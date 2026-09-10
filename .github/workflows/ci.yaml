@@ -148,6 +148,9 @@ jobs:
             image_neutron:
               - 'images/neutron/**'
               - 'patches/neutron/**'
+            image_cinder:
+              - 'images/cinder/**'
+              - 'patches/cinder/**'
             # ovn ships the OVS/OVN daemons the CRs project and the rclone
             # shifter the OVNCentral backup CronJob uploads with. Neither is a
             # per-release service image, so they steer the ovn e2e leg rather
@@ -200,6 +203,8 @@ jobs:
               - 'tests/tempest/barbican-*/**'
             tempest_neutron:
               - 'tests/tempest/neutron-*/**'
+            tempest_cinder:
+              - 'tests/tempest/cinder-*/**'
             # ---------------------------------------------------------------
             # Per-operator e2e suites. Editing one operator's suite runs that
             # operator's leg, not all eight.
@@ -225,6 +230,9 @@ jobs:
               - 'tests/e2e/ovn/**'
             tests_e2e_neutron:
               - 'tests/e2e/neutron/**'
+            tests_e2e_cinder:
+              - 'tests/e2e/cinder/**'
+              - 'tests/e2e/cinder-operator/**'
             # ---------------------------------------------------------------
             # Suites that live in a job of their own. Each filter names exactly
             # the suite its job runs, so an edit schedules that job and no
@@ -365,6 +373,7 @@ jobs:
           FILTER_image_placement: ${{ steps.filter.outputs.image_placement }}
           FILTER_image_barbican: ${{ steps.filter.outputs.image_barbican }}
           FILTER_image_neutron: ${{ steps.filter.outputs.image_neutron }}
+          FILTER_image_cinder: ${{ steps.filter.outputs.image_cinder }}
           FILTER_image_ovn: ${{ steps.filter.outputs.image_ovn }}
           FILTER_image_proxy: ${{ steps.filter.outputs.image_proxy }}
           FILTER_image_tempest: ${{ steps.filter.outputs.image_tempest }}
@@ -375,6 +384,7 @@ jobs:
           FILTER_tempest_glance: ${{ steps.filter.outputs.tempest_glance }}
           FILTER_tempest_barbican: ${{ steps.filter.outputs.tempest_barbican }}
           FILTER_tempest_neutron: ${{ steps.filter.outputs.tempest_neutron }}
+          FILTER_tempest_cinder: ${{ steps.filter.outputs.tempest_cinder }}
           FILTER_tests_e2e_keystone: ${{ steps.filter.outputs.tests_e2e_keystone }}
           FILTER_tests_e2e_c5c3: ${{ steps.filter.outputs.tests_e2e_c5c3 }}
           FILTER_tests_e2e_horizon: ${{ steps.filter.outputs.tests_e2e_horizon }}
@@ -383,6 +393,7 @@ jobs:
           FILTER_tests_e2e_barbican: ${{ steps.filter.outputs.tests_e2e_barbican }}
           FILTER_tests_e2e_ovn: ${{ steps.filter.outputs.tests_e2e_ovn }}
           FILTER_tests_e2e_neutron: ${{ steps.filter.outputs.tests_e2e_neutron }}
+          FILTER_tests_e2e_cinder: ${{ steps.filter.outputs.tests_e2e_cinder }}
           FILTER_tests_controlplane: ${{ steps.filter.outputs.tests_controlplane }}
           FILTER_tests_controlplane_sso: ${{ steps.filter.outputs.tests_controlplane_sso }}
           FILTER_tests_external_keystone: ${{ steps.filter.outputs.tests_external_keystone }}

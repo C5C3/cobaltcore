@@ -21,6 +21,17 @@
 # step's env block they find no NFS export and no broker, and without the cinder
 # arm of the chainsaw narrowing they run four at a time on a node that fits two.
 #
+# Three more filters decide what a pull request that leaves operators/cinder/
+# alone still runs. image_cinder is what puts the service image into
+# changed-services, so an edit under images/cinder/ or patches/cinder/ is
+# built and tested instead of pulled from main. tests_e2e_cinder is what
+# schedules the leg for an edit that touches only the suites. tempest_cinder
+# is declared and handed to the resolver but narrows nothing yet:
+# hack/ci-resolve-changes.sh keeps cinder out of TEMPEST_ALL_SERVICES until
+# the tests/tempest/cinder-* directories exist, and
+# tests/unit/ci/change_classes_wiring_test.sh exempts it from the steering
+# check for that reason.
+#
 # The last signal sits in .github/workflows/build-images.yaml: the option
 # catalog check re-derives operators/cinder/api/v1alpha1/catalogs/<release>.json
 # from the image it just built, and it runs only where the step's `if:` names
@@ -107,6 +118,28 @@ test_cinder_filter_is_wired() {
   assert_contains "the operator source path is covered" "$block" "operators/cinder/**"
 }
 
+test_cinder_image_filter_is_wired() {
+  echo "Test: an images/cinder change reaches changed-services"
+
+  # changed-services is the list build-e2e-images rebuilds from source. An
+  # image edit missing from it leaves the cinder leg loading whatever main
+  # last published, so the suites pass against the old image and the change
+  # under review is never run. patches/cinder/ belongs in the same filter:
+  # hack/ci-build-service-image.sh applies patches/<op>/<release>/*.patch into
+  # the source it builds, so a patch edited on its own changes that image.
+  assert_filter_is_wired image_cinder changed-services
+
+  local block
+  block=$(filter_block image_cinder)
+  assert_contains "the image build context is covered" "$block" "images/cinder/**"
+  assert_contains "the source patches are covered" "$block" "patches/cinder/**"
+
+  assert_eq "an image change rebuilds cinder and nothing else" \
+    'changed-services=["cinder"]' \
+    "$(resolve_output changed-services refs/heads/main "$ALL_OPS" \
+      FILTER_image_cinder=true)"
+}
+
 test_cinder_change_produces_an_e2e_leg() {
   echo "Test: an operators/cinder change puts cinder in the e2e-operators matrix"
 
@@ -117,6 +150,29 @@ test_cinder_change_produces_an_e2e_leg() {
   assert_contains "the matrix keeps the operator axis" "$matrix" '"operator"'
   assert_not_contains "the sentinel is gone once an operator changed" \
     "$matrix" "__none__"
+}
+
+test_cinder_e2e_filter_is_wired() {
+  echo "Test: an edit to the cinder suites alone runs the cinder leg"
+
+  # The suites sit in two directories and the e2e-operator job runs both:
+  # tests/e2e/cinder/ holds the per-CR tests, tests/e2e/cinder-operator/ the
+  # operator-level ones. A filter naming only the first lets an edit under the
+  # second schedule no leg at all, and the suite it changed goes unrun.
+  assert_filter_is_wired tests_e2e_cinder e2e-operators
+
+  local block
+  block=$(filter_block tests_e2e_cinder)
+  assert_contains "the per-CR suites are covered" "$block" "tests/e2e/cinder/**"
+  assert_contains "the operator-level suites are covered" "$block" \
+    "tests/e2e/cinder-operator/**"
+
+  # And that leg only: editing one operator's suites is no reason to spend a
+  # runner on the other eight.
+  assert_eq "a suite edit runs the cinder leg alone" \
+    'e2e-operators={"operator":["cinder"]}' \
+    "$(resolve_output e2e-operators refs/heads/main "$ALL_OPS" \
+      FILTER_tests_e2e_cinder=true)"
 }
 
 test_cinder_leg_opts_into_nfs_and_messaging() {
@@ -302,7 +358,9 @@ test_build_images_verifies_the_cinder_catalog() {
 test_all_operators_lists_cinder
 test_service_operators_lists_cinder
 test_cinder_filter_is_wired
+test_cinder_image_filter_is_wired
 test_cinder_change_produces_an_e2e_leg
+test_cinder_e2e_filter_is_wired
 test_cinder_leg_opts_into_nfs_and_messaging
 test_helm_filter_covers_the_cinder_chart
 test_helm_validate_renders_the_cinder_chart
