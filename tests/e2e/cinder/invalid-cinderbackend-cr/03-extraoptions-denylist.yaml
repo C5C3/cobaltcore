@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraOptions carrying volume_driver duplicates an option the
+# operator renders from spec.type; the validating webhook's denylist
+# rejects it, because a duplicate would shadow the typed value depending on
+# render order.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: cinderbackend-denylist
+spec:
+  cinderRef:
+    name: cinder
+  type: NFS
+  nfs:
+    server: nfs.example.com
+    path: /exports/cinder
+  extraOptions:
+    volume_driver: "cinder.volume.drivers.lvm.LVMVolumeDriver"

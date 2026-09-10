@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.messaging present but naming neither mode violates the same
+# MessagingSpec XOR CEL rule from the other side. The block is required on
+# CinderSpec, so an empty object is the way to reach the rule: an omitted
+# spec.messaging is answered by the required-properties list instead, which
+# pins nothing about the XOR.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-invalid-messaging-neither
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging: {}

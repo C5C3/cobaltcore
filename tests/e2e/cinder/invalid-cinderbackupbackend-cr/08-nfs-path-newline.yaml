@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.nfs.path carrying a newline violates the ^/[!-~]*$ pattern on
+# NFSBackupBackendSpec.Path, which the schema answers before the webhook's
+# validateNFSExport twin. The value is rendered verbatim as the
+# backup_share option, where the reconcile-time control-character guard
+# would delete the backup Deployment outright rather than reject the edit.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: cinderbackupbackend-path-newline
+spec:
+  cinderRef:
+    name: cinder
+  type: NFS
+  nfs:
+    server: nfs.example.com
+    path: "/exports/cinder-backup\nbackup_driver = swift"

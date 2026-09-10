@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for CinderBackend CRD + webhook validation rejection.
+# Pins every implemented CEL XValidation, kubebuilder-marker, and
+# webhook.validate() rejection path in
+# operators/cinder/api/v1alpha1/cinderbackend_* to a deterministic admission
+# failure. Each step applies an otherwise-valid backend CR with a single aspect
+# violating the rule under test, captures the admission $error, and asserts the
+# message substring.
+#
+# Fixture categories:
+#   - Create-rejection fixtures (00-04, 07) are each applied once and rejected.
+#   - The cinderRef-immutability pair: 05-immutable-cinderref-base is the valid
+#     base CR applied first, and 06-immutable-cinderref is applied as an UPDATE
+#     that the CRD CEL transition rule (self == oldSelf, evaluated only on
+#     UPDATE) rejects. A type-immutability update fixture is deliberately
+#     absent: NFS is the only Phase-1 enum value, so a changed type is already
+#     rejected by the Enum marker.
+#
+# To prevent scaffold drift across fixtures they are generated from a single
+# source of truth in `_generate.py`. After editing the canonical scaffold or
+# any per-fixture override, regenerate via:
+#   python3 tests/e2e/cinder/invalid-cinderbackend-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes
+# `_generate.py --check` (drift mode incl. the orphan sweep) and
+# `test_generate.py` (FIXTURES count + chainsaw-test.yaml cross-reference)
+# so any hand-edit fails the build before the cluster-bound e2e-operator job.
+#
+# The test runs in an ephemeral namespace: the base CR references a Cinder that
+# does not exist there — admission deliberately tolerates the dangling
+# reference (GitOps ordering) and the service-remove finalizer is released
+# unconditionally when the parent Cinder is gone, so namespace cleanup never
+# wedges.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-invalid-cinderbackend-cr
+spec:
+  steps:
+  # type NFS without spec.nfs must be rejected (union rule).
+  - try:
+    - apply:
+        file: 00-type-nfs-without-nfs-block.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one backend block matching spec.type')): true
+  # The reserved name "default" must be rejected by the webhook: it names
+  # cinder.conf's [DEFAULT] section.
+  - try:
+    - apply:
+        file: 01-reserved-name-default.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'metadata.name')): true
+            (contains($error, 'it names cinder.conf')): true
+  # A relative spec.nfs.path must be rejected by the ^/ pattern: the path
+  # reaches the mount command verbatim.
+  - try:
+    - apply:
+        file: 02-nfs-path-not-absolute.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'nfs.path')): true
+            (contains($error, 'should match')): true
+  # extraOptions must not carry an option the operator renders from a typed
+  # field.
+  - try:
+    - apply:
+        file: 03-extraoptions-denylist.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'option "volume_driver" is owned by')): true
+  # extraOptions keys must match the ^[A-Za-z0-9_]+$ allowlist.
+  - try:
+    - apply:
+        file: 04-extraoptions-bad-charset.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'option name must match')): true
+  # ── cinderRef-immutability block ────────────────────────────────────────
+  # The valid base CR is applied first and must SUCCEED.
+  - try:
+    - apply:
+        file: 05-immutable-cinderref-base.yaml
+  # cinderRef is immutable (CEL transition rule, UPDATE-only).
+  - try:
+    - apply:
+        file: 06-immutable-cinderref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cinderRef is immutable')): true
+  # metadata.name plus spec.cinderRef.name past the shared 47-character budget
+  # must be rejected by the webhook: the service-remove Job's name is copied
+  # into a label value Kubernetes caps at 63 characters.
+  - try:
+    - apply:
+        file: 07-name-bound-exceeded.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'metadata.name plus spec.cinderRef.name must not exceed 47 characters')): true
+  # metadata.name past its own 35-character bound must be rejected by the
+  # webhook: the detach records the Job's terminal state under a per-backend
+  # annotation key whose name part Kubernetes caps at 63 characters.
+  - try:
+    - apply:
+        file: 08-name-length-exceeded.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'metadata.name must not exceed 35 characters')): true
+  # spec.nfs.path carrying a newline must be rejected by the CRD pattern: the
+  # value is written verbatim into the nfs_shares_config file, where a newline
+  # injects a second export.
+  - try:
+    - apply:
+        file: 09-nfs-path-newline.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'nfs.path')): true
+            (contains($error, 'should match')): true

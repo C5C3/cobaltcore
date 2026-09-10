@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# metadata.name of 36 characters exceeds its own 35-character bound by one,
+# which the validating webhook alone answers: the detach records the Job's
+# terminal state under the annotation key
+# cobaltcore.c5c3.io/last-service-remove-<name>-job-uid on the Cinder, and
+# Kubernetes caps an annotation key's name part at 63 characters. The pair
+# clears the shared 47-character budget (36 + 6), so this fixture pins the
+# per-name bound alone.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: cinderbackend-name-past-the-35-chars
+spec:
+  cinderRef:
+    name: cinder
+  type: NFS
+  nfs:
+    server: nfs.example.com
+    path: /exports/cinder

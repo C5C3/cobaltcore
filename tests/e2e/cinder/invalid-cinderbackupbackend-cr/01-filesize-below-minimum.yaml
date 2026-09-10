@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.fileSize below the Minimum=1048576 marker is answered by the schema.
+# A chunk smaller than a MiB turns a large volume into a backup of tens of
+# thousands of objects, each with its own round trip. The value is a
+# multiple of 32768 so the MultipleOf marker stays satisfied and the
+# fixture isolates the floor. The webhook repeats the bound, but the schema
+# answers first.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: cinderbackupbackend-small-chunk
+spec:
+  cinderRef:
+    name: cinder
+  type: NFS
+  nfs:
+    server: nfs.example.com
+    path: /exports/cinder-backup
+  fileSize: 32768

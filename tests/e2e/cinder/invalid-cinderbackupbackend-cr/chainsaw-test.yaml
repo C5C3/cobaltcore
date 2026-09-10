@@ -1,0 +1,120 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for CinderBackupBackend CRD + webhook validation
+# rejection. Pins every implemented CEL XValidation, kubebuilder-marker, and
+# webhook.validate() rejection path in
+# operators/cinder/api/v1alpha1/cinderbackupbackend_* to a deterministic
+# admission failure. Each step applies an otherwise-valid backup backend CR with
+# a single aspect violating the rule under test, captures the admission $error,
+# and asserts the message substring.
+#
+# Fixture categories:
+#   - Create-rejection fixtures (00-03) are each applied once and rejected.
+#   - The cinderRef-immutability pair: 04-immutable-cinderref-base is the valid
+#     base CR applied first, and 05-immutable-cinderref is applied as an UPDATE
+#     that the CRD CEL transition rule (self == oldSelf, evaluated only on
+#     UPDATE) rejects. A type-immutability update fixture is deliberately
+#     absent: NFS is the only Phase-1 enum value, so a changed type is already
+#     rejected by the Enum marker.
+#   - The single-attachment pair: 06-second-backup-base is a valid backup
+#     backend applied first, and 07-second-backup-backend attaches a second one
+#     to the same Cinder, which the validating webhook's sibling List rejects.
+#     It is the create-rejection that needs an existing object.
+#
+# To prevent scaffold drift across fixtures they are generated from a single
+# source of truth in `_generate.py`. After editing the canonical scaffold or
+# any per-fixture override, regenerate via:
+#   python3 tests/e2e/cinder/invalid-cinderbackupbackend-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes
+# `_generate.py --check` (drift mode incl. the orphan sweep) and
+# `test_generate.py` (FIXTURES count + chainsaw-test.yaml cross-reference)
+# so any hand-edit fails the build before the cluster-bound e2e-operator job.
+#
+# The test runs in an ephemeral namespace: the base CRs reference Cinders that
+# do not exist there, which admission deliberately tolerates (GitOps ordering),
+# and the two bases carry different cinderRefs so neither competes with the
+# other for the single-attachment rule.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-invalid-cinderbackupbackend-cr
+spec:
+  steps:
+  # type NFS without spec.nfs must be rejected (union rule).
+  - try:
+    - apply:
+        file: 00-type-nfs-without-nfs-block.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one backup backend block matching spec.type')): true
+  # spec.fileSize below the Minimum=1048576 marker must be rejected by the
+  # schema: a sub-MiB chunk turns a large volume into tens of thousands of
+  # objects.
+  - try:
+    - apply:
+        file: 01-filesize-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'fileSize')): true
+            (contains($error, 'should be greater than or equal to 1048576')): true
+  # spec.compression outside the CRD enum must be rejected: the four values are
+  # cinder's own choices for backup_compression_algorithm.
+  - try:
+    - apply:
+        file: 02-compression-not-in-enum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'compression')): true
+            (contains($error, 'Unsupported value')): true
+  # extraOptions must not carry an option the operator renders from a typed
+  # field.
+  - try:
+    - apply:
+        file: 03-extraoptions-denylist.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'option "backup_driver" is owned by')): true
+  # ── cinderRef-immutability block ────────────────────────────────────────
+  # The valid base CR is applied first and must SUCCEED.
+  - try:
+    - apply:
+        file: 04-immutable-cinderref-base.yaml
+  # cinderRef is immutable (CEL transition rule, UPDATE-only).
+  - try:
+    - apply:
+        file: 05-immutable-cinderref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cinderRef is immutable')): true
+  # ── single-attachment block ─────────────────────────────────────────────
+  # The valid base CR is applied first and must SUCCEED.
+  - try:
+    - apply:
+        file: 06-second-backup-base.yaml
+  # A second backup backend on the same Cinder must be rejected by the webhook:
+  # the backup driver is a property of the one cinder-backup Deployment.
+  - try:
+    - apply:
+        file: 07-second-backup-backend.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'already has CinderBackupBackend')): true
+  # spec.nfs.path carrying a newline must be rejected by the CRD pattern: the
+  # value is rendered verbatim as backup_share, so a newline injects a further
+  # option line into the backup driver's section.
+  - try:
+    - apply:
+        file: 08-nfs-path-newline.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'nfs.path')): true
+            (contains($error, 'should match')): true

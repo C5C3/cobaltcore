@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraConfig setting an unknown option in a known section is rejected
+# by the validating webhook against the embedded cinder 2025.2 option
+# catalog. [DEFAULT] is a section the catalog carries, so the rejection is
+# the unknown-option one rather than the unknown-section one.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-invalid-extraconfig-option
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: openstack-rabbitmq
+  extraConfig:
+    DEFAULT:
+      no_such_option: "1"

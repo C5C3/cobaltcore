@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraOptions key "nfs-mount-attempts" carries dashes, which the
+# validating webhook's key allowlist (^[A-Za-z0-9_]+$) rejects before the
+# denylist runs: oslo.config option names are snake_case, and a variant the
+# denylist is blind to would otherwise reach the rendered section.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: cinderbackend-bad-key
+spec:
+  cinderRef:
+    name: cinder
+  type: NFS
+  nfs:
+    server: nfs.example.com
+    path: /exports/cinder
+  extraOptions:
+    nfs-mount-attempts: "3"
