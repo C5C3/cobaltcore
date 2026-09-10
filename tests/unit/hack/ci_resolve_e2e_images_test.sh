@@ -187,10 +187,10 @@ test_the_key_set_covers_every_image_in_the_tree() {
   assert_eq "the map's keys are the tree's images" \
     "$(expected_keys | sort)" "$(jq -r 'keys[]' <<<"$MAP" | sort)"
 
-  # Eight operators, six services across two releases, two Tempest images and
+  # Nine operators, seven services across two releases, two Tempest images and
   # the federation proxy. The number moves with the tree; the equality above is
   # what keeps it honest.
-  assert_eq "the tree yields 23 images today" "23" "$(jq -r 'length' <<<"$MAP")"
+  assert_eq "the tree yields 26 images today" "26" "$(jq -r 'length' <<<"$MAP")"
 
   assert_eq "an operator image is keyed by its dev tag" "true" \
     "$(jq 'has("ghcr.io/c5c3/keystone-operator:dev")' <<<"$MAP")"
@@ -206,7 +206,7 @@ test_the_key_set_covers_every_image_in_the_tree() {
   assert_eq "an operator without a service image contributes no service key" "0" \
     "$(jq -r '[keys[] | select(startswith("ghcr.io/c5c3/c5c3:"))] | length' <<<"$MAP")"
 
-  # One lookup per image, and no image looked up twice: 23 round trips to the
+  # One lookup per image, and no image looked up twice: 26 round trips to the
   # registry is already the bulk of this step's runtime on a no-build run.
   assert_eq "every image is looked up" "$(jq -r 'length' <<<"$MAP")" \
     "$(grep -c . "$INSPECT_LOG")"

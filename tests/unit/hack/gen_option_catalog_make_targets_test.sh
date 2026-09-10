@@ -126,8 +126,8 @@ test_clean_run_covers_every_pair() {
   result="$(run_target verify-option-catalogs none none)"
 
   assert_eq "the target exits 0" "0" "$(echo "$result" | cut -d'|' -f1)"
-  assert_eq "both releases times all five services ran" \
-    "10" "$(echo "$result" | cut -d'|' -f3)"
+  assert_eq "both releases times all six services ran" \
+    "12" "$(echo "$result" | cut -d'|' -f3)"
 }
 
 test_verify_target_reports_a_drifted_catalog
