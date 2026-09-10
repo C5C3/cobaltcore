@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The one NFS backend the cinder-nfs-chaos CR serves, and the export the suite
+# takes away underneath it.
+#
+# A Cinder without an attached backend reports VolumeServicesReady=False under
+# reason NoBackends and never reaches Ready, so the baseline needs one.
+#
+# The export is the kind-only NFS server (deploy/kind/nfs/nfs-server.yaml),
+# whose /volumes directory is pre-created 42424:42424 with mode 0770, so the
+# cinder-volume pod writes into it under its own uid.
+#
+# mountOptions is left at the CRD default, nfsvers=4.1,soft,timeo=30,retrans=2
+# (DefaultNFSMountOptions in operators/cinder/api/v1alpha1). The soft mount is
+# what the suite is about: with the server gone the kernel client gives up
+# after two retransmits and returns EIO to cinder-volume instead of blocking
+# the process for as long as the outage lasts.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: nfs-chaos-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-nfs-chaos
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes
