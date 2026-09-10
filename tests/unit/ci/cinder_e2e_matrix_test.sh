@@ -16,7 +16,10 @@
 # operators/cinder/helm/ renders, lints and unit-tests nothing. The chart render
 # is where cinder departs from the ovn and neutron shape: those two refuse
 # namespace-scoped RBAC and the job excuses the refusal, while the cinder chart
-# takes the mode and every scenario has to render.
+# takes the mode and every scenario has to render. The e2e leg also has to ask
+# for what the suites need: without WITH_NFS and WITH_MESSAGING in the setup
+# step's env block they find no NFS export and no broker, and without the cinder
+# arm of the chainsaw narrowing they run four at a time on a node that fits two.
 #
 # The last signal sits in .github/workflows/build-images.yaml: the option
 # catalog check re-derives operators/cinder/api/v1alpha1/catalogs/<release>.json
@@ -114,6 +117,45 @@ test_cinder_change_produces_an_e2e_leg() {
   assert_contains "the matrix keeps the operator axis" "$matrix" '"operator"'
   assert_not_contains "the sentinel is gone once an operator changed" \
     "$matrix" "__none__"
+}
+
+test_cinder_leg_opts_into_nfs_and_messaging() {
+  echo "Test: the cinder e2e leg asks for the NFS export and the broker"
+
+  # Every cinder suite mounts its volumes as inline CSI volumes from the kind
+  # NFS export and takes its own vhost on the shared broker. deploy-infra.sh
+  # installs neither by default and setup-e2e-infra reads both flags from env,
+  # so the values have to sit in this step's own env block; anywhere else the
+  # suites come up against a missing StorageClass and an unreachable transport.
+  local setup
+  setup=$(job_step e2e-operator "Setup E2E infrastructure")
+
+  assert_contains "the step still uses the shared composite action" "$setup" \
+    "uses: ./.github/actions/setup-e2e-infra"
+  assert_contains "the cinder leg opts into the NFS stack" "$setup" \
+    "WITH_NFS: \${{ matrix.operator == 'cinder' && 'true' || '' }}"
+  assert_contains "and into the shared broker" "$setup" \
+    "WITH_MESSAGING: \${{ matrix.operator == 'cinder' && 'true' || '' }}"
+
+  # Sixteen suites of three or four Deployments, a db-sync Job and a probe pod
+  # each do not run four at a time on one kind node: at the shared config's
+  # parallel: 4 the Pods stay Pending on "Insufficient cpu". Read the condition
+  # together with its body, so a cinder arm on a branch that no longer narrows
+  # anything does not pass. The neutron leg keeps its own narrowing.
+  local narrowing
+  narrowing=$(job_step e2e-operator "Run E2E tests" | awk '
+    /^ *parallel=\(\)$/ { in_block = 1; next }
+    in_block && /^ *fi$/ { exit }
+    in_block { print }
+  ')
+
+  assert_not_empty "the chainsaw run step narrows the parallelism" "$narrowing"
+  assert_contains "the cinder leg is one of the narrowed ones" "$narrowing" \
+    '[ "${OPERATOR}" = "cinder" ]'
+  assert_contains "it runs two suites at a time" "$narrowing" \
+    "parallel=(--parallel 2)"
+  assert_contains "the neutron narrowing is kept" "$narrowing" \
+    '[ "${OPERATOR}" = "neutron" ]'
 }
 
 test_helm_filter_covers_the_cinder_chart() {
@@ -261,6 +303,7 @@ test_all_operators_lists_cinder
 test_service_operators_lists_cinder
 test_cinder_filter_is_wired
 test_cinder_change_produces_an_e2e_leg
+test_cinder_leg_opts_into_nfs_and_messaging
 test_helm_filter_covers_the_cinder_chart
 test_helm_validate_renders_the_cinder_chart
 test_go_matrices_list_cinder
