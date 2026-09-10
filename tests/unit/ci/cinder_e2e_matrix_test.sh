@@ -223,7 +223,7 @@ test_cinder_leg_opts_into_nfs_and_messaging() {
 }
 
 test_chaos_network_leg_runs_the_cinder_suites() {
-  echo "Test: the e2e-chaos network leg runs both cinder chaos suites"
+  echo "Test: the e2e-chaos network leg runs the three cinder chaos suites"
 
   # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
   # flags are no-ops in v0.2.14), so a suite missing from the list is
@@ -236,6 +236,8 @@ test_chaos_network_leg_runs_the_cinder_suites() {
     "tests/e2e-chaos/cinder-operator-pod-kill"
   assert_contains "it runs the broker outage suite" "$entry" \
     "tests/e2e-chaos/cinder-broker-outage"
+  assert_contains "it runs the NFS outage suite" "$entry" \
+    "tests/e2e-chaos/cinder-nfs-outage"
 
   local load
   load=$(job_step e2e-chaos "Load E2E images")
@@ -254,9 +256,10 @@ test_chaos_network_leg_runs_the_cinder_suites() {
   assert_contains "the service image is loaded" "$kind_load" \
     "kind load docker-image \${{ env.IMAGE_PREFIX }}/cinder:2025.2"
 
-  # Both suites attach an NFS backend and cinder-operator-pod-kill takes a
-  # vhost on the shared broker, so this leg needs the same two opt-ins the
-  # e2e-operator cinder leg does. deploy-infra.sh installs neither by default.
+  # All three suites attach an NFS backend, cinder-nfs-outage scales that
+  # export away and back, and two of them take a vhost on the shared broker,
+  # so this leg needs the same two opt-ins the e2e-operator cinder leg does.
+  # deploy-infra.sh installs neither by default.
   local setup
   setup=$(job_step e2e-chaos "Setup E2E infrastructure")
   assert_contains "the chaos leg opts into the NFS stack" "$setup" \
@@ -280,8 +283,8 @@ test_chaos_network_leg_runs_the_cinder_suites() {
   assert_contains "it lands in its own Namespace" "$deploy" \
     "NAMESPACE: cinder-system"
 
-  # And the blocking pod leg stays out of it: neither suite runs there, so it
-  # gains no NFS export, no broker and no cinder-operator.
+  # And the blocking pod leg stays out of it: no cinder suite runs there, so
+  # it gains no NFS export, no broker and no cinder-operator.
   local pod_entry
   pod_entry=$(e2e_chaos_matrix_entry pod)
   assert_not_empty "the pod leg exists" "$pod_entry"
