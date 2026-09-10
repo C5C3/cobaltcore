@@ -1337,6 +1337,12 @@ jobs:
         uses: ./.github/actions/setup-e2e-infra
         env:
           WITH_OVN_KERNEL_MODULES: ${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron') && 'true' || '' }}
+          # The cinder suites mount their volumes as inline CSI volumes from
+          # the kind NFS export, and each one takes its own vhost on the
+          # shared broker. Empty on every other leg, where deploy-infra.sh
+          # keeps its default of installing neither.
+          WITH_NFS: ${{ matrix.operator == 'cinder' && 'true' || '' }}
+          WITH_MESSAGING: ${{ matrix.operator == 'cinder' && 'true' || '' }}
       # The c5c3 ControlPlane controller Owns()/Watches() the Keystone,
       # KeystoneIdentityBackend, Horizon, Glance, GlanceBackend, and K-ORC kinds
       # (ControlPlaneReconciler.SetupWithManager). controller-runtime informers
@@ -1412,10 +1418,13 @@ jobs:
           # API, its two worker Deployments and a db-sync Job, so four of them
           # at once do not fit one kind node: the workers and the db-sync Jobs
           # stay Pending on "Insufficient cpu" and the CRs never reach Ready.
-          # Only this leg is narrowed; the shared config's parallel: 4 is what
-          # every other operator runs at.
+          # A cinder suite is the same size: three or four Deployments, a
+          # db-sync Job and a probe pod, which four at once do not fit on a
+          # 4-vCPU node either.
+          # Only these two legs are narrowed; the shared config's parallel: 4
+          # is what every other operator runs at.
           parallel=()
-          if [ "${OPERATOR}" = "neutron" ]; then
+          if [ "${OPERATOR}" = "neutron" ] || [ "${OPERATOR}" = "cinder" ]; then
             parallel=(--parallel 2)
           fi
           chainsaw test --config tests/e2e/chainsaw-config.yaml "${parallel[@]}" "${test_dirs[@]}"
