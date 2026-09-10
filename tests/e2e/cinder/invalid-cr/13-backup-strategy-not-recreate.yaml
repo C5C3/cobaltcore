@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.backup.deployment.strategy.type other than Recreate violates the
+# second single-writer CEL rule on CinderSpec: a rolling update overlaps
+# the surge pod with the outgoing one, and both hold the backup target open
+# under the same host identity. replicas is spelled out at 1 because the
+# shared DeploymentSpec defaults a present deployment block to three, which
+# would trip the replica rule as well and stop this fixture isolating the
+# strategy one.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-invalid-backup-strategy
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: openstack-rabbitmq
+  backup:
+    deployment:
+      replicas: 1
+      strategy:
+        type: RollingUpdate

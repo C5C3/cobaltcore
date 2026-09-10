@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.compression outside the CRD enum (none, zlib, bz2, zstd) is answered
+# by the schema. The four values are cinder's own choices for [DEFAULT]
+# backup_compression_algorithm, so a fifth fails every backup at runtime
+# rather than at admission. The webhook repeats the enum, but the schema
+# answers first.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: cinderbackupbackend-bad-compression
+spec:
+  cinderRef:
+    name: cinder
+  type: NFS
+  nfs:
+    server: nfs.example.com
+    path: /exports/cinder-backup
+  compression: lz4

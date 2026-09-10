@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.nfs.path carrying a newline violates the ^/[!-~]*$ pattern on
+# NFSBackendSpec.Path, which the schema answers before the webhook's
+# validateNFSExport twin. The operator writes "server:path" verbatim into
+# the nfs_shares_config file the cinder-volume pod mounts, so a newline
+# would add a second export line naming a share nothing validated, mounted
+# or derived an egress rule for.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: cinderbackend-path-newline
+spec:
+  cinderRef:
+    name: cinder
+  type: NFS
+  nfs:
+    server: nfs.example.com
+    path: "/exports/cinder\nnfs.example.com:/exports/other"

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base CinderBackupBackend for the single-attachment pair. It is
+# applied FIRST and must SUCCEED; 07-second-backup-backend attaches a
+# second one to the same Cinder, which the webhook rejects. Its cinderRef
+# differs from every other fixture's so the two accepted bases never
+# compete for this rule.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: cinderbackupbackend-a
+spec:
+  cinderRef:
+    name: cinder-single
+  type: NFS
+  nfs:
+    server: nfs.example.com
+    path: /exports/cinder-backup

@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.serviceUser without spec.keystoneEndpoint violates the pairing CEL
+# rule on CinderSpec: the endpoint names who to authenticate against and
+# the service user carries the credentials, so either alone renders a
+# [keystone_authtoken] section the service cannot use. The webhook mirrors
+# it with the same message, but the schema answers first.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-invalid-serviceuser-no-keystone
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: openstack-rabbitmq
+  serviceUser:
+    secretRef:
+      name: cinder-service-password

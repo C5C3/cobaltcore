@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# metadata.name (13 characters) plus spec.cinderRef.name (35) exceeds the
+# shared 47-character budget by one, which the validating webhook alone
+# answers: detaching the backend runs a <cinder>-<name>-service-remove Job
+# whose name is copied into a label value Kubernetes caps at 63 characters.
+# The budget is shared rather than per-name because either name may be the
+# long one, so the overrun is put on the Cinder name here: metadata.name
+# stays inside its own 35-character bound, which 08 pins on its own. The
+# rule runs in ValidateCreate only, so the finalizer-removal update never
+# trips over it.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: cinderbackend
+spec:
+  cinderRef:
+    name: cinder-name-past-the-shared-budgets
+  type: NFS
+  nfs:
+    server: nfs.example.com
+    path: /exports/cinder

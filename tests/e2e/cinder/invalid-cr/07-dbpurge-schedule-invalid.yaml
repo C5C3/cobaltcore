@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.dbPurge.schedule outside the cron grammar is rejected by the
+# validating webhook alone. The field carries no CRD pattern on purpose: the
+# accepted grammar includes descriptors such as @daily, which no regex
+# expresses without also rejecting valid expressions, so
+# validation.CronSchedule is the sole gate. The value carries four fields
+# where five are expected, so it is rejected at admission rather than by
+# the CronJob create the reconciler would otherwise attempt.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-invalid-dbpurge-schedule
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: openstack-rabbitmq
+  dbPurge:
+    schedule: "* * * *"

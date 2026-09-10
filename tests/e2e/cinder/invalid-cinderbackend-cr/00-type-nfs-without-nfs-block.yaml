@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# type NFS without a spec.nfs block violates the union CEL rule
+# ((self.type == 'NFS') == has(self.nfs)); the webhook mirrors it with the
+# same message, but the schema answers first.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: cinderbackend-no-nfs
+spec:
+  cinderRef:
+    name: cinder
+  type: NFS

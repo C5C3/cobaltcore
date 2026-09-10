@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.keyManager without spec.keystoneEndpoint violates the CEL rule on
+# CinderSpec: castellan reaches Barbican with the Keystone credentials from
+# spec.serviceUser, so a key manager on a Keystone-free deployment can
+# authenticate against nothing. The webhook mirrors it with the same
+# message, but the schema answers first.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-invalid-keymanager-no-keystone
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: openstack-rabbitmq
+  keyManager:
+    type: Barbican
+    barbican:
+      endpoint: http://barbican.openstack.svc.cluster.local:9311

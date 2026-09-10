@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.volume.deployment.replicas above one violates the single-writer CEL
+# rule on CinderSpec. A cinder-volume owns its backend through a host
+# identity rather than through a lock, so a second process under the same
+# identity has the same volume state open twice, which the NFS drivers
+# refuse. validateSingletonDeployment mirrors it in the webhook with the
+# same message, but the schema answers first.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-invalid-volume-replicas
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: openstack-rabbitmq
+  volume:
+    deployment:
+      replicas: 2
