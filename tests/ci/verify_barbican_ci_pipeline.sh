@@ -557,7 +557,7 @@ test_barbican_tempest_wiring() {
   assert_file_contains \
     "the tempest matrix generator knows the barbican service" \
     "$TEMPEST_MATRIX_SCRIPT" \
-    "ALL_TEMPEST_SERVICES=(keystone glance barbican neutron)"
+    "ALL_TEMPEST_SERVICES=(keystone glance barbican neutron cinder)"
 
   # The matrix is narrowed per pull request, so the leg has to survive both the
   # unnarrowed case and a selection that names it.

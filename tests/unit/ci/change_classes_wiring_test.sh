@@ -137,9 +137,9 @@ test_every_filter_steers_something() {
   # what CI ever sees; what the per-service filter has to do is narrow.
   assert_contains "tempest_src alone runs every service" \
     "$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_tempest_src=true)" \
-    'tempest-services=["keystone","glance","barbican","neutron"]'
+    'tempest-services=["keystone","glance","barbican","neutron","cinder"]'
   local svc
-  for svc in keystone glance barbican neutron; do
+  for svc in keystone glance barbican neutron cinder; do
     assert_contains "tempest_${svc} narrows the matrix to ${svc}" \
       "$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_tempest_src=true "FILTER_tempest_${svc}=true")" \
       "tempest-services=[\"${svc}\"]"

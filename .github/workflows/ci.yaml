@@ -2880,15 +2880,23 @@ jobs:
             ${{ matrix.service == 'neutron' && format('{0}/neutron:{1}', env.IMAGE_PREFIX, matrix.release) || '' }}
             ${{ matrix.service == 'neutron' && format('{0}/ovn-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.service == 'neutron' && format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION) || '' }}
+            # The cinder leg pulls its own two images here and takes the glance
+            # pair from the step below, whose condition covers it as well: its
+            # volume suites create volumes from an image and upload volumes back
+            # to one, so the leg runs a Glance next to the Cinder.
+            ${{ matrix.service == 'cinder' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.service == 'cinder' && format('{0}/cinder:{1}', env.IMAGE_PREFIX, matrix.release) || '' }}
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
       # -- Glance ----------------------------------------------------------
       # The glance leg additionally pulls the glance-operator and the matching
-      # glance service image; the keystone leg needs neither.
+      # glance service image; the keystone leg needs neither. The cinder leg
+      # takes the same pair, for the Glance its volume suites create images
+      # from, and loads it into kind in its own step below.
       - name: Load Glance E2E images
-        if: matrix.service == 'glance'
+        if: matrix.service == 'glance' || matrix.service == 'cinder'
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
@@ -2942,9 +2950,29 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+      # -- Cinder ----------------------------------------------------------
+      # Both operators and both service images: the leg runs a Glance next to
+      # its Cinder. The tempest image is kind-loaded here for the same reason as
+      # on the glance, barbican and neutron legs: the catalog-setup Job and the
+      # image-seed Job run it in-cluster.
+      - name: Load cinder images into kind
+        if: matrix.service == 'cinder'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
+        env:
+          # The cinder leg's volume backend and backup target are NFS exports
+          # the operator mounts as inline CSI volumes, and its Cinder takes the
+          # shared broker in managed mode. Empty on every other leg, where
+          # deploy-infra.sh keeps its default of installing neither.
+          WITH_NFS: ${{ matrix.service == 'cinder' && 'true' || '' }}
+          WITH_MESSAGING: ${{ matrix.service == 'cinder' && 'true' || '' }}
       # Use shared operator deployment script.
       - name: Deploy operator (keystone)
         run: hack/ci-deploy-operator.sh
@@ -2952,9 +2980,10 @@ jobs:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
       # The glance leg also needs the glance-operator in its own glance-system
-      # namespace before its Glance CR reconciles.
+      # namespace before its Glance CR reconciles, and so does the cinder leg
+      # for the Glance it deploys next to its Cinder.
       - name: Deploy glance operator
-        if: matrix.service == 'glance'
+        if: matrix.service == 'glance' || matrix.service == 'cinder'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: glance
@@ -2992,6 +3021,16 @@ jobs:
           OPERATOR: neutron
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
           NAMESPACE: neutron-system
+      # The cinder leg needs the cinder-operator in its own cinder-system
+      # namespace before its Cinder, CinderBackend and CinderBackupBackend CRs
+      # reconcile. The glance-operator it also needs comes from the step above.
+      - name: Deploy cinder operator
+        if: matrix.service == 'cinder'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
       # Every service deploys the Keystone CR from its own config-dir (the
       # glance and barbican legs run against their own
       # keystone-<service>-tempest identity CR).
@@ -3070,6 +3109,46 @@ jobs:
           kubectl apply -f ${{ matrix.config-dir }}/04-neutron-cr.yaml
           kubectl wait neutron/${{ matrix.neutron-cr-name }} -n openstack \
             --for=condition=Ready --timeout=600s
+      # The cinder leg bootstraps the block-storage catalog (the Cinder and
+      # Glance services plus their endpoints via a setup Job) before its CRs:
+      # the Cinder reconciler authenticates against that catalog entry, and the
+      # Cinder resolves the image service from it too.
+      - name: Bootstrap block-storage catalog
+        if: matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/01-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/cinder-tempest-catalog-setup -n openstack \
+            --timeout=300s
+      # The Glance goes Ready before the Cinder is applied: the seed image the
+      # volume tests boot from is uploaded to it, and a store-side failure here
+      # would otherwise surface as an opaque Cinder timeout.
+      - name: Deploy Glance CR for the cinder leg
+        if: matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/02-glance-cr.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/03-glancebackend-cr.yaml
+          kubectl wait glance/${{ matrix.glance-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=300s
+      # 600s rather than the 300s the glance and barbican legs use: the Cinder
+      # brings up an api, a scheduler, a volume and a backup Deployment plus a
+      # db-sync Job, and the backends have to be attached before the volume and
+      # backup services are projected at all.
+      - name: Deploy Cinder CR for Tempest
+        if: matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/04-cinderbackend-cr.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/05-cinderbackupbackend-cr.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/06-cinder-cr.yaml
+          kubectl wait cinder/${{ matrix.cinder-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=600s
+      # tempest.conf pins [compute] image_ref to the UUID this Job creates, so
+      # the create-volume-from-image cases have an image before the run starts.
+      - name: Seed the image the volume tests boot from
+        if: matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/07-image-seed-job.yaml
+          kubectl wait --for=condition=complete job/cinder-tempest-image-seed -n openstack \
+            --timeout=300s
       # Use shared Tempest wrapper script.
       - name: Run Tempest API tests
         run: hack/ci-run-tempest.sh
@@ -3077,8 +3156,10 @@ jobs:
           CONFIG_DIR: ${{ matrix.config-dir }}
           TEMPEST_IMAGE: ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }}
           SERVICE_K8S_NAME: ${{ matrix.service-k8s-name }}
-          # The Glance Service carries the CR name. Empty for keystone legs
-          # (matrix key absent → ""), which disables the 9292 port-forward in
+          # The Glance Service carries the CR name. The matrix emits
+          # glance-cr-name for the glance legs and for the cinder legs, whose
+          # volume tests create volumes from an image. Empty elsewhere (matrix
+          # key absent → ""), which disables the 9292 port-forward in
           # ci-run-tempest.sh.
           GLANCE_K8S_NAME: ${{ matrix.glance-cr-name }}
           # The Barbican Service carries the CR name. Empty for the keystone and
@@ -3089,10 +3170,15 @@ jobs:
           # glance and barbican legs (matrix key absent → ""), which disables
           # the 9696 port-forward in ci-run-tempest.sh.
           NEUTRON_K8S_NAME: ${{ matrix.neutron-cr-name }}
+          # The Cinder Service carries the CR name. Empty on every other leg
+          # (matrix key absent → ""), which disables the 8776 port-forward in
+          # ci-run-tempest.sh.
+          CINDER_K8S_NAME: ${{ matrix.cinder-cr-name }}
           # stestr worker count. Set by hack/ci-generate-tempest-matrix.sh for
-          # the neutron legs (2), whose node also hosts OVN and Neutron; empty
-          # for the other legs (matrix key absent → ""), which leaves
-          # ci-run-tempest.sh on its default of 4.
+          # the neutron legs (2), whose node also hosts OVN and Neutron, and for
+          # the cinder legs (2), whose node hosts the broker, the NFS server,
+          # four Cinder workloads and a Glance; empty for the other legs (matrix
+          # key absent → ""), which leaves ci-run-tempest.sh on its default of 4.
           TEMPEST_CONCURRENCY: ${{ matrix.tempest-concurrency }}
       - name: Upload Tempest results
         if: always()

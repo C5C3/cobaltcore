@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tempest include list for Cinder block-storage API tests.
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+# Only volume tests are included: apart from the Glance the volume suites create
+# images from, no other service is deployed on this leg.
+#
+# The two patterns take the whole volume tree of each scope. The tests the
+# environment cannot serve are switched off through [volume-feature-enabled] in
+# tempest.conf (no snapshots on the NFS driver, no attach without a Nova) rather
+# than listed here, so a driver that gains a capability needs one flag flipped
+# instead of a pattern set rewritten.
+
+# Core Tempest volume API tests
+tempest.api.volume
+
+# Cinder-specific plugin tests
+cinder_tempest_plugin.api.volume

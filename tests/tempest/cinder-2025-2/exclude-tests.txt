@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tempest exclude list for Cinder block-storage API tests.
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+# Follows the same format as releases/2025.2/test-excludes/keystone.txt.
+#
+# Every group of patterns added here carries a tracked-by/re-evaluate-on pair
+# directly above it so an exclusion does not silently outlive its cause:
+#   tracked-by:      link to the issue that owns the exclusion
+#   re-evaluate-on:  the condition that retires it, e.g. cinder-tempest-plugin
+#                    > <the version the mismatch was observed on>
+# Re-check every group on each plugin bump and drop the patterns upstream has
+# fixed.
+#
+# The first CI run of PR #995 recorded the group below. Further groups land
+# here the same way.
+
+# tracked-by: https://github.com/C5C3/cobaltcore/issues/979
+# re-evaluate-on: cinder-tempest-plugin > 1.22.0
+# Snapshot tests that consult no [volume-feature-enabled] snapshot guard. The
+# NFS backend runs under nas_secure_file_operations = true (#979 D3), which
+# forbids snapshots upstream, so the operator renders nfs_snapshot_support =
+# false and every snapshot these tests take ends in error. Core Tempest skips
+# its own snapshot tests on the flag tempest.conf sets; these six read it
+# nowhere. test_image_volume_dependencies_3 is here because it snapshots the
+# volume it created from an image; _1 and _2 take no snapshot and stay in.
+cinder_tempest_plugin\.api\.volume\.test_multiple_volume_from_resource\.CreateVolumesFromSnapshotTest\.test_create_multiple_volume_from_snapshot
+cinder_tempest_plugin\.api\.volume\.test_volume_backup\.VolumesBackupsTest\.test_volume_snapshot_backup
+cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeDependencyTests\.test_delete_source_snapshot
+cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeDependencyTests\.test_delete_dep_chain
+cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeDependencyTests\.test_delete_dep_chain_2
+cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeImageDependencyTests\.test_image_volume_dependencies_3
