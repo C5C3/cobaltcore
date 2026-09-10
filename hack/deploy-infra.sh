@@ -158,6 +158,13 @@ WITH_DIZZY="${WITH_DIZZY:-false}"
 # privileged, so the stack stays opt-in.
 WITH_NFS="${WITH_NFS:-false}"
 
+# Gates the opt-in message-bus kind overlay (deploy/kind/messaging): a single
+# small RabbitmqCluster named `shared-rabbitmq` in `openstack`. The standalone
+# Cinder e2e suites need a real broker (each creates its own vhost on it), and
+# the ControlPlane suites of #989 use the same one. Defaults to false so the
+# kind Quick Start stays minimal; set WITH_MESSAGING=true to install it.
+WITH_MESSAGING="${WITH_MESSAGING:-false}"
+
 # Gates the opt-in transparent registry pull-through cache (#564). When true,
 # deploy-infra brings up one small distribution-registry (registry:2/3) proxy
 # per upstream registry on the `kind` Docker network (start_registry_cache),
@@ -664,6 +671,50 @@ wait_for_gateway_programmed() {
     fi
 
     sleep 10
+  done
+}
+
+# ---------------------------------------------------------------------------
+# wait_for_rabbitmqcluster — Wait for a RabbitmqCluster to report
+# AllReplicasReady=True
+#
+# The RabbitMQ Cluster Operator publishes no Ready condition, so the poll
+# follows AllReplicasReady, the same condition the chainsaw suites gate on.
+# On timeout, dumps `kubectl describe rabbitmqcluster/<name>` and the events
+# of the `<name>-server-0` pod, then exits 1. This matches the diagnostic
+# shape of wait_for_gateway_programmed.
+#
+# Arguments:
+#   $1 — RabbitmqCluster name (e.g., shared-rabbitmq)
+#   $2 — namespace (e.g., openstack)
+#   $3 — timeout in seconds
+# ---------------------------------------------------------------------------
+wait_for_rabbitmqcluster() {
+  local name="$1"
+  local namespace="$2"
+  local timeout="$3"
+  local deadline=$(( $(date +%s) + timeout ))
+
+  log "Waiting up to ${timeout}s for RabbitmqCluster/${name} in namespace '${namespace}' to report AllReplicasReady=True..."
+
+  while true; do
+    local ready_status
+    ready_status=$(kubectl get rabbitmqcluster/"${name}" -n "${namespace}" \
+      -o "jsonpath={.status.conditions[?(@.type=='AllReplicasReady')].status}" 2>/dev/null) || true
+
+    if [[ "${ready_status}" == "True" ]]; then
+      log "RabbitmqCluster/${name} reports AllReplicasReady."
+      return 0
+    fi
+
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "ERROR: RabbitmqCluster ${namespace}/${name} did not report AllReplicasReady within ${timeout}s"
+      kubectl describe rabbitmqcluster/"${name}" -n "${namespace}" || true
+      kubectl get events -n "${namespace}" --field-selector "involvedObject.name=${name}-server-0" || true
+      exit 1
+    fi
+
+    sleep 5
   done
 }
 
@@ -2214,6 +2265,7 @@ main() {
   log "metrics-server      : ${WITH_METRICS_SERVER} (set WITH_METRICS_SERVER=true to install)"
   log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
   log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the kind NFS server + csi-driver-nfs, and to modprobe nfsd/nfs/nfsv4 on the host)"
+  log "Message bus         : ${WITH_MESSAGING} (set WITH_MESSAGING=true for the kind-only shared-rabbitmq broker)"
   log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
   log "Infrastructure only : ${INFRA_ONLY} (set INFRA_ONLY=true for a target cluster that runs no CobaltCore operator)"
@@ -2849,6 +2901,17 @@ main() {
   else
     kubectl apply -k "${REPO_ROOT}/deploy/kind/infrastructure"
     log "Infrastructure kustomize overlay applied."
+  fi
+
+  # The message-bus overlay lands after Step 5, where both of its prerequisites
+  # are established: the `openstack` namespace (Step 3's base overlay) and the
+  # rabbitmqclusters.rabbitmq.com CRD (Phase 3b's cluster-operator wait, pinned
+  # by the wait_for_crds call above). The AllReplicasReady wait is a hard gate:
+  # a suite that asked for the broker and got an unready one has no bus at all.
+  if [[ "${WITH_MESSAGING}" == "true" ]]; then
+    kubectl apply -k "${REPO_ROOT}/deploy/kind/messaging"
+    log "Message bus overlay applied (WITH_MESSAGING=true)."
+    wait_for_rabbitmqcluster shared-rabbitmq openstack "${POD_TIMEOUT}"
   fi
 
   # Gateway/openstack-gw can only report Programmed=True after the

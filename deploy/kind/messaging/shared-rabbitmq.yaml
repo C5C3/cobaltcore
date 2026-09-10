@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The kind-only message bus.
+#
+# It exists for the standalone Cinder e2e suites, which each create their own
+# vhost on it (one vhost per suite), and the ControlPlane suites of #989 use
+# the same broker.
+#
+# One replica. The RabbitMQ Cluster Operator's defaults for image and
+# persistence are left alone. Its resource default is not: the operator
+# requests 1 CPU and 2Gi per pod, and that request does not fit beside the
+# rest of the stack on the 4-vCPU kind node, where it takes the last
+# schedulable CPU and leaves the next pod Pending on "Insufficient cpu".
+# tests/e2e-chaos/neutron-broker-outage/01-rabbitmqcluster.yaml records the
+# same reason for its own broker. The suites push little traffic through the
+# bus, so 100m and 512Mi are what it needs here.
+#
+# The cluster operator labels the server pod
+# `app.kubernetes.io/name: shared-rabbitmq` and names it
+# `shared-rabbitmq-server-0`. Those are the selectors deploy-infra.sh's
+# AllReplicasReady wait and the suite diagnostics use.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: shared-rabbitmq
+  namespace: openstack
+spec:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
