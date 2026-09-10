@@ -2059,6 +2059,70 @@ as root from the pod spec alone. This cluster has no untrusted tenant; a
 non-kind deployment brings its own CSI mounter against an export that
 squashes root.
 
+### Message bus (kind-only opt-in)
+
+**Files:** `deploy/kind/messaging/kustomization.yaml`,
+`deploy/kind/messaging/shared-rabbitmq.yaml`
+
+One `RabbitmqCluster` named `shared-rabbitmq` in `openstack`, for the
+standalone Cinder e2e suites of
+[#988](https://github.com/c5c3/cobaltcore/issues/988) and, later, the
+ControlPlane suites of #989. The RabbitMQ Cluster Operator that reconciles it
+is not part of the overlay: it reaches every cluster this script provisions
+through the Flux Kustomization in
+`deploy/flux-system/releases/rabbitmq-cluster-operator.yaml`. Only the broker
+instance is opt-in, and the default `make deploy-infra` flow creates none.
+
+Production ships no equivalent object. A production `ControlPlane` declares
+`spec.infrastructure.messaging`, and the c5c3 operator projects a
+`RabbitmqCluster` for it into the ControlPlane's own namespace.
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `openstack` (pre-existing; the overlay ships no inline `Namespace`) |
+| API version | `rabbitmq.com/v1beta1` |
+| Replicas | `1` |
+| Requests | `100m` CPU, `512Mi` memory |
+| Limits | `512Mi` memory, no CPU limit |
+| Dependencies | the RabbitMQ Cluster Operator (Phase 3b) and the `rabbitmqclusters.rabbitmq.com` CRD (the Step 5 `wait_for_crds` list) |
+
+**Sizing.** The cluster operator requests 1 CPU and 2Gi per pod by default.
+That request does not fit beside the rest of the stack on the 4-vCPU kind
+node: it takes the last schedulable CPU and the next pod stays `Pending` on
+`Insufficient cpu`. `tests/e2e-chaos/neutron-broker-outage` records the same
+finding for its own broker. The e2e suites push little traffic through the
+bus, so `100m` and `512Mi` carry them. Memory is limited at the request.
+There is no CPU limit, so a busy moment goes unthrottled.
+
+**One vhost per suite.** Every standalone Cinder e2e suite creates its own
+vhost, named after the `Cinder` CR, plus a Secret `<cr-name>-messaging`
+holding the matching `transport_url`. `tests/e2e/cinder/broker-vhost.sh`
+creates both. Two suites on one vhost would share the RPC topics
+`cinder-scheduler` and `cinder-volume.<host>@<backend>`, so a scheduler in one
+suite could hand a volume to the volume service of another. Managed mode
+(`spec.messaging.clusterRef`) always lands on the default vhost, so it is used
+only where a single Cinder runs alone on the cluster: the tempest legs.
+
+**Deploy-infra wiring.** With `WITH_MESSAGING=true`, `hack/deploy-infra.sh`
+applies `deploy/kind/messaging` after Step 5, where both prerequisites are
+settled: the `openstack` namespace from the Step 3 base overlay and the
+`rabbitmqclusters.rabbitmq.com` CRD from the Phase 3b operator wait. It then
+waits for `rabbitmqcluster/shared-rabbitmq` to report `AllReplicasReady`. The
+cluster operator publishes no `Ready` condition, so that is the condition to
+gate on. On timeout the run stops: it prints
+`kubectl describe rabbitmqcluster/shared-rabbitmq` and the events of
+`shared-rabbitmq-server-0`, then exits 1.
+
+**Opt-in usage:**
+
+```bash
+WITH_MESSAGING=true make deploy-infra
+```
+
+**Posture summary.** Same shape as the entries above: the production omission
+is explicit, the opt-in flag has a single documented name (`WITH_MESSAGING`),
+and the kind overlay is self-contained under `deploy/kind/messaging/`.
+
 ### Glance large-upload listener
 
 **Files:** `deploy/kind/base/openstack-gateway.yaml`,
