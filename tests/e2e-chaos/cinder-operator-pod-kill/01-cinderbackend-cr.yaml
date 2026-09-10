@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The one NFS backend the cinder-chaos-op CR serves.
+#
+# A Cinder without an attached backend reports VolumeServicesReady=False under
+# reason NoBackends and never reaches Ready, so the baseline this suite kills
+# the operator against needs one.
+#
+# The export is the kind-only NFS server (deploy/kind/nfs/nfs-server.yaml),
+# whose /volumes directory is pre-created 42424:42424 with mode 0770, so the
+# cinder-volume pod writes into it under its own uid.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: chaos-op-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-chaos-op
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

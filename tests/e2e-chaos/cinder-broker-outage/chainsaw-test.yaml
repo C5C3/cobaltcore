@@ -1,0 +1,747 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a message-bus outage under a Cinder deployment.
+# The partition severs cinder <-> RabbitMQ traffic on the broker side (see
+# 03-networkchaos.yaml for why a client-side rule would be a no-op). What the
+# suite pins is that the three processes react differently, and that each of
+# them reacts the way its role demands:
+#
+#   - baseline: the CR is Ready, a volume is created through to available, and
+#     the scheduler, the volume service and the API all report a ready
+#     container
+#   - under the partition: the scheduler and the volume service go NotReady.
+#     cinder-amqp-ready looks for an established socket to the broker port and
+#     there is none, so the CR reports SchedulerReady=False,
+#     VolumeServicesReady=False and the aggregate Ready=False. The API
+#     keeps its ready container and never restarts: its readiness is
+#     /healthcheck, which the bus does not reach into
+#   - under the partition: GET /healthcheck answers 200 while POST /v3/volumes
+#     does not answer at all. A create casts to the scheduler, and
+#     oslo.messaging retries that publish for as long as the broker is
+#     unreachable, so the request hangs rather than reporting a success the
+#     deployment cannot deliver
+#   - after the partition is lifted: both processes reconnect on their own, the
+#     conditions go True again, a fresh create reaches available, and no volume
+#     the suite asked for is left stranded in creating
+#
+# The suite brings its own broker (00-rabbitmqcluster.yaml) rather than taking
+# a vhost on the kind-only shared-rabbitmq: the fault severs a whole broker,
+# and doing that to the shared one would take the rest of the leg with it.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-broker-outage
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Bring up the broker ─────────────────────────────────────────
+  # The RabbitMQ Cluster Operator publishes no Ready condition, so the wait
+  # follows AllReplicasReady, which is the condition the messaging helper and
+  # tests/e2e/c5c3/messaging/ gate on too. Ten minutes: the broker pulls its own
+  # image, binds a PersistentVolumeClaim and runs its boot sequence before it
+  # reports a ready replica.
+  - try:
+    - apply:
+        file: 00-rabbitmqcluster.yaml
+    - script:
+        timeout: 11m
+        content: |
+          set -eu
+          BUS=cinder-chaos-rabbitmq
+          DEADLINE=$(( $(date +%s) + 600 ))
+          while true; do
+            STATUS="$(kubectl get rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
+              -o "jsonpath={.status.conditions[?(@.type=='AllReplicasReady')].status}" 2>/dev/null || true)"
+            if [ "${STATUS}" = "True" ]; then
+              echo "OK: rabbitmqcluster/${BUS} AllReplicasReady=True"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+              echo "FAIL: rabbitmqcluster/${BUS} AllReplicasReady not True within 600s (last: '${STATUS:-<none>}')"
+              kubectl get pods,pvc -n "$NAMESPACE" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+    catch:
+    - script:
+        content: kubectl get rabbitmqcluster -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl describe pod -n openstack -l app.kubernetes.io/name=cinder-chaos-rabbitmq 2>&1 || true
+    - script:
+        content: kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=rabbitmq-cluster-operator --all-containers --tail=100 2>&1 || true
+  # ── Step 2: Apply the Cinder CR and its backend, assert Ready ───────────
+  - try:
+    - apply:
+        file: 01-cinder-cr.yaml
+    - apply:
+        file: 02-cinderbackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &broker-dump
+    - script:
+        content: ../diagnostics.sh chaos cinder-broker-chaos --cr-kind=cinder --dep-label=app.kubernetes.io/name=cinder-operator --dep-ns=cinder-system --log-label=app.kubernetes.io/instance=cinder-broker-chaos
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        name: broker-chaos-nfs1
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Cinder pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-broker-chaos -o wide 2>&1 || true
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-broker-chaos -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Probe pods ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null | grep cinder-broker-probe-); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --tail=80 2>&1 || true
+          done
+    - script:
+        content: kubectl get networkchaos,rabbitmqcluster -n openstack -o yaml 2>&1 || true
+  # ── Step 3: Baseline — a volume is created and all three pods are ready ─
+  # The probe is started detached and read back with `kubectl logs`:
+  # `kubectl run -i` only streams from the moment the attach lands, so a probe
+  # that finishes first would lose its sentinel. The token is the noauth
+  # pipeline's "<user>:<project>" pair rather than a Keystone token.
+  - try:
+    - script:
+        timeout: 8m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          NAME = sys.argv[2]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          # Only connection-level failures are retried: kube-proxy's endpoint
+          # programming can trail the CR's Ready flip by a second or two, so a
+          # single-shot request races it. Every HTTP status the API answers
+          # with is a verdict, so it fails hard with the code.
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          # The volume state machine, polled every 5s. An error state is
+          # terminal, so waiting out the deadline on one would only delay the
+          # verdict.
+          def wait_volume(volume_id, want, seconds):
+              deadline = time.time() + seconds
+              volume = {}
+              while time.time() < deadline:
+                  volume = json.loads(
+                      call("GET", "/v3/volumes/" + volume_id).read())["volume"]
+                  status = volume.get("status")
+                  if status in ("error", "error_restoring"):
+                      fail("volume %s entered %s" % (volume_id, status))
+                  if status == want:
+                      return volume
+                  print("volume %s is %s" % (volume_id, status))
+                  time.sleep(5)
+              fail("volume %s never reached %s within %ds: %s"
+                   % (volume_id, want, seconds, volume))
+
+
+          # The write path end to end: the API casts to the scheduler over the
+          # bus, the scheduler places the volume on the one backend, and the
+          # volume service writes the file into the export. Nothing of that
+          # works without the broker, which is what makes it the baseline.
+          created = json.loads(
+              call("POST", "/v3/volumes",
+                   {"volume": {"name": NAME, "size": 1}}).read())["volume"]
+          print("VOLUME-ID: " + created["id"])
+          wait_volume(created["id"], "available", 120)
+          print("WRITE-OK")
+          PY
+          )"
+
+          POD=cinder-broker-probe-baseline
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          # The image ships its python in a venv on PATH; the absolute path is
+          # the one tests/container-images/verify_cinder.sh pins.
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-broker-chaos.openstack.svc.cluster.local:8776 \
+            broker-outage-baseline
+
+          # 60 x 5s = 5m, inside the step timeout, so a stuck probe is reported
+          # with its logs rather than killed by chainsaw.
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'WRITE-OK'
+          echo "OK: the baseline volume reached available through the bus"
+    # The three container readiness flags the partition is read against below.
+    # They are recorded here rather than assumed: the CR being Ready says the
+    # Deployments are available, and this says which container each of the
+    # three pods reports ready on.
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          ready_flag() {
+            kubectl get pods -n "$NAMESPACE" \
+              -l "app.kubernetes.io/instance=cinder-broker-chaos,app.kubernetes.io/component=$1" \
+              -o 'jsonpath={.items[0].status.containerStatuses[0].ready}'
+          }
+
+          # scheduler and volume-<backend> take their readiness off the broker
+          # socket, api off /healthcheck. All three are ready on a healthy bus.
+          for component in scheduler volume-broker-chaos-nfs1 api; do
+            flag="$(ready_flag "$component")"
+            echo "component ${component}: ready=${flag:-<none>}"
+            if [ "${flag}" != "true" ]; then
+              echo "FAIL: the ${component} container is not ready before the partition"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-broker-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+          done
+          echo "BASELINE-READY-OK"
+    catch: *broker-dump
+  # ── Step 4: Inject NetworkChaos to partition the broker ─────────────────
+  - try:
+    - apply:
+        file: 03-networkchaos.yaml
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          # `kubectl wait --for=condition=AllInjected` instead of a chainsaw
+          # resource assert: NetworkChaos.status.conditions is a fixed 4-item
+          # list (Selected/AllInjected/AllRecovered/Paused) and chainsaw's
+          # list-merge rejects a shorter expected slice with "lengths of slices
+          # don't match". Asserting the negative conditions instead would be
+          # worse than verbose: chaos-mesh writes ALL four False before the
+          # selector has run, so a Selected=False assertion passes on an
+          # experiment that never injected anything.
+          kubectl wait networkchaos/partition-broker-cinder -n openstack \
+            --for=condition=AllInjected --timeout=60s
+    catch: *broker-dump
+    cleanup:
+    - script:
+        content: |
+          set -eu
+          kubectl delete -f 03-networkchaos.yaml --ignore-not-found
+          echo "OK: the broker partition is lifted"
+  # ── Step 5: Under the partition — the bus consumers drop, the API serves ─
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # The flip is not immediate, and it cannot be. cinder-amqp-ready
+          # looks for a socket ESTABLISHED to the broker port, and a partition
+          # drops packets without a FIN or an RST, so the socket stays
+          # ESTABLISHED until the client itself closes it.
+          # images/cinder/cinder-amqp-ready documents exactly this blind spot.
+          # What closes it is oslo.messaging's heartbeat, which gives up after
+          # heartbeat_timeout_threshold (60s by default, and the operator
+          # renders no override). The probe then needs two failures at its 5s
+          # period. 180s covers that ~70s worst case with room and stays well
+          # inside the 600s the NetworkChaos runs for.
+          DEADLINE=$(( $(date +%s) + 180 ))
+
+          ready_flag() {
+            kubectl get pods -n "$NAMESPACE" \
+              -l "app.kubernetes.io/instance=cinder-broker-chaos,app.kubernetes.io/component=$1" \
+              -o 'jsonpath={.items[0].status.containerStatuses[0].ready}'
+          }
+
+          while true; do
+            sched="$(ready_flag scheduler)"
+            vol="$(ready_flag volume-broker-chaos-nfs1)"
+            if [ "${sched}" = "false" ] && [ "${vol}" = "false" ]; then
+              echo "both bus consumers report ready=false under the partition"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+              echo "FAIL: scheduler=${sched:-<none>} volume=${vol:-<none>} 180s into the partition, want both false"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-broker-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            echo "scheduler=${sched:-<none>} volume=${vol:-<none>}, waiting"
+            sleep 5
+          done
+    # What the two NotReady Deployments become on the CR. The aggregate is
+    # asserted with its status alone: the reason names whichever sub-condition
+    # the operator aggregated first, and the claim here is that Ready went
+    # False at all.
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SchedulerReady']):
+            - status: "False"
+              reason: WaitingForScheduler
+            (conditions[?type == 'VolumeServicesReady']):
+            - status: "False"
+              reason: WaitingForVolumeServices
+            (conditions[?type == 'Ready']):
+            - status: "False"
+    # The API is the contrast. Its readiness is an HTTP GET of /healthcheck,
+    # which never touches the bus, so the same partition leaves it ready. It
+    # carries a liveness probe on that endpoint too, so a restart here would
+    # mean the outage reached the request path after all.
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          api_field() {
+            kubectl get pods -n "$NAMESPACE" \
+              -l 'app.kubernetes.io/instance=cinder-broker-chaos,app.kubernetes.io/component=api' \
+              -o "jsonpath={.items[0].status.containerStatuses[0].$1}"
+          }
+
+          flag="$(api_field ready)"
+          restarts="$(api_field restartCount)"
+          echo "api container: ready=${flag:-<none>} restartCount=${restarts:-<none>}"
+          if [ "${flag}" != "true" ]; then
+            echo "FAIL: the API container went NotReady under a broker partition"
+            exit 1
+          fi
+          if [ "${restarts}" != "0" ]; then
+            echo "FAIL: the API container restarted ${restarts} time(s) under a broker partition"
+            exit 1
+          fi
+          echo "API-UP-OK"
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import socket
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          NAME = sys.argv[2]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+          # The client-side cap on the blocked create. Long enough that a slow
+          # but working API is not mistaken for a blocked one, short enough
+          # that the probe reports while the partition is still up.
+          CREATE_TIMEOUT = 20
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None, timeout=30):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=timeout)
+
+
+          # Only connection-level failures are retried: kube-proxy's endpoint
+          # programming can trail a pod's readiness by a second or two. Every
+          # HTTP status the API answers with is a verdict, so it fails hard
+          # with the code.
+          def call(method, path, body=None, timeout=30):
+              last = None
+              for _ in range(12):
+                  try:
+                      return send(method, path, body, timeout)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          # /healthcheck is served by the oslo healthcheck middleware and never
+          # touches the message bus, so the API keeps answering it with the
+          # broker partitioned away.
+          resp = call("GET", "/healthcheck", timeout=15)
+          body = resp.read().decode().strip()
+          if resp.status != 200:
+              fail("GET /healthcheck -> %d during the partition, want 200"
+                   % resp.status)
+          print("healthcheck answers %d %r during the partition"
+                % (resp.status, body))
+
+          # The other half. A create writes the volume row and then casts to
+          # the scheduler, and oslo.messaging retries that publish for as long
+          # as the broker is unreachable. So the call must not come back:
+          # neither with the 202 it answers on a healthy bus nor with an error
+          # status, both of which would be the deployment reporting on a
+          # request it cannot carry out. A socket timeout is the only correct
+          # outcome.
+          try:
+              created = send("POST", "/v3/volumes",
+                             {"volume": {"name": NAME, "size": 1}},
+                             timeout=CREATE_TIMEOUT)
+          except urllib.error.HTTPError as exc:
+              fail("create returned during the partition: HTTP %d" % exc.code)
+          except TimeoutError as exc:
+              print("POST /v3/volumes did not answer within %ds: %r"
+                    % (CREATE_TIMEOUT, exc))
+          except urllib.error.URLError as exc:
+              # A connect-phase timeout arrives wrapped in URLError while a
+              # read-phase one is raised bare; anything else here is a
+              # different failure and must not pass as a blocked write.
+              if not isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                  fail("POST /v3/volumes -> %r during the partition, want a "
+                       "timeout" % exc)
+              print("POST /v3/volumes did not answer within %ds: %r"
+                    % (CREATE_TIMEOUT, exc))
+          else:
+              fail("create returned during the partition: HTTP %d"
+                   % created.status)
+
+          print("BLOCKED-OK")
+          PY
+          )"
+
+          POD=cinder-broker-probe-blocked
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-broker-chaos.openstack.svc.cluster.local:8776 \
+            broker-outage-partitioned
+
+          phase=""
+          for _ in $(seq 1 40); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'BLOCKED-OK'
+          echo "OK: the API served health traffic while the write path blocked"
+    catch: *broker-dump
+  # ── Step 6: Lift the partition and let the deployment recover itself ────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: partition-broker-cinder
+          namespace: openstack
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # oslo.messaging is already in its reconnect loop when the drop rule
+          # goes away, so the socket comes back within a retry interval and the
+          # probe passes on its next 5s period. 120s is that with room for the
+          # kubelet to record it.
+          DEADLINE=$(( $(date +%s) + 120 ))
+
+          ready_flag() {
+            kubectl get pods -n "$NAMESPACE" \
+              -l "app.kubernetes.io/instance=cinder-broker-chaos,app.kubernetes.io/component=$1" \
+              -o 'jsonpath={.items[0].status.containerStatuses[0].ready}'
+          }
+
+          while true; do
+            sched="$(ready_flag scheduler)"
+            vol="$(ready_flag volume-broker-chaos-nfs1)"
+            if [ "${sched}" = "true" ] && [ "${vol}" = "true" ]; then
+              echo "both bus consumers are ready again"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+              echo "FAIL: scheduler=${sched:-<none>} volume=${vol:-<none>} 120s after the partition was lifted, want both true"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-broker-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            echo "scheduler=${sched:-<none>} volume=${vol:-<none>}, waiting"
+            sleep 5
+          done
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'VolumeServicesReady']):
+            - status: "True"
+              reason: AllVolumeServicesReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          NAME = sys.argv[2]
+          PREFIX = sys.argv[3]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+          # How long a volume the suite created may still be settling after the
+          # partition is lifted, both for the fresh create and for the row the
+          # blocked create left behind.
+          SETTLE_SECONDS = 120
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          def wait_volume(volume_id, want, seconds):
+              deadline = time.time() + seconds
+              volume = {}
+              while time.time() < deadline:
+                  volume = json.loads(
+                      call("GET", "/v3/volumes/" + volume_id).read())["volume"]
+                  status = volume.get("status")
+                  if status in ("error", "error_restoring"):
+                      fail("volume %s entered %s" % (volume_id, status))
+                  if status == want:
+                      return volume
+                  print("volume %s is %s" % (volume_id, status))
+                  time.sleep(5)
+              fail("volume %s never reached %s within %ds: %s"
+                   % (volume_id, want, seconds, volume))
+
+
+          def states():
+              listing = json.loads(
+                  call("GET", "/v3/volumes/detail").read())["volumes"]
+              return [(v.get("name"), v.get("status")) for v in listing
+                      if (v.get("name") or "").startswith(PREFIX)]
+
+
+          # A create the scheduler and the volume service both have to serve
+          # over the bus. It reaching available is the recovery claim: both
+          # processes reconnected on their own, with nothing restarted and no
+          # operator action.
+          created = json.loads(
+              call("POST", "/v3/volumes",
+                   {"volume": {"name": NAME, "size": 1}}).read())["volume"]
+          print("VOLUME-ID: " + created["id"])
+          wait_volume(created["id"], "available", SETTLE_SECONDS)
+          print("the post-partition create reached available")
+
+          # And nothing the suite asked for is stranded. The create that
+          # blocked under the partition left a row in creating, and the API
+          # worker still retrying its cast publishes it once the broker is
+          # reachable again, so that volume settles like any other. A row that
+          # stays in creating is a request the deployment accepted and then
+          # silently dropped.
+          deadline = time.time() + SETTLE_SECONDS
+          while True:
+              ours = states()
+              pending = [entry for entry in ours if entry[1] != "available"]
+              if not pending:
+                  break
+              if time.time() >= deadline:
+                  fail("%ds after the partition was lifted these volumes are "
+                       "not available: %s" % (SETTLE_SECONDS, pending))
+              print("waiting for %s" % pending)
+              time.sleep(5)
+          print("every volume the suite created is available: %s" % ours)
+
+          print("RECOVERED-OK")
+          PY
+          )"
+
+          POD=cinder-broker-probe-recovered
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-broker-chaos.openstack.svc.cluster.local:8776 \
+            broker-outage-recovered broker-outage-
+
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'RECOVERED-OK'
+          echo "OK: the write path recovered and left no volume stranded"
+    catch: *broker-dump
+  # ── Step 7: Tear the broker down through its own operator ───────────────
+  # Chainsaw's cleanup deletes what the suite applied, under the 120s the chaos
+  # config allows. The broker pod carries the RabbitMQ Cluster Operator's
+  # default terminationGracePeriodSeconds of 604800s (seven days, so its preStop
+  # drain can finish), and the path that gets it to exit promptly is the
+  # RabbitmqCluster delete: the operator labels the pod skipPreStopChecks and
+  # releases its finalizer. So the suite performs that delete itself and waits
+  # for the pod, the way tests/e2e/c5c3/messaging/ tears its bus down, rather
+  # than leaving a seven-day grace period inside a two-minute budget.
+  #
+  # The Cinder CR goes first: it is the only consumer of the bus here, and a
+  # reconcile that ran between the two deletes would find a RabbitmqCluster
+  # mid-teardown and report the CR unready for a bus that is meant to be gone.
+  # The CinderBackend is left to chainsaw's own cleanup: with the parent gone
+  # it releases its service-remove finalizer unconditionally, which is what
+  # tests/e2e/cinder/deletion-cleanup/ pins.
+  - try:
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          BUS=cinder-chaos-rabbitmq
+          kubectl delete cinder cinder-broker-chaos -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=cinder-broker-chaos -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a cinder pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-broker-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Cinder CR and its pods are gone"
+
+          kubectl delete rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=180s
+          BUS_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pod "${BUS}-server-0" -n "$NAMESPACE" -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${BUS_DEADLINE}" ]; then
+              echo "FAIL: ${BUS}-server-0 outlived its RabbitmqCluster by 180s; chainsaw's cleanup cannot wait it out"
+              kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the RabbitmqCluster and its broker pod are gone"
+    catch:
+    - script:
+        content: kubectl get rabbitmqcluster,cinder,cinderbackend -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl get pods -n openstack -o wide 2>&1 || true
+    - script:
+        content: kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=rabbitmq-cluster-operator --all-containers --tail=100 2>&1 || true

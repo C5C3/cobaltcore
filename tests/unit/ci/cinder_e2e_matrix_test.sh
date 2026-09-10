@@ -21,6 +21,14 @@
 # step's env block they find no NFS export and no broker, and without the cinder
 # arm of the chainsaw narrowing they run four at a time on a node that fits two.
 #
+# The e2e-chaos network leg carries the same kind of silence one job over. It
+# enumerates its test directories by hand, so a cinder chaos suite absent from
+# that list is lint-checked and never applied to a cluster, and the images, the
+# operator deploy and the same two infrastructure flags are the rest of what
+# those suites need: kind pulls nothing the run did not load, a Cinder whose
+# operator never deployed sits without status until the suite times out, and a
+# leg without the NFS export and the broker cannot bring one up at all.
+#
 # Three more filters decide what a pull request that leaves operators/cinder/
 # alone still runs. image_cinder is what puts the service image into
 # changed-services, so an edit under images/cinder/ or patches/cinder/ is
@@ -214,6 +222,73 @@ test_cinder_leg_opts_into_nfs_and_messaging() {
     '[ "${OPERATOR}" = "neutron" ]'
 }
 
+test_chaos_network_leg_runs_the_cinder_suites() {
+  echo "Test: the e2e-chaos network leg runs both cinder chaos suites"
+
+  # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
+  # flags are no-ops in v0.2.14), so a suite missing from the list is
+  # lint-checked and never applied to a cluster.
+  local entry
+  entry=$(e2e_chaos_matrix_entry network)
+
+  assert_not_empty "the network leg exists" "$entry"
+  assert_contains "it runs the operator pod-kill suite" "$entry" \
+    "tests/e2e-chaos/cinder-operator-pod-kill"
+  assert_contains "it runs the broker outage suite" "$entry" \
+    "tests/e2e-chaos/cinder-broker-outage"
+
+  local load
+  load=$(job_step e2e-chaos "Load E2E images")
+  assert_contains "the leg pulls the cinder-operator image" "$load" \
+    "matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX)"
+  assert_contains "the leg pulls the cinder service image" "$load" \
+    "matrix.suite == 'network' && format('{0}/cinder:2025.2', env.IMAGE_PREFIX)"
+
+  local kind_load
+  kind_load=$(job_step e2e-chaos "Load cinder images into kind")
+  assert_not_empty "both images reach the node" "$kind_load"
+  assert_contains "the load runs on the network leg alone" "$kind_load" \
+    "if: matrix.suite == 'network'"
+  assert_contains "the operator image is loaded" "$kind_load" \
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/cinder-operator:dev"
+  assert_contains "the service image is loaded" "$kind_load" \
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/cinder:2025.2"
+
+  # Both suites attach an NFS backend and cinder-operator-pod-kill takes a
+  # vhost on the shared broker, so this leg needs the same two opt-ins the
+  # e2e-operator cinder leg does. deploy-infra.sh installs neither by default.
+  local setup
+  setup=$(job_step e2e-chaos "Setup E2E infrastructure")
+  assert_contains "the chaos leg opts into the NFS stack" "$setup" \
+    "WITH_NFS: \${{ matrix.suite == 'network' && 'true' || '' }}"
+  assert_contains "and into the shared broker" "$setup" \
+    "WITH_MESSAGING: \${{ matrix.suite == 'network' && 'true' || '' }}"
+
+  local deploy
+  deploy=$(job_step e2e-chaos "Deploy cinder operator")
+  assert_not_empty "the cinder-operator is deployed" "$deploy"
+  assert_contains "the deploy runs on the network leg alone" "$deploy" \
+    "if: matrix.suite == 'network'"
+  assert_contains "it goes through the shared deploy script" "$deploy" \
+    "run: hack/ci-deploy-operator.sh"
+  assert_contains "it deploys the cinder operator" "$deploy" "OPERATOR: cinder"
+  assert_contains "it uses the run-tagged cinder-operator image" "$deploy" \
+    "IMAGE_PREFIX }}/cinder-operator"
+  # cinder-operator-pod-kill selects and kills the operator pod by
+  # `-n cinder-system` and its PodChaos targets that namespace, so the script's
+  # keystone-system default would leave the selector finding nothing.
+  assert_contains "it lands in its own Namespace" "$deploy" \
+    "NAMESPACE: cinder-system"
+
+  # And the blocking pod leg stays out of it: neither suite runs there, so it
+  # gains no NFS export, no broker and no cinder-operator.
+  local pod_entry
+  pod_entry=$(e2e_chaos_matrix_entry pod)
+  assert_not_empty "the pod leg exists" "$pod_entry"
+  assert_not_contains "the pod leg runs no cinder suite" "$pod_entry" \
+    "tests/e2e-chaos/cinder-"
+}
+
 test_helm_filter_covers_the_cinder_chart() {
   echo "Test: a cinder chart change re-runs helm-validate"
 
@@ -362,6 +437,7 @@ test_cinder_image_filter_is_wired
 test_cinder_change_produces_an_e2e_leg
 test_cinder_e2e_filter_is_wired
 test_cinder_leg_opts_into_nfs_and_messaging
+test_chaos_network_leg_runs_the_cinder_suites
 test_helm_filter_covers_the_cinder_chart
 test_helm_validate_renders_the_cinder_chart
 test_go_matrices_list_cinder

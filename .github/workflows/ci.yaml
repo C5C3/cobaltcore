@@ -1639,6 +1639,8 @@ jobs:
               tests/e2e-chaos/barbican-openbao-outage
               tests/e2e-chaos/neutron-mariadb-outage
               tests/e2e-chaos/neutron-broker-outage
+              tests/e2e-chaos/cinder-operator-pod-kill
+              tests/e2e-chaos/cinder-broker-outage
           # ovn-southbound-outage kills the Southbound Pod and asserts the
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
@@ -1714,6 +1716,11 @@ jobs:
             # The two neutron outage suites run on the network leg alone.
             ${{ matrix.suite == 'network' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'network' && format('{0}/neutron:2025.2', env.IMAGE_PREFIX) || '' }}
+            # The two cinder outage suites run on the network leg alone. Both
+            # deploy a Cinder, so both need the service image beside the
+            # operator one.
+            ${{ matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'network' && format('{0}/cinder:2025.2', env.IMAGE_PREFIX) || '' }}
       - name: Load images into kind
         if: matrix.suite != 'ovn'
         run: |
@@ -1749,6 +1756,11 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name ${{ env.KIND_CLUSTER }}
+      - name: Load cinder images into kind
+        if: matrix.suite == 'network'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers every matrix entry.
       # The ovn leg's chassis DaemonSet opens a Geneve tunnel from the kind
@@ -1760,6 +1772,13 @@ jobs:
         env:
           WITH_CHAOS_MESH: "true"
           WITH_OVN_KERNEL_MODULES: ${{ matrix.suite == 'ovn' && 'true' || '' }}
+          # The two cinder suites attach an NFS backend, which the operator
+          # mounts as an inline CSI volume from the kind NFS export, and
+          # cinder-operator-pod-kill takes a vhost on the shared broker. Empty
+          # on the other two legs, where deploy-infra.sh keeps its default of
+          # installing neither.
+          WITH_NFS: ${{ matrix.suite == 'network' && 'true' || '' }}
+          WITH_MESSAGING: ${{ matrix.suite == 'network' && 'true' || '' }}
       # Use shared operator deployment script. The ovn leg skips it along with
       # the rest of the keystone stack: no suite there creates a Keystone.
       - name: Deploy operator
@@ -1853,6 +1872,19 @@ jobs:
           OPERATOR: neutron
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
           NAMESPACE: neutron-system
+      # The two cinder outage suites run on the network leg alone, so the
+      # cinder-operator deploys there alone. Like the sibling operators it
+      # lands in its own cinder-system namespace, not the script's
+      # keystone-system default: that is where the Flux/deploy-infra path
+      # installs it and where cinder-operator-pod-kill's pod selector and
+      # PodChaos look.
+      - name: Deploy cinder operator
+        if: matrix.suite == 'network'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
       - name: Run chaos E2E tests
         run: |
           mkdir -p _output/reports
