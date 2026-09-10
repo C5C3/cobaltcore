@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The message bus this suite partitions.
+#
+# It is a broker of its own rather than the kind-only shared-rabbitmq the other
+# Cinder suites take a vhost on: the fault here severs the whole broker, and
+# doing that to the shared one would take every other suite on the leg down
+# with it. It is a plain RabbitmqCluster and not a ControlPlane with
+# spec.infrastructure.messaging, because the subject is what a Cinder in
+# managed messaging mode does when its broker becomes unreachable, and the
+# aggregate would add a second operator between the fixture and the fault.
+#
+# One replica. The RabbitMQ Cluster Operator's defaults for image and
+# persistence are left alone. Its resource default is not: the operator
+# requests 1 CPU and 2Gi per pod, and on the single kind node of the
+# self-hosted e2e-chaos network leg that request takes the last schedulable
+# CPU and leaves the next pod Pending on "Insufficient cpu".
+# tests/e2e-chaos/neutron-broker-outage/01-rabbitmqcluster.yaml and
+# deploy/kind/messaging/shared-rabbitmq.yaml record the same reason. This suite
+# pushes one volume create through the bus, so 100m and 512Mi are what it needs
+# on kind.
+#
+# The cluster-operator labels the broker's pods app.kubernetes.io/name=<cluster
+# name> and names the single server pod <cluster>-server-0, which is what
+# 03-networkchaos.yaml, the readiness wait and the teardown use.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: cinder-chaos-rabbitmq
+  namespace: openstack
+spec:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
