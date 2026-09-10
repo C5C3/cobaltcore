@@ -1,0 +1,201 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the NetworkPolicy sub-reconciler.
+#
+# SCOPE CAVEAT: the default CI CNI (kindnet) does NOT enforce NetworkPolicy, so
+# this suite validates the rendered policy object (ingress on the Cinder API
+# port 8776, auto-derived DNS/database/cache/messaging/export egress) and its
+# lifecycle, not actual traffic enforcement. That is the same scope as the
+# keystone/horizon/glance/placement/neutron network-policy suites.
+#
+# The auto-derived egress order is deterministic:
+#   - DNS       UDP+TCP 53
+#   - database  TCP 3306 (spec.database default port)
+#   - cache     TCP 11211 (managed memcached)
+#   - messaging TCP 5672 (the port of the transport URL in the broker Secret)
+#   - export    TCP 2049 (the NFS servers of every attached backend)
+# The export rule is what separates Cinder from the sibling suites: a volume
+# service mounts its backend over NFSv4, so every attached backend contributes
+# the same single port and a Cinder with none opens nothing. The rule that is
+# absent carries as much: this CR sets no spec.keystoneEndpoint, so it validates
+# no token and gets no Keystone rule. Neither the broker nor the exports are
+# reachable by a label selector, so both rules are port-only.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-network-policy
+spec:
+  namespace: openstack
+  timeouts:
+    # The schema migration and the API cold start precede the parallel group
+    # that owns the policy, and that does not fit the 120s the shared config
+    # allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite; see ../broker-vhost.sh. The step cleanup runs at the
+  # end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-netpol cinder-netpol-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-netpol || true
+  # ── Step 2: Assert the NetworkPolicy carries the expected rules ────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyReady
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: cinder-netpol
+            namespace: openstack
+          spec:
+            # The selector carries no component key, so one policy covers the
+            # API pods, the scheduler, the volume service and the Job pods
+            # alike. All of them read the same database, publish on the same
+            # broker and mount the same exports.
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: cinder
+                app.kubernetes.io/instance: cinder-netpol
+            policyTypes:
+            - Ingress
+            - Egress
+            ingress:
+            - ports:
+              - protocol: TCP
+                port: 8776
+            egress:
+            - ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+            - ports:
+              - protocol: TCP
+                port: 3306
+            - ports:
+              - protocol: TCP
+                port: 11211
+            - ports:
+              - protocol: TCP
+                port: 5672
+            - ports:
+              - protocol: TCP
+                port: 2049
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-netpol
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy cinder-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Deployments ==="
+          kubectl get deploy -n $NAMESPACE -l app.kubernetes.io/instance=cinder-netpol -o wide 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 3: Add a second ingress source and assert it lands ────────────
+  # Peer arithmetic: the operator appends one peer per declared ingress source
+  # plus one for its own Namespace (so the operator's health check reaches the
+  # API). One source therefore renders 2 peers and the patched two sources
+  # render 3, so `>= 3` is what distinguishes "the patch landed" from
+  # "the policy is unchanged".
+  - try:
+    - patch:
+        file: 02-patch-update-ingress.yaml
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: cinder-netpol
+            namespace: openstack
+          spec:
+            ingress:
+            - (length(from) >= `3`): true
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-netpol
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy cinder-netpol -n $NAMESPACE -o yaml 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 4: Disable networkPolicy and assert deletion ──────────────────
+  - try:
+    - patch:
+        file: 03-patch-disable-networkpolicy.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+    - script:
+        content: |
+          if kubectl get networkpolicy cinder-netpol -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: NetworkPolicy should have been deleted"
+            exit 1
+          fi
+          echo "PASS: NetworkPolicy correctly deleted"
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-netpol
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== NetworkPolicies ==="
+          kubectl get networkpolicy -n $NAMESPACE 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
