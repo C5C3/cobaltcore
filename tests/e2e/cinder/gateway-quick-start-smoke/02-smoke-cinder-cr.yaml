@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Minimal Cinder CR fixture for the Gateway quick-start smoke test, the block
+# storage counterpart to tests/e2e/keystone/gateway-quick-start-smoke,
+# tests/e2e/glance/gateway-quick-start-smoke and
+# tests/e2e/neutron/gateway-quick-start-smoke.
+#
+# This smoke test exercises the end-to-end TLS + Gateway data-plane path:
+# `curl -k https://cinder.127-0-0-1.nip.io/` must return HTTP 300 carrying the
+# Cinder version document. That requires a Cinder CR whose spec.gateway
+# produces an HTTPRoute attaching to the kind overlay's `openstack-gw` Gateway.
+# The hostname MUST match the `https-cinder` listener on `openstack-gw` that
+# terminates TLS for `cinder.127-0-0-1.nip.io` AND the dnsName of that
+# listener's Certificate, so the listener's TLS Secret matches the SNI the
+# client presents.
+#
+# Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
+# so this fixture uses a unique CR name (`cinder-smoke`) to avoid clashing with
+# the sibling cinder suites that share the `openstack` namespace, the backing
+# services (`openstack-db`, `openstack-memcached`) and the HTTPRoute object
+# names inside the namespace. No other cinder suite attaches to the nip.io
+# Gateway hostname, so a root-path route does not conflict.
+#
+# Keystone is configured although none runs: a CEL rule pairs spec.gateway with
+# spec.keystoneEndpoint, because a Cinder without one renders auth_strategy =
+# noauth and publishing that through a Gateway would serve every volume
+# operation of every project unauthenticated. The pairing rule on CinderSpec
+# then requires spec.serviceUser beside the endpoint. Nothing the smoke asserts
+# needs a validated token: cinder's api-paste splits "/" off into the
+# unauthenticated `apiversions` application before the auth pipeline, so the
+# version document answers without a token, as it does under noauth. The
+# `keystone-admin` Secret the service user points at is the kind overlay's own
+# shim (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml), which is
+# what lets SecretsReady pass.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-smoke
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_smoke
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-smoke-messaging
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: cinder.127-0-0-1.nip.io
+    path: /

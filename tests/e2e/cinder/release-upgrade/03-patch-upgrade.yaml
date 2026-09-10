@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to trigger a cross-release upgrade from 2025.2 to 2026.1. Both fields
+# move together: release tracking keys on spec.openStackRelease while the phase
+# Jobs and the pods run spec.image, and the operator refuses a bump that leaves
+# the image untouched (checkImageReleaseMismatch reports
+# DatabaseReady=False/ImageReleaseMismatch, because promoting installedRelease
+# off Jobs that ran the old migration tree would claim a migration that never
+# happened).
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-upgrade
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    tag: "2026.1"

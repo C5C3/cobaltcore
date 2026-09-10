@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The backup target of the cinder-cleanup CR.
+#
+# It brings the fourth Deployment (cinder-backup) and the second projection
+# Secret base name into the child inventory the suite asserts on either side of
+# the delete.
+#
+# The name carries the suite's own prefix for the same reason its sibling
+# CinderBackend does: the namespace is shared and spec.cinderRef is immutable.
+#
+# The export is the /backups directory the kind NFS server pre-creates
+# 42424:42424 mode 0770 (deploy/kind/nfs/nfs-server.yaml).
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: cleanup-nfsbk
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-cleanup
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /backups
