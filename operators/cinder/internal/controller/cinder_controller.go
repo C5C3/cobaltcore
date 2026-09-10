@@ -207,6 +207,9 @@ var CinderRemoteChildKinds = []schema.GroupVersionKind{
 	autoscalingv2.SchemeGroupVersion.WithKind("HorizontalPodAutoscaler"),
 	networkingv1.SchemeGroupVersion.WithKind("NetworkPolicy"),
 	httpRouteGVK,
+	mariadbv1alpha1.GroupVersion.WithKind("Database"),
+	mariadbv1alpha1.GroupVersion.WithKind("User"),
+	mariadbv1alpha1.GroupVersion.WithKind("Grant"),
 }
 
 // The operator never creates a Cinder; it reads them, patches their status and
