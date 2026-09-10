@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The one NFS backend the cinder-basic CR serves.
+#
+# A Cinder without an attached backend reports VolumeServicesReady=False under
+# reason NoBackends and never reaches Ready, so every happy-path suite here
+# brings one.
+#
+# The name carries the suite's prefix because every suite of this tree runs in
+# the shared openstack namespace: a backend named after its driver alone would
+# be one object six suites apply, delete and re-point at each other's Cinder.
+#
+# The export is the kind-only NFS server (deploy/kind/nfs/nfs-server.yaml),
+# whose /volumes directory is pre-created 42424:42424 with mode 0770, so the
+# cinder-volume pod writes into it under its own uid.
+#
+# spec.nfs.mountOptions is left out: the schema default
+# (nfsvers=4.1,soft,timeo=30,retrans=2) is what the suite asserts on the
+# rendered CSI volume, so a changed default surfaces here.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: basic-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-basic
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

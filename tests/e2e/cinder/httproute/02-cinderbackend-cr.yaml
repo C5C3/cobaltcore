@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The one NFS backend the cinder-route CR serves.
+#
+# The HTTPRoute sub-reconciler runs in the parallel group after the Deployment
+# step, and a Cinder without an attached backend stops the pipeline earlier
+# under VolumeServicesReady=False/NoBackends. So the route this suite is about
+# needs a backend to exist at all.
+#
+# The name carries the suite's prefix because every suite of this tree runs in
+# the shared openstack namespace: a backend named after its driver alone would
+# be one object six suites apply, delete and re-point at each other's Cinder.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: route-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-route
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR with spec.gateway for the HTTPRoute lifecycle test.
+#
+# Same managed-mode wiring as the basic-deployment fixture, on the schema
+# cinder_route, and one API replica because the route is a function of the spec
+# rather than of the replica count.
+#
+# Unlike the other suites here this CR configures Keystone: a CEL rule pairs
+# spec.gateway with spec.keystoneEndpoint, because a Cinder without one renders
+# auth_strategy = noauth and publishing that through a Gateway would serve every
+# volume operation of every project unauthenticated. No Keystone runs on this
+# cluster and none is needed: the operator's health probe and the kubelet probes
+# both read /healthcheck, which the oslo healthcheck middleware answers above
+# the auth pipeline, so the API still becomes available. The suite asserts
+# nothing that depends on a validated token.
+#
+# The parentRef names a Gateway that does not exist, which is what the sibling
+# suites do: with a real Gateway as the parent, its controller writes its own
+# RouteParentStatus slot and races the status merge-patch the acceptance step
+# applies, so the suite would be asserting against whichever write landed last.
+# A parent nothing reconciles leaves the slot to the suite alone.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-route
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_route
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-route-messaging
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  gateway:
+    parentRef:
+      name: not-a-real-gateway
+    hostname: cinder-route.example.test
+    path: /

@@ -1,0 +1,216 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the optional HTTPRoute sub-reconciler.
+# Verifies the full lifecycle of spec.gateway driven by the Cinder CR:
+#   - apply a Cinder CR with spec.gateway and assert the HTTPRoute is created
+#     with the expected ParentRef/Hostname/BackendRef (Cinder API port 8776)
+#   - before any Gateway controller reports Accepted, HTTPRouteReady is False
+#     with reason HTTPRouteNotAccepted
+#   - simulate a Gateway controller accepting the route by patching the parent
+#     status, then assert HTTPRouteReady flips True/HTTPRouteAccepted
+#   - unset spec.gateway and assert the HTTPRoute is deleted and HTTPRouteReady
+#     is True with reason HTTPRouteNotRequired
+#
+# SCOPE: this suite covers the operator's HTTPRoute contract only. It patches
+# the Accepted condition itself rather than running a Gateway controller, so
+# nothing here proves traffic reaches the Cinder API.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-httproute
+spec:
+  namespace: openstack
+  timeouts:
+    # The schema migration and the API cold start precede the parallel group
+    # that owns the route, and that does not fit the 120s the shared config
+    # allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Install the HTTPRoute CRD ──────────────────────────────────
+  # The E2E cluster may not install a Gateway controller; apply the minimal CRD
+  # so the operator can create HTTPRoute objects and the test can patch their
+  # status.
+  - try:
+    - apply:
+        file: 00-httproute-crd.yaml
+  # ── Step 2: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite; see ../broker-vhost.sh. The step cleanup runs at the
+  # end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-route cinder-route-messaging openstack
+    - apply:
+        file: 01-cinder-cr.yaml
+    - apply:
+        file: 02-cinderbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-route || true
+  # ── Step 3: Assert the HTTPRoute is created with the expected spec ─────
+  - try:
+    - assert:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: cinder-route
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: cinder
+              app.kubernetes.io/instance: cinder-route
+              app.kubernetes.io/managed-by: cinder-operator
+          spec:
+            parentRefs:
+            - name: not-a-real-gateway
+            hostnames:
+            - cinder-route.example.test
+            rules:
+            - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+              backendRefs:
+              - name: cinder-route
+                port: 8776
+              # The rule carries no `timeouts` stanza: buildCinderHTTPRoute
+              # passes no RequestTimeout, so the request cap is left to the
+              # gateway implementation's default. The stub CRD above preserves
+              # unknown fields, so a timeout the operator started rendering
+              # would round-trip and show up as a diff against this assertion.
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-route
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== HTTPRoutes ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Deployments ==="
+          kubectl get deploy -n $NAMESPACE -l app.kubernetes.io/instance=cinder-route -o wide 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 4: Assert HTTPRouteReady=False/HTTPRouteNotAccepted ───────────
+  # No Gateway controller reconciles not-a-real-gateway, so the route's parent
+  # status stays empty and the operator reports the route as unaccepted.
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-route
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "False"
+              reason: HTTPRouteNotAccepted
+  # ── Step 5: Simulate a Gateway controller accepting the route ──────────
+  - try:
+    - script:
+        content: |
+          kubectl patch httproute cinder-route -n $NAMESPACE \
+            --subresource=status --type=merge -p '{
+              "status": {
+                "parents": [{
+                  "parentRef": {"name": "not-a-real-gateway"},
+                  "controllerName": "e2e.example.com/fake-gateway-controller",
+                  "conditions": [{
+                    "type": "Accepted",
+                    "status": "True",
+                    "reason": "Accepted",
+                    "message": "Simulated Accepted condition for E2E test",
+                    "lastTransitionTime": "2026-07-05T00:00:00Z",
+                    "observedGeneration": 1
+                  }]
+                }]
+              }
+            }'
+  # ── Step 6: Assert HTTPRouteReady=True/HTTPRouteAccepted ───────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-route
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteAccepted
+            # With spec.gateway set the endpoint advertises the external
+            # hostname rather than the Service URL, while the health probe keeps
+            # reading the cluster-local one.
+            endpoint: https://cinder-route.example.test/
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-route
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== HTTPRoutes ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 7: Unset spec.gateway ─────────────────────────────────────────
+  - try:
+    - patch:
+        file: 03-patch-remove-gateway.yaml
+  # ── Step 8: Assert the HTTPRoute is deleted and NotRequired ────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-route
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+    - script:
+        content: |
+          # Verify the HTTPRoute no longer exists.
+          if kubectl get httproute cinder-route -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: HTTPRoute should have been deleted"
+            exit 1
+          fi
+          echo "PASS: HTTPRoute correctly deleted"
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-route
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== HTTPRoutes ==="
+          kubectl get httproute -n $NAMESPACE -o wide 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
