@@ -45,11 +45,12 @@ const (
 // gets its own cinder-volume Deployment, while the backup driver is a single
 // property of the one cinder-backup Deployment.
 //
-// Detaching it is not a plain delete. The backup service registers under a host
-// identity like a volume service does, so the controller holds the finalizer
-// cinder.openstack.c5c3.io/service-remove on this CR: on deletion it runs a
-// "cinder-manage service remove" Job for that host and releases the finalizer
-// only once that Job succeeds.
+// Detaching it is a plain delete. The backup service registers as
+// "<cinder>-backup" and re-registers under that identity whenever it starts, so
+// there is no per-target service row to unregister and this kind carries no
+// finalizer. The parent Cinder sees the detach through its watch, deletes the
+// "<cinder>-backup" Deployment and prunes the Secrets this CR was rendered into
+// on its next pass.
 type CinderBackupBackend struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
