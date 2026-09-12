@@ -678,6 +678,7 @@ validates health of all operators, CRs, and ExternalSecrets.
 | 10 | `chainsaw test --report-name chainsaw-report-additive` | Scoped run over infra-stack-health, garage-health, flux-web-health, no-prometheus-when-disabled, openbao-instance, and nfs-health; the metrics-server and NFS absence suites are deliberately excluded |
 | 11 | `hack/ci-dump-diagnostics.sh` (on failure) | Dumps HelmReleases, pods, events, Flux logs |
 | 12 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
+| 13 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 Timeout: 50 minutes.
 
@@ -786,6 +787,7 @@ Chainsaw E2E test suites.
 | 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs |
 | 11 | `hack/ci-dump-diagnostics.sh` (always, `neutron` leg) | Same dump for `ovn-system` |
 | 12 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
+| 13 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Matrix strategy:**
 
@@ -909,6 +911,7 @@ DaemonSet. The diagnostics dump follows the leg through
 | 8 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |
 | 9 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, or `OPERATOR=ovn` on the `ovn` leg |
 | 10 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
+| 11 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Key differences from `e2e-operator`:**
 
@@ -1049,6 +1052,7 @@ genuine regression of the kind-only Quick Start observability story.
 | 7 | `chainsaw test` | Runs the prometheus E2E suite from `tests/e2e/keystone/prometheus-stack/` |
 | 8 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone` |
 | 9 | Upload JUnit report | Uploads `_output/reports/` as `e2e-prometheus-junit-report` artifact (14-day retention) |
+| 10 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Path filter:** `deploy/kind/prometheus/**`, `tests/e2e/keystone/prometheus-stack/**`,
 `hack/**`, `deploy/**`, `.github/workflows/ci.yaml`, `.github/actions/**`. As
@@ -1162,6 +1166,7 @@ one under review — which is why the `e2e_controlplane` path filter also watche
 | 9 | `chainsaw test` | Runs the full-chain suite with `E2E_REQUIRE_CONTROLPLANE_STACK=true` |
 | 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostics with `OPERATOR=c5c3` |
 | 11 | Upload JUnit report | Uploads `_output/reports/` as `e2e-controlplane-junit-report` (14-day retention) |
+| 12 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Path filter:** `operators/c5c3/**`, `operators/keystone/**`, `tests/e2e/c5c3/**`,
 `deploy/**`, `hack/**`, `.github/actions/**`, `.github/workflows/ci.yaml`. As with
@@ -1263,6 +1268,7 @@ these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
 | 15 | `hack/ci-run-tempest.sh` | Runs Tempest API tests with `CONFIG_DIR=matrix.config-dir`, `SERVICE_K8S_NAME=matrix.service-k8s-name`, and on the neutron leg `NEUTRON_K8S_NAME=matrix.neutron-cr-name` (empty elsewhere, which disables the 9696 port-forward) |
 | 16 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
 | 17 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
+| 18 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 Timeout: 68 minutes.
 
@@ -1645,13 +1651,13 @@ control-plane node blocks every cluster on that runner.
 
 | Step | Description |
 | --- | --- |
-| 1 | `helm/kind-action` with `install_only: true`: installs the pinned kind and kubectl binaries and registers the post-job `kind delete cluster`, without creating anything |
+| 1 | `helm/kind-action` with `install_only: true` and `ignore_failed_clean: true`: installs the pinned kind and kubectl binaries and registers the post-job `kind delete cluster` as a best-effort net, without creating anything |
 | 2 | `hack/ci-create-kind-cluster.sh`: resets the runner through `hack/ci-reset-kind-cluster.sh`, creates the cluster, and retries a failed creation |
 
 | Input | Default | Description |
 | --- | --- | --- |
 | `version` | (required) | kind version to install; every caller passes `${{ env.KIND_VERSION }}` |
-| `cluster-name` | (required) | The cluster to create, and the one the post-job teardown deletes |
+| `cluster-name` | (required) | The cluster to create, and the one the post-job net aims at when a cancelled job never reaches its own teardown step |
 | `config` | `''` | kind config file. Empty creates a cluster with no config, the way `hack/deploy-mgmt-cluster.sh` creates the management cluster |
 
 **What the reset removes.** `hack/ci-reset-kind-cluster.sh` deletes every kind
@@ -1662,6 +1668,17 @@ takes whatever survives, a node container kind itself no longer recognises
 included. A leftover that survives both fails the step instead of letting the
 creation hit the same error again. The registry pull-through caches of
 `hack/deploy-infra.sh` carry a label of their own and stay.
+
+That force-remove is retried, because the docker daemon rejects a removal whose
+container it has not yet seen exit:
+
+```text
+Error response from daemon: cannot remove container "cobaltcore-control-plane": could not kill container: tried to kill container, but did not receive an exit event
+```
+
+The exit event arrives seconds later, so three attempts five seconds apart
+(`KIND_RM_ATTEMPTS`, `KIND_RM_RETRY_DELAY`) separate that race from a container
+that is genuinely stuck. The daemon's own message is printed either way.
 
 Sweeping every cluster is safe because an e2e job owns its runner while it runs:
 two clusters on one host contend for those host ports, so a cluster already there
@@ -1679,6 +1696,21 @@ Before each retry, and before the step fails for good, the script prints the nod
 containers on the host and the tail of their logs. The cluster never came up, so
 `hack/ci-dump-diagnostics.sh` has no API server to read instead.
 
+**The teardown.** Every cluster-bound job ends with a
+`hack/ci-delete-kind-cluster.sh` step, guarded by `if: always()`. It runs the
+same sweep at `KIND_RESET_SCOPE=all`, which needs no cluster name and therefore
+covers the jobs that bring up two (`e2e-multicluster`). It is the last step of
+the job, so `hack/ci-dump-diagnostics.sh` above it still reads a live cluster.
+
+**It cannot fail a job.** A cluster that survives the teardown is a
+`::warning::`, never a failure. Before the step existed, the deletion was left to
+the post step of `helm/kind-action` — one `kind delete cluster`, no retry, and
+its exit code is the job's. Run 34714006750 is what that cost: every suite of
+`e2e-infra` passed, the post step then lost the race above, and a job with
+nothing wrong in it was reported red. Nothing depends on the deletion succeeding
+right then. The reset in front of the next job on that runner clears whatever is
+left, and the runner's own job-completed hook usually gets there first.
+
 Usage in a workflow job:
 
 ```yaml
@@ -1688,13 +1720,20 @@ Usage in a workflow job:
     version: ${{ env.KIND_VERSION }}
     config: hack/kind-config.yaml
     cluster-name: ${{ env.KIND_CLUSTER }}
+
+# ... every other step of the job ...
+
+- name: Delete kind cluster
+  if: always()
+  run: hack/ci-delete-kind-cluster.sh
 ```
 
-Pinned by three shell suites:
+Pinned by four shell suites:
 `tests/unit/ci/create_kind_cluster_wiring_test.sh` asserts that no job creates a
-cluster on its own, `tests/unit/hack/ci_reset_kind_cluster_test.sh` covers the
-sweep, and `tests/unit/hack/ci_create_kind_cluster_test.sh` covers the creation
-and its retry.
+cluster on its own and that every job that creates one ends with the teardown,
+`tests/unit/hack/ci_reset_kind_cluster_test.sh` covers the sweep,
+`tests/unit/hack/ci_create_kind_cluster_test.sh` covers the creation and its
+retry, and `tests/unit/hack/ci_delete_kind_cluster_test.sh` covers the teardown.
 
 ## Composite Action: setup-test-deps
 

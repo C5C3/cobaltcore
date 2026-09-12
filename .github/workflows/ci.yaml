@@ -985,6 +985,12 @@ jobs:
           name: e2e-infra-junit-report
           path: _output/reports/
           retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
 
   # Centralized image build for E2E test jobs.
   # Builds all Docker images (operator, service, tempest) once and pushes them
@@ -1440,6 +1446,12 @@ jobs:
           name: e2e-${{ matrix.operator }}-junit-report
           path: _output/reports/
           retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
 
   # Operator helm-upgrade-in-place E2E: installs the last released
   # keystone-operator chart+image from GHCR as the baseline, brings a Keystone
@@ -1532,6 +1544,12 @@ jobs:
           name: e2e-operator-upgrade-junit-report
           path: _output/reports/
           retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
 
   # End-to-end chaos tests using kind cluster, Chaos Mesh,
   # and Chainsaw.  Builds the keystone operator image, deploys it with Chaos
@@ -1853,6 +1871,12 @@ jobs:
           name: e2e-chaos-junit-report-${{ matrix.suite }}
           path: _output/reports/
           retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
 
   # End-to-end Prometheus stack tests using kind cluster,
   # kube-prometheus-stack, and Chainsaw.  Builds the keystone operator image,
@@ -1943,6 +1967,12 @@ jobs:
           name: e2e-prometheus-junit-report
           path: _output/reports/
           retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
 
   # Full ControlPlane -> Keystone chain E2E on kind. Deploys keystone-operator +
   # K-ORC + c5c3-operator as local dev images (the GHCR-published Flux chart path
@@ -2197,6 +2227,12 @@ jobs:
           name: e2e-controlplane-junit-report
           path: _output/reports/
           retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
 
   # Federated ControlPlane E2E: the end-user SSO experience (Horizon websso
   # choices, the multi-domain login dropdown, and the websso round trip through
@@ -2327,6 +2363,12 @@ jobs:
           name: e2e-controlplane-sso-junit-report
           path: _output/reports/
           retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
 
   # External-mode ControlPlane E2E: an External CR driven against a plain
   # Keystone the operator does NOT own (a brownfield-adoption stand-in).
@@ -2455,6 +2497,12 @@ jobs:
           name: e2e-external-keystone-junit-report
           path: _output/reports/
           retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
 
   # Two-cluster placed-services E2E on kind. Brings up a target cluster running
   # the infrastructure and no operator (INFRA_ONLY=true), a management cluster
@@ -2671,6 +2719,12 @@ jobs:
           name: e2e-multicluster-junit-report
           path: _output/reports/
           retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
 
   # Multi-node OVN overlay E2E on kind. Brings up the one-control-plane,
   # two-worker cluster of hack/kind-config-multinode.yaml, deploys the
@@ -2765,6 +2819,12 @@ jobs:
           name: e2e-ovn-overlay-junit-report
           path: _output/reports/
           retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
 
   # Tempest API integration tests.
   # Deploys services into a kind cluster and runs the OpenStack Tempest test
@@ -3060,6 +3120,12 @@ jobs:
         run: hack/ci-dump-diagnostics.sh
         env:
           OPERATOR: keystone
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
 
   # GH-310: Prune the run-scoped GHCR tags pushed by build-e2e-images.
   # Runs as soon as every consumer that might still pull the images has

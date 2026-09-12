@@ -320,6 +320,7 @@ of the `changes` job matches. It depends only on `changes` — not on the `lint`
 12. Run a scoped Chainsaw suite (report `chainsaw-report-additive`) over infra-stack-health, garage-health, flux-web-health, no-prometheus-when-disabled, openbao-instance, and nfs-health, skipping the metrics-server and NFS absence suites it would now rightly fail
 13. Dump diagnostic info on failure (`kubectl get`, `flux logs` for troubleshooting)
 14. Upload JUnit report as workflow artifact (SHA-pinned `actions/upload-artifact`, `if: always()`)
+15. Delete the kind cluster (`hack/ci-delete-kind-cluster.sh`, `if: always()`) — last, so step 13 still had a cluster to read, and a cluster that survives is a warning rather than a failed job
 
 **Configuration:**
 

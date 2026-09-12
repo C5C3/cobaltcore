@@ -21,6 +21,10 @@
 #   - `kind delete cluster` is best-effort: the force-remove behind it is what
 #     makes the reset dependable on a host where the previous job left a node
 #     container kind itself no longer recognises.
+#   - That force-remove is retried, because the docker daemon rejects a removal
+#     it has not yet seen the container's exit event for. The stub can fail a
+#     given number of removals with the daemon's own wording, which is what
+#     separates riding out that race from papering over a real leftover.
 #
 # Usage: bash tests/unit/hack/ci_reset_kind_cluster_test.sh
 
@@ -53,6 +57,8 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 #   STUB_KIND_DELETE_EXIT     — exit code of `kind delete cluster` (default 0)
 #   STUB_KIND_DELETE_EFFECTIVE — `false` keeps the node containers in place
 #   STUB_DOCKER_RM_EFFECTIVE  — `false` makes `docker rm -f` a no-op
+#   STUB_DOCKER_RM_FAIL_TIMES — how many `docker rm` calls fail with the
+#                               missing-exit-event error before one works
 write_stubs() {
   local dir="$1" state="$2" log="$3"
   mkdir -p "$dir"
@@ -85,6 +91,15 @@ case "\$1" in
     fi
     ;;
   rm)
+    count_file="\$STATE.rmcount"
+    calls=\$(cat "\$count_file" 2>/dev/null || echo 0)
+    calls=\$((calls + 1))
+    echo "\$calls" >"\$count_file"
+    if [ "\$calls" -le "\${STUB_DOCKER_RM_FAIL_TIMES:-0}" ]; then
+      # Verbatim wording of the race this retry exists for.
+      echo 'Error response from daemon: cannot remove container "cobaltcore-control-plane": could not kill container: tried to kill container, but did not receive an exit event' >&2
+      exit 1
+    fi
     if [ "\${STUB_DOCKER_RM_EFFECTIVE:-true}" = true ]; then
       for arg in "\$@"; do
         case "\$arg" in
@@ -138,7 +153,9 @@ run_reset() {
     if [ "${STUB_KIND:-present}" = absent ]; then
       rm -f "$tmp/bin/kind"
     fi
-    env "$@" bash "$RESET_SH" "$cluster"
+    # The retry spacing is real seconds on a runner and dead time here; a case
+    # that cares about it passes its own KIND_RM_RETRY_DELAY after this one.
+    env KIND_RM_RETRY_DELAY=0 "$@" bash "$RESET_SH" "$cluster"
   ) 2>&1
 }
 
@@ -259,8 +276,67 @@ test_fails_when_leftover_survives() {
   assert_nonzero_exit "exits non-zero" "$exit_code"
   assert_contains "annotates the failure for the job log" \
     "$output" "::error::kind cluster 'cobaltcore' still has node containers"
+  assert_eq "gives up after KIND_RM_ATTEMPTS removals, not before" \
+    "3" "$(grep -c '^docker rm' "$tmp/log")"
   assert_eq "no marker is written when the sweep failed" \
     "0" "$(find "$tmp/runner-temp" -name 'cobaltcore-kind-reset-*.done' | wc -l | tr -d ' ')"
+}
+
+# ---------------------------------------------------------------------------
+# Test E2: the missing-exit-event race is ridden out rather than reported
+# ---------------------------------------------------------------------------
+test_retries_through_missing_exit_event() {
+  echo "Test: retries the force-remove the docker daemon rejected"
+
+  local tmp
+  tmp="$(new_case "n1 cobaltcore")"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # The shape of run 34714006750: kind cannot delete the cluster because the
+  # daemon refuses to remove a container whose exit event has not arrived yet.
+  # It arrives before the second attempt, which is the whole reason this is a
+  # retry and not a failure.
+  local output exit_code
+  output="$(run_reset "$tmp" cobaltcore \
+    STUB_KIND_DELETE_EXIT=1 STUB_KIND_DELETE_EFFECTIVE=false \
+    STUB_DOCKER_RM_FAIL_TIMES=1)"
+  exit_code=$?
+
+  assert_eq "exits 0 — the second attempt got the container" "0" "$exit_code"
+  assert_contains "keeps the daemon's own wording in the log" \
+    "$output" "did not receive an exit event"
+  assert_contains "says it is retrying" "$output" "retrying the removal (attempt 2/3)"
+  assert_not_contains "does not report a surviving leftover" \
+    "$output" "::error::kind cluster"
+  assert_eq "two removals were enough" "2" "$(grep -c '^docker rm' "$tmp/log")"
+  assert_eq "the cluster is gone" "" "$(cat "$tmp/state")"
+}
+
+# ---------------------------------------------------------------------------
+# Test E3: KIND_RM_ATTEMPTS bounds the retry
+# ---------------------------------------------------------------------------
+test_rm_attempts_is_honoured() {
+  echo "Test: KIND_RM_ATTEMPTS bounds how often the removal is retried"
+
+  local tmp
+  tmp="$(new_case "n1 cobaltcore")"
+  trap 'rm -rf "$tmp"' RETURN
+
+  local output exit_code
+  output="$(run_reset "$tmp" cobaltcore \
+    STUB_KIND_DELETE_EXIT=1 STUB_KIND_DELETE_EFFECTIVE=false \
+    STUB_DOCKER_RM_EFFECTIVE=false KIND_RM_ATTEMPTS=1)"
+  exit_code=$?
+
+  assert_nonzero_exit "still fails when the leftover survives" "$exit_code"
+  assert_eq "one attempt means one removal" "1" "$(grep -c '^docker rm' "$tmp/log")"
+
+  output="$(run_reset "$tmp" cobaltcore KIND_RM_ATTEMPTS=0)"
+  exit_code=$?
+
+  assert_eq "a non-positive attempt count is a usage error" "2" "$exit_code"
+  assert_contains "explains what KIND_RM_ATTEMPTS accepts" \
+    "$output" "::error::KIND_RM_ATTEMPTS must be a positive integer"
 }
 
 # ---------------------------------------------------------------------------
@@ -340,6 +416,36 @@ test_scope_override() {
 }
 
 # ---------------------------------------------------------------------------
+# Test G2: an explicit scope=all needs no cluster name
+# ---------------------------------------------------------------------------
+test_scope_all_without_cluster_name() {
+  echo "Test: KIND_RESET_SCOPE=all sweeps without being given a cluster name"
+
+  local tmp
+  tmp="$(new_case "n1 cobaltcore" "n2 cobaltcore-target" "cache1 -")"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # How hack/ci-delete-kind-cluster.sh calls this at the end of a job: there is
+  # no one cluster to single out, every one on the host belongs to the job that
+  # is finishing.
+  local output exit_code
+  output="$(
+    (
+      export PATH="$tmp/bin:/usr/bin:/bin"
+      export RUNNER_TEMP="$tmp/runner-temp"
+      env -u CLUSTER_NAME -u KIND_CLUSTER KIND_RESET_SCOPE=all KIND_RM_RETRY_DELAY=0 \
+        bash "$RESET_SH"
+    ) 2>&1
+  )"
+  exit_code=$?
+
+  assert_eq "exits 0" "0" "$exit_code"
+  assert_contains "works at scope all" "$output" "(scope: all)"
+  assert_eq "both clusters are gone, the unlabelled container is not" \
+    "cache1 -" "$(cat "$tmp/state")"
+}
+
+# ---------------------------------------------------------------------------
 # Test H: usage errors
 # ---------------------------------------------------------------------------
 test_requires_cluster_name() {
@@ -373,8 +479,11 @@ test_deletes_leftover_target
 test_force_removes_after_kind_delete_failure
 test_works_without_kind_on_path
 test_fails_when_leftover_survives
+test_retries_through_missing_exit_event
+test_rm_attempts_is_honoured
 test_sweeps_foreign_clusters_once_per_job
 test_scope_override
+test_scope_all_without_cluster_name
 test_requires_cluster_name
 
 echo ""

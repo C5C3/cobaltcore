@@ -11,12 +11,23 @@
 #   ERROR: failed to create cluster: node(s) already exist for a cluster with
 #   the name "cobaltcore"
 #
-# helm/kind-action is still what installs the pinned kind and kubectl binaries,
-# and its post step is still what deletes the cluster when the job ends — that
-# part of its behaviour is untouched, and passing `cluster-name` is what keeps
-# the teardown pointed at the right cluster. Only the creation moves into
-# hack/ci-create-kind-cluster.sh, which resets the runner first and retries a
-# creation that fails, so a job no longer inherits the previous job's leftovers.
+# helm/kind-action is still what installs the pinned kind and kubectl binaries.
+# The creation moves into hack/ci-create-kind-cluster.sh, which resets the
+# runner first and retries a creation that fails, so a job no longer inherits
+# the previous job's leftovers.
+#
+# The deletion moves out of its post step too, into the
+# hack/ci-delete-kind-cluster.sh step every e2e job ends with. That post step
+# stays as the net under a cancelled job, which never reaches a step of its own,
+# but it runs with `ignore_failed_clean` now: its `kind delete cluster` is one
+# attempt with no retry, and in run 34714006750 it lost the docker race
+#
+#   cannot remove container "cobaltcore-control-plane": could not kill
+#   container: tried to kill container, but did not receive an exit event
+#
+# after every suite of the job had passed — reporting a job with nothing wrong
+# in it as failed. Passing `cluster-name` still keeps that net pointed at this
+# job's cluster; what it no longer does is decide whether the job failed.
 #
 # KIND_CREATE_ATTEMPTS and KIND_WAIT are threaded from the calling job's env
 # context, the way setup-e2e-infra threads its opt-in flags: unset by every
@@ -36,7 +47,8 @@ inputs:
   cluster-name:
     description: >
       Name of the kind cluster to create. Also what the post-job
-      `kind delete cluster` of helm/kind-action deletes.
+      `kind delete cluster` of helm/kind-action aims at, in the cancelled-job
+      case where hack/ci-delete-kind-cluster.sh never runs.
     required: true
   config:
     description: >
@@ -51,12 +63,20 @@ runs:
     # install_only: the binaries and the post-job cleanup, without the creation.
     # The kind directory lands on PATH through GITHUB_PATH, so the step below
     # (and every later step in the job) finds the pinned binary.
+    #
+    # ignore_failed_clean: the post step's cleanup.sh runs
+    # `kind delete cluster … || "${INPUT_IGNORE_FAILED_CLEAN}"`, so this input is
+    # literally the command its failure branch runs — "true" turns a failed
+    # deletion into a logged one instead of a failed job. The deletion that the
+    # job actually relies on is hack/ci-delete-kind-cluster.sh, which runs
+    # before this and retries.
     - name: Install kind and kubectl
       uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
       with:
         version: ${{ inputs.version }}
         cluster_name: ${{ inputs.cluster-name }}
         install_only: "true"
+        ignore_failed_clean: "true"
 
     - name: Reset the runner and create the cluster
       shell: bash
