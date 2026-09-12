@@ -125,8 +125,9 @@ env:
 `e2e-operator`, and `tempest` jobs to construct image names and registry URLs.
 `KIND_CLUSTER` is the single source of truth for every E2E job's kind cluster name
 (mirroring the `CLUSTER_NAME` default in `hack/deploy-infra.sh`). `KIND_VERSION` is
-the kind binary every E2E job creates its cluster with, passed to
-`helm/kind-action`'s `version` input. The action defaults to v0.31.0, whose kindnetd
+the kind binary every E2E job creates its cluster with, passed to the
+`create-kind-cluster` composite action, which hands it to `helm/kind-action`'s
+`version` input. That action defaults to v0.31.0, whose kindnetd
 does not enforce NetworkPolicy egress against the post-DNAT destination; pinning it
 keeps CI on the enforcing build and in lockstep with the `KIND_VERSION` in
 `hack/install-test-deps.sh` that local development installs. Renovate groups the two
@@ -667,7 +668,7 @@ validates health of all operators, CRs, and ExternalSecrets.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
-| 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
 | 5 | `chainsaw test` | Runs E2E tests from `tests/e2e/infrastructure/` |
 | 6 | `make deploy-infra` (re-run) | Unchanged-parameter re-run (no `SKIP_KIND_CREATE`) — exercises the script's existing-cluster detection |
@@ -775,7 +776,7 @@ Chainsaw E2E test suites.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
-| 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
 | 5 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn` and `neutron` legs pass `WITH_OVN_KERNEL_MODULES: true` |
@@ -899,7 +900,7 @@ DaemonSet. The diagnostics dump follows the leg through
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 3 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/Dockerfile` pin to `$GITHUB_ENV` as `OVN_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs |
 | 5 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod`), the OVN images (all but `pod`), the neutron images (`network`) |
@@ -953,7 +954,7 @@ create. The `e2e-multicluster` job sidesteps the same collision by creating its
 management cluster with no kind config.
 
 The path the file takes into the job is the `config:` input of the
-`helm/kind-action` step, not the `KIND_CONFIG` variable: `setup-e2e-infra` runs
+`create-kind-cluster` step, not the `KIND_CONFIG` variable: `setup-e2e-infra` runs
 with `SKIP_KIND_CREATE: "true"`, so the cluster already exists by the time
 `hack/deploy-infra.sh` sees the variable, and it warns that the value is being
 ignored rather than recreating anything.
@@ -1040,7 +1041,7 @@ genuine regression of the kind-only Quick Start observability story.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 3 | `load-e2e-images` composite | Restores prebuilt operator and service images from the build-e2e-images artifact |
 | 4 | `kind load docker-image` | Loads operator and service images into kind |
 | 5 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_PROMETHEUS: "true"` |
@@ -1151,7 +1152,7 @@ one under review — which is why the `e2e_controlplane` path filter also watche
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 3 | `load-e2e-images` composite | Restores `keystone-operator:dev`, `c5c3-operator:dev`, `keystone:2025.2`, `tempest:2025.2` from GHCR |
 | 4 | `kind load docker-image` | Loads the four images into kind |
 | 5 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=controlplane-keystone` |
@@ -1247,7 +1248,7 @@ these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
-| 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` writes `OVN_VERSION` to `$GITHUB_ENV`; `images/ovn/Dockerfile` holds the pin |
 | 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; the neutron leg also pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>` |
 | 6 | `kind load docker-image` | Loads keystone operator and service images into kind |
@@ -1618,6 +1619,82 @@ Usage:
 hack/ci-run-tempest.sh
 SERVICE=keystone OUTPUT_DIR=_output/tempest hack/ci-run-tempest.sh
 ```
+
+## Composite Action: create-kind-cluster
+
+`.github/actions/create-kind-cluster/action.yaml`
+
+A composite GitHub Action that creates the kind cluster for every cluster-bound
+job. It replaces the bare `helm/kind-action` step those jobs used to carry. That
+step creates a cluster and does nothing else, which is a problem on the
+`self-hosted` runners, because they are reused between jobs.
+
+**The failure it removes.** Nothing in the runner's teardown deletes a kind
+cluster, and a job GitHub cancels mid-flight never reaches the post step that
+would (every push to a pull request cancels the run in progress). Its node
+containers outlive the job, and the next e2e job scheduled onto that host fails
+within its first minute:
+
+```text
+ERROR: failed to create cluster: node(s) already exist for a cluster with the name "cobaltcore"
+```
+
+A leftover under another name fails the job differently. `hack/kind-config.yaml`
+and `hack/kind-config-multinode.yaml` bind the same two host ports, so one stale
+control-plane node blocks every cluster on that runner.
+
+| Step | Description |
+| --- | --- |
+| 1 | `helm/kind-action` with `install_only: true`: installs the pinned kind and kubectl binaries and registers the post-job `kind delete cluster`, without creating anything |
+| 2 | `hack/ci-create-kind-cluster.sh`: resets the runner through `hack/ci-reset-kind-cluster.sh`, creates the cluster, and retries a failed creation |
+
+| Input | Default | Description |
+| --- | --- | --- |
+| `version` | (required) | kind version to install; every caller passes `${{ env.KIND_VERSION }}` |
+| `cluster-name` | (required) | The cluster to create, and the one the post-job teardown deletes |
+| `config` | `''` | kind config file. Empty creates a cluster with no config, the way `hack/deploy-mgmt-cluster.sh` creates the management cluster |
+
+**What the reset removes.** `hack/ci-reset-kind-cluster.sh` deletes every kind
+cluster with node containers on the host, found through the
+`io.x-k8s.kind.cluster` label kind stamps on them. `kind delete cluster` runs
+first, because it also drops the cluster's kubeconfig entry. `docker rm -f` then
+takes whatever survives, a node container kind itself no longer recognises
+included. A leftover that survives both fails the step instead of letting the
+creation hit the same error again. The registry pull-through caches of
+`hack/deploy-infra.sh` carry a label of their own and stay.
+
+Sweeping every cluster is safe because an e2e job owns its runner while it runs:
+two clusters on one host contend for those host ports, so a cluster already there
+when the job starts cannot belong to a job running alongside it. The sweep also
+clears a stale `cobaltcore-mgmt` that `hack/deploy-mgmt-cluster.sh` would
+otherwise adopt as an existing cluster. A job that creates a second cluster of
+its own keeps it: the first reset in a job leaves a marker in `RUNNER_TEMP`, and
+later resets remove only the cluster they are about to create.
+
+**The retry.** A failed creation leaves its partial cluster on the host, so the
+reset in front of the next attempt is what makes the retry a clean one. Two
+attempts is the default. A job that wants more sets `KIND_CREATE_ATTEMPTS` in its
+own `env`, and `KIND_WAIT` overrides the 60s control-plane wait the same way.
+Before each retry, and before the step fails for good, the script prints the node
+containers on the host and the tail of their logs. The cluster never came up, so
+`hack/ci-dump-diagnostics.sh` has no API server to read instead.
+
+Usage in a workflow job:
+
+```yaml
+- name: Create kind cluster
+  uses: ./.github/actions/create-kind-cluster
+  with:
+    version: ${{ env.KIND_VERSION }}
+    config: hack/kind-config.yaml
+    cluster-name: ${{ env.KIND_CLUSTER }}
+```
+
+Pinned by three shell suites:
+`tests/unit/ci/create_kind_cluster_wiring_test.sh` asserts that no job creates a
+cluster on its own, `tests/unit/hack/ci_reset_kind_cluster_test.sh` covers the
+sweep, and `tests/unit/hack/ci_create_kind_cluster_test.sh` covers the creation
+and its retry.
 
 ## Composite Action: setup-test-deps
 
