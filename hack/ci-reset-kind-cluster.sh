@@ -29,15 +29,29 @@
 # run in a job clears everything and leaves a marker in RUNNER_TEMP, and later
 # runs remove only the cluster they are about to create.
 #
+# Removing a node container can also lose a race with the docker daemon itself:
+#
+#   Error response from daemon: cannot remove container
+#   "cobaltcore-control-plane": could not kill container: tried to kill
+#   container, but did not receive an exit event
+#
+# The daemon has signalled the container but the containerd shim has not
+# reported its exit yet, so the removal is rejected even though nothing is
+# wrong. The exit event arrives moments later, which is why the force-remove
+# below is retried rather than taken as a verdict on the first attempt.
+#
 # Required env vars:
 #   (none — the cluster name may come from the first argument instead)
 #
 # Optional env vars:
 #   CLUSTER_NAME           — cluster about to be created (default: $KIND_CLUSTER)
 #   KIND_CLUSTER           — fallback for CLUSTER_NAME
-#   KIND_RESET_SCOPE       — all | cluster | auto (default: auto, see above)
+#   KIND_RESET_SCOPE       — all | cluster | auto (default: auto, see above);
+#                            `all` needs no cluster name, it sweeps every one
 #   KIND_RESET_STATE_FILE  — marker path (default: a run-scoped file in $RUNNER_TEMP)
 #   KIND_DELETE_TIMEOUT    — seconds a `kind delete cluster` may take (default: 120)
+#   KIND_RM_ATTEMPTS       — `docker rm -f` attempts per cluster (default: 3)
+#   KIND_RM_RETRY_DELAY    — seconds between those attempts (default: 5)
 #
 # Usage:
 #   hack/ci-reset-kind-cluster.sh [cluster-name]
@@ -64,6 +78,12 @@ KIND_RESET_SCOPE="${KIND_RESET_SCOPE:-auto}"
 # marker from another job is then simply absent, and the sweep runs in full.
 KIND_RESET_STATE_FILE="${KIND_RESET_STATE_FILE:-${RUNNER_TEMP:-/tmp}/cobaltcore-kind-reset-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}.done}"
 KIND_DELETE_TIMEOUT="${KIND_DELETE_TIMEOUT:-120}"
+# Attempts and spacing of the force-remove behind `kind delete cluster`. Three
+# attempts five seconds apart is aimed at the missing-exit-event race described
+# above, which clears on its own within seconds; a container that survives all
+# three is a real leftover and is reported as one.
+KIND_RM_ATTEMPTS="${KIND_RM_ATTEMPTS:-3}"
+KIND_RM_RETRY_DELAY="${KIND_RM_RETRY_DELAY:-5}"
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).
@@ -109,6 +129,46 @@ leftover_clusters() {
 }
 
 # ---------------------------------------------------------------------------
+# force_remove_nodes <cluster> — Force-remove whatever node containers of that
+# cluster are still on the host, retrying while any survive. The retry is what
+# rides out the missing-exit-event race: the daemon rejects the removal, the
+# shim reports the exit a moment later, and the next attempt succeeds. The
+# daemon's own message is kept and printed, because the one failure that is not
+# that race is the one whose text tells you so.
+#
+# Returns non-zero when a container survives every attempt.
+# ---------------------------------------------------------------------------
+force_remove_nodes() {
+  local cluster="$1" ids output attempt=1
+
+  while :; do
+    ids="$(node_containers "${cluster}")"
+    [[ -n "${ids}" ]] || return 0
+
+    if ((attempt > 1)); then
+      log "  ${ids//$'\n'/ } still present — retrying the removal (attempt ${attempt}/${KIND_RM_ATTEMPTS})."
+      if ((KIND_RM_RETRY_DELAY > 0)); then
+        sleep "${KIND_RM_RETRY_DELAY}"
+      fi
+    fi
+
+    log "  docker rm -f -v ${ids//$'\n'/ }"
+    # shellcheck disable=SC2086 # word splitting is how the ID list is passed
+    if ! output="$(docker rm -f -v ${ids} 2>&1)"; then
+      log "  docker rm reported: ${output//$'\n'/ | }"
+    fi
+
+    ((attempt++))
+    if ((attempt > KIND_RM_ATTEMPTS)); then
+      break
+    fi
+  done
+
+  ids="$(node_containers "${cluster}")"
+  [[ -z "${ids}" ]]
+}
+
+# ---------------------------------------------------------------------------
 # delete_cluster <cluster> — Remove one leftover cluster. `kind delete` goes
 # first because it also drops the cluster's kubeconfig entry; whatever it leaves
 # behind (or everything, when kind is not installed yet) goes with `docker rm
@@ -127,15 +187,8 @@ delete_cluster() {
     log "  kind is not on PATH yet — removing the node containers with docker."
   fi
 
-  ids="$(node_containers "${cluster}")"
-  if [[ -n "${ids}" ]]; then
-    log "  docker rm -f ${ids//$'\n'/ }"
-    # shellcheck disable=SC2086 # word splitting is how the ID list is passed
-    docker rm -f -v ${ids} >/dev/null 2>&1 || true
-  fi
-
-  ids="$(node_containers "${cluster}")"
-  if [[ -n "${ids}" ]]; then
+  if ! force_remove_nodes "${cluster}"; then
+    ids="$(node_containers "${cluster}")"
     echo "::error::kind cluster '${cluster}' still has node containers after deletion: ${ids//$'\n'/ }" >&2
     return 1
   fi
@@ -168,8 +221,22 @@ resolve_scope() {
 }
 
 main() {
-  if [[ -z "${CLUSTER_NAME}" ]]; then
-    echo "::error::hack/ci-reset-kind-cluster.sh needs a cluster name (argument, CLUSTER_NAME or KIND_CLUSTER)." >&2
+  # A name is what `cluster` scope works on, so every scope that can resolve to
+  # it — `auto` included — needs one. The exception is an explicit scope of
+  # `all`, which is how hack/ci-delete-kind-cluster.sh tears a job down: it
+  # sweeps every cluster on the host and has none to single out.
+  if [[ -z "${CLUSTER_NAME}" && "${KIND_RESET_SCOPE}" != "all" ]]; then
+    echo "::error::hack/ci-reset-kind-cluster.sh needs a cluster name (argument, CLUSTER_NAME or KIND_CLUSTER) unless KIND_RESET_SCOPE=all." >&2
+    exit 2
+  fi
+
+  if [[ ! "${KIND_RM_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::error::KIND_RM_ATTEMPTS must be a positive integer — got '${KIND_RM_ATTEMPTS}'." >&2
+    exit 2
+  fi
+
+  if [[ ! "${KIND_RM_RETRY_DELAY}" =~ ^[0-9]+$ ]]; then
+    echo "::error::KIND_RM_RETRY_DELAY must be a non-negative integer — got '${KIND_RM_RETRY_DELAY}'." >&2
     exit 2
   fi
 
