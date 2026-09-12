@@ -411,7 +411,97 @@ if not resolved(True):
   assert_eq "NfsDriver._qemu_img_info follows nas_secure_file_operations" "0" "$exit_code"
 }
 
-# --- Test 11: runs as openstack user ---
+# --- Test 11: the create-from-image patch is applied ---
+test_create_from_image_patch_applied() {
+  echo "Test: the create-from-image qemu-img calls run as the service user"
+  # Proves both build paths applied
+  # patches/cinder/<release>/0002-create-from-image-run-qemu-img-as-the-service-user.patch,
+  # which flips the two forced-root calls above the driver on the
+  # create-from-image path: the volume manager inspecting the image it just
+  # downloaded (CreateVolumeFromSpecTask._create_from_image_cache_or_download)
+  # and the one inside image_utils.fetch_verify_image. Patch 0001 covers the
+  # driver alone, and neither call goes through it. Unpatched, the manager
+  # call ends every create-from-image in `error`, and the fetch_verify_image
+  # call is swallowed by get_qemu_data, which then skips the backing-file and
+  # data-file checks for a raw image (#979 D3, the first Tempest run of
+  # PR #995).
+  # Each is checked on the run_as_root the call resolves, not on the source
+  # text. The manager call is driven through the real task method with the
+  # fetch, the space check, the signature check and the download stubbed out,
+  # so an upstream rewrite of that block is caught rather than passed over.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import contextlib
+import sys
+from unittest import mock
+import cinder.objects
+cinder.objects.register_all()
+from cinder.image import image_utils
+from cinder.volume.flows.manager import create_volume
+
+
+@contextlib.contextmanager
+def fake_fetch(*args, **kwargs):
+    yield "/var/lib/cinder/conversion/image_fetch_probe"
+
+
+def manager_run_as_root():
+    """Report the run_as_root the volume manager inspects the image with."""
+    # Constructing the task needs a manager, a driver and a database this
+    # image does not carry, so bind the attributes the method reads.
+    task = create_volume.CreateVolumeFromSpecTask.__new__(
+        create_volume.CreateVolumeFromSpecTask)
+    task.image_volume_cache = None
+    task.db = mock.Mock()
+    task.driver = mock.Mock()
+    task._create_from_image_download = mock.Mock(return_value=None)
+    volume = mock.Mock(size=1, id="volume-1",
+                       service_topic_queue="cinder@nfs1")
+    with mock.patch.object(image_utils, "qemu_img_info") as info, \
+            mock.patch.object(image_utils.TemporaryImages, "fetch",
+                              fake_fetch), \
+            mock.patch.object(image_utils, "check_available_space"), \
+            mock.patch.object(image_utils, "verify_glance_image_signature"), \
+            mock.patch.object(image_utils, "check_virtual_size",
+                              return_value=1), \
+            mock.patch.object(create_volume.fileutils, "ensure_tree"):
+        task._create_from_image_cache_or_download(
+            mock.Mock(), volume, None, "image-1",
+            {"size": 1048576, "disk_format": "raw"}, mock.Mock())
+    if info.call_args is None:
+        sys.exit("the volume manager inspected no image; the probe no longer "
+                 "drives the patched block")
+    return info.call_args.kwargs.get("run_as_root", True)
+
+
+def fetch_verify_run_as_root():
+    """Report the run_as_root fetch_verify_image inspects the image with."""
+    image_service = mock.Mock()
+    image_service.show.return_value = {"disk_format": "raw"}
+    with mock.patch.object(image_utils, "fetch"), \
+            mock.patch.object(image_utils, "get_qemu_data",
+                              return_value=None) as data:
+        image_utils.fetch_verify_image(
+            mock.Mock(), image_service, "image-1",
+            "/var/lib/cinder/conversion/image_fetch_probe")
+    if data.call_args is None:
+        sys.exit("fetch_verify_image inspected no image; the probe no longer "
+                 "drives the patched call")
+    return data.call_args.args[4]
+
+
+if manager_run_as_root():
+    sys.exit("the volume manager still inspects the downloaded image as root")
+if fetch_verify_run_as_root():
+    sys.exit("fetch_verify_image still inspects the downloaded image as root")' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "the create-from-image qemu-img calls run unprivileged" "0" "$exit_code"
+}
+
+# --- Test 12: runs as openstack user ---
 test_runs_as_openstack_user() {
   echo "Test: container runs as openstack user"
   local whoami_output exit_code=0
@@ -421,7 +511,7 @@ test_runs_as_openstack_user() {
   assert_eq "whoami outputs openstack" "openstack" "$whoami_output"
 }
 
-# --- Test 12: no build tools in final image ---
+# --- Test 13: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
 
@@ -441,7 +531,7 @@ test_no_build_tools_in_final_image() {
   assert_nonzero_exit "uv not found" "$uv_exit"
 }
 
-# --- Test 13: uwsgi is runnable (serves the cinder API at runtime) ---
+# --- Test 14: uwsgi is runnable (serves the cinder API at runtime) ---
 test_uwsgi_runnable() {
   echo "Test: uwsgi --version succeeds"
   # Transitively proves the libpython3.12t64 apt wiring: the venv-builder
@@ -453,7 +543,7 @@ test_uwsgi_runnable() {
   assert_not_empty "uwsgi version output is non-empty" "$version"
 }
 
-# --- Test 14: the state directories ship empty and owned by 42424 ---
+# --- Test 15: the state directories ship empty and owned by 42424 ---
 test_state_directories() {
   echo "Test: the state directories ship empty and owned by 42424"
   # /var/lib/cinder is [DEFAULT] state_path. mnt and backup_mount are the two
@@ -481,7 +571,7 @@ test_state_directories() {
   assert_eq "the state tree is owned by 42424 alone" "42424 " "$output"
 }
 
-# --- Test 15: pkg_resources is importable ---
+# --- Test 16: pkg_resources is importable ---
 test_pkg_resources_importable() {
   echo "Test: pkg_resources and the os_win cinder requires import cleanly"
   # os-win is a requirement of cinder 27.0.0 and os_win/_utils.py imports
@@ -536,6 +626,8 @@ echo ""
 test_amqp_readiness_probe
 echo ""
 test_nfs_patch_applied
+echo ""
+test_create_from_image_patch_applied
 echo ""
 test_runs_as_openstack_user
 echo ""
