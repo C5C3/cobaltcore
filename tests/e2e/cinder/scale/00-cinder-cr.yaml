@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR fixture for the scaling E2E test (2025.2 release).
+#
+# Same Keystone-free wiring as the basic-deployment fixture, on the schema
+# cinder_scale.
+#
+# The API starts at three replicas, which is what makes the PodDisruptionBudget
+# assertion meaningful: the shared builder renders minAvailable=1 above one
+# replica and maxUnavailable=1 at exactly one, and the suite patches across that
+# boundary. The scheduler and the volume service stay at one replica throughout:
+# they are the control group that says a patch to spec.api.deployment.replicas
+# reached the API Deployment alone.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-scale
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 3
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_scale
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-scale-messaging

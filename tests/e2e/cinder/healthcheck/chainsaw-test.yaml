@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the HealthCheck sub-reconciler.
+# Verifies the operator's HTTP probe of the Cinder API drives CinderAPIReady
+# and status.endpoint:
+#   - CinderAPIReady=True with reason APIHealthy once the Deployment serves
+#   - status.endpoint carries the cluster-local Service URL
+#
+# The probe GETs /healthcheck, which the oslo healthcheck middleware answers
+# without a token and without touching the database or the message bus, so a
+# 2xx there means the WSGI app is serving requests. Cinder writes the internal
+# URL into status.endpoint whenever spec.gateway is unset, and this CR sets
+# none, so the probe target and the advertised endpoint coincide here.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-healthcheck
+spec:
+  namespace: openstack
+  timeouts:
+    # The schema migration and the API cold start both precede Ready, and that
+    # does not fit the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite; see ../broker-vhost.sh. The step cleanup runs at the
+  # end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-health cinder-health-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-health || true
+  # ── Step 2: Assert CinderAPIReady and the endpoint ─────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-health
+            namespace: openstack
+          status:
+            endpoint: http://cinder-health.openstack.svc.cluster.local:8776
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+            (conditions[?type == 'CinderAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-health
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        name: health-nfs1
+        namespace: openstack
+    - script:
+        content: |
+          for d in cinder-health cinder-health-scheduler cinder-health-volume-health-nfs1 cinder-health-backup; do
+            echo "=== Deployment $d ==="
+            kubectl describe deploy "$d" -n $NAMESPACE 2>&1 | tail -40 || true
+          done
+          echo "=== Service and Endpoints ==="
+          kubectl get svc,endpoints -n $NAMESPACE -l app.kubernetes.io/instance=cinder-health 2>&1 || true
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-health -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack

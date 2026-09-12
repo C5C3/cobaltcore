@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the deletion-cleanup E2E test (2025.2 release).
+#
+# Same Keystone-free wiring as the basic-deployment fixture, on the schema
+# cinder_cleanup. A CinderBackupBackend attaches to it as well, so the operator
+# projects all four Deployments and the suite has the full child inventory to
+# assert against before and after the delete.
+#
+# One API replica: the suite asserts the existence of the children rather than
+# how many pods serve requests, and a second replica only lengthens the
+# bring-up on the single kind node.
+#
+# The volume and backup blocks are absent, so the schema default of three
+# replicas never applies to them: naming either block would mean spelling out
+# replicas: 1 beside it, which is what the operator renders for the absent
+# block anyway.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-cleanup
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_cleanup
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-cleanup-messaging

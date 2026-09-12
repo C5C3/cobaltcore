@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the backup-nfs E2E test (2025.2 release).
+#
+# Same Keystone-free wiring as the basic-deployment fixture, on the schema
+# cinder_backup. A CinderBackupBackend attaches to it, so the operator projects
+# a fourth Deployment, the cinder-backup service, on top of the API, the
+# scheduler and the one volume service.
+#
+# One API replica: the probes reach the Service, and this suite already holds
+# four pods on the single kind node.
+#
+# The backup block is absent, so the schema default of three replicas never
+# applies to it: naming it would mean spelling out replicas: 1 beside it, which
+# is what the operator renders for the absent block anyway.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-backup
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_backup
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-backup-messaging

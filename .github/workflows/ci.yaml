@@ -148,6 +148,9 @@ jobs:
             image_neutron:
               - 'images/neutron/**'
               - 'patches/neutron/**'
+            image_cinder:
+              - 'images/cinder/**'
+              - 'patches/cinder/**'
             # ovn ships the OVS/OVN daemons the CRs project and the rclone
             # shifter the OVNCentral backup CronJob uploads with. Neither is a
             # per-release service image, so they steer the ovn e2e leg rather
@@ -200,6 +203,8 @@ jobs:
               - 'tests/tempest/barbican-*/**'
             tempest_neutron:
               - 'tests/tempest/neutron-*/**'
+            tempest_cinder:
+              - 'tests/tempest/cinder-*/**'
             # ---------------------------------------------------------------
             # Per-operator e2e suites. Editing one operator's suite runs that
             # operator's leg, not all eight.
@@ -225,6 +230,9 @@ jobs:
               - 'tests/e2e/ovn/**'
             tests_e2e_neutron:
               - 'tests/e2e/neutron/**'
+            tests_e2e_cinder:
+              - 'tests/e2e/cinder/**'
+              - 'tests/e2e/cinder-operator/**'
             # ---------------------------------------------------------------
             # Suites that live in a job of their own. Each filter names exactly
             # the suite its job runs, so an edit schedules that job and no
@@ -365,6 +373,7 @@ jobs:
           FILTER_image_placement: ${{ steps.filter.outputs.image_placement }}
           FILTER_image_barbican: ${{ steps.filter.outputs.image_barbican }}
           FILTER_image_neutron: ${{ steps.filter.outputs.image_neutron }}
+          FILTER_image_cinder: ${{ steps.filter.outputs.image_cinder }}
           FILTER_image_ovn: ${{ steps.filter.outputs.image_ovn }}
           FILTER_image_proxy: ${{ steps.filter.outputs.image_proxy }}
           FILTER_image_tempest: ${{ steps.filter.outputs.image_tempest }}
@@ -375,6 +384,7 @@ jobs:
           FILTER_tempest_glance: ${{ steps.filter.outputs.tempest_glance }}
           FILTER_tempest_barbican: ${{ steps.filter.outputs.tempest_barbican }}
           FILTER_tempest_neutron: ${{ steps.filter.outputs.tempest_neutron }}
+          FILTER_tempest_cinder: ${{ steps.filter.outputs.tempest_cinder }}
           FILTER_tests_e2e_keystone: ${{ steps.filter.outputs.tests_e2e_keystone }}
           FILTER_tests_e2e_c5c3: ${{ steps.filter.outputs.tests_e2e_c5c3 }}
           FILTER_tests_e2e_horizon: ${{ steps.filter.outputs.tests_e2e_horizon }}
@@ -383,6 +393,7 @@ jobs:
           FILTER_tests_e2e_barbican: ${{ steps.filter.outputs.tests_e2e_barbican }}
           FILTER_tests_e2e_ovn: ${{ steps.filter.outputs.tests_e2e_ovn }}
           FILTER_tests_e2e_neutron: ${{ steps.filter.outputs.tests_e2e_neutron }}
+          FILTER_tests_e2e_cinder: ${{ steps.filter.outputs.tests_e2e_cinder }}
           FILTER_tests_controlplane: ${{ steps.filter.outputs.tests_controlplane }}
           FILTER_tests_controlplane_sso: ${{ steps.filter.outputs.tests_controlplane_sso }}
           FILTER_tests_external_keystone: ${{ steps.filter.outputs.tests_external_keystone }}
@@ -1337,6 +1348,12 @@ jobs:
         uses: ./.github/actions/setup-e2e-infra
         env:
           WITH_OVN_KERNEL_MODULES: ${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron') && 'true' || '' }}
+          # The cinder suites mount their volumes as inline CSI volumes from
+          # the kind NFS export, and each one takes its own vhost on the
+          # shared broker. Empty on every other leg, where deploy-infra.sh
+          # keeps its default of installing neither.
+          WITH_NFS: ${{ matrix.operator == 'cinder' && 'true' || '' }}
+          WITH_MESSAGING: ${{ matrix.operator == 'cinder' && 'true' || '' }}
       # The c5c3 ControlPlane controller Owns()/Watches() the Keystone,
       # KeystoneIdentityBackend, Horizon, Glance, GlanceBackend, and K-ORC kinds
       # (ControlPlaneReconciler.SetupWithManager). controller-runtime informers
@@ -1412,10 +1429,13 @@ jobs:
           # API, its two worker Deployments and a db-sync Job, so four of them
           # at once do not fit one kind node: the workers and the db-sync Jobs
           # stay Pending on "Insufficient cpu" and the CRs never reach Ready.
-          # Only this leg is narrowed; the shared config's parallel: 4 is what
-          # every other operator runs at.
+          # A cinder suite is the same size: three or four Deployments, a
+          # db-sync Job and a probe pod, which four at once do not fit on a
+          # 4-vCPU node either.
+          # Only these two legs are narrowed; the shared config's parallel: 4
+          # is what every other operator runs at.
           parallel=()
-          if [ "${OPERATOR}" = "neutron" ]; then
+          if [ "${OPERATOR}" = "neutron" ] || [ "${OPERATOR}" = "cinder" ]; then
             parallel=(--parallel 2)
           fi
           chainsaw test --config tests/e2e/chainsaw-config.yaml "${parallel[@]}" "${test_dirs[@]}"
@@ -1619,6 +1639,9 @@ jobs:
               tests/e2e-chaos/barbican-openbao-outage
               tests/e2e-chaos/neutron-mariadb-outage
               tests/e2e-chaos/neutron-broker-outage
+              tests/e2e-chaos/cinder-operator-pod-kill
+              tests/e2e-chaos/cinder-broker-outage
+              tests/e2e-chaos/cinder-nfs-outage
           # ovn-southbound-outage kills the Southbound Pod and asserts the
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
@@ -1694,6 +1717,11 @@ jobs:
             # The two neutron outage suites run on the network leg alone.
             ${{ matrix.suite == 'network' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'network' && format('{0}/neutron:2025.2', env.IMAGE_PREFIX) || '' }}
+            # The three cinder outage suites run on the network leg alone.
+            # Each deploys a Cinder, so each needs the service image beside
+            # the operator one.
+            ${{ matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'network' && format('{0}/cinder:2025.2', env.IMAGE_PREFIX) || '' }}
       - name: Load images into kind
         if: matrix.suite != 'ovn'
         run: |
@@ -1729,6 +1757,11 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name ${{ env.KIND_CLUSTER }}
+      - name: Load cinder images into kind
+        if: matrix.suite == 'network'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers every matrix entry.
       # The ovn leg's chassis DaemonSet opens a Geneve tunnel from the kind
@@ -1740,6 +1773,13 @@ jobs:
         env:
           WITH_CHAOS_MESH: "true"
           WITH_OVN_KERNEL_MODULES: ${{ matrix.suite == 'ovn' && 'true' || '' }}
+          # The three cinder suites attach an NFS backend, which the operator
+          # mounts as an inline CSI volume from the kind NFS export, and two of
+          # them (cinder-operator-pod-kill, cinder-nfs-outage) take a vhost on
+          # the shared broker. Empty on the other two legs, where
+          # deploy-infra.sh keeps its default of installing neither.
+          WITH_NFS: ${{ matrix.suite == 'network' && 'true' || '' }}
+          WITH_MESSAGING: ${{ matrix.suite == 'network' && 'true' || '' }}
       # Use shared operator deployment script. The ovn leg skips it along with
       # the rest of the keystone stack: no suite there creates a Keystone.
       - name: Deploy operator
@@ -1833,6 +1873,19 @@ jobs:
           OPERATOR: neutron
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
           NAMESPACE: neutron-system
+      # The three cinder outage suites run on the network leg alone, so the
+      # cinder-operator deploys there alone. Like the sibling operators it
+      # lands in its own cinder-system namespace, not the script's
+      # keystone-system default: that is where the Flux/deploy-infra path
+      # installs it and where cinder-operator-pod-kill's pod selector and
+      # PodChaos look.
+      - name: Deploy cinder operator
+        if: matrix.suite == 'network'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
       - name: Run chaos E2E tests
         run: |
           mkdir -p _output/reports
@@ -2827,15 +2880,23 @@ jobs:
             ${{ matrix.service == 'neutron' && format('{0}/neutron:{1}', env.IMAGE_PREFIX, matrix.release) || '' }}
             ${{ matrix.service == 'neutron' && format('{0}/ovn-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.service == 'neutron' && format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION) || '' }}
+            # The cinder leg pulls its own two images here and takes the glance
+            # pair from the step below, whose condition covers it as well: its
+            # volume suites create volumes from an image and upload volumes back
+            # to one, so the leg runs a Glance next to the Cinder.
+            ${{ matrix.service == 'cinder' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.service == 'cinder' && format('{0}/cinder:{1}', env.IMAGE_PREFIX, matrix.release) || '' }}
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
       # -- Glance ----------------------------------------------------------
       # The glance leg additionally pulls the glance-operator and the matching
-      # glance service image; the keystone leg needs neither.
+      # glance service image; the keystone leg needs neither. The cinder leg
+      # takes the same pair, for the Glance its volume suites create images
+      # from, and loads it into kind in its own step below.
       - name: Load Glance E2E images
-        if: matrix.service == 'glance'
+        if: matrix.service == 'glance' || matrix.service == 'cinder'
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
@@ -2889,9 +2950,29 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+      # -- Cinder ----------------------------------------------------------
+      # Both operators and both service images: the leg runs a Glance next to
+      # its Cinder. The tempest image is kind-loaded here for the same reason as
+      # on the glance, barbican and neutron legs: the catalog-setup Job and the
+      # image-seed Job run it in-cluster.
+      - name: Load cinder images into kind
+        if: matrix.service == 'cinder'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
+        env:
+          # The cinder leg's volume backend and backup target are NFS exports
+          # the operator mounts as inline CSI volumes, and its Cinder takes the
+          # shared broker in managed mode. Empty on every other leg, where
+          # deploy-infra.sh keeps its default of installing neither.
+          WITH_NFS: ${{ matrix.service == 'cinder' && 'true' || '' }}
+          WITH_MESSAGING: ${{ matrix.service == 'cinder' && 'true' || '' }}
       # Use shared operator deployment script.
       - name: Deploy operator (keystone)
         run: hack/ci-deploy-operator.sh
@@ -2899,9 +2980,10 @@ jobs:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
       # The glance leg also needs the glance-operator in its own glance-system
-      # namespace before its Glance CR reconciles.
+      # namespace before its Glance CR reconciles, and so does the cinder leg
+      # for the Glance it deploys next to its Cinder.
       - name: Deploy glance operator
-        if: matrix.service == 'glance'
+        if: matrix.service == 'glance' || matrix.service == 'cinder'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: glance
@@ -2939,6 +3021,16 @@ jobs:
           OPERATOR: neutron
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
           NAMESPACE: neutron-system
+      # The cinder leg needs the cinder-operator in its own cinder-system
+      # namespace before its Cinder, CinderBackend and CinderBackupBackend CRs
+      # reconcile. The glance-operator it also needs comes from the step above.
+      - name: Deploy cinder operator
+        if: matrix.service == 'cinder'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
       # Every service deploys the Keystone CR from its own config-dir (the
       # glance and barbican legs run against their own
       # keystone-<service>-tempest identity CR).
@@ -3017,6 +3109,46 @@ jobs:
           kubectl apply -f ${{ matrix.config-dir }}/04-neutron-cr.yaml
           kubectl wait neutron/${{ matrix.neutron-cr-name }} -n openstack \
             --for=condition=Ready --timeout=600s
+      # The cinder leg bootstraps the block-storage catalog (the Cinder and
+      # Glance services plus their endpoints via a setup Job) before its CRs:
+      # the Cinder reconciler authenticates against that catalog entry, and the
+      # Cinder resolves the image service from it too.
+      - name: Bootstrap block-storage catalog
+        if: matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/01-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/cinder-tempest-catalog-setup -n openstack \
+            --timeout=300s
+      # The Glance goes Ready before the Cinder is applied: the seed image the
+      # volume tests boot from is uploaded to it, and a store-side failure here
+      # would otherwise surface as an opaque Cinder timeout.
+      - name: Deploy Glance CR for the cinder leg
+        if: matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/02-glance-cr.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/03-glancebackend-cr.yaml
+          kubectl wait glance/${{ matrix.glance-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=300s
+      # 600s rather than the 300s the glance and barbican legs use: the Cinder
+      # brings up an api, a scheduler, a volume and a backup Deployment plus a
+      # db-sync Job, and the backends have to be attached before the volume and
+      # backup services are projected at all.
+      - name: Deploy Cinder CR for Tempest
+        if: matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/04-cinderbackend-cr.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/05-cinderbackupbackend-cr.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/06-cinder-cr.yaml
+          kubectl wait cinder/${{ matrix.cinder-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=600s
+      # tempest.conf pins [compute] image_ref to the UUID this Job creates, so
+      # the create-volume-from-image cases have an image before the run starts.
+      - name: Seed the image the volume tests boot from
+        if: matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/07-image-seed-job.yaml
+          kubectl wait --for=condition=complete job/cinder-tempest-image-seed -n openstack \
+            --timeout=300s
       # Use shared Tempest wrapper script.
       - name: Run Tempest API tests
         run: hack/ci-run-tempest.sh
@@ -3024,8 +3156,10 @@ jobs:
           CONFIG_DIR: ${{ matrix.config-dir }}
           TEMPEST_IMAGE: ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }}
           SERVICE_K8S_NAME: ${{ matrix.service-k8s-name }}
-          # The Glance Service carries the CR name. Empty for keystone legs
-          # (matrix key absent → ""), which disables the 9292 port-forward in
+          # The Glance Service carries the CR name. The matrix emits
+          # glance-cr-name for the glance legs and for the cinder legs, whose
+          # volume tests create volumes from an image. Empty elsewhere (matrix
+          # key absent → ""), which disables the 9292 port-forward in
           # ci-run-tempest.sh.
           GLANCE_K8S_NAME: ${{ matrix.glance-cr-name }}
           # The Barbican Service carries the CR name. Empty for the keystone and
@@ -3036,10 +3170,15 @@ jobs:
           # glance and barbican legs (matrix key absent → ""), which disables
           # the 9696 port-forward in ci-run-tempest.sh.
           NEUTRON_K8S_NAME: ${{ matrix.neutron-cr-name }}
+          # The Cinder Service carries the CR name. Empty on every other leg
+          # (matrix key absent → ""), which disables the 8776 port-forward in
+          # ci-run-tempest.sh.
+          CINDER_K8S_NAME: ${{ matrix.cinder-cr-name }}
           # stestr worker count. Set by hack/ci-generate-tempest-matrix.sh for
-          # the neutron legs (2), whose node also hosts OVN and Neutron; empty
-          # for the other legs (matrix key absent → ""), which leaves
-          # ci-run-tempest.sh on its default of 4.
+          # the neutron legs (2), whose node also hosts OVN and Neutron, and for
+          # the cinder legs (2), whose node hosts the broker, the NFS server,
+          # four Cinder workloads and a Glance; empty for the other legs (matrix
+          # key absent → ""), which leaves ci-run-tempest.sh on its default of 4.
           TEMPEST_CONCURRENCY: ${{ matrix.tempest-concurrency }}
       - name: Upload Tempest results
         if: always()

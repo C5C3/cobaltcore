@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The first of the two NFS backends the cinder-multi CR serves.
+#
+# The name carries the suite's own prefix because every suite of this tree runs
+# in the shared openstack namespace and spec.cinderRef is immutable: two suites
+# applying a CinderBackend of the same name would be one object fighting over
+# which Cinder it attaches to.
+#
+# This one takes the /volumes export the kind NFS server pre-creates
+# (deploy/kind/nfs/nfs-server.yaml). Its sibling takes /volumes-b, so the two
+# resolve to different mount directories and a volume placed on one is visible
+# from that pod alone.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: multi-nfs-a
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-multi
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

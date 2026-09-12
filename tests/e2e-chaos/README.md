@@ -37,8 +37,8 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `self-hosted` runners. The NetworkChaos suites
   (`mariadb-network-latency`, `-partition`, `glance-garage-outage`,
   `barbican-openbao-outage`, `neutron-mariadb-outage`,
-  `neutron-broker-outage`) need the `sch_netem`/`ip_set` kernel
-  modules, which `hack/deploy-infra.sh` loads
+  `neutron-broker-outage`, `cinder-broker-outage`) need the
+  `sch_netem`/`ip_set` kernel modules, which `hack/deploy-infra.sh` loads
   (installing `linux-modules-extra-$(uname -r)` on demand); that leg stays
   `continue-on-error`. The `ovn` leg runs `ovn-southbound-outage` on the
   `self-hosted` runners as well, with `WITH_OVN_KERNEL_MODULES=true` so

@@ -1,0 +1,806 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for the NFS export disappearing under a Cinder
+# deployment. What the suite pins is that the write path fails closed while
+# everything above it keeps serving:
+#
+#   - baseline: the CR is Ready, a volume is created through to available, and
+#     its file is on the share
+#   - under the outage: a create ends in error. The kernel client gives up on
+#     the soft mount and the volume service gets EIO, so the deployment refuses
+#     the volume instead of reporting a success the export cannot hold
+#   - under the outage: GET /healthcheck still answers 200 and the
+#     cinder-volume container does not restart. It carries a readiness probe on
+#     the broker socket and no liveness probe, so a lost export is not a reason
+#     to recycle a process that has transfers in flight
+#   - under the outage: the operator's view does not move. The mount is not
+#     something it reads, so the CR stays Ready=True/AllReady while every
+#     create fails, and a reader of the CR alone cannot see the fault
+#   - after the server is back: a fresh create reaches available with its file
+#     on the share, and every volume the suite asked for deletes
+#
+# The outage is a scale-down of the NFS server, not a NetworkChaos partition.
+# The share is mounted by the csi-nfs-node DaemonSet, which runs with
+# hostNetwork: true (deploy/kind/nfs/release.yaml, line 56), so the kernel NFS
+# client sends from the node's network namespace and an iptables rule keyed on
+# the cinder-volume pod's IP never matches a single mount packet. Scaling
+# deploy/nfs-server to 0 removes the endpoint the client dials instead, which
+# is what tests/e2e-chaos/deletion-stuck-finalizer does to the mariadb-operator
+# on this same leg.
+#
+# Recovery takes longer than the fault. A fresh nfsd comes up in its NFSv4
+# grace period, up to 90s in which it serves reclaims alone, and the client
+# retries through it without telling the application. The post-recovery create
+# is therefore given 240s where the baseline gets 120s.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-nfs-outage
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ────────────────
+  # One vhost per suite: Cinder's RPC topics are named after the deployment, so
+  # two suites on one vhost would share the scheduler and volume-service
+  # queues. See ../../e2e/cinder/broker-vhost.sh. The step cleanup runs at the
+  # end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create cinder-nfs-chaos cinder-nfs-chaos-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    # Every sub-condition, so the state the outage is read against is the whole
+    # one rather than the aggregate alone. status.volumeServices carries the
+    # host identity the backend's cinder-volume registers under, which is the
+    # key the heartbeat row in step 4 is looked up by.
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-nfs-chaos
+            namespace: openstack
+          status:
+            volumeServices:
+            - backend: nfs-chaos-nfs1
+              host: cinder-nfs-chaos@nfs-chaos-nfs1
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'BackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'BackupBackendReady']):
+            - status: "True"
+              reason: NoBackupBackend
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'VolumeServicesReady']):
+            - status: "True"
+              reason: AllVolumeServicesReady
+            (conditions[?type == 'BackupServiceReady']):
+            - status: "True"
+              reason: BackupNotConfigured
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'CinderAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'DBPurgeReady']):
+            - status: "True"
+              reason: DBPurgeScheduled
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &nfs-chaos-dump
+    - script:
+        content: ../diagnostics.sh chaos cinder-nfs-chaos --cr-kind=cinder --dep-label=app.kubernetes.io/name=nfs-server --dep-ns=openstack --log-label=app.kubernetes.io/instance=cinder-nfs-chaos
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        name: nfs-chaos-nfs1
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== NFS server ==="
+          kubectl get deploy,pod -n $NAMESPACE -l app.kubernetes.io/name=nfs-server -o wide 2>&1 || true
+          kubectl get endpointslices -n $NAMESPACE -l kubernetes.io/service-name=nfs-server -o wide 2>&1 || true
+          echo "=== Cinder pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-nfs-chaos -o wide 2>&1 || true
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-nfs-chaos -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Probe pods ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null | grep cinder-nfs-chaos-probe-); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --tail=80 2>&1 || true
+          done
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete cinder-nfs-chaos || true
+  # ── Step 2: Baseline — a volume is created and its file is on the share ─
+  # The probe is started detached and read back with `kubectl logs`:
+  # `kubectl run -i` only streams from the moment the attach lands, so a probe
+  # that finishes first would lose its sentinel. The token is the noauth
+  # pipeline's "<user>:<project>" pair rather than a Keystone token.
+  - try:
+    - script:
+        timeout: 8m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          NAME = sys.argv[2]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          # Only connection-level failures are retried: kube-proxy's endpoint
+          # programming can trail the CR's Ready flip by a second or two, so a
+          # single-shot request races it. Every HTTP status the API answers
+          # with is a verdict, so it fails hard with the code.
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          # The volume state machine, polled every 5s. An error state is
+          # terminal, so waiting out the deadline on one would only delay the
+          # verdict.
+          def wait_volume(volume_id, want, seconds):
+              deadline = time.time() + seconds
+              volume = {}
+              while time.time() < deadline:
+                  volume = json.loads(
+                      call("GET", "/v3/volumes/" + volume_id).read())["volume"]
+                  status = volume.get("status")
+                  if status in ("error", "error_restoring"):
+                      fail("volume %s entered %s" % (volume_id, status))
+                  if status == want:
+                      return volume
+                  print("volume %s is %s" % (volume_id, status))
+                  time.sleep(5)
+              fail("volume %s never reached %s within %ds: %s"
+                   % (volume_id, want, seconds, volume))
+
+
+          # The write path end to end, on a healthy export: the API casts to
+          # the scheduler, the scheduler places the volume on the one backend,
+          # and the volume service writes the file into the share.
+          created = json.loads(
+              call("POST", "/v3/volumes",
+                   {"volume": {"name": NAME, "size": 1}}).read())["volume"]
+          print("VOLUME-ID: " + created["id"])
+          wait_volume(created["id"], "available", 120)
+          print("WRITE-OK")
+          PY
+          )"
+
+          POD=cinder-nfs-chaos-probe-baseline
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          # The image ships its python in a venv on PATH; the absolute path is
+          # the one tests/container-images/verify_cinder.sh pins.
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-nfs-chaos.openstack.svc.cluster.local:8776 \
+            nfs-outage-baseline
+
+          # 60 x 5s = 5m, inside the step timeout, so a stuck probe is reported
+          # with its logs rather than killed by chainsaw.
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'WRITE-OK'
+
+          VID="$(printf '%s\n' "${OUT}" | sed -n 's/^VOLUME-ID: //p' | head -1)"
+          test -n "${VID}"
+
+          # The file the driver wrote, read in the one pod that holds the
+          # mount. The mount point is the hex md5 of "server:path", which is how
+          # os-brick's remotefs driver derives it.
+          MNT=/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          STAT="$(kubectl exec -n "$NAMESPACE" deploy/cinder-nfs-chaos-volume-nfs-chaos-nfs1 -- \
+            stat -c '%u %g %a %s' "${MNT}/volume-${VID}")"
+          echo "stat volume-${VID}: ${STAT}"
+          echo "OK: the baseline volume reached available and its file is on the share"
+    catch: *nfs-chaos-dump
+  # ── Step 3: Take the export away ────────────────────────────────────────
+  # The pre-outage identity of the cinder-volume pod is stashed on its own
+  # Deployment as an annotation: chainsaw hands no values between steps, and
+  # this is the same carrier tests/e2e-chaos/deletion-stuck-finalizer uses for
+  # the replica count it restores. The operator applies that Deployment
+  # server-side under its own field manager, so an annotation written by
+  # kubectl stays where it was put, and a Deployment annotation reaches no pod
+  # template, so writing it starts no rollout.
+  #
+  # The cleanup runs at the end of the test and is a no-op after step 5 did the
+  # same thing; on a failed run it is what leaves the leg's NFS server up for
+  # the suites behind this one.
+  - try:
+    - script:
+        timeout: 4m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          DEPLOY=cinder-nfs-chaos-volume-nfs-chaos-nfs1
+
+          # UID and restart count together: a restart count read on its own
+          # falls back to 0 on a replaced pod, which is the very value a pod
+          # that never restarted reports.
+          STATE="$(kubectl get pods -n "$NAMESPACE" \
+            -l 'app.kubernetes.io/instance=cinder-nfs-chaos,app.kubernetes.io/component=volume-nfs-chaos-nfs1' \
+            -o 'jsonpath={.items[0].metadata.uid} {.items[0].status.containerStatuses[0].restartCount}')"
+          case "${STATE}" in
+            *" "[0-9]*) ;;
+            *)
+              echo "FAIL: could not read the cinder-volume pod state before the outage: '${STATE}'"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-nfs-chaos -o wide 2>&1 || true
+              exit 1
+              ;;
+          esac
+          echo "pre-outage cinder-volume pod: ${STATE}"
+          kubectl annotate deploy "$DEPLOY" -n "$NAMESPACE" \
+            chaos.cobaltcore.c5c3.io/pre-outage-volume-pod="${STATE}" --overwrite
+
+          kubectl scale deploy/nfs-server -n "$NAMESPACE" --replicas=0
+
+          # The client dials the Service, so the outage begins when the last
+          # address leaves the EndpointSlice. The pod is waited out too: a
+          # terminating nfsd still answers the RPCs it has sockets for.
+          # 60 x 2s = 120s, well past the 30s termination grace period.
+          for _ in $(seq 1 60); do
+            ADDRS="$(kubectl get endpointslices -n "$NAMESPACE" \
+              -l kubernetes.io/service-name=nfs-server \
+              -o 'jsonpath={.items[*].endpoints[*].addresses[*]}' 2>/dev/null || true)"
+            PODS="$(kubectl get pods -n "$NAMESPACE" \
+              -l app.kubernetes.io/name=nfs-server -o name 2>/dev/null || true)"
+            if [ -z "${ADDRS}" ] && [ -z "${PODS}" ]; then
+              echo "OUTAGE-OK: nfs-server has no endpoint and no pod"
+              exit 0
+            fi
+            echo "waiting for the export to go: addresses='${ADDRS}' pods='${PODS}'"
+            sleep 2
+          done
+          echo "FAIL: nfs-server was still reachable 120s after the scale-down"
+          kubectl get deploy,pod -n "$NAMESPACE" -l app.kubernetes.io/name=nfs-server -o wide 2>&1 || true
+          exit 1
+    catch: *nfs-chaos-dump
+    cleanup:
+    - script:
+        timeout: 3m
+        content: |
+          kubectl scale deploy/nfs-server -n "$NAMESPACE" --replicas=1 2>&1 || true
+          kubectl rollout status deploy/nfs-server -n "$NAMESPACE" --timeout=120s 2>&1 || true
+  # ── Step 4: Under the outage — the create fails closed, the API serves ──
+  - try:
+    - script:
+        timeout: 9m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          NAME = sys.argv[2]
+          HOST = sys.argv[3]
+          # How long the volume is given to reach a terminal state. Passed in
+          # rather than pinned so the poller can be exercised against a stub.
+          VERDICT_SECONDS = int(sys.argv[4])
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          # Only connection-level failures are retried. Every HTTP status the
+          # API answers with is a verdict, so it fails hard with the code.
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          # /healthcheck is served by the oslo healthcheck middleware and
+          # touches neither the bus nor the share, so the API answers it while
+          # the export is gone.
+          resp = call("GET", "/healthcheck")
+          body = resp.read().decode().strip()
+          if resp.status != 200:
+              fail("GET /healthcheck -> %d during the NFS outage, want 200"
+                   % resp.status)
+          print("healthcheck answers %d %r during the NFS outage"
+                % (resp.status, body))
+
+          # The write path with no export behind it. The API takes the request
+          # and the scheduler places it, and then the volume service meets the
+          # soft mount: two retransmits at timeo=30 and the kernel returns EIO,
+          # which the driver reports as a failed create. Reaching available
+          # would mean the deployment confirmed a volume no share is holding.
+          created = json.loads(
+              call("POST", "/v3/volumes",
+                   {"volume": {"name": NAME, "size": 1}}).read())["volume"]
+          vid = created["id"]
+          print("volume %s accepted, waiting for its verdict" % vid)
+          deadline = time.time() + VERDICT_SECONDS
+          status = None
+          while time.time() < deadline:
+              status = json.loads(
+                  call("GET", "/v3/volumes/" + vid).read())["volume"].get(
+                      "status")
+              if status == "available":
+                  fail("create succeeded during the NFS partition: volume %s "
+                       "reached available" % vid)
+              if status in ("error", "error_restoring"):
+                  print("ERRORED-ID: " + vid)
+                  break
+              print("volume %s is %s" % (vid, status))
+              time.sleep(5)
+          else:
+              fail("volume %s was still %s after %ds, want error"
+                   % (vid, status, VERDICT_SECONDS))
+          print("FAILCLOSED-OK")
+
+          # The service registry, read for the record rather than gated on.
+          # The heartbeat is a database write on a periodic task, and whether
+          # it keeps landing while the driver is blocked on I/O is a property
+          # of where the service's threads are, not a contract this suite is
+          # entitled to pin. What it does say is which of the two an operator
+          # sees, so the state is printed and the shell step reports it.
+          listing = json.loads(
+              call("GET", "/v3/os-services").read()).get("services", [])
+          rows = [s for s in listing if s.get("binary") == "cinder-volume"
+                  and s.get("host") == HOST]
+          if len(rows) != 1:
+              fail("want one cinder-volume row for %s, found %s"
+                   % (HOST, listing))
+          print("HEARTBEAT-STATE: %s" % rows[0].get("state"))
+          PY
+          )"
+
+          POD=cinder-nfs-chaos-probe-partitioned
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-nfs-chaos.openstack.svc.cluster.local:8776 \
+            nfs-outage-partitioned cinder-nfs-chaos@nfs-chaos-nfs1 240
+
+          # 84 x 5s = 7m, past the probe's own 240s verdict window and its
+          # retry budget, and inside the step timeout.
+          phase=""
+          for _ in $(seq 1 84); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'FAILCLOSED-OK'
+
+          HEARTBEAT="$(printf '%s\n' "${OUT}" | sed -n 's/^HEARTBEAT-STATE: //p' | head -1)"
+          test -n "${HEARTBEAT}"
+          echo "OK: the create failed closed while the API served, and the volume service reads ${HEARTBEAT}"
+    # Nothing in the operator's view moved. The share is not something it
+    # reads: the volume service's readiness is the broker socket, so the
+    # Deployment stays available and every condition holds while every create
+    # fails. An operator watching the CR alone cannot see this outage, which is
+    # the contract the suite records here.
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-nfs-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'VolumeServicesReady']):
+            - status: "True"
+              reason: AllVolumeServicesReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    # And the pod that met the EIO is the same pod, unrestarted. The container
+    # carries a readiness probe on the broker socket and no liveness probe, so
+    # a lost export must not recycle it.
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          RECORDED="$(kubectl get deploy cinder-nfs-chaos-volume-nfs-chaos-nfs1 -n "$NAMESPACE" \
+            -o 'jsonpath={.metadata.annotations.chaos\.cobaltcore\.c5c3\.io/pre-outage-volume-pod}')"
+          CURRENT="$(kubectl get pods -n "$NAMESPACE" \
+            -l 'app.kubernetes.io/instance=cinder-nfs-chaos,app.kubernetes.io/component=volume-nfs-chaos-nfs1' \
+            -o 'jsonpath={.items[0].metadata.uid} {.items[0].status.containerStatuses[0].restartCount}')"
+          echo "cinder-volume pod before: '${RECORDED}' now: '${CURRENT}'"
+          if [ -z "${RECORDED}" ]; then
+            echo "FAIL: the pre-outage cinder-volume pod state was not recorded"
+            exit 1
+          fi
+          if [ "${RECORDED}" != "${CURRENT}" ]; then
+            echo "FAIL: the cinder-volume pod was replaced or restarted during the NFS outage"
+            kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-nfs-chaos -o wide 2>&1 || true
+            exit 1
+          fi
+          echo "NO-RESTART-OK"
+    catch: *nfs-chaos-dump
+  # ── Step 5: Bring the export back and let the deployment recover ────────
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl scale deploy/nfs-server -n "$NAMESPACE" --replicas=1
+          kubectl rollout status deploy/nfs-server -n "$NAMESPACE" --timeout=180s
+          echo "OK: the NFS server is back"
+    - script:
+        timeout: 9m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          NAME = sys.argv[2]
+          ERRORED_NAME = sys.argv[3]
+          # A fresh nfsd opens in its NFSv4 grace period, up to 90s of reclaims
+          # only, and the client retries through it silently. The create is
+          # given more room than the baseline's 120s for that reason.
+          SETTLE_SECONDS = 240
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          def wait_volume(volume_id, want, seconds):
+              deadline = time.time() + seconds
+              volume = {}
+              while time.time() < deadline:
+                  volume = json.loads(
+                      call("GET", "/v3/volumes/" + volume_id).read())["volume"]
+                  status = volume.get("status")
+                  if status in ("error", "error_restoring"):
+                      fail("volume %s entered %s" % (volume_id, status))
+                  if status == want:
+                      return volume
+                  print("volume %s is %s" % (volume_id, status))
+                  time.sleep(5)
+              fail("volume %s never reached %s within %ds: %s"
+                   % (volume_id, want, seconds, volume))
+
+
+          # Chainsaw hands no values between steps, so the volume the outage
+          # rejected is found again by its name. It is still there and still in
+          # error: a failed create leaves the row for its owner to clean up.
+          listing = json.loads(
+              call("GET", "/v3/volumes/detail").read())["volumes"]
+          errored = [v for v in listing if v.get("name") == ERRORED_NAME]
+          if len(errored) != 1:
+              fail("want one volume named %s, found %s"
+                   % (ERRORED_NAME, [v.get("name") for v in listing]))
+          if errored[0].get("status") != "error":
+              fail("volume %s is %s after the outage, want error"
+                   % (errored[0]["id"], errored[0].get("status")))
+          print("ERRORED-ID: " + errored[0]["id"])
+
+          # The recovery claim: the same volume service, with nothing
+          # restarted and no operator action, writes to the share again.
+          created = json.loads(
+              call("POST", "/v3/volumes",
+                   {"volume": {"name": NAME, "size": 1}}).read())["volume"]
+          print("VOLUME-ID: " + created["id"])
+          wait_volume(created["id"], "available", SETTLE_SECONDS)
+          print("RECOVERED-OK")
+          PY
+          )"
+
+          POD=cinder-nfs-chaos-probe-recovered
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-nfs-chaos.openstack.svc.cluster.local:8776 \
+            nfs-outage-recovered nfs-outage-partitioned
+
+          phase=""
+          for _ in $(seq 1 84); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'RECOVERED-OK'
+
+          VID="$(printf '%s\n' "${OUT}" | sed -n 's/^VOLUME-ID: //p' | head -1)"
+          test -n "${VID}"
+
+          MNT=/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          STAT="$(kubectl exec -n "$NAMESPACE" deploy/cinder-nfs-chaos-volume-nfs-chaos-nfs1 -- \
+            stat -c '%u %g %a %s' "${MNT}/volume-${VID}")"
+          echo "stat volume-${VID}: ${STAT}"
+          echo "OK: the post-outage create reached available and its file is on the share"
+    # The three rows the suite is responsible for leave the deployment: the two
+    # that hold a file and the one the outage rejected. A volume the suite
+    # cannot delete afterwards is a volume the next run inherits, and the
+    # export is shared with the other cinder suites.
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          PREFIX = sys.argv[2]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          # A deleted volume leaves the database rather than changing status,
+          # so this waits for the 404 the show call answers with.
+          def wait_gone(volume_id, seconds):
+              deadline = time.time() + seconds
+              while time.time() < deadline:
+                  try:
+                      send("GET", "/v3/volumes/" + volume_id).read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          return
+                      fail("GET /v3/volumes/%s -> HTTP %d"
+                           % (volume_id, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      print("retry GET /v3/volumes/%s: %s" % (volume_id, exc))
+                  print("volume %s is still there" % volume_id)
+                  time.sleep(5)
+              fail("volume %s was still there after %ds" % (volume_id, seconds))
+
+
+          listing = json.loads(
+              call("GET", "/v3/volumes/detail").read())["volumes"]
+          ours = [v for v in listing
+                  if (v.get("name") or "").startswith(PREFIX)]
+          if len(ours) != 3:
+              fail("want the three volumes named %s*, found %s"
+                   % (PREFIX, [(v.get("name"), v.get("status")) for v in ours]))
+          for volume in ours:
+              print("deleting %s (%s)" % (volume["id"], volume.get("status")))
+              call("DELETE", "/v3/volumes/" + volume["id"])
+          for volume in ours:
+              wait_gone(volume["id"], 60)
+          print("CLEANUP-OK")
+          PY
+          )"
+
+          POD=cinder-nfs-chaos-probe-cleanup
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-nfs-chaos.openstack.svc.cluster.local:8776 \
+            nfs-outage-
+
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'CLEANUP-OK'
+          echo "OK: every volume the suite created is gone"
+    catch: *nfs-chaos-dump
+  # ── Step 6: Tear the deployment down ────────────────────────────────────
+  # Chainsaw's own cleanup would delete both CRs under the 120s the chaos
+  # config allows. The Cinder goes first and explicitly, so the wait for its
+  # pods is part of the test rather than of a cleanup budget, and so the
+  # CinderBackend outlives its parent: with the Cinder gone it releases its
+  # service-remove finalizer unconditionally, which is what
+  # tests/e2e/cinder/deletion-cleanup/ pins.
+  - try:
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          kubectl delete cinder cinder-nfs-chaos -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=cinder-nfs-chaos -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a cinder pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-nfs-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Cinder CR and its pods are gone"
+
+          kubectl delete cinderbackend nfs-chaos-nfs1 -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=120s
+          echo "OK: the CinderBackend is gone"
+    catch: *nfs-chaos-dump

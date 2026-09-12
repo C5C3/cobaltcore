@@ -1,0 +1,637 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the NFS data path of one Cinder backend (2025.2).
+# The basic-deployment suite stops at the empty volume list; this one drives a
+# volume through its whole life and reads the export back:
+#   - create: the API accepts a 1 GiB volume, the scheduler places it on the one
+#     backend, and the cinder-volume writes the file into the export as
+#     42424:42424 mode 660 at its full apparent size, which is the restricted
+#     NFS posture the operator configures (nas_secure_file_operations and
+#     nas_secure_file_permissions are both true, so the driver runs its file
+#     operations as the service user instead of through a root helper)
+#   - extend: os-extend grows the same file to 2 GiB in place
+#   - clone: the copy the driver makes lands beside its source, world-readable
+#     from _set_rw_permissions_for_all, with the source's snapshot-info file
+#     written alongside it
+#   - delete: both files leave the share
+#
+# Every step drives the API from a probe pod off the service image, so each
+# request crosses kube-proxy like any other client's, and reads the export
+# through `kubectl exec` into the cinder-volume pod, which is the one process
+# holding the mount.
+#
+# Chainsaw steps cannot hand values to one another, so each probe re-derives the
+# volume it works on by name from GET /v3/volumes, and the file assertions run
+# in the same script step that read the id out of the probe's log.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-nfs-backend
+spec:
+  namespace: openstack
+  timeouts:
+    # The schema migration, the API cold start and the NFS mount of the volume
+    # service all precede the first assertion. That does not fit the 120s the
+    # shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite: the RPC topics are named after the deployment, so two
+  # suites on one vhost would share the scheduler and volume-service queues.
+  # See ../broker-vhost.sh. The step cleanup runs at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-nfs cinder-nfs-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-nfs || true
+  # ── Step 2: Assert Ready and the mounted export ────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-nfs
+            namespace: openstack
+          status:
+            # The host identity the backend's cinder-volume registers under.
+            # Every volume the probes create is keyed by this string.
+            volumeServices:
+            - backend: nfsbe-nfs1
+              host: cinder-nfs@nfsbe-nfs1
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-nfs-volume-nfsbe-nfs1
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                # The mount point is the hex md5 of "server:path", which is how
+                # os-brick's remotefs driver derives it. The file assertions
+                # below read that directory, so a mount anywhere else would put
+                # every volume out of their reach as well as cinder's.
+                (containers[0].volumeMounts[?name == 'share-nfsbe-nfs1'].mountPath | [0]): /var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          status:
+            availableReplicas: 1
+    catch: &nfs-dump
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-nfs
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        name: nfsbe-nfs1
+        namespace: openstack
+    - script:
+        content: |
+          for d in cinder-nfs cinder-nfs-scheduler cinder-nfs-volume-nfsbe-nfs1 cinder-nfs-backup; do
+            echo "=== Deployment $d ==="
+            kubectl describe deploy "$d" -n $NAMESPACE 2>&1 | tail -40 || true
+          done
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-nfs -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Probe pods ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null | grep cinder-nfs-probe-); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --tail=80 2>&1 || true
+          done
+          echo "=== Share listing ==="
+          kubectl exec -n $NAMESPACE deploy/cinder-nfs-volume-nfsbe-nfs1 -- ls -l /var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 3: Create a volume and read the file it became ────────────────
+  # The probe is started detached and read back with `kubectl logs`:
+  # `kubectl run -i` only streams from the moment the attach lands, so a probe
+  # that finishes first would lose its sentinel. The token is the noauth
+  # pipeline's "<user>:<project>" pair rather than a Keystone token.
+  - try:
+    - script:
+        timeout: 8m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          # Only connection-level failures are retried: kube-proxy's endpoint
+          # programming can trail the CR's Ready flip by a second or two, so a
+          # single-shot request races it. Every HTTP status the API answers
+          # with is a verdict, so it fails hard with the code.
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          # The volume state machine, polled every 5s until the wanted status.
+          # An error state is terminal, so waiting out the deadline on one
+          # would only delay the verdict.
+          def wait_volume(volume_id, want, seconds, size=None):
+              deadline = time.time() + seconds
+              volume = {}
+              while time.time() < deadline:
+                  volume = json.loads(
+                      call("GET", "/v3/volumes/" + volume_id).read())["volume"]
+                  status = volume.get("status")
+                  if status in ("error", "error_restoring"):
+                      fail("volume %s entered %s" % (volume_id, status))
+                  if status == want and (size is None
+                                         or volume.get("size") == size):
+                      return volume
+                  print("volume %s is %s at size %s"
+                        % (volume_id, status, volume.get("size")))
+                  time.sleep(5)
+              fail("volume %s never reached %s within %ds: %s"
+                   % (volume_id, want, seconds, volume))
+
+
+          created = json.loads(
+              call("POST", "/v3/volumes",
+                   {"volume": {"name": "nfs-rt", "size": 1}}).read())["volume"]
+          print("VOLUME-ID: " + created["id"])
+          wait_volume(created["id"], "available", 120, size=1)
+          print("NFS-CREATE-OK")
+          PY
+          )"
+
+          POD=cinder-nfs-probe-create
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          # The image ships its python in a venv on PATH; the absolute path is
+          # the one tests/container-images/verify_cinder.sh pins.
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-nfs.openstack.svc.cluster.local:8776
+
+          # 60 x 5s = 5m, inside the step timeout, so a stuck probe is reported
+          # with its logs rather than killed by chainsaw.
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'NFS-CREATE-OK'
+
+          VID="$(printf '%s\n' "${OUT}" | sed -n 's/^VOLUME-ID: //p' | head -1)"
+          test -n "${VID}"
+
+          # The file the driver wrote, read in the one pod that holds the mount.
+          # 42424:42424 is the service user the export was pre-created for, 660
+          # is what _set_rw_permissions leaves a fresh volume at, and the
+          # apparent size is the full 1 GiB even though the file is sparse
+          # (nfs_sparsed_volumes = true).
+          MNT=/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          STAT="$(kubectl exec -n "$NAMESPACE" deploy/cinder-nfs-volume-nfsbe-nfs1 -- \
+            stat -c '%u %g %a %s' "${MNT}/volume-${VID}")"
+          echo "stat volume-${VID}: ${STAT}"
+          [ "${STAT}" = "42424 42424 660 1073741824" ]
+          echo "OK: volume ${VID} is a 1 GiB 42424:42424 mode-660 file on the export"
+    catch: *nfs-dump
+  # ── Step 4: Extend the volume and read the file back ───────────────────
+  - try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          def wait_volume(volume_id, want, seconds, size=None):
+              deadline = time.time() + seconds
+              volume = {}
+              while time.time() < deadline:
+                  volume = json.loads(
+                      call("GET", "/v3/volumes/" + volume_id).read())["volume"]
+                  status = volume.get("status")
+                  if status in ("error", "error_restoring"):
+                      fail("volume %s entered %s" % (volume_id, status))
+                  if status == want and (size is None
+                                         or volume.get("size") == size):
+                      return volume
+                  print("volume %s is %s at size %s"
+                        % (volume_id, status, volume.get("size")))
+                  time.sleep(5)
+              fail("volume %s never reached %s within %ds: %s"
+                   % (volume_id, want, seconds, volume))
+
+
+          # Chainsaw hands no values between steps, so the volume the previous
+          # step created is found again by its name.
+          def volume_id(name):
+              listing = json.loads(call("GET", "/v3/volumes").read())["volumes"]
+              found = [v["id"] for v in listing if v.get("name") == name]
+              if len(found) != 1:
+                  fail("want one volume named %s, found %s" % (name, found))
+              return found[0]
+
+
+          vid = volume_id("nfs-rt")
+          print("VOLUME-ID: " + vid)
+          call("POST", "/v3/volumes/%s/action" % vid,
+               {"os-extend": {"new_size": 2}})
+          # The wanted size is part of the wait: os-extend is accepted while
+          # the volume still reads "available", so a status-only wait could
+          # return before the driver has touched the file.
+          wait_volume(vid, "available", 120, size=2)
+          print("NFS-EXTEND-OK")
+          PY
+          )"
+
+          POD=cinder-nfs-probe-extend
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-nfs.openstack.svc.cluster.local:8776
+
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'NFS-EXTEND-OK'
+
+          VID="$(printf '%s\n' "${OUT}" | sed -n 's/^VOLUME-ID: //p' | head -1)"
+          test -n "${VID}"
+
+          # Same file, twice the apparent size: the extend grew the volume in
+          # place rather than writing a second one beside it.
+          MNT=/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          STAT="$(kubectl exec -n "$NAMESPACE" deploy/cinder-nfs-volume-nfsbe-nfs1 -- \
+            stat -c '%u %g %a %s' "${MNT}/volume-${VID}")"
+          echo "stat volume-${VID}: ${STAT}"
+          [ "${STAT}" = "42424 42424 660 2147483648" ]
+          echo "OK: volume ${VID} grew to 2 GiB in place"
+    catch: *nfs-dump
+  # ── Step 5: Clone the volume and read both files ───────────────────────
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          def wait_volume(volume_id, want, seconds, size=None):
+              deadline = time.time() + seconds
+              volume = {}
+              while time.time() < deadline:
+                  volume = json.loads(
+                      call("GET", "/v3/volumes/" + volume_id).read())["volume"]
+                  status = volume.get("status")
+                  if status in ("error", "error_restoring"):
+                      fail("volume %s entered %s" % (volume_id, status))
+                  if status == want and (size is None
+                                         or volume.get("size") == size):
+                      return volume
+                  print("volume %s is %s at size %s"
+                        % (volume_id, status, volume.get("size")))
+                  time.sleep(5)
+              fail("volume %s never reached %s within %ds: %s"
+                   % (volume_id, want, seconds, volume))
+
+
+          def volume_id(name):
+              listing = json.loads(call("GET", "/v3/volumes").read())["volumes"]
+              found = [v["id"] for v in listing if v.get("name") == name]
+              if len(found) != 1:
+                  fail("want one volume named %s, found %s" % (name, found))
+              return found[0]
+
+
+          src = volume_id("nfs-rt")
+          print("VOLUME-ID: " + src)
+          # The size is spelled out because the source was extended: a clone
+          # smaller than its source is refused.
+          clone = json.loads(
+              call("POST", "/v3/volumes",
+                   {"volume": {"name": "nfs-clone", "size": 2,
+                               "source_volid": src}}).read())["volume"]
+          print("CLONE-ID: " + clone["id"])
+          wait_volume(clone["id"], "available", 240, size=2)
+          print("NFS-CLONE-OK")
+          PY
+          )"
+
+          POD=cinder-nfs-probe-clone
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-nfs.openstack.svc.cluster.local:8776
+
+          phase=""
+          for _ in $(seq 1 84); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'NFS-CLONE-OK'
+
+          VID="$(printf '%s\n' "${OUT}" | sed -n 's/^VOLUME-ID: //p' | head -1)"
+          CID="$(printf '%s\n' "${OUT}" | sed -n 's/^CLONE-ID: //p' | head -1)"
+          test -n "${VID}"
+          test -n "${CID}"
+
+          # The clone is world-readable where its source is 660: the driver
+          # copies it out of a temporary snapshot and finishes with
+          # _set_rw_permissions_for_all. Project isolation on this backend is
+          # the API's, not the export's.
+          MNT=/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          STAT="$(kubectl exec -n "$NAMESPACE" deploy/cinder-nfs-volume-nfsbe-nfs1 -- \
+            stat -c '%u %g %a %s' "${MNT}/volume-${CID}")"
+          echo "stat volume-${CID}: ${STAT}"
+          [ "${STAT}" = "42424 42424 666 2147483648" ]
+
+          # The snapshot-info file of the source, written when the clone's
+          # temporary snapshot was taken and left behind with it.
+          kubectl exec -n "$NAMESPACE" deploy/cinder-nfs-volume-nfsbe-nfs1 -- \
+            test -f "${MNT}/volume-${VID}.info"
+          echo "OK: clone ${CID} is world-readable beside volume-${VID}.info"
+    catch: *nfs-dump
+  # ── Step 6: Delete both volumes and assert the share is clean ──────────
+  - try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          def volume_id(name):
+              listing = json.loads(call("GET", "/v3/volumes").read())["volumes"]
+              found = [v["id"] for v in listing if v.get("name") == name]
+              if len(found) != 1:
+                  fail("want one volume named %s, found %s" % (name, found))
+              return found[0]
+
+
+          # A deleted volume leaves the database rather than changing status,
+          # so this waits for the 404 the show call answers with.
+          def wait_gone(volume_id, seconds):
+              deadline = time.time() + seconds
+              while time.time() < deadline:
+                  try:
+                      send("GET", "/v3/volumes/" + volume_id).read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          return
+                      fail("GET /v3/volumes/%s -> HTTP %d"
+                           % (volume_id, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      print("retry GET /v3/volumes/%s: %s" % (volume_id, exc))
+                  print("volume %s is still there" % volume_id)
+                  time.sleep(5)
+              fail("volume %s was still there after %ds" % (volume_id, seconds))
+
+
+          src = volume_id("nfs-rt")
+          clone = volume_id("nfs-clone")
+          print("VOLUME-ID: " + src)
+          print("CLONE-ID: " + clone)
+          for vid in (src, clone):
+              call("DELETE", "/v3/volumes/" + vid)
+          for vid in (src, clone):
+              wait_gone(vid, 60)
+          print("NFS-DELETE-OK")
+          PY
+          )"
+
+          POD=cinder-nfs-probe-delete
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-nfs.openstack.svc.cluster.local:8776
+
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'NFS-DELETE-OK'
+
+          VID="$(printf '%s\n' "${OUT}" | sed -n 's/^VOLUME-ID: //p' | head -1)"
+          CID="$(printf '%s\n' "${OUT}" | sed -n 's/^CLONE-ID: //p' | head -1)"
+          test -n "${VID}"
+          test -n "${CID}"
+
+          # The export is shared with the other cinder suites, so the listing is
+          # matched on the two file names rather than expected to be empty.
+          MNT=/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          LISTING="$(kubectl exec -n "$NAMESPACE" deploy/cinder-nfs-volume-nfsbe-nfs1 -- ls -1 "${MNT}")"
+          for name in "volume-${VID}" "volume-${CID}"; do
+            if printf '%s\n' "${LISTING}" | grep -qx "${name}"; then
+              echo "FAIL: ${name} is still on the export"
+              printf '%s\n' "${LISTING}"
+              exit 1
+            fi
+          done
+          echo "OK: neither volume file is left on the export"
+    catch: *nfs-dump

@@ -35,6 +35,12 @@
 # empty string and hack/deploy-infra.sh's `${WITH_NFS:-false}` default keeps
 # the stack out of the install.
 #
+# WITH_MESSAGING is threaded the same way so the Cinder e2e legs can opt in to
+# the kind-only `shared-rabbitmq` broker in `openstack`. When the calling job
+# leaves WITH_MESSAGING unset, `${{ env.WITH_MESSAGING }}` resolves to an empty
+# string and hack/deploy-infra.sh's `${WITH_MESSAGING:-false}` default keeps the
+# broker out of the install.
+#
 # WITH_CONTROLPLANE, CONTROLPLANE_OPERATORS, CONTROLPLANE_NAME, and
 # WITH_CONTROLPLANE_CR are threaded the same way so the e2e-controlplane job can
 # provision the shared infra for the c5c3 ControlPlane chain and provide the
@@ -83,6 +89,8 @@ runs:
         WITH_OVN_KERNEL_MODULES: ${{ env.WITH_OVN_KERNEL_MODULES }}
         # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_NFS: ${{ env.WITH_NFS }}
+        # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
+        WITH_MESSAGING: ${{ env.WITH_MESSAGING }}
         # ControlPlane opt-in flags — empty when caller does not set them;
         # deploy-infra.sh defaults keep the ControlPlane stack out of the install.
         WITH_CONTROLPLANE: ${{ env.WITH_CONTROLPLANE }}

@@ -1,0 +1,344 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for detaching one CinderBackend from a running Cinder
+# (2025.2). Two backends come up, one is deleted, and the test follows what the
+# operator has to do before it may let the CR go:
+#   - the volume Deployment of the deleted backend is removed first, because a
+#     running cinder-volume reports itself back into the service registry every
+#     few seconds and an entry removed under it would come back
+#   - the <cinder>-<backend>-service-remove Job then runs cinder-manage against
+#     the parent's database and succeeds
+#   - the finalizer cinder.openstack.c5c3.io/service-remove is released, so the
+#     CinderBackend leaves Terminating, and the Cinder records the Job it
+#     observed in its dedupe annotation and a ServiceRemoved event
+#   - status.volumeServices drops to the surviving backend while Ready stays
+#     True, and the API's own service registry no longer lists the detached
+#     host while the surviving one keeps reporting up
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-backend-detach
+spec:
+  namespace: openstack
+  timeouts:
+    # The schema migration, the API cold start and two NFS mounts precede the
+    # first assertion, and the detach flow needs several reconcile passes after
+    # it. That does not fit the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite: the RPC topics are named after the deployment, so two
+  # suites on one vhost would share the scheduler and volume-service queues.
+  # See ../broker-vhost.sh. The step cleanup runs at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-detach cinder-detach-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-a-cr.yaml
+    - apply:
+        file: 02-cinderbackend-b-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-detach || true
+  # ── Step 2: Assert both backends are up before anything is deleted ─────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-detach
+            namespace: openstack
+          status:
+            volumeServices:
+            - backend: detach-nfs-a
+              host: cinder-detach@detach-nfs-a
+            - backend: detach-nfs-b
+              host: cinder-detach@detach-nfs-b
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-detach-volume-detach-nfs-a
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-detach-volume-detach-nfs-b
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch: &detach-dump
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-detach
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        namespace: openstack
+    - script:
+        content: |
+          for d in cinder-detach cinder-detach-scheduler cinder-detach-volume-detach-nfs-a cinder-detach-volume-detach-nfs-b; do
+            echo "=== Deployment $d ==="
+            kubectl describe deploy "$d" -n $NAMESPACE 2>&1 | tail -40 || true
+          done
+          echo "=== service-remove Jobs ==="
+          kubectl get jobs -n $NAMESPACE -l app.kubernetes.io/instance=cinder-detach -o wide 2>&1 || true
+          kubectl describe job cinder-detach-detach-nfs-b-service-remove -n $NAMESPACE 2>&1 | tail -40 || true
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-detach -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Probe pods ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null | grep cinder-detach-probe-); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --tail=80 2>&1 || true
+          done
+          echo "=== Cinder annotations ==="
+          kubectl get cinder cinder-detach -n $NAMESPACE -o 'jsonpath={.metadata.annotations}' 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 3: Delete one backend and assert the detach completed ─────────
+  # The delete blocks until the CR is gone, which the finalizer only permits
+  # once the Job has run, so everything asserted after it describes a settled
+  # detach rather than one in flight.
+  - try:
+    - delete:
+        timeout: 6m
+        ref:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackend
+          name: detach-nfs-b
+          namespace: openstack
+    - error:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackend
+          metadata:
+            name: detach-nfs-b
+            namespace: openstack
+    # The volume service is stopped before the registry entry is touched, so a
+    # Deployment left here would mean the Job ran against a live process.
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-detach-volume-detach-nfs-b
+            namespace: openstack
+    # The Job outlives the backend: its TTL is an hour, and it is the record of
+    # what dropped the host identity from the registry.
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-detach-detach-nfs-b-service-remove
+            namespace: openstack
+          status:
+            succeeded: 1
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-detach
+            namespace: openstack
+          status:
+            # The surviving backend alone. The length is asserted beside the
+            # entry because a list assertion matches a subset: without it, a
+            # status that still carried the detached service would pass.
+            (length(volumeServices) == `1`): true
+            volumeServices:
+            - backend: detach-nfs-a
+              host: cinder-detach@detach-nfs-a
+            # Detaching a backend is a normal operation, so the aggregate never
+            # leaves True for it.
+            (conditions[?type == 'VolumeServicesReady']):
+            - status: "True"
+              reason: AllVolumeServicesReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+
+          # The dedupe annotation is stamped from the terminal Job the operator
+          # observed, one key per backend, so a non-empty value proves this
+          # detach's own Job was accounted for rather than a sibling's. It is
+          # patched after the finalizer is released, so it is polled.
+          ANN=""
+          for _ in $(seq 1 30); do
+            ANN="$(kubectl get cinder cinder-detach -n "$NAMESPACE" \
+              -o 'jsonpath={.metadata.annotations.cobaltcore\.c5c3\.io/last-service-remove-detach-nfs-b-job-uid}' 2>/dev/null || true)"
+            [ -n "${ANN}" ] && break
+            sleep 5
+          done
+          if [ -z "${ANN}" ]; then
+            echo "FAIL: the Cinder carries no last-service-remove-detach-nfs-b-job-uid annotation"
+            kubectl get cinder cinder-detach -n "$NAMESPACE" -o 'jsonpath={.metadata.annotations}' || true
+            exit 1
+          fi
+          echo "OK: the operator observed service-remove Job UID ${ANN}"
+
+          # The event goes to the Cinder rather than to the backend: the backend
+          # is being deleted, so an event on it is collected with it, while the
+          # Cinder is where an operator reads why a detach is stuck. The
+          # recorder writes asynchronously, so this is polled too.
+          FOUND=0
+          for _ in $(seq 1 24); do
+            if kubectl get events -n "$NAMESPACE" \
+                --field-selector reason=ServiceRemoved,involvedObject.name=cinder-detach \
+                -o name 2>/dev/null | grep -q .; then
+              FOUND=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "${FOUND}" -ne 1 ]; then
+            echo "FAIL: no ServiceRemoved event was recorded on cinder-detach"
+            kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+            exit 1
+          fi
+          echo "OK: a ServiceRemoved event is on cinder-detach"
+    catch: *detach-dump
+  # ── Step 4: Assert the API's own service registry agrees ───────────────
+  # The conditions and the children are the operator's view. This is cinder's:
+  # the registry row lives in the Cinder's database, and dropping it is the one
+  # thing the Job exists for.
+  - try:
+    - script:
+        timeout: 8m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          GONE = sys.argv[2]
+          STAYS = sys.argv[3]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          # Only connection-level failures are retried: kube-proxy's endpoint
+          # programming can trail the CR's Ready flip by a second or two, so a
+          # single-shot request races it. Every HTTP status the API answers
+          # with is a verdict, so it fails hard with the code.
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          # The row is already gone by the time this runs: the Job succeeded
+          # before the CinderBackend left. The poll covers the API's own view
+          # catching up rather than the removal itself. Both halves are read
+          # off one listing, so a surviving host that flaps out of "up" for a
+          # report interval is retried instead of failing the probe.
+          listing = []
+          for _ in range(30):
+              listing = json.loads(
+                  call("GET", "/v3/os-services").read()).get("services", [])
+              hosts = {s.get("host") for s in listing}
+              up = {s.get("host") for s in listing
+                    if s.get("binary") == "cinder-volume"
+                    and s.get("state") == "up"}
+              if GONE not in hosts and STAYS in up:
+                  break
+              print("waiting for the service registry: %s" % listing)
+              time.sleep(2)
+          else:
+              fail("want %s gone and %s up, registry is %s"
+                   % (GONE, STAYS, listing))
+          print("%s is gone and %s still reports state up" % (GONE, STAYS))
+
+          print("DETACH-OK")
+          PY
+          )"
+
+          POD=cinder-detach-probe-registry
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          # The image ships its python in a venv on PATH; the absolute path is
+          # the one tests/container-images/verify_cinder.sh pins.
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-detach.openstack.svc.cluster.local:8776 \
+            cinder-detach@detach-nfs-b cinder-detach@detach-nfs-a
+
+          # 60 x 5s = 5m, inside the step timeout, so a stuck probe is reported
+          # with its logs rather than killed by chainsaw.
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'DETACH-OK'
+          echo "OK: the service registry carries the surviving backend alone"
+    catch: *detach-dump

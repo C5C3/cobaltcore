@@ -24,13 +24,23 @@ ARG PIP_PACKAGES=""
 # unquoted so multiple space-separated packages word-split, but a PEP 508
 # extras suffix (e.g. some_lib[s3]) is also a glob bracket expression that the
 # shell would rewrite if a matching file existed in the build CWD.
+# The runtime venv is held below setuptools 81. os-win is a requirement of
+# cinder 27.0.0, and os_win/_utils.py imports pkg_resources at module level,
+# which setuptools 81 dropped from the wheel. The 2025.2 constraints otherwise
+# resolve setuptools 84, where that import fails and takes
+# `hack/gen-option-catalog.sh --check` with it. The pin goes on the runtime
+# install rather than on UV_BUILD_CONSTRAINT (how the horizon image uses it),
+# because the import happens at run time. Both releases build the same way and
+# the pin changes nothing on 2026.1.
 RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
     --mount=type=bind,from=cinder,target=/tmp/cinder,readwrite \
     PKG="/tmp/cinder" && \
     if [ -n "$PIP_EXTRAS" ]; then PKG="${PKG}[${PIP_EXTRAS}]"; fi && \
+    printf 'setuptools<81\n' > /tmp/build-constraints.txt && \
     set -f && \
     uv pip install --prefix /var/lib/openstack \
         --constraint /tmp/upper-constraints.txt \
+        --constraint /tmp/build-constraints.txt \
         "$PKG" $PIP_PACKAGES
 
 # uv's --prefix install mode generates the nine console scripts declared in

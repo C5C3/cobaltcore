@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The one NFS backend the cinder-nfs CR serves.
+#
+# The name carries the suite's own prefix because every suite of this tree runs
+# in the shared openstack namespace and spec.cinderRef is immutable: two suites
+# applying a CinderBackend of the same name would be one object fighting over
+# which Cinder it attaches to.
+#
+# The export is the kind-only NFS server (deploy/kind/nfs/nfs-server.yaml),
+# whose /volumes directory is pre-created 42424:42424 with mode 0770, so the
+# cinder-volume pod writes into it under its own uid. That posture is what the
+# file assertions of this suite read back.
+#
+# spec.nfs.mountOptions is left out, so the schema default applies.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: nfsbe-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-nfs
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

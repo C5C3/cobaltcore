@@ -127,6 +127,7 @@ deploy/
 │       ├── keystone-db-externalsecret.yaml           Secret keystone-db
 │       ├── placement-db-externalsecret.yaml          Secret placement-db
 │       ├── neutron-db-externalsecret.yaml            Secret neutron-db
+│       ├── cinder-db-externalsecret.yaml             Secret cinder-db
 │       └── placement-nip-io-tls-certificate.yaml     Certificate placement-nip-io-tls
 └── flux-system/
     ├── releases/
@@ -832,10 +833,12 @@ deployment-specific.
 | `{controlplane.Name}-glance-db-credentials` | `openstack` | Dynamic (default): generator-backed via `VaultDynamicSecret` reading `database/mariadb/creds/glance-{ns}` (no KV remote path); Static opt-out: `openstack/glance/{ns}/{name}/db` | `username`, `password` | `{controlplane.Name}-glance-db-credentials` | `username`, `password` |
 | `{controlplane.Name}-placement-db-credentials` | `openstack` | Dynamic (default): generator-backed via `VaultDynamicSecret` reading `database/mariadb/creds/placement-{ns}` (no KV remote path); Static opt-out: `openstack/placement/{ns}/{name}/db` | `username`, `password` | `{controlplane.Name}-placement-db-credentials` | `username`, `password` |
 | `{controlplane.Name}-neutron-db-credentials` | `openstack` | Dynamic (default): generator-backed via `VaultDynamicSecret` reading `database/mariadb/creds/neutron-{ns}` (no KV remote path); Static opt-out: `openstack/neutron/{ns}/{name}/db` | `username`, `password` | `{controlplane.Name}-neutron-db-credentials` | `username`, `password` |
+| `{controlplane.Name}-cinder-db-credentials` | `openstack` | Dynamic (default): generator-backed via `VaultDynamicSecret` reading `database/mariadb/creds/cinder-{ns}` (no KV remote path); Static opt-out: `openstack/cinder/{ns}/{name}/db`. Not projected yet: the c5c3 Cinder integration (#989) adds it, together with the `cinder-db` role and `cinder-db-dynamic` policy behind it | `username`, `password` | `{controlplane.Name}-cinder-db-credentials` | `username`, `password` |
 | `keystone-admin` (kind only) | `openstack` | `bootstrap/openstack/controlplane-keystone/admin` | `password` | `keystone-admin` | `password` |
 | `mariadb-root-password` (kind only) | `openstack` | `infrastructure/mariadb` | `root-password` | `mariadb-root-password` | `password` |
 | `keystone-db` (kind only) | `openstack` | `openstack/keystone/openstack/standalone/db` | `username`, `password` | `keystone-db` | `username`, `password` |
 | `neutron-db` (kind only) | `openstack` | `openstack/neutron/openstack/standalone/db` | `username`, `password` | `neutron-db` | `username`, `password` |
+| `cinder-db` (kind only) | `openstack` | `openstack/cinder/openstack/standalone/db` | `username`, `password` | `cinder-db` | `username`, `password` |
 
 **Note:** The static `deploy/eso/externalsecrets/` directory has been removed, so
 the production stack ships **no** ExternalSecret resources — its ESO

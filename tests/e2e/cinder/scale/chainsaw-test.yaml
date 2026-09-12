@@ -1,0 +1,271 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for replica scaling and PDB policy.
+# Verifies that patching spec.api.deployment.replicas propagates to the API
+# Deployment and its PDB:
+#   - initial deployment with replicas: 3 (PDB: minAvailable=1)
+#   - scale up to 5 replicas, where updatedReplicas proves new pods started
+#   - scale down to 1 replica (PDB: maxUnavailable=1)
+#
+# Every step also asserts that the scheduler and the volume service still run
+# one available replica. Both are separate Deployments fed by separate spec
+# fields, so a builder that read the API replica count for every workload would
+# scale them along and only this assertion would catch it. The volume service
+# is the stricter half of the pair: the NFS drivers refuse a second writer, so
+# a CEL rule pins it at one replica and this assertion says the rendered object
+# agrees.
+#
+# spec.concurrent is false because of the CPU the scale-up requests. Every
+# Cinder pod carries the shared 100m request (internal/common/types/workload.go),
+# so step 3 holds 700m on the single node hack/kind-config.yaml declares: five
+# API pods, the scheduler and the volume service. Run alone, before the
+# concurrent suites start, the peak fits the node.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-scale
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The schema migration and three API cold starts precede the first
+    # assertion, and two rollouts follow it. That does not fit the 120s the
+    # shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite; see ../broker-vhost.sh. The step cleanup runs at the
+  # end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-scale cinder-scale-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-scale || true
+  # ── Step 2: Assert Ready and the initial replica count ─────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-scale
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-scale
+            namespace: openstack
+          spec:
+            replicas: 3
+          status:
+            readyReplicas: 3
+            availableReplicas: 3
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: cinder-scale
+            namespace: openstack
+          spec:
+            minAvailable: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-scale-scheduler
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-scale-volume-scale-nfs1
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-scale
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Deployments and PDB ==="
+          kubectl get deploy,pdb -n $NAMESPACE -l app.kubernetes.io/instance=cinder-scale -o wide 2>&1 || true
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-scale -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 3: Scale up to 5 and assert the rollout completed ─────────────
+  - try:
+    - patch:
+        file: 02-patch-scale-up.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-scale
+            namespace: openstack
+          spec:
+            replicas: 5
+          status:
+            availableReplicas: 5
+            updatedReplicas: 5
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-scale
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-scale-scheduler
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-scale-volume-scale-nfs1
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-scale
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Deployments and PDB ==="
+          kubectl get deploy,pdb -n $NAMESPACE -l app.kubernetes.io/instance=cinder-scale -o wide 2>&1 || true
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-scale -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 4: Scale down to 1 and assert the PDB flips ───────────────────
+  - try:
+    - patch:
+        file: 03-patch-scale-to-one.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-scale
+            namespace: openstack
+          spec:
+            replicas: 1
+          status:
+            availableReplicas: 1
+            updatedReplicas: 1
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: cinder-scale
+            namespace: openstack
+          spec:
+            maxUnavailable: 1
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-scale
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-scale-scheduler
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-scale-volume-scale-nfs1
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-scale
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Deployments and PDB ==="
+          kubectl get deploy,pdb -n $NAMESPACE -l app.kubernetes.io/instance=cinder-scale -o wide 2>&1 || true
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-scale -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack

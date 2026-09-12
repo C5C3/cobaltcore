@@ -1,0 +1,117 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Run the create-from-image qemu-img calls as the service user
+
+Patch 0001 flips the NFS driver's forced-root `qemu-img info`. Two more
+forced-root calls sit above the driver on the same create-from-image
+path, and neither of them goes through it.
+
+`CreateVolumeFromSpecTask._create_from_image_cache_or_download`
+(cinder/volume/flows/manager/create_volume.py) inspects the image it has
+just downloaded with `image_utils.qemu_img_info(tmp_image)`, whose
+`run_as_root` defaults to True. `fetch_verify_image`
+(cinder/image/image_utils.py) inspects the same file through
+`get_qemu_data(image_id, has_meta, format_raw, dest, True)`, which passes
+the flag positionally and offers no way to ask for anything else. In both
+cases the file is the temporary copy the service itself wrote into
+`image_conversion_dir`, owned by uid 42424 and reachable by nobody else,
+so reading it as root gains no privilege the process does not already
+have.
+
+Under the restricted posture of #979 decision D3 there is no root to
+fall back to: the root helper is `sudo cinder-rootwrap` with no sudoers
+entry, and every such call fails with `sudo: The "no new privileges"
+flag is set`. The two calls fail differently, and both are worth fixing:
+
+* The manager call raises that ProcessExecutionError uncaught, so every
+  create-from-image ends in `error` status.
+* The `fetch_verify_image` call swallows it. `get_qemu_data` reads a
+  failing `qemu-img` as "qemu-img is not installed", returns None for a
+  raw image and skips the backing-file and data-file checks the function
+  exists for (bugs 1996188 and 2059809), and raises ImageUnacceptable for
+  every other disk format.
+
+The #985 lab measured the flow with the `sudo` shim of evidence section
+(a.4) in place, which answers every forced-root call in the tree, so only
+the driver's own call was left to attribute and patch 0001 was sized for
+it alone. Without the shim both calls surface: on the first Tempest run
+of PR #995, 14 of 192 tests failed on each release, and every failure
+created a volume from an image or a snapshot.
+
+Three upstream unit tests pin the `fetch_verify_image` argument and move
+with it, in cinder/tests/unit/test_image_utils.py:
+`TestVerifyImage.test_defaults`,
+`TestFetchToVolumeFormat.test_no_qemu_img_fetch_verify_image`, and the
+first expected call of `TestFetchToVolumeFormat.test_temporary_images`.
+The other two calls that last test expects come from
+`fetch_to_volume_format`, which still takes the flag from its caller, so
+they stay True. No upstream test pins the manager call, so the
+create_volume.py hunk needs no test hunk. The image build runs the
+upstream unit suite, which is where a missing one shows up.
+
+tests/container-images/verify_cinder.sh asserts both call sites against
+the built image, beside the assertion for patch 0001.
+
+Applies to cinder 27.0.0 (2025.2).
+
+Upstream status: not yet proposed.
+
+diff --git a/cinder/image/image_utils.py b/cinder/image/image_utils.py
+index b467380..771883a 100644
+--- a/cinder/image/image_utils.py
++++ b/cinder/image/image_utils.py
+@@ -880,7 +880,7 @@ def fetch_verify_image(context: context.RequestContext,
+         except TypeError:
+             format_raw = False
+         data = get_qemu_data(image_id, has_meta, format_raw,
+-                             dest, True)
++                             dest, False)
+         # We can only really do verification of the image if we have
+         # qemu data to use.
+         # NOTE: We won't have data if qemu_img is not installed *and* the
+diff --git a/cinder/tests/unit/test_image_utils.py b/cinder/tests/unit/test_image_utils.py
+index 5a12391..9740a30 100644
+--- a/cinder/tests/unit/test_image_utils.py
++++ b/cinder/tests/unit/test_image_utils.py
+@@ -829,7 +829,7 @@ class TestVerifyImage(test.TestCase):
+         mock_fetch.assert_called_once_with(ctxt, image_service, image_id,
+                                            dest, None, None)
+         mock_info.assert_called_once_with(dest,
+-                                          run_as_root=True,
++                                          run_as_root=False,
+                                           force_share=False)
+         mock_fileutils.remove_path_on_error.assert_called_once_with(dest)
+         (mock_fileutils.remove_path_on_error.return_value.__enter__
+@@ -1654,7 +1654,7 @@ class TestFetchToVolumeFormat(test.TestCase):
+         self.assertIsNone(output)
+         self.assertEqual(2, mock_temp.call_count)
+         mock_info.assert_has_calls([
+-            mock.call(tmp, force_share=False, run_as_root=True),
++            mock.call(tmp, force_share=False, run_as_root=False),
+             mock.call(dummy, force_share=False, run_as_root=True),
+             mock.call(tmp, run_as_root=True)])
+         mock_fetch.assert_called_once_with(ctxt, image_service, image_id,
+@@ -1992,7 +1992,7 @@ class TestFetchToVolumeFormat(test.TestCase):
+         image_service.show.assert_called_once_with(ctxt, image_id)
+         mock_info.assert_called_once_with(dest,
+                                           force_share=False,
+-                                          run_as_root=True)
++                                          run_as_root=False)
+         mock_fetch.assert_called_once_with(ctxt, image_service, image_id,
+                                            dest, None, None)
+ 
+diff --git a/cinder/volume/flows/manager/create_volume.py b/cinder/volume/flows/manager/create_volume.py
+index effbac3..8395b4e 100644
+--- a/cinder/volume/flows/manager/create_volume.py
++++ b/cinder/volume/flows/manager/create_volume.py
+@@ -1006,7 +1006,8 @@ class CreateVolumeFromSpecTask(flow_utils.CinderTask):
+                         # Try to create the volume as the minimal size,
+                         # then we can extend once the image has been
+                         # downloaded.
+-                        data = image_utils.qemu_img_info(tmp_image)
++                        data = image_utils.qemu_img_info(tmp_image,
++                                                         run_as_root=False)
+ 
+                         virtual_size = image_utils.check_virtual_size(
+                             data.virtual_size, volume.size, image_id)

@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR fixture for the PSS-restricted E2E test.
+#
+# Brownfield mode (database.host + cache.servers, no `clusterRef`): the CR
+# lives in the labelled `cinder-pss` namespace, but `Database.ClusterRef` /
+# `Cache.ClusterRef` are namespace-local (the shared provisioning flow looks up
+# the MariaDB / Memcached CR in the Cinder CR's namespace). Brownfield wiring
+# is the only path that reaches the existing `openstack/openstack-db` and
+# `openstack/openstack-memcached` from this namespace without duplicating
+# MariaDB / Memcached CRs.
+#
+# The `cinder_pss` Database/User/Grant are pre-created in the openstack
+# namespace by 00-brownfield-db-setup.yaml. The database credentials are synced
+# into this namespace by the ExternalSecret in 00-namespace.yaml, and
+# spec.secretStoreRef selects the same per-tenant store the ExternalSecret
+# authenticates through: reconcileSecrets gates SecretsReady on the selected
+# store, resolved in the CR's own namespace.
+#
+# No keystoneEndpoint and no serviceUser: the two are set together or not at
+# all (the pairing CEL rule on CinderSpec), and leaving both out renders
+# auth_strategy = noauth. The subject here is Pod admission, not identity.
+#
+# `replicas: 1` on the API keeps the test inside the suite's assert budget; the
+# regression net we want is "every Pod the operator creates admits under
+# PSS=restricted", which one replica per workload proves. The volume and backup
+# blocks are absent, so the operator renders the single replica each of them is
+# limited to anyway.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-pss
+  namespace: cinder-pss
+spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    host: openstack-db.openstack.svc.cluster.local
+    port: 3306
+    database: cinder_pss
+    secretRef:
+      name: cinder-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "openstack-memcached.openstack.svc:11211"
+  messaging:
+    secretRef:
+      name: cinder-pss-messaging

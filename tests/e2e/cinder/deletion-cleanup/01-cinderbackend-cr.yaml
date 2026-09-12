@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The one NFS volume backend the cinder-cleanup CR serves.
+#
+# The name carries the suite's own prefix because every suite of this tree runs
+# in the shared openstack namespace and spec.cinderRef is immutable: two suites
+# applying a CinderBackend of the same name would be one object fighting over
+# which Cinder it attaches to.
+#
+# This backend is the one the suite keeps alive across the parent's deletion:
+# it is user-owned, carries no owner reference, and its service-remove
+# finalizer is what the ServiceRemoveSkipped path releases once the parent is
+# gone.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: cleanup-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-cleanup
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

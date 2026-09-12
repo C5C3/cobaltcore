@@ -44,6 +44,7 @@ deploy/
     │   ├── placement-operator.yaml       Placement Operator (from c5c3-charts)
     │   ├── ovn-operator.yaml             OVN Operator (from c5c3-charts)
     │   ├── neutron-operator.yaml         Neutron Operator (from c5c3-charts)
+    │   ├── cinder-operator.yaml          Cinder Operator (from c5c3-charts)
     │   ├── k-orc.yaml                    K-ORC OpenStack Resource Controller
     │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator (Flux Kustomization over config/installation)
     │   ├── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts)
@@ -86,6 +87,7 @@ created.
 | `barbican-system` | Barbican Operator controller (Barbican/BarbicanSecretStore CRs and the operator-managed payload live in `openstack`) |
 | `ovn-system` | OVN Operator controller (OVNCentral/OVNChassis CRs and the operator-managed payload live in the tenant namespace they are created in) |
 | `neutron-system` | Neutron Operator controller (Neutron/NeutronMetadataAgent CRs and the operator-managed payload live in the tenant namespace they are created in) |
+| `cinder-system` | Cinder Operator controller (Cinder/CinderBackend/CinderBackupBackend CRs and the operator-managed payload live in the tenant namespace they are created in) |
 | `openstack` | Infrastructure instance CRs that exist to run the operators standalone (MariaDB cluster, Memcached cluster; on kind also the OpenBao proving instance and the shared Gateway) |
 | `shared-services` | Infrastructure consumed by more than one control plane: the OpenBao HA Raft cluster and the Garage object store |
 | `openbao-operator-system` | openbao-operator controller. It stays out of `shared-services` so the shared OpenBao cluster and the operator that manages per-service instances keep separate lifecycles |
@@ -291,6 +293,7 @@ mariadb-operator-crds     (no dependencies)
 ├── barbican-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator, openbao-operator
 ├── ovn-operator          dependsOn: cert-manager
 ├── neutron-operator      dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator, ovn-operator
+├── cinder-operator       dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
 └── c5c3-operator         dependsOn: keystone-operator, external-secrets, mariadb-operator, memcached-operator
 ```
 
@@ -318,9 +321,9 @@ Kustomizations and cert-manager is a HelmRelease. On a cold cluster the
 Issuer/Certificate apply fails while cert-manager's CRDs are still missing, the
 Kustomization reports NotReady, and one of the following `retryInterval` passes
 (2m) succeeds once cert-manager is up. The NotReady window is that convergence.
-That is also why `neutron-operator` carries no edge to it: the Neutron agents
-talk over the shared message bus, but a HelmRelease cannot depend on a
-Kustomization.
+That is also why `neutron-operator` and `cinder-operator` carry no edge to it:
+the Neutron agents and the Cinder services talk over the shared message bus, but
+a HelmRelease cannot depend on a Kustomization.
 
 The `c5c3-operator` HelmRelease sits at the top of this graph: it
 `dependsOn` the four operators whose CRs it projects (keystone-operator,
@@ -1997,21 +2000,43 @@ port.
 | Helm value | Override | Purpose |
 | --- | --- | --- |
 | `controller.enableSnapshotter` | `false` | The chart defaults it to `true` while `externalSnapshotter.enabled` defaults to `false`, so the `csi-snapshotter` sidecar would be deployed against `snapshot.storage.k8s.io` CRDs nothing in this stack installs. The Cinder NFS backend has snapshots off |
-| `storageClass.create` | `false` | Already the chart default, set here with the reason: the cinder-operator binds static PersistentVolume and PersistentVolumeClaim pairs, and an unwanted class in a kind cluster competes for `is-default-class` |
+| `storageClass.create` | `false` | Already the chart default, set here with the reason: the cinder-operator mounts inline volumes, so no dynamic class is wanted, and an unwanted class in a kind cluster competes for `is-default-class` |
+| `feature.enableInlineVolume` | `true` | The cinder-operator mounts every backend and backup share as an inline `csi:` volume, and the driver serves such a volume only when its CSIDriver lists the `Ephemeral` lifecycle mode. The chart adds that mode behind this flag. `CSIDriver.spec.volumeLifecycleModes` is immutable, so a kind cluster created before this value was set carries a `CSIDriver` the chart cannot patch; `hack/deploy-infra.sh` deletes that object before it applies the overlay and the chart recreates it (see below). A fresh cluster needs nothing |
 
 Everything else stays at the chart default: `driver.name: nfs.csi.k8s.io`,
 `attachRequired: false`, `fsGroupPolicy: File` and
 `kubeletDir: /var/lib/kubelet`.
 
-When `WITH_NFS=true`, `hack/deploy-infra.sh` does three things. It loads
+When `WITH_NFS=true`, `hack/deploy-infra.sh` does four things. It loads
 `nfsd`, `nfs` and `nfsv4` on the host before the cluster is created,
 best-effort through the same loader as `WITH_OVN_KERNEL_MODULES` (Linux only,
-root or passwordless sudo, otherwise a warning). It applies `deploy/kind/nfs`
-in Step 3 and waits for the `nfs-server` Deployment to roll out; a failed
-rollout is an error that stops the run and names the `nfsd` module, because a
-CrashLooping server on a host without `nfsd` must not end in a green summary.
-It appends `csi-driver-nfs` to the Phase 3 HelmRelease wait list. All three
-actions are gated strictly on the flag; the default run is unchanged.
+root or passwordless sudo, otherwise a warning). On a cluster whose
+`CSIDriver/nfs.csi.k8s.io` lists no `Ephemeral` lifecycle mode it deletes that
+object, because the field is immutable and the chart's patch would otherwise
+be rejected for the lifetime of the cluster: a reused cluster (a second run,
+or a runner keeping a warm one with `SKIP_KIND_CREATE=true`) would fail the
+`csi-driver-nfs` wait below with the cause buried in the HelmRelease status.
+Only a `NotFound` counts as "no such object" there; any other failed read (an
+API server still settling, a denied cluster-scoped read) aborts the run rather
+than skipping the check. A delete is followed by a forced `csi-driver-nfs`
+reconcile with the release's failure counts reset and a hard wait for the
+object to reappear, because the re-applied overlay can be identical to what
+the cluster already carries and helm-controller retries neither an unchanged
+release nor an upgrade whose remediation retries are spent: a cluster left
+with no NFS CSI driver at all is worse than the one the delete started from.
+A `NotFound` on a cluster that already carries the `csi-driver-nfs`
+HelmRelease enters that same recreate path, because it is not a fresh cluster
+but one an earlier run left driverless when it died between the delete and the
+forced reconcile. The wait is on the recreated object's
+`spec.volumeLifecycleModes`, not only on its existence: a remediation rollback
+racing the delete puts the pre-`Ephemeral` object back, which an
+existence-only check would accept.
+It applies `deploy/kind/nfs` in Step 3 and waits for the `nfs-server`
+Deployment to roll out; a failed rollout is an error that stops the run and
+names the `nfsd` module, because a CrashLooping server on a host without
+`nfsd` must not end in a green summary. It appends `csi-driver-nfs` to the
+Phase 3 HelmRelease wait list. All four actions are gated strictly on the
+flag; the default run is unchanged.
 
 **Opt-in usage:**
 
@@ -2029,7 +2054,77 @@ the kind overlay is self-contained under `deploy/kind/nfs/`. The CI-only
 posture is recorded in the header of `nfs-server.yaml`: a privileged server,
 `sec=sys` with `no_root_squash` and a wildcard client list, an amd64-only
 image, and `ghcr.io/nfs-ganesha/nfs-ganesha` as the recorded fallback if a
-runner kernel lacks `nfsd`.
+runner kernel lacks `nfsd`. The `Ephemeral` lifecycle mode widens that posture
+by one step, which is another reason it stays kind-only: reaching the export
+no longer needs a cluster-scoped `PersistentVolume`, so anyone who can create
+a Pod in a namespace that is not PodSecurity `restricted` mounts both shares
+as root from the pod spec alone. This cluster has no untrusted tenant; a
+non-kind deployment brings its own CSI mounter against an export that
+squashes root.
+
+### Message bus (kind-only opt-in)
+
+**Files:** `deploy/kind/messaging/kustomization.yaml`,
+`deploy/kind/messaging/shared-rabbitmq.yaml`
+
+One `RabbitmqCluster` named `shared-rabbitmq` in `openstack`, for the
+standalone Cinder e2e suites of
+[#988](https://github.com/c5c3/cobaltcore/issues/988) and, later, the
+ControlPlane suites of #989. The RabbitMQ Cluster Operator that reconciles it
+is not part of the overlay: it reaches every cluster this script provisions
+through the Flux Kustomization in
+`deploy/flux-system/releases/rabbitmq-cluster-operator.yaml`. Only the broker
+instance is opt-in, and the default `make deploy-infra` flow creates none.
+
+Production ships no equivalent object. A production `ControlPlane` declares
+`spec.infrastructure.messaging`, and the c5c3 operator projects a
+`RabbitmqCluster` for it into the ControlPlane's own namespace.
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `openstack` (pre-existing; the overlay ships no inline `Namespace`) |
+| API version | `rabbitmq.com/v1beta1` |
+| Replicas | `1` |
+| Requests | `100m` CPU, `512Mi` memory |
+| Limits | `512Mi` memory, no CPU limit |
+| Dependencies | the RabbitMQ Cluster Operator (Phase 3b) and the `rabbitmqclusters.rabbitmq.com` CRD (the Step 5 `wait_for_crds` list) |
+
+**Sizing.** The cluster operator requests 1 CPU and 2Gi per pod by default.
+That request does not fit beside the rest of the stack on the 4-vCPU kind
+node: it takes the last schedulable CPU and the next pod stays `Pending` on
+`Insufficient cpu`. `tests/e2e-chaos/neutron-broker-outage` records the same
+finding for its own broker. The e2e suites push little traffic through the
+bus, so `100m` and `512Mi` carry them. Memory is limited at the request.
+There is no CPU limit, so a busy moment goes unthrottled.
+
+**One vhost per suite.** Every standalone Cinder e2e suite creates its own
+vhost, named after the `Cinder` CR, plus a Secret `<cr-name>-messaging`
+holding the matching `transport_url`. `tests/e2e/cinder/broker-vhost.sh`
+creates both. Two suites on one vhost would share the RPC topics
+`cinder-scheduler` and `cinder-volume.<host>@<backend>`, so a scheduler in one
+suite could hand a volume to the volume service of another. Managed mode
+(`spec.messaging.clusterRef`) always lands on the default vhost, so it is used
+only where a single Cinder runs alone on the cluster: the tempest legs.
+
+**Deploy-infra wiring.** With `WITH_MESSAGING=true`, `hack/deploy-infra.sh`
+applies `deploy/kind/messaging` after Step 5, where both prerequisites are
+settled: the `openstack` namespace from the Step 3 base overlay and the
+`rabbitmqclusters.rabbitmq.com` CRD from the Phase 3b operator wait. It then
+waits for `rabbitmqcluster/shared-rabbitmq` to report `AllReplicasReady`. The
+cluster operator publishes no `Ready` condition, so that is the condition to
+gate on. On timeout the run stops: it prints
+`kubectl describe rabbitmqcluster/shared-rabbitmq` and the events of
+`shared-rabbitmq-server-0`, then exits 1.
+
+**Opt-in usage:**
+
+```bash
+WITH_MESSAGING=true make deploy-infra
+```
+
+**Posture summary.** Same shape as the entries above: the production omission
+is explicit, the opt-in flag has a single documented name (`WITH_MESSAGING`),
+and the kind overlay is self-contained under `deploy/kind/messaging/`.
 
 ### Glance large-upload listener
 

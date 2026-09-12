@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The volume backend the cinder-isolation CR keeps for the whole run.
+#
+# It exists so the Cinder can reach Ready before the sampling window opens: a
+# Cinder without an attached backend reports VolumeServicesReady=False under
+# reason NoBackends. Its sibling isolation-nfs-b is the one the suite detaches.
+#
+# The name carries the suite's own prefix because every suite of this tree runs
+# in the shared openstack namespace and spec.cinderRef is immutable: two suites
+# applying a CinderBackend of the same name would be one object fighting over
+# which Cinder it attaches to.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: isolation-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-isolation
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

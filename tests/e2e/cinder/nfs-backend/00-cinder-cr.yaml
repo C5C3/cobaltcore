@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the nfs-backend E2E test (2025.2 release).
+#
+# Same Keystone-free wiring as the basic-deployment fixture, on the schema
+# cinder_nfs. No keystoneEndpoint and no serviceUser: the two are set together
+# or not at all, and leaving both out renders auth_strategy = noauth, which is
+# how the storage path is exercised on a cluster that runs no identity service.
+#
+# One API replica. The probes reach the Service, so a second pod would only
+# lengthen the bring-up and hold another 100m on the single kind node.
+#
+# The volume and backup blocks are absent, so the schema default of three
+# replicas never applies to them: naming either block would mean spelling out
+# replicas: 1 beside it.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-nfs
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_nfs
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-nfs-messaging
