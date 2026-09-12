@@ -308,7 +308,7 @@ of the `changes` job matches. It depends only on `changes` — not on the `lint`
 
 1. Checkout repository (SHA-pinned `actions/checkout`)
 2. Setup Go (SHA-pinned `actions/setup-go` with `go-version-file: go.work`)
-3. Create kind cluster (SHA-pinned `helm/kind-action` with `hack/kind-config.yaml`)
+3. Create kind cluster (`create-kind-cluster` composite action with `hack/kind-config.yaml`)
 4. Install Flux CLI (SHA-pinned `fluxcd/flux2/action`)
 5. Install test dependencies (`make install-test-deps`, adds `~/.local/bin` to `PATH`)
 6. Deploy infrastructure stack (`make deploy-infra` with `SKIP_KIND_CREATE=true`)

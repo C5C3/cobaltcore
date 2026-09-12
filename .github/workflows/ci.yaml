@@ -19,10 +19,11 @@ env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/c5c3
   # Kind cluster name — single source of truth for every e2e job's
-  # helm/kind-action cluster_name and `kind load --name`. Mirrors the
+  # create-kind-cluster `cluster-name` and `kind load --name`. Mirrors the
   # CLUSTER_NAME default in hack/deploy-infra.sh.
   KIND_CLUSTER: cobaltcore
-  # kind binary version for every e2e job. helm/kind-action defaults to v0.31.0,
+  # kind binary version for every e2e job, passed to the create-kind-cluster
+  # composite action, which hands it to helm/kind-action. That action defaults to v0.31.0,
   # whose kindnetd does not yet enforce egress against the post-DNAT destination —
   # the posture under which the OpenBao instances' NetworkPolicy needs an explicit
   # API-server allowance. Pinning it here keeps CI on the enforcing build, in
@@ -897,11 +898,11 @@ jobs:
         with:
           go-version-file: go.work
       - name: Create kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
-          cluster_name: ${{ env.KIND_CLUSTER }}
+          cluster-name: ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -1246,11 +1247,11 @@ jobs:
         with:
           go-version-file: go.work
       - name: Create kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
-          cluster_name: ${{ env.KIND_CLUSTER }}
+          cluster-name: ${{ env.KIND_CLUSTER }}
       # Resolve which images this operator needs: always its operator image,
       # plus one service image per release that ships one. The release list
       # comes from source-refs.yaml (ci-service-image-releases.sh), so an
@@ -1468,11 +1469,11 @@ jobs:
       # runner image, matching the helm-push job.
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
       - name: Create kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
-          cluster_name: ${{ env.KIND_CLUSTER }}
+          cluster-name: ${{ env.KIND_CLUSTER }}
       # Pull the run-scoped images from GHCR: the locally built operator (:dev,
       # the upgrade target) and the 2025.2 service image the CR fixture uses.
       # This step also `docker login`s GHCR, which the baseline image pull below
@@ -1647,11 +1648,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Create kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
-          cluster_name: ${{ env.KIND_CLUSTER }}
+          cluster-name: ${{ env.KIND_CLUSTER }}
       # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version
@@ -1888,11 +1889,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Create kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
-          cluster_name: ${{ env.KIND_CLUSTER }}
+          cluster-name: ${{ env.KIND_CLUSTER }}
       # GH-310: Pull pre-built images from GHCR (run-scoped tag).
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
@@ -2007,11 +2008,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Create kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
-          cluster_name: ${{ env.KIND_CLUSTER }}
+          cluster-name: ${{ env.KIND_CLUSTER }}
       # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version
@@ -2239,11 +2240,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Create kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
-          cluster_name: ${{ env.KIND_CLUSTER }}
+          cluster-name: ${{ env.KIND_CLUSTER }}
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
@@ -2360,11 +2361,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Create kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
-          cluster_name: ${{ env.KIND_CLUSTER }}
+          cluster-name: ${{ env.KIND_CLUSTER }}
       # The Horizon service image is NOT loaded: External mode never runs a
       # Horizon workload (HorizonReady=HorizonNotManaged); the horizon-operator is
       # deployed only so its CRD exists for the c5c3 manager's Owns(Horizon) watch.
@@ -2502,11 +2503,11 @@ jobs:
       # hack/deploy-mgmt-cluster.sh with no config at all, so the two never
       # contend for a host port.
       - name: Create target kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
-          cluster_name: ${{ env.TARGET_CLUSTER }}
+          cluster-name: ${{ env.TARGET_CLUSTER }}
       # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version
@@ -2714,11 +2715,11 @@ jobs:
       # so the cluster already exists by the time hack/deploy-infra.sh reads
       # that variable.
       - name: Create kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config-multinode.yaml
-          cluster_name: ${{ env.KIND_CLUSTER }}
+          cluster-name: ${{ env.KIND_CLUSTER }}
       # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version
@@ -2800,11 +2801,11 @@ jobs:
         with:
           go-version-file: go.work
       - name: Create kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
-          cluster_name: ${{ env.KIND_CLUSTER }}
+          cluster-name: ${{ env.KIND_CLUSTER }}
       # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag out
       # of this workflow. The step runs on every leg because only the neutron
       # one reads OVN_VERSION, and a grep costs nothing on the others.

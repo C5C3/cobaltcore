@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Composite action every e2e job creates its kind cluster with. It replaces the
+# bare `helm/kind-action` step each of them used to carry, because that step
+# runs `kind create cluster` and nothing else: on the reused `self-hosted`
+# runners a cluster a cancelled job left behind makes it fail in the job's first
+# minute with
+#
+#   ERROR: failed to create cluster: node(s) already exist for a cluster with
+#   the name "cobaltcore"
+#
+# helm/kind-action is still what installs the pinned kind and kubectl binaries,
+# and its post step is still what deletes the cluster when the job ends — that
+# part of its behaviour is untouched, and passing `cluster-name` is what keeps
+# the teardown pointed at the right cluster. Only the creation moves into
+# hack/ci-create-kind-cluster.sh, which resets the runner first and retries a
+# creation that fails, so a job no longer inherits the previous job's leftovers.
+#
+# KIND_CREATE_ATTEMPTS and KIND_WAIT are threaded from the calling job's env
+# context, the way setup-e2e-infra threads its opt-in flags: unset by every
+# caller today, which leaves them empty and lets the script's own defaults (2
+# attempts, a 60s wait, matching what helm/kind-action waited for) apply.
+
+name: Create kind cluster
+description: >
+  Install the pinned kind and kubectl binaries, clear any kind cluster a
+  cancelled job left behind on the runner, then create this job's cluster,
+  retrying the creation once if it fails.
+
+inputs:
+  version:
+    description: kind version to install (the workflow's KIND_VERSION).
+    required: true
+  cluster-name:
+    description: >
+      Name of the kind cluster to create. Also what the post-job
+      `kind delete cluster` of helm/kind-action deletes.
+    required: true
+  config:
+    description: >
+      Path to the kind config file, relative to the repository root. Empty
+      creates a cluster with no config at all.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # install_only: the binaries and the post-job cleanup, without the creation.
+    # The kind directory lands on PATH through GITHUB_PATH, so the step below
+    # (and every later step in the job) finds the pinned binary.
+    - name: Install kind and kubectl
+      uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+      with:
+        version: ${{ inputs.version }}
+        cluster_name: ${{ inputs.cluster-name }}
+        install_only: "true"
+
+    - name: Reset the runner and create the cluster
+      shell: bash
+      env:
+        CLUSTER_NAME: ${{ inputs.cluster-name }}
+        KIND_CONFIG: ${{ inputs.config }}
+        # Lets the script fall back to the tool cache if the PATH entry above
+        # did not carry over.
+        KIND_VERSION: ${{ inputs.version }}
+        # Optional overrides — empty unless the calling job sets them; the
+        # script's defaults then apply.
+        KIND_CREATE_ATTEMPTS: ${{ env.KIND_CREATE_ATTEMPTS }}
+        KIND_WAIT: ${{ env.KIND_WAIT }}
+      run: hack/ci-create-kind-cluster.sh
