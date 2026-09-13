@@ -28,6 +28,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/validation"
 	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 )
@@ -109,6 +110,12 @@ const (
 	// DedicatedNeutronCacheClusterRefSuffix names the Memcached CR of a
 	// dedicated Neutron cache.
 	DedicatedNeutronCacheClusterRefSuffix = "-neutron-cache"
+	// DedicatedCinderDatabaseClusterRefSuffix names the MariaDB CR of a
+	// dedicated Cinder database.
+	DedicatedCinderDatabaseClusterRefSuffix = "-cinder-db" //nolint:gosec // G101 false positive: CR name suffix, not a credential
+	// DedicatedCinderCacheClusterRefSuffix names the Memcached CR of a
+	// dedicated Cinder cache.
+	DedicatedCinderCacheClusterRefSuffix = "-cinder-cache"
 	// DefaultDatabaseStorageSize is the effective per-replica MariaDB volume size
 	// when spec.infrastructure.database.storageSize is empty. It aliases
 	// commonv1.DatabaseStorageSizeDefault (also the CRD +kubebuilder:default and
@@ -533,6 +540,26 @@ const NeutronServiceProjectName = "service-neutron"
 // characters.
 const neutronChildNameOverhead = len("-neutron")
 
+// CinderServiceAccountName is the OpenStack user name of the Keystone account
+// Cinder authenticates as, carried as spec.account.userName on the
+// KeystoneService child projected for Cinder, following the per-service
+// convention GlanceServiceAccountName describes.
+const CinderServiceAccountName = "cinder"
+
+// CinderServiceProjectName is the Keystone project the KeystoneService child
+// projected for Cinder creates and owns its service user in, following the
+// per-service convention GlanceServiceProjectName describes.
+const CinderServiceProjectName = "service-cinder"
+
+// cinderChildNameOverhead is the fixed part of the projected Cinder child CR
+// name, "{cp}-cinder". Like its Glance, Barbican and Neutron siblings the
+// budget it eats into is not the apiserver's 253-byte cap but the tighter one
+// the Cinder CRD's own admission applies to metadata.name
+// (cinderv1alpha1.MaxCinderNameLength, 43): the cinder operator appends
+// "-db-purge" for the database-purge CronJob, and Kubernetes caps CronJob names
+// at 52 characters.
+const cinderChildNameOverhead = len("-cinder")
+
 // validateGlanceChildName enforces that the Glance child this ControlPlane would
 // project carries a name the Glance CRD's own validating webhook admits.
 // Without it a longer ControlPlane admits cleanly and reconcileGlance then fails
@@ -654,6 +681,36 @@ func validateNeutronChildName(cp *ControlPlane) field.ErrorList {
 			"ControlPlane name must be at most %d characters when spec.services.neutron is set",
 		n, neutronv1alpha1.MaxNeutronNameLength, neutronv1alpha1.MaxCronJobNameLength,
 		neutronv1alpha1.MaxNeutronNameLength-neutronChildNameOverhead,
+	))}
+}
+
+// validateCinderChildName enforces that the Cinder child this ControlPlane would
+// project carries a name the Cinder CRD's own validating webhook admits. Without
+// it a longer ControlPlane admits cleanly and the Cinder projection then fails to
+// apply the child on every pass: CinderReady never goes True, the ControlPlane
+// never reaches Ready, and metadata.name is immutable, so the only recovery is
+// deleting and recreating the whole control plane.
+//
+// It is a create-and-newly-enabled rule rather than part of validateCinder, which
+// every update re-runs, for the same reason as its Glance, Placement, Barbican
+// and Neutron siblings: the ControlPlane name is immutable, so on a routine
+// update the rule could only ever fire against a CR a pre-upgrade operator
+// already admitted, including the finalizer-removal update that completes its
+// deletion.
+func validateCinderChildName(cp *ControlPlane) field.ErrorList {
+	if cp.Spec.Services.Cinder == nil {
+		return nil
+	}
+	n := len(cp.Name) + cinderChildNameOverhead
+	if n <= cinderv1alpha1.MaxCinderNameLength {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(field.NewPath("metadata", "name"), cp.Name, fmt.Sprintf(
+		"the projected Cinder child CR name would be %d characters; the Cinder CRD caps metadata.name at %d "+
+			"(its db-purge CronJob appends a suffix, and Kubernetes caps CronJob names at %d), so the "+
+			"ControlPlane name must be at most %d characters when spec.services.cinder is set",
+		n, cinderv1alpha1.MaxCinderNameLength, cinderv1alpha1.MaxCronJobNameLength,
+		cinderv1alpha1.MaxCinderNameLength-cinderChildNameOverhead,
 	))}
 }
 
@@ -838,7 +895,8 @@ func insecurePublicEndpointWarnings(cp *ControlPlane) admission.Warnings {
 	warnings = append(warnings, warnInsecureGlancePublicEndpoint(cp)...)
 	warnings = append(warnings, warnInsecurePlacementPublicEndpoint(cp)...)
 	warnings = append(warnings, warnInsecureBarbicanPublicEndpoint(cp)...)
-	return append(warnings, warnInsecureNeutronPublicEndpoint(cp)...)
+	warnings = append(warnings, warnInsecureNeutronPublicEndpoint(cp)...)
+	return append(warnings, warnInsecureCinderPublicEndpoint(cp)...)
 }
 
 // glanceImportFilteringWarnings surfaces the two admissible-but-misleading
@@ -1314,12 +1372,216 @@ func validateNeutron(cp *ControlPlane) field.ErrorList {
 	return allErrs
 }
 
+// validateCinder enforces the rules on the services.cinder block. It mirrors the
+// declarative constraints as defense-in-depth for callers that bypass CRD schema
+// admission (the gateway hostname shape and the image tag/digest XOR here, the
+// backend shapes in the two validators below) and adds the rules the CRD schema
+// cannot express: the public endpoint's origin shape and its agreement with the
+// gateway (validateCinderPublicEndpoint), the reserved backend name, and the
+// composed CinderBackend child-name bound.
+//
+// The shared message bus the projected child cannot come up without is checked
+// by validateMessagingConsumers, which the caller runs directly after this
+// validator.
+//
+// The projected-child-name bound lives in validateCinderChildName, which does not
+// run on every update.
+//
+// The cross-field rule that services.cinder is forbidden in External mode lives
+// in validateKeystoneMode with the rest of the External-mode matrix; the
+// extraConfig rules live in the two extraConfig admission families, which walk
+// every declared service block at once.
+func validateCinder(cp *ControlPlane) field.ErrorList {
+	cd := cp.Spec.Services.Cinder
+	if cd == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	cdPath := field.NewPath("spec", "services", "cinder")
+
+	// When a gateway is configured, its hostname must be set and usable as the
+	// host of the derived public endpoint. Mirrors the MinLength=1 marker on
+	// commonv1.GatewaySpec.Hostname.
+	if g := cd.Gateway; g != nil {
+		hostnamePath := cdPath.Child("gateway", "hostname")
+		if g.Hostname == "" {
+			allErrs = append(allErrs, field.Required(hostnamePath,
+				"must be set when a gateway is configured"))
+		} else if err := validateGatewayHostname(hostnamePath, g.Hostname); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	}
+
+	// When the Cinder image is overridden, mirror the ImageSpec tag/digest XOR
+	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
+	if img := cd.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+		allErrs = append(allErrs, field.Invalid(cdPath.Child("image"), img,
+			"exactly one of image.tag or image.digest must be set"))
+	}
+
+	allErrs = append(allErrs, validateCinderPublicEndpoint(cdPath, cd)...)
+	allErrs = append(allErrs, validateCinderBackends(cp, cdPath.Child("backends"))...)
+	allErrs = append(allErrs, validateCinderBackupBackend(cp, cdPath.Child("backupBackend"))...)
+
+	return allErrs
+}
+
+// validateCinderBackends mirrors the declarative constraints on
+// services.cinder.backends as defense-in-depth for callers that bypass CRD schema
+// admission (at least one entry, the type/nfs union, and the export leaves an NFS
+// entry cannot mount without) and adds the two rules the CRD schema cannot
+// express: the backend name cinder.conf reserves, and the composed CinderBackend
+// child-name bound, which spends a budget the ControlPlane name and the entry
+// name share.
+//
+// A name that collides with a cinder.conf catalog section OTHER than "default" is
+// not mirrored here: that catalog lives in the cinder module, so such an entry is
+// admitted and surfaces as a CinderBackendProjectionRejected event from the
+// cinder webhook.
+func validateCinderBackends(cp *ControlPlane, backendsPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	backends := cp.Spec.Services.Cinder.Backends
+
+	if len(backends) == 0 {
+		allErrs = append(allErrs, field.Required(backendsPath,
+			"at least one backend must be declared"))
+	}
+
+	for i := range backends {
+		entry := backends[i]
+		entryPath := backendsPath.Index(i)
+
+		// The nfs block must be set exactly when type is NFS.
+		if (entry.Type == "NFS") != (entry.NFS != nil) {
+			allErrs = append(allErrs, field.Invalid(entryPath, entry.Type,
+				"the nfs block must be set exactly when type is NFS"))
+		}
+		allErrs = append(allErrs, validateNFSShare(entryPath.Child("nfs"), entry.NFS)...)
+
+		// "default" names cinder.conf's [DEFAULT] section, which the backend's
+		// options would land in. The comparison is case-insensitive because cinder
+		// reads the section name case-insensitively.
+		if strings.EqualFold(entry.Name, "default") {
+			allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), entry.Name,
+				"must not be \"default\": it names cinder.conf's [DEFAULT] section, so the backend's options "+
+					"would be read as service-wide ones"))
+		}
+
+		// Detaching a backend runs a "<cinder>-<backend>-service-remove" Job whose
+		// name is copied into a label value, so the projected Cinder name and the
+		// backend name share one budget. Without the guard the ControlPlane admits
+		// and the detach then fails on a Job the apiserver rejects.
+		if entry.Name != "" {
+			n := len(cp.Name) + cinderChildNameOverhead + len(entry.Name)
+			if n > cinderv1alpha1.MaxBackendNamePlusCinderRef {
+				allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), entry.Name, fmt.Sprintf(
+					"the CinderBackend %q attached to the projected Cinder %q would put %d bytes into the "+
+						"<cinder>-<backend>-service-remove Job name; shorten the ControlPlane name or the "+
+						"backend name so the sum stays at or below %d",
+					entry.Name, cp.Name+"-cinder", n, cinderv1alpha1.MaxBackendNamePlusCinderRef,
+				)))
+			}
+		}
+	}
+
+	return allErrs
+}
+
+// validateCinderBackupBackend mirrors the declarative constraints on
+// services.cinder.backupBackend as defense-in-depth for callers that bypass CRD
+// schema admission: the type/nfs union, the export leaves, the chunk-size bounds,
+// and the compression enum.
+//
+// It carries no composed name bound, unlike the volume backends above: detaching
+// a backup backend runs no service-remove Job, so its name enters no Job name.
+func validateCinderBackupBackend(cp *ControlPlane, path *field.Path) field.ErrorList {
+	bb := cp.Spec.Services.Cinder.BackupBackend
+	if bb == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+
+	if (bb.Type == "NFS") != (bb.NFS != nil) {
+		allErrs = append(allErrs, field.Invalid(path, bb.Type,
+			"the nfs block must be set exactly when type is NFS"))
+	}
+	allErrs = append(allErrs, validateNFSShare(path.Child("nfs"), bb.NFS)...)
+
+	// The chunk size, mirroring the Minimum and MultipleOf markers: cinder splits
+	// the volume into objects of this size and hashes each one in 32768-byte
+	// blocks.
+	if fs := bb.FileSize; fs != nil {
+		switch {
+		case *fs < 1048576:
+			allErrs = append(allErrs, field.Invalid(path.Child("fileSize"), *fs,
+				"must be at least 1048576 bytes (1 MiB)"))
+		case *fs%32768 != 0:
+			allErrs = append(allErrs, field.Invalid(path.Child("fileSize"), *fs,
+				"must be a multiple of 32768, the block size cinder hashes backup chunks in"))
+		}
+	}
+
+	if compressions := []string{"none", "zlib", "bz2", "zstd"}; bb.Compression != "" &&
+		!slices.Contains(compressions, bb.Compression) {
+		allErrs = append(allErrs, field.NotSupported(path.Child("compression"), bb.Compression, compressions))
+	}
+
+	return allErrs
+}
+
+// nfsServerPattern and nfsPathPattern mirror the Pattern markers on
+// NFSShareSpec.Server and NFSShareSpec.Path. Both values are rendered verbatim:
+// the server reaches the mount command, and "server:path" is written into the
+// shares file cinder reads back a line at a time, so a space cuts the export
+// short and a newline appends a second one.
+var (
+	nfsServerPattern = regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
+	nfsPathPattern   = regexp.MustCompile(`^/[!-~]*$`)
+)
+
+// validateNFSShare mirrors the MinLength and Pattern markers that make an NFS
+// export addressable: without a server and a path the satellite renders a
+// "server:path" line the cinder pod cannot mount, and the markers on those two
+// fields (plus the one on mountOptions) are what keep a value from adding a line
+// of its own to the rendered shares and mount configuration. A nil block is the
+// type/nfs union's business, so it reports nothing here.
+//
+// Without the pattern halves a caller that bypasses CRD schema admission gets a
+// ControlPlane ADMITTED with an injecting export: cinderBackendForEntry copies
+// the value into the projected satellite, whose own webhook rejects it, so the
+// plane wedges on CinderReady=False/CinderBackendProjectionRejected instead of
+// failing at admission with the offending field named.
+func validateNFSShare(nfsPath *field.Path, nfs *NFSShareSpec) field.ErrorList {
+	if nfs == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	if nfs.Server == "" {
+		allErrs = append(allErrs, field.Required(nfsPath.Child("server"), "must be set"))
+	} else if !nfsServerPattern.MatchString(nfs.Server) {
+		allErrs = append(allErrs, field.Invalid(nfsPath.Child("server"), nfs.Server,
+			"must be a hostname or an IPv4 address: it reaches the mount command verbatim"))
+	}
+	if nfs.Path == "" {
+		allErrs = append(allErrs, field.Required(nfsPath.Child("path"), "must be set"))
+	} else if !nfsPathPattern.MatchString(nfs.Path) {
+		allErrs = append(allErrs, field.Invalid(nfsPath.Child("path"), nfs.Path,
+			"must be an absolute path of printable ASCII with no whitespace: it is rendered verbatim into "+
+				"the shares file cinder reads back a line at a time"))
+	}
+	if strings.ContainsAny(nfs.MountOptions, "\n\r") {
+		allErrs = append(allErrs, field.Invalid(nfsPath.Child("mountOptions"), nfs.MountOptions,
+			"must not contain a newline or a carriage return: it would divide the rendered option line"))
+	}
+	return allErrs
+}
+
 // validateMessagingConsumers requires spec.infrastructure.messaging once per
 // declared bus-consuming service. The bus is not optional for such a service:
 // its child CRD requires spec.messaging, and the ControlPlane derives the
 // child's transport URL from spec.infrastructure.messaging, so a ControlPlane
 // declaring the service without one would project a child its own admission
-// rejects on every pass. Neutron is the one such service.
+// rejects on every pass. Neutron and Cinder are the two such services.
 //
 // A nil infrastructure block is reported by validateKeystoneMode already (it is
 // required outside External mode, and External mode forbids the service blocks
@@ -1333,6 +1595,11 @@ func validateMessagingConsumers(cp *ControlPlane) field.ErrorList {
 	if cp.Spec.Services.Neutron != nil {
 		allErrs = append(allErrs, field.Required(field.NewPath("spec", "infrastructure", "messaging"),
 			"is required when services.neutron is set: the Neutron CRD requires spec.messaging, and the "+
+				"ControlPlane derives the child's transport URL from the shared bus"))
+	}
+	if cp.Spec.Services.Cinder != nil {
+		allErrs = append(allErrs, field.Required(field.NewPath("spec", "infrastructure", "messaging"),
+			"is required when services.cinder is set: the Cinder CRD requires spec.messaging, and the "+
 				"ControlPlane derives the child's transport URL from the shared bus"))
 	}
 	return allErrs
@@ -1510,6 +1777,130 @@ func warnInsecureNeutronPublicEndpoint(cp *ControlPlane) admission.Warnings {
 	)}
 }
 
+// validateCinderPublicEndpoint enforces the rules on
+// services.cinder.publicEndpoint that the CRD markers cannot express. The value
+// is the origin the public block-storage catalog Endpoint is registered under:
+// the URL every client resolves to create its volumes, and sends its scoped
+// Keystone token (X-Auth-Token) to. It is projected into no child CR, so no
+// downstream webhook re-checks it: whatever admission accepts here is what lands
+// in the Keystone catalog.
+//
+//   - Shape, as defense-in-depth alongside the ^https?:// Pattern marker:
+//     "https://" alone matches the pattern and stays under the 512-byte cap, yet
+//     registers a hostless URL no client can resolve.
+//   - A bare origin, with no path, query or fragment. The Pattern marker anchors
+//     only the prefix, so "https://cinder.example.com?utm=1" is schema-legal; the
+//     ControlPlane appends the API version to what it registers, yielding
+//     "https://cinder.example.com?utm=1/v3" and a 404 on every volume call. A
+//     single trailing slash is tolerated: OpenStack clients normalize the catalog
+//     endpoint before appending.
+//   - With a gateway configured the listener terminates TLS, so the externally
+//     observed scheme is https, the same rule the Glance public endpoint applies.
+//     An http endpoint is also a token leak: the scoped Keystone token rides every
+//     volume call, and a compute service attaches a volume over the same catalog
+//     entry for every instance it boots from one.
+//   - With a gateway configured the host must equal gateway.hostname. The Gateway
+//     listener is what routes that hostname to the Cinder Service, so a divergent
+//     host advertises an endpoint that never reaches the API, failing client-side
+//     with no status condition and no admission error naming the cause. The port
+//     may still differ: Gateway API hostnames carry none, so an API published off
+//     443 has to spell the port out here.
+func validateCinderPublicEndpoint(cdPath *field.Path, cd *ServiceCinderSpec) field.ErrorList {
+	if cd.PublicEndpoint == "" {
+		return nil
+	}
+	pePath := cdPath.Child("publicEndpoint")
+	u, err := validateHTTPURL(pePath, cd.PublicEndpoint)
+	if err != nil {
+		return field.ErrorList{err}
+	}
+
+	var errs field.ErrorList
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		errs = append(errs, field.Invalid(pePath, cd.PublicEndpoint,
+			"must be a bare origin (scheme://host[:port]) with no path, query, or fragment: the ControlPlane "+
+				"appends /v3 when it registers the block-storage catalog endpoint"))
+	}
+
+	g := cd.Gateway
+	if g == nil || g.Hostname == "" {
+		return errs
+	}
+
+	if u.Scheme != "https" {
+		errs = append(errs, field.Invalid(pePath, cd.PublicEndpoint,
+			"scheme must be https when services.cinder.gateway is configured (the Gateway listener terminates "+
+				"TLS): every volume call sends the caller's scoped Keystone token to this endpoint"))
+	}
+	if u.Hostname() != g.Hostname {
+		errs = append(errs, field.Invalid(pePath, cd.PublicEndpoint,
+			fmt.Sprintf("host %q must equal services.cinder.gateway.hostname %q: the Gateway listener routes that "+
+				"hostname to the Cinder API, so the catalog would direct clients to a host that never reaches it",
+				u.Hostname(), g.Hostname)))
+	}
+	return errs
+}
+
+// warnInsecureCinderPublicEndpoint surfaces a cleartext block-storage endpoint
+// that validateCinderPublicEndpoint cannot reject: without a gateway Cinder is
+// published by some other means, and a plain-http endpoint is a legal, if unwise,
+// development setup that the ^https?:// CRD Pattern deliberately allows. The
+// downgrade must never be silent, though: every volume call carries the caller's
+// scoped Keystone token to this URL, and that bearer token grants the caller's
+// full API privileges, not just block-storage access.
+func warnInsecureCinderPublicEndpoint(cp *ControlPlane) admission.Warnings {
+	cd := cp.Spec.Services.Cinder
+	if cd == nil || cd.PublicEndpoint == "" {
+		return nil
+	}
+	if u, err := url.Parse(cd.PublicEndpoint); err != nil || u.Scheme != "http" {
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"spec.services.cinder.publicEndpoint %q uses http://: it is advertised as the public block-storage "+
+			"catalog endpoint, so every volume call would deliver the caller's scoped Keystone token in "+
+			"cleartext. Use https://.",
+		cd.PublicEndpoint,
+	)}
+}
+
+// warnRemovedCinderBackends surfaces a services.cinder.backends entry an update
+// drops. Dropping the whole services.cinder block is gated behind
+// cinderDeletionAllowedAnnotation, but dropping one entry out of it is not: the
+// next pass prunes that entry's CinderBackend, the cinder operator stops its
+// cinder-volume Deployment and unregisters the volume service, and every volume
+// whose host is that backend is left with nothing managing it — attach, extend,
+// snapshot and delete all fail — while the plane keeps reporting CinderReady=True
+// off the backends that remain.
+//
+// It is a warning rather than an error because the removal is legitimate once the
+// backend is drained, and because re-adding the entry under the same name restores
+// the host identity the volumes are keyed by.
+func warnRemovedCinderBackends(oldObj, newObj *ControlPlane) admission.Warnings {
+	oldCinder, newCinder := oldObj.Spec.Services.Cinder, newObj.Spec.Services.Cinder
+	if oldCinder == nil || newCinder == nil {
+		return nil
+	}
+	kept := make(map[string]struct{}, len(newCinder.Backends))
+	for i := range newCinder.Backends {
+		kept[newCinder.Backends[i].Name] = struct{}{}
+	}
+	var warnings admission.Warnings
+	for i := range oldCinder.Backends {
+		name := oldCinder.Backends[i].Name
+		if _, ok := kept[name]; ok {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"spec.services.cinder.backends entry %q is removed: its CinderBackend is pruned and its "+
+				"cinder-volume service unregistered, leaving every volume on that backend unmanageable "+
+				"until the entry is restored under the same name.",
+			name,
+		))
+	}
+	return warnings
+}
+
 // externalAuthURLIsPlaintext reports whether raw is an http:// (non-TLS) endpoint.
 // A parse failure reads as false: validateHTTPURL already rejects those on the same
 // field, and a second error on it would only add noise.
@@ -1638,6 +2029,7 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	for _, ns := range []*ServiceNamespaceSpec{
 		keystoneNamespaceBlock(obj), horizonNamespaceBlock(obj), glanceNamespaceBlock(obj),
 		placementNamespaceBlock(obj), barbicanNamespaceBlock(obj), neutronNamespaceBlock(obj),
+		cinderNamespaceBlock(obj),
 	} {
 		if ns != nil && ns.Lifecycle == "" {
 			ns.Lifecycle = ServiceNamespaceLifecycleManaged
@@ -1785,6 +2177,20 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 				defaultCacheLeaves(cache, obj.Name+DedicatedNeutronCacheClusterRefSuffix)
 			}
 		}
+		if cd := cinderDedicatedBlock(obj); cd != nil {
+			if db := cd.Database; db != nil {
+				defaultDatabaseLeaves(db, obj.Name+DedicatedCinderDatabaseClusterRefSuffix)
+				// A dedicated MANAGED Cinder database is Static-only for the same
+				// reason the Keystone one is (see above): no per-instance OpenBao
+				// engine role exists. Materialize the mode; validate() rejects Dynamic.
+				if db.ClusterRef != nil && db.CredentialsMode == "" {
+					db.CredentialsMode = commonv1.CredentialsModeStatic
+				}
+			}
+			if cache := cd.Cache; cache != nil {
+				defaultCacheLeaves(cache, obj.Name+DedicatedCinderCacheClusterRefSuffix)
+			}
+		}
 
 		// The OVNCentral the network service programs defaults to the
 		// ControlPlane's own namespace, so a CR that names a central without
@@ -1880,6 +2286,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	allErrs = append(allErrs, validatePlacementChildName(obj)...)
 	allErrs = append(allErrs, validateBarbicanChildName(obj)...)
 	allErrs = append(allErrs, validateNeutronChildName(obj)...)
+	allErrs = append(allErrs, validateCinderChildName(obj)...)
 	allErrs = append(allErrs, ValidateNeutronOVNCentralNamespace(obj)...)
 	if err := newInvalidIfErrs(obj, allErrs); err != nil {
 		return warnings, err
@@ -1912,6 +2319,7 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	warnings := insecurePublicEndpointWarnings(newObj)
 	warnings = append(warnings, glanceImportFilteringWarnings(newObj)...)
 	warnings = append(warnings, warnDevelopmentBarbicanSecretStore(newObj)...)
+	warnings = append(warnings, warnRemovedCinderBackends(oldObj, newObj)...)
 
 	allErrs := w.validate(newObj)
 	allErrs = append(allErrs, validateImmutable(oldObj, newObj)...)
@@ -1949,6 +2357,9 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	}
 	if oldObj.Spec.Services.Neutron == nil {
 		allErrs = append(allErrs, validateNeutronChildName(newObj)...)
+	}
+	if oldObj.Spec.Services.Cinder == nil {
+		allErrs = append(allErrs, validateCinderChildName(newObj)...)
 	}
 
 	// The OVNCentral reach check re-runs only when this update is what enables the
@@ -2185,6 +2596,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validatePlacement(cp)...)
 	allErrs = append(allErrs, validateBarbican(cp)...)
 	allErrs = append(allErrs, validateNeutron(cp)...)
+	allErrs = append(allErrs, validateCinder(cp)...)
 	allErrs = append(allErrs, validateMessagingConsumers(cp)...)
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
 	allErrs = append(allErrs, validateServiceRegistrations(cp)...)
@@ -2231,6 +2643,9 @@ func declaredServiceNamespaces(cp *ControlPlane) []serviceNamespaceAssignment {
 	}
 	if ns := neutronNamespaceBlock(cp); ns != nil {
 		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("neutron", "namespace"), ns: ns})
+	}
+	if ns := cinderNamespaceBlock(cp); ns != nil {
+		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("cinder", "namespace"), ns: ns})
 	}
 	return out
 }
@@ -2364,6 +2779,12 @@ func declaredServiceTargetClusters(cp *ControlPlane) []serviceTargetClusterAssig
 		out = append(out, serviceTargetClusterAssignment{
 			path: svcPath.Child("neutron"), ref: nn.TargetClusterRef, ns: nn.Namespace,
 			catalog: true, published: nn.PublicEndpoint != "" || nn.Gateway != nil,
+		})
+	}
+	if cd := cp.Spec.Services.Cinder; cd != nil {
+		out = append(out, serviceTargetClusterAssignment{
+			path: svcPath.Child("cinder"), ref: cd.TargetClusterRef, ns: cd.Namespace,
+			catalog: true, published: cd.PublicEndpoint != "" || cd.Gateway != nil,
 		})
 	}
 	return out
@@ -2709,6 +3130,13 @@ func declaredDedicatedBackingServices(cp *ControlPlane) []dedicatedBackingServic
 			cache: nn.Cache,
 		})
 	}
+	if cd := cinderDedicatedBlock(cp); cd != nil {
+		out = append(out, dedicatedBackingServices{
+			path:  svcPath.Child("cinder", "dedicatedBackingServices"),
+			db:    cd.Database,
+			cache: cd.Cache,
+		})
+	}
 	return out
 }
 
@@ -2862,6 +3290,9 @@ func validateServiceCredentialsModeOverrides(cp *ControlPlane) field.ErrorList {
 	}
 	if nn := cp.Spec.Services.Neutron; nn != nil {
 		check("neutron", nn.DatabaseCredentialsMode, cp.DedicatedNeutronDatabase())
+	}
+	if cd := cp.Spec.Services.Cinder; cd != nil {
+		check("cinder", cd.DatabaseCredentialsMode, cp.DedicatedCinderDatabase())
 	}
 
 	return allErrs
@@ -3034,6 +3465,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 		if cp.Spec.Services.Neutron != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "neutron"),
 				"forbidden when services.keystone.mode is External (Neutron needs its own External-mode design)"))
+		}
+		if cp.Spec.Services.Cinder != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "cinder"),
+				"forbidden when services.keystone.mode is External (Cinder needs its own External-mode design)"))
 		}
 
 		return allErrs
@@ -3574,6 +4009,18 @@ func validateDedicatedBackingServicesImmutable(oldObj, newObj *ControlPlane) fie
 		}
 	}
 
+	if serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Cinder != nil, "cinder") {
+		cdPath := svcPath.Child("cinder", "dedicatedBackingServices")
+		oldCD := cinderDedicatedBlock(oldObj)
+		newCD := cinderDedicatedBlock(newObj)
+		if (oldCD == nil) != (newCD == nil) {
+			allErrs = append(allErrs, field.Invalid(cdPath, newCD, dedicatedTransitionMessage))
+		} else if oldCD != nil && newCD != nil {
+			allErrs = append(allErrs, validateDedicatedDatabase(cdPath.Child("database"), oldCD.Database, newCD.Database)...)
+			allErrs = append(allErrs, validateDedicatedCache(cdPath.Child("cache"), oldCD.Cache, newCD.Cache)...)
+		}
+	}
+
 	return allErrs
 }
 
@@ -3683,6 +4130,9 @@ func validateServiceNamespacesImmutable(oldObj, newObj *ControlPlane) field.Erro
 	freeze(svcPath.Child("neutron", "namespace"),
 		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Neutron != nil, "neutron"),
 		neutronNamespaceBlock(oldObj), neutronNamespaceBlock(newObj))
+	freeze(svcPath.Child("cinder", "namespace"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Cinder != nil, "cinder"),
+		cinderNamespaceBlock(oldObj), cinderNamespaceBlock(newObj))
 
 	return allErrs
 }
@@ -3738,6 +4188,9 @@ func validateServiceTargetClustersImmutable(oldObj, newObj *ControlPlane) field.
 	freeze(svcPath.Child("neutron", "targetClusterRef"),
 		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Neutron != nil, "neutron"),
 		oldObj.NeutronTargetClusterRef(), newObj.NeutronTargetClusterRef())
+	freeze(svcPath.Child("cinder", "targetClusterRef"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Cinder != nil, "cinder"),
+		oldObj.CinderTargetClusterRef(), newObj.CinderTargetClusterRef())
 
 	return allErrs
 }

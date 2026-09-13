@@ -5,6 +5,7 @@ go 1.26.6
 require (
 	github.com/c5c3/cobaltcore/internal/common v0.0.0
 	github.com/c5c3/cobaltcore/operators/barbican v0.0.0-00010101000000-000000000000
+	github.com/c5c3/cobaltcore/operators/cinder v0.0.0-00010101000000-000000000000
 	github.com/c5c3/cobaltcore/operators/glance v0.0.0-00010101000000-000000000000
 	github.com/c5c3/cobaltcore/operators/horizon v0.0.0-00010101000000-000000000000
 	github.com/c5c3/cobaltcore/operators/keystone v0.0.0-00010101000000-000000000000
@@ -98,6 +99,8 @@ require (
 replace github.com/c5c3/cobaltcore/internal/common => ../../internal/common
 
 replace github.com/c5c3/cobaltcore/operators/barbican => ../barbican
+
+replace github.com/c5c3/cobaltcore/operators/cinder => ../cinder
 
 replace github.com/c5c3/cobaltcore/operators/glance => ../glance
 
