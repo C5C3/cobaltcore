@@ -93,7 +93,12 @@ const (
 	// drive: the projected Neutron child and the material it consumes, the shared
 	// bus delivered into the Neutron namespace among it. It is separate from
 	// conditionTypeOVNReady, which reports a central this plane only reads.
-	conditionTypeNeutronReady         = "NeutronReady"
+	conditionTypeNeutronReady = "NeutronReady"
+	// conditionTypeCinderReady covers the block-storage service the ControlPlane
+	// drives: the projected Cinder child, its CinderBackend and CinderBackupBackend
+	// satellites, and the material it consumes, the shared bus delivered into the
+	// Cinder namespace among it.
+	conditionTypeCinderReady          = "CinderReady"
 	conditionTypeKORCReady            = "KORCReady"
 	conditionTypeAdminCredentialReady = "AdminCredentialReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeAdminPasswordReady   = "AdminPasswordReady"   //nolint:gosec // G101 false positive: condition type name, not a credential.
