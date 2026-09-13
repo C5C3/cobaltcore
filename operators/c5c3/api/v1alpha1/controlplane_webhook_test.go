@@ -23,6 +23,7 @@ import (
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 )
@@ -8235,4 +8236,993 @@ func TestValidateUpdate_NeutronDeclaredInStatusFreezesTheNamespace(t *testing.T)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec.services.neutron.namespace"))
 	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+}
+
+// cinderControlPlane returns a managed ControlPlane carrying the minimal
+// admissible block-storage service: the brownfield bus the Cinder CRD requires
+// and the one volume backend services.cinder.backends cannot be empty of.
+func cinderControlPlane() *ControlPlane {
+	cp := managedControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+		SecretRef: &commonv1.SecretRefSpec{Name: "bus-url"},
+	}
+	cp.Spec.Services.Cinder = &ServiceCinderSpec{
+		Backends: []CinderBackendEntry{{
+			Name: "nfs1",
+			Type: "NFS",
+			NFS: &NFSShareSpec{
+				Server: "nfs-server.openstack.svc.cluster.local",
+				Path:   "/volumes",
+			},
+		}},
+	}
+	return cp
+}
+
+// TestDefault_CinderServiceNamespaceLifecycle verifies a declared cinder
+// namespace assignment takes the Managed lifecycle default, exactly as the
+// keystone/horizon/glance/placement/barbican/neutron ones do, and that no
+// assignment is invented for a service that declared none.
+func TestDefault_CinderServiceNamespaceLifecycle(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := cinderControlPlane()
+	cp.Spec.Services.Cinder.Namespace = &ServiceNamespaceSpec{Name: "block-storage"}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services.Cinder.Namespace.Lifecycle).To(Equal(ServiceNamespaceLifecycleManaged))
+
+	bare := cinderControlPlane()
+	g.Expect(w.Default(context.Background(), bare)).To(Succeed())
+	g.Expect(bare.Spec.Services.Cinder.Namespace).To(BeNil(),
+		"an absent assignment means the service stays in the ControlPlane's namespace")
+}
+
+// TestDefault_CinderDedicatedBackingServicesLeaves verifies a declared cinder
+// dedicated block takes the same leaf defaults as the shared one, with a managed
+// clusterRef name DERIVED from the ControlPlane and credentialsMode materialized
+// to Static (a dedicated managed database cannot draw engine-issued credentials).
+// A service that declares no dedicated block gets nothing.
+func TestDefault_CinderDedicatedBackingServicesLeaves(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := cinderControlPlane()
+	cp.Name = "prod"
+	cp.Spec.Services.Cinder.DedicatedBackingServices = &CinderDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{},
+		Cache:    &commonv1.CacheSpec{},
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	db := cp.Spec.Services.Cinder.DedicatedBackingServices.Database
+	g.Expect(db.ClusterRef).NotTo(BeNil())
+	g.Expect(db.ClusterRef.Name).To(Equal("prod" + DedicatedCinderDatabaseClusterRefSuffix))
+	g.Expect(db.Database).To(Equal(DefaultDatabaseName))
+	g.Expect(db.SecretRef.Name).To(Equal(DefaultDatabaseSecretName))
+	g.Expect(db.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic),
+		"a dedicated managed database is Static-only: no per-instance OpenBao engine role exists")
+
+	cache := cp.Spec.Services.Cinder.DedicatedBackingServices.Cache
+	g.Expect(cache.ClusterRef).NotTo(BeNil())
+	g.Expect(cache.ClusterRef.Name).To(Equal("prod" + DedicatedCinderCacheClusterRefSuffix))
+	g.Expect(cache.Backend).To(Equal(DefaultCacheBackend))
+
+	// Idempotent on the dedicated leaves too.
+	before := cp.DeepCopy()
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services).To(Equal(before.Spec.Services))
+
+	shared := cinderControlPlane()
+	g.Expect(w.Default(context.Background(), shared)).To(Succeed())
+	g.Expect(shared.Spec.Services.Cinder.DedicatedBackingServices).To(BeNil(),
+		"an absent block means the service shares the ControlPlane-wide instances")
+}
+
+// TestDefault_LeavesCinderBackendEntriesUntouched pins the leaves the defaulter
+// deliberately does not fill in. mountOptions, fileSize and compression carry the
+// satellite CRDs' own defaults, so materializing them here would freeze today's
+// values into the stored ControlPlane and apply the same default at two layers.
+// The image-volume cache is an opt-in, so inventing one would enable a feature
+// the operator did not ask for.
+func TestDefault_LeavesCinderBackendEntriesUntouched(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := cinderControlPlane()
+	cp.Spec.Services.Cinder.BackupBackend = &CinderBackupBackendEntry{
+		Name: "backup",
+		Type: "NFS",
+		NFS:  &NFSShareSpec{Server: "nfs-server.openstack.svc.cluster.local", Path: "/backups"},
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	backend := cp.Spec.Services.Cinder.Backends[0]
+	g.Expect(backend.NFS.MountOptions).To(BeEmpty())
+	g.Expect(backend.ImageVolumeCache).To(BeNil())
+
+	backup := cp.Spec.Services.Cinder.BackupBackend
+	g.Expect(backup.NFS.MountOptions).To(BeEmpty())
+	g.Expect(backup.FileSize).To(BeNil())
+	g.Expect(backup.Compression).To(BeEmpty())
+}
+
+// TestValidateCreate_AcceptsCinderControlPlane pins the admissible baseline and
+// the longest ControlPlane name the projected Cinder child still fits into.
+func TestValidateCreate_AcceptsCinderControlPlane(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("the minimal block beside a brownfield bus", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, err := w.ValidateCreate(context.Background(), cinderControlPlane())
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("a 36-character ControlPlane name", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Name = strings.Repeat("c", cinderv1alpha1.MaxCinderNameLength-cinderChildNameOverhead)
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateCreate_RejectsCinderInExternalMode verifies the webhook cross-field
+// forbid, mirroring services.neutron: no Keystone workload is deployed, so Cinder
+// has no identity to validate its tokens against.
+func TestValidateCreate_RejectsCinderInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Cinder = cinderControlPlane().Spec.Services.Cinder
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.cinder"))
+	g.Expect(err.Error()).To(ContainSubstring("forbidden when services.keystone.mode is External"))
+}
+
+// TestValidateCreate_RejectsCinderWithoutMessaging pins the bus prerequisite the
+// block-storage service shares with the network one. The Cinder CRD requires
+// spec.messaging, and the ControlPlane derives the child's transport URL from the
+// shared bus, so a ControlPlane that declares the service without one would
+// project a child its own admission rejects on every pass.
+func TestValidateCreate_RejectsCinderWithoutMessaging(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := cinderControlPlane()
+	cp.Spec.Infrastructure.Messaging = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure.messaging"))
+	g.Expect(err.Error()).To(ContainSubstring("is required when services.cinder is set"))
+}
+
+// TestValidateCinder_LeavesTheBusToMessagingConsumers pins where the bus rule
+// lives: validateCinder leaves spec.infrastructure.messaging to
+// validateMessagingConsumers, which the caller runs directly after it.
+func TestValidateCinder_LeavesTheBusToMessagingConsumers(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cinderControlPlane()
+	cp.Spec.Infrastructure.Messaging = nil
+
+	for _, err := range validateCinder(cp) {
+		g.Expect(err.Field).NotTo(Equal("spec.infrastructure.messaging"))
+	}
+}
+
+// TestValidateCreate_CinderPublicEndpointMustBeABareOrigin pins the origin shape
+// the CRD Pattern marker cannot express: the ControlPlane appends /v3 to what it
+// registers, so anything past the origin lands in the middle of the catalog URL.
+func TestValidateCreate_CinderPublicEndpointMustBeABareOrigin(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, endpoint := range map[string]string{
+		"query":        "https://cinder.example.com?utm=1",
+		"fragment":     "https://cinder.example.com#top",
+		"path":         "https://cinder.example.com/v3",
+		"missing host": "https://",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := cinderControlPlane()
+			cp.Spec.Services.Cinder.PublicEndpoint = endpoint
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.cinder.publicEndpoint"))
+		})
+	}
+
+	t.Run("trailing slash", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.PublicEndpoint = "https://cinder.example.com/"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(),
+			"clients normalize the catalog endpoint before appending the API path")
+	})
+}
+
+// TestValidateCreate_CinderPublicEndpointMustAgreeWithGateway pins the two
+// cross-field rules. An http endpoint behind a TLS-terminating listener ships the
+// caller's scoped Keystone token in cleartext on every volume call; a divergent
+// host advertises a catalog URL the Gateway listener never routes, which fails
+// client-side with nothing on the ControlPlane recording why.
+func TestValidateCreate_CinderPublicEndpointMustAgreeWithGateway(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	gateway := func() *commonv1.GatewaySpec {
+		return &commonv1.GatewaySpec{
+			Hostname:  "cinder.example.com",
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		}
+	}
+
+	t.Run("divergent host", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Gateway = gateway()
+		cp.Spec.Services.Cinder.PublicEndpoint = "https://volumes.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.cinder.publicEndpoint"))
+		g.Expect(err.Error()).To(ContainSubstring(
+			`must equal services.cinder.gateway.hostname "cinder.example.com"`,
+		))
+	})
+
+	t.Run("http scheme behind a TLS-terminating gateway", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Gateway = gateway()
+		cp.Spec.Services.Cinder.PublicEndpoint = "http://cinder.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("scheme must be https"))
+	})
+
+	t.Run("matching host with a non-default port", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Gateway = gateway()
+		cp.Spec.Services.Cinder.PublicEndpoint = "https://cinder.example.com:8776"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(),
+			"Gateway API hostnames carry no port, so the port is the reason the override exists")
+	})
+
+	t.Run("wildcard gateway hostname", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Gateway = gateway()
+		cp.Spec.Services.Cinder.Gateway.Hostname = "*.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.cinder.gateway.hostname"))
+	})
+
+	// The other arm of the same pair, mirroring the MinLength=1 marker on
+	// GatewaySpec.Hostname: a gateway without one derives a hostless public
+	// endpoint the catalog would register as "https://".
+	t.Run("gateway without a hostname", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Gateway = &commonv1.GatewaySpec{
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.cinder.gateway.hostname"))
+		g.Expect(err.Error()).To(ContainSubstring("must be set when a gateway is configured"))
+	})
+}
+
+// TestValidateCreate_WarnsOnCleartextCinderPublicEndpoint covers the gateway-less
+// block-storage service, where an http endpoint is a legal (if unwise)
+// development setup the CRD Pattern deliberately allows. Every volume call sends
+// a scoped Keystone token to that URL, so the downgrade must at least be
+// surfaced.
+func TestValidateCreate_WarnsOnCleartextCinderPublicEndpoint(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("http warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.PublicEndpoint = "http://cinder.example.com"
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveLen(1))
+		g.Expect(warnings[0]).To(ContainSubstring("scoped Keystone token"))
+	})
+
+	t.Run("https is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.PublicEndpoint = "https://cinder.example.com"
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(BeEmpty())
+	})
+}
+
+// TestValidateUpdate_WarnsOnRemovedCinderBackend covers the entry-level
+// counterpart of the c5c3.io/allow-cinder-deletion gate: dropping one backends
+// entry is not annotation-gated, and the prune that follows unregisters the
+// backend's cinder-volume service, so every volume keyed to that host is left
+// unmanageable while the plane keeps reporting CinderReady=True.
+func TestValidateUpdate_WarnsOnRemovedCinderBackend(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("a dropped entry warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := cinderControlPlane()
+		oldCP.Spec.Services.Cinder.Backends = append(oldCP.Spec.Services.Cinder.Backends, CinderBackendEntry{
+			Name: "nfs2",
+			Type: "NFS",
+			NFS:  &NFSShareSpec{Server: "nfs-server.openstack.svc.cluster.local", Path: "/volumes2"},
+		})
+		newCP := cinderControlPlane()
+
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveLen(1))
+		g.Expect(warnings[0]).To(ContainSubstring(`entry "nfs2" is removed`))
+		g.Expect(warnings[0]).To(ContainSubstring("unmanageable"))
+	})
+
+	t.Run("keeping every entry is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := cinderControlPlane()
+		newCP := cinderControlPlane()
+		newCP.Spec.Services.Cinder.Backends[0].NFS.Path = "/volumes-moved"
+
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(BeEmpty())
+	})
+
+	t.Run("dropping the whole block is the annotation gate's business", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := cinderControlPlane()
+		newCP := cinderControlPlane()
+		newCP.Spec.Services.Cinder = nil
+
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(BeEmpty())
+	})
+}
+
+// TestValidateCreate_RejectsCinderImageTagDigestXOR pins the defense-in-depth
+// mirror of the commonv1.ImageSpec XValidation rule for callers that bypass CRD
+// schema admission.
+func TestValidateCreate_RejectsCinderImageTagDigestXOR(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, img := range map[string]*commonv1.ImageSpec{
+		"neither tag nor digest": {Repository: "ghcr.io/c5c3/cinder"},
+		"both tag and digest": {
+			Repository: "ghcr.io/c5c3/cinder",
+			Tag:        "2025.2",
+			Digest:     "sha256:" + strings.Repeat("a", 64),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := cinderControlPlane()
+			cp.Spec.Services.Cinder.Image = img
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.cinder.image"))
+			g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest must be set"))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsCinderCredentialsModeOverrideDynamicOnDedicated is the
+// cinder mirror of the keystone dedicated-database rejection: the override
+// retargets the shared database the service does not use, and a dedicated
+// database is Static-only.
+func TestValidateCreate_RejectsCinderCredentialsModeOverrideDynamicOnDedicated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := cinderControlPlane()
+	cp.Spec.Services.Cinder.DatabaseCredentialsMode = commonv1.CredentialsModeDynamic
+	cp.Spec.Services.Cinder.DedicatedBackingServices = &CinderDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef:      &corev1.LocalObjectReference{Name: "cp-cinder-db"},
+			CredentialsMode: commonv1.CredentialsModeStatic,
+			Database:        "cinder",
+			SecretRef:       commonv1.SecretRefSpec{Name: "cinder-db"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.cinder.databaseCredentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring(
+		"not supported as an override on a service with a dedicated database",
+	))
+}
+
+// TestValidateCreate_RejectsCinderCredentialsModeOverrideDynamicOnBrownfieldShared
+// pins the other half of the override rule: the dynamic engine issues per-tenant
+// DB users only against a cluster the operator provisions, so a Dynamic override
+// on a brownfield shared database is rejected.
+func TestValidateCreate_RejectsCinderCredentialsModeOverrideDynamicOnBrownfieldShared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := cinderControlPlane()
+	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		Host:      "db.example.com",
+		Port:      3306,
+		Database:  "openstack",
+		SecretRef: commonv1.SecretRefSpec{Name: "db-creds"},
+	}
+	cp.Spec.Services.Cinder.DatabaseCredentialsMode = commonv1.CredentialsModeDynamic
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.cinder.databaseCredentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring(
+		"Dynamic requires the shared database to be managed (clusterRef)",
+	))
+}
+
+// placedCinderControlPlane returns a ControlPlane whose block-storage service is
+// placed on the "edge" cluster in a namespace of its own, advertising nothing.
+// Keystone is published because a service placed away from it validates its
+// tokens over that URL.
+func placedCinderControlPlane() *ControlPlane {
+	cp := cinderControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Cinder.Namespace = &ServiceNamespaceSpec{
+		Name: "block-storage", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Cinder.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+	publishKeystone(cp)
+	return cp
+}
+
+// TestValidateCreate_RejectsPlacedCinderWithoutNamespace pins the
+// dedicated-namespace rule for the block-storage service: a namespace maps to
+// exactly one cluster, and the ControlPlane's own stays on the local one, so a
+// Cinder placed elsewhere without a namespace of its own would have its database,
+// its tenant store, and its credential material provisioned on a cluster its
+// workload does not run on.
+func TestValidateCreate_RejectsPlacedCinderWithoutNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := placedCinderControlPlane()
+	cp.Spec.Services.Cinder.PublicEndpoint = "https://cinder.example.com"
+	cp.Spec.Services.Cinder.Namespace = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.namespace"))
+	g.Expect(err.Error()).To(ContainSubstring("a placed service needs a namespace of its own"))
+}
+
+// TestValidateCreate_RejectsPlacedCinderUnpublished pins the reachability rule for
+// the block-storage catalog entry: what the ControlPlane registers for an
+// unpublished service is its in-cluster Service DNS name, which resolves nowhere
+// outside the cluster the service runs on. Either publication satisfies it.
+func TestValidateCreate_RejectsPlacedCinderUnpublished(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("neither publicEndpoint nor gateway", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, err := w.ValidateCreate(context.Background(), placedCinderControlPlane())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.publicEndpoint"))
+		g.Expect(err.Error()).To(ContainSubstring(
+			"one of publicEndpoint or gateway is required when targetClusterRef is set"))
+	})
+
+	t.Run("a publicEndpoint satisfies it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placedCinderControlPlane()
+		cp.Spec.Services.Cinder.PublicEndpoint = "https://cinder.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("a gateway satisfies it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placedCinderControlPlane()
+		cp.Spec.Services.Cinder.Gateway = placedGateway("cinder.example.com")
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// The projected Cinder child is bounded far below the 253-byte object-name cap:
+// the Cinder CRD caps metadata.name at 43 characters, because the cinder operator
+// appends "-db-purge" for the purge CronJob and Kubernetes caps CronJob names at
+// 52. Without this guard the ControlPlane admits and the projection then fails to
+// apply the child on every pass, with metadata.name immutable, so recovery means
+// recreating the whole control plane.
+func TestValidateCreate_RejectsOverlongProjectedCinderChildName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	maxCPName := cinderv1alpha1.MaxCinderNameLength - cinderChildNameOverhead
+
+	atLimit := cinderControlPlane()
+	atLimit.Name = strings.Repeat("c", maxCPName)
+	_, err := w.ValidateCreate(context.Background(), atLimit)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a name whose projected Cinder child still fits must be accepted")
+
+	tooLong := cinderControlPlane()
+	tooLong.Name = strings.Repeat("c", maxCPName+1)
+	_, err = w.ValidateCreate(context.Background(), tooLong)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("projected Cinder child CR name would be 44 characters"))
+	g.Expect(err.Error()).To(ContainSubstring("must be at most 36 characters"))
+
+	// Without services.cinder no Cinder child is projected, so the bound does not
+	// apply and the ControlPlane keeps the full 253-byte budget.
+	noCinder := cinderControlPlane()
+	noCinder.Name = strings.Repeat("c", maxCPName+1)
+	noCinder.Spec.Services.Cinder = nil
+	_, err = w.ValidateCreate(context.Background(), noCinder)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// Enabling Cinder on an existing over-long ControlPlane is the one update that can
+// newly violate the bound, so it is rejected; every other update on a CR that
+// already carried Cinder must still pass, the finalizer removal that completes
+// its deletion included, because metadata.name is immutable and a rejection
+// would wedge it in Terminating.
+func TestValidateUpdate_ProjectedCinderChildNameBoundIsNewlyEnabledOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	overlong := strings.Repeat("c", cinderv1alpha1.MaxCinderNameLength-cinderChildNameOverhead+1)
+	// A three-character backend name keeps the composed CinderBackend bound, which
+	// every update re-runs, within its 47 bytes, so what these cases measure is the
+	// child-name bound alone.
+	planeAt := func(name string) *ControlPlane {
+		cp := cinderControlPlane()
+		cp.Name = name
+		cp.Spec.Services.Cinder.Backends[0].Name = "nfs"
+		return cp
+	}
+
+	withoutCinder := planeAt(overlong)
+	withoutCinder.Spec.Services.Cinder = nil
+	enabling := planeAt(overlong)
+
+	_, err := w.ValidateUpdate(context.Background(), withoutCinder, enabling)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("projected Cinder child CR name would be"))
+
+	grandfathered := planeAt(overlong)
+	grandfathered.Finalizers = []string{"c5c3.io/finalizer"}
+	deleting := grandfathered.DeepCopy()
+	deleting.Finalizers = nil
+
+	_, err = w.ValidateUpdate(context.Background(), grandfathered, deleting)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an over-long grandfathered ControlPlane must stay updatable, or its deletion never completes")
+}
+
+// TestValidateUpdate_RejectsCinderNamespaceChange pins the create-only freeze on
+// the cinder namespace assignment.
+func TestValidateUpdate_RejectsCinderNamespaceChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := cinderControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Cinder.Namespace = &ServiceNamespaceSpec{
+		Name: "block-storage", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Cinder.Namespace.Name = "block-storage-2"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.namespace.name"))
+	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+}
+
+// TestValidateUpdate_RejectsDroppingACinderNamespaceAssignment pins that the
+// declared-before carve-out does not weaken the move freeze: a live Cinder still
+// cannot shed its namespace assignment, since everything scoped to that namespace
+// stays where it is.
+func TestValidateUpdate_RejectsDroppingACinderNamespaceAssignment(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := cinderControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Cinder.Namespace = &ServiceNamespaceSpec{
+		Name: "block-storage", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Cinder.Namespace = nil
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+}
+
+// TestValidateUpdate_RejectsCinderDedicatedPresenceFlip pins the transition freeze
+// on the cinder dedicated block: a live service cannot be moved between shared and
+// dedicated backing services.
+func TestValidateUpdate_RejectsCinderDedicatedPresenceFlip(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := cinderControlPlane()
+	newCP := cinderControlPlane()
+	newCP.Spec.Services.Cinder.DedicatedBackingServices = &CinderDedicatedBackingServicesSpec{
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-cinder-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+		},
+	}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
+	g.Expect(err.Error()).To(ContainSubstring("cinder.dedicatedBackingServices"))
+}
+
+// TestValidateUpdate_RejectsCinderTargetClusterChange pins the create-only freeze
+// on the cinder placement: re-pointing a live service strands its workload, its
+// database, and the material in its tenant store on the cluster it came from.
+func TestValidateUpdate_RejectsCinderTargetClusterChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := placedCinderControlPlane()
+	oldCP.Spec.Services.Cinder.PublicEndpoint = "https://cinder.example.com"
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Cinder.TargetClusterRef.Name = "core"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.targetClusterRef.name"))
+	g.Expect(err.Error()).To(ContainSubstring("targetClusterRef is immutable"))
+}
+
+// TestValidateUpdate_AcceptsAddingCinderInADedicatedNamespace pins the
+// declared-before carve-out for the block-storage service: assigning a namespace
+// to a service the ControlPlane did not declare before is that service's create,
+// so there is no live workload and no credential material stranded in an old
+// namespace for the move freeze to protect.
+func TestValidateUpdate_AcceptsAddingCinderInADedicatedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := cinderControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Cinder = nil
+
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Cinder = cinderControlPlane().Spec.Services.Cinder
+	newCP.Spec.Services.Cinder.Namespace = &ServiceNamespaceSpec{
+		Name: "block-storage", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateUpdate_CinderDeclaredInStatusFreezesTheNamespace pins that the
+// carve-out keys on status.services too, not on the old spec alone: a Cinder
+// dropped from spec keeps its projected child until the operator observes the
+// drop, so re-adding it in a namespace of its own inside that window is the move
+// the freeze forbids.
+func TestValidateUpdate_CinderDeclaredInStatusFreezesTheNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := cinderControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Cinder = nil
+	oldCP.Status.Services = []ServiceStatus{
+		{Name: "keystone", Ready: true},
+		{Name: "cinder", Ready: true},
+	}
+
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Cinder = cinderControlPlane().Spec.Services.Cinder
+	newCP.Spec.Services.Cinder.Namespace = &ServiceNamespaceSpec{
+		Name: "block-storage", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.namespace"))
+	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+}
+
+// TestValidateCreate_RejectsEmptyCinderBackends pins the MinItems mirror: a Cinder
+// with no volume backend accepts a volume request and leaves it in error, so the
+// block-storage service cannot be declared without one.
+func TestValidateCreate_RejectsEmptyCinderBackends(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := cinderControlPlane()
+	cp.Spec.Services.Cinder.Backends = []CinderBackendEntry{}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one backend"))
+}
+
+// TestValidateCreate_RejectsCinderBackendUnionViolations pins the type/nfs union
+// and the export leaves an NFS backend cannot mount without, both mirrored as
+// defense-in-depth for callers that bypass CRD schema admission.
+func TestValidateCreate_RejectsCinderBackendUnionViolations(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("type NFS without an nfs block", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Backends[0].NFS = nil
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends[0]"))
+		g.Expect(err.Error()).To(ContainSubstring("the nfs block must be set exactly when type is NFS"))
+	})
+
+	t.Run("an nfs block without the type", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Backends[0].Type = ""
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends[0]"))
+		g.Expect(err.Error()).To(ContainSubstring("the nfs block must be set exactly when type is NFS"))
+	})
+
+	t.Run("an export without a server", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Backends[0].NFS.Server = ""
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends[0].nfs.server"))
+		g.Expect(err.Error()).To(ContainSubstring("must be set"))
+	})
+
+	t.Run("an export without a path", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Backends[0].NFS.Path = ""
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends[0].nfs.path"))
+		g.Expect(err.Error()).To(ContainSubstring("must be set"))
+	})
+}
+
+// TestValidateCreate_RejectsCinderNFSInjection pins the Pattern half of the
+// NFSShareSpec mirror, the half that stops a value from adding a line of its own
+// to the shares and mount configuration the satellite renders. These shapes are
+// rejected by the CRD schema too; the mirror is what names the field for a caller
+// that reaches a current operator through a stale CRD copy, instead of admitting
+// the plane and wedging it on the satellite webhook's rejection.
+func TestValidateCreate_RejectsCinderNFSInjection(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, tc := range map[string]struct {
+		mutate func(*NFSShareSpec)
+		field  string
+		reason string
+	}{
+		"a server carrying a mount option": {
+			mutate: func(nfs *NFSShareSpec) { nfs.Server = "nfs.example.com -o ro" },
+			field:  "spec.services.cinder.backends[0].nfs.server",
+			reason: "it reaches the mount command verbatim",
+		},
+		"a path appending a second export": {
+			mutate: func(nfs *NFSShareSpec) { nfs.Path = "/exports/a\n1.2.3.4:/attacker" },
+			field:  "spec.services.cinder.backends[0].nfs.path",
+			reason: "cinder reads back a line at a time",
+		},
+		"a path carrying a space": {
+			mutate: func(nfs *NFSShareSpec) { nfs.Path = "/exports/a b" },
+			field:  "spec.services.cinder.backends[0].nfs.path",
+			reason: "cinder reads back a line at a time",
+		},
+		"a relative path": {
+			mutate: func(nfs *NFSShareSpec) { nfs.Path = "exports/a" },
+			field:  "spec.services.cinder.backends[0].nfs.path",
+			reason: "must be an absolute path",
+		},
+		"mount options dividing the option line": {
+			mutate: func(nfs *NFSShareSpec) { nfs.MountOptions = "soft\nrw" },
+			field:  "spec.services.cinder.backends[0].nfs.mountOptions",
+			reason: "it would divide the rendered option line",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := cinderControlPlane()
+			tc.mutate(cp.Spec.Services.Cinder.Backends[0].NFS)
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.field))
+			g.Expect(err.Error()).To(ContainSubstring(tc.reason))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsCinderBackupNFSInjection walks the same mirror on the
+// backup driver's export, which shares the NFSShareSpec shape with the volume
+// backends and is rendered the same way.
+func TestValidateCreate_RejectsCinderBackupNFSInjection(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := cinderControlPlane()
+	cp.Spec.Services.Cinder.BackupBackend = &CinderBackupBackendEntry{
+		Name: "backup",
+		Type: "NFS",
+		NFS: &NFSShareSpec{
+			Server: "nfs-server.openstack.svc.cluster.local",
+			Path:   "/backups\n1.2.3.4:/attacker",
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backupBackend.nfs.path"))
+	g.Expect(err.Error()).To(ContainSubstring("cinder reads back a line at a time"))
+}
+
+// TestValidateCreate_RejectsCinderBackendNamedDefault pins the one backend name
+// cinder.conf reserves: [DEFAULT] holds the service-wide options, so a backend of
+// that name would have its driver options read as service-wide ones. The
+// comparison is case-insensitive, the way cinder reads the section name.
+func TestValidateCreate_RejectsCinderBackendNamedDefault(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for _, name := range []string{"default", "DEFAULT"} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := cinderControlPlane()
+			cp.Spec.Services.Cinder.Backends[0].Name = name
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends[0].name"))
+			g.Expect(err.Error()).To(ContainSubstring("it names cinder.conf's [DEFAULT] section"))
+		})
+	}
+}
+
+// TestValidateCreate_CinderBackendNameBoundIs47Bytes pins the budget the
+// ControlPlane name and the backend name share. Detaching a backend runs a
+// "<cinder>-<backend>-service-remove" Job whose name is copied into a label value,
+// which Kubernetes caps at 63 characters, leaving the two names 47 between them.
+func TestValidateCreate_CinderBackendNameBoundIs47Bytes(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	// 29 characters, so the projected Cinder eats 36 of the 47 and leaves 11.
+	const cpName = "cp-cinder-backend-bound-xxxxx"
+
+	t.Run("one byte over", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Name = cpName
+		cp.Spec.Services.Cinder.Backends[0].Name = "share-twelve"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends[0].name"))
+		g.Expect(err.Error()).To(ContainSubstring("service-remove Job name"))
+		g.Expect(err.Error()).To(ContainSubstring("at or below 47"))
+	})
+
+	t.Run("exactly at the budget", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Name = cpName
+		cp.Spec.Services.Cinder.Backends[0].Name = "share-elevn"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateCreate_RejectsCinderBackupBackendUnionAndEnum pins the backup
+// backend's own shapes: the type/nfs union it shares with a volume backend, the
+// chunk size cinder hashes in 32768-byte blocks, and the compression enum.
+func TestValidateCreate_RejectsCinderBackupBackendUnionAndEnum(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	backupBackend := func() *CinderBackupBackendEntry {
+		return &CinderBackupBackendEntry{
+			Name: "backup",
+			Type: "NFS",
+			NFS:  &NFSShareSpec{Server: "nfs-server.openstack.svc.cluster.local", Path: "/backups"},
+		}
+	}
+
+	t.Run("type NFS without an nfs block", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.BackupBackend = backupBackend()
+		cp.Spec.Services.Cinder.BackupBackend.NFS = nil
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backupBackend"))
+		g.Expect(err.Error()).To(ContainSubstring("the nfs block must be set exactly when type is NFS"))
+	})
+
+	t.Run("an export without a server", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.BackupBackend = backupBackend()
+		cp.Spec.Services.Cinder.BackupBackend.NFS.Server = ""
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backupBackend.nfs.server"))
+		g.Expect(err.Error()).To(ContainSubstring("must be set"))
+	})
+
+	t.Run("an unsupported compression algorithm", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.BackupBackend = backupBackend()
+		cp.Spec.Services.Cinder.BackupBackend.Compression = "gzip"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backupBackend.compression"))
+		g.Expect(err.Error()).To(ContainSubstring(`supported values: "none", "zlib", "bz2", "zstd"`))
+	})
+
+	t.Run("a chunk size below the floor", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.BackupBackend = backupBackend()
+		cp.Spec.Services.Cinder.BackupBackend.FileSize = ptr.To(int64(1048575))
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backupBackend.fileSize"))
+		g.Expect(err.Error()).To(ContainSubstring("must be at least 1048576 bytes (1 MiB)"))
+	})
+
+	t.Run("a chunk size off the block size", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.BackupBackend = backupBackend()
+		cp.Spec.Services.Cinder.BackupBackend.FileSize = ptr.To(int64(1048577))
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backupBackend.fileSize"))
+		g.Expect(err.Error()).To(ContainSubstring("must be a multiple of 32768"))
+	})
+
+	t.Run("the smallest admissible chunk size with zstd", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.BackupBackend = backupBackend()
+		cp.Spec.Services.Cinder.BackupBackend.FileSize = ptr.To(int64(1048576))
+		cp.Spec.Services.Cinder.BackupBackend.Compression = "zstd"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
 }
