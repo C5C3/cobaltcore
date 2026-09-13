@@ -17,6 +17,8 @@
 #   - The rendered barbican.conf carries the vault plugin's approle_role_id and
 #     NOT its approle_secret_id, and the rendered paste file has the pre-2026.1
 #     shape (repoze.profile pipeline present, oslo request_id filter absent)
+#   - The rendered barbican.conf carries [oslo_policy]
+#     enforce_new_defaults = true and no enforce_scope
 #   - The Barbican API answers /healthcheck with 200 from inside the API pod
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -237,6 +239,10 @@ spec:
   # asserted in step 3. An approle_secret_id line anywhere in the document means
   # the secret ID gained a second copy the store controller does not own.
   #
+  # The [oslo_policy] greps pin the secure-RBAC posture the operator renders for
+  # every Barbican: enforce_new_defaults = true. No enforce_scope line appears
+  # because the operator leaves that option at barbican's default.
+  #
   # The paste greps pin the 2025.2 file shape: the repoze.profile pipeline that
   # upstream dropped in 2026.1 is present, and the oslo request_id filter that
   # arrived with it is not. The 2026-1 variant of this suite asserts the
@@ -267,6 +273,14 @@ spec:
             exit 1
           fi
           echo "OK: $SEC renders approle_role_id in [vault_plugin] and no approle_secret_id"
+          awk '/^\[oslo_policy\]$/{f=1;next} /^\[/{f=0} f' /tmp/barbican-basic.conf \
+            > /tmp/barbican-basic-oslo-policy.ini
+          grep -q '^enforce_new_defaults = true$' /tmp/barbican-basic-oslo-policy.ini
+          if grep -q '^enforce_scope' /tmp/barbican-basic-oslo-policy.ini; then
+            echo "ERROR: barbican.conf renders enforce_scope; the operator leaves it at barbican's default"
+            exit 1
+          fi
+          echo "OK: $SEC renders enforce_new_defaults = true in [oslo_policy] and no enforce_scope"
           grep -q '^\[pipeline:barbican-profile\]$' /tmp/barbican-basic-paste.ini
           if grep -q '^\[filter:request_id\]$' /tmp/barbican-basic-paste.ini; then
             echo "ERROR: barbican-api-paste.ini carries the 2026.1 request_id filter"
