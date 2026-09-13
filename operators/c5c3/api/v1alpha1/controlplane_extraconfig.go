@@ -15,6 +15,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/config"
 	"github.com/c5c3/cobaltcore/internal/common/release"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -117,6 +118,7 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 	placementPath := specPath.Child("services", "placement", "extraConfig")
 	barbicanPath := specPath.Child("services", "barbican", "extraConfig")
 	neutronPath := specPath.Child("services", "neutron", "extraConfig")
+	cinderPath := specPath.Child("services", "cinder", "extraConfig")
 	horizonPath := specPath.Child("services", "horizon", "extraConfig")
 
 	// --- Shape checks -----------------------------------------------------
@@ -135,6 +137,9 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 	}
 	if nn := cp.Spec.Services.Neutron; nn != nil {
 		errs = append(errs, validateINIShape(neutronPath, nn.ExtraConfig)...)
+	}
+	if cd := cp.Spec.Services.Cinder; cd != nil {
+		errs = append(errs, validateINIShape(cinderPath, cd.ExtraConfig)...)
 	}
 	if hz := cp.Spec.Services.Horizon; hz != nil {
 		for name := range hz.ExtraConfig {
@@ -282,6 +287,51 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 		}
 	}
 
+	// --- Cinder merged-result ownership -----------------------------------
+	if cd := cp.Spec.Services.Cinder; cd != nil {
+		blocks := []iniBlock{{cp.Spec.GlobalExtraConfig, globalPath}, {cd.ExtraConfig, cinderPath}}
+		merged := MergedExtraConfig(cp.Spec.GlobalExtraConfig, cd.ExtraConfig)
+		for _, owned := range config.FindOwnedOverrides(merged, cinderv1alpha1.OwnedConfigKeys) {
+			paths := contributingKeyPaths(owned.Section, owned.Key, blocks...)
+			// Every Rejected cinder key is always forbidden. [DEFAULT]
+			// transport_url, [database] connection and the [keystone_authtoken] /
+			// [service_user] passwords arrive through env overrides at runtime, so
+			// rendering one is inert and only copies credential material into the
+			// config Secret every pod mounts. [DEFAULT] auth_strategy and
+			// api_paste_config select the WSGI pipeline, and anything but the
+			// keystone one serves the API without token validation, on an endpoint
+			// services.cinder.gateway can publish outside the cluster. The
+			// [cinder_sys_admin] and [privsep_osbrick] helper_command / capabilities
+			// pairs are the command the volume and backup services run as root and
+			// the capability set it keeps, so an override executes a binary of the
+			// submitter's choosing with the privsep context's privileges.
+			if owned.Rejected {
+				for _, p := range paths {
+					errs = append(errs, field.Forbidden(p, rejectedOwnedKeyMessage(owned)))
+				}
+				continue
+			}
+			// The three key-manager keys are Reported in the cinder registry,
+			// because the child accepts a Barbican it did not provision. The
+			// ControlPlane projects the Cinder child's keyManager from the Barbican
+			// child by naming convention (decision D9 of #979), so beside a declared
+			// services.barbican an override names a key manager the plane does not
+			// own, and the volume-encryption keys are written to or read from a
+			// service this ControlPlane never provisioned. Without services.barbican
+			// the three keys stay Reported, which is what lets an external key
+			// manager be configured by hand.
+			if cp.Spec.Services.Barbican != nil && cinderKeyManagerKey(owned.Section, owned.Key) {
+				for _, p := range paths {
+					errs = append(errs, field.Forbidden(p, fmt.Sprintf(
+						"is projected by the ControlPlane from services.barbican (%s); "+
+							"remove the override or unset services.barbican", owned.OwnedBy)))
+				}
+				continue
+			}
+			warnings = append(warnings, ownedINIWarning(owned, paths))
+		}
+	}
+
 	// --- Horizon ownership (flat Django settings) -------------------------
 	if hz := cp.Spec.Services.Horizon; hz != nil && len(hz.ExtraConfig) > 0 {
 		names := make([]string, 0, len(hz.ExtraConfig))
@@ -372,6 +422,19 @@ func rejectedOwnedKeyMessage(owned config.OwnedKey) string {
 	return msg
 }
 
+// cinderKeyManagerKey reports whether (section, key) is one of the three
+// cinder.conf keys the ControlPlane takes over as soon as services.barbican is
+// declared: the castellan backend selector and the two Barbican addresses beside
+// it. All three are Reported rather than Rejected in the cinder registry, since
+// a Cinder child on its own cannot tell a projected key manager from a
+// hand-configured one.
+func cinderKeyManagerKey(section, key string) bool {
+	if section == "key_manager" {
+		return key == "backend"
+	}
+	return section == "barbican" && (key == "barbican_endpoint" || key == "auth_endpoint")
+}
+
 // rejectedHorizonMessage renders the Forbidden detail for a Rejected Horizon
 // setting: SECRET_KEY is managed via services.horizon.secretKeyRef, and the
 // websso / multi-domain settings are owned by the identity-backend projection.
@@ -407,8 +470,8 @@ func ownedSettingWarning(owned config.OwnedKey, path *field.Path) string {
 }
 
 // validateExtraConfigCatalogs validates the MERGED INI config of each declared
-// INI service (Keystone unless External, Glance, Placement, Barbican, Neutron)
-// against
+// INI service (Keystone unless External, Glance, Placement, Barbican, Neutron,
+// Cinder) against
 // the option catalog embedded for the resolved release (Family B). It fails
 // open — exactly one warning, no error — when no catalog resolves for a
 // non-empty merged config, so a digest pin, an unparseable tag, or a release the
@@ -536,6 +599,29 @@ func validateExtraConfigCatalogs(cp *ControlPlane) (admission.Warnings, field.Er
 			w, e := attributeCatalogFindings("neutron", catalog, merged, ex,
 				iniBlock{cp.Spec.GlobalExtraConfig, globalPath},
 				iniBlock{nn.ExtraConfig, specPath.Child("services", "neutron", "extraConfig")})
+			warnings = append(warnings, w...)
+			errs = append(errs, e...)
+		}
+	}
+
+	// --- Cinder -----------------------------------------------------------
+	if cd := cp.Spec.Services.Cinder; cd != nil {
+		merged := MergedExtraConfig(cp.Spec.GlobalExtraConfig, cd.ExtraConfig)
+		catalog, ok := cinderv1alpha1.OptionCatalogForRelease(cp.Spec.OpenStackRelease)
+		if !ok {
+			if w := failOpenCatalogWarning("cinder", "spec.openStackRelease", cp.Spec.OpenStackRelease, merged); w != "" {
+				warnings = append(warnings, w)
+			}
+		} else {
+			// No exempt sections: the cinder catalog is the flat union of the
+			// generator files, as neutron's is, so it already enumerates every
+			// section the child configures, which is why the exemptions are keys-only.
+			// A section named after a declared backend is reported as unknown, which
+			// is what the cinder child's own catalog check does with it too.
+			ex := config.CatalogExemptions{Keys: config.KeyExemptionsFromRegistry(cinderv1alpha1.OwnedConfigKeys)}
+			w, e := attributeCatalogFindings("cinder", catalog, merged, ex,
+				iniBlock{cp.Spec.GlobalExtraConfig, globalPath},
+				iniBlock{cd.ExtraConfig, specPath.Child("services", "cinder", "extraConfig")})
 			warnings = append(warnings, w...)
 			errs = append(errs, e...)
 		}
@@ -695,6 +781,16 @@ func controlPlaneExtraConfigCatalogInputsChanged(oldObj, newObj *ControlPlane) b
 	}
 	if oldNn != nil && newNn != nil {
 		if !reflect.DeepEqual(oldNn.ExtraConfig, newNn.ExtraConfig) {
+			return true
+		}
+	}
+
+	oldCd, newCd := oldObj.Spec.Services.Cinder, newObj.Spec.Services.Cinder
+	if (oldCd == nil) != (newCd == nil) {
+		return true
+	}
+	if oldCd != nil && newCd != nil {
+		if !reflect.DeepEqual(oldCd.ExtraConfig, newCd.ExtraConfig) {
 			return true
 		}
 	}

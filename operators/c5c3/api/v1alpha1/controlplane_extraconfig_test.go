@@ -440,3 +440,230 @@ func TestControlPlaneExtraConfigCatalogInputsChanged_Neutron(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateCreate_RejectsUnknownCinderExtraConfigOption pins the cinder
+// catalog leg from both sides: a per-service override the catalog does not
+// accept, and the cross-service reach of globalExtraConfig, which is validated
+// against the catalog of every declared service.
+func TestValidateCreate_RejectsUnknownCinderExtraConfigOption(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("in cinder extraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.ExtraConfig = map[string]map[string]string{
+			"DEFAULT": {"volume_name_templatez": "volume-%s"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.extraConfig[DEFAULT][volume_name_templatez]"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the cinder 2025.2 option catalog"))
+	})
+
+	t.Run("in globalExtraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{
+			"DEFAULT": {"volume_name_templatez": "volume-%s"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[DEFAULT][volume_name_templatez]"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the cinder 2025.2 option catalog"))
+	})
+}
+
+// TestValidateCreate_ForbidsCinderRejectedOwnedKey pins a Rejected cinder owned
+// key from whichever block carries it. [DEFAULT] transport_url is the one to
+// guard: the broker URL reaches the pods through OS_DEFAULT__TRANSPORT_URL, so a
+// file value changes nothing at runtime and only copies the broker credentials
+// into the config Secret every cinder pod mounts.
+func TestValidateCreate_ForbidsCinderRejectedOwnedKey(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("in cinder extraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.ExtraConfig = map[string]map[string]string{
+			"DEFAULT": {"transport_url": "rabbit://user:pw@broker:5672/"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.extraConfig[DEFAULT][transport_url]"))
+		g.Expect(err.Error()).To(ContainSubstring(
+			"transport_url is managed via spec.messaging and must not be set in extraConfig"))
+	})
+
+	t.Run("in globalExtraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{
+			"DEFAULT": {"transport_url": "rabbit://user:pw@broker:5672/"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[DEFAULT][transport_url]"))
+		g.Expect(err.Error()).To(ContainSubstring("must not be set in extraConfig"))
+	})
+}
+
+// cinderAndBarbicanControlPlane returns the cinder baseline with the minimal
+// barbican block beside it, the shape in which the ControlPlane projects the
+// Cinder child's keyManager from the Barbican child.
+func cinderAndBarbicanControlPlane() *ControlPlane {
+	cp := cinderControlPlane()
+	cp.Spec.Services.Barbican = &ServiceBarbicanSpec{
+		SecretStore: ServiceBarbicanSecretStoreSpec{Dedicated: &BarbicanDedicatedSecretStoreSpec{}},
+	}
+	return cp
+}
+
+// TestValidateCreate_ForbidsCinderKeyManagerOverrideBesideBarbican pins the one
+// cinder rule the registry alone does not carry. The three key-manager keys are
+// Reported there, because a Cinder child accepts a Barbican it did not
+// provision; beside a declared services.barbican the ControlPlane owns them, so
+// an override points castellan at a key manager the plane never provisioned and
+// every encrypted volume is written with, or read against, the wrong keys.
+func TestValidateCreate_ForbidsCinderKeyManagerOverrideBesideBarbican(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for _, tc := range []struct {
+		section string
+		key     string
+		value   string
+	}{
+		{"key_manager", "backend", "barbican.key_manager.API"},
+		{"barbican", "barbican_endpoint", "https://barbican.example.com"},
+		{"barbican", "auth_endpoint", "https://keystone.example.com/v3"},
+	} {
+		t.Run(tc.section+" "+tc.key, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := cinderAndBarbicanControlPlane()
+			cp.Spec.Services.Cinder.ExtraConfig = map[string]map[string]string{
+				tc.section: {tc.key: tc.value},
+			}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(
+				"spec.services.cinder.extraConfig[" + tc.section + "][" + tc.key + "]"))
+			g.Expect(err.Error()).To(ContainSubstring(
+				"is projected by the ControlPlane from services.barbican"))
+		})
+	}
+
+	t.Run("in globalExtraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderAndBarbicanControlPlane()
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{
+			"key_manager": {"backend": "barbican.key_manager.API"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[key_manager][backend]"))
+		g.Expect(err.Error()).To(ContainSubstring(
+			"is projected by the ControlPlane from services.barbican"))
+	})
+}
+
+// TestValidateCreate_ReportsCinderKeyManagerOverrideWithoutBarbican pins the
+// other half of the same rule: with no services.barbican the ControlPlane
+// projects no key manager, so pointing cinder at an externally-run Barbican is
+// legitimate and the override is honored-but-reported, the way the cinder
+// registry classifies it.
+func TestValidateCreate_ReportsCinderKeyManagerOverrideWithoutBarbican(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := cinderControlPlane()
+	cp.Spec.Services.Cinder.ExtraConfig = map[string]map[string]string{
+		"barbican": {"barbican_endpoint": "https://barbican.example.com"},
+	}
+
+	warnings, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(ContainElement(ContainSubstring("barbican_endpoint")))
+}
+
+// TestValidateCreate_AcceptsEmptyCinderExtraConfig pins that a declared but
+// empty block is admitted and raises nothing: the merge normalizes it to nil, so
+// there is no config to scan and no catalog to fail open on.
+func TestValidateCreate_AcceptsEmptyCinderExtraConfig(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, cfg := range map[string]map[string]map[string]string{
+		"an empty map": {},
+		"nil":          nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := cinderControlPlane()
+			cp.Spec.Services.Cinder.ExtraConfig = cfg
+
+			warnings, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(warnings).To(BeEmpty())
+		})
+	}
+}
+
+// TestControlPlaneExtraConfigCatalogInputsChanged_Cinder pins the update gate
+// for the cinder leg: the catalog family re-runs when the cinder block is added,
+// dropped, or edited, and stays gated off for an update that leaves it alone.
+func TestControlPlaneExtraConfigCatalogInputsChanged_Cinder(t *testing.T) {
+	withoutCinder := func() *ControlPlane {
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder = nil
+		return cp
+	}
+	withExtraConfig := func(cfg map[string]map[string]string) *ControlPlane {
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.ExtraConfig = cfg
+		return cp
+	}
+
+	for _, tc := range []struct {
+		name     string
+		oldCP    *ControlPlane
+		newCP    *ControlPlane
+		expected bool
+	}{
+		{
+			name:     "the cinder block is newly declared",
+			oldCP:    withoutCinder(),
+			newCP:    cinderControlPlane(),
+			expected: true,
+		},
+		{
+			name:     "the cinder block is dropped",
+			oldCP:    cinderControlPlane(),
+			newCP:    withoutCinder(),
+			expected: true,
+		},
+		{
+			name:     "the cinder extraConfig changes",
+			oldCP:    withExtraConfig(map[string]map[string]string{"DEFAULT": {"debug": "false"}}),
+			newCP:    withExtraConfig(map[string]map[string]string{"DEFAULT": {"debug": "true"}}),
+			expected: true,
+		},
+		{
+			name:  "an unrelated cinder edit leaves the gate closed",
+			oldCP: cinderControlPlane(),
+			newCP: func() *ControlPlane {
+				cp := cinderControlPlane()
+				cp.Spec.Services.Cinder.Replicas = ptr.To(int32(5))
+				return cp
+			}(),
+			expected: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(controlPlaneExtraConfigCatalogInputsChanged(tc.oldCP, tc.newCP)).To(Equal(tc.expected))
+		})
+	}
+}
