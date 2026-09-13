@@ -29,6 +29,22 @@ The v1 operator resolves the onboarding decisions as follows:
   worker, so with none deployed an enabled queue would leave orders pending
   instead of failing them. The key is therefore operator-owned, and an
   `extraConfig` override of it is reported through `ExtraConfigHealthy`.
+- **Secure-RBAC policy defaults on.** The rendered config carries
+  `[oslo_policy] enforce_new_defaults = true` for every Barbican, which replaces
+  Barbican's legacy `creator`/`observer`/`audit` rules with its secure-RBAC
+  defaults. `enforce_scope` stays at Barbican's default (off) and can be set
+  through `extraConfig`. `enforce_new_defaults` is operator-owned, and an
+  `extraConfig` override of it is honored and reported through
+  `ExtraConfigHealthy`. The defaults are on for Cinder's volume encryption
+  (decision D9a of issue [#979](https://github.com/C5C3/cobaltcore/issues/979)).
+  Under the legacy rules the member creating a volume's key needs the `creator`
+  role, which nothing assigns, and the cinder service user's project-scoped
+  key-delete fallback fails. The new rules also let the bare `admin` role act
+  across projects: `secret:get` and `secret:delete` accept `admin` held on any
+  project, so its holder reads the metadata of and deletes secrets in every
+  project, while `secret:decrypt` and `secret:put` still require the secret's
+  own project. The cinder fallback passes only through that term, because its
+  token is scoped to the service user's project, never to the volume owner's.
 - **One OpenBao store per Barbican.** The vault plugin reads its server URL,
   its AppRole and its mount from the process-global `[vault_plugin]` section,
   which every store in one `barbican.conf` shares. A second OpenBao store would
