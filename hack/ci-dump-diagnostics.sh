@@ -12,6 +12,7 @@
 # Usage:
 #   hack/ci-dump-diagnostics.sh                   # infra-only diagnostics
 #   OPERATOR=keystone hack/ci-dump-diagnostics.sh  # + operator-specific diagnostics
+#   KIND_CLUSTER=cobaltcore hack/ci-dump-diagnostics.sh  # kind cluster whose node answers dmesg (default: cobaltcore)
 #
 # Shared diagnostic dump script for all E2E jobs.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -26,6 +27,9 @@ NAMESPACE="${NAMESPACE:-openstack}"
 # an explicit -n the pod/log lookups below silently hit the default namespace
 # and the dump loses exactly the operator evidence it exists to capture.
 OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-${OPERATOR}-system}"
+# The kind cluster whose node containers the kernel-OOM block below asks for
+# dmesg. Matches the KIND_CLUSTER env every e2e job exports.
+KIND_CLUSTER="${KIND_CLUSTER:-cobaltcore}"
 
 # ---------------------------------------------------------------------------
 # Infrastructure diagnostics (always emitted)
@@ -38,6 +42,71 @@ kubectl get pods --all-namespaces || true
 
 echo "=== DaemonSets ==="
 kubectl get daemonsets --all-namespaces -o wide || true
+
+# ---------------------------------------------------------------------------
+# Node pressure (always emitted)
+# ---------------------------------------------------------------------------
+# A kind node that runs out of RAM leaves almost no trace in the pod table:
+# the kernel OOM killer takes the largest BestEffort process, the kubelet
+# restarts the container in place, and `kubectl get pods` shows nothing but
+# a restart count. CI run 34718789784 lost openstack-db-0 five times that way,
+# each start an InnoDB crash recovery, and the suite that failed was whichever
+# one waited on DatabaseReady at that moment. The four blocks below make the
+# cause legible from the job log alone: what the node has and what is
+# requested of it, which containers died and why, who holds the memory now,
+# and what the kernel says.
+echo "=== Node capacity and allocated resources ==="
+for node in $(kubectl get nodes -o name 2>/dev/null); do
+  echo "--- ${node} ---"
+  kubectl describe "${node}" 2>/dev/null \
+    | sed -n -e '/^Capacity:/,/^System Info:/p' -e '/^Allocated resources:/,/^Events:/p' \
+    | grep -vE '^(System Info:|Events:)' || true
+done
+
+echo "=== Containers with restarts (last termination reason, QoS class) ==="
+kubectl get pods --all-namespaces \
+  -o custom-columns='NAMESPACE:.metadata.namespace,POD:.metadata.name,RESTARTS:.status.containerStatuses[*].restartCount,LAST_REASON:.status.containerStatuses[*].lastState.terminated.reason,LAST_EXIT:.status.containerStatuses[*].lastState.terminated.exitCode,QOS:.status.qosClass' 2>/dev/null \
+  | awk 'NR == 1 || $3 ~ /[1-9]/' || true
+
+# The kubelet summary API needs no metrics-server: it is what `kubectl top`
+# would read if one were installed. Working set is the number the OOM killer
+# and the eviction manager act on.
+echo "=== Memory working set per pod (kubelet summary, top 20 per node) ==="
+if command -v jq >/dev/null 2>&1; then
+  for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+    kubectl get --raw "/api/v1/nodes/${node}/proxy/stats/summary" 2>/dev/null \
+      | jq -r --arg node "${node}" '
+          "node \($node): workingSet \((.node.memory.workingSetBytes // 0) / 1048576 | floor) MiB, available \((.node.memory.availableBytes // 0) / 1048576 | floor) MiB",
+          (.pods[] | "\((.memory.workingSetBytes // 0) / 1048576 | floor) MiB\t\(.podRef.namespace)/\(.podRef.name)")' 2>/dev/null \
+      | { IFS= read -r header && echo "${header}" && sort -rn | head -20; } || true
+  done
+else
+  echo "SKIP: jq not installed"
+fi
+
+# The kind node is a privileged container, so dmesg inside it reads the
+# host kernel's ring buffer, where an OOM kill names the victim, its cgroup
+# and the memory state at the time. `kubectl` cannot reach that.
+echo "=== Kernel OOM events on the kind node(s) ==="
+if command -v docker >/dev/null 2>&1; then
+  found=0
+  # kind labels every node container with its cluster; a name filter would
+  # also match unrelated containers whose name merely contains the prefix.
+  for node in $(docker ps --filter "label=io.x-k8s.kind.cluster=${KIND_CLUSTER}" --format '{{.Names}}' 2>/dev/null); do
+    found=1
+    echo "--- ${node} ---"
+    if ! err="$(docker exec "${node}" dmesg 2>&1 >/dev/null)"; then
+      echo "(dmesg unavailable in ${node}: ${err})"
+      continue
+    fi
+    docker exec "${node}" dmesg 2>/dev/null \
+      | grep -iE 'out of memory|oom-kill|killed process' | tail -30 | grep . \
+      || echo "(no OOM lines in dmesg)"
+  done
+  [ "${found}" -eq 1 ] || echo "SKIP: no kind node container for cluster '${KIND_CLUSTER}' on this host"
+else
+  echo "SKIP: docker not installed"
+fi
 
 # Chaos Mesh is opt-in in the kind Quick Start the chaos-mesh
 # namespace only exists when the cluster was deployed with

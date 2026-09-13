@@ -34,7 +34,8 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 #   - `get ns chaos-mesh`                          → exits <ns_exit>
 #   - `describe daemonset -n chaos-mesh chaos-daemon` → emits a stub marker
 #   - infra-summary verbs the dump always runs (`get helmrelease`,
-#     `get pods`, `get daemonsets`, `get events`, `api-resources`) → exit 0
+#     `get pods`, `get daemonsets`, `get nodes`, `get events`,
+#     `api-resources`) → exit 0
 #     silently so the script's `|| true`s pass through cleanly without
 #     polluting the stdout the test asserts against.
 # Any other invocation emits an `[kubectl-stub] unexpected invocation: …`
@@ -58,7 +59,7 @@ case "\$1" in
           exit ${ns_exit}
         fi
         ;;
-      helmrelease|pods|daemonsets|events|fluxinstance,fluxreport)
+      helmrelease|pods|daemonsets|events|nodes|fluxinstance,fluxreport)
         exit 0
         ;;
     esac
