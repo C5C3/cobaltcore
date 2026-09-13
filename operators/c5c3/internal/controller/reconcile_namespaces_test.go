@@ -12,6 +12,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -25,6 +26,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -1060,4 +1062,160 @@ func TestEnsureUnownedOrOwned_ConfirmsACacheMissAgainstTheAPIServer(t *testing.T
 	g.Expect(r.ensureUnownedOrOwned(ctx, r.Client, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
 		Namespace: "identity", Name: "cp-db-credentials",
 	}})).To(Succeed())
+}
+
+// foreignSatellite is a hand-made object under the BARE name a projected
+// satellite carries: a person's CinderBackend "nfs1", with no owner reference,
+// no ownership labels and data that is nobody else's to rewrite.
+func foreignSatellite(namespace string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "nfs1"},
+		Data:       map[string]string{"k": "v"},
+	}
+}
+
+// TestEnsureProjectedSatellite_RefusesForeignInOwnNamespace covers the gap the
+// satellite entry point exists for. A satellite is named after a spec entry, so
+// its name is short, bare and exactly what a person picks for a hand-made object
+// of the same kind in cp's OWN namespace (where ensureUnownedOrOwned applies
+// without asking who owns the name). Adoption there is not a spec overwrite only:
+// the object becomes a child of cp, and the prune that follows the projection
+// deletes it the moment the entry goes away.
+func TestEnsureProjectedSatellite_RefusesForeignInOwnNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := namespacedControlPlane()
+
+	r := &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreignSatellite(cp.Namespace)).Build(),
+		Scheme: s,
+	}
+
+	err := r.ensureProjectedSatellite(ctx, r.Client, cp, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "nfs1"},
+		Data:       map[string]string{"k": "ours"},
+	})
+	g.Expect(err).To(HaveOccurred(), "a hand-made object under the entry's name must not be adopted")
+	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing"))
+	g.Expect(err.Error()).To(ContainSubstring("nfs1"))
+
+	// The refusal comes before the first write, so the object is untouched: same
+	// data, still unowned and still unlabelled.
+	live := &corev1.ConfigMap{}
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Namespace: cp.Namespace, Name: "nfs1"}, live)).To(Succeed())
+	g.Expect(live.Data).To(Equal(map[string]string{"k": "v"}))
+	g.Expect(live.OwnerReferences).To(BeEmpty())
+	g.Expect(live.Labels).To(BeEmpty())
+}
+
+// TestEnsureProjectedSatellite_ReappliesOwnChild pins the other half of the
+// guard: it refuses a foreign object, not a pre-existing one. A satellite this
+// ControlPlane already created has to keep converging on every pass, or the
+// first projection would be the only one that ever lands.
+func TestEnsureProjectedSatellite_ReappliesOwnChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := namespacedControlPlane()
+
+	ours := foreignSatellite(cp.Namespace)
+	g.Expect(controllerutil.SetControllerReference(cp, ours, s)).To(Succeed())
+	r := &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ours).Build(),
+		Scheme: s,
+	}
+
+	g.Expect(r.ensureProjectedSatellite(ctx, r.Client, cp, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "nfs1"},
+		Data:       map[string]string{"k": "ours"},
+	})).To(Succeed())
+
+	live := &corev1.ConfigMap{}
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Namespace: cp.Namespace, Name: "nfs1"}, live)).To(Succeed())
+	g.Expect(live.Data).To(Equal(map[string]string{"k": "ours"}))
+}
+
+// TestEnsureProjectedSatellite_CreatesWhenAbsent covers the ordinary case: a free
+// name is created and owner-referenced, so the garbage collector reaps it with
+// the ControlPlane.
+func TestEnsureProjectedSatellite_CreatesWhenAbsent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := namespacedControlPlane()
+
+	r := &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme: s,
+	}
+
+	g.Expect(r.ensureProjectedSatellite(ctx, r.Client, cp, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "nfs1"},
+		Data:       map[string]string{"k": "ours"},
+	})).To(Succeed())
+
+	live := &corev1.ConfigMap{}
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Namespace: cp.Namespace, Name: "nfs1"}, live)).To(Succeed())
+	g.Expect(metav1.IsControlledBy(live, cp)).To(BeTrue(), "a satellite in cp's own namespace is owner-referenced")
+}
+
+// TestEnsureProjectedSatellite_ReturnsThePrecheckError keeps an unreadable name
+// from being treated as a free one. Only NotFound and a missing CRD say the name
+// is available; every other read failure is transient, and continuing on it would
+// apply over whatever the failed read did not report.
+func TestEnsureProjectedSatellite_ReturnsThePrecheckError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := namespacedControlPlane()
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*corev1.ConfigMap); ok {
+					return errors.New("etcd is unreachable")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	err := r.ensureProjectedSatellite(ctx, c, cp, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "nfs1"},
+	})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("checking for a pre-existing"))
+	g.Expect(err.Error()).To(ContainSubstring("etcd is unreachable"))
+}
+
+// TestEnsureUnownedOrOwned_StillRefusesForeignInUnownedNamespace holds the
+// behaviour the extracted pre-check was carrying before: outside cp's namespace a
+// foreign object is refused, in the same words as before, and inside it the fast
+// path applies without asking. The second half is not an oversight but the reason
+// ensureProjectedSatellite exists: a ControlPlane-prefixed name is one this
+// operator composed, so nothing else in cp's own namespace answers to it.
+func TestEnsureUnownedOrOwned_StillRefusesForeignInUnownedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := namespacedControlPlane()
+
+	r := &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).
+			WithObjects(cp, foreignSatellite("other"), foreignSatellite(cp.Namespace)).Build(),
+		Scheme: s,
+	}
+
+	err := r.ensureUnownedOrOwned(ctx, r.Client, cp, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "other", Name: "nfs1"},
+		Data:       map[string]string{"k": "ours"},
+	})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`in unowned namespace "other"`))
+
+	g.Expect(r.ensureUnownedOrOwned(ctx, r.Client, cp, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "nfs1"},
+		Data:       map[string]string{"k": "ours"},
+	})).To(Succeed(), "the own-namespace fast path runs no pre-check")
 }
