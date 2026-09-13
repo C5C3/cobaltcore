@@ -87,6 +87,7 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		mcKeystoneNamespace = "mc-cp-identity"
 		mcGlanceNamespace   = "mc-cp-image"
 		mcNetworkNamespace  = "mc-cp-network"
+		mcBlockNamespace    = "mc-cp-block"
 		mcControlPlane      = "cp"
 
 		// The OVN control plane the network service programs. It is deployed
@@ -242,10 +243,12 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 	dbCredKey := client.ObjectKey{Namespace: mcKeystoneNamespace, Name: dbCredentialSecretName(cp)}
 	dbCredCertKey := client.ObjectKey{Namespace: mcKeystoneNamespace, Name: dbCredentialClientCertName(cp)}
 	adminPasswordKey := client.ObjectKey{Namespace: mcKeystoneNamespace, Name: adminPasswordSecretName(cp)}
-	// The one object the placed NETWORK service takes with it that no other
-	// service has: the shared bus, delivered as a Secret on the cluster Neutron
-	// runs on. It is asserted in the network subtest and swept in the deletion one.
+	// The object the two placed BUS CONSUMERS take with them that no other service
+	// has: the shared bus, delivered as a Secret on the cluster each of them runs
+	// on, under a name of its own. Each is asserted in its own subtest and swept in
+	// the deletion one.
 	neutronBusKey := client.ObjectKey{Namespace: mcNetworkNamespace, Name: neutronMessagingSecretName(cp)}
+	cinderBusKey := client.ObjectKey{Namespace: mcBlockNamespace, Name: cinderMessagingSecretName(cp)}
 
 	t.Run("register the target cluster", func(t *testing.T) {
 		g := NewGomegaWithT(t)
@@ -759,6 +762,114 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			"the network service parks on the account its registration has not provisioned")
 	})
 
+	t.Run("a placed block-storage service takes its bus credentials with it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The block-storage service joins the plane on the same target cluster, in a
+		// namespace of its own, advertising an externally routable address for the
+		// reason its image and network siblings do. It declares the volume backend of
+		// the shared fixture and no backup backend: what this subtest walks is the
+		// placement split, not the satellite projection, which the single-cluster
+		// full-chain test covers.
+		g.Eventually(func() error {
+			live := &c5c3v1alpha1.ControlPlane{}
+			if err := mgmtClient.Get(ctx, cpKey, live); err != nil {
+				return err
+			}
+			live.Spec.Services.Cinder = &c5c3v1alpha1.ServiceCinderSpec{
+				Backends: integrationCinderService().Backends,
+				Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+					Name:      mcBlockNamespace,
+					Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+				},
+				PublicEndpoint:   "https://cinder.example.com",
+				TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: mcTargetCluster},
+			}
+			return mgmtClient.Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"place the block-storage service on the target cluster")
+
+		// --- The namespace is created on both clusters, and the backing services
+		// follow the service onto the target. Infrastructure short-circuits the
+		// pipeline while either is converging, so nothing below runs until they
+		// report.
+		blockNSKey := client.ObjectKey{Name: mcBlockNamespace}
+		mcEventuallyExists(t, ctx, targetClient, blockNSKey, &corev1.Namespace{}, "block-storage service namespace")
+		mcEventuallyExists(t, ctx, mgmtClient, blockNSKey, &corev1.Namespace{}, "block-storage service namespace")
+
+		cinderMariaDBKey := client.ObjectKey{
+			Namespace: mcBlockNamespace,
+			Name:      cp.Spec.Infrastructure.Database.ClusterRef.Name,
+		}
+		cinderMemcachedKey := client.ObjectKey{
+			Namespace: mcBlockNamespace,
+			Name:      cp.Spec.Infrastructure.Cache.ClusterRef.Name,
+		}
+		mcEventuallyExists(t, ctx, targetClient, cinderMariaDBKey, &mariadbv1alpha1.MariaDB{}, "block-side MariaDB")
+		mcExpectAbsent(t, ctx, mgmtClient, cinderMariaDBKey, &mariadbv1alpha1.MariaDB{}, "block-side MariaDB")
+		mcEventuallyExists(t, ctx, targetClient, cinderMemcachedKey, mcMemcached(), "block-side Memcached")
+		mcExpectAbsent(t, ctx, mgmtClient, cinderMemcachedKey, mcMemcached(), "block-side Memcached")
+		simulateMariaDBReadyWhenPresent(t, ctx, targetClient, cinderMariaDBKey)
+		simulateMemcachedReadyWhenPresent(t, ctx, targetClient, cinderMemcachedKey)
+
+		// --- The tenant store of the placed namespace exists on both clusters, for
+		// the reason the image service's does, and the plane is gated on both.
+		blockStoreKey := client.ObjectKey{Namespace: mcBlockNamespace, Name: esoTenantStoreName}
+		mcEventuallyExists(t, ctx, mgmtClient, blockStoreKey, &esov1.SecretStore{}, "management-side tenant SecretStore")
+		mcEventuallyExists(t, ctx, targetClient, blockStoreKey, &esov1.SecretStore{}, "target-side tenant SecretStore")
+		ensureReadySecretStore(t, ctx, mgmtClient, esoTenantStoreName, mcBlockNamespace)
+		ensureReadySecretStore(t, ctx, targetClient, esoTenantStoreName, mcBlockNamespace)
+		waitForControlPlaneCondition(t, ctx, mgmtClient, cpKey,
+			conditionTypeESOTenantStoreReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+		// --- The bus follows the service, the way it follows the network one: read
+		// in the ControlPlane's own namespace on the management cluster, delivered as
+		// a Secret in the block-storage namespace on the cluster the service runs on,
+		// claimed by the ownership labels because no owner reference crosses a
+		// cluster.
+		busSecret := &corev1.Secret{}
+		mcEventuallyExists(t, ctx, targetClient, cinderBusKey, busSecret, "cinder messaging Secret")
+		g.Expect(string(busSecret.Data[commonv1.DefaultTransportURLSecretKey])).To(Equal(mcBusTransportURL),
+			"the placed service receives the URL the ControlPlane's own bus block declares")
+		mcExpectRemoteClaim(t, ctx, targetClient, cinderBusKey, &corev1.Secret{}, "cinder messaging Secret", cp)
+		mcExpectAbsent(t, ctx, mgmtClient, cinderBusKey, &corev1.Secret{}, "cinder messaging Secret")
+
+		// --- The registration is reconciled at home whatever cluster the service
+		// runs on, exactly as the image and network services' are.
+		registrationKey := client.ObjectKey{Namespace: mcBlockNamespace, Name: mcControlPlane + "-cinder"}
+		mcEventuallyExists(t, ctx, mgmtClient, registrationKey, &c5c3v1alpha1.KeystoneService{},
+			"Cinder registration")
+		mcExpectAbsent(t, ctx, targetClient, registrationKey, &c5c3v1alpha1.KeystoneService{},
+			"Cinder registration")
+
+		// --- Its credentials, though, follow the service: the ControlPlane
+		// materialises the registration's own OpenBao path a second time on the
+		// cluster the block-storage service runs on, under the name its pods read.
+		mirrorKey := client.ObjectKey{Namespace: mcBlockNamespace, Name: mcControlPlane + "-cinder-credentials"}
+		mirror := &esov1.ExternalSecret{}
+		mcEventuallyExists(t, ctx, targetClient, mirrorKey, mirror, "registration credentials mirror")
+		g.Expect(mirror.Spec.Data).NotTo(BeEmpty())
+		g.Expect(mirror.Spec.Data[0].RemoteRef.Key).To(Equal(
+			"openstack/keystone/"+mcBlockNamespace+"/"+mcControlPlane+"-cinder/service-accounts/credentials"),
+			"the mirror reads the registration's own per-CR OpenBao path")
+		mcExpectRemoteClaim(t, ctx, targetClient, mirrorKey, &esov1.ExternalSecret{},
+			"registration credentials mirror", cp)
+
+		// --- And that is as far as this plane goes: no KeystoneService controller
+		// runs here, so the registration never provisions the Keystone account and
+		// CinderReady parks on it rather than projecting a Cinder that would
+		// authenticate as a user nothing created.
+		g.Eventually(func(ig Gomega) {
+			live := &c5c3v1alpha1.ControlPlane{}
+			ig.Expect(mgmtClient.Get(ctx, cpKey, live)).To(Succeed())
+			cond := meta.FindStatusCondition(live.Status.Conditions, conditionTypeCinderReady)
+			ig.Expect(cond).NotTo(BeNil())
+			ig.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			ig.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"the block-storage service parks on the account its registration has not provisioned")
+	})
+
 	t.Run("a ControlPlane naming an unregistered cluster creates nothing", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 
@@ -831,6 +942,7 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			{dbCredKey, &esov1.ExternalSecret{}, "DB-credential ExternalSecret"},
 			{adminPasswordKey, &esov1.ExternalSecret{}, "admin-password ExternalSecret"},
 			{neutronBusKey, &corev1.Secret{}, "neutron messaging Secret"},
+			{cinderBusKey, &corev1.Secret{}, "cinder messaging Secret"},
 		}
 		g.Eventually(func(ig Gomega) {
 			for _, child := range swept {
@@ -846,7 +958,7 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		// Terminating forever. The DeletionTimestamp is what the operator is
 		// responsible for, on both clusters — it created the namespace on both.
 		for name, c := range map[string]client.Client{"target": targetClient, "management": mgmtClient} {
-			for _, namespace := range []string{mcKeystoneNamespace, mcNetworkNamespace} {
+			for _, namespace := range []string{mcKeystoneNamespace, mcNetworkNamespace, mcBlockNamespace} {
 				g.Eventually(func() bool {
 					ns := &corev1.Namespace{}
 					if err := c.Get(ctx, client.ObjectKey{Name: namespace}, ns); err != nil {
