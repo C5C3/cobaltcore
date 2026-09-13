@@ -577,13 +577,25 @@ func (r *ControlPlaneReconciler) reconcileCinder(ctx context.Context, cp *c5c3v1
 		}
 	}
 
-	// spec.scheduler, spec.volume, spec.backup, spec.dbPurge, spec.networkPolicy,
-	// spec.autoscaling, spec.logging, spec.api.uwsgi and spec.policyOverrides are
-	// deliberately NOT set, the Placement posture: the child-side defaults stay
-	// authoritative, and tuning them stays a standalone-CR concern. It is what keeps
-	// the volume and backup Deployments on their replicas: 1 singleton defaults,
-	// which the shared DeploymentSpec default of three would override as soon as one
-	// of those blocks were written at all.
+	// The volume and backup Deployments run exactly one replica, which the Cinder
+	// CRD's CEL rules require: the NFS drivers refuse a second process under the
+	// same host identity. The scheduler runs one because that is what the cinder
+	// operator's defaulting webhook gives a standalone CR; no CEL rule guards it.
+	// All three blocks are struct values rather than pointers, so the apply carries
+	// them whatever this projection assigns, and the API server materializes the
+	// shared DeploymentSpec default of three into the replicas of every deployment
+	// block on the wire before that webhook runs. Writing the one replica here is
+	// what keeps the projected child admissible: leaving the volume and backup
+	// blocks alone has the Cinder API server reject the child on every pass, and
+	// leaving the scheduler block alone has it silently run three schedulers.
+	cn.Spec.Scheduler.Deployment.Replicas = 1
+	cn.Spec.Volume.Deployment.Replicas = 1
+	cn.Spec.Backup.Deployment.Replicas = 1
+
+	// spec.dbPurge, spec.networkPolicy, spec.autoscaling, spec.logging,
+	// spec.api.uwsgi and spec.policyOverrides are deliberately NOT set, the
+	// Placement posture: the child-side defaults stay authoritative, and tuning
+	// them stays a standalone-CR concern.
 
 	res, err := commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp,
 		commonreconcile.ChildProjectionParams[*cinderv1alpha1.Cinder]{
