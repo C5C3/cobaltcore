@@ -59,6 +59,7 @@ LICENSE_HEADER = """\
 #   {placement}           the spec.services.placement entry (indent 4) or ""
 #   {barbican}            the spec.services.barbican entry (indent 4) or ""
 #   {neutron}             the spec.services.neutron entry (indent 4) or ""
+#   {cinder}              the spec.services.cinder entry (indent 4) or ""
 #   {service_registrations}
 #                         the spec.korc.serviceRegistrations block (indent 4) or ""
 #
@@ -74,7 +75,7 @@ spec:
   openStackRelease: "2025.2"
 {region}{region_description}{global_extra_config}{infrastructure}  services:
     keystone:
-{keystone}{horizon}{glance}{placement}{barbican}{neutron}  korc:
+{keystone}{horizon}{glance}{placement}{barbican}{neutron}{cinder}  korc:
     adminCredential:
       cloudCredentialsRef:
         cloudName: admin
@@ -159,6 +160,22 @@ VALID_NEUTRON = (
 )
 
 
+# A valid cinder service body (indent 4): one NFS volume backend, the smallest
+# valid block, because backends is REQUIRED with at least one entry. Everything
+# else the child needs (its database, its cache, its bus, its Keystone endpoint)
+# is derived from the ControlPlane. The cinder fixtures below mutate exactly one
+# aspect of it.
+VALID_CINDER = (
+    "    cinder:\n"
+    "      backends:\n"
+    "      - name: nfs1\n"
+    "        type: NFS\n"
+    "        nfs:\n"
+    "          server: nfs-server.openstack.svc.cluster.local\n"
+    "          path: /volumes\n"
+)
+
+
 # A valid, MANAGED dedicated backing-services block for the Keystone service
 # (indent 6, to be appended to a Managed keystone body). Every dedicated fixture
 # below mutates exactly one aspect of it.
@@ -191,6 +208,7 @@ class Fixture:
     placement: str = ""
     barbican: str = ""
     neutron: str = ""
+    cinder: str = ""
     # The spec.region line (indent 2, trailing newline) or "".
     region: str = ""
     # The spec.regionDescription line (indent 2, trailing newline) or "".
@@ -213,6 +231,7 @@ class Fixture:
             placement=self.placement,
             barbican=self.barbican,
             neutron=self.neutron,
+            cinder=self.cinder,
             service_registrations=self.service_registrations,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
@@ -1470,6 +1489,95 @@ FIXTURES: tuple[Fixture, ...] = (
             "        centralRef:\n"
             "          name: ovn\n"
             "          namespace: other-tenant\n"
+        ),
+    ),
+    # --- per-service Cinder (still the create-rejection matrix). Every
+    #     ControlPlane name below stays well under the 36 characters the
+    #     projected "{cp}-cinder" child leaves, except the one fixture that pins
+    #     the composed backend bound. The numbering fills 32, 33, 34 and 46, the
+    #     four gaps left below the two-digit ceiling every fixture filename sits
+    #     under. ---
+    Fixture(
+        filename="32-cinder-without-messaging.yaml",
+        comment=(
+            "spec.infrastructure.messaging is required as soon as services.cinder is set, and\n"
+            "the webhook is the only layer that can say so: the Cinder CRD requires\n"
+            "spec.messaging and the ControlPlane derives the child's transport URL from the\n"
+            "shared bus, so a ControlPlane declaring the block-storage service without a bus\n"
+            "would project a child its own admission rejects on every pass. The infrastructure\n"
+            "block is the brownfield one every Managed fixture carries, minus the messaging\n"
+            "entry, so the missing bus is the only violation and the step anchors on `is\n"
+            "required when services.cinder is set`."
+        ),
+        name="cp-cinder-no-messaging",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        cinder=VALID_CINDER,
+    ),
+    Fixture(
+        filename="33-cinder-backends-empty.yaml",
+        comment=(
+            "services.cinder.backends is empty. A Cinder with no volume backend accepts a\n"
+            "volume request and leaves it in error, so the list carries MinItems=1 and the CR\n"
+            "is rejected at the CRD schema layer, before the webhook mirror in\n"
+            "validateCinderBackends runs. The step therefore anchors on the API server's\n"
+            "marker message rather than the webhook's."
+        ),
+        name="cp-cinder-backends-empty",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=(
+            "    cinder:\n"
+            "      backends: []\n"
+        ),
+    ),
+    Fixture(
+        filename="34-cinder-backend-name-too-long.yaml",
+        comment=(
+            "metadata.name is 29 characters and the backend name is 12, so the pair puts\n"
+            "29 + 7 + 12 = 48 bytes into the <cinder>-<backend>-service-remove Job name, one\n"
+            "over the 47 the CinderBackend webhook admits for metadata.name plus\n"
+            "spec.cinderRef.name. The ControlPlane webhook rejects the pair up front: admitted,\n"
+            "detaching that backend would fail on a Job name the apiserver refuses, and both\n"
+            "names are immutable, so there is no recovery short of recreating the plane. The\n"
+            "backend is otherwise the minimal valid NFS one, so the step anchors on\n"
+            "`service-remove Job name` and `at or below 47`."
+        ),
+        name="cp-cinder-backend-bound-xxxxx",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=(
+            "    cinder:\n"
+            "      backends:\n"
+            "      - name: share-twelve\n"
+            "        type: NFS\n"
+            "        nfs:\n"
+            "          server: nfs-server.openstack.svc.cluster.local\n"
+            "          path: /volumes\n"
+        ),
+    ),
+    Fixture(
+        filename="46-cinder-barbican-endpoint-override.yaml",
+        comment=(
+            "[barbican] barbican_endpoint in services.cinder.extraConfig is forbidden by the\n"
+            "ownership family as soon as services.barbican is declared: the ControlPlane\n"
+            "projects the Cinder child's key manager from the Barbican child by naming\n"
+            "convention, so an override points castellan at a key manager this plane never\n"
+            "provisioned, and every encrypted volume is then written with, or read against,\n"
+            "the wrong keys. The key is only Reported in the cinder registry, because a Cinder\n"
+            "child on its own cannot tell a projected Barbican from a hand-configured one,\n"
+            "which is why the fixture carries the barbican block too. The step anchors on\n"
+            "`services.cinder.extraConfig[barbican][barbican_endpoint]`."
+        ),
+        name="cp-cinder-barbican-override",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        barbican=VALID_BARBICAN,
+        cinder=(
+            VALID_CINDER
+            + "      extraConfig:\n"
+            + "        barbican:\n"
+            + "          barbican_endpoint: http://elsewhere:9311\n"
         ),
     ),
     Fixture(

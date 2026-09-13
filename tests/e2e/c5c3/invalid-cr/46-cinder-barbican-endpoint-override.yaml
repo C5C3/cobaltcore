@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# [barbican] barbican_endpoint in services.cinder.extraConfig is forbidden by the
+# ownership family as soon as services.barbican is declared: the ControlPlane
+# projects the Cinder child's key manager from the Barbican child by naming
+# convention, so an override points castellan at a key manager this plane never
+# provisioned, and every encrypted volume is then written with, or read against,
+# the wrong keys. The key is only Reported in the cinder registry, because a Cinder
+# child on its own cannot tell a projected Barbican from a hand-configured one,
+# which is why the fixture carries the barbican block too. The step anchors on
+# `services.cinder.extraConfig[barbican][barbican_endpoint]`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-cinder-barbican-override
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    barbican:
+      secretStore:
+        dedicated: {}
+    cinder:
+      backends:
+      - name: nfs1
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /volumes
+      extraConfig:
+        barbican:
+          barbican_endpoint: http://elsewhere:9311
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
