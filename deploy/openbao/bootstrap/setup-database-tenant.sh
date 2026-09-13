@@ -277,12 +277,11 @@ main() {
   # the neutron-db-dynamic policy that grants exactly this creds path.
   #
   # MUST STAY IN SYNC (cinder): the cinder-<namespace> role name below is the
-  # derivation
-  # operators/c5c3/internal/controller/reconcile_cinder_dbcredentials.go asserts
-  # once issue #989 adds that generator to the c5c3 operator, and the schema is
-  # the fixed 'cinder' one. This leg is the engine half of the cinder onboarding;
-  # the auth half (a cinder-db role bound to a cinder-db-dynamic policy in
-  # setup-auth.sh) lands with that generator in #989.
+  # derivation cinderDBDynamicRoleFor asserts in
+  # operators/c5c3/internal/controller/reconcile_cinder_dbcredentials.go, and the
+  # schema is the fixed 'cinder' one. This leg is the engine half of the cinder
+  # onboarding; the auth half is in setup-auth.sh, where the cinder-db role binds
+  # the cinder-db-dynamic policy that grants exactly this creds path.
   local svc svc_ns svc_mariadb
   for svc in glance placement barbican neutron cinder; do
     if [[ -z "$(get_controlplane_field "{.spec.services.${svc}}" '')" ]]; then
