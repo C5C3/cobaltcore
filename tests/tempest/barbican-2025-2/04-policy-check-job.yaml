@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Checks that barbican-tempest-2025-2 enforces the secure-RBAC policy defaults
+# the operator renders ([oslo_policy] enforce_new_defaults = true). Every plugin
+# API test runs as project_admin, which the legacy and the new rules both
+# accept, and the one test whose credential told them apart is excluded (see
+# exclude-tests.txt), so this Job asserts the posture directly. Each probe
+# answers differently under the legacy rules:
+#
+#   - a user holding only member on a probe project creates a secret (201) and
+#     deletes it again (204); the legacy rules demand the creator role
+#   - a user holding only key-manager:service-admin lists project quotas and is
+#     refused (403); the legacy rules grant it
+#
+# The creator-free create is the call Cinder's volume encryption makes with the
+# requesting member's token (#979 D9a). The Job authenticates as the bootstrap
+# admin (keystone-admin Secret) to create the probe project and users, and is
+# written idempotently so a Job retry converges.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: barbican-tempest-policy-check
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: check
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-barbican-tempest-2025-2.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+            - name: BARBICAN_URL
+              value: http://barbican-tempest-2025-2.openstack.svc:9311
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              PROJECT=barbican-policy-check
+              # A fresh password per run, set on every probe user below, so a
+              # retry after a partial run still authenticates.
+              PROBE_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+
+              # --or-show keeps the creates idempotent, and re-adding an existing
+              # role assignment succeeds.
+              openstack project create --or-show --domain Default "${PROJECT}" >/dev/null
+              probe_user() {
+                user="$1"
+                role="$2"
+                openstack user create --or-show --domain Default "${user}" >/dev/null
+                openstack user set --password "${PROBE_PASSWORD}" "${user}"
+                openstack role add --user "${user}" --user-domain Default \
+                  --project "${PROJECT}" --project-domain Default "${role}"
+              }
+              probe_user barbican-policy-member member
+              probe_user barbican-policy-service-admin key-manager:service-admin
+
+              probe_token() {
+                OS_USERNAME="$1" OS_PASSWORD="${PROBE_PASSWORD}" OS_PROJECT_NAME="${PROJECT}" \
+                  openstack token issue --format value --column id
+              }
+              MEMBER_TOKEN="$(probe_token barbican-policy-member)"
+              SERVICE_ADMIN_TOKEN="$(probe_token barbican-policy-service-admin)"
+              export MEMBER_TOKEN SERVICE_ADMIN_TOKEN
+
+              python3 - <<'EOF'
+              import json
+              import os
+              import sys
+              import urllib.error
+              import urllib.request
+
+              BARBICAN = os.environ["BARBICAN_URL"]
+
+
+              def call(method, path, token, body=None):
+                  headers = {"X-Auth-Token": token, "Accept": "application/json"}
+                  data = None
+                  if body is not None:
+                      data = json.dumps(body).encode()
+                      headers["Content-Type"] = "application/json"
+                  req = urllib.request.Request(BARBICAN + path, data=data,
+                                               method=method, headers=headers)
+                  try:
+                      with urllib.request.urlopen(req, timeout=30) as resp:
+                          return resp.status, resp.read().decode("utf-8", "replace")
+                  except urllib.error.HTTPError as e:
+                      return e.code, e.read().decode("utf-8", "replace")
+
+
+              def expect(what, want, got, body):
+                  if got != want:
+                      sys.exit("ERROR: %s answered %d, want %d: %s" % (what, got, want, body))
+                  print("OK: %s answered %d" % (what, got))
+
+
+              member = os.environ["MEMBER_TOKEN"]
+              status, body = call("POST", "/v1/secrets", member, {
+                  "name": "policy-check", "payload": "policy-check",
+                  "payload_content_type": "text/plain"})
+              expect("POST /v1/secrets as a member-only user", 201, status, body)
+              # secret_ref carries the request host, so only its uuid is reused.
+              uuid = json.loads(body)["secret_ref"].rstrip("/").rsplit("/", 1)[-1]
+              status, body = call("DELETE", "/v1/secrets/" + uuid, member)
+              expect("DELETE /v1/secrets/%s as its member-only creator" % uuid, 204, status, body)
+
+              status, body = call("GET", "/v1/project-quotas", os.environ["SERVICE_ADMIN_TOKEN"])
+              expect("GET /v1/project-quotas as a key-manager:service-admin-only user",
+                     403, status, body)
+              EOF
