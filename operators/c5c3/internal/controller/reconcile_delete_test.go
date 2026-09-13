@@ -2203,6 +2203,9 @@ func namespaceTeardownScheme(t *testing.T) *runtime.Scheme {
 	if err := mariadbv1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding mariadb scheme: %v", err)
 	}
+	if err := cinderv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding cinder scheme: %v", err)
+	}
 	return s
 }
 
@@ -2431,6 +2434,113 @@ func TestDeleteServiceChildrenIn_ToleratesAnAbsentGlanceBackendCRD(t *testing.T)
 	// No Glance CR fixture either, so the wait set's Glance entry is NotFound and
 	// tolerated the same way.
 	remaining, err := r.deleteServiceChildrenIn(context.Background(), cp, "images")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(remaining).To(BeEmpty())
+}
+
+// cinderTeardownNamespace is the namespace the Cinder fixtures below place the
+// block-storage service in.
+const cinderTeardownNamespace = "block"
+
+// deletingCinderControlPlane returns a deleting ControlPlane whose block-storage
+// service lives in a namespace of its own, under the given lifecycle, on one NFS
+// volume backend.
+func deletingCinderControlPlane(
+	deletionAge time.Duration, lifecycle c5c3v1alpha1.ServiceNamespaceLifecycle,
+) *c5c3v1alpha1.ControlPlane {
+	cp := deletingControlPlane(deletionAge)
+	cp.Spec.Services.Cinder = &c5c3v1alpha1.ServiceCinderSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name: cinderTeardownNamespace, Lifecycle: lifecycle,
+		},
+		Backends: []c5c3v1alpha1.CinderBackendEntry{{
+			Name: "nfs1",
+			Type: "NFS",
+			NFS: &c5c3v1alpha1.NFSShareSpec{
+				Server: "nfs-server.openstack.svc.cluster.local",
+				Path:   "/volumes",
+			},
+		}},
+	}
+	return cp
+}
+
+// TestDeleteServiceChildrenIn_SweepsOwnedCinderSatellites verifies the
+// cross-namespace teardown reaps both projected satellite kinds the ControlPlane
+// placed in a dedicated namespace: a c5c3-owned CinderBackend and
+// CinderBackupBackend are deleted and reported as remaining (so the sweep waits
+// for the detach the cinder operator runs under its service-remove finalizer),
+// while a hand-created backend attached to the same Cinder is left untouched. The
+// satellites carry bare entry names, so ownership is the whole filter.
+func TestDeleteServiceChildrenIn_SweepsOwnedCinderSatellites(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingCinderControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	ns := cinderTeardownNamespace
+
+	// The projected, label-owned satellites (a cross-namespace child cannot carry
+	// an owner reference).
+	owned := &cinderv1alpha1.CinderBackend{ObjectMeta: metav1.ObjectMeta{
+		Name: "nfs1", Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	ownedBackup := &cinderv1alpha1.CinderBackupBackend{ObjectMeta: metav1.ObjectMeta{
+		Name: "nfsbk", Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	// A hand-created backend on the same Cinder, owned by nobody.
+	foreign := &cinderv1alpha1.CinderBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: "byo", Namespace: ns},
+		Spec: cinderv1alpha1.CinderBackendSpec{
+			CinderRef: cinderv1alpha1.CinderRefSpec{Name: cinderName(cp)},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned, ownedBackup, foreign).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	remaining, err := r.deleteServiceChildrenIn(context.Background(), cp, ns)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Both owned satellites were deleted and reported as remaining so the sweep waits.
+	g.Expect(remaining).To(ContainElements(ns+"/nfs1", ns+"/nfsbk"))
+	expectSwept(t, c, owned, ownedBackup)
+
+	// The foreign backend is untouched and never reported as remaining.
+	expectPresent(t, c, foreign)
+	g.Expect(remaining).NotTo(ContainElement(ns + "/byo"))
+}
+
+// TestDeleteServiceChildrenIn_ToleratesAbsentCinderCRDs covers the uninstall order
+// nobody controls: the cinder-operator and its CRDs can be removed before the
+// ControlPlane that projected the satellites. A List against a kind the API server
+// no longer serves reads as nothing to sweep, for both satellite kinds, so the
+// teardown still finishes instead of wedging on it.
+func TestDeleteServiceChildrenIn_ToleratesAbsentCinderCRDs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingCinderControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				switch list.(type) {
+				case *cinderv1alpha1.CinderBackendList:
+					return &meta.NoKindMatchError{
+						GroupKind: schema.GroupKind{Group: "cinder.openstack.c5c3.io", Kind: "CinderBackend"},
+					}
+				case *cinderv1alpha1.CinderBackupBackendList:
+					return &meta.NoKindMatchError{
+						GroupKind: schema.GroupKind{Group: "cinder.openstack.c5c3.io", Kind: "CinderBackupBackend"},
+					}
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	// No Cinder CR fixture either, so the wait set's Cinder entry is NotFound and
+	// tolerated the same way.
+	remaining, err := r.deleteServiceChildrenIn(context.Background(), cp, cinderTeardownNamespace)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(remaining).To(BeEmpty())
 }
@@ -3213,6 +3323,60 @@ func TestSweepExternalNamespaceResidue_RemovesTheNeutronResidue(t *testing.T) {
 
 	r2.sweepExternalNamespaceResidue(ctx, c2, cp, ns)
 	expectPresent(t, c2, foreign)
+}
+
+// TestSweepExternalNamespaceResidue_RemovesTheCinderResidue covers the External
+// lifecycle for the block-storage service, where the namespace survives the
+// ControlPlane so nothing cascades and every object has to be named: the
+// DB-credential material in the same four shapes as Glance's, plus the bus
+// delivery beside it, the transport-URL Secret and the CA mirror. A same-named
+// Secret this ControlPlane never wrote is left alone.
+func TestSweepExternalNamespaceResidue_RemovesTheCinderResidue(t *testing.T) {
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingCinderControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleExternal)
+	ns := cinderTeardownNamespace
+
+	dbES := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: cinderDBCredentialSecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	dbVDS := &esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: cinderDBCredentialSecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	dbCert := &unstructured.Unstructured{}
+	dbCert.SetGroupVersionKind(certificateGVK)
+	dbCert.SetName(cinderDBCredentialClientCertName(cp))
+	dbCert.SetNamespace(ns)
+	dbCert.SetLabels(controlPlaneChildLabels(cp))
+	dbSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name: cinderDBCredentialServiceAccountName, Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	bus := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: cinderMessagingSecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	busCA := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: cinderMessagingCASecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+
+	residue := []client.Object{dbES, dbVDS, dbCert, dbSA, bus, busCA}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(append([]client.Object{cp}, residue...)...).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	r.sweepExternalNamespaceResidue(ctx, c, cp, ns)
+	expectSwept(t, c, residue...)
+
+	// A Secret at the derived transport-URL name that carries none of our labels
+	// belongs to somebody else in this shared namespace and survives.
+	foreignBus := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: cinderMessagingSecretName(cp), Namespace: ns,
+	}}
+	c2 := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreignBus).Build()
+	r2 := &ControlPlaneReconciler{Client: c2, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	r2.sweepExternalNamespaceResidue(ctx, c2, cp, ns)
+	expectPresent(t, c2, foreignBus)
 }
 
 // --- placed-namespace teardown ---

@@ -981,6 +981,27 @@ func (r *ControlPlaneReconciler) deleteServiceChildrenIn(
 			return nil, err
 		}
 	}
+
+	// The Cinder namespace carries the two projected satellite kinds, swept on
+	// ownership alone: a satellite is named after the backends entry itself, so no
+	// prefix selects it, and the ownership check is the whole filter that keeps a
+	// hand-created backend attached to the same Cinder out of the sweep. Each
+	// still-present satellite is reported as remaining, because a deleted
+	// CinderBackend keeps the cinder operator's service-remove finalizer until its
+	// detach Job has run: the namespace must not be taken out from under that Job.
+	// An absent satellite CRD reads as nothing to sweep.
+	if cp.CinderNamespace() == namespace {
+		for _, satellites := range []projectedChildren{
+			cinderBackendChildren(namespace, nil),
+			cinderBackupBackendChildren(namespace, nil),
+		} {
+			swept, err := r.sweepProjectedChildren(ctx, cp, satellites)
+			if err != nil {
+				return nil, err
+			}
+			remaining = append(remaining, swept...)
+		}
+	}
 	return remaining, nil
 }
 
@@ -1168,9 +1189,9 @@ func (r *ControlPlaneReconciler) deleteManagedNamespace(
 // nothing cascades and every object has to be named. The set is deterministic
 // (every name is derived from the ControlPlane), so nothing has to be discovered:
 // the backing services, the admin-password and Keystone DB-credential material, the
-// Glance, Placement, Barbican, and Neutron DB-credential material, the Barbican
-// secret store with the dedicated OpenBao ensemble behind it, the bus delivery the
-// network service reads, and the tenant-store trio.
+// Glance, Placement, Barbican, Neutron, and Cinder DB-credential material, the
+// Barbican secret store with the dedicated OpenBao ensemble behind it, the bus
+// delivery the network and block-storage services read, and the tenant-store trio.
 //
 // The tenant-store trio goes LAST: the service children deleted before this ran
 // their own ESO cleanup through that store, and an ESO PushSecret cannot purge its
@@ -1323,6 +1344,27 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 			}},
 		)
 		objs = append(objs, serviceMessagingSecrets(neutronMessagingTarget(cp))...)
+	}
+	// The Cinder credential material, which follows the block-storage service, in
+	// the same four shapes as Glance's above, plus the bus delivery the ControlPlane
+	// wrote beside the child: the brownfield transport-URL Secret and the CA mirror.
+	// The satellites are not in here: deleteServiceChildrenIn sweeps them and waits
+	// for them, and this runs only once that namespace reported nothing remaining.
+	if cp.CinderNamespace() == namespace {
+		objs = append(
+			objs,
+			&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: cinderDBCredentialSecretName(cp), Namespace: namespace,
+			}},
+			&esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: cinderDBCredentialSecretName(cp), Namespace: namespace,
+			}},
+			unstructuredIn(certificateGVK, cinderDBCredentialClientCertName(cp)),
+			&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name: cinderDBCredentialServiceAccountName, Namespace: namespace,
+			}},
+		)
+		objs = append(objs, serviceMessagingSecrets(cinderMessagingTarget(cp))...)
 	}
 	// The tenant store LAST: everything above authenticated through it.
 	objs = append(
