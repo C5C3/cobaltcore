@@ -1099,11 +1099,13 @@ func TestReconcileCinder_ProjectedChildFields(t *testing.T) {
 }
 
 // TestReconcileCinder_LeavesTuningBlocksUnset pins the Placement posture on the
-// blocks the ControlPlane deliberately does not drive. It is what keeps the volume
-// and backup Deployments on their single-replica defaults: the shared DeploymentSpec
-// defaults replicas to three as soon as one of those blocks is written at all, and
-// a second cinder-volume process under the same host identity is what the NFS
-// drivers refuse.
+// blocks the ControlPlane deliberately does not drive, and the one replica it does
+// write on the scheduler, volume and backup Deployments. Those three blocks are
+// struct values, so the apply carries them either way and the API server defaults
+// their replicas to three. Volume and backup take the one replica the Cinder CRD's
+// CEL rules admit, because a second cinder-volume process under the same host
+// identity is what the NFS drivers refuse; the scheduler takes the one the cinder
+// operator's defaulting webhook gives a standalone CR.
 func TestReconcileCinder_LeavesTuningBlocksUnset(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := cinderControlPlane()
@@ -1113,11 +1115,15 @@ func TestReconcileCinder_LeavesTuningBlocksUnset(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cn := getProjectedCinder(t, r.Client, cp)
-	g.Expect(cn.Spec.Scheduler).To(Equal(cinderv1alpha1.CinderSchedulerSpec{}),
-		"the scheduler's own defaults stay authoritative")
-	g.Expect(cn.Spec.Volume).To(Equal(cinderv1alpha1.CinderVolumeSpec{}),
-		"a volume block would raise the single-replica default to three")
-	g.Expect(cn.Spec.Backup).To(Equal(cinderv1alpha1.CinderBackupSpec{}))
+	g.Expect(cn.Spec.Scheduler).To(Equal(cinderv1alpha1.CinderSchedulerSpec{
+		Deployment: commonv1.DeploymentSpec{Replicas: 1},
+	}), "the scheduler block carries the pinned replica count and nothing else")
+	g.Expect(cn.Spec.Volume).To(Equal(cinderv1alpha1.CinderVolumeSpec{
+		Deployment: commonv1.DeploymentSpec{Replicas: 1},
+	}), "the volume block carries the pinned replica count and nothing else")
+	g.Expect(cn.Spec.Backup).To(Equal(cinderv1alpha1.CinderBackupSpec{
+		Deployment: commonv1.DeploymentSpec{Replicas: 1},
+	}), "the backup block carries the pinned replica count and nothing else")
 	g.Expect(cn.Spec.API.UWSGI).To(BeNil(), "the child-side uWSGI defaults stay authoritative")
 	g.Expect(cn.Spec.DBPurge).To(BeNil(), "scheduling the database purge stays a standalone-CR decision")
 	g.Expect(cn.Spec.NetworkPolicy).To(BeNil())
