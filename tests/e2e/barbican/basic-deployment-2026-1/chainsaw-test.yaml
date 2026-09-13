@@ -14,6 +14,8 @@
 #   - The API Deployment runs the :2026.1 image under the same uWSGI command
 #   - The rendered barbican.conf carries the vault plugin's approle_role_id and
 #     NOT its approle_secret_id
+#   - The rendered barbican.conf carries [oslo_policy]
+#     enforce_new_defaults = true and no enforce_scope
 #   - The rendered paste file has the 2026.1 shape: the oslo request_id filter is
 #     present and the repoze.profile pipeline is gone
 #   - The Barbican API answers /healthcheck with 200 from inside the API pod
@@ -202,7 +204,9 @@ spec:
   # ── Step 5: Assert the rendered config Secret ──────────────────────────
   # The [vault_plugin] greps are identical to the 2025.2 leg's: the credential
   # split does not move with the release, and keeping them here is what turns
-  # that claim into an end-to-end one against the 2026.1 image.
+  # that claim into an end-to-end one against the 2026.1 image. The
+  # [oslo_policy] greps are identical to the 2025.2 leg's as well, since the
+  # policy posture does not move with the release either.
   #
   # The paste greps are the INVERSE of the 2025.2 leg's. Upstream added the oslo
   # request_id filter to every pipeline and dropped the repoze.profile pipeline
@@ -230,6 +234,14 @@ spec:
             exit 1
           fi
           echo "OK: $SEC renders approle_role_id in [vault_plugin] and no approle_secret_id"
+          awk '/^\[oslo_policy\]$/{f=1;next} /^\[/{f=0} f' /tmp/barbican-basic-2026.conf \
+            > /tmp/barbican-basic-2026-oslo-policy.ini
+          grep -q '^enforce_new_defaults = true$' /tmp/barbican-basic-2026-oslo-policy.ini
+          if grep -q '^enforce_scope' /tmp/barbican-basic-2026-oslo-policy.ini; then
+            echo "ERROR: barbican.conf renders enforce_scope; the operator leaves it at barbican's default"
+            exit 1
+          fi
+          echo "OK: $SEC renders enforce_new_defaults = true in [oslo_policy] and no enforce_scope"
           grep -q '^\[filter:request_id\]$' /tmp/barbican-basic-2026-paste.ini
           if grep -q '^\[pipeline:barbican-profile\]$' /tmp/barbican-basic-2026-paste.ini; then
             echo "ERROR: barbican-api-paste.ini carries the pre-2026.1 barbican-profile pipeline"
