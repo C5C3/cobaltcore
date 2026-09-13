@@ -661,6 +661,69 @@ test_matrix_cr_names_match_the_cinder_fixtures() {
   done <<< "$legs"
 }
 
+test_controlplane_leg_deploys_cinder() {
+  echo "Test: the e2e-controlplane leg carries the block-storage service"
+
+  # The full-ControlPlane suite drives a seventh service through the chain, and
+  # every piece of that is wired in this one job. kind pulls nothing the run did
+  # not load, the projected Cinder child needs a cinder-operator to drive it to
+  # Ready, and the suite's own gate hard-fails on a leg that carries the CRDs
+  # alone (E2E_REQUIRE_CONTROLPLANE_STACK=true).
+  local load
+  load=$(job_step e2e-controlplane "Load E2E images")
+  assert_contains "the leg pulls the cinder-operator image" "$load" \
+    "cinder-operator:dev"
+  assert_contains "the leg pulls the cinder service image" "$load" \
+    "cinder:2025.2"
+
+  local kind_load
+  kind_load=$(job_step e2e-controlplane "Load images into kind")
+  assert_contains "the operator image reaches the node" "$kind_load" \
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/cinder-operator:dev"
+  assert_contains "the service image reaches the node" "$kind_load" \
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/cinder:2025.2"
+
+  # The suite mounts its volume and backup shares from the kind NFS export and
+  # takes a vhost on the shared broker. deploy-infra.sh installs neither by
+  # default and setup-e2e-infra reads both flags from env, so they have to sit in
+  # this step's own env block.
+  local setup
+  setup=$(job_step e2e-controlplane "Setup E2E infrastructure")
+  assert_contains "the leg opts into the NFS stack" "$setup" \
+    "WITH_NFS: \"true\""
+  assert_contains "and into the shared broker" "$setup" \
+    "WITH_MESSAGING: \"true\""
+
+  local deploy
+  deploy=$(job_step e2e-controlplane "Deploy cinder-operator")
+  assert_not_empty "the cinder-operator is deployed" "$deploy"
+  assert_contains "it deploys the cinder operator" "$deploy" "OPERATOR: cinder"
+  assert_contains "it lands in its own Namespace" "$deploy" \
+    "NAMESPACE: cinder-system"
+
+  # Order is the load-bearing part: c5c3-operator projects the Cinder child and
+  # its two satellite kinds, so the Cinder CRDs have to be served before it
+  # starts. A deploy step that drifted below c5c3-operator would leave the first
+  # projection passes failing on an unknown kind.
+  local body neutron_at cinder_at c5c3_at
+  body=$(job_block e2e-controlplane)
+  neutron_at=$(grep -n "^      - name: Deploy neutron-operator$" <<< "$body" | cut -d: -f1)
+  cinder_at=$(grep -n "^      - name: Deploy cinder-operator$" <<< "$body" | cut -d: -f1)
+  c5c3_at=$(grep -n "^      - name: Deploy c5c3-operator$" <<< "$body" | cut -d: -f1)
+  assert_not_empty "the job deploys neutron-operator" "$neutron_at"
+  assert_not_empty "the job deploys c5c3-operator" "$c5c3_at"
+  assert_gte "cinder-operator is deployed after neutron-operator" \
+    "$cinder_at" "$neutron_at"
+  assert_gte "and before c5c3-operator" "$c5c3_at" "$cinder_at"
+
+  # The c5c3 dump reads cinder-system for nothing, so a failed run would carry no
+  # cinder-operator log at all without a second dump of its own.
+  local dump
+  dump=$(job_step e2e-controlplane "Dump cinder diagnostic info")
+  assert_contains "the failed run dumps the cinder-operator" "$dump" \
+    "OPERATOR: cinder"
+}
+
 # Two release directories carry the seed image the volume suites boot from, and
 # each carries it twice: 07-image-seed-job.yaml registers the UUID and
 # tempest.conf points compute.image_ref at it. Nothing holds the two together.
@@ -703,6 +766,7 @@ test_cinder_tempest_filter_is_wired
 test_tempest_cinder_leg_is_wired
 test_matrix_cr_names_match_the_cinder_fixtures
 test_cinder_fixtures_agree_on_the_seed_image
+test_controlplane_leg_deploys_cinder
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -2056,19 +2056,28 @@ jobs:
   # applies that budget to every script operation, so try, catch and finally each
   # get one, and the cleanup runs after all three. Each of the three therefore
   # pins its catch and its finally explicitly, which puts the ceilings at
-  # 40+5+5+3 = 53m (full-chain), 40+5+20+15 = 80m (foreign-namespace) and
+  # 50+5+5+2+3 = 65m (full-chain), 40+5+20+15 = 80m (foreign-namespace) and
   # 50+5+20+15 = 90m (own-namespace). Unpinned, catch and finally would inherit
   # the exec budget and the own-namespace ceiling alone would be 165m.
   #
-  # timeout-minutes has to outlast the bring-up (kind create, sixteen kind loads,
-  # setup-e2e-infra, K-ORC and eight operator deploys) plus the suites that pass
-  # plus the full ceiling of the one that stalls, or the job wall arrives before
-  # a suite's own timeout does: chainsaw is killed outright, its catch block
-  # never runs, and a stalled leg is reported as a cancelled job with no JUnit
-  # report to read it out of. 195m covers ~30m of observed bring-up, the two
-  # earlier suites, and the 90m ceiling of the last one; the worst case holds the
-  # runner for over three hours, which is the price of a stalled suite reporting
-  # as a failure rather than a cancellation.
+  # timeout-minutes has to outlast the bring-up (kind create, eighteen kind
+  # loads, setup-e2e-infra, K-ORC and nine operator deploys) plus the suites
+  # that pass plus the full ceiling of the one that stalls, or the job wall
+  # arrives before a suite's own timeout does: chainsaw is killed outright, its
+  # catch block never runs, and a stalled leg is reported as a cancelled job
+  # with no JUnit report to read it out of.
+  #
+  # The seventh service moved every term of that sum, so the wall is re-derived
+  # rather than carried over: the bring-up grew two image loads, a ninth operator
+  # deploy, the NFS stack and a RabbitMQ broker on top of the ~30m measured
+  # before, and the full-chain ceiling grew 53m -> 65m. 220m therefore covers
+  # ~40m of bring-up, the 65m ceiling of the full-chain suite (at its ceiling,
+  # not an observed pass: it is the suite this leg just lengthened), ~25m for the
+  # foreign-namespace pass, and the 90m ceiling of the last suite. The bring-up
+  # and foreign-namespace terms are the two estimates in that sum — confirm both
+  # against the first green run of this leg and re-derive if either overruns. The
+  # worst case holds the runner for close to four hours, which is the price of a
+  # stalled suite reporting as a failure rather than a cancellation.
   e2e-controlplane:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
     # always(): allow the job to run when upstream Go jobs are skipped
@@ -2083,7 +2092,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 195
+    timeout-minutes: 220
     continue-on-error: false
     permissions:
       contents: read
@@ -2117,12 +2126,14 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
             ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
             ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
+            ${{ env.IMAGE_PREFIX }}/cinder-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
             ${{ env.IMAGE_PREFIX }}/horizon:2025.2
             ${{ env.IMAGE_PREFIX }}/glance:2025.2
             ${{ env.IMAGE_PREFIX }}/placement:2025.2
             ${{ env.IMAGE_PREFIX }}/barbican:2025.2
             ${{ env.IMAGE_PREFIX }}/neutron:2025.2
+            ${{ env.IMAGE_PREFIX }}/cinder:2025.2
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
             ${{ env.IMAGE_PREFIX }}/tempest:2025.2
       - name: Load images into kind
@@ -2135,12 +2146,14 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Prepare the shared infra (TLS, OpenBao + per-CR seeding, ESO store) and
@@ -2154,6 +2167,12 @@ jobs:
           CONTROLPLANE_OPERATORS: external
           CONTROLPLANE_NAME: controlplane-keystone
           WITH_CONTROLPLANE_CR: "false"
+          # The seventh service, Cinder, mounts its NFS shares from the kind NFS
+          # export and takes a vhost of its own on the shared broker, so this leg
+          # opts into both stacks the way the cinder e2e-operator leg does.
+          # deploy-infra.sh installs neither by default.
+          WITH_NFS: "true"
+          WITH_MESSAGING: "true"
       # Deploy K-ORC (CRDs + controller) from the upstream installer at the tag
       # pinned in deploy/flux-system/sources/k-orc.yaml.
       - name: Deploy K-ORC
@@ -2231,6 +2250,15 @@ jobs:
           OPERATOR: neutron
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
           NAMESPACE: neutron-system
+      # cinder-operator before c5c3-operator so the Cinder CRDs exist before
+      # c5c3-operator projects the Cinder child and its two satellite kinds, and
+      # so something drives that child to Ready once it lands.
+      - name: Deploy cinder-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
       - name: Deploy c5c3-operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -2273,6 +2301,14 @@ jobs:
         run: hack/ci-dump-diagnostics.sh
         env:
           OPERATOR: c5c3
+      # The cinder half of the same dump: the script reads OPERATOR for the
+      # operator namespace (cinder-system) and leaves NAMESPACE at openstack,
+      # where the projected Cinder child and its satellites run.
+      - name: Dump cinder diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: cinder
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

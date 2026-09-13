@@ -98,7 +98,7 @@ test_shared_changes_no_longer_force_the_job() {
   echo "Test: a shared Go change and another operator's suite leave the job off"
 
   # This job and its two siblings are the most expensive in the pipeline (up to
-  # 195 minutes each). They used to run on any Go change and on any edit under
+  # 220 minutes each). They used to run on any Go change and on any edit under
   # tests/e2e/**, which is what made a one-line dependency bump cost a full
   # pipeline. A shared change still runs the c5c3 e2e leg; ci:controlplane and
   # ci:full are how you ask for the chain itself.
@@ -202,7 +202,7 @@ test_filter_covers_the_machinery_and_the_suites() {
     "$block" "tests/e2e/c5c3/keystone-service-foreign-namespace/**"
   # The operator code and the shared scripts reach this job through the c5c3
   # filter and the canary respectively, not through the suite filter. Listing
-  # them here again is what made every Go change schedule three 195-minute jobs.
+  # them here again is what made every Go change schedule three 220-minute jobs.
   assert_not_contains "the suite filter does not carry the operator tree" \
     "$block" "operators/c5c3/**"
   assert_not_contains "the suite filter does not carry the hack scripts" \

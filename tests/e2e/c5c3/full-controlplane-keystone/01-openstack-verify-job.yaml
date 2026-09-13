@@ -8,19 +8,24 @@
 # delivered to the per-CR k-orc-clouds-yaml Secret by the credential chain) and
 # runs `openstack token issue` + `openstack catalog list` to prove the
 # credential actually works end-to-end and that the identity, image, placement,
-# key-manager, and network services are catalogued. It also lists the role
-# assignments of the INJECTED "glance", "placement", "barbican" and "neutron"
-# service accounts and greps for the "service" role, proving the RoleAssignments
-# landed in Keystone, uploads a real image through the projected Glance endpoint
+# key-manager, network, and block-storage services are catalogued. It also lists
+# the role assignments of the INJECTED "glance", "placement", "barbican",
+# "neutron" and "cinder" service accounts and greps for the "service" role (and
+# for "admin" on cinder), proving the RoleAssignments landed in Keystone, uploads
+# a real image through the projected Glance endpoint
 # into the Garage S3 backend, waits for it to reach "active", and deletes it
 # (proving the image service works end-to-end rather than only being
 # catalogued), lists the placement resource classes through the projected
 # Placement endpoint for the same reason, stores a secret through the projected
 # Barbican endpoint, reads its payload back and compares it byte for byte
 # against the stored literal, and creates, shows and deletes a network through
-# the projected Neutron endpoint. It also reads the RegionOne description back
-# and compares it against the literal the ControlPlane's
-# `spec.regionDescription` sets.
+# the projected Neutron endpoint. Through the projected Cinder endpoint it runs
+# four more round-trips: a volume on the NFS backend, a backup created, restored
+# into that volume and deleted, an encrypted volume type whose LUKS key is
+# counted into and back out of Barbican, and two creates from the same image
+# where the second one has to be served by the image-volume cache. It also reads
+# the RegionOne description back and compares it against the literal the
+# ControlPlane's `spec.regionDescription` sets.
 #
 # the orc-system copy of k-orc-clouds-yaml was removed; the
 # operator now materialises the per-CR k-orc-clouds-yaml Secret ONLY into the
@@ -35,8 +40,10 @@
 # into kind (the tag CI builds — there is no :latest), so the image is pinned to
 # that tag with imagePullPolicy: IfNotPresent to use the kind-loaded copy rather
 # than pulling from GHCR. The `openstack secret` subcommands come from the
-# python-barbicanclient plugin the same image bundles. Behind the chainsaw
-# presence guard the verify step never runs on a cluster that lacks the stack.
+# python-barbicanclient plugin the same image bundles, and the `openstack
+# volume` subcommands from the python-cinderclient it pulls in with
+# python-openstackclient. Behind the chainsaw presence guard the verify step
+# never runs on a cluster that lacks the stack.
 # The `admin` cloud entry name is the cloudName K-ORC writes into the clouds.yaml
 # (spec.korc.adminCredential in 00-controlplane-cr.yaml).
 apiVersion: batch/v1
@@ -72,6 +79,8 @@ spec:
               openstack --os-cloud admin catalog list | grep -qi key-manager
               echo "== network service catalogued =="
               openstack --os-cloud admin catalog list | grep -qi network
+              echo "== block-storage service catalogued =="
+              openstack --os-cloud admin catalog list | grep -qi block-storage
               echo "== region description round-trip =="
               DESC="$(openstack --os-cloud admin region show RegionOne -f value -c description)"
               test "${DESC}" = "CobaltCore e2e region" || { echo "ERROR: region description '${DESC}' != 'CobaltCore e2e region'"; exit 1; }
@@ -88,6 +97,14 @@ spec:
               echo "== openstack --os-cloud admin role assignment list --names --user neutron =="
               openstack --os-cloud admin role assignment list --names --user neutron
               openstack --os-cloud admin role assignment list --user neutron --names -f value -c Role | grep -qx service
+              echo "== openstack --os-cloud admin role assignment list --names --user cinder =="
+              openstack --os-cloud admin role assignment list --names --user cinder
+              # Cinder is the one service account with a second role: it deletes the
+              # Barbican secret of an encrypted volume as a fallback when the
+              # volume's owner cannot, which Barbican's secure-RBAC defaults put
+              # behind admin. Both rows are asserted, so dropping either one fails.
+              openstack --os-cloud admin role assignment list --user cinder --names -f value -c Role | grep -qx service
+              openstack --os-cloud admin role assignment list --user cinder --names -f value -c Role | grep -qx admin
               echo "== image upload round-trip =="
               # The projected K-ORC catalog rows carry no region — K-ORC's
               # EndpointResourceSpec has no region field — while the mounted
@@ -146,6 +163,132 @@ spec:
               test "${NET_STATUS}" = "ACTIVE" || { echo "ERROR: created network status '${NET_STATUS}' != ACTIVE"; exit 1; }
               OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin network delete cp-verify-net
               echo "OK: network round-trip created, showed ACTIVE, and deleted cp-verify-net"
+              echo "== block-storage round-trips =="
+              # The D8 CRUD checks for the block-storage service, driven through
+              # the ControlPlane's own admin credential like the network one
+              # above. The block-storage rows carry no region either, so every
+              # call in this section goes through one wrapper over the
+              # region-stripped copy.
+              osc() { OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin "$@"; }
+              # wait_status <kind> <name> <want> <timeoutSeconds>: poll one
+              # object's status every 5s, and print the last status seen when the
+              # deadline passes. Cinder answers a create before the volume exists
+              # on the backend, so every create here is followed by one of these.
+              # The kind is one word ("volume", "image") or two ("volume backup"),
+              # and is left unquoted so both reach the command line as written.
+              wait_status() {
+                ws_deadline=$(( $(date +%s) + $4 ))
+                while true; do
+                  ws_status="$(osc $1 show "$2" -f value -c status 2>/dev/null || true)"
+                  if [ "${ws_status}" = "$3" ]; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${ws_deadline}" ]; then
+                    echo "ERROR: $1 $2 status '${ws_status:-<none>}' != $3 within $4s"
+                    # The show itself, for the reason the status was not read:
+                    # a volume the API answers with an error state, or a name
+                    # that resolves to more than one object.
+                    osc $1 show "$2" 2>&1 || true
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+              # wait_gone <kind> <name> <timeoutSeconds>: poll until a show of the
+              # object fails, which is how the client reports one that is gone. A
+              # delete is asynchronous, so a later count would otherwise race it.
+              wait_gone() {
+                wg_deadline=$(( $(date +%s) + $3 ))
+                while true; do
+                  if ! osc $1 show "$2" >/dev/null 2>&1; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${wg_deadline}" ]; then
+                    echo "ERROR: $1 $2 still present after $3s"
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+              echo "== volume round-trip =="
+              # A volume on the NFS backend the ControlPlane projected. Reaching
+              # available spans the whole service: the API took the request, the
+              # scheduler answered it over the bus, and cinder-volume created the
+              # file on the mounted share.
+              osc volume create --size 1 cp-vol
+              wait_status volume cp-vol available 120
+              echo "OK: volume round-trip"
+              echo "== backup round-trip =="
+              # cinder-backup reads the volume off the volume share and writes the
+              # chunks onto the backup share. The restore goes back into the same
+              # volume, which is the half that proves the chunks are readable
+              # again, and the delete proves the backup service owns them.
+              # openstackclient restores into a volume that already exists only
+              # behind --force; without it the command refuses before any API
+              # call ("Volume 'cp-vol' already exists; if you want to restore
+              # the backup to it you need to specify the '--force' option").
+              osc volume backup create --name cp-bk cp-vol
+              wait_status "volume backup" cp-bk available 180
+              osc volume backup restore --force cp-bk cp-vol
+              wait_status volume cp-vol available 180
+              osc volume backup delete cp-bk
+              wait_gone "volume backup" cp-bk 120
+              echo "OK: backup round-trip"
+              echo "== encrypted volume type =="
+              # The key-manager half of the block-storage service. Creating a
+              # volume of an encrypted type has cinder store a LUKS key in
+              # Barbican, and deleting that volume has it delete the key again.
+              # Counting the secrets on both sides is what proves the key reached
+              # Barbican: the type and the volume are created just the same
+              # against a key manager that is never called.
+              BEFORE="$(osc secret list -f value -c 'Secret href' | wc -l)"
+              osc volume type create --encryption-provider luks --encryption-cipher aes-xts-plain64 \
+                --encryption-key-size 256 --encryption-control-location front-end cp-luks
+              osc volume create --size 1 --type cp-luks cp-enc
+              wait_status volume cp-enc available 120
+              AFTER="$(osc secret list -f value -c 'Secret href' | wc -l)"
+              test "${AFTER}" -eq "$((BEFORE + 1))" || { echo "ERROR: barbican secret count ${AFTER} != $((BEFORE + 1)) after creating an encrypted volume"; exit 1; }
+              osc volume delete cp-enc
+              wait_gone volume cp-enc 120
+              test "$(osc secret list -f value -c 'Secret href' | wc -l)" -eq "${BEFORE}" \
+                || { echo "ERROR: the encrypted volume's key outlived the volume in Barbican"; exit 1; }
+              osc volume type delete cp-luks
+              echo "OK: encrypted volume type"
+              echo "== image-volume cache =="
+              # The cache is enabled on the nfs1 backend, so the FIRST create from
+              # an image leaves a deployment-owned volume named image-<uuid> beside
+              # the tenant's, and the second request clones that instead of pulling
+              # the image through Glance again. The count of cache entries is what
+              # tells the two apart: a cache that never engaged leaves none, and one
+              # that engaged twice leaves two. The cache volume belongs to the
+              # internal tenant the ControlPlane projected onto the child, which is
+              # why it is only visible with --all-projects.
+              dd if=/dev/urandom of=/tmp/cache.img bs=1024 count=1024
+              osc image create --disk-format raw --container-format bare --file /tmp/cache.img cp-cache-img
+              wait_status image cp-cache-img active 120
+              IMG="$(osc image show cp-cache-img -f value -c id)"
+              osc volume create --size 1 --image "${IMG}" cp-img-1
+              wait_status volume cp-img-1 available 180
+              COUNT="$(osc volume list --all-projects -f value -c Name | grep -cx "image-${IMG}" || true)"
+              test "${COUNT}" -eq 1 || { echo "ERROR: expected one cache entry image-${IMG} in the all-projects listing, found ${COUNT}"; exit 1; }
+              osc volume create --size 1 --image "${IMG}" cp-img-2
+              wait_status volume cp-img-2 available 180
+              COUNT="$(osc volume list --all-projects -f value -c Name | grep -cx "image-${IMG}" || true)"
+              test "${COUNT}" -eq 1 || { echo "ERROR: the second create-from-image left ${COUNT} cache entries image-${IMG} instead of cloning the one"; exit 1; }
+              osc volume delete cp-img-2
+              osc volume delete cp-img-1
+              wait_gone volume cp-img-2 120
+              wait_gone volume cp-img-1 120
+              # The cache volume is the deployment's, not the tenant's, so nothing
+              # above removed it and the namespace teardown reaches no backend.
+              CACHE_ID="$(osc volume list --all-projects -f value -c ID -c Name | awk -v n="image-${IMG}" '$2 == n {print $1}')"
+              test -n "${CACHE_ID}" || { echo "ERROR: no cache volume image-${IMG} left to delete"; exit 1; }
+              osc volume delete "${CACHE_ID}"
+              wait_gone volume "${CACHE_ID}" 120
+              osc volume delete cp-vol
+              wait_gone volume cp-vol 120
+              osc image delete cp-cache-img
+              echo "OK: image-volume cache"
           volumeMounts:
             - name: clouds
               mountPath: /etc/openstack
