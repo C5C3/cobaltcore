@@ -25,7 +25,7 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 | `tests/tempest/keystone-2026-1/` | Keystone 2026.1 Tempest configuration |
 | `tests/tempest/glance-2025-2/` | Glance 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-glance-tempest-2025-2`, and four extra fixtures the CI job applies — `01-catalog-setup-job.yaml` (image-catalog bootstrap Job), `02-glance-cr.yaml` (Glance CR), `03-glancebackend-cr.yaml` (default GlanceBackend CR), `04-glancebackend2-cr.yaml` (second, non-default store so the copy-image import test has a copy target) |
 | `tests/tempest/glance-2026-1/` | Glance 2026.1 Tempest configuration (same file set; identity CR `keystone-glance-tempest-2026-1`) |
-| `tests/tempest/barbican-2025-2/` | Barbican 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-barbican-tempest-2025-2`, and three extra fixtures the CI job applies (`01-catalog-setup-job.yaml`, the key-manager catalog bootstrap Job; `02-barbican-cr.yaml`, the Barbican CR; `03-barbicansecretstore-cr.yaml`, the default BarbicanSecretStore the job waits on before the Barbican CR) |
+| `tests/tempest/barbican-2025-2/` | Barbican 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-barbican-tempest-2025-2`, and four extra fixtures the CI job applies (`01-catalog-setup-job.yaml`, the key-manager catalog bootstrap Job; `02-barbican-cr.yaml`, the Barbican CR; `03-barbicansecretstore-cr.yaml`, the default BarbicanSecretStore the job waits on before the Barbican CR; `04-policy-check-job.yaml`, the Job that checks Barbican enforces its secure-RBAC policy defaults) |
 | `tests/tempest/barbican-2026-1/` | Barbican 2026.1 Tempest configuration (same file set; identity CR `keystone-barbican-tempest-2026-1`) |
 | `tests/tempest/neutron-2025-2/` | Neutron 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-neutron-tempest-2025-2`, and four extra fixtures the CI job applies (`01-catalog-setup-job.yaml`, the network catalog bootstrap Job; `02-messaging-secret.yaml`, the RabbitMQ credentials the Neutron mounts; `03-ovncentral-cr.yaml`, the OVNCentral the job waits on before the Neutron CR; `04-neutron-cr.yaml`, the Neutron CR) |
 | `tests/tempest/neutron-2026-1/` | Neutron 2026.1 Tempest configuration (same file set; identity CR `keystone-neutron-tempest-2026-1`) |
@@ -365,10 +365,10 @@ infrastructure not available in the CI kind cluster:
 #### Tracking version-coupled RBAC excludes
 
 Unlike the infrastructure excludes above, the RBAC excludes are coupled to a
-specific `keystone-tempest-plugin` version — they exist because the plugin's
-expected status codes disagree with Keystone's default policies for that
-release. They must not silently outlive their cause. Each RBAC exclude group
-therefore carries a `# tracked-by:` / `# re-evaluate-on:` comment pair:
+specific tempest plugin version — they exist because the plugin's expected
+status codes disagree with the service's default policies for that release.
+They must not silently outlive their cause. Each RBAC exclude group therefore
+carries a `# tracked-by:` / `# re-evaluate-on:` comment pair:
 
 ```text
 # tracked-by: <issue URL>
@@ -378,7 +378,17 @@ therefore carries a `# tracked-by:` / `# re-evaluate-on:` comment pair:
 On every `keystone-tempest-plugin` bump, re-run the excluded RBAC groups against
 the new plugin and drop any pattern upstream has fixed. The `re-evaluate-on`
 version is per-release (`> 0.19.0` for 2025.2, `> 0.20.0` for 2026.1), matching
-the plugin pinned in that release's `test-refs.yaml`.
+the plugin pinned in that release's `test-refs.yaml`. The barbican legs follow
+the same convention for their one exclude,
+`barbican_tempest_plugin\.tests\.api\.test_quotas\.ProjectQuotasTest\.test_manage_project_quotas`.
+The plugin runs that test with a credential that holds only
+`key-manager:service-admin`, which Barbican's
+[new policy defaults](../barbican/index.md#design-decisions) refuse for project
+quotas. The exclude is tracked by
+[#991](https://github.com/C5C3/cobaltcore/issues/991) and carries
+`re-evaluate-on: barbican-tempest-plugin > 4.5.0` on both releases. The excluded
+test was the leg's only runtime sign of that policy posture, so the leg's
+`04-policy-check-job.yaml` Job asserts the posture before Tempest runs.
 
 ### Adding a New Service
 
@@ -590,6 +600,7 @@ cinder legs also carry `tempest-concurrency` (`2`), which the run step passes to
 | Deploy Glance CR *(glance leg only)* | Applies `matrix.config-dir/02-glance-cr.yaml`, `03-glancebackend-cr.yaml`, and `04-glancebackend2-cr.yaml`, waits for `matrix.glance-cr-name` Ready |
 | Bootstrap key-manager catalog *(barbican leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits for the `barbican-tempest-catalog-setup` Job to complete (registers the key-manager service + endpoints in Keystone that the Barbican CR needs to reconcile, plus the `key-manager:service-admin` role the plugin's quota tests assign via dynamic credentials) |
 | Deploy Barbican CR *(barbican leg only)* | Applies `matrix.config-dir/02-barbican-cr.yaml` and `03-barbicansecretstore-cr.yaml`, waits for `barbicansecretstore/<barbican-cr-name>-store` Ready first, then for `matrix.barbican-cr-name` Ready. Barbican renders no config and never starts without a credential-ready default store, so the separate wait keeps a store-side failure from surfacing as an opaque Barbican timeout |
+| Verify key-manager policy defaults *(barbican leg only)* | Applies `matrix.config-dir/04-policy-check-job.yaml`, waits 300 s for the `barbican-tempest-policy-check` Job to complete. A user holding only `member` on a probe project must get 201 creating a secret and 204 deleting it, and a user holding only `key-manager:service-admin` must get 403 listing project quotas. Every plugin API test runs as `project_admin`, which the legacy and the secure-RBAC rules both accept, so the Tempest run alone cannot show that `enforce_new_defaults` took effect |
 | Bootstrap network catalog *(neutron leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits 300 s for the `neutron-tempest-catalog-setup` Job to complete (registers the network service + endpoints in Keystone that the Neutron CR authenticates against) |
 | Deploy OVNCentral *(neutron leg only)* | Applies `matrix.config-dir/02-messaging-secret.yaml` and `03-ovncentral-cr.yaml`, waits 300 s for `ovncentral/<matrix.ovn-cr-name>` Ready. `ovn-cr-name` is emitted by the matrix generator, like every other CR name this job waits on |
 | Deploy Neutron CR *(neutron leg only)* | Applies `matrix.config-dir/04-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready. The longer timeout covers the db-sync Job on top of the api and rpc-worker Deployments |

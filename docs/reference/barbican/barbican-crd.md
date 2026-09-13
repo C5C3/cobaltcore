@@ -192,12 +192,27 @@ each a credential the operator delivers through an environment variable:
 | `[vault_plugin] root_token_id` | operator-computed | The vault plugin prefers a root token over AppRole authentication, so a rendered one replaces the mount-scoped AppRole with an unscoped credential in plain text, and both are done the moment the pods load the file |
 
 Every other owned key is honored and reported. The registry covers `[DEFAULT]`
-(`db_auto_create`, `host_href`), `[database] connection`, the
-`[keystone_authtoken]` keys `keystoneauth.Section` renders, the `[secretstore]`
-registry pair, the `[vault_plugin]` options derived from the attached store,
-`[queue] enable`, and `[oslo_policy] policy_file`. Conditionally rendered keys
-are registered unconditionally: the registry records that a key is not the
-user's to set, not that it is currently rendered.
+(`db_auto_create`, `host_href`), `[database]` (`connection`, `max_retries`,
+`connection_recycle_time`), the `[keystone_authtoken]` keys
+`keystoneauth.Section` renders, the `[secretstore]` registry pair, the
+`[vault_plugin]` options derived from the attached store, `[queue] enable`, and
+`[oslo_policy]` (`enforce_new_defaults`, `policy_file`).
+Conditionally rendered keys are registered unconditionally: the registry
+records that a key is not the user's to set, not that it is currently rendered.
+
+`spec.policyOverrides` rules sit on top of the secure-RBAC defaults that
+`[oslo_policy] enforce_new_defaults = true` turns on (see
+[Design decisions](./index.md#design-decisions)). Each override replaces the
+one rule it names, and every other rule keeps its new default. A rule written
+for the legacy `creator` role, such as `secrets:get: rule:admin_or_creator`,
+grants a non-admin user nothing until the `creator` role is assigned in
+Keystone. Neither the operator nor the ControlPlane assigns it.
+
+The defaults grant `secret:get` and `secret:delete` to the bare `admin` role, so
+a user holding `admin` on any project reads the metadata of and deletes secrets
+in every project. An override that ties those two rules to the secret's project
+also stops the cinder service user's key-delete fallback, which reaches the
+volume owner's secret only through that term.
 
 The catalog check re-runs on update only when one of its inputs changed
 (`spec.extraConfig` or `spec.openStackRelease`), so an unrelated edit such as a
