@@ -281,6 +281,48 @@ main() {
     token_max_ttl=72h
   log "neutron-db role written."
 
+  # cinder-db role on the management cluster's Kubernetes auth mount, the Cinder
+  # analogue of the neutron-db role above and equally keystone-independent. The
+  # c5c3 operator's per-ControlPlane VaultDynamicSecret generator
+  # (operators/c5c3/internal/controller/reconcile_cinder_dbcredentials.go)
+  # authenticates with the "cinder-db-creds" ServiceAccount to read short-lived
+  # DB credentials at database/mariadb/creds/cinder-<namespace>.
+  # bound_service_account_namespaces="*" lets any ControlPlane namespace
+  # authenticate; the fixed SA name is what tells this role apart from
+  # keystone-db, glance-db, placement-db, barbican-db, and neutron-db (a
+  # cinder-db-creds token can never read their creds paths), and the cross-tenant
+  # boundary is enforced by the cinder-db-dynamic policy, which templates the
+  # readable creds path to the caller's OWN service_account_namespace (an exact
+  # match).
+  #
+  # Token TTLs are pinned to DB_CREDS_MAX_TTL (72h, setup-database-tenant.sh) for
+  # the same reason spelled out on the keystone-db role above: OpenBao revokes a
+  # dynamic-secret lease together with the token that minted it, so the token must
+  # outlive the lease or the issued DB credential dies early under a running
+  # Cinder.
+  #
+  # The role is written unconditionally but stays dormant until the ControlPlane
+  # spec carries a cinder service: no cinder-db-creds ServiceAccount is projected
+  # before then, so nothing authenticates against it. Pre-creating it (as the
+  # per-cluster ESO roles above are pre-created) gets the auth half of that
+  # onboarding out of the way.
+  #
+  # The ENGINE half is per ControlPlane: setup-database-tenant.sh carries a cinder
+  # branch that writes the database/mariadb connection+role pair behind
+  # database/mariadb/creds/cinder-<ns>, the exact path cinder-db-dynamic grants.
+  # That branch is gated on the live CR's spec.services.cinder and skipped for a
+  # dedicated cinder database, whereas this auth role is presence-independent: it
+  # grants nothing on its own, so the cluster-wide bootstrap writes it once
+  # instead of per tenant onboarding.
+  log "Writing cinder-db role on kubernetes/management..."
+  bao_exec bao write "auth/kubernetes/management/role/cinder-db" \
+    bound_service_account_names=cinder-db-creds \
+    bound_service_account_namespaces="*" \
+    token_policies=cinder-db-dynamic \
+    token_ttl=72h \
+    token_max_ttl=72h
+  log "cinder-db role written."
+
   # eso-tenant role on the management cluster's Kubernetes auth mount. This is
   # the per-ControlPlane ESO identity a namespaced SecretStore authenticates
   # with (created per tenant by setup-eso-tenant.sh with the "eso-tenant-auth"
