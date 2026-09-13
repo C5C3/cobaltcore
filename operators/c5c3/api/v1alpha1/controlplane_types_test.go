@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	"reflect"
 	"regexp"
 	"testing"
 
@@ -458,10 +459,11 @@ func TestGlanceNamespace(t *testing.T) {
 }
 
 // TestDedicatedServiceNamespacesIncludesGlance asserts the Glance, Placement,
-// Barbican, and Neutron assignments are enumerated alongside keystone and
-// horizon, in the stable keystone→horizon→glance→placement→barbican→neutron
-// order, and that co-located services collapse to a single entry (services
-// sharing a namespace share its backing services and tenant store).
+// Barbican, Neutron, and Cinder assignments are enumerated alongside keystone
+// and horizon, in the stable
+// keystone→horizon→glance→placement→barbican→neutron→cinder order, and that
+// co-located services collapse to a single entry (services sharing a namespace
+// share its backing services and tenant store).
 func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
 	cpIn := func(services ServicesSpec) *ControlPlane {
 		return &ControlPlane{
@@ -482,7 +484,7 @@ func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
 			want: []string{"images"},
 		},
 		{
-			name: "each service in its own namespace enumerates in keystone→horizon→glance→placement→barbican→neutron order",
+			name: "each service in its own namespace enumerates in keystone→horizon→glance→placement→barbican→neutron→cinder order",
 			cp: cpIn(ServicesSpec{
 				Keystone:  &ServiceKeystoneSpec{Namespace: &ServiceNamespaceSpec{Name: "identity"}},
 				Horizon:   &ServiceHorizonSpec{Namespace: &ServiceNamespaceSpec{Name: "dashboard"}},
@@ -490,8 +492,31 @@ func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
 				Placement: &ServicePlacementSpec{Namespace: &ServiceNamespaceSpec{Name: "placement"}},
 				Barbican:  &ServiceBarbicanSpec{Namespace: &ServiceNamespaceSpec{Name: "barbican"}},
 				Neutron:   &ServiceNeutronSpec{Namespace: &ServiceNamespaceSpec{Name: "neutron"}},
+				Cinder:    &ServiceCinderSpec{Namespace: &ServiceNamespaceSpec{Name: "block-storage"}},
 			}),
-			want: []string{"identity", "dashboard", "images", "placement", "barbican", "neutron"},
+			want: []string{"identity", "dashboard", "images", "placement", "barbican", "neutron", "block-storage"},
+		},
+		{
+			name: "cinder takes a namespace of its own",
+			cp: cpIn(ServicesSpec{
+				Cinder: &ServiceCinderSpec{Namespace: &ServiceNamespaceSpec{Name: "block-storage"}},
+			}),
+			want: []string{"block-storage"},
+		},
+		{
+			name: "cinder co-located with neutron yields one entry",
+			cp: cpIn(ServicesSpec{
+				Neutron: &ServiceNeutronSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+				Cinder:  &ServiceCinderSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+			}),
+			want: []string{"shared-ns"},
+		},
+		{
+			name: "a cinder assignment naming the ControlPlane namespace contributes nothing",
+			cp: cpIn(ServicesSpec{
+				Cinder: &ServiceCinderSpec{Namespace: &ServiceNamespaceSpec{Name: "openstack"}},
+			}),
+			want: nil,
 		},
 		{
 			name: "neutron takes a namespace of its own",
@@ -1179,6 +1204,224 @@ func TestNeutronOVNCentralNamespace(t *testing.T) {
 	}
 }
 
+// TestCinderNamespace exercises the nil-safe namespace resolver for the
+// block-storage service across the states the accessor can be in: no service
+// block and a block without an assignment (both default to the ControlPlane's
+// namespace), a webhook-bypass empty name (also a fallback), and an explicit
+// assignment.
+func TestCinderNamespace(t *testing.T) {
+	cpIn := func(cinder *ServiceCinderSpec) *ControlPlane {
+		return &ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+			Spec:       ControlPlaneSpec{Services: ServicesSpec{Cinder: cinder}},
+		}
+	}
+	tests := []struct {
+		name string
+		cp   *ControlPlane
+		want string
+	}{
+		{"no cinder block defaults to the ControlPlane namespace", cpIn(nil), "openstack"},
+		{"cinder block without an assignment defaults to the ControlPlane namespace", cpIn(&ServiceCinderSpec{}), "openstack"},
+		{"an empty assignment name falls back to the ControlPlane namespace", cpIn(&ServiceCinderSpec{Namespace: &ServiceNamespaceSpec{}}), "openstack"},
+		{"cinder takes a namespace of its own", cpIn(&ServiceCinderSpec{Namespace: &ServiceNamespaceSpec{Name: "block-storage"}}), "block-storage"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.CinderNamespace(); got != tc.want {
+				t.Errorf("CinderNamespace() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDedicatedCinderBackingServicesAccessors exercises the nil-safe reads for
+// the block-storage service across the states it can be in: no service block
+// (services.cinder nil), a block that shares the ControlPlane-wide instances
+// (dedicatedBackingServices nil), and one that opted into a dedicated database, a
+// dedicated cache, or both.
+func TestDedicatedCinderBackingServicesAccessors(t *testing.T) {
+	tests := []struct {
+		name         string
+		cp           *ControlPlane
+		wantDatabase bool
+		wantCache    bool
+	}{
+		{
+			name: "no cinder block",
+			cp:   &ControlPlane{},
+		},
+		{
+			name: "cinder shares the ControlPlane-wide instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Cinder: &ServiceCinderSpec{},
+			}}},
+		},
+		{
+			name: "cinder takes a dedicated database only",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Cinder: &ServiceCinderSpec{
+					DedicatedBackingServices: &CinderDedicatedBackingServicesSpec{
+						Database: &commonv1.DatabaseSpec{Database: "cinder"},
+					},
+				},
+			}}},
+			wantDatabase: true,
+		},
+		{
+			name: "cinder takes a dedicated cache only",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Cinder: &ServiceCinderSpec{
+					DedicatedBackingServices: &CinderDedicatedBackingServicesSpec{
+						Cache: &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+			}}},
+			wantCache: true,
+		},
+		{
+			name: "cinder takes both dedicated instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Cinder: &ServiceCinderSpec{
+					DedicatedBackingServices: &CinderDedicatedBackingServicesSpec{
+						Database: &commonv1.DatabaseSpec{Database: "cinder"},
+						Cache:    &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+			}}},
+			wantDatabase: true,
+			wantCache:    true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.DedicatedCinderDatabase() != nil; got != tc.wantDatabase {
+				t.Errorf("DedicatedCinderDatabase() present = %v, want %v", got, tc.wantDatabase)
+			}
+			if got := tc.cp.DedicatedCinderCache() != nil; got != tc.wantCache {
+				t.Errorf("DedicatedCinderCache() present = %v, want %v", got, tc.wantCache)
+			}
+		})
+	}
+}
+
+// TestServiceCinderSpecDeepCopy verifies the curated Cinder subset round-trips
+// through DeepCopy with independent storage, down to the leaves the other
+// services have no counterpart for: the backends slice, the NFS export and
+// image-volume cache inside each entry, and the backup-backend block. The
+// reconciler DeepCopies the projected spec onto the Cinder child and its
+// satellites, so an aliased nested value here would let a child projection
+// mutate the ControlPlane spec it was derived from.
+func TestServiceCinderSpecDeepCopy(t *testing.T) {
+	replicas, maxSizeGB, maxCount := int32(2), int32(50), int32(10)
+	fileSize := int64(52428800)
+	spec := ServiceCinderSpec{
+		Replicas:                &replicas,
+		Image:                   &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/cinder", Tag: "2026.1"},
+		Gateway:                 &commonv1.GatewaySpec{Hostname: "cinder.example.com"},
+		PublicEndpoint:          "https://cinder.example.com",
+		DatabaseCredentialsMode: "Static",
+		ExtraConfig:             map[string]map[string]string{"DEFAULT": {"quota_volumes": "20"}},
+		Backends: []CinderBackendEntry{
+			{
+				Name: "nfs-fast",
+				Type: "NFS",
+				NFS:  &NFSShareSpec{Server: "fast.example.com", Path: "/exports/fast"},
+				ImageVolumeCache: &CinderImageVolumeCacheSpec{
+					Enabled:   true,
+					MaxSizeGB: &maxSizeGB,
+					MaxCount:  &maxCount,
+				},
+			},
+			{
+				Name: "nfs-bulk",
+				Type: "NFS",
+				NFS:  &NFSShareSpec{Server: "bulk.example.com", Path: "/exports/bulk"},
+			},
+		},
+		BackupBackend: &CinderBackupBackendEntry{
+			Name:        "nfs-backup",
+			Type:        "NFS",
+			NFS:         &NFSShareSpec{Server: "backup.example.com", Path: "/exports/backup"},
+			FileSize:    &fileSize,
+			Compression: "zstd",
+		},
+		DedicatedBackingServices: &CinderDedicatedBackingServicesSpec{
+			Database: &commonv1.DatabaseSpec{Database: "cinder"},
+			Cache:    &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+		},
+		Namespace:        &ServiceNamespaceSpec{Name: "block-storage"},
+		TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-storage"},
+	}
+
+	clone := spec.DeepCopy()
+	if !reflect.DeepEqual(*clone, spec) {
+		t.Fatalf("DeepCopy() = %+v, want %+v", *clone, spec)
+	}
+
+	// Every pointer-backed leaf must be freshly allocated: mutating the clone
+	// leaves the source at the values asserted below.
+	*clone.Replicas = 9
+	clone.Image.Tag = "2026.2"
+	clone.Backends[0].NFS.Server = "other.example.com"
+	*clone.Backends[0].ImageVolumeCache.MaxSizeGB = 999
+	*clone.BackupBackend.FileSize = 1048576
+	clone.DedicatedBackingServices.Database.Database = "other"
+	clone.Namespace.Name = "elsewhere"
+	clone.ExtraConfig["DEFAULT"]["quota_volumes"] = "99"
+	clone.TargetClusterRef.Name = "edge-other"
+
+	if *spec.Replicas != 2 {
+		t.Errorf("DeepCopy aliased Replicas: source = %d, want 2", *spec.Replicas)
+	}
+	if spec.Image.Tag != "2026.1" {
+		t.Errorf("DeepCopy aliased the image: source tag = %q, want %q", spec.Image.Tag, "2026.1")
+	}
+	if spec.Backends[0].NFS.Server != "fast.example.com" {
+		t.Errorf("DeepCopy aliased the backend export: source server = %q", spec.Backends[0].NFS.Server)
+	}
+	if *spec.Backends[0].ImageVolumeCache.MaxSizeGB != 50 {
+		t.Errorf("DeepCopy aliased the image-volume cache bound: source = %d, want 50",
+			*spec.Backends[0].ImageVolumeCache.MaxSizeGB)
+	}
+	if *spec.BackupBackend.FileSize != 52428800 {
+		t.Errorf("DeepCopy aliased the backup chunk size: source = %d, want 52428800", *spec.BackupBackend.FileSize)
+	}
+	if spec.DedicatedBackingServices.Database.Database != "cinder" {
+		t.Errorf("DeepCopy aliased the dedicated database: source = %q, want %q",
+			spec.DedicatedBackingServices.Database.Database, "cinder")
+	}
+	if spec.Namespace.Name != "block-storage" {
+		t.Errorf("DeepCopy aliased the namespace assignment: source = %q", spec.Namespace.Name)
+	}
+	if spec.ExtraConfig["DEFAULT"]["quota_volumes"] != "20" {
+		t.Errorf("DeepCopy aliased the nested extraConfig section: source value changed to %q",
+			spec.ExtraConfig["DEFAULT"]["quota_volumes"])
+	}
+	if spec.TargetClusterRef.Name != "edge-storage" {
+		t.Errorf("DeepCopy aliased the target-cluster ref: source = %q", spec.TargetClusterRef.Name)
+	}
+
+	// The optional blocks stay nil rather than becoming empty structs, so a
+	// projection can tell "no backup service" from "a backup service with every
+	// knob at its zero value".
+	sparse := ServiceCinderSpec{
+		Backends: []CinderBackendEntry{{Name: "nfs", Type: "NFS", NFS: &NFSShareSpec{Server: "nfs", Path: "/e"}}},
+	}
+	sparseClone := sparse.DeepCopy()
+	if sparseClone.BackupBackend != nil {
+		t.Errorf("DeepCopy materialized BackupBackend = %+v, want nil", sparseClone.BackupBackend)
+	}
+	if sparseClone.Backends[0].ImageVolumeCache != nil {
+		t.Errorf("DeepCopy materialized ImageVolumeCache = %+v, want nil", sparseClone.Backends[0].ImageVolumeCache)
+	}
+
+	var nilSpec *ServiceCinderSpec
+	if got := nilSpec.DeepCopy(); got != nil {
+		t.Errorf("(*ServiceCinderSpec)(nil).DeepCopy() = %v, want nil", got)
+	}
+}
+
 // TestServiceTargetClusterRefAccessors exercises the nil-safe target-cluster
 // accessors across the states each can be in: no service block at all and a
 // service block without a ref (both mean the service stays on the local cluster)
@@ -1215,6 +1458,7 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 				Placement: &ServicePlacementSpec{},
 				Barbican:  &ServiceBarbicanSpec{},
 				Neutron:   &ServiceNeutronSpec{},
+				Cinder:    &ServiceCinderSpec{},
 			}),
 			want: map[string]string{},
 		},
@@ -1227,6 +1471,7 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 				Placement: &ServicePlacementSpec{TargetClusterRef: ref("edge-placement")},
 				Barbican:  &ServiceBarbicanSpec{TargetClusterRef: ref("edge-secrets")},
 				Neutron:   &ServiceNeutronSpec{TargetClusterRef: ref("edge-networking")},
+				Cinder:    &ServiceCinderSpec{TargetClusterRef: ref("edge-storage")},
 			}),
 			want: map[string]string{
 				"KeystoneTargetClusterRef":  "edge-identity",
@@ -1235,6 +1480,7 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 				"PlacementTargetClusterRef": "edge-placement",
 				"BarbicanTargetClusterRef":  "edge-secrets",
 				"NeutronTargetClusterRef":   "edge-networking",
+				"CinderTargetClusterRef":    "edge-storage",
 			},
 		},
 		{
@@ -1257,6 +1503,16 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 			}),
 			want: map[string]string{"PlacementTargetClusterRef": "edge-placement"},
 		},
+		{
+			// A cinder block with no ref beside a placed sibling: the accessor
+			// must not read through the missing ref.
+			name: "a cinder block without a ref resolves to nil",
+			cp: cpIn(ServicesSpec{
+				Cinder:   &ServiceCinderSpec{},
+				Barbican: &ServiceBarbicanSpec{TargetClusterRef: ref("edge-secrets")},
+			}),
+			want: map[string]string{"BarbicanTargetClusterRef": "edge-secrets"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1267,6 +1523,7 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 				"PlacementTargetClusterRef": tc.cp.PlacementTargetClusterRef(),
 				"BarbicanTargetClusterRef":  tc.cp.BarbicanTargetClusterRef(),
 				"NeutronTargetClusterRef":   tc.cp.NeutronTargetClusterRef(),
+				"CinderTargetClusterRef":    tc.cp.CinderTargetClusterRef(),
 			}
 			for accessor, gotRef := range got {
 				want := tc.want[accessor]
@@ -1290,7 +1547,8 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 
 // TestTargetClusterNames pins the enumeration of the clusters a ControlPlane
 // places services on: deduplicated, in the stable keystone→horizon→glance→
-// placement→barbican→neutron order, and empty for a local-only ControlPlane.
+// placement→barbican→neutron→cinder order, and empty for a local-only
+// ControlPlane.
 func TestTargetClusterNames(t *testing.T) {
 	ref := func(name string) *commonv1.TargetClusterRefSpec {
 		return &commonv1.TargetClusterRefSpec{Name: name}
@@ -1325,8 +1583,27 @@ func TestTargetClusterNames(t *testing.T) {
 				Placement: &ServicePlacementSpec{TargetClusterRef: ref("edge-c")},
 				Barbican:  &ServiceBarbicanSpec{TargetClusterRef: ref("edge-b")},
 				Neutron:   &ServiceNeutronSpec{TargetClusterRef: ref("edge-a")},
+				Cinder:    &ServiceCinderSpec{TargetClusterRef: ref("edge-0")},
 			}),
-			want: []string{"edge-f", "edge-e", "edge-d", "edge-c", "edge-b", "edge-a"},
+			want: []string{"edge-f", "edge-e", "edge-d", "edge-c", "edge-b", "edge-a", "edge-0"},
+		},
+		{
+			// The cinder ref is enumerated last, and a nil cinder block
+			// contributes nothing.
+			name: "a placed cinder is enumerated after neutron",
+			cp: cpIn(ServicesSpec{
+				Neutron: &ServiceNeutronSpec{TargetClusterRef: ref("edge-networking")},
+				Cinder:  &ServiceCinderSpec{TargetClusterRef: ref("edge-storage")},
+			}),
+			want: []string{"edge-networking", "edge-storage"},
+		},
+		{
+			name: "cinder sharing a cluster with keystone yields one entry",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{TargetClusterRef: ref("edge-one")},
+				Cinder:   &ServiceCinderSpec{TargetClusterRef: ref("edge-one")},
+			}),
+			want: []string{"edge-one"},
 		},
 		{
 			// The neutron ref is enumerated last, and a nil neutron block

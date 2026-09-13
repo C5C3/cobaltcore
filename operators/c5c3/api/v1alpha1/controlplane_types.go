@@ -187,9 +187,9 @@ type InfrastructureSpec struct {
 }
 
 // ServicesSpec declares the per-service configuration of the control plane.
-// Keystone, Horizon, Glance, Placement, Barbican, and Neutron are modeled
-// today; additional services are added as optional pointer fields as the
-// operator grows.
+// Keystone, Horizon, Glance, Placement, Barbican, Neutron, and Cinder are
+// modeled today; additional services are added as optional pointer fields as
+// the operator grows.
 type ServicesSpec struct {
 	// Keystone configures the Keystone service projected by the reconciler.
 	// Optional: a ControlPlane with services.keystone unset manages no Keystone
@@ -253,6 +253,22 @@ type ServicesSpec struct {
 	// annotation c5c3.io/allow-neutron-deletion: "true".
 	// +optional
 	Neutron *ServiceNeutronSpec `json:"neutron,omitempty"`
+
+	// Cinder configures the block-storage service projected by the reconciler. The
+	// ControlPlane projects one Cinder CR plus one CinderBackend satellite per
+	// backends entry and one CinderBackupBackend for the backupBackend entry,
+	// registers the block-storage catalog entry and the cinder service account for
+	// it, and hands the child the shared bus from spec.infrastructure.messaging as a
+	// brownfield Secret. The projection is gated on KeystoneReady (the block-storage
+	// service authenticates against the ControlPlane's Keystone child) and on the
+	// registration's AccountReady. spec.infrastructure.messaging is required while
+	// this block is set, and the block is forbidden in External mode. Optional: a
+	// ControlPlane with services.cinder unset manages no block-storage service and
+	// the reconciler reports CinderReady as not-managed (CinderNotManaged). Flipping
+	// this from set to nil preserves the previously-projected Cinder child unless
+	// the ControlPlane carries the annotation c5c3.io/allow-cinder-deletion: "true".
+	// +optional
+	Cinder *ServiceCinderSpec `json:"cinder,omitempty"`
 }
 
 // ServiceKeystoneSpec is a CURATED LOCAL subset of the knobs the ControlPlane
@@ -1767,6 +1783,340 @@ type NeutronDedicatedBackingServicesSpec struct {
 	Cache *commonv1.CacheSpec `json:"cache,omitempty"`
 }
 
+// ServiceCinderSpec is a CURATED LOCAL subset of the knobs the ControlPlane
+// exposes for the block-storage service, mirroring the ServiceKeystoneSpec and
+// ServiceNeutronSpec DECISION above: the reconciler (L2) PROJECTS this struct
+// into a Cinder CR; the database, cache, message bus, Keystone endpoint, Glance
+// endpoint, key manager, and internal tenant of that Cinder CR are DERIVED from
+// the ControlPlane (infrastructure.*, the sibling children's naming convention,
+// and operator policy) rather than set by the user here, and the L1 api package
+// stays free of a dependency on the cinder module.
+//
+// Two fields have no counterpart on the other services: the required backends
+// list, because a Cinder with no volume backend serves no volume at all, and
+// backupBackend, because the backup driver is a single property of the one
+// backup service rather than one of several. Both project satellite CRs of their
+// own kinds beside the Cinder child.
+type ServiceCinderSpec struct {
+	// Replicas overrides the number of Cinder API replicas. When nil the
+	// reconciler applies the cinder operator's own default (3). It sizes the API
+	// Deployment only; the volume and backup Deployments the satellites carry are
+	// single-replica by construction.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Image optionally overrides the Cinder container image. When nil the
+	// reconciler derives the image from spec.openStackRelease.
+	// +optional
+	Image *commonv1.ImageSpec `json:"image,omitempty"`
+
+	// Gateway optionally exposes the projected Cinder API externally via a
+	// Gateway API HTTPRoute. When nil (the default) the reconciler does NOT
+	// project a gateway and the Cinder API is reachable in-cluster only.
+	// +optional
+	Gateway *commonv1.GatewaySpec `json:"gateway,omitempty"`
+
+	// PublicEndpoint is the externally routable Cinder endpoint URL
+	// (e.g. "https://cinder.127-0-0-1.nip.io:8443"). It is used ONLY for the
+	// K-ORC public block-storage catalog Endpoint; unlike the keystone override it
+	// is projected into no child CR (the Cinder child's keystoneEndpoint is
+	// Keystone's endpoint, a separate concern). When empty and Gateway is set, the
+	// reconciler derives "https://{gateway.hostname}" (the default-443 form); set
+	// it explicitly when the externally reachable port differs (e.g. a kind
+	// host-port mapping like :8443), since the port cannot be derived from the
+	// hostname alone. The pattern and the 512-character bound mirror
+	// ServiceKeystoneSpec.PublicEndpoint, whose value flows into the same K-ORC
+	// Endpoint URL field.
+	//
+	// The keystone override is re-validated on the projected Keystone child; this
+	// one is projected nowhere, so the validating webhook is the only gate on the
+	// URL every client resolves to create its volumes, snapshots, and backups. It
+	// therefore enforces what the markers cannot: a parseable bare origin (no
+	// path, query, or fragment, since the catalog entry carries the origin alone
+	// and the client discovers the version prefix from the document served at the
+	// root), and, whenever a gateway is configured, an https scheme and a host
+	// equal to gateway.hostname. Without a gateway an http:// value stays legal
+	// for development but raises an admission warning.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^https?://`
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+
+	// DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
+	// for THIS service on the managed SHARED database, so a staged migration can run
+	// Cinder on one mode while another service stays on the other. Empty (the
+	// default) inherits the ControlPlane-wide mode; it is deliberately NOT
+	// materialized by the defaulting webhook, so "inherit" stays distinguishable
+	// from an explicit override. A dedicated per-service database is Static-only
+	// (its own credentialsMode lives in dedicatedBackingServices.database, where the
+	// webhook already rejects Dynamic), so a Dynamic override on a service that
+	// declares one is rejected; Dynamic also requires the shared database to be
+	// managed (clusterRef set), mirroring the commonv1.DatabaseSpec contract, so a
+	// Dynamic override on a brownfield shared database is rejected too. A Static
+	// override is always admitted.
+	// +optional
+	// +kubebuilder:validation:Enum=Static;Dynamic
+	DatabaseCredentialsMode string `json:"databaseCredentialsMode,omitempty"`
+
+	// ExtraConfig is a free-form INI block for the block-storage service. It is
+	// merged key by key with spec.globalExtraConfig (sections unioned, this
+	// per-service value winning per key), and the merged result is projected onto
+	// the Cinder child's spec.extraConfig, which carries the cinder.conf sections.
+	// +optional
+	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
+
+	// Backends is the curated list of volume backends projected into CinderBackend
+	// satellite CRs, one per entry. It is REQUIRED with at least one entry: a
+	// Cinder with no backend accepts a volume request and leaves it in error, so
+	// the MinItems floor keeps that shape out of the API.
+	//
+	// maxItems bounds the child-CR amplification of one admission: every entry
+	// projects one CinderBackend CR, and each of those carries a cinder-volume
+	// Deployment of its own. The name keys the listType=map list, so the apiserver
+	// rejects duplicate names.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	Backends []CinderBackendEntry `json:"backends"`
+
+	// BackupBackend declares the driver the backup service writes volume backups
+	// through, projected into the one CinderBackupBackend satellite CR. Omitting
+	// it (the default) leaves the plane without a backup service; removing it from
+	// a ControlPlane that had one prunes the satellite, and the Cinder child drops
+	// its backup Deployment in turn.
+	// +optional
+	BackupBackend *CinderBackupBackendEntry `json:"backupBackend,omitempty"`
+
+	// DedicatedBackingServices opts the block-storage service out of the
+	// ControlPlane-wide shared instances declared in spec.infrastructure and gives
+	// it backing services of its own. Omitting it (the default) keeps Cinder on the
+	// ControlPlane's shared database cluster and cache, isolated only logically
+	// (its own logical database, its own credentials). See
+	// CinderDedicatedBackingServicesSpec.
+	// +optional
+	DedicatedBackingServices *CinderDedicatedBackingServicesSpec `json:"dedicatedBackingServices,omitempty"`
+
+	// Namespace places the block-storage service, and the backing services, secret
+	// store, and credential material that follow it, in a namespace of its own
+	// instead of the ControlPlane's. Omitting it (the default) keeps Cinder in the
+	// ControlPlane's namespace. The assignment is create-only: the validating
+	// webhook freezes the block after creation (see ServiceNamespaceSpec), because
+	// moving a live service across namespaces would strand its database, its
+	// credential material, and its tenant store with no migration path.
+	// +optional
+	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
+
+	// TargetClusterRef names the registered target cluster the block-storage
+	// service is placed on. The projected Cinder CR, its satellites, and the
+	// per-namespace objects that support them (its database, its cache, its
+	// credential material) are created there instead of on the local cluster;
+	// omitting it (the default) keeps everything on the local (management) cluster.
+	// A placed service needs a namespace of its own (webhook enforced), and the ref
+	// is frozen after creation by the validating webhook. See
+	// ServiceKeystoneSpec.TargetClusterRef.
+	// +optional
+	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
+}
+
+// CinderBackendEntry declares one curated volume backend of the block-storage
+// service. The reconciler (L2) projects each entry one-to-one into a
+// CinderBackend satellite CR; the driver block matching type carries the backend
+// parameters. The type/nfs union rule enforces "the nfs block is set exactly when
+// type is NFS" at the CRD schema layer so it holds even when the validating
+// webhook is bypassed, mirroring the CinderBackend CR's own union rule.
+// +kubebuilder:validation:XValidation:rule="(self.type == 'NFS') == has(self.nfs)",message="the nfs block must be set exactly when type is NFS"
+type CinderBackendEntry struct {
+	// Name keys the listType=map Backends list (the apiserver rejects duplicates)
+	// and IS the projected CinderBackend's metadata.name, taken bare rather than
+	// prefixed with the ControlPlane's name, because cinder keys every volume by
+	// the backend it was created on: a rename would strand the volumes already
+	// there. It is also the backend's [<name>] section in cinder.conf and its
+	// volume_backend_name.
+	//
+	// The 35-character bound mirrors cinderv1alpha1.MaxBackendNameLength (see
+	// operators/cinder/api/v1alpha1/cinderbackend_webhook.go), the bound the
+	// satellite's own webhook applies to metadata.name. The validating webhook
+	// adds the two rules the markers cannot express: len(ControlPlane name) + 7 +
+	// len(name) must stay within 47, the satellite's shared name budget with its
+	// cinderRef, and the name "default" is refused because cinder reserves that
+	// section.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=35
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Type selects the volume driver. Phase 1 supports NFS only; the enum mirrors
+	// the CinderBackend CR's own type enum so an entry admitted here can never be
+	// rejected downstream by the CinderBackend CRD.
+	// +kubebuilder:validation:Enum=NFS
+	Type string `json:"type"`
+
+	// NFS configures the NFS volume driver. Required exactly when type is NFS
+	// (union rule above) and forbidden otherwise.
+	// +optional
+	NFS *NFSShareSpec `json:"nfs,omitempty"`
+
+	// ImageVolumeCache turns on the per-backend image-volume cache: the first
+	// volume created from a given image is kept and later requests for the same
+	// image clone it on the backend instead of pulling the image through Glance
+	// again. Omitting it (the default) leaves the cache off. The cached volumes
+	// are owned by the deployment rather than by the requesting tenant, so the
+	// reconciler gives the Cinder child an internal tenant whenever any entry
+	// enables the cache.
+	// +optional
+	ImageVolumeCache *CinderImageVolumeCacheSpec `json:"imageVolumeCache,omitempty"`
+}
+
+// NFSShareSpec is the CURATED LOCAL NFS export shape the ControlPlane projects
+// onto a satellite's spec.nfs, shared by the volume backends and the backup
+// backend because both mount one export the same way. It defines its own field
+// types rather than importing the cinder module's NFSBackendSpec, keeping the L1
+// api package free of a dependency on the cinder module (see the
+// ServiceKeystoneSpec DECISION on L2 dependency coordinates). The field bounds
+// mirror that NFSBackendSpec so a value admitted here can never be rejected
+// downstream by the satellite CRD.
+type NFSShareSpec struct {
+	// Server is the NFS server the export lives on, as a hostname or an IP
+	// address. It reaches the mount command verbatim, which is why the pattern
+	// admits only the characters a hostname or an IPv4 address carries.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9.-]+$`
+	Server string `json:"server"`
+
+	// Path is the absolute export path on the server. The pattern admits only
+	// printable ASCII because the satellite renders "server:path" verbatim into
+	// the config file the cinder pod reads back a line at a time, cutting it at
+	// the first space: whitespace in the path would leave cinder addressing a
+	// shorter export than the one validated and mounted, and a newline would add
+	// a second export line outright.
+	// +kubebuilder:validation:Pattern=`^/[!-~]*$`
+	Path string `json:"path"`
+
+	// MountOptions is the comma-separated option string the export is mounted
+	// with. It carries NO schema default on purpose: when unset the projection
+	// leaves the satellite's field unset so the satellite CRD's own default
+	// ("nfsvers=4.1,soft,timeo=30,retrans=2") applies at exactly one layer.
+	// Override it only where the server demands different semantics, and keep the
+	// mount soft, because a hard mount blocks the cinder process on an unreachable
+	// server rather than failing the request. The pattern excludes a newline and a
+	// carriage return, which would divide the rendered option line.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[^\n\r]*$`
+	MountOptions string `json:"mountOptions,omitempty"`
+}
+
+// CinderImageVolumeCacheSpec bounds the per-backend image-volume cache the
+// ControlPlane projects onto a CinderBackend satellite's spec.imageVolumeCache.
+// The cache trades backend capacity for create-volume-from-image latency: a
+// cached image volume is cloned on the backend, which skips the download through
+// Glance entirely.
+//
+// Both bounds are optional and independent: whichever is reached first evicts the
+// least recently used entry. Leaving both unset caches without a bound, which is
+// a deliberate choice only where the backend has capacity to spare.
+type CinderImageVolumeCacheSpec struct {
+	// Enabled turns the cache on for this backend. It is an explicit field rather
+	// than the presence of the block so the bounds can be configured in a
+	// ControlPlane that keeps the cache off.
+	Enabled bool `json:"enabled"`
+
+	// MaxSizeGB caps the total size, in GiB, of the cached image volumes on this
+	// backend. When unset the cache is not bounded by size.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	MaxSizeGB *int32 `json:"maxSizeGB,omitempty"`
+
+	// MaxCount caps the number of cached image volumes on this backend. When unset
+	// the cache is not bounded by count.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	MaxCount *int32 `json:"maxCount,omitempty"`
+}
+
+// CinderBackupBackendEntry declares the curated backup driver of the
+// block-storage service, projected one-to-one into the one CinderBackupBackend
+// satellite CR. It is a separate shape from CinderBackendEntry because the two
+// describe different things: a backend is one of several volume stores and gets
+// a cinder-volume Deployment of its own, while the backup driver is a single
+// property of the one cinder-backup Deployment, with chunking and compression
+// knobs no volume backend carries. The type/nfs union rule mirrors the
+// CinderBackupBackend CR's own.
+// +kubebuilder:validation:XValidation:rule="(self.type == 'NFS') == has(self.nfs)",message="the nfs block must be set exactly when type is NFS"
+type CinderBackupBackendEntry struct {
+	// Name is embedded verbatim in the name of the projected CinderBackupBackend
+	// satellite CR, hence the DNS-1123 label shape. Unlike a volume backend's name
+	// it names no cinder.conf section, so it takes the full label bound.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Type selects the backup driver. Phase 1 supports NFS only; the enum mirrors
+	// the CinderBackupBackend CR's own type enum so an entry admitted here can
+	// never be rejected downstream by the CinderBackupBackend CRD.
+	// +kubebuilder:validation:Enum=NFS
+	Type string `json:"type"`
+
+	// NFS configures the NFS backup driver. Required exactly when type is NFS
+	// (union rule above) and forbidden otherwise.
+	// +optional
+	NFS *NFSShareSpec `json:"nfs,omitempty"`
+
+	// FileSize is the size in bytes of one backup chunk: cinder splits a volume
+	// into objects of this size and writes them one at a time, so it bounds both
+	// the memory a backup holds and the work a failed chunk costs. It has to be a
+	// multiple of 32768, the block size cinder hashes chunks in, which the
+	// MultipleOf marker enforces.
+	//
+	// It carries NO schema default on purpose: when unset the projection leaves
+	// the satellite's field unset so the CinderBackupBackend CR's own default
+	// (52428800, 50 MiB) applies at exactly one layer.
+	// +optional
+	// +kubebuilder:validation:Minimum=1048576
+	// +kubebuilder:validation:MultipleOf=32768
+	FileSize *int64 `json:"fileSize,omitempty"`
+
+	// Compression selects the algorithm each chunk is compressed with. "none"
+	// writes the chunks uncompressed, which trades backup capacity for CPU on the
+	// backup pod. It carries NO schema default on purpose, the same way fileSize
+	// does: when unset the CinderBackupBackend CR's own default ("zlib") applies.
+	// +optional
+	// +kubebuilder:validation:Enum=none;zlib;bz2;zstd
+	Compression string `json:"compression,omitempty"`
+}
+
+// CinderDedicatedBackingServicesSpec declares the backing-service instances the
+// block-storage service gets for itself instead of the ControlPlane-wide shared
+// ones. Cinder consumes both a database and a cache, so it can take either or
+// both dedicated; a class left unset resolves to the ControlPlane-wide instance
+// in spec.infrastructure. See KeystoneDedicatedBackingServicesSpec for the full
+// contract.
+//
+// The block is optional, but must declare at least one class when present.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.database) || has(self.cache)",message="dedicatedBackingServices must declare at least one backing-service class (database, cache)"
+type CinderDedicatedBackingServicesSpec struct {
+	// Database gives Cinder its own database cluster instead of the shared
+	// spec.infrastructure.database. Managed (clusterRef) and brownfield (host)
+	// modes are both supported.
+	//
+	// A dedicated managed database uses credentialsMode Static (the webhook
+	// materializes it and rejects Dynamic): the OpenBao database engine is
+	// bootstrapped once per namespace against the shared cluster, so no engine role
+	// exists that could issue credentials for a dedicated instance. Seed and rotate
+	// the credential at the OpenBao source.
+	// +optional
+	Database *commonv1.DatabaseSpec `json:"database,omitempty"`
+
+	// Cache gives Cinder its own cache instead of the shared
+	// spec.infrastructure.cache. Managed (clusterRef) and brownfield (servers)
+	// modes are both supported.
+	// +optional
+	Cache *commonv1.CacheSpec `json:"cache,omitempty"`
+}
+
 // KORCSpec configures the K-ORC (OpenStack Resource Controller) integration of
 // the control plane. It declares how the admin application credential
 // is bootstrapped and rotated and which bootstrap resources are reconciled.
@@ -2234,6 +2584,13 @@ func neutronDedicatedBlock(cp *ControlPlane) *NeutronDedicatedBackingServicesSpe
 	return nil
 }
 
+func cinderDedicatedBlock(cp *ControlPlane) *CinderDedicatedBackingServicesSpec {
+	if cd := cp.Spec.Services.Cinder; cd != nil {
+		return cd.DedicatedBackingServices
+	}
+	return nil
+}
+
 // DedicatedKeystoneDatabase returns the database instance declared FOR the
 // Keystone service alone, or nil when Keystone shares the ControlPlane-wide
 // instance (the default).
@@ -2339,6 +2696,25 @@ func (cp *ControlPlane) DedicatedNeutronCache() *commonv1.CacheSpec {
 	return nil
 }
 
+// DedicatedCinderDatabase returns the database instance declared FOR the
+// block-storage service alone, or nil when Cinder shares the ControlPlane-wide
+// instance (the default).
+func (cp *ControlPlane) DedicatedCinderDatabase() *commonv1.DatabaseSpec {
+	if b := cinderDedicatedBlock(cp); b != nil {
+		return b.Database
+	}
+	return nil
+}
+
+// DedicatedCinderCache returns the cache instance declared for the block-storage
+// service alone, or nil when Cinder shares the ControlPlane-wide instance.
+func (cp *ControlPlane) DedicatedCinderCache() *commonv1.CacheSpec {
+	if b := cinderDedicatedBlock(cp); b != nil {
+		return b.Cache
+	}
+	return nil
+}
+
 // keystoneNamespaceBlock / horizonNamespaceBlock are the single nil-safe walk of
 // the per-service namespace BLOCK, shared by the webhook (defaulting, claim and
 // immutability rules) and by the resolvers below. The webhook needs the block
@@ -2383,6 +2759,13 @@ func barbicanNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
 func neutronNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
 	if nt := cp.Spec.Services.Neutron; nt != nil {
 		return nt.Namespace
+	}
+	return nil
+}
+
+func cinderNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
+	if cd := cp.Spec.Services.Cinder; cd != nil {
+		return cd.Namespace
 	}
 	return nil
 }
@@ -2449,9 +2832,19 @@ func (cp *ControlPlane) NeutronNamespace() string {
 	return cp.Namespace
 }
 
+// CinderNamespace resolves the namespace the block-storage service, and the
+// database, cache, tenant store, and credential material that follow it, is
+// placed in. See KeystoneNamespace.
+func (cp *ControlPlane) CinderNamespace() string {
+	if ns := cinderNamespaceBlock(cp); ns != nil && ns.Name != "" {
+		return ns.Name
+	}
+	return cp.Namespace
+}
+
 // DedicatedServiceNamespaces returns the namespaces the ControlPlane places
 // services in OUTSIDE its own, deduplicated by name and in a stable order
-// (keystone first). It is the enumeration every cross-namespace concern walks:
+// (keystone, horizon, glance, placement, barbican, neutron, cinder). It is the enumeration every cross-namespace concern walks:
 // the namespace sub-reconciler creates/verifies them, the tenant-store
 // sub-reconciler provisions a store in each, and the teardown sweeps each.
 //
@@ -2466,6 +2859,7 @@ func (cp *ControlPlane) DedicatedServiceNamespaces() []ServiceNamespaceSpec {
 	for _, ns := range []*ServiceNamespaceSpec{
 		keystoneNamespaceBlock(cp), horizonNamespaceBlock(cp), glanceNamespaceBlock(cp),
 		placementNamespaceBlock(cp), barbicanNamespaceBlock(cp), neutronNamespaceBlock(cp),
+		cinderNamespaceBlock(cp),
 	} {
 		if ns == nil || ns.Name == "" || ns.Name == cp.Namespace {
 			continue
@@ -2541,6 +2935,16 @@ func (cp *ControlPlane) NeutronTargetClusterRef() *commonv1.TargetClusterRefSpec
 	return nil
 }
 
+// CinderTargetClusterRef resolves the target cluster the block-storage service,
+// and the database, cache, and credential material that follow it, is placed on.
+// See KeystoneTargetClusterRef.
+func (cp *ControlPlane) CinderTargetClusterRef() *commonv1.TargetClusterRefSpec {
+	if cd := cp.Spec.Services.Cinder; cd != nil {
+		return cd.TargetClusterRef
+	}
+	return nil
+}
+
 // NeutronOVNCentralNamespace resolves the namespace the OVNCentral named by
 // services.neutron.ovn.centralRef lives in: the namespace on the ref when it
 // carries one, and the ControlPlane's own namespace otherwise. That is the same
@@ -2556,8 +2960,8 @@ func (cp *ControlPlane) NeutronOVNCentralNamespace() string {
 
 // TargetClusterNames returns the names of the target clusters the ControlPlane
 // places services on, deduplicated and in a stable order (keystone, horizon,
-// glance, placement, barbican, neutron — first occurrence wins), mirroring
-// DedicatedServiceNamespaces one level up.
+// glance, placement, barbican, neutron, cinder — first occurrence wins),
+// mirroring DedicatedServiceNamespaces one level up.
 //
 // Two services placed on one cluster yield ONE entry: the enumeration answers
 // "which clusters does this ControlPlane reach", not "where does each service
@@ -2569,6 +2973,7 @@ func (cp *ControlPlane) TargetClusterNames() []string {
 	for _, ref := range []*commonv1.TargetClusterRefSpec{
 		cp.KeystoneTargetClusterRef(), cp.HorizonTargetClusterRef(), cp.GlanceTargetClusterRef(),
 		cp.PlacementTargetClusterRef(), cp.BarbicanTargetClusterRef(), cp.NeutronTargetClusterRef(),
+		cp.CinderTargetClusterRef(),
 	} {
 		if ref == nil || ref.Name == "" {
 			continue
