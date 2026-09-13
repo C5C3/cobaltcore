@@ -15,6 +15,13 @@
 #                    > <the version the mismatch was observed on>
 # Re-check every group on each plugin bump and drop the patterns upstream has
 # fixed.
-#
-# No exclusions yet — the full barbican_tempest_plugin.tests.api suite runs
-# against Barbican.
+
+# tracked-by: https://github.com/C5C3/cobaltcore/issues/991
+# re-evaluate-on: barbican-tempest-plugin > 4.5.0
+# ProjectQuotasTest drives the project-quota API with a credential that holds
+# only key-manager:service-admin (its client credentials in
+# barbican-tempest-plugin 4.5.0); under the new policy defaults
+# project_quotas:get/put/delete require role:admin, so the one test gets 403.
+# 04-policy-check-job.yaml asserts that 403 directly. Drop the pattern once the
+# plugin runs the test as project_admin.
+barbican_tempest_plugin\.tests\.api\.test_quotas\.ProjectQuotasTest\.test_manage_project_quotas
