@@ -464,7 +464,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      security-events: write #: SARIF upload for Grype scan on PR
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.tempest-matrix) }}
@@ -586,7 +585,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      security-events: write #: SARIF upload for Grype scan on PR
     strategy:
       fail-fast: false
       matrix:
@@ -691,7 +689,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      security-events: write #: SARIF upload for Grype scan on PR
     strategy:
       fail-fast: false
       matrix:
@@ -797,7 +794,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      security-events: write #: SARIF upload for Grype scan on PR
     strategy:
       fail-fast: false
       matrix:
@@ -968,7 +964,6 @@ jobs:
       id-token: write #: Sigstore OIDC signing
       attestations: write #: GitHub Attestations API
       artifact-metadata: write  # gh#108: actions/attest v4.1.0 storage record
-      security-events: write #: GitHub Security tab SARIF upload
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.build-matrix) }}

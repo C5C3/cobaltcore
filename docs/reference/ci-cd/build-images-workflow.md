@@ -105,10 +105,11 @@ requests a short-lived OIDC token bound to the workflow identity, which Sigstore
 sign the attestation without managing keys. `attestations: write` grants
 access to the GitHub Attestations API for storing signed attestations.
 `security-events: write` allows uploading Grype vulnerability scan results in SARIF
-format to the GitHub Security tab. These three permissions are scoped to the
-merge jobs (`merge-base-images`, `merge-tempest-image`, `merge-service-images`) and to
-`build-service-images` and `build-tempest` (for PR-only Grype scans via
-`supply-chain-attest` with `scan-mode: image`). The verification jobs
+format to the GitHub Security tab; it is scoped to the `merge-*` jobs, the only jobs that
+upload. `id-token` and `attestations` are scoped to the merge jobs and to
+`build-service-images`. The per-platform build jobs run the PR-only Grype scan via
+`supply-chain-attest` with `scan-mode: image` but upload no SARIF, so none of them holds
+`security-events`. The verification jobs
 (`verify-base-images`, `verify-service-images`) do **not** receive `id-token`,
 `attestations`, or `security-events` permissions — they only need `contents: read` (for
 checkout and test scripts) and `packages: read` (for pulling images from GHCR), following
@@ -157,8 +158,9 @@ at the default `'true'`.
 ### supply-chain-attest
 
 Runs the full supply chain security pipeline for a container image: CycloneDX SBOM
-generation, Grype vulnerability scanning, SARIF upload to the GitHub Security tab, SBOM
-attestation, build provenance attestation, and cosign signing. Replaces the ~65-line
+generation, Grype vulnerability scanning, SARIF upload to the GitHub Security tab (push
+events only), SBOM attestation, build provenance attestation, and cosign signing.
+Replaces the ~65-line
 inline sequence that was previously duplicated for each image type.
 
 | Input | Required | Default | Description |
@@ -175,9 +177,9 @@ inline sequence that was previously duplicated for each image type.
 - **`sbom` mode** (push events): Generates SBOM, scans via SBOM, uploads SARIF, creates
   SBOM attestation, creates build provenance attestation, and signs with cosign. This is
   the full supply chain pipeline.
-- **`image` mode** (PR events): Scans the image directly with Grype and uploads SARIF.
-  No SBOM generation, no attestation, no signing. Provides vulnerability feedback on PRs
-  without the overhead of full attestation.
+- **`image` mode** (PR events): Scans the image directly with Grype. No SARIF upload, no
+  SBOM generation, no attestation, no signing. The scan keeps the tooling exercised on
+  PRs and is where `fail-build` turns into a severity gate once one is wanted.
 
 **Usage:** `python-base`, `venv-builder`, `tempest`, and service images all call this
 composite action. Merge jobs use `sbom` mode; build jobs use `image` mode for PR-only
@@ -564,7 +566,7 @@ on the final manifests.
 | 3 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login + cosign |
 | 4 | Download python-base digests | `actions/download-artifact@v4` | Downloads all `digests-python-base-*` artifacts, merges into `/tmp/digests/python-base/` |
 | 5 | Create python-base manifest | `hack/ci-merge-manifest.sh` | Assembles per-platform digests into multi-arch manifest; tags `:latest` and `:${{ github.sha }}`; outputs merged manifest digest |
-| 6 | Supply chain attest python-base | `.github/actions/supply-chain-attest` | SBOM + Grype scan + SARIF upload + attestation + provenance + cosign sign. Uses `scan-mode: sbom` on push, `image` on PR |
+| 6 | Supply chain attest python-base | `.github/actions/supply-chain-attest` | SBOM + Grype scan + SARIF upload + attestation + provenance + cosign sign. Uses `scan-mode: sbom` on push, `image` on PR; SARIF is uploaded on push only |
 | 7 | Download venv-builder digests | `actions/download-artifact@v4` | Downloads all `digests-venv-builder-*` artifacts |
 | 8 | Create venv-builder manifest | `hack/ci-merge-manifest.sh` | Same pattern as step 5 for venv-builder |
 | 9 | Supply chain attest venv-builder | `.github/actions/supply-chain-attest` | Same pattern as step 6 for venv-builder |
@@ -655,7 +657,7 @@ locally for inline verification instead of being pushed to GHCR.
 | 7 | Generate metadata for service image | `docker/metadata-action@v6` | Produces OCI labels and overrides version to the upstream release ref via `type=raw` strategy |
 | 8 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args. Non-PR: `push-by-digest=true`, digest exported as artifact. PR: `load: true`, composite tag |
 | 9 | Export service image digest | `.github/actions/export-digest` | Non-PR only. Uploads artifact `digests-service-<service>-<release>-<platform-pair>` |
-| 10 | Supply chain scan (PR) | `.github/actions/supply-chain-attest` | PR only: scans locally loaded image via Grype (`scan-mode: image`), uploads SARIF |
+| 10 | Supply chain scan (PR) | `.github/actions/supply-chain-attest` | PR only: scans locally loaded image via Grype (`scan-mode: image`); no SARIF upload |
 | 11 | Verify service image (PR) | Shell (conditional) | PR only: runs `verify_${{ matrix.service }}.sh` with the locally loaded image ref |
 
 :::
@@ -1210,13 +1212,14 @@ The `verify_build_images_workflow.sh` script validates cosign signing configurat
 
 Every container image is scanned for known CVEs using Grype (via `anchore/scan-action`)
 on every push and pull request. Unlike SBOM generation, attestation, and cosign
-signing (which are skipped on PRs), vulnerability scanning runs on **both** event types
-to provide immediate feedback on high-severity CVEs before merging.
+signing (which are skipped on PRs), vulnerability scanning runs on **both** event types.
+Only push events upload the results to the GitHub Security tab; a pull request runs the
+scan without uploading.
 
 > **Consolidation note.** Vulnerability scanning is part of the
-> `supply-chain-attest` composite action. In `sbom` mode (push), Grype scans the SBOM.
-> In `image` mode (PR), Grype scans the image directly. Both modes upload SARIF to the
-> GitHub Security tab.
+> `supply-chain-attest` composite action. In `sbom` mode (push), Grype scans the SBOM
+> and uploads SARIF to the GitHub Security tab. In `image` mode (PR), Grype scans the
+> image directly and uploads nothing.
 
 ### How It Works
 
@@ -1230,17 +1233,25 @@ The `supply-chain-attest` composite action includes two vulnerability scanning s
    on high/critical CVEs will be activated later.
 
 2. **SARIF upload** (`github/codeql-action/upload-sarif`) — Uploads Grype results to the
-   GitHub Security tab in SARIF format. Each upload uses a unique `category` value to
-   distinguish findings per image. The upload step runs with `if: always()` and a guard
-   that checks for non-empty SARIF output, ensuring the upload is skipped cleanly if the
-   scan step crashes without producing output.
+   GitHub Security tab in SARIF format on push events. Each upload uses a unique
+   `category` value to distinguish findings per image. The upload step runs with
+   `if: always()`, a `github.event_name != 'pull_request'` guard, and a guard that checks
+   for non-empty SARIF output, ensuring the upload is skipped cleanly if the scan step
+   crashes without producing output.
+
+   The pull-request guard exists because code scanning compares the categories a pull
+   request uploads with those present on the default branch. Main receives one upload per
+   image from the merge jobs (`grype-<image>`), while a pull request scans per platform
+   and only the images it changed (`grype-<image>-<platform>`), so the two sets never
+   matched and every image-building pull request carried a neutral `grype` check reading
+   "N configurations not found". Without a PR upload GitHub creates no such check.
 
 This pattern is applied to all four image types via the `supply-chain-attest` composite
 action:
 
 ::: v-pre
 
-| Image | SARIF category | Push job | PR job |
+| Image | SARIF category | Push job (uploads) | PR job (scan only) |
 | --- | --- | --- | --- |
 | `python-base` | `grype-python-base` | `merge-base-images` | `merge-base-images` |
 | `venv-builder` | `grype-venv-builder` | `merge-base-images` | `merge-base-images` |
@@ -1276,7 +1287,8 @@ All Grype scan steps use `severity-cutoff: high` with `fail-build: false`:
 - **Critical** and **High** severity CVEs are reported in SARIF but do not currently
   fail the build (build failure will be activated later)
 - **Medium** and **Low** severity CVEs are reported in SARIF but do not block the build
-- All findings are visible in the GitHub Security tab regardless of severity
+- All findings from push events are visible in the GitHub Security tab regardless of
+  severity; pull-request scans upload nothing
 
 ### CVE Suppression
 
@@ -1308,14 +1320,17 @@ Grype scan results are uploaded to the GitHub Security tab via
   dashboard
 - Upload steps use `if: always()` with a guard for non-empty SARIF output, ensuring
   clean skip when a scan step crashes without producing output
+- Uploads run on push events only (`github.event_name != 'pull_request'`); the SARIF
+  upload step description above explains why pull requests upload nothing
 - Results appear in the repository's **Security > Code scanning alerts** tab
 
 ### Required Permissions
 
-SARIF upload requires `security-events: write` permission on merge jobs
-(`merge-base-images`, `merge-tempest-image`, `merge-service-images`) and on
-`build-service-images` (for PR-only scans). Verification jobs (`verify-base-images`,
-`verify-service-images`) do not receive this permission (least privilege).
+SARIF upload requires `security-events: write` permission on the merge jobs
+(`merge-base-images`, `merge-tempest-image`, `merge-service-images` and the other
+`merge-*-image` jobs). The per-platform build jobs scan on pull requests without
+uploading and hold no `security-events` permission, and neither do the verification jobs
+(`verify-base-images`, `verify-service-images`): least privilege.
 
 ### Test Coverage
 
@@ -1335,11 +1350,10 @@ configuration:
 | `test_grype_output_format_sarif` | All Grype steps use `output-format: sarif` |
 | `test_sarif_upload_steps_exist` | 2 `upload-sarif` steps in `build-base-images`, 1 in `build-service-images` |
 | `test_sarif_upload_categories` | SARIF upload categories match image names (`grype-python-base`, etc.) |
-| `test_sarif_upload_always_condition` | All SARIF upload steps have `if: always()` with SARIF output guard |
+| `test_sarif_upload_always_condition` | The SARIF upload step has `if: always()`, the pull-request guard, and the SARIF output guard |
 | `test_sarif_upload_action_sha_pinned` | `github/codeql-action/upload-sarif` is SHA-pinned with `# v3` version comment |
 | `test_sarif_upload_references_grype_output` | SARIF upload `sarif_file` references Grype step output |
-| `test_security_events_permission_build_base_images` | `build-base-images` has `security-events: write` |
-| `test_security_events_permission_build_service_images` | `build-service-images` has `security-events: write` |
+| `test_security_events_permission_scoped_to_merge_jobs` | The `merge-*` jobs have `security-events: write`; the per-platform build jobs do not |
 | `test_verify_jobs_no_security_events_permission` | Verify jobs do **not** have `security-events` permission |
 | `test_security_events_permission_comment` | `security-events` permission comment references SARIF upload |
 
