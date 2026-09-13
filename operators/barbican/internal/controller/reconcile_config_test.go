@@ -129,6 +129,9 @@ func TestReconcileConfig_OperatorOwnedOptions(t *testing.T) {
 	g.Expect(sectionOf(t, rendered, "keystone_authtoken")).NotTo(ContainElement(HavePrefix("password =")))
 	g.Expect(sectionOf(t, rendered, "keystone_authtoken")).To(ContainElement("auth_url = " + barbican.Spec.KeystoneEndpoint))
 	g.Expect(sectionOf(t, rendered, "keystone_authtoken")).To(ContainElement("memcached_servers = mc:11211"))
+	// Secure-RBAC defaults are on, enforce_scope is not rendered, and
+	// policy_file is absent without spec.policyOverrides.
+	g.Expect(sectionOf(t, rendered, "oslo_policy")).To(ConsistOf("enforce_new_defaults = true"))
 }
 
 // TestReconcileConfig_GatewayHostHrefHasNoTrailingSlash pins the endpoint shape
@@ -163,12 +166,12 @@ func TestReconcileConfig_PolicyOverridesAreInjected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	barbican := testBarbican()
 	barbican.Spec.PolicyOverrides = &commonv1.PolicySpec{
-		Rules: map[string]string{"secrets:get": "rule:admin_or_creator"},
+		Rules: map[string]string{"secrets:get": "role:admin"},
 	}
 	_, secret := renderConfig(t, barbican, validProjection())
 
 	g.Expect(sectionOf(t, string(secret.Data[barbicanConfDataKey]), "oslo_policy")).
-		To(ConsistOf("policy_file = " + policyFilePath))
+		To(ConsistOf("enforce_new_defaults = true", "policy_file = "+policyFilePath))
 	g.Expect(secret.Data).To(HaveKey(policyFileDataKey))
 	g.Expect(string(secret.Data[policyFileDataKey])).To(ContainSubstring("secrets:get"))
 }
@@ -199,6 +202,160 @@ func TestReconcileConfig_ExtraConfigOverlay(t *testing.T) {
 	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(
 		ContainElement(ContainSubstring(config.EventReasonExtraConfigOwnedKeyOverride)),
 	)
+}
+
+// TestReconcileConfig_PolicyDefaultsOverrideIsReported pins the Reported
+// treatment of [oslo_policy] enforce_new_defaults: an extraConfig override of it
+// wins in the rendered file and is surfaced through ExtraConfigHealthy and a
+// Warning event, while other oslo_policy options, enforce_scope among them, merge
+// beside the operator key without a report.
+func TestReconcileConfig_PolicyDefaultsOverrideIsReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// TestOperatorDefaults_RegistryDriftGuard pins that the key is registered;
+	// this test pins how an override of it is treated.
+	var owned *config.OwnedKey
+	for i := range barbicanv1alpha1.OwnedConfigKeys {
+		if k := &barbicanv1alpha1.OwnedConfigKeys[i]; k.Section == "oslo_policy" && k.Key == "enforce_new_defaults" {
+			owned = k
+			break
+		}
+	}
+	g.Expect(owned).NotTo(BeNil())
+	g.Expect(owned.Rejected).To(BeFalse(), "an override is reported, not rejected at admission")
+	g.Expect(owned.Impact).NotTo(BeEmpty())
+	impact := owned.Impact
+
+	tests := []struct {
+		name         string
+		extraConfig  map[string]map[string]string
+		wantSection  []string
+		wantReported bool
+	}{
+		{
+			name:         "override turns the new defaults off",
+			extraConfig:  map[string]map[string]string{"oslo_policy": {"enforce_new_defaults": "false"}},
+			wantSection:  []string{"enforce_new_defaults = false"},
+			wantReported: true,
+		},
+		{
+			name:        "enforce_scope is a free option",
+			extraConfig: map[string]map[string]string{"oslo_policy": {"enforce_scope": "true"}},
+			wantSection: []string{"enforce_new_defaults = true", "enforce_scope = true"},
+		},
+		{
+			name:        "no extraConfig",
+			wantSection: []string{"enforce_new_defaults = true"},
+		},
+		{
+			name:        "empty oslo_policy section",
+			extraConfig: map[string]map[string]string{"oslo_policy": {}},
+			wantSection: []string{"enforce_new_defaults = true"},
+		},
+		{
+			name:        "unowned oslo_policy option",
+			extraConfig: map[string]map[string]string{"oslo_policy": {"policy_default_rule": "default"}},
+			wantSection: []string{"enforce_new_defaults = true", "policy_default_rule = default"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			barbican := testBarbican()
+			barbican.Spec.ExtraConfig = tc.extraConfig
+			r, secret := renderConfig(t, barbican, validProjection())
+
+			g.Expect(sectionOf(t, string(secret.Data[barbicanConfDataKey]), "oslo_policy")).To(ConsistOf(tc.wantSection))
+
+			cond := barbicanCondition(barbican, config.ConditionTypeExtraConfigHealthy)
+			g.Expect(cond).NotTo(BeNil())
+			events := collectEvents(r.Recorder.(*record.FakeRecorder))
+			if tc.wantReported {
+				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+				g.Expect(cond.Message).To(ContainSubstring("[oslo_policy] enforce_new_defaults (" + impact + ")"))
+				g.Expect(events).To(ContainElement(
+					HavePrefix(corev1.EventTypeWarning + " " + config.EventReasonExtraConfigOwnedKeyOverride),
+				))
+				return
+			}
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
+			g.Expect(events).NotTo(ContainElement(ContainSubstring(config.EventReasonExtraConfigOwnedKeyOverride)))
+		})
+	}
+}
+
+// TestOperatorDefaults_RegistryDriftGuard is the completeness check tying
+// operatorDefaults to barbicanv1alpha1.OwnedConfigKeys: every key the operator
+// renders must be registered (forward) and every registered key must be
+// rendered (reverse), so the registry and the renderer cannot drift apart.
+func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// Exercise every conditional branch: a store scoped to a server namespace
+	// with a CA bundle for the optional [vault_plugin] pair, a region beside the
+	// fixture's cache servers for the optional [keystone_authtoken] pair, and the
+	// injected oslo_policy.policy_file.
+	store := readyStore(brownfieldStoreNamed("external", "https://bao.example.com:8200", true))
+	store.Spec.OpenBao.Namespace = "tenant-a"
+	store.Spec.OpenBao.Server.CABundleSecretRef = &barbicanv1alpha1.SecretNameRefSpec{Name: "bao-ca"}
+	creds := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "brownfield-approle", Namespace: testNamespace},
+		Data: map[string][]byte{
+			barbicanv1alpha1.OpenBaoRoleIDKey:   []byte("brownfield-role"),
+			barbicanv1alpha1.OpenBaoSecretIDKey: []byte("brownfield-secret"),
+		},
+	}
+	_, _, projection, err := projectStores(t, store, creds)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(projection.valid).To(BeTrue())
+
+	barbican := testBarbican()
+	barbican.Spec.Region = "RegionOne"
+	defaults := config.InjectOsloPolicyConfig(operatorDefaults(barbican, projection), policyFilePath)
+
+	registered := make(map[[2]string]struct{}, len(barbicanv1alpha1.OwnedConfigKeys))
+	for _, o := range barbicanv1alpha1.OwnedConfigKeys {
+		registered[[2]string{o.Section, o.Key}] = struct{}{}
+	}
+
+	// Forward check: every rendered (section, key) is registered. The per-store
+	// [secretstore:<name>] sections take their names from the attached stores,
+	// so the static registry cannot spell them.
+	for section, kvs := range defaults {
+		if strings.HasPrefix(section, storeSectionPrefix) {
+			continue
+		}
+		for key := range kvs {
+			if _, ok := registered[[2]string{section, key}]; ok {
+				continue
+			}
+			t.Errorf("operatorDefaults renders unregistered key [%s] %s: add it to "+
+				"barbicanv1alpha1.OwnedConfigKeys", section, key)
+		}
+	}
+
+	// Reverse check: every registered key is rendered by operatorDefaults or on
+	// the extras list. The extras are credential keys the renderer never emits:
+	// [keystone_authtoken] password and [vault_plugin] approle_secret_id arrive
+	// through their env overrides, and [vault_plugin] root_token_id is registered
+	// only so the webhook rejects it.
+	reverseExtras := map[[2]string]struct{}{
+		{"keystone_authtoken", "password"}:    {},
+		{"vault_plugin", "approle_secret_id"}: {},
+		{"vault_plugin", "root_token_id"}:     {},
+	}
+	for _, o := range barbicanv1alpha1.OwnedConfigKeys {
+		if _, ok := defaults[o.Section][o.Key]; ok {
+			continue
+		}
+		if _, ok := reverseExtras[[2]string{o.Section, o.Key}]; ok {
+			continue
+		}
+		t.Errorf("registry key [%s] %s is not rendered by operatorDefaults: remove it "+
+			"from barbicanv1alpha1.OwnedConfigKeys or extend the drift-guard extras list", o.Section, o.Key)
+	}
 }
 
 func TestReconcileConfig_PluginSectionsAreMerged(t *testing.T) {

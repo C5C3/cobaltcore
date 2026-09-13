@@ -201,6 +201,12 @@ func operatorDefaults(barbican *barbicanv1alpha1.Barbican, projection secretStor
 		"queue": {
 			"enable": "false",
 		},
+		// The flag swaps barbican's legacy creator/observer/audit rules, its
+		// shipped default, for the secure-RBAC ones (#979 D9a). enforce_scope is
+		// not rendered: no consumer sends system-scoped tokens.
+		"oslo_policy": {
+			"enforce_new_defaults": "true",
+		},
 	}
 
 	for name, section := range projection.sections {
