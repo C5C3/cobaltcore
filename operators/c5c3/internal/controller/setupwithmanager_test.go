@@ -392,6 +392,9 @@ func TestNamespacedStoreToControlPlaneMapper_MatchesServiceNamespaces(t *testing
 	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
 		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"},
 	}
+	cp.Spec.Services.Cinder = &c5c3v1alpha1.ServiceCinderSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "block"},
+	}
 	c := newControlPlaneMapperClient(t, cp)
 	mapper := namespacedStoreToControlPlaneMapper(c)
 
@@ -407,11 +410,25 @@ func TestNamespacedStoreToControlPlaneMapper_MatchesServiceNamespaces(t *testing
 	}
 	g.Expect(mapper(context.Background(), inOwnNS)).To(HaveLen(1))
 
+	// The block-storage namespace is reached the same way, so a store flipping
+	// there wakes the plane that placed Cinder in it.
+	inCinderNS := &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: "block"},
+	}
+	g.Expect(mapper(context.Background(), inCinderNS)).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "openstack", Name: "cp"}},
+	), "a tenant store in the cinder namespace must wake its ControlPlane")
+
 	unrelated := &esov1.SecretStore{
 		ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: "some-other-tenant"},
 	}
 	g.Expect(mapper(context.Background(), unrelated)).To(BeEmpty(),
 		"an identically-named store in a namespace the ControlPlane does not occupy must wake nobody")
+
+	cp.Spec.Services.Cinder = nil
+	g.Expect(namespacedStoreToControlPlaneMapper(newControlPlaneMapperClient(t, cp))(
+		context.Background(), inCinderNS,
+	)).To(BeEmpty(), "a plane that places no Cinder must not be woken by a store in \"block\"")
 }
 
 // --- controlPlaneTargetClusters ---

@@ -182,3 +182,28 @@ func TestInstrumenterInstrument_KeystoneServiceLabelPairs(t *testing.T) {
 			To(Equal(1.0), "error path must attribute %s to condition_type %s", name, condType)
 	}
 }
+
+// TestInstrumenterInstrument_CinderLabelPair is the same guard for the Cinder
+// leg: its error series must carry condition_type="CinderReady" resolved through
+// subReconcilerConditionTypes, not the UNKNOWN fallback an unmapped
+// sub_reconciler name produces.
+func TestInstrumenterInstrument_CinderLabelPair(t *testing.T) {
+	g := NewGomegaWithT(t)
+	reg := withTestInstrumenter(t)
+
+	const name = "Cinder"
+	errLabels := map[string]string{"sub_reconciler": name, "condition_type": conditionTypeCinderReady}
+	unknownLabels := map[string]string{
+		"sub_reconciler": name,
+		"condition_type": instrumentation.ConditionTypeUnknown,
+	}
+
+	_, err := instrumenter.Instrument(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
+		return ctrl.Result{}, errors.New("boom")
+	})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(counterValueOn(t, reg, reconcileErrorsMetric, errLabels)).
+		To(Equal(1.0), "the Cinder leg must attribute its errors to CinderReady")
+	g.Expect(counterValueOn(t, reg, reconcileErrorsMetric, unknownLabels)).
+		To(Equal(0.0), "the Cinder leg must not fall back to the UNKNOWN condition_type")
+}

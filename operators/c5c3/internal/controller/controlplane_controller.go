@@ -12,6 +12,7 @@ import (
 	"slices"
 
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -137,6 +138,7 @@ var subConditionTypes = []string{
 	conditionTypeBarbicanReady,
 	conditionTypeOVNReady,
 	conditionTypeNeutronReady,
+	conditionTypeCinderReady,
 	conditionTypeKORCReady,
 	conditionTypeAdminCredentialReady,
 	conditionTypeAdminPasswordReady,
@@ -310,6 +312,12 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // The ControlPlane reconciler projects and Owns a Neutron child, the network
 // service the OVN control plane below carries the logical model for.
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutrons,verbs=get;list;watch;create;update;patch;delete
+// cinders, cinderbackends, cinderbackupbackends:
+// The ControlPlane reconciler projects and Owns a Cinder child plus one
+// CinderBackend per services.cinder.backends entry and one CinderBackupBackend
+// for services.cinder.backupBackend. All three are operator-written children, so
+// all three get full verbs.
+// +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinders;cinderbackends;cinderbackupbackends,verbs=get;list;watch;create;update;patch;delete
 // The OVNCentral is deployed outside the plane and only REFERENCED by
 // services.neutron.ovn.centralRef, so the reconciler reads and watches it but
 // never writes it: read-only verbs.
@@ -647,11 +655,21 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				{Name: "Neutron", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileNeutron(ctx, &cp)
 				}},
+				// Cinder is gated on KeystoneReady alone: the block-storage
+				// service validates tokens against the Keystone child and
+				// reads no condition the network legs above write. Past the
+				// gate it delivers the shared bus into the block-storage
+				// namespace, projects the KeystoneService registration, the DB
+				// credential and the two satellite kinds the child consumes,
+				// and folds the child's aggregate Ready into CinderReady.
+				{Name: "Cinder", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileCinder(ctx, &cp)
+				}},
 				// ServiceAccounts aggregates the readiness of the
 				// KeystoneService children the
-				// Glance/Placement/Barbican/Neutron legs applied earlier in
-				// this same pass into ServiceAccountsReady. It reads only, so
-				// it carries no condition gate.
+				// Glance/Placement/Barbican/Neutron/Cinder legs applied
+				// earlier in this same pass into ServiceAccountsReady. It
+				// reads only, so it carries no condition gate.
 				{Name: "ServiceAccounts", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileServiceAccounts(ctx, &cp)
 				}},
@@ -793,6 +811,10 @@ const barbicanServiceKey = "barbican"
 // network service.
 const neutronServiceKey = "neutron"
 
+// cinderServiceKey is the key under which status.services reports the Cinder
+// block-storage service.
+const cinderServiceKey = "cinder"
+
 // setServicesStatus records status.services and status.updatePhase on every
 // status write (#476). Both fields were declared on ControlPlaneStatus but never
 // written. status.updatePhase is fixed at Idle until the release-update state
@@ -808,8 +830,8 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 	// manages no Keystone, so status.services stays empty rather than reporting a
 	// service that does not exist.
 	// One entry per configured service (keystone, horizon, glance, placement,
-	// barbican, neutron), in a stable order; unmanaged services are omitted rather than
-	// reported as a service that does not exist. The entry NAMES carry beyond
+	// barbican, neutron, cinder), in a stable order; unmanaged services are
+	// omitted rather than reported as a service that does not exist. The entry NAMES carry beyond
 	// status: the webhook's shared/dedicated transition freeze reads
 	// status.services[].name to tell a service's CREATE from a service dropped and
 	// re-added (serviceDeclaredBefore), so a service missing an arm here is a
@@ -854,6 +876,13 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    neutronServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeNeutronReady),
+			Release: cp.Spec.OpenStackRelease,
+		})
+	}
+	if cp.Spec.Services.Cinder != nil {
+		services = append(services, c5c3v1alpha1.ServiceStatus{
+			Name:    cinderServiceKey,
+			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeCinderReady),
 			Release: cp.Spec.OpenStackRelease,
 		})
 	}
@@ -1413,7 +1442,9 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 	//
 	// The Neutron kind joins them for the same reason as its peers: the
 	// neutron-operator is installed only for a ControlPlane that runs the network
-	// service.
+	// service. The three Cinder kinds join them for the same reason: the
+	// cinder-operator is installed only for a ControlPlane that runs the
+	// block-storage service.
 	//
 	// The OVNCentral kind is guarded too, but not from this loop: it is referenced
 	// rather than projected, so it carries neither an Owns leg nor a
@@ -1428,6 +1459,9 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		&barbicanv1alpha1.Barbican{},
 		&barbicanv1alpha1.BarbicanSecretStore{},
 		&neutronv1alpha1.Neutron{},
+		&cinderv1alpha1.Cinder{},
+		&cinderv1alpha1.CinderBackend{},
+		&cinderv1alpha1.CinderBackupBackend{},
 		&openbaov1alpha1.OpenBaoCluster{},
 		&openbaov1alpha1.OpenBaoTenant{},
 		rabbitmq,

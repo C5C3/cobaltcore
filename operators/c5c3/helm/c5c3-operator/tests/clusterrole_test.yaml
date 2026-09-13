@@ -120,6 +120,28 @@ tests:
               - update
               - watch
 
+  # The Cinder child and its two satellite kinds are projected and Owned, so all
+  # three take full CRUD.
+  - it: should grant full CRUD on cinders, cinderbackends and cinderbackupbackends
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - cinder.openstack.c5c3.io
+            resources:
+              - cinderbackends
+              - cinderbackupbackends
+              - cinders
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch
+              - update
+              - watch
+
   # The dedicated OpenBao instance needs a Role/RoleBinding pair for the
   # barbican-operator's TokenRequest and a ClusterRoleBinding for the instance
   # pods' TokenReview, so the operator authors all three kinds. Both rules carry

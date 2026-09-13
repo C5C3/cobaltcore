@@ -40,6 +40,7 @@ import (
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 )
 
@@ -854,8 +855,8 @@ const rabbitmqClusterDeletionFinalizer = "deletion.finalizers.rabbitmqclusters.r
 
 // crossNamespaceServiceChildren returns the service children the ControlPlane
 // placed in namespace: the Keystone child when the Keystone service is assigned
-// there, and the Horizon, Glance, Placement, Barbican, and Neutron children
-// likewise. Each is matched by its deterministic name; ownership is re-checked
+// there, and the Horizon, Glance, Placement, Barbican, Neutron and Cinder
+// children likewise. Each is matched by its deterministic name; ownership is re-checked
 // against the live object before anything is deleted.
 //
 // The Barbican arm names three objects rather than one, because its secret store
@@ -907,6 +908,11 @@ func crossNamespaceServiceChildren(cp *c5c3v1alpha1.ControlPlane, namespace stri
 	if cp.NeutronNamespace() == namespace {
 		children = append(children, &neutronv1alpha1.Neutron{
 			ObjectMeta: metav1.ObjectMeta{Name: neutronName(cp), Namespace: namespace},
+		})
+	}
+	if cp.CinderNamespace() == namespace {
+		children = append(children, &cinderv1alpha1.Cinder{
+			ObjectMeta: metav1.ObjectMeta{Name: cinderName(cp), Namespace: namespace},
 		})
 	}
 	return children

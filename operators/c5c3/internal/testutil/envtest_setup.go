@@ -24,6 +24,7 @@ import (
 
 	commonenvtest "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -107,6 +108,9 @@ func SetupC5c3EnvTestWithControllerAndCRDs(
 //   - the sibling service-operator CRDs (Keystone, Horizon, Glance, Placement,
 //     Barbican, Neutron — and with them GlanceBackend, KeystoneIdentityBackend
 //     and BarbicanSecretStore) the reconciler Owns as children.
+//   - the Cinder CRDs (Cinder, CinderBackend, CinderBackupBackend), the child
+//     and the two satellite kinds the reconciler projects and Owns for the
+//     block-storage service.
 //   - the OVNCentral CRD, which the reconciler only reads and watches: it
 //     mirrors the referenced central's readiness into OVNReady.
 //   - BaselineCRDDirectoryPaths(): the c5c3 CRDs plus every shared fake CRD dir
@@ -121,11 +125,12 @@ func CRDDirectoryPaths() []string {
 	placementCRDDir := filepath.Join(base, "..", "..", "..", "placement", "config", "crd", "bases")
 	barbicanCRDDir := filepath.Join(base, "..", "..", "..", "barbican", "config", "crd", "bases")
 	neutronCRDDir := filepath.Join(base, "..", "..", "..", "neutron", "config", "crd", "bases")
+	cinderCRDDir := filepath.Join(base, "..", "..", "..", "cinder", "config", "crd", "bases")
 	ovnCRDDir := filepath.Join(base, "..", "..", "..", "ovn", "config", "crd", "bases")
 
 	dirs := []string{
 		keystoneCRDDir, horizonCRDDir, glanceCRDDir, placementCRDDir, barbicanCRDDir,
-		neutronCRDDir, ovnCRDDir,
+		neutronCRDDir, cinderCRDDir, ovnCRDDir,
 	}
 	return append(dirs, BaselineCRDDirectoryPaths()...)
 }
@@ -207,6 +212,7 @@ func BuildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 		placementv1alpha1.AddToScheme,
 		barbicanv1alpha1.AddToScheme,
 		neutronv1alpha1.AddToScheme,
+		cinderv1alpha1.AddToScheme,
 		ovnv1alpha1.AddToScheme,
 		openbaov1alpha1.AddToScheme,
 		esov1.AddToScheme,

@@ -11,6 +11,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -90,6 +91,10 @@ type serverResourcesLister interface {
 // runs a network service, so a plane without one runs on a cluster that never
 // served them.
 //
+// The three Cinder kinds are listed for the same sibling reason: the
+// cinder-operator is installed only for a ControlPlane that runs the
+// block-storage service.
+//
 // The RabbitmqCluster kind is listed for a reason of its own: messaging is opt-in,
 // so spec.infrastructure.messaging is never materialized by defaulting and a
 // Keystone-only install on a cluster without the rabbitmq-cluster-operator has no
@@ -116,6 +121,9 @@ func optionalWatchObjects() []client.Object {
 		&openbaov1alpha1.OpenBaoTenant{},
 		rabbitmq,
 		&neutronv1alpha1.Neutron{},
+		&cinderv1alpha1.Cinder{},
+		&cinderv1alpha1.CinderBackend{},
+		&cinderv1alpha1.CinderBackupBackend{},
 		&ovnv1alpha1.OVNCentral{},
 	}
 }
