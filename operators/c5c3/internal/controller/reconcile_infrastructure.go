@@ -461,6 +461,14 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 		addCache(effectiveNeutronCache(cp), neutronNS, neutronCacheDeclaredAt(cp))
 	}
 
+	// Cinder's database and cache are gated on the DECLARATION for the same
+	// no-consumer-no-instance reason as Neutron's above.
+	if cp.Spec.Services.Cinder != nil {
+		cinderNS := cp.CinderNamespace()
+		addDatabase(effectiveCinderDatabase(cp), cinderNS, cinderDatabaseDeclaredAt(cp))
+		addCache(effectiveCinderCache(cp), cinderNS, cinderCacheDeclaredAt(cp))
+	}
+
 	// The shared message bus is the one class enumerated at the ControlPlane's
 	// own namespace regardless of consumers: see the doc comment above. The nil
 	// check on the block mirrors the effective-* resolvers, so a webhook-bypassed
@@ -549,6 +557,20 @@ func neutronDatabaseDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 func neutronCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 	if cp.DedicatedNeutronCache() != nil {
 		return "spec.services.neutron.dedicatedBackingServices.cache"
+	}
+	return "spec.infrastructure.cache"
+}
+
+func cinderDatabaseDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedCinderDatabase() != nil {
+		return "spec.services.cinder.dedicatedBackingServices.database"
+	}
+	return "spec.infrastructure.database"
+}
+
+func cinderCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedCinderCache() != nil {
+		return "spec.services.cinder.dedicatedBackingServices.cache"
 	}
 	return "spec.infrastructure.cache"
 }

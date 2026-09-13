@@ -37,6 +37,10 @@ func TestTargetClusterRefForNamespace(t *testing.T) {
 						Namespace:        &c5c3v1alpha1.ServiceNamespaceSpec{Name: "network"},
 						TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-b"},
 					},
+					Cinder: &c5c3v1alpha1.ServiceCinderSpec{
+						Namespace:        &c5c3v1alpha1.ServiceNamespaceSpec{Name: "block"},
+						TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-c"},
+					},
 				},
 			},
 		}
@@ -54,6 +58,11 @@ func TestTargetClusterRefForNamespace(t *testing.T) {
 	bypassedNeutron := placed()
 	bypassedNeutron.Spec.Services.Neutron.Namespace = nil
 
+	// And on the block-storage service: a co-located Cinder contributes the
+	// ControlPlane's own namespace to the table too.
+	bypassedCinder := placed()
+	bypassedCinder.Spec.Services.Cinder.Namespace = nil
+
 	tests := []struct {
 		name      string
 		cp        *c5c3v1alpha1.ControlPlane
@@ -67,6 +76,8 @@ func TestTargetClusterRefForNamespace(t *testing.T) {
 		{name: "a ref without a namespace block leaves the own namespace local", cp: bypassed, namespace: "openstack"},
 		{name: "the network service's namespace answers with its ref", cp: placed(), namespace: "network", want: "edge-b"},
 		{name: "a co-located neutron leaves the own namespace local", cp: bypassedNeutron, namespace: "openstack"},
+		{name: "the block-storage service's namespace answers with its ref", cp: placed(), namespace: "block", want: "edge-c"},
+		{name: "a co-located cinder leaves the own namespace local", cp: bypassedCinder, namespace: "openstack"},
 	}
 
 	for _, tc := range tests {
@@ -202,6 +213,8 @@ func TestEffectiveBackingServices(t *testing.T) {
 		wantHorizonCache  string
 		wantNeutronDB     string
 		wantNeutronCache  string
+		wantCinderDB      string
+		wantCinderCache   string
 	}{
 		{
 			name: "no dedicated blocks: every service shares the ControlPlane-wide instances",
@@ -211,6 +224,7 @@ func TestEffectiveBackingServices(t *testing.T) {
 					Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
 					Horizon:  &c5c3v1alpha1.ServiceHorizonSpec{},
 					Neutron:  &c5c3v1alpha1.ServiceNeutronSpec{},
+					Cinder:   &c5c3v1alpha1.ServiceCinderSpec{},
 				},
 			}},
 			wantKeystoneDB:    "openstack-db",
@@ -218,6 +232,8 @@ func TestEffectiveBackingServices(t *testing.T) {
 			wantHorizonCache:  "openstack-memcached",
 			wantNeutronDB:     "openstack-db",
 			wantNeutronCache:  "openstack-memcached",
+			wantCinderDB:      "openstack-db",
+			wantCinderCache:   "openstack-memcached",
 		},
 		{
 			name: "keystone takes a dedicated database only: its cache stays shared",
@@ -233,6 +249,7 @@ func TestEffectiveBackingServices(t *testing.T) {
 						},
 					},
 					Horizon: &c5c3v1alpha1.ServiceHorizonSpec{},
+					Cinder:  &c5c3v1alpha1.ServiceCinderSpec{},
 				},
 			}},
 			wantKeystoneDB:    "cp-keystone-db",
@@ -240,6 +257,8 @@ func TestEffectiveBackingServices(t *testing.T) {
 			wantHorizonCache:  "openstack-memcached",
 			wantNeutronDB:     "openstack-db",
 			wantNeutronCache:  "openstack-memcached",
+			wantCinderDB:      "openstack-db",
+			wantCinderCache:   "openstack-memcached",
 		},
 		{
 			name: "each service takes its own dedicated cache",
@@ -262,6 +281,7 @@ func TestEffectiveBackingServices(t *testing.T) {
 							},
 						},
 					},
+					Cinder: &c5c3v1alpha1.ServiceCinderSpec{},
 				},
 			}},
 			wantKeystoneDB:    "openstack-db",
@@ -269,6 +289,8 @@ func TestEffectiveBackingServices(t *testing.T) {
 			wantHorizonCache:  "cp-horizon-cache",
 			wantNeutronDB:     "openstack-db",
 			wantNeutronCache:  "openstack-memcached",
+			wantCinderDB:      "openstack-db",
+			wantCinderCache:   "openstack-memcached",
 		},
 		{
 			name: "neutron takes both instances dedicated: keystone keeps the shared ones",
@@ -288,6 +310,7 @@ func TestEffectiveBackingServices(t *testing.T) {
 							},
 						},
 					},
+					Cinder: &c5c3v1alpha1.ServiceCinderSpec{},
 				},
 			}},
 			wantKeystoneDB:    "openstack-db",
@@ -295,11 +318,44 @@ func TestEffectiveBackingServices(t *testing.T) {
 			wantHorizonCache:  "openstack-memcached",
 			wantNeutronDB:     "cp-neutron-db",
 			wantNeutronCache:  "cp-neutron-cache",
+			wantCinderDB:      "openstack-db",
+			wantCinderCache:   "openstack-memcached",
+		},
+		{
+			name: "cinder takes both instances dedicated: the other services keep the shared ones",
+			cp: &c5c3v1alpha1.ControlPlane{Spec: c5c3v1alpha1.ControlPlaneSpec{
+				Infrastructure: sharedInfra(),
+				Services: c5c3v1alpha1.ServicesSpec{
+					Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+					Cinder: &c5c3v1alpha1.ServiceCinderSpec{
+						DedicatedBackingServices: &c5c3v1alpha1.CinderDedicatedBackingServicesSpec{
+							Database: &commonv1.DatabaseSpec{
+								ClusterRef: &corev1.LocalObjectReference{Name: "cp-cinder-db"},
+								Database:   "cinder",
+							},
+							Cache: &commonv1.CacheSpec{
+								ClusterRef: &corev1.LocalObjectReference{Name: "cp-cinder-cache"},
+								Backend:    commonv1.DefaultCacheBackend,
+							},
+						},
+					},
+				},
+			}},
+			wantKeystoneDB:    "openstack-db",
+			wantKeystoneCache: "openstack-memcached",
+			wantHorizonCache:  "openstack-memcached",
+			wantNeutronDB:     "openstack-db",
+			wantNeutronCache:  "openstack-memcached",
+			wantCinderDB:      "cp-cinder-db",
+			wantCinderCache:   "cp-cinder-cache",
 		},
 		{
 			name: "no infrastructure block and no dedicated instances: nothing resolves",
 			cp: &c5c3v1alpha1.ControlPlane{Spec: c5c3v1alpha1.ControlPlaneSpec{
-				Services: c5c3v1alpha1.ServicesSpec{Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{}},
+				Services: c5c3v1alpha1.ServicesSpec{
+					Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+					Cinder:   &c5c3v1alpha1.ServiceCinderSpec{},
+				},
 			}},
 		},
 	}
@@ -351,6 +407,22 @@ func TestEffectiveBackingServices(t *testing.T) {
 			}
 			if gotNTCache != tc.wantNeutronCache {
 				t.Errorf("effectiveNeutronCache() = %q, want %q", gotNTCache, tc.wantNeutronCache)
+			}
+
+			var gotCDDB string
+			if db := effectiveCinderDatabase(tc.cp); db != nil {
+				gotCDDB = clusterRefName(db.ClusterRef)
+			}
+			if gotCDDB != tc.wantCinderDB {
+				t.Errorf("effectiveCinderDatabase() = %q, want %q", gotCDDB, tc.wantCinderDB)
+			}
+
+			var gotCDCache string
+			if cache := effectiveCinderCache(tc.cp); cache != nil {
+				gotCDCache = clusterRefName(cache.ClusterRef)
+			}
+			if gotCDCache != tc.wantCinderCache {
+				t.Errorf("effectiveCinderCache() = %q, want %q", gotCDCache, tc.wantCinderCache)
 			}
 		})
 	}
