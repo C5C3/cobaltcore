@@ -106,6 +106,20 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - update
   - watch
 - apiGroups:
+  - cinder.openstack.c5c3.io
+  resources:
+  - cinderbackends
+  - cinderbackupbackends
+  - cinders
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - discovery.k8s.io
   resources:
   - endpointslices

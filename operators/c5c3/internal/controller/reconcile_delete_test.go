@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -2311,6 +2312,42 @@ func TestCrossNamespaceServiceChildren_IncludesNeutron(t *testing.T) {
 	g.Expect(hasNeutron("unrelated")).To(BeFalse(), "a namespace Neutron was not placed in must not name it")
 	g.Expect(crossNamespaceServiceChildren(cp, "ovn-system")).To(BeEmpty(),
 		"the referenced OVNCentral is never enumerated for deletion")
+}
+
+// TestCrossNamespaceServiceChildren_IncludesCinder is the same guard for the
+// Cinder child: it is enumerated for the namespace it was assigned to and
+// excluded from any other, so a Cinder placed in a namespace of its own is torn
+// down by the finalizer sweep (it carries no owner reference to garbage-collect
+// it).
+func TestCrossNamespaceServiceChildren_IncludesCinder(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcControlPlane()
+	cp.Spec.Services.Cinder = &c5c3v1alpha1.ServiceCinderSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name: "block", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+		},
+	}
+
+	hasCinder := func(namespace string) bool {
+		for _, child := range crossNamespaceServiceChildren(cp, namespace) {
+			if _, ok := child.(*cinderv1alpha1.Cinder); ok && child.GetName() == cinderName(cp) {
+				return true
+			}
+		}
+		return false
+	}
+
+	g.Expect(hasCinder("block")).To(BeTrue(), "the Cinder child is enumerated for its assigned namespace")
+	g.Expect(hasCinder(cp.Namespace)).To(BeFalse(),
+		"a namespace Cinder was not placed in must not name it")
+
+	// Dropping the services.cinder block moves the resolved namespace back to the
+	// plane's own, exactly as every peer arm behaves: the dedicated namespace stops
+	// naming a Cinder, and the name the own namespace still carries resolves to a
+	// NotFound the sweep tolerates as already-gone.
+	cp.Spec.Services.Cinder = nil
+	g.Expect(hasCinder("block")).To(BeFalse(),
+		"a dedicated namespace must name no Cinder once the service is unmanaged")
 }
 
 // TestDeleteServiceChildrenIn_SweepsOwnedGlanceBackends verifies the cross-namespace

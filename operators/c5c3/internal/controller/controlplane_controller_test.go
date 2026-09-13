@@ -316,6 +316,107 @@ func TestSetServicesStatus_NeutronEntry(t *testing.T) {
 	g.Expect(cp.Status.Services[4].Name).To(Equal("barbican"))
 }
 
+// TestSetServicesStatus_CinderEntry extends the status projection to the seventh
+// service: services.cinder produces a "cinder" entry whose readiness tracks the
+// CinderReady sub-condition, and an unmanaged Cinder is omitted. The entry is
+// appended LAST, so the six established positions keep their meaning.
+func TestSetServicesStatus_CinderEntry(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2025.2",
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone:  &c5c3v1alpha1.ServiceKeystoneSpec{},
+				Horizon:   &c5c3v1alpha1.ServiceHorizonSpec{},
+				Glance:    &c5c3v1alpha1.ServiceGlanceSpec{},
+				Placement: &c5c3v1alpha1.ServicePlacementSpec{},
+				Barbican:  &c5c3v1alpha1.ServiceBarbicanSpec{},
+				Neutron: &c5c3v1alpha1.ServiceNeutronSpec{
+					OVN: c5c3v1alpha1.NeutronOVNSpec{
+						CentralRef: c5c3v1alpha1.NeutronOVNCentralRef{Name: "ovn"},
+					},
+				},
+				Cinder: &c5c3v1alpha1.ServiceCinderSpec{
+					Backends: []c5c3v1alpha1.CinderBackendEntry{{
+						Name: "nfs1",
+						Type: "NFS",
+						NFS: &c5c3v1alpha1.NFSShareSpec{
+							Server: "nfs-server.openstack.svc.cluster.local",
+							Path:   "/volumes",
+						},
+					}},
+				},
+			},
+		},
+	}
+
+	setServicesStatus(cp)
+	g.Expect(cp.Status.Services).To(HaveLen(7))
+	// Stable order: keystone, horizon, glance, placement, barbican, neutron, cinder.
+	g.Expect(cp.Status.Services[6].Name).To(Equal("cinder"))
+	g.Expect(cp.Status.Services[6].Ready).To(BeFalse(),
+		"cinder is not Ready while CinderReady is absent")
+	g.Expect(cp.Status.Services[6].Release).To(Equal("2025.2"))
+
+	// A False CinderReady keeps the entry not-ready; only True flips it, and only
+	// the cinder entry.
+	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+		Type:    conditionTypeCinderReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  "WaitingForKeystone",
+		Message: "KeystoneReady is not True; Cinder projection deferred",
+	})
+	setServicesStatus(cp)
+	g.Expect(findServiceStatus(cp.Status.Services, "cinder").Ready).To(BeFalse())
+
+	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeCinderReady))
+	setServicesStatus(cp)
+	cinder := findServiceStatus(cp.Status.Services, "cinder")
+	g.Expect(cinder).NotTo(BeNil())
+	g.Expect(cinder.Ready).To(BeTrue())
+	g.Expect(findServiceStatus(cp.Status.Services, "neutron").Ready).To(BeFalse(),
+		"CinderReady must not flip a peer service entry")
+
+	// An unmanaged cinder is omitted rather than reported, and the remaining
+	// entries keep their positions.
+	cp.Spec.Services.Cinder = nil
+	setServicesStatus(cp)
+	g.Expect(cp.Status.Services).To(HaveLen(6))
+	g.Expect(findServiceStatus(cp.Status.Services, "cinder")).To(BeNil())
+	g.Expect(cp.Status.Services[5].Name).To(Equal("neutron"))
+}
+
+// TestAggregateReady_CinderBlocksIt pins the condition type the block-storage
+// service contributes to the aggregate vocabulary: with every sub-condition True
+// the plane reports Ready, and CinderReady turning False takes it back to
+// False/NotAllReady.
+func TestAggregateReady_CinderBlocksIt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+	}
+	for _, ct := range subConditionTypes {
+		conditions.SetCondition(&cp.Status.Conditions, trueCondition(ct))
+	}
+
+	blocking := trueCondition(conditionTypeCinderReady)
+	blocking.Status = metav1.ConditionFalse
+	blocking.Reason = "WaitingForKeystone"
+	conditions.SetCondition(&cp.Status.Conditions, blocking)
+	setReadyCondition(cp)
+
+	ready := conditions.GetCondition(cp.Status.Conditions, conditionTypeReady)
+	g.Expect(ready).NotTo(BeNil())
+	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(ready.Reason).To(Equal("NotAllReady"))
+
+	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeCinderReady))
+	setReadyCondition(cp)
+	ready = conditions.GetCondition(cp.Status.Conditions, conditionTypeReady)
+	g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+}
+
 // TestAggregateReady_OVNAndNeutronBlockIt pins the two condition types the network
 // service contributes to the aggregate vocabulary: with every sub-condition True
 // the plane reports Ready, and either of the two turning False takes it back to

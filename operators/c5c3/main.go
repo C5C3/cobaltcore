@@ -26,6 +26,7 @@ import (
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/c5c3/internal/controller"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -74,6 +75,9 @@ var scheme = bootstrap.NewScheme(
 	barbicanv1alpha1.AddToScheme,
 	// Neutron CR — projected and Owned by the ControlPlane reconciler.
 	neutronv1alpha1.AddToScheme,
+	// Cinder CR, with CinderBackend and CinderBackupBackend: projected and Owned
+	// by the ControlPlane reconciler.
+	cinderv1alpha1.AddToScheme,
 	// OVNCentral — read and watched by reconcileOVN, never projected: the OVN
 	// control plane is deployed outside the plane and only referenced.
 	ovnv1alpha1.AddToScheme,
