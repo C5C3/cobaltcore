@@ -9,8 +9,9 @@
 #   1. Infrastructure  — owned MariaDB ("openstack-db") + Memcached
 #                        ("openstack-memcached") created in the openstack
 #                        namespace and owned by the ControlPlane; the shared bus
-#                        is referenced brownfield (04-messaging-secret.yaml), so
-#                        no broker is projected; InfrastructureReady=True.
+#                        is referenced brownfield against a vhost of this suite's
+#                        own on the kind broker, so no broker is projected;
+#                        InfrastructureReady=True.
 #   2. Keystone        — owned Keystone CR ("controlplane-keystone-keystone")
 #                        with image tag derived from spec.openStackRelease,
 #                        database/cache clusterRefs wired to the infra CRs, and
@@ -82,16 +83,36 @@
 #                        internal/public Endpoints, resolved through its ownership
 #                        labels, both URLs the in-cluster Neutron API (no gateway
 #                        in this fixture).
+#   5k. Cinder child   — owned Cinder CR ("…-cinder") on the Neutron child's terms
+#                        (database/cache clusterRefs, an engine-issued (Dynamic) DB
+#                        credential, the derived Keystone endpoint, the service user
+#                        its registration provisions, the bus Secret
+#                        "…-cinder-messaging" it references brownfield) PLUS what no
+#                        peer carries: the Glance and Barbican endpoints of its
+#                        sibling services, the internal tenant read off the
+#                        registration's account status, and one CinderBackend
+#                        ("nfs1") and one CinderBackupBackend ("nfsbk") satellite
+#                        against the kind NFS export, both attached by cinderRef;
+#                        CinderReady=True.
+#   5l. Block-st. cat. — the block-storage registration's K-ORC Service +
+#                        internal/public Endpoints, resolved through its ownership
+#                        labels, both URLs the in-cluster Cinder API on the
+#                        project-less /v3 path (no gateway in this fixture).
 #   6. Aggregate       — ControlPlane Ready=True (reason AllReady).
 #   7. API reachable   — Keystone /v3 returns HTTP 200; `openstack token issue`,
 #                        `openstack catalog list` (identity, image, placement,
-#                        key-manager AND network), an image upload round-trip
-#                        through the projected Glance endpoint into the Garage S3
-#                        backend, a placement resource-class listing, a Barbican
-#                        secret store/get round-trip whose retrieved payload is
-#                        compared byte for byte against the stored literal, and a
-#                        network create/show/delete round-trip through the
-#                        projected Neutron endpoint all succeed using
+#                        key-manager, network AND block-storage), an image upload
+#                        round-trip through the projected Glance endpoint into the
+#                        Garage S3 backend, a placement resource-class listing, a
+#                        Barbican secret store/get round-trip whose retrieved
+#                        payload is compared byte for byte against the stored
+#                        literal, a network create/show/delete round-trip through
+#                        the projected Neutron endpoint, and four block-storage
+#                        round-trips through the projected Cinder endpoint (a
+#                        volume on the NFS backend, a backup created, restored and
+#                        deleted, an encrypted volume type whose key lands in
+#                        Barbican and leaves again, and a second create-from-image
+#                        served by the image-volume cache) all succeed using
 #                        the materialised admin clouds.yaml (proves the minted,
 #                        pushed, re-materialised application credential
 #                        authenticates and the services work).
@@ -167,7 +188,7 @@ spec:
   # ── Step 1: Presence-gate, apply the ControlPlane, assert the chain ────────
   - try:
     - script:
-        timeout: 40m
+        timeout: 50m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
         # infra/keystone e2e script pins bash for the same reason.
         shell: bash
@@ -189,6 +210,7 @@ spec:
           BARBICAN_STORE="${BARBICAN_CR}-store"
           BARBICAN_BAO="${BARBICAN_CR}-bao"
           NEUTRON_CR="${CP_NAME}-neutron"
+          CINDER_CR="${CP_NAME}-cinder"
           CLOUDS_SECRET=k-orc-clouds-yaml
 
           # Each built-in service registers through a KeystoneService child of its
@@ -198,6 +220,7 @@ spec:
           PLACEMENT_KS="${PLACEMENT_CR}"
           BARBICAN_KS="${BARBICAN_CR}"
           NEUTRON_KS="${NEUTRON_CR}"
+          CINDER_KS="${CINDER_CR}"
           # A registration's K-ORC children live in the ControlPlane's namespace and
           # carry a name-hash prefix, so nothing here can address them by name: they
           # are resolved through the ownership labels the registration stamps. The
@@ -209,6 +232,7 @@ spec:
           PLACEMENT_SELECTOR="c5c3.io/keystoneservice-name=${PLACEMENT_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
           BARBICAN_SELECTOR="c5c3.io/keystoneservice-name=${BARBICAN_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
           NEUTRON_SELECTOR="c5c3.io/keystoneservice-name=${NEUTRON_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
+          CINDER_SELECTOR="c5c3.io/keystoneservice-name=${CINDER_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
 
           # ── Presence guard ──────────────────────────────
           # Probe for every CRD the chain spans plus the OpenBao
@@ -250,7 +274,11 @@ spec:
             barbicans.barbican.openstack.c5c3.io \
             barbicansecretstores.barbican.openstack.c5c3.io \
             neutrons.neutron.openstack.c5c3.io \
+            cinders.cinder.openstack.c5c3.io \
+            cinderbackends.cinder.openstack.c5c3.io \
+            cinderbackupbackends.cinder.openstack.c5c3.io \
             ovncentrals.ovn.openstack.c5c3.io \
+            rabbitmqclusters.rabbitmq.com \
             openbaoclusters.openbao.org \
             openbaotenants.openbao.org \
             applicationcredentials.openstack.k-orc.cloud \
@@ -332,9 +360,26 @@ spec:
           if ! operator_running neutron-operator; then
             gate_absent "no neutron-operator is running; the projected Neutron child cannot reach Ready."
           fi
+          # The cinder-operator drives the projected Cinder child to Ready.
+          if ! operator_running cinder-operator; then
+            gate_absent "no cinder-operator is running; the projected Cinder child cannot reach Ready."
+          fi
+          # Two infrastructure stacks beyond the operators, both of them opt-in on
+          # the CI job and neither installed by deploy-infra.sh by default. The
+          # block-storage service casts real RPC over the bus and mounts both of
+          # its shares from the in-cluster export, so a cluster missing either one
+          # brings up no Cinder at all. Probing here turns that into one gated line
+          # instead of a CinderReady wait that burns the whole script budget.
+          if [ "$(kubectl get rabbitmqcluster shared-rabbitmq -n openstack \
+            -o jsonpath='{.status.conditions[?(@.type=="AllReplicasReady")].status}' 2>/dev/null || true)" != "True" ]; then
+            gate_absent "shared-rabbitmq is not serving in openstack; deploy the kind messaging stack (WITH_MESSAGING=true) so the block-storage service has a broker."
+          fi
+          if ! kubectl get deploy nfs-server -n openstack >/dev/null 2>&1; then
+            gate_absent "no nfs-server Deployment in openstack; deploy the kind NFS stack (WITH_NFS=true) so the block-storage service has its shares."
+          fi
 
-          echo "OK: c5c3 + K-ORC + keystone + glance + placement + barbican + openbao + neutron + ovn CRDs, OpenBao store, and running"
-          echo "    keystone-operator, glance-operator, placement-operator, barbican-operator, openbao-operator, ovn-operator, and neutron-operator present — running the full ControlPlane → Keystone chain."
+          echo "OK: c5c3 + K-ORC + keystone + glance + placement + barbican + openbao + neutron + ovn + cinder CRDs, OpenBao store, the shared-rabbitmq broker, the nfs-server export, and running"
+          echo "    keystone-operator, glance-operator, placement-operator, barbican-operator, openbao-operator, ovn-operator, neutron-operator, and cinder-operator present — running the full ControlPlane → Keystone chain."
 
           # ── Helpers ────────────────────────────────────────────────────────
           # Poll a ControlPlane status condition to True. Implemented as an
@@ -410,10 +455,14 @@ spec:
           # devstack that carries no OVN CRD, which is the case the gate above is
           # meant to SKIP.
           kubectl apply -f 03-ovncentral-cr.yaml
-          # The brownfield bus Secret spec.infrastructure.messaging references: no
-          # broker runs here (see 04-messaging-secret.yaml); the ControlPlane
-          # only reads it and copies the URL to the Neutron child.
-          kubectl apply -f 04-messaging-secret.yaml
+          # The brownfield bus Secret spec.infrastructure.messaging references. It
+          # is written rather than applied: the helper takes a vhost of this
+          # suite's own on the shared kind broker and renders the transport URL of
+          # that vhost into the Secret, which is what keeps these RPC topics out of
+          # the vhosts the parallel cinder suites hold. The ControlPlane reads the
+          # Secret and copies the URL to the Neutron and Cinder children. The
+          # finally block deletes the vhost again.
+          ../../cinder/broker-vhost.sh create "${CP_NAME}" "${CP_NAME}-messaging" "${CP_NS}"
           kubectl apply -f 00-controlplane-cr.yaml
 
           # ── Link 1: Infrastructure (MariaDB + Memcached, owned) ────────────
@@ -1100,14 +1149,136 @@ spec:
           NEUTRON_URL="http://${NEUTRON_CR}.${CP_NS}.svc:9696"
           assert_catalog_rows "${NEUTRON_KS}" "${NEUTRON_SELECTOR}" network "${NEUTRON_URL}"
 
+          # ── Link 5k: Cinder child + satellites (the block-storage service) ──
+          # The widest window in the suite, and it buys the most. CinderReady
+          # needs the delivered bus Secret, the registration and the account IDs
+          # it publishes, the engine-issued DB credential, and the child's own
+          # Ready, which waits on db-sync, on the API Deployment, and on one
+          # cinder-volume and one cinder-backup pod that each have to mount an NFS
+          # share before they report anything.
+          wait_cp_condition CinderReady 900
+
+          assert_eq "Cinder image tag derived from openStackRelease" "2025.2" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
+          assert_eq "Cinder database clusterRef wired to infra" "openstack-db" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
+          assert_eq "Cinder logical database is cinder" "cinder" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.database}')"
+          assert_eq "Cinder DB secretRef points at the projected DB-credential Secret" "${CINDER_CR}-db-credentials" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.secretRef.name}')"
+          assert_eq "Cinder projected with Dynamic credentialsMode" "Dynamic" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.credentialsMode}')"
+
+          # ── Assert the Cinder DB credential is generator-backed ─────────────
+          # Same shape and same ordering rationale as the peers above: the dynamic
+          # objects are ensured inside the Keystone-gated reconcileCinder, and the
+          # child only reaches Dynamic once an engine-issued credential has
+          # materialised. Cinder shares the ControlPlane namespace here, so the
+          # per-tenant engine role is cinder-<CP_NS>.
+          CINDER_DB_SECRET="${CINDER_CR}-db-credentials"
+          assert_eq "Cinder DB-credential ExternalSecret uses a VaultDynamicSecret generator" "VaultDynamicSecret" \
+            "$(kubectl get externalsecret "${CINDER_DB_SECRET}" -n "${CP_NS}" \
+              -o "jsonpath={.spec.dataFrom[0].sourceRef.generatorRef.kind}")"
+          assert_eq "Cinder DB-credential ExternalSecret carries no static Data refs" "" \
+            "$(kubectl get externalsecret "${CINDER_DB_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.data}')"
+          kubectl get vaultdynamicsecret "${CINDER_DB_SECRET}" -n "${CP_NS}" >/dev/null
+          assert_eq "Cinder VaultDynamicSecret reads the cinder engine-role creds path" "database/mariadb/creds/cinder-${CP_NS}" \
+            "$(kubectl get vaultdynamicsecret "${CINDER_DB_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.path}')"
+          kubectl get serviceaccount cinder-db-creds -n "${CP_NS}" >/dev/null
+          CINDER_DB_USERNAME="$(kubectl get secret "${CINDER_DB_SECRET}" -n "${CP_NS}" \
+            -o "jsonpath={.data.username}" | base64 -d)"
+          if [ "${CINDER_DB_USERNAME}" = "cinder" ] || [ -z "${CINDER_DB_USERNAME}" ]; then
+            echo "ERROR: Cinder DB-credential Secret username '${CINDER_DB_USERNAME}' is not engine-issued"; exit 1
+          fi
+          echo "OK: Cinder DB credential is engine-issued (username '${CINDER_DB_USERNAME}')"
+
+          assert_eq "Cinder cache clusterRef wired to infra" "openstack-memcached" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.cache.clusterRef.name}')"
+          assert_eq "Cinder keystoneEndpoint derived from the naming convention" \
+            "http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keystoneEndpoint}')"
+          assert_eq "Cinder service user derived from its registration (username)" "cinder" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.username}')"
+          assert_eq "Cinder service user project" "service-cinder" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.projectName}')"
+          assert_eq "Cinder service user secretRef" "${CINDER_KS}-credentials" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.secretRef.name}')"
+
+          # The bus reaches the child as its own delivered Secret, never the source
+          # the ControlPlane read, on the rule the Neutron link documents.
+          assert_eq "Cinder messaging secretRef points at the delivered bus Secret" "${CP_NAME}-cinder-messaging" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.messaging.secretRef.name}')"
+          kubectl get secret "${CP_NAME}-cinder-messaging" -n "${CP_NS}" >/dev/null
+
+          # Glance and Barbican are siblings rather than gates, so the two
+          # endpoints only prove the plane wired the declared services together:
+          # Cinder pulls an image through the first and stores volume-encryption
+          # keys through the second. The verify Job exercises both for real.
+          assert_eq "Cinder glanceEndpoint points at the projected Glance" \
+            "http://${GLANCE_CR}.${CP_NS}.svc:9292" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.glanceEndpoint}')"
+          assert_eq "Cinder key manager points at the projected Barbican" \
+            "http://${BARBICAN_CR}.${CP_NS}.svc:9311" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keyManager.barbican.endpoint}')"
+
+          # The internal tenant the image-volume cache owns its cached volumes as.
+          # Cinder passes both IDs to the volume API without resolving them, so the
+          # only projectable pair is the one Keystone assigned, which the
+          # registration publishes on its account status. Reading the expected
+          # value off that status is the point: a hardcoded ID would pass against a
+          # projection that invented one.
+          CINDER_ACCOUNT_PROJECT="$(kubectl get keystoneservice "${CINDER_KS}" -n "${CP_NS}" \
+            -o 'jsonpath={.status.account.projectID}')"
+          CINDER_ACCOUNT_USER="$(kubectl get keystoneservice "${CINDER_KS}" -n "${CP_NS}" \
+            -o 'jsonpath={.status.account.userID}')"
+          if [ -z "${CINDER_ACCOUNT_PROJECT}" ] || [ -z "${CINDER_ACCOUNT_USER}" ]; then
+            echo "ERROR: registration ${CINDER_KS} published no status.account project/user ID"; exit 1
+          fi
+          assert_eq "Cinder internal tenant carries the registration's project" "${CINDER_ACCOUNT_PROJECT}" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.internalTenant.projectID}')"
+          assert_eq "Cinder internal tenant carries the registration's user" "${CINDER_ACCOUNT_USER}" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.internalTenant.userID}')"
+
+          assert_eq "Cinder API replicas sized from services.cinder.replicas" "1" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.api.deployment.replicas}')"
+          assert_eq "Cinder CR owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of cinders.cinder.openstack.c5c3.io "${CINDER_CR}")"
+
+          # The two satellites carry the BARE entry names, not names prefixed with
+          # the ControlPlane's: cinder keys every volume by the backend it was
+          # created on, so a rename would strand the volumes already there. Each
+          # attaches to the child by cinderRef (inverted attachment) and is owned by
+          # the plane.
+          assert_eq "CinderBackend nfs1 attaches to the projected Cinder" "${CINDER_CR}" \
+            "$(kubectl get cinderbackends.cinder.openstack.c5c3.io nfs1 -n "${CP_NS}" -o 'jsonpath={.spec.cinderRef.name}')"
+          assert_eq "CinderBackend nfs1 owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of cinderbackends.cinder.openstack.c5c3.io nfs1)"
+          assert_eq "CinderBackupBackend nfsbk attaches to the projected Cinder" "${CINDER_CR}" \
+            "$(kubectl get cinderbackupbackends.cinder.openstack.c5c3.io nfsbk -n "${CP_NS}" -o 'jsonpath={.spec.cinderRef.name}')"
+          assert_eq "CinderBackupBackend nfsbk owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of cinderbackupbackends.cinder.openstack.c5c3.io nfsbk)"
+          # The host identity the backend's cinder-volume registers under. It is
+          # what the volumes on that backend are keyed by, so it has to be derived
+          # from the projected child's name and the entry's, not from either alone.
+          assert_eq "Cinder reports the projected backend's host identity" "${CINDER_CR}@nfs1" \
+            "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.status.volumeServices[0].host}')"
+
+          # ── Link 5l: block-storage catalog (the registration's rows) ────────
+          # The block-storage service registers an internal AND a public Endpoint
+          # at birth like its peers; with no gateway in this fixture both URLs
+          # advertise the in-cluster Cinder API Service, on the project-less /v3
+          # path (decision D8 of #979).
+          CINDER_URL="http://${CINDER_CR}.${CP_NS}.svc:8776/v3"
+          assert_catalog_rows "${CINDER_KS}" "${CINDER_SELECTOR}" block-storage "${CINDER_URL}"
+
           # ── Link 6: aggregate Ready=True ───────────────────────────────────
           wait_cp_condition Ready 300
           assert_eq "Aggregate Ready reason" "AllReady" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
 
-          # ── Link 6a: status.services[] reports all six services ready ──────
+          # ── Link 6a: status.services[] reports all seven services ready ────
           # keystone [0], horizon [1], glance [2], placement [3], barbican [4],
-          # neutron [5] — the stable order setServicesStatus emits.
+          # neutron [5], cinder [6] — the stable order setServicesStatus emits.
           assert_eq "status.services[0] is keystone" "keystone" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[0].name}')"
           assert_eq "status.services[0] keystone ready" "true" \
@@ -1132,6 +1303,10 @@ spec:
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[5].name}')"
           assert_eq "status.services[5] neutron ready" "true" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[5].ready}')"
+          assert_eq "status.services[6] is cinder" "cinder" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[6].name}')"
+          assert_eq "status.services[6] cinder ready" "true" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[6].ready}')"
 
           # ── Link 6b: dynamic DB credential engine (no-static / revoke / iso) ─
           # Per-tenant role is keyed on the namespace alone (dbDynamicRoleFor /
@@ -1246,14 +1421,15 @@ spec:
           echo "== openstack token issue + catalog list (cloud: admin) =="
           kubectl delete job cp-openstack-verify -n "${CP_NS}" --ignore-not-found
           kubectl apply -f 01-openstack-verify-job.yaml
-          # The Job runs more than a dozen openstack CLI calls in sequence (token
-          # issue, catalog list, four role-assignment lists, then the image,
-          # placement, secret and network round-trips), and with six services up
-          # on the 4-vCPU CI node each call takes 15-25s: the run that added the
-          # network round-trip was still on `network show` when a 5m wait
-          # expired. 10m is about twice the observed runtime and sits inside the
-          # 40m step budget above.
-          kubectl wait --for=condition=complete job/cp-openstack-verify -n "${CP_NS}" --timeout=10m
+          # The Job runs dozens of openstack CLI calls in sequence (token issue,
+          # catalog list, five role-assignment lists, then the image, placement,
+          # secret and network round-trips), and with seven services up on the
+          # 4-vCPU CI node each call takes 15-25s: the run that added the network
+          # round-trip was still on `network show` when a 5m wait expired. The four
+          # block-storage round-trips add more than twenty calls of their own, most
+          # of them behind a poll on a volume reaching available. 15m sits inside
+          # the 50m step budget above.
+          kubectl wait --for=condition=complete job/cp-openstack-verify -n "${CP_NS}" --timeout=15m
           echo "=== openstack client output ==="
           # Fetch the Job log ONCE and assert on the captured text. `kubectl
           # logs | grep -q` fails under pipefail exactly when it MATCHES:
@@ -1275,6 +1451,8 @@ spec:
             || { echo "ERROR: key-manager (barbican) service not listed in the catalog"; exit 1; }
           grep -qi "network" <<<"${VERIFY_LOGS}" \
             || { echo "ERROR: network service missing from the catalog"; exit 1; }
+          grep -qi "block-storage" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: block-storage (cinder) service not listed in the catalog"; exit 1; }
           # The Job fails itself on a payload mismatch; this grep pins the positive
           # line so a silently skipped round-trip cannot pass as a green Job.
           grep -q "secret round-trip payload matches" <<<"${VERIFY_LOGS}" \
@@ -1283,7 +1461,15 @@ spec:
             || { echo "ERROR: the network round-trip did not confirm an ACTIVE network"; exit 1; }
           grep -q "OK: region description round-trip" <<<"${VERIFY_LOGS}" \
             || { echo "ERROR: the Keystone region description did not round-trip through openstack region show"; exit 1; }
-          echo "OK: token issued, identity + image + placement + key-manager + network services catalogued, and the image, placement, secret and network round-trips passed — full chain verified."
+          grep -q "OK: volume round-trip" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: the volume round-trip did not reach an available volume on the NFS backend"; exit 1; }
+          grep -q "OK: backup round-trip" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: the backup round-trip did not create, restore and delete a backup"; exit 1; }
+          grep -q "OK: encrypted volume type" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: the encrypted volume did not put exactly one key into Barbican and take it back out"; exit 1; }
+          grep -q "OK: image-volume cache" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: the second create-from-image did not reuse the cached image volume"; exit 1; }
+          echo "OK: token issued, identity + image + placement + key-manager + network + block-storage services catalogued, and the image, placement, secret, network, volume, backup, encryption and cache round-trips passed — full chain verified."
     catch:
     - script:
         # Pinned, because chainsaw applies the test's exec budget to EVERY
@@ -1351,6 +1537,27 @@ spec:
           kubectl get serviceaccount neutron-db-creds -n openstack 2>&1 || true
           echo "=== neutron-operator logs (last 200 lines) ==="
           kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --tail=200 --all-containers 2>&1 || true
+          echo "=== Cinder child + satellites + bus Secret + DB credential ==="
+          kubectl get cinders.cinder.openstack.c5c3.io,cinderbackends.cinder.openstack.c5c3.io,cinderbackupbackends.cinder.openstack.c5c3.io -n openstack 2>&1 || true
+          kubectl describe cinders.cinder.openstack.c5c3.io controlplane-keystone-cinder -n openstack 2>&1 || true
+          kubectl describe cinderbackends.cinder.openstack.c5c3.io nfs1 -n openstack 2>&1 || true
+          kubectl describe cinderbackupbackends.cinder.openstack.c5c3.io nfsbk -n openstack 2>&1 || true
+          kubectl get secret controlplane-keystone-cinder-messaging -n openstack 2>&1 || true
+          kubectl describe externalsecret controlplane-keystone-cinder-db-credentials -n openstack 2>&1 || true
+          kubectl describe vaultdynamicsecret controlplane-keystone-cinder-db-credentials -n openstack 2>&1 || true
+          kubectl get serviceaccount cinder-db-creds -n openstack 2>&1 || true
+          echo "=== cinder-operator logs (last 200 lines) ==="
+          kubectl logs -n cinder-system -l app.kubernetes.io/name=cinder-operator --tail=200 --all-containers 2>&1 || true
+          echo "=== Cinder service pod logs (api, scheduler, volume, backup; last 200 lines) ==="
+          # Dumped here, inside catch, because the finally block below deletes
+          # the vhost these pods sit on: every tail the workflow's diagnostics
+          # steps take afterwards is "vhost ... not found" from the teardown,
+          # and what cinder-volume and the scheduler did with the verify Job's
+          # volume is gone with it.
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=controlplane-keystone-cinder -o name 2>/dev/null); do
+            echo "--- ${pod} ---"
+            kubectl logs -n openstack "${pod}" --all-containers --tail=200 2>&1 || true
+          done
           echo "=== ovn-operator logs (last 200 lines) ==="
           kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --tail=200 --all-containers 2>&1 || true
           echo "=== openbao-operator logs (last 100 lines) ==="
@@ -1361,15 +1568,23 @@ spec:
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
           echo "=== K-ORC controller logs (last 100 lines) ==="
           kubectl logs -n orc-system -l app.kubernetes.io/name=openstack-resource-controller --tail=100 --all-containers 2>&1 || true
-          echo "=== openstack verify Job logs ==="
-          kubectl logs -n openstack job/cp-openstack-verify --tail=100 2>&1 || true
+          echo "=== openstack verify Job pod logs (every attempt) ==="
+          # job/<name> resolves to ONE pod, the newest, so after a backoffLimit
+          # retry the attempt that carried the failure line is the one not
+          # shown. The label lists every pod the Job made; a Never-restart pod
+          # is kept as Failed rather than replaced, so the first attempt's log
+          # is still there to read.
+          for pod in $(kubectl get pods -n openstack -l job-name=cp-openstack-verify -o name 2>/dev/null); do
+            echo "--- ${pod} ---"
+            kubectl logs -n openstack "${pod}" --tail=400 2>&1 || true
+          done
           echo "=== Events (openstack ns, last 30) ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
     finally:
     - script:
         # Pinned for the same reason as catch above; one delete needs nothing
         # like the test's exec budget. Keeps the suite's ceiling at
-        # exec + catch + finally + cleanup = 40 + 5 + 5 + 3 = 53m, which is the
+        # exec + catch + finally + cleanup = 50 + 5 + 5 + 2 + 3 = 65m, which is the
         # number .github/workflows/ci.yaml budgets against.
         timeout: 5m
         shell: bash
@@ -1378,3 +1593,14 @@ spec:
           # openstack namespace (the ControlPlane and its owned children are GC'd
           # by chainsaw's namespace teardown).
           kubectl delete job cp-openstack-verify -n openstack --ignore-not-found 2>&1 || true
+    - script:
+        # The vhost the create call took on the shared broker. `|| true` is the
+        # helper's contract rather than a choice made here: the delete reaches the
+        # broker through kubectl exec into the one pod every cinder suite shares,
+        # and a broker that is restarting under that load must not redden a run
+        # whose assertions all passed. The helper prints one WARNING: line for a
+        # leak, and the vhost dies with the kind cluster either way.
+        timeout: 2m
+        shell: bash
+        content: |
+          ../../cinder/broker-vhost.sh delete controlplane-keystone || true
