@@ -168,6 +168,30 @@ func effectiveNeutronCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
 	return nil
 }
 
+// effectiveCinderDatabase resolves the database instance the Cinder service
+// connects to.
+func effectiveCinderDatabase(cp *c5c3v1alpha1.ControlPlane) *commonv1.DatabaseSpec {
+	if db := cp.DedicatedCinderDatabase(); db != nil {
+		return db
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Database
+	}
+	return nil
+}
+
+// effectiveCinderCache resolves the cache instance the Cinder service connects
+// to.
+func effectiveCinderCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
+	if cache := cp.DedicatedCinderCache(); cache != nil {
+		return cache
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Cache
+	}
+	return nil
+}
+
 // targetClusterRefForNamespace resolves the target cluster the namespace named
 // namespace lives on: nil — the local cluster the operator runs on — for the
 // ControlPlane's own namespace, and otherwise the ref of a service that declares
@@ -198,6 +222,7 @@ func targetClusterRefForNamespace(cp *c5c3v1alpha1.ControlPlane, namespace strin
 		{cp.PlacementNamespace(), cp.PlacementTargetClusterRef()},
 		{cp.BarbicanNamespace(), cp.BarbicanTargetClusterRef()},
 		{cp.NeutronNamespace(), cp.NeutronTargetClusterRef()},
+		{cp.CinderNamespace(), cp.CinderTargetClusterRef()},
 	} {
 		if svc.namespace == namespace {
 			return svc.ref

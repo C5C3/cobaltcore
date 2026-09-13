@@ -1484,6 +1484,90 @@ func TestManagedInfraInstances_NeutronDedicatedBackingServices(t *testing.T) {
 		"an undeclared dedicated cache keeps naming the shared block")
 }
 
+// --- Cinder: a seventh database + cache consumer ---
+
+// TestManagedInfraInstances_CinderEnumeratedOnlyWhenDeclared pins the
+// no-consumer-no-instance rule for Cinder: an undeclared Cinder enumerates
+// nothing, and a co-located declared Cinder resolves to the SAME shared database
+// and cache as Keystone, so the entries dedup away rather than provisioning a
+// second set.
+func TestManagedInfraInstances_CinderEnumeratedOnlyWhenDeclared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	// Without services.cinder: only Keystone's shared database and cache.
+	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2))
+
+	// With services.cinder sharing the ControlPlane's namespace: Cinder resolves
+	// to the same shared instances, so the (kind, namespace, name) dedup collapses
+	// them, still two.
+	cp.Spec.Services.Cinder = &c5c3v1alpha1.ServiceCinderSpec{
+		Backends: []c5c3v1alpha1.CinderBackendEntry{{
+			Name: "nfs1",
+			Type: "NFS",
+			NFS:  &c5c3v1alpha1.NFSShareSpec{Server: "nfs.example.com", Path: "/exports/cinder"},
+		}},
+	}
+	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2),
+		"a co-located Cinder shares Keystone's instances, so nothing new is enumerated")
+}
+
+// TestManagedInfraInstances_CinderDedicatedBackingServices verifies a Cinder that
+// opts into a dedicated database is enumerated as its own instance (declared at
+// the dedicated path) in the namespace the block-storage service occupies, while
+// its still-shared cache dedups against Keystone's and keeps naming the shared
+// block.
+func TestManagedInfraInstances_CinderDedicatedBackingServices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+		Cinder: &c5c3v1alpha1.ServiceCinderSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "block"},
+			Backends: []c5c3v1alpha1.CinderBackendEntry{{
+				Name: "nfs1",
+				Type: "NFS",
+				NFS:  &c5c3v1alpha1.NFSShareSpec{Server: "nfs.example.com", Path: "/exports/cinder"},
+			}},
+			DedicatedBackingServices: &c5c3v1alpha1.CinderDedicatedBackingServicesSpec{
+				Database: &commonv1.DatabaseSpec{
+					ClusterRef:      &corev1.LocalObjectReference{Name: "cp-cinder-db"},
+					Database:        "cinder",
+					SecretRef:       commonv1.SecretRefSpec{Name: "cinder-db"},
+					CredentialsMode: commonv1.CredentialsModeStatic,
+					Replicas:        1,
+				},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	instances := r.managedInfraInstances(cp)
+	byName := make(map[string]infraInstance, len(instances))
+	for _, inst := range instances {
+		byName[inst.kind+"/"+inst.name] = inst
+	}
+	g.Expect(byName).To(HaveKey("MariaDB/cp-cinder-db"))
+	g.Expect(byName["MariaDB/cp-cinder-db"].declaredAt).To(
+		Equal("spec.services.cinder.dedicatedBackingServices.database"),
+	)
+	g.Expect(byName["MariaDB/cp-cinder-db"].namespace).To(Equal("block"),
+		"the backing services follow the service into its namespace")
+	// Keystone still shares the ControlPlane database, and Cinder's own cache is
+	// not dedicated, so it resolves to the shared cache materialized a second time
+	// in the block namespace.
+	g.Expect(byName).To(HaveKey("MariaDB/openstack-db"))
+	g.Expect(byName).To(HaveKey("Memcached/openstack-memcached"))
+	g.Expect(cinderCacheDeclaredAt(cp)).To(Equal("spec.infrastructure.cache"),
+		"an undeclared dedicated cache keeps naming the shared block")
+}
+
 // --- per-service target clusters: the backing services follow the service ---
 
 // placedInfraControlPlane places Horizon — and with it the cache it resolves to —
