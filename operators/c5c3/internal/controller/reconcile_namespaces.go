@@ -155,37 +155,80 @@ func (r *ControlPlaneReconciler) ensureUnownedOrOwned(ctx context.Context, c cli
 	if obj.GetNamespace() == cp.Namespace {
 		return apply.EnsureObject(ctx, c, r.Scheme, cp, obj, apply.FieldManager)
 	}
+	foreign, err := r.preexistingForeign(ctx, c, cp, obj)
+	if err != nil {
+		return err
+	}
+	if foreign {
+		return fmt.Errorf("refusing to adopt pre-existing %T %s in unowned namespace %q: it was not created by "+
+			"this ControlPlane, so adopting it would overwrite its spec and delete it at teardown",
+			obj, client.ObjectKeyFromObject(obj), obj.GetNamespace())
+	}
+	if err := claimChildOwnership(c, cp, obj, r.Scheme); err != nil {
+		return err
+	}
+	return apply.EnsureUnownedObject(ctx, c, r.Scheme, obj, apply.FieldManager)
+}
+
+// preexistingForeign reports whether a same-named object already exists on the
+// cluster c writes to and belongs to somebody other than cp. It is the adoption
+// pre-check every caller takes before its first write, because both halves of an
+// adoption are destructive: the SSA apply overwrites the live spec, and the
+// ownership mark stamped on the object has the teardown delete it.
+//
+// An absent object, and a kind whose CRD is not installed, are not foreign:
+// there is nothing there to overwrite, so the create is safe.
+func (r *ControlPlaneReconciler) preexistingForeign(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, obj client.Object) (bool, error) {
 	live := obj.DeepCopyObject().(client.Object)
 	reader, cached := adoptionPrecheckReader(r, c, obj)
 	err := reader.Get(ctx, client.ObjectKeyFromObject(obj), live)
 	if cached && apierrors.IsNotFound(err) {
 		// A cache MISS is not proof of absence: the informer trails the API server
-		// by however long the watch takes to deliver the ADD, and everything below
-		// this point is destructive if the name turns out to be taken — the SSA
-		// apply overwrites the foreign object's spec, and the labels we stamp get
-		// it deleted at teardown. Confirm against the API server before concluding
-		// the name is free. It costs a round trip only while the object does not
-		// exist yet; once it does, the cache answers and this never runs.
+		// by however long the watch takes to deliver the ADD, and everything the
+		// caller does on a clean answer is destructive if the name turns out to be
+		// taken — the SSA apply overwrites the foreign object's spec, and the labels
+		// we stamp get it deleted at teardown. Confirm against the API server before
+		// concluding the name is free. It costs a round trip only while the object
+		// does not exist yet; once it does, the cache answers and this never runs.
 		live = obj.DeepCopyObject().(client.Object)
 		err = r.apiReader().Get(ctx, client.ObjectKeyFromObject(obj), live)
 	}
 	switch {
 	case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
 		// Absent (or its CRD is not installed): safe to create.
+		return false, nil
 	case err != nil:
-		return fmt.Errorf("checking for a pre-existing %T %s before adopting it: %w",
+		return false, fmt.Errorf("checking for a pre-existing %T %s before adopting it: %w",
 			obj, client.ObjectKeyFromObject(obj), err)
 	default:
-		if !isControlPlaneChild(live, cp) {
-			return fmt.Errorf("refusing to adopt pre-existing %T %s in unowned namespace %q: it was not created by "+
-				"this ControlPlane, so adopting it would overwrite its spec and delete it at teardown",
-				obj, client.ObjectKeyFromObject(obj), obj.GetNamespace())
-		}
+		return !isControlPlaneChild(live, cp), nil
 	}
-	if err := claimChildOwnership(c, cp, obj, r.Scheme); err != nil {
+}
+
+// ensureProjectedSatellite is ensureUnownedOrOwned for a satellite named after a
+// spec entry rather than after the ControlPlane. The adoption pre-check runs in
+// EVERY namespace, cp's own included, which is the one difference between the
+// two. A bare entry name (the CinderBackend "nfs1" of a services.cinder.backends
+// entry) is what a person naming a hand-made object of that kind picks as well,
+// and cp's own namespace is where both of them land. There ensureUnownedOrOwned
+// applies straight through, which would make the hand-made object a child of cp,
+// and the prune that follows every projection deletes the children the spec no
+// longer declares: dropping the entry would take the foreign object with it.
+// Refusing before the first write leaves that object byte-identical.
+//
+// In any other namespace ensureUnownedOrOwned repeats the pre-check. The second
+// read is a cache hit on an informer that has just answered it, which is cheaper
+// than threading an "already checked" flag through both call paths.
+func (r *ControlPlaneReconciler) ensureProjectedSatellite(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, obj client.Object) error {
+	foreign, err := r.preexistingForeign(ctx, c, cp, obj)
+	if err != nil {
 		return err
 	}
-	return apply.EnsureUnownedObject(ctx, c, r.Scheme, obj, apply.FieldManager)
+	if foreign {
+		return fmt.Errorf("refusing to adopt pre-existing %T %s: it was not created by this ControlPlane and a "+
+			"projected satellite carries the entry's bare name", obj, client.ObjectKeyFromObject(obj))
+	}
+	return r.ensureUnownedOrOwned(ctx, c, cp, obj)
 }
 
 // adoptionPrecheckReader picks the reader ensureUnownedOrOwned's adoption
