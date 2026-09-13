@@ -624,6 +624,18 @@ green, because its test driver never calls `set_nas_security_options` and
 `_execute_as_root` keeps its default `True`, so the patch carries no test
 hunk. Upstream status: not yet proposed.
 
+`patches/cinder/2025.2/0003-tests-remove-use-of-mutable-netapp-fakes.patch`
+is a test-only backport of upstream commit `cc981d81b6` (2025-09-17, Launchpad
+bug 2125159), which cinder 28.0.0 carries and 27.0.0 does not.
+`CapabilitiesLibraryTestCase.test_update_ssc` hands module-level fake dicts to
+a mock by reference, and `update_ssc` pops `netapp_node_name` off them, so the
+second ddt variant to run in a process fails with a `KeyError`. stestr assigns
+tests to workers in per-process hash order, so the two variants shared a
+worker in about one `test-service-images (cinder, 2025.2)` run out of four.
+The patch moves the fakes inline into the test method. It changes nothing at
+runtime and has no 2026.1 twin. Upstream status: merged on master, backported
+to stable/2025.2 as `7faebca9b5`.
+
 **Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
 probe of the cinder-scheduler, cinder-volume and cinder-backup processes
 (decision D2 of issue #979). None of the three serves an HTTP port, so
