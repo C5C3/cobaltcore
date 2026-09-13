@@ -676,7 +676,7 @@ validates health of all operators, CRs, and ExternalSecrets.
 | 8 | `make deploy-infra` with `WITH_METRICS_SERVER=true` and `WITH_NFS=true` | Additive re-run — the script's Phase-3 wait gates the new metrics-server and `csi-driver-nfs` HelmReleases on Ready, and its Step-3 rollout wait gates `Deployment/nfs-server` |
 | 9 | `kubectl get deployment nfs-server -n openstack` + `kubectl get helmrelease csi-driver-nfs -n kube-system` | Asserts the additive `WITH_NFS` opt-in landed. nfs-health *skips* when the server is absent, so without this step dropping `WITH_NFS: "true"` from step 8 would leave the job green with the NFS stack untested |
 | 10 | `chainsaw test --report-name chainsaw-report-additive` | Scoped run over infra-stack-health, garage-health, flux-web-health, no-prometheus-when-disabled, openbao-instance, and nfs-health; the metrics-server and NFS absence suites are deliberately excluded |
-| 11 | `hack/ci-dump-diagnostics.sh` (on failure) | Dumps HelmReleases, pods, events, Flux logs |
+| 11 | `hack/ci-dump-diagnostics.sh` (on failure) | Dumps HelmReleases, pods, node pressure (capacity and allocated requests, containers with restarts and their last termination reason, per-pod memory working set, kernel OOM lines from the kind node), events, Flux logs |
 | 12 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
 | 13 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
@@ -784,7 +784,7 @@ Chainsaw E2E test suites.
 | 7 | `hack/ci-deploy-operator.sh` (`neutron` leg) | Deploys the ovn-operator into `ovn-system` |
 | 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
 | 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` |
-| 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs |
+| 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, node pressure (capacity and allocated requests, containers with restarts and their last termination reason, per-pod memory working set, kernel OOM lines from the kind node), events, operator logs |
 | 11 | `hack/ci-dump-diagnostics.sh` (always, `neutron` leg) | Same dump for `ovn-system` |
 | 12 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
 | 13 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
