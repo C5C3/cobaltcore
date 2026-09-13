@@ -54,8 +54,11 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "DEFAULT", Key: "host_href", OwnedBy: "operator-computed", Impact: "the links in API responses stop matching the published endpoint, so clients following them address a URL that need not resolve"},
 
 	// [database] — barbican keeps its database options in the plain [database]
-	// section its sibling services use.
+	// section its sibling services use. max_retries and connection_recycle_time
+	// are the oslo.db tuning the operator renders beside the placeholder DSN.
 	{Section: "database", Key: "connection", OwnedBy: "operator-computed", Impact: "the runtime value comes from the OS_DATABASE__CONNECTION env override, so the file override is ignored"},
+	{Section: "database", Key: "max_retries", OwnedBy: "operator-computed"},
+	{Section: "database", Key: "connection_recycle_time", OwnedBy: "operator-computed"},
 
 	// [keystone_authtoken] — rendered by keystoneauth.Section.
 	{Section: "keystone_authtoken", Key: "auth_type", OwnedBy: "operator-computed"},
@@ -114,5 +117,11 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "queue", Key: "enable", OwnedBy: "operator-computed", Impact: "enabling the queue makes the API hand order processing to a worker that is not deployed, so orders stay pending instead of failing"},
 
 	// [oslo_policy]
+	//
+	// enforce_new_defaults switches barbican from its legacy
+	// creator/observer/audit rules to the secure-RBAC defaults. Barbican ships
+	// it off and the operator renders it on. enforce_scope is not rendered and
+	// therefore not registered.
+	{Section: "oslo_policy", Key: "enforce_new_defaults", OwnedBy: "operator-computed", Impact: "turning it off returns barbican to the legacy creator/observer/audit rules: a project member needs the creator role again, the observer and audit read roles come back, and the cinder service user's key-delete fallback fails"},
 	{Section: "oslo_policy", Key: "policy_file", OwnedBy: "operator-computed"},
 }

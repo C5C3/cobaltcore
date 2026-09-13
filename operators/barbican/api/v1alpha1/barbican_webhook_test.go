@@ -541,6 +541,28 @@ func TestBarbicanValidate_ExtraConfigPerStoreSectionExempt(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
+// [oslo_policy] enforce_new_defaults is a Reported owned key, so the Rejected
+// loop in validate does not match it, and enforce_scope is a plain option both
+// release catalogs list. Neither override blocks admission or draws a warning on
+// either release.
+func TestBarbicanValidate_ExtraConfigPolicyDefaultsOverrideAdmitted(t *testing.T) {
+	for _, release := range []string{"2025.2", "2026.1"} {
+		t.Run(release, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &BarbicanWebhook{}
+
+			obj := validBarbican()
+			obj.Spec.OpenStackRelease = release
+			obj.Spec.ExtraConfig = map[string]map[string]string{
+				"oslo_policy": {"enforce_new_defaults": "false", "enforce_scope": "true"},
+			}
+			warnings, err := w.ValidateCreate(context.Background(), obj)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(warnings).To(gomega.BeEmpty())
+		})
+	}
+}
+
 // A release the build ships no catalog for must not block admission: the check
 // fails open with exactly one warning, and the two misses are distinguishable.
 func TestBarbicanValidate_ExtraConfigFailsOpenWithoutCatalog(t *testing.T) {
