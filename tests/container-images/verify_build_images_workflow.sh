@@ -1922,6 +1922,28 @@ test_sarif_upload_always_condition() {
   if_expr=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .if' "$ACTION_SUPPLY_CHAIN" || true)
   assert_contains "supply-chain-attest SARIF upload has always() condition" "$if_expr" "always()"
   assert_contains "supply-chain-attest SARIF upload has output guard" "$if_expr" "outputs.sarif"
+  # Code scanning compares a PR's categories against the default branch. The
+  # per-platform PR categories never matched the merge-job categories, so the
+  # upload is push-only and no "N configurations not found" check appears.
+  assert_contains "supply-chain-attest SARIF upload skips pull requests" "$if_expr" "github.event_name != 'pull_request'"
+}
+
+# --- security-events: write is scoped to the jobs that upload SARIF ---
+test_security_events_permission_scoped_to_merge_jobs() {
+  echo "Test: security-events permission scoped to merge jobs"
+
+  # The per-platform build jobs run the Grype scan on PRs but never upload
+  # SARIF (the composite skips the upload on pull requests), so they hold no
+  # security-events permission. The merge jobs upload on push and keep it.
+  local job perm
+  for job in build-tempest build-keystone-federation-proxy build-backup-shifter build-ovn build-service-images; do
+    perm=$(yq_raw ".jobs[\"$job\"][\"permissions\"][\"security-events\"]" "$WORKFLOW" || echo "null")
+    assert_eq "$job has no security-events permission" "null" "$perm"
+  done
+  for job in merge-base-images merge-tempest-image merge-keystone-federation-proxy-image merge-backup-shifter-image merge-ovn-image merge-service-images; do
+    perm=$(yq_raw ".jobs[\"$job\"][\"permissions\"][\"security-events\"]" "$WORKFLOW" || echo "null")
+    assert_eq "$job has security-events: write" "write" "$perm"
+  done
 }
 
 # --- upload-sarif action is SHA-pinned ---
@@ -2220,6 +2242,7 @@ echo ""
 test_sarif_upload_categories
 echo ""
 test_sarif_upload_always_condition
+test_security_events_permission_scoped_to_merge_jobs
 echo ""
 test_sarif_upload_action_sha_pinned
 echo ""

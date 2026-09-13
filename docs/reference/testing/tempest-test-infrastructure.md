@@ -612,7 +612,7 @@ See [the changes job](/reference/ci-cd/build-images-workflow#changes).
 | Export digest | Push only | Writes digest to `/tmp/digests/` for merge job |
 | Upload digest artifact | Push only | `digests-tempest-<release>-<platform-pair>`, 1-day retention |
 | Scan for vulnerabilities | PR, amd64 only | Grype scan against loaded image |
-| Upload SARIF | PR, if scan produced output | GitHub Security tab under `grype-tempest-<release>-<platform>` |
+| Upload SARIF | Skipped | The composite uploads SARIF on push events only; `merge-tempest-image` publishes `grype-tempest-<release>` |
 | Verify Tempest image | PR, amd64 only | Runs `verify_tempest.sh` against the built image |
 
 **PR vs push behavior:**
@@ -623,6 +623,7 @@ See [the changes job](/reference/ci-cd/build-images-workflow#changes).
 | Image destination | Loaded locally (`load: true`) | Pushed by digest to GHCR |
 | Verification | `verify_tempest.sh` runs | Deferred to `merge-tempest-image` |
 | Vulnerability scan | Against local image | Against SBOM (in merge job) |
+| SARIF upload | None | `grype-tempest-<release>` (in merge job) |
 
 ### build-images.yaml — merge-tempest-image Job
 

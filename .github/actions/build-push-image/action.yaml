@@ -78,7 +78,7 @@ inputs:
     required: false
     default: /tmp/digests
   grype-category:
-    description: SARIF category for PR scan (empty = skip)
+    description: Enables the PR Grype scan when non-empty; forwarded to supply-chain-attest, which uploads no SARIF on pull requests
     required: false
     default: ''
   image-ref-for-scan:
