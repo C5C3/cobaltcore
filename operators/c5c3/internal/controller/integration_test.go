@@ -51,6 +51,7 @@ import (
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/c5c3/internal/testutil"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -361,6 +362,37 @@ func integrationNeutronService() *c5c3v1alpha1.ServiceNeutronSpec {
 	}
 }
 
+// integrationCinderService returns a valid services.cinder block: one NFS volume
+// backend with the image-volume cache turned on, and one NFS backup backend. It
+// is the one-backend, one-backup shape the full-ControlPlane e2e suite declares,
+// and the smallest one the CRD admits, because backends is required with at least
+// one entry.
+//
+// replicas is left unset so the full-chain test proves the API pods fall back to
+// the shared operator default, and the volume and backup Deployments the
+// satellites carry stay on their own single-replica defaults.
+func integrationCinderService() *c5c3v1alpha1.ServiceCinderSpec {
+	return &c5c3v1alpha1.ServiceCinderSpec{
+		Backends: []c5c3v1alpha1.CinderBackendEntry{{
+			Name: "nfs1",
+			Type: "NFS",
+			NFS: &c5c3v1alpha1.NFSShareSpec{
+				Server: "nfs-server.openstack.svc.cluster.local",
+				Path:   "/volumes",
+			},
+			ImageVolumeCache: &c5c3v1alpha1.CinderImageVolumeCacheSpec{Enabled: true},
+		}},
+		BackupBackend: &c5c3v1alpha1.CinderBackupBackendEntry{
+			Name: "nfsbk",
+			Type: "NFS",
+			NFS: &c5c3v1alpha1.NFSShareSpec{
+				Server: "nfs-server.openstack.svc.cluster.local",
+				Path:   "/backups",
+			},
+		},
+	}
+}
+
 // ensureReadyClusterSecretStore creates the cluster-scoped OpenBao-backed
 // ClusterSecretStore the DB-credential, admin-password and admin-credential
 // sub-reconcilers gate on (#476) and marks it Ready. It is idempotent across the
@@ -594,6 +626,28 @@ func simulateNeutronReadyWhenPresent(t testing.TB, ctx context.Context, c client
 		Message: "simulated ready",
 	})
 	g.Expect(c.Status().Update(ctx, nn)).To(Succeed(), "set Neutron Ready=True")
+}
+
+// simulateCinderReadyWhenPresent waits for the projected Cinder child, then sets
+// its aggregate Ready condition True so reconcileCinder's mirror flips
+// CinderReady (there is no cinder-operator running in envtest). Mirrors
+// simulateNeutronReadyWhenPresent.
+func simulateCinderReadyWhenPresent(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	cn := &cinderv1alpha1.Cinder{}
+	g.Eventually(func() error {
+		return c.Get(ctx, key, cn)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Cinder child should be created")
+
+	meta.SetStatusCondition(&cn.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "AllReady",
+		Message: "simulated ready",
+	})
+	g.Expect(c.Status().Update(ctx, cn)).To(Succeed(), "set Cinder Ready=True")
 }
 
 // simulateOVNCentralReadyWhenPresent waits for the OVNCentral
@@ -922,6 +976,11 @@ func simulateRegistrationCatalogAvailableWhenPresent(
 // the delivery objects — source Secret, PushSecret, consumer Secret — stay in the
 // registration's own namespace, which for a service placed in a namespace of its
 // own is not the same one.
+//
+// The simulated project and user IDs are derived from the child's own name, so no
+// two registrations publish the same pair. A service that projects those IDs onto
+// its child (Cinder does, as its internal tenant) can then be asserted against the
+// registration it read them from.
 func simulateRegistrationAccountConvergedWhenPresent(
 	t testing.TB, ctx context.Context, c client.Client,
 	cp *c5c3v1alpha1.ControlPlane, ks *c5c3v1alpha1.KeystoneService,
@@ -970,7 +1029,7 @@ func simulateRegistrationAccountConvergedWhenPresent(
 		ObservedGeneration: project.Generation,
 		Message:            "simulated available",
 	})
-	project.Status.ID = ptr.To("registration-project-id")
+	project.Status.ID = ptr.To("project-" + ks.Name)
 	g.Expect(c.Status().Update(ctx, project)).To(Succeed(), "resolve the registration Project")
 
 	user := &orcv1alpha1.User{}
@@ -990,7 +1049,7 @@ func simulateRegistrationAccountConvergedWhenPresent(
 		Reason:  orcv1alpha1.ConditionReasonSuccess,
 		Message: "simulated available",
 	})
-	user.Status.ID = ptr.To("registration-user-id")
+	user.Status.ID = ptr.To("user-" + ks.Name)
 	user.Status.Resource = &orcv1alpha1.UserResourceStatus{AppliedPasswordRef: string(*user.Spec.Resource.PasswordRef)}
 	g.Expect(c.Status().Update(ctx, user)).To(Succeed(), "mark the registration's managed User Available")
 
@@ -1275,6 +1334,38 @@ func simulateNeutronDBCredentialSyncWhenPresent(
 		To(Succeed(), "simulate per-CP Neutron DB credential ExternalSecret sync")
 }
 
+// simulateCinderDBCredentialSyncWhenPresent is the Cinder twin of
+// simulateNeutronDBCredentialSyncWhenPresent: it waits for the operator-created
+// Cinder DB-credential ExternalSecret, simulates the ESO sync, and materialises
+// the Secret behind it with an ENGINE-ISSUED username. reconcileCinder gates the
+// Dynamic projection on both halves for the reason its peers do: a Static->Dynamic
+// flip updates the ExternalSecret in place, so its Ready can still be the retired
+// Static sync's. The engine-issued username here is deliberately not the static
+// seed's "cinder".
+func simulateCinderDBCredentialSyncWhenPresent(
+	t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	cinderNS, name := cp.CinderNamespace(), cinderDBCredentialSecretName(cp)
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: cinderNS, Name: name}, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"operator must create the per-CP Cinder DB-credential ExternalSecret")
+
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cinderNS},
+		Data: map[string][]byte{
+			"username": []byte(engineIssuedUsernamePrefix + "kubernetes-cinder-abc123-1750000000"),
+			"password": []byte("engine-issued-password"),
+		},
+	})).To(Succeed(), "materialise the engine-issued Cinder DB credential ESO would have written")
+
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c, client.ObjectKey{Namespace: cinderNS, Name: name})).
+		To(Succeed(), "simulate per-CP Cinder DB credential ExternalSecret sync")
+}
+
 // TestIntegration_FullReconcile_ManagedToReady drives a managed-mode ControlPlane
 // through every sub-reconciler to the aggregate Ready=True, simulating each
 // external dependency's readiness in dependency order. It is the single primary
@@ -1302,24 +1393,27 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
 
 	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
-	// Horizon, Glance, Placement, Barbican and Neutron are enabled HERE (not in the
-	// shared fixture) so only this full-chain test — which simulates the Horizon
-	// child in Phase 2.5, the four built-in registrations in Phase 5.6, the Glance
-	// child (plus its GlanceBackend) in Phase 6, the Placement child in Phase 7, the
-	// Barbican child (plus the dedicated OpenBao ensemble behind its secret store)
-	// in Phase 8, and the Neutron child (plus the OVN gate and the bus delivery
-	// ahead of it) in Phase 9 — carries the extra services; the gate-focused tests
-	// reusing the fixture would otherwise wedge at the unsimulated steps.
+	// Horizon, Glance, Placement, Barbican, Neutron and Cinder are enabled HERE (not
+	// in the shared fixture) so only this full-chain test — which simulates the
+	// Horizon child in Phase 2.5, the five built-in registrations in Phase 5.6, the
+	// Glance child (plus its GlanceBackend) in Phase 6, the Placement child in Phase
+	// 7, the Barbican child (plus the dedicated OpenBao ensemble behind its secret
+	// store) in Phase 8, the Neutron child (plus the OVN gate and the bus delivery
+	// ahead of it) in Phase 9, and the Cinder child (plus its two satellites) in
+	// Phase 10 — carries the extra services; the gate-focused tests reusing the
+	// fixture would otherwise wedge at the unsimulated steps.
 	cp := integrationManagedControlPlane("cp", ns.Name)
 	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{}
 	cp.Spec.Services.Glance = integrationGlanceService()
 	cp.Spec.Services.Placement = integrationPlacementService()
 	cp.Spec.Services.Barbican = integrationBarbicanService()
 	cp.Spec.Services.Neutron = integrationNeutronService()
+	cp.Spec.Services.Cinder = integrationCinderService()
 
-	// The shared message bus. The network service is what needs it: the Neutron
-	// projection derives the child's transport URL from this block, and the
-	// validating webhook requires the block beside services.neutron.
+	// The shared message bus. The network and block-storage services are what need
+	// it: both projections derive their child's transport URL from this block, and
+	// the validating webhook requires the block beside services.neutron and
+	// services.cinder.
 	cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
 		ClusterRef: &corev1.LocalObjectReference{Name: "cp-rabbitmq"},
 		Replicas:   1,
@@ -1496,9 +1590,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 5.6: the built-in registrations. Glance, Placement, Barbican and
-	// Neutron each project one KeystoneService child carrying that service's catalog
-	// row and its Keystone account. The registration controller running beside the
+	// --- Phase 5.6: the built-in registrations. Glance, Placement, Barbican,
+	// Neutron and Cinder each project one KeystoneService child carrying that
+	// service's catalog row and its Keystone account. The registration controller running beside the
 	// ControlPlane reconciles them, so the same K-ORC and ESO round-trip is replayed
 	// once per child — and until each reports AccountReady, no service child is
 	// projected at all. The Neutron one appears only because OVNReady is already
@@ -1511,8 +1605,10 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		client.ObjectKey{Name: barbicanName(cp), Namespace: cp.BarbicanNamespace()})
 	neutronReg := simulateBuiltinRegistrationConvergedWhenPresent(t, ctx, c, cp,
 		client.ObjectKey{Name: neutronName(cp), Namespace: cp.NeutronNamespace()})
+	cinderReg := simulateBuiltinRegistrationConvergedWhenPresent(t, ctx, c, cp,
+		client.ObjectKey{Name: cinderName(cp), Namespace: cp.CinderNamespace()})
 
-	// The ServiceAccounts member aggregates those four children into
+	// The ServiceAccounts member aggregates those five children into
 	// ServiceAccountsReady, which is the condition operators alert on: with every
 	// registration Ready it reports how many were counted.
 	serviceAccountsReady := waitForControlPlaneCondition(t, ctx, c, cpKey,
@@ -1520,16 +1616,20 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(serviceAccountsReady.Reason).To(Equal(reasonServiceAccountsProvisioned))
 
 	// Each child declares the identity its service authenticates as: the service's
-	// user name, a service project of its own, and the "service" role.
+	// user name, a service project of its own, and the roles that account holds.
+	// Cinder is the one built-in that holds admin beside service, because it deletes
+	// the Barbican secret of an encrypted volume on behalf of an owner that cannot.
 	for _, registration := range []struct {
 		child   *c5c3v1alpha1.KeystoneService
 		user    string
 		project string
+		roles   []string
 	}{
-		{glanceReg, "glance", "service-glance"},
-		{placementReg, "placement", "service-placement"},
-		{barbicanReg, "barbican", "service-barbican"},
-		{neutronReg, "neutron", "service-neutron"},
+		{glanceReg, "glance", "service-glance", []string{"service"}},
+		{placementReg, "placement", "service-placement", []string{"service"}},
+		{barbicanReg, "barbican", "service-barbican", []string{"service"}},
+		{neutronReg, "neutron", "service-neutron", []string{"service"}},
+		{cinderReg, "cinder", "service-cinder", []string{"service", "admin"}},
 	} {
 		account := registration.child.Spec.Account
 		g.Expect(account).NotTo(BeNil(), "the %q registration must declare a service account", registration.user)
@@ -1537,7 +1637,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		g.Expect(account.Project.Name).To(Equal(registration.project),
 			"every built-in takes a service project of its own")
 		g.Expect(account.Project.Create).To(BeTrue(), "the registration creates that project")
-		g.Expect(account.Roles).To(Equal([]string{"service"}))
+		g.Expect(account.Roles).To(Equal(registration.roles))
 	}
 
 	// --- Phase 6: Glance child (the last pipeline step, after the registrations).
@@ -2189,6 +2289,242 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		conditionTypeNeutronReady, metav1.ConditionTrue, itEventuallyTimeout)
 	g.Expect(neutronReady.Reason).To(Equal("NeutronReady"))
 
+	// --- Phase 10: Cinder child (the block-storage service, behind Neutron). It
+	// takes the shared bus the way the network service does, and it is the one
+	// built-in that projects satellite CRs of its own kinds beside the child: one
+	// CinderBackend per declared volume backend and one CinderBackupBackend. Glance
+	// and Barbican are SIBLINGS rather than gates, and both are declared on this
+	// fixture, so the child carries the endpoints it reaches them at. ---
+	simulateCinderDBCredentialSyncWhenPresent(t, ctx, c, cp)
+
+	// The bus delivery beside the Cinder child, under a name of its own: each
+	// consuming service gets the same transport URL in a Secret the cinder operator
+	// resolves in the Cinder's own namespace.
+	cinderBusSecret := &corev1.Secret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: cinderMessagingSecretName(cp), Namespace: ns.Name}, cinderBusSecret)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the ControlPlane must deliver the shared bus into the block-storage service's namespace")
+	g.Expect(string(cinderBusSecret.Data[commonv1.DefaultTransportURLSecretKey])).To(
+		Equal(fmt.Sprintf("rabbit://default-user:broker-password@cp-rabbitmq.%s.svc:5672/", ns.Name)),
+		"the transport URL is assembled from the four keys of the broker's default-user Secret")
+	// A plaintext bus declares no TLS, so no CA mirror is written beside it, for the
+	// reason the Neutron delivery documents.
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, client.ObjectKey{
+		Name: cinderMessagingCASecretName(cp), Namespace: ns.Name,
+	}, &corev1.Secret{}))).To(BeTrue(), "a bus without tls leaves no CA mirror in the Cinder namespace")
+
+	cinderKey := client.ObjectKey{Name: cinderName(cp), Namespace: ns.Name}
+	projectedCinder := &cinderv1alpha1.Cinder{}
+	g.Eventually(func() error {
+		return c.Get(ctx, cinderKey, projectedCinder)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"Cinder child should be projected once KeystoneReady and the Cinder registration are ready")
+
+	// Release and image: the canonical repository with the release-derived tag.
+	g.Expect(projectedCinder.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(projectedCinder.Spec.Image.Repository).To(Equal(defaultCinderRepository))
+	g.Expect(projectedCinder.Spec.Image.Tag).To(Equal("2025.2"), "Cinder image tag must derive from openStackRelease")
+
+	// extraConfig: this fixture declares no services.cinder.extraConfig, so the
+	// merge is the global section alone.
+	g.Expect(projectedCinder.Spec.ExtraConfig).To(Equal(map[string]map[string]string{
+		"cors": {"allowed_origin": "https://dashboard.example.com"},
+	}), "globalExtraConfig reaches the block-storage service too")
+
+	// Database: the shared managed cluster, the fixed "cinder" logical schema, and
+	// the operator-owned engine-issued DB credential (Dynamic is the default on the
+	// managed shared database, as it is for every peer).
+	g.Expect(projectedCinder.Spec.Database.ClusterRef).NotTo(BeNil(), "Cinder database clusterRef must be wired")
+	g.Expect(projectedCinder.Spec.Database.ClusterRef.Name).To(Equal("openstack-db"))
+	g.Expect(projectedCinder.Spec.Database.Database).To(Equal("cinder"))
+	g.Expect(projectedCinder.Spec.Database.SecretRef.Name).To(Equal(cinderDBCredentialSecretName(cp)),
+		"managed Cinder DB secretRef must point at the operator-owned per-CP Cinder DB-credential Secret")
+	g.Expect(projectedCinder.Spec.Database.SecretRef.Key).To(Equal("password"))
+	g.Expect(projectedCinder.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeDynamic),
+		"the projected Cinder DB credential defaults to Dynamic (engine-issued)")
+
+	// Cache: the shared managed Memcached.
+	g.Expect(projectedCinder.Spec.Cache.ClusterRef).NotTo(BeNil(), "Cinder cache clusterRef must be wired")
+	g.Expect(projectedCinder.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
+
+	// Keystone endpoint: derived TOP-DOWN from the naming convention, because Cinder
+	// validates every token against it from inside the cluster.
+	g.Expect(projectedCinder.Spec.KeystoneEndpoint).To(
+		Equal(fmt.Sprintf("http://%s.%s.svc:5000/v3", keystoneName(cp), ns.Name)),
+		"keystoneEndpoint must be the cluster-local Keystone Service URL",
+	)
+	g.Expect(projectedCinder.Spec.KeystonePublicEndpoint).To(BeEmpty(),
+		"this fixture exposes Keystone nowhere externally, so the child falls back to the internal endpoint")
+
+	// Service user: the identity the Cinder registration provisions (its own
+	// service-cinder project) and the consumer Secret it delivers, in the admin
+	// domain the registration resolves the account in.
+	g.Expect(projectedCinder.Spec.ServiceUser).NotTo(BeNil(), "the service user must be projected")
+	g.Expect(projectedCinder.Spec.ServiceUser.Username).To(Equal("cinder"))
+	g.Expect(projectedCinder.Spec.ServiceUser.ProjectName).To(Equal("service-cinder"))
+	g.Expect(projectedCinder.Spec.ServiceUser.UserDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(projectedCinder.Spec.ServiceUser.ProjectDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(projectedCinder.Spec.ServiceUser.SecretRef.Name).
+		To(Equal(keystoneServiceCredentialsSecretName(cinderReg)),
+			"Cinder service-user password must read the registration's consumer Secret")
+	g.Expect(projectedCinder.Spec.ServiceUser.SecretRef.Key).To(Equal("password"))
+
+	// The ControlPlane's RESOLVED store selection, so the child never falls back to
+	// its own shared-cluster-store default.
+	g.Expect(projectedCinder.Spec.SecretStoreRef).NotTo(BeNil(), "the resolved store ref must be projected")
+	g.Expect(projectedCinder.Spec.SecretStoreRef.Kind).To(Equal(commonv1.SecretStoreKindNamespaced))
+	g.Expect(projectedCinder.Spec.SecretStoreRef.Name).To(Equal(esoTenantStoreName))
+
+	// The bus reaches the child as a brownfield secretRef naming the Secret asserted
+	// above, never as the managed clusterRef the ControlPlane resolved it from.
+	g.Expect(projectedCinder.Spec.Messaging.SecretRef).NotTo(BeNil())
+	g.Expect(projectedCinder.Spec.Messaging.SecretRef.Name).To(Equal(cinderMessagingSecretName(cp)))
+	g.Expect(projectedCinder.Spec.Messaging.SecretRef.Key).To(Equal(commonv1.DefaultTransportURLSecretKey))
+	g.Expect(projectedCinder.Spec.Messaging.TLS).To(BeNil(),
+		"the bus declares no tls, so the child names no CA mirror")
+
+	// The two siblings, both declared on this fixture: the Glance endpoint Cinder
+	// fetches image data from and the Barbican one castellan stores volume keys
+	// through, each derived from the sibling child's naming convention.
+	g.Expect(projectedCinder.Spec.GlanceEndpoint).To(
+		Equal(fmt.Sprintf("http://%s.%s.svc:9292", glanceName(cp), ns.Name)))
+	g.Expect(projectedCinder.Spec.KeyManager).NotTo(BeNil(), "a declared Barbican gives Cinder a key manager")
+	g.Expect(projectedCinder.Spec.KeyManager.Type).To(Equal(cinderv1alpha1.KeyManagerTypeBarbican))
+	g.Expect(projectedCinder.Spec.KeyManager.Barbican).NotTo(BeNil())
+	g.Expect(projectedCinder.Spec.KeyManager.Barbican.Endpoint).To(
+		Equal(fmt.Sprintf("http://%s.%s.svc:9311", barbicanName(cp), ns.Name)))
+
+	// The internal tenant the image-volume cache owns its cached volumes as. Both
+	// IDs come off the registration's account status, which is the one place they
+	// exist, so they are the ones Phase 5.6 published for THIS registration.
+	g.Expect(projectedCinder.Spec.InternalTenant).To(Equal(&cinderv1alpha1.InternalTenantSpec{
+		ProjectID: "project-" + cinderName(cp),
+		UserID:    "user-" + cinderName(cp),
+	}), "the internal tenant is read off the Cinder registration's own account")
+
+	// One replica count, not overridden: services.cinder declares none, so the API
+	// pods take the shared operator default. The volume and backup Deployments stay
+	// on their single-replica defaults because the projection writes neither block.
+	g.Expect(projectedCinder.Spec.API.Deployment.Replicas).To(Equal(commonv1.DefaultReplicas),
+		"replicas fall back to the shared operator default when services.cinder sets none")
+	g.Expect(projectedCinder.Spec.DBPurge).To(BeNil(),
+		"spec.dbPurge is deliberately unset: the child-side schedule stays authoritative")
+	g.Expect(projectedCinder.Spec.NetworkPolicy).To(BeNil())
+	g.Expect(projectedCinder.Spec.Autoscaling).To(BeNil())
+	g.Expect(projectedCinder.Spec.Logging).To(BeNil(),
+		"spec.logging is deliberately unset: the Cinder CRD's own defaulting webhook materializes it")
+
+	// The child is co-located with the ControlPlane, so ownership is a controller
+	// owner reference rather than the labels a cross-namespace child carries.
+	cinderOwner := metav1.GetControllerOf(projectedCinder)
+	g.Expect(cinderOwner).NotTo(BeNil(), "Cinder child must be controller-owned by the ControlPlane")
+	g.Expect(cinderOwner.Kind).To(Equal("ControlPlane"))
+	g.Expect(cinderOwner.Name).To(Equal(cp.Name))
+
+	// The satellites: one CinderBackend per declared volume backend and the one
+	// CinderBackupBackend. Each carries the entry's BARE name (a rename would strand
+	// the volumes already on the backend) and references its Cinder by name.
+	volumeBackend := &cinderv1alpha1.CinderBackend{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: "nfs1", Namespace: ns.Name}, volumeBackend)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the declared volume backend should be projected")
+	g.Expect(volumeBackend.Spec.CinderRef.Name).To(Equal(cinderName(cp)))
+	g.Expect(volumeBackend.Spec.Type).To(Equal(cinderv1alpha1.CinderBackendTypeNFS))
+	g.Expect(volumeBackend.Spec.NFS).NotTo(BeNil())
+	g.Expect(volumeBackend.Spec.NFS.Server).To(Equal("nfs-server.openstack.svc.cluster.local"))
+	g.Expect(volumeBackend.Spec.NFS.Path).To(Equal("/volumes"))
+	g.Expect(volumeBackend.Spec.ImageVolumeCache).NotTo(BeNil())
+	g.Expect(volumeBackend.Spec.ImageVolumeCache.Enabled).To(BeTrue())
+	volumeBackendOwner := metav1.GetControllerOf(volumeBackend)
+	g.Expect(volumeBackendOwner).NotTo(BeNil(), "the satellite must be controller-owned by the ControlPlane")
+	g.Expect(volumeBackendOwner.Name).To(Equal(cp.Name))
+
+	backupBackend := &cinderv1alpha1.CinderBackupBackend{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: "nfsbk", Namespace: ns.Name}, backupBackend)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the declared backup backend should be projected")
+	g.Expect(backupBackend.Spec.CinderRef.Name).To(Equal(cinderName(cp)))
+	g.Expect(backupBackend.Spec.NFS).NotTo(BeNil())
+	g.Expect(backupBackend.Spec.NFS.Path).To(Equal("/backups"))
+	backupOwner := metav1.GetControllerOf(backupBackend)
+	g.Expect(backupOwner).NotTo(BeNil(), "the satellite must be controller-owned by the ControlPlane")
+	g.Expect(backupOwner.Name).To(Equal(cp.Name))
+
+	simulateCinderReadyWhenPresent(t, ctx, c, cinderKey)
+	cinderReady := waitForControlPlaneCondition(t, ctx, c, cpKey,
+		conditionTypeCinderReady, metav1.ConditionTrue, itEventuallyTimeout)
+	g.Expect(cinderReady.Reason).To(Equal("CinderReady"))
+
+	// --- Phase 10b: swapping the declared volume backend. A satellite is named
+	// after its entry, which is also what a person naming a hand-made CinderBackend
+	// picks, so the projection has to tell the two apart: it projects and prunes its
+	// own and leaves everything else byte-identical. ---
+	foreignBackend := &cinderv1alpha1.CinderBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: "foreign", Namespace: ns.Name},
+		Spec: cinderv1alpha1.CinderBackendSpec{
+			CinderRef: cinderv1alpha1.CinderRefSpec{Name: cinderName(cp)},
+			Type:      cinderv1alpha1.CinderBackendTypeNFS,
+			NFS: &cinderv1alpha1.NFSBackendSpec{
+				Server: "nfs-server.openstack.svc.cluster.local",
+				Path:   "/hand-made",
+			},
+		},
+	}
+	g.Expect(c.Create(ctx, foreignBackend)).To(Succeed(),
+		"attach a hand-made CinderBackend to the same Cinder, owned by nobody")
+
+	g.Eventually(func() error {
+		live := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, live); err != nil {
+			return err
+		}
+		live.Spec.Services.Cinder.Backends = []c5c3v1alpha1.CinderBackendEntry{{
+			Name: "nfs2",
+			Type: "NFS",
+			NFS: &c5c3v1alpha1.NFSShareSpec{
+				Server: "nfs-server.openstack.svc.cluster.local",
+				Path:   "/volumes2",
+			},
+		}}
+		return c.Update(ctx, live)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "replace the declared volume backend")
+
+	swapped := &cinderv1alpha1.CinderBackend{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: "nfs2", Namespace: ns.Name}, swapped)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the newly declared backend should be projected")
+	g.Expect(swapped.Spec.NFS).NotTo(BeNil())
+	g.Expect(swapped.Spec.NFS.Path).To(Equal("/volumes2"))
+	swappedOwner := metav1.GetControllerOf(swapped)
+	g.Expect(swappedOwner).NotTo(BeNil(), "the replacement satellite must be controller-owned")
+	g.Expect(swappedOwner.Name).To(Equal(cp.Name))
+
+	g.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, client.ObjectKey{Name: "nfs1", Namespace: ns.Name},
+			&cinderv1alpha1.CinderBackend{}))
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the satellite of the removed entry must be pruned")
+
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(foreignBackend), &cinderv1alpha1.CinderBackend{})).
+		To(Succeed(), "the prune selects on ownership, so the hand-made CinderBackend survives it")
+
+	// The child keeps its simulated status across the spec update, so CinderReady
+	// re-converges on the same mirror rather than on a second simulation.
+	cinderReady = waitForControlPlaneCondition(t, ctx, c, cpKey,
+		conditionTypeCinderReady, metav1.ConditionTrue, itEventuallyTimeout)
+	g.Expect(cinderReady.Reason).To(Equal("CinderReady"))
+
+	// The swap bumped the ControlPlane's generation, so wait for the reconciler to
+	// observe it: the final block below reads a status restamped for THIS
+	// generation.
+	g.Eventually(func(ig Gomega) {
+		live := &c5c3v1alpha1.ControlPlane{}
+		ig.Expect(c.Get(ctx, cpKey, live)).To(Succeed())
+		ig.Expect(live.Status.ObservedGeneration).To(Equal(live.Generation))
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the reconciler must observe the generation the backend swap produced")
+
 	// --- Aggregate: Ready=True. ---
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeReady, metav1.ConditionTrue, itEventuallyTimeout)
 
@@ -2210,6 +2546,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		conditionTypeBarbicanReady,
 		conditionTypeOVNReady,
 		conditionTypeNeutronReady,
+		conditionTypeCinderReady,
 		conditionTypeReady,
 	} {
 		cond := meta.FindStatusCondition(final.Status.Conditions, condType)
@@ -2227,9 +2564,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 
 	// status.services reports one entry per configured service, all ready, in the
 	// stable order setServicesStatus produces (keystone, horizon, glance, placement,
-	// barbican, neutron).
-	g.Expect(final.Status.Services).To(HaveLen(6),
-		"six services are configured (keystone, horizon, glance, placement, barbican, neutron)")
+	// barbican, neutron, cinder).
+	g.Expect(final.Status.Services).To(HaveLen(7),
+		"seven services are configured (keystone, horizon, glance, placement, barbican, neutron, cinder)")
 	g.Expect(final.Status.Services[0].Name).To(Equal("keystone"))
 	g.Expect(final.Status.Services[0].Ready).To(BeTrue())
 	g.Expect(final.Status.Services[1].Name).To(Equal("horizon"))
@@ -2245,6 +2582,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(final.Status.Services[5].Name).To(Equal("neutron"))
 	g.Expect(final.Status.Services[5].Ready).To(BeTrue())
 	g.Expect(final.Status.Services[5].Release).To(Equal("2025.2"))
+	g.Expect(final.Status.Services[6].Name).To(Equal("cinder"))
+	g.Expect(final.Status.Services[6].Ready).To(BeTrue())
+	g.Expect(final.Status.Services[6].Release).To(Equal("2025.2"))
 
 	// Every condition records the generation it was observed against.
 	for _, cond := range final.Status.Conditions {
@@ -3497,6 +3837,20 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 
 	c, ctx, _ := setupControlPlaneEnvTest(t)
 
+	// Every services.cinder case declares the shared bus beside the block: the
+	// validating webhook requires a messaging block whenever the block-storage
+	// service is set, so without one the rejection cases below would be rejected for
+	// a reason other than the marker they pin.
+	withCinder := func(cd *c5c3v1alpha1.ServiceCinderSpec) func(*c5c3v1alpha1.ControlPlane) {
+		return func(cp *c5c3v1alpha1.ControlPlane) {
+			cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "cp-rabbitmq"},
+				Replicas:   1,
+			}
+			cp.Spec.Services.Cinder = cd
+		}
+	}
+
 	cases := []struct {
 		name    string
 		mutate  func(*c5c3v1alpha1.ControlPlane)
@@ -3559,6 +3913,42 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 					{Kind: "Network", Name: "ext"},
 				}
 			},
+		},
+		{
+			// MinItems=1 on services.cinder.backends: a Cinder with no volume backend
+			// accepts a volume request and leaves it in error.
+			name:    "cinder backends empty",
+			wantErr: true,
+			mutate: withCinder(&c5c3v1alpha1.ServiceCinderSpec{
+				Backends: []c5c3v1alpha1.CinderBackendEntry{},
+			}),
+		},
+		{
+			// The CEL union rule on CinderBackendEntry: the nfs block is set exactly
+			// when type is NFS.
+			name:    "cinder backend type NFS without nfs",
+			wantErr: true,
+			mutate: withCinder(&c5c3v1alpha1.ServiceCinderSpec{
+				Backends: []c5c3v1alpha1.CinderBackendEntry{{Name: "nfs1", Type: "NFS"}},
+			}),
+		},
+		{
+			// MaxLength=35 on a backend name, the bound the CinderBackend CRD's own
+			// admission applies to metadata.name.
+			name:    "cinder backend name 36 characters",
+			wantErr: true,
+			mutate: withCinder(&c5c3v1alpha1.ServiceCinderSpec{
+				Backends: []c5c3v1alpha1.CinderBackendEntry{{
+					Name: strings.Repeat("b", 36),
+					Type: "NFS",
+					NFS:  &c5c3v1alpha1.NFSShareSpec{Server: "nfs.example.com", Path: "/volumes"},
+				}},
+			}),
+		},
+		{
+			name:    "cinder one NFS backend",
+			wantErr: false,
+			mutate:  withCinder(integrationCinderService()),
 		},
 		{
 			name:    "valid access rules, bootstrap resources, and public endpoint",
