@@ -650,6 +650,46 @@ func TestHostsHomeRegistration_Neutron(t *testing.T) {
 		"without a neutron block the network namespace belongs to no service of this plane")
 }
 
+// TestHostsHomeRegistration_Cinder pins the block-storage service's arm of the
+// home-registration question: a placed Cinder namespace hosts the KeystoneService
+// registration projected for it, so it needs the tenant store at home as well as
+// on its own cluster. A namespace the ControlPlane placed nothing in answers
+// false, and so does the Cinder namespace of a ControlPlane that declares no
+// block-storage service, because an undeclared Cinder resolves to the
+// ControlPlane's own namespace instead.
+func TestHostsHomeRegistration_Cinder(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			Services: c5c3v1alpha1.ServicesSpec{
+				Cinder: &c5c3v1alpha1.ServiceCinderSpec{
+					Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+						Name: "block", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+					},
+					TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-a"},
+					Backends: []c5c3v1alpha1.CinderBackendEntry{{
+						Name: "nfs1",
+						Type: "NFS",
+						NFS:  &c5c3v1alpha1.NFSShareSpec{Server: "nfs.example.com", Path: "/exports/cinder"},
+					}},
+				},
+			},
+		},
+	}
+
+	g.Expect(hostsHomeRegistration(cp, "block")).To(BeTrue(),
+		"the placed Cinder namespace hosts the registration projected for the block-storage service")
+	g.Expect(hostsHomeRegistration(cp, "storage")).To(BeFalse(),
+		"a namespace this ControlPlane placed nothing in hosts no registration")
+
+	undeclared := cp.DeepCopy()
+	undeclared.Spec.Services.Cinder = nil
+	g.Expect(hostsHomeRegistration(undeclared, "block")).To(BeFalse(),
+		"without a cinder block the block namespace belongs to no service of this plane")
+}
+
 // TestReconcileESOTenantStore_ReadyGatesOnBothPlacedStores verifies the readiness
 // gate covers BOTH copies of a placed REGISTRATION-HOSTING namespace's store, each
 // read from the cluster it was written to. The two carry different delivery

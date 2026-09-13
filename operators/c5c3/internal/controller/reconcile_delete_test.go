@@ -4056,3 +4056,34 @@ func TestReconcileDelete_AbandonsTheBusWaitPastTheDeadline(t *testing.T) {
 	g.Expect(events).To(ContainElement(ContainSubstring("MessagingTeardownStalled")))
 	g.Expect(events).To(ContainElement(ContainSubstring("ORCTeardownComplete")))
 }
+
+// TestProjectedRegistrationKeys_IncludesCinder pins the teardown sweep on the
+// fifth built-in registration. The keys are enumerated whether or not the spec
+// still declares the service, so a co-located block-storage registration is swept
+// from the ControlPlane's own namespace; a placed one is swept from the namespace
+// services.cinder.namespace assigned it, which is the only case where the block
+// cannot be dropped at all.
+func TestProjectedRegistrationKeys_IncludesCinder(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+	}
+
+	g.Expect(projectedRegistrationKeys(cp)).To(Equal([]client.ObjectKey{
+		{Name: "cp-glance", Namespace: "openstack"},
+		{Name: "cp-placement", Namespace: "openstack"},
+		{Name: "cp-barbican", Namespace: "openstack"},
+		{Name: "cp-neutron", Namespace: "openstack"},
+		{Name: "cp-cinder", Namespace: "openstack"},
+	}))
+
+	placed := cp.DeepCopy()
+	placed.Spec.Services.Cinder = &c5c3v1alpha1.ServiceCinderSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "block"},
+	}
+
+	g.Expect(projectedRegistrationKeys(placed)).To(ContainElement(
+		client.ObjectKey{Name: "cp-cinder", Namespace: "block"}),
+		"a placed block-storage registration is swept from the namespace it was assigned")
+}

@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -535,4 +536,33 @@ func neutronCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
 		return fmt.Sprintf("https://%s", gw.Hostname)
 	}
 	return neutronEndpointURL(cp)
+}
+
+// cinderCatalogURL returns the URL registered for the K-ORC block-storage PUBLIC
+// Endpoint. Like its peers it prefers an explicit services.cinder.publicEndpoint
+// (the only way to advertise a non-443 external port), then the externally
+// routable gateway hostname ("https://{gateway.hostname}"), and falls back to the
+// in-cluster Service URL (cinderEndpointURL) when Cinder is not exposed via a
+// Gateway.
+//
+// Unlike the network row this one carries a "/v3" path: the block-storage API is
+// served under the microversioned v3 prefix. The path is project-less, because
+// cinder resolves the project from the token rather than from the URL.
+//
+// Cinder is the only built-in service that appends a path to a user-supplied
+// origin, so it is the only one that has to normalize that origin first: the
+// webhook admits a publicEndpoint carrying a single trailing slash (peer services
+// register the origin unchanged, and clients normalize before appending), which
+// joined naively would register "https://cinder.example.com//v3". keystoneauth
+// strips nothing from that, so every client would call a path cinder's routes do
+// not map and read the 404 with no condition on the plane naming the cause.
+// Trimming the slash keeps the version prefix joined exactly once.
+func cinderCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
+	origin := cinderEndpointURL(cp)
+	if pe := cp.Spec.Services.Cinder.PublicEndpoint; pe != "" {
+		origin = pe
+	} else if gw := cp.Spec.Services.Cinder.Gateway; gw != nil {
+		origin = fmt.Sprintf("https://%s", gw.Hostname)
+	}
+	return strings.TrimSuffix(origin, "/") + "/v3"
 }
