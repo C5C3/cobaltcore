@@ -152,6 +152,26 @@ patches:
           failureThreshold: 6
         readinessProbe:
           timeoutSeconds: 10
+        # Memory only, no CPU. Without a request the single replica is
+        # BestEffort, the QoS class the kernel OOM killer takes first
+        # (oom_score_adj 1000), while every operator workload requests 256Mi
+        # (internal/common/types/workload.go). When two parallel e2e suites
+        # push a 4-vCPU runner past its RAM, the largest BestEffort process
+        # on the node is mariadbd: CI run 34718789784 restarted openstack-db-0
+        # five times in 36 minutes, each start an InnoDB crash recovery, and
+        # whichever suite was waiting on DatabaseReady at that moment failed.
+        # The request moves the database below the service pods in the
+        # killer's order and makes the scheduler account for it; the equal
+        # limit bounds mariadbd (11.4 defaults: 128M buffer pool, 151
+        # connections) so an undersized value surfaces as OOMKilled against
+        # a limit instead of a restart nobody can attribute. No CPU: a 500m
+        # request left pods Pending on the 4-vCPU keystone leg (#970), and a
+        # CPU limit would throttle the SELECT 1 probe relaxed above.
+        resources:
+          requests:
+            memory: 1Gi
+          limits:
+            memory: 1Gi
         storage:
           size: 1Gi
           storageClassName: standard
