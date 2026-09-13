@@ -1426,6 +1426,7 @@ func projectedRegistrationKeys(cp *c5c3v1alpha1.ControlPlane) []client.ObjectKey
 		{Name: placementName(cp), Namespace: cp.PlacementNamespace()},
 		{Name: barbicanName(cp), Namespace: cp.BarbicanNamespace()},
 		{Name: neutronName(cp), Namespace: cp.NeutronNamespace()},
+		{Name: cinderName(cp), Namespace: cp.CinderNamespace()},
 	}
 }
 

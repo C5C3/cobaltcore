@@ -30,8 +30,10 @@ import (
 //
 // Everything here is service-agnostic: the registration differs per service only
 // in the values desiredGlanceRegistration and its siblings hand to
-// builtinRegistration, so a further built-in service adds those values and its
-// wiring rather than another copy of the ensure, gate and mirror legs.
+// builtinRegistration, the roles the account holds among them (cinder takes
+// admin beside service, the others service alone), so a further built-in service
+// adds those values and its wiring rather than another copy of the ensure, gate
+// and mirror legs.
 
 const (
 	// reasonWaitingForServiceRegistration is the bounded wait while the projected
@@ -57,6 +59,13 @@ const (
 // account, in the namespace the service is assigned to. PURE builder — the
 // caller claims ownership and applies it.
 //
+// roles are the Keystone roles the account is granted in its service project.
+// Every built-in service needs "service", the role the OpenStack policy files
+// reserve for service-to-service calls; a service whose reach goes beyond that
+// names what it needs on top (cinder adds "admin", see
+// desiredCinderRegistration), which is why the list is the caller's rather than
+// a constant here.
+//
 // spec.controlPlaneRef names the ControlPlane's namespace EXPLICITLY. An empty
 // namespace resolves to the CR's own, which for a service placed in a dedicated
 // namespace is not the ControlPlane's: the reference would dangle and the
@@ -79,6 +88,7 @@ const (
 func builtinRegistration(
 	cp *c5c3v1alpha1.ControlPlane,
 	name, namespace, serviceType, serviceName, internalURL, publicURL, userName, projectName string,
+	roles []string,
 ) *c5c3v1alpha1.KeystoneService {
 	return &c5c3v1alpha1.KeystoneService{
 		ObjectMeta: metav1.ObjectMeta{
@@ -104,7 +114,7 @@ func builtinRegistration(
 					Name:   projectName,
 					Create: true,
 				},
-				Roles: []string{"service"},
+				Roles: roles,
 			},
 		},
 	}
@@ -116,7 +126,8 @@ func desiredGlanceRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.Keys
 	return builtinRegistration(cp, glanceName(cp), cp.GlanceNamespace(), "image", "glance",
 		internalCatalogURL(cp.GlanceTargetClusterRef(), glanceEndpointURL(cp), glanceCatalogURL(cp)),
 		glanceCatalogURL(cp),
-		c5c3v1alpha1.GlanceServiceAccountName, c5c3v1alpha1.GlanceServiceProjectName)
+		c5c3v1alpha1.GlanceServiceAccountName, c5c3v1alpha1.GlanceServiceProjectName,
+		[]string{"service"})
 }
 
 // desiredPlacementRegistration builds the registration child for Placement: the
@@ -125,7 +136,8 @@ func desiredPlacementRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.K
 	return builtinRegistration(cp, placementName(cp), cp.PlacementNamespace(), "placement", "placement",
 		internalCatalogURL(cp.PlacementTargetClusterRef(), placementEndpointURL(cp), placementCatalogURL(cp)),
 		placementCatalogURL(cp),
-		c5c3v1alpha1.PlacementServiceAccountName, c5c3v1alpha1.PlacementServiceProjectName)
+		c5c3v1alpha1.PlacementServiceAccountName, c5c3v1alpha1.PlacementServiceProjectName,
+		[]string{"service"})
 }
 
 // desiredBarbicanRegistration builds the registration child for Barbican: the
@@ -134,7 +146,8 @@ func desiredBarbicanRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.Ke
 	return builtinRegistration(cp, barbicanName(cp), cp.BarbicanNamespace(), "key-manager", "barbican",
 		internalCatalogURL(cp.BarbicanTargetClusterRef(), barbicanEndpointURL(cp), barbicanCatalogURL(cp)),
 		barbicanCatalogURL(cp),
-		c5c3v1alpha1.BarbicanServiceAccountName, c5c3v1alpha1.BarbicanServiceProjectName)
+		c5c3v1alpha1.BarbicanServiceAccountName, c5c3v1alpha1.BarbicanServiceProjectName,
+		[]string{"service"})
 }
 
 // desiredNeutronRegistration builds the registration child for Neutron: the
@@ -143,7 +156,22 @@ func desiredNeutronRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.Key
 	return builtinRegistration(cp, neutronName(cp), cp.NeutronNamespace(), "network", "neutron",
 		internalCatalogURL(cp.NeutronTargetClusterRef(), neutronEndpointURL(cp), neutronCatalogURL(cp)),
 		neutronCatalogURL(cp),
-		c5c3v1alpha1.NeutronServiceAccountName, c5c3v1alpha1.NeutronServiceProjectName)
+		c5c3v1alpha1.NeutronServiceAccountName, c5c3v1alpha1.NeutronServiceProjectName,
+		[]string{"service"})
+}
+
+// desiredCinderRegistration builds the registration child for Cinder: the
+// block-storage catalog entry and the "cinder" service account. Both catalog
+// endpoints carry the project-less /v3 path (decision D8 of #979). The account
+// holds the admin role beside service (D9): cinder deletes the Barbican secret
+// of an encrypted volume as a fallback when the volume's owner cannot, and
+// under Barbican's secure-RBAC defaults that reach needs admin.
+func desiredCinderRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+	return builtinRegistration(cp, cinderName(cp), cp.CinderNamespace(), "block-storage", "cinder",
+		internalCatalogURL(cp.CinderTargetClusterRef(), cinderEndpointURL(cp)+"/v3", cinderCatalogURL(cp)),
+		cinderCatalogURL(cp),
+		c5c3v1alpha1.CinderServiceAccountName, c5c3v1alpha1.CinderServiceProjectName,
+		[]string{"service", "admin"})
 }
 
 // reconcileBuiltinRegistration drives the registration leg every built-in

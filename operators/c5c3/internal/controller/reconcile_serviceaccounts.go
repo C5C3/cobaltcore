@@ -64,8 +64,8 @@ type projectedBuiltinRegistration struct {
 }
 
 // projectedBuiltinRegistrations returns one entry per enabled built-in service (a
-// non-nil spec.services.glance / .placement / .barbican / .neutron), in that
-// order.
+// non-nil spec.services.glance / .placement / .barbican / .neutron / .cinder), in
+// that order.
 func projectedBuiltinRegistrations(cp *c5c3v1alpha1.ControlPlane) []projectedBuiltinRegistration {
 	var entries []projectedBuiltinRegistration
 	if cp.Spec.Services.Glance != nil {
@@ -88,12 +88,17 @@ func projectedBuiltinRegistrations(cp *c5c3v1alpha1.ControlPlane) []projectedBui
 			display: "neutron", desired: desiredNeutronRegistration(cp),
 		})
 	}
+	if cp.Spec.Services.Cinder != nil {
+		entries = append(entries, projectedBuiltinRegistration{
+			display: "cinder", desired: desiredCinderRegistration(cp),
+		})
+	}
 	return entries
 }
 
 // reconcileServiceAccounts aggregates the readiness of the KeystoneService
-// children the Glance, Placement, Barbican and Neutron legs applied earlier in
-// the same pass into the ServiceAccountsReady condition.
+// children the Glance, Placement, Barbican, Neutron and Cinder legs applied
+// earlier in the same pass into the ServiceAccountsReady condition.
 //
 // The double reporting is intended: a failing child already fails its own
 // service condition, and the aggregate names the same cause under the condition

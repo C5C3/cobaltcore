@@ -290,6 +290,47 @@ func TestReconcileServiceAccounts_CountsNeutron(t *testing.T) {
 	g.Expect(cond.Message).To(Equal("4 built-in service registration(s) ready"))
 }
 
+// TestReconcileServiceAccounts_CountsCinder extends the aggregate to the fifth
+// built-in registration. The block-storage service is waited on exactly like its
+// peers: while its KeystoneService child is missing the aggregate holds and names
+// it, and only with the child present does the count reach five.
+func TestReconcileServiceAccounts_CountsCinder(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcControlPlane()
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+	cp.Spec.Services.Placement = &c5c3v1alpha1.ServicePlacementSpec{}
+	cp.Spec.Services.Barbican = &c5c3v1alpha1.ServiceBarbicanSpec{}
+	cp.Spec.Services.Neutron = &c5c3v1alpha1.ServiceNeutronSpec{
+		OVN: c5c3v1alpha1.NeutronOVNSpec{CentralRef: c5c3v1alpha1.NeutronOVNCentralRef{Name: "ovn"}},
+	}
+	cp.Spec.Services.Cinder = &c5c3v1alpha1.ServiceCinderSpec{
+		Backends: []c5c3v1alpha1.CinderBackendEntry{{
+			Name: "nfs1",
+			Type: "NFS",
+			NFS:  &c5c3v1alpha1.NFSShareSpec{Server: "nfs.example.com", Path: "/exports/cinder"},
+		}},
+	}
+
+	res, err := runServiceAccounts(t, cp, readyGlanceRegistration(cp), readyPlacementRegistration(cp),
+		readyBarbicanRegistration(cp), readyNeutronRegistration(cp))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := serviceAccountsCondition(t, cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+	g.Expect(cond.Message).To(ContainSubstring(cinderName(cp)))
+
+	res, err = runServiceAccounts(t, cp, readyGlanceRegistration(cp), readyPlacementRegistration(cp),
+		readyBarbicanRegistration(cp), readyNeutronRegistration(cp), readyCinderRegistration(cp))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	cond = serviceAccountsCondition(t, cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Message).To(Equal("5 built-in service registration(s) ready"))
+}
+
 // TestServiceAccountRoleSlug covers the slug normalization and its case-sensitive
 // collision resistance. The slug names the Role import and RoleAssignment CRs a
 // KeystoneService registration projects per declared role
