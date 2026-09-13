@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# metadata.name is 29 characters and the backend name is 12, so the pair puts
+# 29 + 7 + 12 = 48 bytes into the <cinder>-<backend>-service-remove Job name, one
+# over the 47 the CinderBackend webhook admits for metadata.name plus
+# spec.cinderRef.name. The ControlPlane webhook rejects the pair up front: admitted,
+# detaching that backend would fail on a Job name the apiserver refuses, and both
+# names are immutable, so there is no recovery short of recreating the plane. The
+# backend is otherwise the minimal valid NFS one, so the step anchors on
+# `service-remove Job name` and `at or below 47`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-cinder-backend-bound-xxxxx
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    cinder:
+      backends:
+      - name: share-twelve
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /volumes
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

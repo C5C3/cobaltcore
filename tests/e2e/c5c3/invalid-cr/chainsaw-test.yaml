@@ -664,6 +664,48 @@ spec:
             ($error != null): true
             (contains($error, 'services.neutron.ovn.centralRef.namespace')): true
             (contains($error, 'is neither this ControlPlane')): true
+    # The shared message bus is not optional for the block-storage service
+    # (webhook-only): the Cinder CRD requires spec.messaging, and the ControlPlane
+    # derives the child's transport URL from spec.infrastructure.messaging.
+    - apply:
+        file: 32-cinder-without-messaging.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'infrastructure.messaging')): true
+            (contains($error, 'is required when services.cinder is set')): true
+    # An empty services.cinder.backends list is rejected by the MinItems marker,
+    # which answers before the webhook mirror in validateCinderBackends does: a
+    # Cinder with no backend accepts a volume request and leaves it in error.
+    - apply:
+        file: 33-cinder-backends-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.cinder.backends')): true
+            (contains($error, 'should have at least 1 items')): true
+    # A 29-character ControlPlane name and a 12-character backend name put 48 bytes
+    # into the service-remove Job name the detach path runs, one over the 47 the
+    # CinderBackend webhook admits. Both names are immutable, so the ControlPlane
+    # webhook rejects the pair up front.
+    - apply:
+        file: 34-cinder-backend-name-too-long.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'service-remove Job name')): true
+            (contains($error, 'at or below 47')): true
+    # [barbican] barbican_endpoint in services.cinder.extraConfig is forbidden beside
+    # a declared services.barbican (webhook-only): the ControlPlane projects the
+    # Cinder child's key manager from the Barbican child, so the override points
+    # castellan at a key manager this plane never provisioned.
+    - apply:
+        file: 46-cinder-barbican-endpoint-override.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.cinder.extraConfig[barbican][barbican_endpoint]')): true
+            (contains($error, 'is projected by the ControlPlane from services.barbican')): true
     # A 256-character spec.regionDescription is refused by the CRD's MaxLength 255
     # marker (K-ORC's bound on RegionResourceSpec.Description); there is no
     # webhook mirror, so the error is the API server's own.
