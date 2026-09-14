@@ -135,6 +135,9 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Barbican` | `Owns()` | Re-reconciles when the projected Barbican key-manager child status changes |
 | `BarbicanSecretStore` | `Owns()` | Re-reconciles when the projected BarbicanSecretStore status changes |
 | `Neutron` | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the projected Neutron network-service child status changes. The neutron-operator is installed only for a ControlPlane that runs the network service, so both legs sit behind the discovery probe with the other sibling-operator kinds |
+| `Cinder` | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the projected Cinder block-storage child status changes. The cinder-operator is installed only for a ControlPlane that runs the block-storage service, so both legs sit behind the discovery probe with the other sibling-operator kinds |
+| `CinderBackend` | `Owns()` + cross-namespace `Watches()` | Re-reconciles when a projected CinderBackend satellite status changes, under the same discovery guard as the `Cinder` kind |
+| `CinderBackupBackend` | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the projected CinderBackupBackend satellite status changes, under the same discovery guard as the `Cinder` kind |
 | `OpenBaoCluster`, `OpenBaoTenant` | `Owns()` | Re-reconciles when the OpenBao instance provisioned for a dedicated Barbican secret store, or the tenant admitting its namespace, changes. The openbao-operator is installed only for that mode, so a ControlPlane without one runs on a cluster that never serves these kinds; both legs sit behind the discovery probe with the other sibling-operator kinds (`probeOptionalWatches`, which skips the leg and registers a leader-gated re-check that restarts the operator once the CRD appears) |
 | `RabbitmqCluster` (unstructured `rabbitmqClusterGVK`) | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the managed message-bus child status changes, so `InfrastructureReady` follows `AllReplicasReady` instead of waiting for the periodic requeue. Watched as `*unstructured.Unstructured`, since the c5c3 operator takes no dependency on the RabbitMQ Cluster Operator's Go module. Messaging is opt-in, so both legs sit behind the discovery probe with the openbao kinds: a cluster that does not serve `rabbitmqclusters.rabbitmq.com` starts without them, and `crdWatchGate` restarts the operator once the CRD appears |
 | `OVNCentral` | `Watches()` | Per-CR fan-out via `ovnCentralToControlPlaneMapper`. The central is deployed outside the plane and only named by `spec.services.neutron.ovn.centralRef`, so it carries no owner reference an `Owns()` could match; the leg re-runs `reconcileOVN` when the central's status moves instead of waiting for the periodic requeue. The ovn-operator is installed only for a plane that runs a network service, so the leg sits behind the discovery probe with the other sibling-operator kinds |
@@ -152,7 +155,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
 | `ClusterSecretStore` | `Watches()` | Per-ref fan-out via `storeToControlPlaneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind): a status change on a cluster-scoped store enqueues only the ControlPlanes whose effective `spec.secretStoreRef` resolves to it |
 | `SecretStore` | `Watches()` | The namespaced twin, scoped to the store's own namespace, so a ControlPlane pinned to a per-tenant `SecretStore` reacts to its backend health (`storeToControlPlaneMapper` for the namespaced kind) |
-| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `Placement` / `Barbican` / `BarbicanSecretStore` / `Neutron` / `OpenBaoCluster` / `OpenBaoTenant` / `RabbitmqCluster` / `MariaDB` / `Memcached` / `ExternalSecret` / `KeystoneService` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
+| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `Placement` / `Barbican` / `BarbicanSecretStore` / `Neutron` / `Cinder` / `CinderBackend` / `CinderBackupBackend` / `OpenBaoCluster` / `OpenBaoTenant` / `RabbitmqCluster` / `MariaDB` / `Memcached` / `ExternalSecret` / `KeystoneService` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
 
 The `Secret` watch uses `Watches()` with a `MapFunc` rather than `Owns()`
 because the admin-password Secret
@@ -273,6 +276,7 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `placement.openstack.c5c3.io` | `placements` | get, list, watch, create, update, patch, delete |
 | `barbican.openstack.c5c3.io` | `barbicans`, `barbicansecretstores` | get, list, watch, create, update, patch, delete |
 | `neutron.openstack.c5c3.io` | `neutrons` | get, list, watch, create, update, patch, delete |
+| `cinder.openstack.c5c3.io` | `cinders`, `cinderbackends`, `cinderbackupbackends` | get, list, watch, create, update, patch, delete |
 | `ovn.openstack.c5c3.io` | `ovncentrals` | get, list, watch |
 | `openbao.org` | `openbaoclusters`, `openbaotenants` | get, list, watch, create, update, patch, delete |
 | `rbac.authorization.k8s.io` | `roles`, `rolebindings`, `clusterrolebindings` | get, create, patch, delete |
@@ -447,7 +451,13 @@ grants. The markers therefore add `core/namespaces` with
 │  ║           │                                                                    ║ │
 │  ║           ▼                                                                    ║ │
 │  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileServiceAccounts │  Fold the four registration children's           ║ │
+│  ║  │ reconcileCinder          │  Deliver the shared bus and the two satellite    ║ │
+│  ║  │ (gate: KS + its registr.)│  kinds, then project the Cinder child CR         ║ │
+│  ║  └────────┬─────────────────┘  Sets: CinderReady (not-managed when unset)      ║ │
+│  ║           │                    Requeue: 5s gated / 15s child or bus / 10s reg. ║ │
+│  ║           ▼                                                                    ║ │
+│  ║  ┌──────────────────────────┐                                                  ║ │
+│  ║  │ reconcileServiceAccounts │  Fold the five registration children's           ║ │
 │  ║  │  (gate: none)            │  readiness. Sets: ServiceAccountsReady           ║ │
 │  ║  └────────┬─────────────────┘  Requeue: 10s while one is not Ready             ║ │
 │  ║           │                                                                    ║ │
@@ -799,19 +809,37 @@ Each service supplies a constructor: `glanceBackendChildren` for the
 `GlanceBackend` kind under the `{controlplane.Name}-glance-` prefix (see
 [reconcileGlance](#reconcileglance)), `barbicanSecretStoreChildren` for the
 `BarbicanSecretStore` kind under `{controlplane.Name}-barbican-` (see
-[reconcileBarbican](#reconcilebarbican)).
+[reconcileBarbican](#reconcilebarbican)), and `cinderBackendChildren` /
+`cinderBackupBackendChildren` for the two satellite kinds of the block-storage
+service (see [reconcileCinder](#reconcilecinder)).
 
 | Site | Helper | `Keep` |
 | --- | --- | --- |
 | `reconcileGlanceBackends` | `pruneProjectedChildren` | the backend names the pass declared |
 | `deleteOrphanedGlance` | `pruneProjectedChildren` | nil |
 | `reconcileBarbicanSecretStore` | `pruneProjectedChildren` | the store the projection names |
+| `reconcileCinderBackends` | `pruneProjectedChildren` | the backend names the pass declared |
+| `reconcileCinderBackupBackend` | `pruneProjectedChildren` | the backup-backend name the projection declares, nil when the block is unset |
+| `deleteOrphanedCinder`, both satellite kinds | `pruneProjectedChildren` | nil |
 | `deleteServiceChildrenIn`, Glance namespace | `sweepProjectedChildren` | nil |
 | `deleteServiceChildrenIn`, Barbican namespace | `sweepProjectedChildren` | `barbicanSecretStoreName(cp)` |
+| `deleteServiceChildrenIn`, Cinder namespace, both satellite kinds | `sweepProjectedChildren` | nil |
 
 The Barbican teardown keeps the projected store because
 `crossNamespaceServiceChildren` already holds it in the wait set, so the sweep
 reports it once.
+
+The two Cinder constructors carry `Prefix: ""`, so ownership alone selects their
+satellites. A `CinderBackend` is named after its `services.cinder.backends` entry
+rather than after the ControlPlane, because cinder keys every volume by the
+backend it was created on and a rename would strand the volumes already there, so
+there is no prefix to recognise it by. The bare name is also what a person naming
+a hand-made object of that kind picks, which is why every satellite write goes
+through `ensureProjectedSatellite` instead of `ensureUnownedOrOwned`: the
+adoption pre-check runs in **every** namespace, the ControlPlane's own included,
+and refuses a same-named object this ControlPlane did not create. Without it the
+foreign object would become a child of the plane, and the prune that follows each
+projection would delete it as soon as the entry was dropped.
 
 `serviceMessagingTarget` names a bus consumer by four fields: `Service` (the
 display name in the `<Service>MessagingError` reason and in the wrapped texts),
@@ -824,11 +852,18 @@ transport-URL Secret, plus the CA mirror on a TLS bus. `serviceMessagingSpec`
 renders the child's brownfield `spec.messaging`, `messagingCAMirrorReleasable` is
 the reap gate for the mirror, `pruneServiceMessagingCA` performs the reap, and
 `serviceMessagingSecrets` returns the two Secret stubs both teardown paths delete.
-Neutron is the first target: `neutronMessagingTarget(cp)` names `Neutron`, the
-`{controlplane.Name}-neutron` child, `cp.NeutronNamespace()` and `NeutronReady`,
-so the delivery lands as `{controlplane.Name}-neutron-messaging` and
-`{controlplane.Name}-neutron-messaging-ca` (see
+Two services name themselves as targets. `neutronMessagingTarget(cp)` names
+`Neutron`, the `{controlplane.Name}-neutron` child, `cp.NeutronNamespace()` and
+`NeutronReady`, so the delivery lands as `{controlplane.Name}-neutron-messaging`
+and `{controlplane.Name}-neutron-messaging-ca` (see
 [reconcileNeutron](#reconcileneutron)).
+`cinderMessagingTarget(cp)` names `Cinder`, the `{controlplane.Name}-cinder`
+child, `cp.CinderNamespace()` and `CinderReady`, so its delivery lands as
+`{controlplane.Name}-cinder-messaging` and
+`{controlplane.Name}-cinder-messaging-ca` (see
+[reconcileCinder](#reconcilecinder)). Each Secret carries the ControlPlane's own
+name rather than the one the service operator claims for the Secret it derives
+from `spec.messaging.secretRef`, so no two controllers rewrite one object.
 
 Admission carries the same two shapes. `projectedChildNameBound` bounds a child
 name composed as `{controlplane.Name}` + infix + entry name against the
@@ -836,7 +871,12 @@ apiserver's 253-byte `metadata.name` cap, and `validateGlanceBackends` calls it
 with the `-glance-` infix and the `backend` entry noun the remediation tells the
 operator to shorten. `validateMessagingConsumers` requires
 `spec.infrastructure.messaging` once per declared service whose child CRD
-requires `spec.messaging`; Neutron is the one such service.
+requires `spec.messaging`; Neutron and Cinder are the two such services. The
+`CinderBackend` name carries a composed bound of its own that
+`projectedChildNameBound` does not express: `validateCinderBackends` keeps
+`len(controlplane.Name) + 7 + len(entry name)` at or below 47, the budget the
+satellite shares with its `cinderRef` in the `<cinder>-<backend>-service-remove`
+Job name a detach spawns.
 
 ### reconcileNamespaces
 
@@ -1492,17 +1532,18 @@ an empty websso block, which would silently remove a working SSO button.
 
 ### Built-in service registrations
 
-Glance, Placement, Barbican and Neutron each need a Keystone catalog row and a
-Keystone service user. None of the four registers either itself: every one of them
-projects a [`KeystoneService`](./keystoneservice-crd.md) child and lets that CR's
-controller do the work. `builtin_registrations.go` is the leg all four share, so
-it is described once here rather than four times below, and a fifth built-in
-service adds the values it registers with rather than another copy of the leg.
+Glance, Placement, Barbican, Neutron and Cinder each need a Keystone catalog row
+and a Keystone service user. None of the five registers either itself: every one
+of them projects a [`KeystoneService`](./keystoneservice-crd.md) child and lets
+that CR's controller do the work. `builtin_registrations.go` is the leg all five
+share, so it is described once here rather than five times below, and a sixth
+built-in service adds the values it registers with rather than another copy of
+the leg.
 
 | Aspect | Value |
 | --- | --- |
 | File | `builtin_registrations.go` |
-| Conditions | `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady` — the leg writes the caller's condition, never one of its own |
+| Conditions | `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `CinderReady` — the leg writes the caller's condition, never one of its own |
 | Projects / Owns | one `KeystoneService` named `{controlplane.Name}-{service}` in the namespace that service is placed in, applied through the **local** client whatever cluster the service runs on |
 | Requeue | `korcRequeueAfter` = **10s** while the registration is not usable yet |
 
@@ -1511,18 +1552,33 @@ namespace explicitly rather than relying on the default, so the child resolves t
 same plane wherever it is placed. `spec.catalog` carries the service's type and
 name with **two** endpoints, `internal` and `public`, from the start, so no later
 catalog migration is needed. `spec.account` carries the service's user with a
-project of its own and `create: true`, plus the single role `service`. Each
-service creates its own project (`service-placement`, `service-barbican`,
-`service-neutron`), because two registrations creating one project would each
+project of its own and `create: true`, plus the roles the caller passes: every
+service needs `service`, the role the OpenStack policy files reserve for
+service-to-service calls, and Cinder names `admin` on top. Each service creates
+its own project (`service-placement`, `service-barbican`, `service-neutron`,
+`service-cinder`), because two registrations creating one project would each
 adopt the other's Keystone row.
+
+Cinder is the one registration whose account reaches past `service` (decision D9
+of #979). It deletes the Barbican secret of an encrypted volume as a fallback
+when the volume's owner cannot, and under Barbican's secure-RBAC defaults the
+`secret:get` and `secret:delete` rules a bare `admin` holds are what carry that
+reach across projects. `builtinRegistration` therefore takes the role list as a
+parameter instead of pinning `service` as a constant.
 
 **The URLs each row advertises.** The `internal` endpoint advertises the
 in-cluster API Service URL — `http://{controlplane.Name}-glance.<glance-namespace>.svc:9292`
 (`glanceEndpointURL`), `…-placement.<placement-namespace>.svc:8778`
 (`placementEndpointURL`), `…-barbican.<barbican-namespace>.svc:9311`
 (`barbicanEndpointURL`), `…-neutron.<neutron-namespace>.svc:9696`
-(`neutronEndpointURL`). None of the four carries a `/v3` path suffix; unlike
-identity, these APIs are served at the root. The `public` endpoint resolves
+(`neutronEndpointURL`), `…-cinder.<cinder-namespace>.svc:8776`
+(`cinderEndpointURL`). The first four carry no `/v3` path suffix; unlike
+identity, those APIs are served at the root. The two block-storage rows do carry
+one: the API is served under the microversioned `v3` prefix, and the path is
+project-less because cinder resolves the project from the token rather than from
+the URL (decision D8 of #979). `cinderCatalogURL` appends it exactly once
+whichever origin wins, since the validating webhook admits a `publicEndpoint`
+only as a bare origin. The `public` endpoint resolves
 through one preference order (`glanceCatalogURL` and its siblings): an explicit
 `services.<svc>.publicEndpoint`, advertised verbatim, then the externally routable
 gateway hostname `https://{gateway.hostname}`, then the same in-cluster URL when
@@ -1571,7 +1627,7 @@ mirrors the registration's consumer credentials there
 (`ensureBuiltinRegistrationMirror`): it resolves that cluster, gates on the store
 being ready **on that cluster**, and writes an `ExternalSecret` drawing the same
 OpenBao path. A co-located service is a no-op. For the credentials' shape and the
-aggregate condition over all four registrations, see
+aggregate condition over all five registrations, see
 [reconcileServiceAccounts](#reconcileserviceaccounts).
 
 | Path | Status | Reason | Notes |
@@ -2225,6 +2281,156 @@ ownership labels and applied unowned, and the finalizer sweeps it by those label
 | projected Neutron spec rejected (HTTP 422 Invalid) | False | `NeutronProjectionRejected` | returns the error; the projection violates a Neutron CRD/webhook rule, so reconcile the ControlPlane spec to a valid projection to recover |
 | Neutron create/update fails | False | `NeutronError` | returns the error |
 | Neutron child Ready and its registration Ready | True | `NeutronReady` | — |
+
+### reconcileCinder
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_cinder.go`, `reconcile_service_messaging.go`, `reconcile_cinder_dbcredentials.go` |
+| Condition | `CinderReady` |
+| Gate | `KeystoneReady == True` (Cinder validates every token against the Keystone child) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)). There is no OVN gate, and neither Glance nor Barbican gates the pass |
+| Projects / Owns | one `Cinder` child named `{controlplane.Name}-cinder` (`cinderNameSuffix`) in `cp.CinderNamespace()`; one `CinderBackend` satellite per `services.cinder.backends` entry, named after the entry itself, and one `CinderBackupBackend` named after `services.cinder.backupBackend`; the bus delivery beside the child, a `{controlplane.Name}-cinder-messaging` Secret (key `transport_url`) and, only while the shared bus declares `tls`, a `{controlplane.Name}-cinder-messaging-ca` Secret (key `ca.crt`); the `{controlplane.Name}-cinder` `KeystoneService` registration; and, on a managed database only, the per-ControlPlane DB-credential objects in the same namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `cinder-db-creds`, an mTLS client Certificate `{controlplane.Name}-cinder-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/cinder-{cinder-namespace}` (auth role `cinder-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-cinder-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/cinder/{cinder-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.cinder` is set |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on `KeystoneReady`; `infraRequeueAfter` = **15s** while the bus material has not landed, while the backing services or the bus do not resolve, and while the child is not Ready; `korcRequeueAfter` = **10s** while the `cinder` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed |
+
+`reconcileCinder` runs in a fixed order: the not-managed branch first, then a
+nil-safety fail-safe on the resolved database, cache and shared bus (a
+webhook-bypassed CR requeues after 15s rather than dereferencing a nil), then the
+`KeystoneReady` gate, the bus delivery into the block-storage service's
+namespace, the `KeystoneService` registration whose account Cinder authenticates
+as, the DB credential the child references, the two satellite kinds, and finally
+the child itself through `ProjectChild`. Past the apply it reaps a released
+messaging CA mirror and folds the registration's readiness into `CinderReady`.
+
+The satellites are written **before** the child. A satellite references its Cinder
+by name (inverted attachment), so the order is immaterial to the cinder operator,
+but a satellite that could not be written has to halt the pass: a child applied
+behind it would run with a backend set the ControlPlane never projected.
+
+It is optional: `spec.services.cinder` unset means this ControlPlane manages no
+block-storage service, and the sub-reconciler reports `CinderReady=True` /
+`CinderNotManaged` so the aggregate is not blocked (staged adoption).
+
+When managed, the projection follows the same thin discipline as its Neutron
+sibling, reusing the ControlPlane's own specs so Cinder points at the same backing
+services:
+
+- **Image:** repository defaults to `ghcr.io/c5c3/cinder` with the tag derived
+  from `spec.openStackRelease`; `spec.services.cinder.image` overrides the whole
+  image reference when set.
+- **Database:** a DeepCopy of the **effective** database (`effectiveCinderDatabase`:
+  Cinder's [dedicated](./controlplane-crd.md#cinderdedicatedbackingservicesspec)
+  database when it opted into one, the shared `spec.infrastructure.database`
+  otherwise) with its logical database name forced to `cinder`. In managed mode
+  (`clusterRef` set) the `secretRef` is repointed at the operator-owned
+  `{controlplane.Name}-cinder-db-credentials` Secret (key `password`), and the
+  projected `credentialsMode` is the **effective** mode: `Dynamic` (engine-issued)
+  by default on the managed shared database, drawn from the engine role
+  `cinder-{cinder-ns}` that `setup-database-tenant.sh` provisions, flipped to
+  `Static` by the shared-block opt-out or the per-service
+  `services.cinder.databaseCredentialsMode` override, and always `Static` for a
+  dedicated cinder database. A brownfield database keeps the user-supplied
+  `secretRef` and `credentialsMode`.
+- **Cache:** a DeepCopy of the **effective** cache (`effectiveCinderCache`).
+- **Messaging:** what `serviceMessagingSpec` renders for the Cinder target
+  (see [Projected satellites and the shared bus](#projected-satellites-and-the-shared-bus)):
+  a **brownfield** `secretRef` naming the `{controlplane.Name}-cinder-messaging`
+  Secret the pass wrote beside the child, under the key `transport_url`, plus a
+  `tls.caBundleSecretRef` naming the `{controlplane.Name}-cinder-messaging-ca`
+  mirror under `ca.crt`, set only while `spec.infrastructure.messaging.tls` is
+  declared. Dropping the `tls` block reverts both halves in the order the Neutron
+  leg documents, and `pruneServiceMessagingCA` runs on the far side of the
+  child's readiness return for the same reason. The transport URL's digest is
+  **not** projected: the cinder operator rolls its pods off the Secret it derives
+  itself.
+- **Keystone endpoint:** `keystoneEndpoint` is derived top-down via
+  `cinderKeystoneEndpoint(cp)`, the cluster-local `{controlplane.Name}-keystone`
+  Service URL while Cinder and Keystone resolve to the same cluster, and the
+  public URL when they are placed apart (see
+  [Reaching a placed service](#reaching-a-placed-service)).
+  `keystonePublicEndpoint` is a pass-through of the Keystone service's own public
+  endpoint.
+- **Service user:** derived from the `cinder` account the projected
+  `KeystoneService` registration provisions, its `username`, the `service-cinder`
+  project, and both domains from the ControlPlane's effective admin domain, with
+  the password read from the consumer Secret that registration delivers.
+- **Backends:** each `services.cinder.backends` entry projects one `CinderBackend`
+  satellite carrying the entry's **bare** name, its NFS export, and its
+  image-volume cache bounds; `services.cinder.backupBackend` projects the one
+  `CinderBackupBackend`. Unset `mountOptions`, `fileSize` and `compression`
+  serialize away, so the satellite CRD's own defaults apply at one layer. Both
+  passes prune what the spec no longer declares
+  (`pruneProjectedChildren` on `cinderBackendChildren` / `cinderBackupBackendChildren`,
+  ownership only, no name prefix). Dropping a `backends[]` entry **detaches a live
+  volume backend**: the pruned `CinderBackend` keeps the cinder operator's
+  `service-remove` finalizer until the backend's volume Deployment is gone and a
+  `<cinder>-<backend>-service-remove` Job has removed the service row, and the
+  volumes on that share stay on the export while nothing serves them any more.
+  Recovery is re-creating the entry under the *identical* name. Unlike unsetting
+  `spec.services.cinder`, which is gated behind `c5c3.io/allow-cinder-deletion`,
+  removing one `backends[]` line takes effect immediately and is not gated.
+- **Glance, Barbican and the internal tenant:** `glanceEndpoint` is
+  `glanceEndpointURL(cp)` while `services.glance` is declared and empty otherwise;
+  `keyManager` names the Barbican child by naming convention while
+  `services.barbican` is declared and is nil otherwise; `internalTenant` carries
+  the `projectID` and `userID` the registration publishes on its `status.account`,
+  and stays nil until both are there. Neither sibling **gates** the pass: a
+  Cinder with an empty `glanceEndpoint` and no `keyManager` runs, and the pass
+  that follows a sibling block being declared re-renders the child with it.
+- **Gateway / Replicas / SecretStoreRef / Region:** `gateway` is a DeepCopy of
+  `spec.services.cinder.gateway` (a nil source clears it, tearing the HTTPRoute
+  down); `api.deployment.replicas` defaults to `commonv1.DefaultReplicas` and is
+  overridden by `services.cinder.replicas`; the resolved store selection and
+  `spec.region` are projected through. The scheduler, volume and backup
+  `deployment.replicas` are pinned to `1`: all three blocks are struct values, so
+  the API server materializes the shared default of three onto the wire before the
+  cinder operator's own defaulting webhook runs, and the Cinder CRD's CEL rules
+  admit only `1` on the volume and backup blocks. `spec.dbPurge`,
+  `spec.networkPolicy`, `spec.autoscaling`, `spec.logging`, `spec.api.uwsgi` and
+  `spec.policyOverrides` are **not** set, so the child-side defaults stay
+  authoritative.
+
+Unsetting `spec.services.cinder` deletes nothing on its own. With
+`c5c3.io/allow-cinder-deletion: "true"`, `deleteOrphanedCinder` releases, in
+order, the `Cinder` child, the DB-credential `ExternalSecret`, the Dynamic-mode
+`VaultDynamicSecret`, its client Certificate and the `cinder-db-creds`
+ServiceAccount, the two messaging Secrets, every owned satellite of both kinds,
+and finally the `KeystoneService` registration, whose finalizer is what tears the
+block-storage catalog rows, the service user and its project down. Each object is
+only removed while this ControlPlane still owns it, so a foreign object colliding
+on a name is left alone, and a pruned `CinderBackend` outlives the call while its
+detach Job runs.
+
+The credential minter comes down either way. On the preserve branch the
+`VaultDynamicSecret`, its client Certificate, and the `cinder-db-creds`
+ServiceAccount are torn down before the condition is written: a live generator
+keeps issuing a fresh MySQL user with all privileges on the `cinder` schema at
+every refresh interval, for a service this ControlPlane has been told it no longer
+manages, behind a `CinderReady=True` condition that surfaces none of it.
+
+A child placed outside the ControlPlane's namespace (`services.cinder.namespace`)
+carries no owner reference: it is stamped with the ownership labels and applied
+unowned, and the finalizer sweeps it by those labels.
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| `spec.services.cinder` unset | True | `CinderNotManaged` | staged adoption; a previously-projected child and its satellites are preserved unless `c5c3.io/allow-cinder-deletion: "true"` is set, but the dynamic DB-credential generator, ServiceAccount, and client Certificate are torn down either way |
+| `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Cinder CR is projected while Keystone is unready |
+| the shared bus has not delivered its transport URL yet | False | `WaitingForMessagingCredentials` | requeue 15s; nothing is written, so the child never sees a partial URL |
+| the messaging CA bundle Secret is absent or carries no data under its key | False | `WaitingForMessagingCABundle` | requeue 15s; an empty key is the ordinary transient of a two-step create-then-populate flow, so it waits rather than mirroring an empty trust anchor |
+| resolving the URL, writing either messaging Secret, or reaping the stale CA mirror after the child stopped naming it fails | False | `CinderMessagingError` | returns the error |
+| the cluster the Cinder namespace resolves to is unavailable | False | `TargetClusterUnavailable` | the resolver's own message; a wait, not a failed reconcile. Requeue 15s from the bus delivery, 10s from the registration mirror and the DB credential |
+| the projected registration has not provisioned the account yet | False | `WaitingForServiceRegistration` | requeue 10s; no Cinder child is written until the Keystone user and its password exist. See [Built-in service registrations](#built-in-service-registrations) |
+| projecting, reading or mirroring the registration child fails | False | `ServiceRegistrationError` | returns the error |
+| the registration child carries foreign spec fields | False | `ServiceRegistrationFieldsReclaimed` | they are reset and the pass halts; requeue 10s |
+| the store on a placed service's target cluster is not ready | False | `SecretStoreNotReady` | the registration's credentials cannot be materialised there; requeue 10s |
+| DB-credential ensure fails (Dynamic generator objects or Static ExternalSecret) | False | `CinderDBCredentialError` | returns the error (managed database only) |
+| Dynamic DB credential not yet materialised | False | `WaitingForCinderDBCredential` | requeue 10s; the message names the `database/mariadb/creds/cinder-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the non-engine-issued username it found in the target Secret |
+| projecting or pruning a satellite fails | False | `CinderBackendError` | returns the error; the pass halts before the child, which would otherwise run with a backend set the ControlPlane never projected |
+| a projected satellite is rejected (HTTP 422 Invalid) | False | `CinderBackendProjectionRejected` | returns the error; reconcile the `services.cinder.backends` / `services.cinder.backupBackend` entries to a valid projection to recover |
+| Cinder child not yet Ready | False | `WaitingForCinder` | requeue 15s |
+| projected Cinder spec rejected (HTTP 422 Invalid) | False | `CinderProjectionRejected` | returns the error; the projection violates a Cinder CRD/webhook rule, so reconcile the ControlPlane spec to a valid projection to recover |
+| Cinder create/update fails | False | `CinderError` | returns the error |
+| Cinder child Ready and its registration Ready | True | `CinderReady` | — |
 
 ### reconcileKORC
 
@@ -3406,6 +3612,36 @@ belonging to somebody else in a shared namespace is left alone. The `OVNCentral`
 the child references appears in neither path and is deleted nowhere: it is
 deployed outside the plane and only read.
 
+#### Cinder teardown residue
+
+The block-storage service leaves the shapes the network service does plus its
+two satellite kinds, and both teardown paths name them. `deleteOrphanedCinder` runs when `spec.services.cinder`
+is unset with `c5c3.io/allow-cinder-deletion: "true"`; the ControlPlane teardown
+reaches the set through `sweepExternalNamespaceResidue` for a namespace it does
+not own, through `crossNamespaceServiceChildren` for the `Cinder` child in a
+dedicated namespace, and through `projectedRegistrationKeys` for the registration.
+
+- The four DB-credential shapes: the `{controlplane.Name}-cinder-db-credentials`
+  `ExternalSecret` and the `VaultDynamicSecret` generator of the same name, the
+  `{controlplane.Name}-cinder-db-openbao-client` `Certificate`, and the
+  `cinder-db-creds` `ServiceAccount`.
+- The bus delivery: the `{controlplane.Name}-cinder-messaging` Secret and the
+  `{controlplane.Name}-cinder-messaging-ca` mirror. Both paths take the two stubs
+  from `serviceMessagingSecrets(cinderMessagingTarget(cp))`. Nothing else writes
+  them, so an unmanaged service leaves no broker credential behind in the
+  namespace.
+- Every owned `CinderBackend` and `CinderBackupBackend` in the Cinder namespace,
+  swept kind by kind on ownership alone, since a satellite carries a bare entry
+  name no prefix selects. The teardown waits on them: a deleted `CinderBackend`
+  holds the cinder operator's `service-remove` finalizer until its detach Job has
+  run, so the namespace must not be taken out from under that Job.
+- The `Cinder` child and the `{controlplane.Name}-cinder` `KeystoneService`
+  registration, whose finalizer removes the block-storage catalog rows, the
+  service user, and its project.
+
+Each object is ownership-checked against its live state, so a hand-created
+`CinderBackend` attached to the same `Cinder` is neither pruned nor swept.
+
 #### External-mode deletion resource set
 
 `orcChildObjects(cp)` derives the swept CR names from the ControlPlane spec, so
@@ -3534,6 +3770,7 @@ The `condition_type` label is resolved from the package-private
 | `Glance` | `GlanceReady` |
 | `Placement` | `PlacementReady` |
 | `Barbican` | `BarbicanReady` |
+| `Cinder` | `CinderReady` |
 | `KORC` | `KORCReady` |
 | `AdminCredential` | `AdminCredentialReady` |
 | `AdminPassword` | `AdminPasswordReady` |
@@ -3627,6 +3864,9 @@ cross-namespace teardown assertions.
 | `reconcile_korc_test.go` | AC mint, restricted↔unrestricted inversion, hash annotation/re-mint, missing-CRD safety, admin-credential push, catalog, condition contract |
 | `reconcile_projected_children_test.go` | Prune and sweep of projected satellite children: ownership, name prefix, the `Keep` set, an absent CRD, the wrapped errors |
 | `reconcile_service_messaging_test.go` | Bus delivery on the Neutron target, a second target under its own names, `serviceMessagingSpec`, the CA-mirror reap gate, the teardown stubs |
+| `reconcile_cinder_test.go` | Cinder projection, the Keystone and registration gates, the satellite projection and prune, the derived Glance/Barbican/internal-tenant fields, the replica pins, the orphan teardown |
+| `reconcile_cinder_dbcredentials_test.go` | Cinder DB-credential names, OpenBao paths, and the effective mode |
+| `builtin_registrations_test.go` | The shared registration leg: the projected child, the gate, the credential mirror, the reclaim of foreign spec fields, and the per-service roles |
 | `reconcile_credentialrotation_test.go` | Nudge model, one-per-namespace resolution, bootstrap, deferred scheduled fields, target enum |
 | `credential_invariant_test.go` | Security invariants (restricted mint, app-credential Secret not on any workload) |
 | `instrumentation_test.go` | Wiring smoke test (records through the instrumenter), condition_type drift guard |
@@ -3687,11 +3927,14 @@ operators/c5c3/
     │   │                                        ovnCentralToControlPlaneMapper
     │   ├── reconcile_neutron.go                reconcileNeutron projection (Neutron child, orphan
     │   │                                        teardown)
+    │   ├── reconcile_cinder.go                 reconcileCinder projection (Cinder child, its two
+    │   │                                        satellite kinds, orphan teardown)
     │   ├── reconcile_projected_children.go     Shared prune/sweep of a service's projected
     │   │                                        satellite children (ownership + name prefix)
     │   ├── reconcile_service_messaging.go      Shared-bus delivery on a service target
     │   │                                        (transport-URL Secret + CA mirror)
     │   ├── reconcile_neutron_dbcredentials.go  Neutron DB-credential names, OpenBao paths, mode
+    │   ├── reconcile_cinder_dbcredentials.go   Cinder DB-credential names, OpenBao paths, mode
     │   ├── reconcile_korc.go                   reconcileKORC (AC mint/re-mint, drift detection)
     │   ├── reconcile_admincredential.go        reconcileAdminCredential (assemble + push + re-push
     │   │                                        nudges, semantic clouds.yaml gate)
@@ -3701,8 +3944,9 @@ operators/c5c3/
     │   │                                        identity imports, opt-in entries, stall detection)
     │   ├── reconcile_serviceaccounts.go        reconcileServiceAccounts (folds the built-in
     │   │                                        registrations into ServiceAccountsReady)
-    │   ├── builtin_registrations.go            The leg Glance/Placement/Barbican/Neutron share:
-    │   │                                        project the KeystoneService child, gate, mirror, reclaim
+    │   ├── builtin_registrations.go            The leg Glance/Placement/Barbican/Neutron/Cinder
+    │   │                                        share: project the KeystoneService child, gate,
+    │   │                                        mirror, reclaim
     │   ├── registration_projection.go          K-ORC child + ESO builders shared with the
     │   │                                        KeystoneService controller
     │   ├── keystoneservice_controller.go       KeystoneServiceReconciler (see the KeystoneService pages)
@@ -3732,14 +3976,17 @@ operators/c5c3/
     │   ├── reconcile_barbican_dbcredentials_test.go Barbican DB-credential tests
     │   ├── reconcile_ovn_test.go               OVNCentral mirroring tests
     │   ├── reconcile_neutron_test.go           Neutron projection tests
+    │   ├── reconcile_cinder_test.go            Cinder projection tests
     │   ├── reconcile_projected_children_test.go Projected-children prune/sweep tests
     │   ├── reconcile_service_messaging_test.go Bus-delivery tests
     │   ├── reconcile_neutron_dbcredentials_test.go Neutron DB-credential tests
+    │   ├── reconcile_cinder_dbcredentials_test.go Cinder DB-credential tests
     │   ├── reconcile_korc_test.go              K-ORC mint/re-mint tests
     │   ├── reconcile_admincredential_test.go   AdminCredential tests
     │   ├── reconcile_catalog_test.go           Catalog (managed-mode) tests
     │   ├── reconcile_catalog_external_test.go  External-catalog tests
     │   ├── reconcile_serviceaccounts_test.go   ServiceAccounts tests
+    │   ├── builtin_registrations_test.go       Built-in service registration tests
     │   ├── reconcile_delete_test.go            Deletion-sequencing (finalizer) tests
     │   ├── reconcile_credentialrotation_test.go CredentialRotation tests
     │   ├── credential_invariant_test.go        Security-invariant tests
