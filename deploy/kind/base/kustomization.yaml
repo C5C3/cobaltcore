@@ -242,6 +242,34 @@ patches:
       spec:
         suspend: true
 
+  # k-orc: suspend the Flux Kustomization in kind for the same reason as the
+  # operator HelmReleases above. The e2e-controlplane CI job installs K-ORC out
+  # of band (hack/ci-deploy-korc.sh), and hack/deploy-infra.sh suspends this
+  # Kustomization only after the base overlay is applied. Applied active, the
+  # kustomize-controller reconciles it inside that window whenever something
+  # slower than a patch sits between the two (the WITH_NFS=true rollout wait
+  # takes ~18 s where the default path takes 0.5 s), and the CI script's
+  # server-side apply then conflicts with the kustomize-controller on the
+  # manager image (Flux renders <name>:<tag>@<digest>, the script renders
+  # <name>@<digest>).
+  # Suspended at apply time, nothing reconciles K-ORC until a path lifts the
+  # suspension; the CONTROLPLANE_OPERATORS=flux branch of hack/deploy-infra.sh
+  # does so right before it waits for the Kustomization.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: k-orc
+      namespace: flux-system
+    patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: k-orc
+        namespace: flux-system
+      spec:
+        suspend: true
+
   # The Chaos Mesh kind-tuning patch (containerd runtime, dashboard disabled,
   # reduced resource requests) lives in the opt-in deploy/kind/chaos-mesh/
   # overlay. It cannot stay here because Chaos Mesh is no longer in the base
