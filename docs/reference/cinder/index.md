@@ -134,3 +134,5 @@ of the attached satellites:
   controllers emit
 - [Reconciler Architecture](./cinder-reconciler.md): the sub-reconciler
   pipeline, conditions, and requeue semantics
+- [Upgrade Flow](./cinder-upgrade-flow.md): the four phases of a release
+  upgrade, the pre-flight checks, the roll order, and the abort recipe

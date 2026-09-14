@@ -188,6 +188,9 @@ pins the wire format for the life of the process, so the second roll is what
 drops it. The API carries no such annotation: it rolled during `RollingUpdate`
 and came up holding the new minimum.
 
+The operator-facing walkthrough of the same flow, with the pre-flight checks and
+the abort recipe, is [Cinder Upgrade Flow](./cinder-upgrade-flow.md).
+
 ## Volume services and the detach sequence
 
 The VolumeServices step projects one Deployment per backend rather than one
