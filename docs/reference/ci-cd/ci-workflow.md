@@ -829,6 +829,19 @@ which loads `openvswitch` and `geneve` on the kind node for the chassis
 DaemonSets. See
 [Kernel-module-dependent suites](#kernel-module-dependent-suites).
 
+**The cinder leg.** Its `setup-e2e-infra` step carries `WITH_NFS: true` and
+`WITH_MESSAGING: true`, neither of which `hack/deploy-infra.sh` installs by
+default: the suites mount their volumes as inline CSI volumes from the kind NFS
+export, and each one takes its own vhost on the `shared-rabbitmq` broker. The
+chainsaw step runs with `--parallel 2`, as the `neutron` leg does. A cinder
+suite brings up three or four Deployments, a db-sync Job and a probe pod, and
+four of those at once do not fit on a 4-vCPU node; the other legs keep the
+shared config's `parallel: 4`. Chart-level suites live in
+`tests/e2e/cinder-operator/`, which the `-operator` directory probe appends to
+`tests/e2e/cinder/`. The leg runs on a `self-hosted` runner, like every leg but
+`keystone`, and one diagnostics dump covers it, because it deploys a single
+operator. See [Cinder E2E Test Suites](../testing/cinder-e2e-tests.md).
+
 ### e2e-operator-upgrade
 
 Operator helm-upgrade-in-place E2E. Installs the last released keystone-operator
@@ -861,7 +874,7 @@ operator and service images its leg needs from GHCR via the `load-e2e-images`
 composite action, deploys them alongside Chaos Mesh infrastructure, and runs the
 chaos test suites (MariaDB pod kill, Memcached pod kill, OpenBao pod kill,
 MariaDB network partition, MariaDB network latency, the two Neutron outage
-suites, OVN Southbound outage). See
+suites, the three Cinder outage suites, OVN Southbound outage). See
 [Chaos E2E Test Suites](../testing/chaos-e2e-tests.md) for test suite details.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]`
@@ -889,7 +902,7 @@ leg needs:
 | Leg | Runner | Operators deployed | Suites |
 | --- | --- | --- | --- |
 | `pod` | `blacksmith-4vcpu-ubuntu-2404` | keystone, horizon, glance, placement, barbican | the PodChaos suites |
-| `network` | `self-hosted` | keystone, horizon, glance, barbican, ovn, neutron | the NetworkChaos suites, `neutron-mariadb-outage` and `neutron-broker-outage` among them |
+| `network` | `self-hosted` | keystone, horizon, glance, barbican, ovn, neutron, cinder | the NetworkChaos suites, `neutron-mariadb-outage` and `neutron-broker-outage` among them, plus the three Cinder suites `cinder-operator-pod-kill`, `cinder-broker-outage` and `cinder-nfs-outage` |
 | `ovn` | `self-hosted` | ovn | `ovn-southbound-outage` |
 
 The `pod` leg is pinned to the `blacksmith-4vcpu-ubuntu-2404` runner for now,
@@ -1254,27 +1267,25 @@ GHCR (run-scoped tag) via the `load-e2e-images` composite action.
 **Condition:** Runs only when `tempest == 'true'`, `build-e2e-images` succeeded, and no other E2E job failed or was cancelled; tempest is the last E2E job in the chain. Without a label it runs for a change to its own sources, and the matrix is narrowed to the services whose configuration changed.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
-**Matrix strategy:**
+**Matrix strategy:** the workflow holds no list of legs.
+`hack/ci-generate-tempest-matrix.sh` runs in the `changes` job and crosses
+`ALL_TEMPEST_SERVICES=(keystone glance barbican neutron cinder)` with every
+`releases/<version>/` directory, writing the result to the `tempest-releases`
+output the job consumes as `matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}`.
+A service without a `tests/tempest/<service>-<slug>` configuration directory
+fails the generator. `TEMPEST_SERVICES`, set from the change resolver, narrows
+the emitted entries to the services a pull request touches; the directory check
+still covers all five.
 
-```yaml
-strategy:
-  fail-fast: false
-  matrix:
-    include:
-      - release: "2025.2"
-        config-dir: tests/tempest/keystone
-        cr-name: keystone-tempest
-        service-k8s-name: keystone-tempest-api
-      - release: "2026.1"
-        config-dir: tests/tempest/keystone-2026-1
-        cr-name: keystone-tempest-2026-1
-        service-k8s-name: keystone-tempest-2026-1-api
-```
-
-Each matrix entry specifies: the release version, the Tempest configuration directory,
-the Keystone CR name, and the K8s service name used for port-forwarding. Steps reference
-these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
-`matrix.service-k8s-name`.
+Every entry carries `service`, `release`, `config-dir`, `cr-name` and
+`service-k8s-name`, and `service-k8s-name` equals `cr-name` (the Keystone
+identity CR the job waits on and port-forwards). Non-keystone entries add
+`<service>-cr-name` for the service CR of the leg. The neutron entries also
+carry `ovn-cr-name` and `tempest-concurrency: "2"`; the cinder entries carry
+`glance-cr-name` and `tempest-concurrency: "2"`. Steps read them as
+`matrix.release`, `matrix.config-dir`, `matrix.cr-name` and so on. For the names
+each leg ends up with, see
+[Tempest Test Infrastructure](../testing/tempest-test-infrastructure.md).
 
 | Step | Action | Details |
 | --- | --- | --- |
@@ -1292,10 +1303,14 @@ these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
 | 12 | Bootstrap network catalog *(neutron leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml` and waits 300 s for the `neutron-tempest-catalog-setup` Job to complete |
 | 13 | Deploy OVNCentral *(neutron leg only)* | Applies `02-messaging-secret.yaml` and `03-ovncentral-cr.yaml`, waits 300 s for `ovncentral/ovn-neutron-tempest-<slug>` Ready |
 | 14 | Deploy Neutron CR *(neutron leg only)* | Applies `04-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready |
-| 15 | `hack/ci-run-tempest.sh` | Runs Tempest API tests with `CONFIG_DIR=matrix.config-dir`, `SERVICE_K8S_NAME=matrix.service-k8s-name`, and on the neutron leg `NEUTRON_K8S_NAME=matrix.neutron-cr-name` (empty elsewhere, which disables the 9696 port-forward) |
-| 16 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
-| 17 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
-| 18 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 15 | Bootstrap block-storage catalog *(cinder leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml` and waits 300 s for the `cinder-tempest-catalog-setup` Job, which registers the block-storage and image services with their endpoints |
+| 16 | Deploy Glance CR *(cinder leg only)* | Applies `02-glance-cr.yaml` and `03-glancebackend-cr.yaml`, waits 300 s for `matrix.glance-cr-name` Ready; the volume tests create volumes from an image and upload volumes back to one |
+| 17 | Deploy Cinder CR *(cinder leg only)* | Applies `04-cinderbackend-cr.yaml`, `05-cinderbackupbackend-cr.yaml` and `06-cinder-cr.yaml`, waits 600 s for `matrix.cinder-cr-name` Ready. 600 s, because the Cinder brings up four Deployments and a db-sync Job, and the backends have to be attached before the volume and backup services are projected |
+| 18 | Seed the image the volume tests boot from *(cinder leg only)* | Applies `07-image-seed-job.yaml` and waits 300 s for the `cinder-tempest-image-seed` Job; `tempest.conf` pins `[compute] image_ref` to the UUID it creates |
+| 19 | `hack/ci-run-tempest.sh` | Runs Tempest API tests with `CONFIG_DIR=matrix.config-dir`, `SERVICE_K8S_NAME=matrix.service-k8s-name`, and on the neutron leg `NEUTRON_K8S_NAME=matrix.neutron-cr-name` (empty elsewhere, which disables the 9696 port-forward). The cinder leg adds `CINDER_K8S_NAME=matrix.cinder-cr-name`, `GLANCE_K8S_NAME=matrix.glance-cr-name` and `TEMPEST_CONCURRENCY=matrix.tempest-concurrency`; the script's optional-target row `Cinder:CINDER_K8S_NAME:8776:/healthcheck` turns the filled name into an 8776 port-forward polled on `/healthcheck` |
+| 20 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
+| 21 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
+| 22 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 Timeout: 68 minutes.
 
@@ -1637,7 +1652,7 @@ handles local execution including image building).
 | `ADMIN_SECRET` | No | `keystone-admin` | Secret name holding admin password |
 | `OUTPUT_DIR` | No | `_output/tempest` | Test output directory |
 | `TEMPEST_IMAGE` | No | `c5c3/tempest:local` | Tempest container image |
-| `SERVICE_K8S_NAME` | No | `<SERVICE>-tempest-api` | K8s Service name for port-forwarding (allows override for release-specific CR names, e.g. `keystone-tempest-2026-1-api`) |
+| `SERVICE_K8S_NAME` | No | `<SERVICE>-tempest-2025-2` | K8s Service name for port-forwarding; the CI matrix passes its `service-k8s-name` entry for release-specific CR names (e.g. `keystone-tempest-2026-1`) |
 
 The script:
 1. Extracts the admin password from the Kubernetes secret
@@ -1966,7 +1981,8 @@ to `CODECOV_TOKEN`. This prevents CI from failing due to upload issues on forks.
 
 The `flag_management` section in `.codecov.yml` links CI-uploaded flags to coverage tracking
 rules. Flags follow the `[unit|integration]-<target>` naming convention, matching the CI
-matrix targets (`common`, `keystone`, `c5c3`, `horizon`, `glance`, `placement`, `barbican`).
+matrix targets (`common`, `keystone`, `c5c3`, `horizon`, `glance`, `placement`, `barbican`,
+`ovn`, `neutron`, `cinder`).
 Each flag has `carryforward: true`, which ensures that when only a subset of flags is
 uploaded (e.g., only one operator changed), the missing flags carry forward their
 last-known coverage instead of reducing the total.
@@ -1982,6 +1998,9 @@ Defined flags:
 | `unit-glance` | `operators/glance/` | `test` job, `glance` matrix leg |
 | `unit-placement` | `operators/placement/` | `test` job, `placement` matrix leg |
 | `unit-barbican` | `operators/barbican/` | `test` job, `barbican` matrix leg |
+| `unit-ovn` | `operators/ovn/` | `test` job, `ovn` matrix leg |
+| `unit-neutron` | `operators/neutron/` | `test` job, `neutron` matrix leg |
+| `unit-cinder` | `operators/cinder/` | `test` job, `cinder` matrix leg |
 | `integration-common` | `internal/common/` | `test-integration` job, `common` matrix leg |
 | `integration-keystone` | `operators/keystone/` | `test-integration` job, `keystone` matrix leg |
 | `integration-c5c3` | `operators/c5c3/` | `test-integration` job, `c5c3` matrix leg |
@@ -1989,6 +2008,9 @@ Defined flags:
 | `integration-glance` | `operators/glance/` | `test-integration` job, `glance` matrix leg |
 | `integration-placement` | `operators/placement/` | `test-integration` job, `placement` matrix leg |
 | `integration-barbican` | `operators/barbican/` | `test-integration` job, `barbican` matrix leg |
+| `integration-ovn` | `operators/ovn/` | `test-integration` job, `ovn` matrix leg |
+| `integration-neutron` | `operators/neutron/` | `test-integration` job, `neutron` matrix leg |
+| `integration-cinder` | `operators/cinder/` | `test-integration` job, `cinder` matrix leg |
 
 ### Component Thresholds
 

@@ -580,8 +580,8 @@ The image stays config-free. The package data files `api-paste.ini`,
 under `/var/lib/openstack/etc/cinder/` at both tags, declared in `setup.cfg`
 at 27.0.0 and in `pyproject.toml` at 28.0.0. Nothing in the Dockerfile copies
 `etc/cinder/` by hand, and the contract script asserts the four files. The
-cinder-operator points `api_paste_config`, `resource_query_filters_file` and
-`rootwrap_config` at those absolute paths.
+cinder-operator points `api_paste_config` and `resource_query_filters_file` at
+those absolute paths.
 
 **Runtime packages:**
 
@@ -623,6 +623,29 @@ between Step 2 and Step 3 of the
 green, because its test driver never calls `set_nas_security_options` and
 `_execute_as_root` keeps its default `True`, so the patch carries no test
 hunk. Upstream status: not yet proposed.
+
+`patches/cinder/2025.2/0002-create-from-image-run-qemu-img-as-the-service-user.patch`
+and its 2026.1 twin flip two more forced-root `qemu-img info` calls. Both sit
+above the NFS driver on the create-from-image path and neither goes through it,
+so the flip in `0001` never reaches them.
+`CreateVolumeFromSpecTask._create_from_image_cache_or_download`
+(`cinder/volume/flows/manager/create_volume.py`) inspects the image it has just
+downloaded with `image_utils.qemu_img_info(tmp_image)`, whose `run_as_root`
+defaults to `True`. `fetch_verify_image` (`cinder/image/image_utils.py`)
+inspects the same file through `get_qemu_data(image_id, has_meta, format_raw,
+dest, True)`, which passes the flag positionally. In both cases the file is the
+temporary copy the service itself wrote into `image_conversion_dir`, owned by
+UID 42424, so reading it as root gains nothing. The two calls fail differently
+where `sudo cinder-rootwrap` has no sudoers entry: the manager call raises the
+`ProcessExecutionError` uncaught and every create-from-image ends in `error`
+status, while `fetch_verify_image` swallows it. `get_qemu_data` reads a failing
+`qemu-img` as "qemu-img is not installed", returns `None` for a raw image and
+skips the backing-file and data-file checks the function exists for, and raises
+`ImageUnacceptable` for every other disk format. Three upstream tests in
+`cinder/tests/unit/test_image_utils.py` pin the `fetch_verify_image` argument
+and move with it, so this patch does carry test hunks; no upstream test pins
+the manager call. `tests/container-images/verify_cinder.sh` asserts both call
+sites against the built image. Upstream status: not yet proposed.
 
 `patches/cinder/2025.2/0003-tests-remove-use-of-mutable-netapp-fakes.patch`
 is a test-only backport of upstream commit `cc981d81b6` (2025-09-17, Launchpad
