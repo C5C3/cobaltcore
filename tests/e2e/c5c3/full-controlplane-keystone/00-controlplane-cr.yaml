@@ -40,6 +40,7 @@
 # `global.rules` carries one oslo.policy override so the test can assert that the
 # reconciler merges policy into the projected Keystone CR's spec.policyOverrides
 # (the per-service override path is left empty here so the global rule wins).
+# region controlplane-cr
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -207,3 +208,4 @@ spec:
     # children reach Ready and that the K-ORC rows they label-own are Available,
     # and the verify Job asserts the role is listed against each user in
     # Keystone.
+# endregion controlplane-cr

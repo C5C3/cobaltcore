@@ -18,6 +18,7 @@
 #
 # fileSize, compression and mountOptions are left out, so the schema defaults
 # apply and the suite reads them back off the rendered section.
+# region backup-backend
 apiVersion: cinder.openstack.c5c3.io/v1alpha1
 kind: CinderBackupBackend
 metadata:
@@ -30,3 +31,4 @@ spec:
   nfs:
     server: nfs-server.openstack.svc.cluster.local
     path: /backups
+# endregion backup-backend
