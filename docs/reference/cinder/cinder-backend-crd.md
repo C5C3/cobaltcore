@@ -191,7 +191,7 @@ volume_driver = cinder.volume.drivers.nfs.NfsDriver
 `@<backend>` itself, so the rendered value is the half the operator owns. The
 three `image_volume_cache_*` keys follow when the cache is enabled.
 
-Three caveats come with this driver:
+Five caveats come with this driver:
 
 - Snapshots are off. `nfs_snapshot_support = false` is rendered on every
   backend, so a volume on an NFS backend cannot be snapshotted, and neither can
@@ -207,6 +207,14 @@ Three caveats come with this driver:
   identity, and the NFS drivers refuse two processes holding the same volume
   state, so `spec.volume.deployment` is pinned at one replica on the `Recreate`
   strategy (see [CinderVolumeSpec](./cinder-crd.md#cindervolumespec)).
+- A clone is world-readable. Cloning a volume runs through the driver's internal
+  temporary snapshot and ends in `_set_rw_permissions_for_all`, so the cloned
+  file carries mode `666` where a created volume's carries `660`. The export
+  itself is mode `0770`, which keeps the difference inside the service group.
+- Uploading a volume that was itself created from an image fails. Glance rejects
+  the request at both 27.0.0 and 28.0.0 with
+  `400 Unable to set 'properties' to {}. Reason: {} is not of type 'string'`.
+  A volume that was not created from an image uploads.
 
 ## Detaching a backend
 
@@ -222,9 +230,13 @@ backend reports `Ready=False` under the reason `Detaching`.
 The Job runs `cinder-manage service remove cinder-volume <cinder>@<name>`.
 Exit code 2 is "host not found", which is the state of a backend whose
 `cinder-volume` never registered, so the script normalises it to success and
-lets every other code fail the Job. A failed Job keeps the finalizer: the
-registry entry is still there, and deleting the Job is what retries the removal
-once the cause is understood. The parent then reports
+lets every other code fail the Job. The removed `services` row is only
+soft-deleted: `GET /v3/os-services` stops listing it as soon as the Job
+succeeds, but the row stays in the table until the next
+[db purge](./cinder-reconciler.md#dbpurge) sweeps it, and a backend that is
+attached again registers under a new row id. A failed Job keeps the finalizer:
+the registry entry is still there, and deleting the Job is what retries the
+removal once the cause is understood. The parent then reports
 `VolumeServicesReady=False` under `ServiceRemoveJobFailed`.
 
 A backend whose parent Cinder is already gone is released unconditionally, with
@@ -251,6 +263,10 @@ CR instead.
 | `BackendsReady` | Cinder | True | `AllBackendsProjected` | Every attached backend is credential-ready and projected. |
 | `BackendsReady` | Cinder | True | `NoBackends` | No CinderBackend is attached. It is True rather than False: a Cinder without volume backends serves its API and its scheduler, and attaching storage is a separate act. |
 | `BackendsReady` | Cinder | False | `WaitingForBackends` | At least one attached backend is pending, either not yet credential-ready or skipped for a per-backend fault. The ready subset is still projected, and the message names what is missing. |
+
+`status.observedGeneration` carries the `metadata.generation` of the last spec
+the controller observed (`cinderbackend_types.go`), so a status reported against
+an older spec is distinguishable from a current one.
 
 A backend whose `spec.nfs` block is absent, or whose rendered section carries a
 control character, is skipped: the cinder-side step emits a
