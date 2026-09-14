@@ -12,6 +12,7 @@
 # The volume the probe places through a volume type lands here, which is what
 # separates a backend that was merely projected from one the scheduler can
 # actually route to.
+# region backend-b
 apiVersion: cinder.openstack.c5c3.io/v1alpha1
 kind: CinderBackend
 metadata:
@@ -24,3 +25,4 @@ spec:
   nfs:
     server: nfs-server.openstack.svc.cluster.local
     path: /volumes-b
+# endregion backend-b
