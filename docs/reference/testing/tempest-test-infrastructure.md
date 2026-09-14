@@ -227,7 +227,7 @@ Keystone service:
 | `[identity-feature-enabled]` | `api_v3` | `true` | Enable v3 identity API tests |
 | `[service_available]` | `identity` | `true` | Identity service is deployed |
 | `[service_available]` | `compute` | `false` | Nova is not deployed |
-| `[service_available]` | `network` | `false` / `true` | Neutron is deployed on the neutron legs; the keystone, glance and barbican legs set `false` |
+| `[service_available]` | `network` | `false` / `true` | Neutron is deployed on the neutron legs; the keystone, glance, barbican and cinder legs set `false` |
 | `[service_available]` | `volume` | `false` / `true` | Cinder is deployed on the cinder legs; the keystone, glance, barbican and neutron legs set `false` |
 | `[service_available]` | `image` | `false` | Glance is not deployed |
 | `[service_available]` | `object-storage` | `false` | Swift is not deployed |

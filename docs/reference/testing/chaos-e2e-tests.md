@@ -173,6 +173,22 @@ block merges. The `ci:chaos` PR label runs every leg on demand for pre-validatio
 **Legs and what they carry:** the `network` leg runs the NetworkChaos suites, the two
 Neutron ones (`neutron-mariadb-outage`, `neutron-broker-outage`) among them, and
 therefore deploys the neutron-operator and the ovn-operator alongside keystone. The
+three Cinder suites (`cinder-operator-pod-kill`, `cinder-broker-outage`,
+`cinder-nfs-outage`) run on that leg alone, so it deploys the cinder-operator into
+`cinder-system` as well and sets `WITH_NFS=true` and `WITH_MESSAGING=true` on the
+infrastructure bring-up: each of the three attaches an NFS backend the operator
+mounts as an inline CSI volume, and two of them (`cinder-operator-pod-kill`,
+`cinder-nfs-outage`) take a vhost on the shared broker. Two of the three are
+there for the leg's Cinder stack rather than for its fault class, so they inherit
+a `continue-on-error` the gate below justifies with a kernel-module dependency
+neither of them has: `cinder-operator-pod-kill` injects `PodChaos`, the class the
+blocking leg exists for, and `cinder-nfs-outage` writes no chaos-mesh CR at all.
+Each is the only automated check on the invariant it pins — operational
+independence and the fail-closed write path — and a regression in either goes red
+on a leg that reports green. Moving them onto the pod leg means taking the Cinder
+stack, the NFS export and the broker there with them, which the blocking leg's
+4-vCPU runner has not been sized for; it is tracked as a follow-up rather than
+done here. The
 `ovn` leg is the third one, on the `self-hosted` runners as well and
 `continue-on-error` like the network one. It sets `WITH_OVN_KERNEL_MODULES=true` so
 `hack/deploy-infra.sh` modprobes `openvswitch` and `geneve` on the host (the chassis
@@ -203,6 +219,9 @@ assertion windows.
 | [ovn-southbound-outage](#ovn-southbound-outage) | — | `ovn-sb-chaos` | Southbound database outage (datapath no-regression) | Ping across the datapath answers under the fault, chassis containers stay at `restartCount: 0`, `SouthboundReady=True` and chassis `Ready=True/AllReady` restored after it |
 | [neutron-mariadb-outage](#neutron-mariadb-outage) | — | `neutron-db-chaos` | Database partition (fail-closed write) | `NeutronAPIReady=True/APIHealthy` and `DeploymentReady=True/DeploymentReady` maintained, `POST /v2.0/networks` non-2xx during the partition and 201 after it |
 | [neutron-broker-outage](#neutron-broker-outage) | — | `neutron-broker-chaos` | Message-bus partition (no-regression) | `Ready=True/AllReady` maintained, `POST /v2.0/networks` answers 201 throughout, `rabbitmqctl list_connections` empty before, during and after |
+| [cinder-operator-pod-kill](#cinder-operator-pod-kill) | — | `cinder-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted, `PodChaos mode: one` replaces one operator pod, a workload pod restart fails the suite, a replica patch afterwards reaches the API Deployment |
+| [cinder-broker-outage](#cinder-broker-outage) | — | `cinder-broker-chaos` | Message-bus partition (degrade and recover) | `SchedulerReady=False/WaitingForScheduler` and `VolumeServicesReady=False/WaitingForVolumeServices` within 180 s, `/healthcheck` 200 and API `restartCount` 0 throughout, `POST /v3/volumes` unanswered within 20 s (`BLOCKED-OK`), the blocked create settling to `available` after the partition (`RECOVERED-OK`) |
+| [cinder-nfs-outage](#cinder-nfs-outage) | — | `cinder-nfs-chaos` | Storage outage (fail-closed create) | `Ready=True/AllReady` maintained, a create ending in `error` within 240 s (`FAILCLOSED-OK`), a post-recovery create reaching `available` within 240 s (`RECOVERED-OK`) |
 
 ---
 
@@ -883,6 +902,203 @@ rabbitmq-cluster-operator logs from `rabbitmq-system`, and the NetworkChaos dump
 - The RabbitmqCluster fixture sets `replicas: 1` and leaves image, resources and
   persistence at the operator's defaults, the way the ControlPlane projection
   (`ensureRabbitMQ`) leaves them.
+
+---
+
+### cinder-operator-pod-kill
+
+**File:** `tests/e2e-chaos/cinder-operator-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** —
+
+**Purpose:** A `PodChaos` kills one of the two cinder-operator pods. The operator
+is a control-plane component: the API, the scheduler and the volume service it
+deployed keep running while it is gone, and they keep running while it comes
+back. The suite states that as pod identity. Every workload pod UID is
+snapshotted before the kill and compared after the recovery, so a restart
+anywhere in the deployment fails the test instead of passing as "still Ready".
+The second half is the other side of the contract: a replica count patched after
+the recovery has to reach the API Deployment, which nothing but a working control
+loop does.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` + `assert` (5m) | `../../e2e/cinder/broker-vhost.sh create cinder-chaos-op cinder-chaos-op-messaging openstack`, then `00-cinder-cr.yaml` (`cinder-chaos-op`) and `01-cinderbackend-cr.yaml` (`chaos-op-nfs1`) reach `Ready=True/AllReady`. The step cleanup deletes the vhost |
+| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `cinder-operator` Deployment, snapshot the operator pod UIDs in `cinder-system` and the workload pod UIDs in `openstack`, apply `02-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot |
+| 3 | Delete PodChaos | `delete` | Removes `PodChaos/kill-cinder-operator` from `cinder-system` |
+| 4 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | `03-patch-scale.yaml` takes the API to two replicas; Deployment `cinder-chaos-op` reaches `availableReplicas: 2` and `updatedReplicas: 2`, and the CR stays `Ready=True/AllReady` |
+
+**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`, `02-podchaos.yaml`,
+`03-patch-scale.yaml`.
+
+**Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos cinder-chaos-op`
+with `--cr-kind=cinder`, `--dep-label=app.kubernetes.io/name=cinder-operator` and
+`--dep-ns=cinder-system`, dumps the `CinderBackend`, and lists the CR's
+Deployments, pods and pod logs.
+
+**Design notes:**
+
+- The snapshot covers every pre-chaos operator pod UID. Recording only
+  `.items[0]` is racy: the operator runs two replicas and `PodChaos mode: one`
+  picks its victim at random, so the recorded pod survives the kill in about half
+  the runs and the old-pod-gone poll fails spuriously.
+  `glance-operator-pod-kill` records the same reasoning.
+- The workload snapshot is the operational-independence half. The instance label
+  covers all four pods the CR owns: the API, the scheduler, the volume service of
+  `chaos-op-nfs1`, and the completed db-sync Job pod, which stays listed because
+  the migration Job carries no `ttlSecondsAfterFinished`. A UID that changed means
+  an operator kill disturbed a data-plane pod, so the step fails with both UID
+  lists printed.
+- `set -euo pipefail` is omitted in step 2 on purpose. The polling loops use
+  `${VAR:-0}` defaults that would abort under `set -e` when kubectl returns empty
+  output, and every loop exit condition is checked explicitly instead.
+
+---
+
+### cinder-broker-outage
+
+**File:** `tests/e2e-chaos/cinder-broker-outage/chainsaw-test.yaml`
+
+**Scenario:** —
+
+**Purpose:** A `NetworkChaos` partition severs Cinder from its RabbitMQ cluster,
+enforced on the broker side. The suite pins that the three processes react
+differently, each the way its role demands. The scheduler and the volume service
+take their readiness off the broker socket and go NotReady, so the CR reports
+`SchedulerReady=False/WaitingForScheduler`,
+`VolumeServicesReady=False/WaitingForVolumeServices` and `Ready=False`. The API
+keeps its ready container and never restarts, because its readiness is
+`/healthcheck`, which the bus does not reach into. A `POST /v3/volumes` under the
+partition does not answer at all: a create casts to the scheduler, and
+oslo.messaging retries that publish for as long as the broker is unreachable, so
+the request hangs instead of reporting a success the deployment cannot deliver.
+After the partition is lifted both processes reconnect on their own and the
+blocked create settles like any other.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Bring up the broker | `apply` + `script` (11m) | `00-rabbitmqcluster.yaml` creates `cinder-chaos-rabbitmq` (`replicas: 1`), waited on `AllReplicasReady` for up to 600 s, the condition the RabbitMQ Cluster Operator does set |
+| 2 | Apply the Cinder CR and its backend, assert Ready | `apply` + `assert` (5m) | `01-cinder-cr.yaml` (`cinder-broker-chaos`) and `02-cinderbackend-cr.yaml` (`broker-chaos-nfs1`) reach `Ready=True/AllReady` |
+| 3 | Baseline | `script` (8m) + `script` (2m) | A probe pod creates a volume through to `available` (`WRITE-OK`), then the scheduler, the volume service and the API are each read for a ready container (`BASELINE-READY-OK`) |
+| 4 | Inject NetworkChaos to partition the broker | `apply` + `script` (60s) | `03-networkchaos.yaml` creates `partition-broker-cinder` (`action: partition`, `direction: both`, `duration: 600s`), then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
+| 5 | Under the partition | `script` (5m) + `assert` + `script` (2m) + `script` (5m) | The scheduler and volume containers are polled to `ready=false` within 180 s; the CR reports the two waiting reasons and `Ready=False`; the API container reads `ready=true` at `restartCount` 0 (`API-UP-OK`); a probe gets 200 from `/healthcheck` while `POST /v3/volumes` does not answer within `CREATE_TIMEOUT = 20` seconds (`BLOCKED-OK`) |
+| 6 | Lift the partition and let the deployment recover itself | `delete` + `script` (5m) + `assert` + `script` (8m) | Both containers are ready again within 120 s, the three conditions return to `SchedulerReady`, `AllVolumeServicesReady` and `AllReady`, and a probe creates a volume that reaches `available` and then waits until every volume the suite created is `available`, the blocked one included (`RECOVERED-OK`) |
+| 7 | Tear the broker down through its own operator | `script` (8m) | Deletes the Cinder CR and waits out its pods, then deletes the RabbitmqCluster and waits for `cinder-chaos-rabbitmq-server-0` to disappear |
+
+**Fixtures:** `00-rabbitmqcluster.yaml`, `01-cinder-cr.yaml`,
+`02-cinderbackend-cr.yaml`, `03-networkchaos.yaml`.
+
+**Catch blocks:** a shared anchor calls
+`../diagnostics.sh chaos cinder-broker-chaos` with `--cr-kind=cinder`,
+`--dep-label=app.kubernetes.io/name=cinder-operator`, `--dep-ns=cinder-system`
+and `--log-label=app.kubernetes.io/instance=cinder-broker-chaos`, dumps the
+`CinderBackend`, lists the CR's pods with their logs and the
+`cinder-broker-probe-*` pod logs, and adds
+`kubectl get networkchaos,rabbitmqcluster -o yaml`.
+
+**Design notes:**
+
+- The suite brings its own broker, `cinder-chaos-rabbitmq`, rather than taking a
+  vhost on the kind-only `shared-rabbitmq`. The fault severs a whole broker, and
+  doing that to the shared one would take the rest of the leg with it.
+- `partition-broker-cinder` selects the broker pods
+  (`app.kubernetes.io/name=cinder-chaos-rabbitmq`) and targets every pod of this
+  Cinder with no component key. A client-side rule would match broker pod IPs
+  while the packet still carries the Service ClusterIP, because kube-proxy DNATs
+  later in the node's root namespace, so it would never match Service-routed
+  traffic. Sparing one of the three processes would leave that part of the claim
+  untested.
+- The conditions take up to 180 s to flip, and they cannot be faster.
+  `cinder-amqp-ready` looks for a socket ESTABLISHED to the broker port, and a
+  partition drops packets without a FIN or an RST, so the socket stays
+  ESTABLISHED until the client itself closes it. What closes it is
+  oslo.messaging's heartbeat, which gives up after `heartbeat_timeout_threshold`
+  (60 s by default, and the operator renders no override). The probe then needs
+  two failures at its 5 s period, so 180 s covers that roughly 70 s worst case
+  and stays inside the 600 s the NetworkChaos runs for.
+- `CREATE_TIMEOUT = 20` is the client-side cap on the blocked create: long enough
+  that a slow but working API is not mistaken for a blocked one, short enough
+  that the probe reports while the partition is still up. Neither a 202 nor an
+  error status may come back, since both would be the deployment reporting on a
+  request it cannot carry out, so a socket timeout is the only outcome that
+  passes. `BLOCKED-OK` records it.
+- `RECOVERED-OK` carries two claims: the post-partition create reached
+  `available`, and nothing the suite asked for is stranded. The create that
+  blocked left a row in `creating`, and the API worker still retrying its cast
+  publishes it once the broker is reachable, so a row that stays in `creating` is
+  a request the deployment accepted and then dropped.
+- The NetworkChaos `duration` exceeds the Chainsaw assert window rather than
+  equalling it. An equal duration self-heals at the deadline itself, restoring
+  broker connectivity in the same instant an assertion is still reading the state
+  under the fault.
+
+---
+
+### cinder-nfs-outage
+
+**File:** `tests/e2e-chaos/cinder-nfs-outage/chainsaw-test.yaml`
+
+**Scenario:** —
+
+**Purpose:** The NFS export disappears under a running Cinder. The write path
+fails closed while everything above it keeps serving: a create ends in `error`
+because the kernel client gives up on the soft mount and the volume service gets
+EIO, `/healthcheck` still answers 200, and the `cinder-volume` container is
+neither replaced nor restarted. After the server is back, a fresh create reaches
+`available` with its file on the share and every volume the suite asked for
+deletes.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` + `assert` (5m) | `../../e2e/cinder/broker-vhost.sh create cinder-nfs-chaos cinder-nfs-chaos-messaging openstack`, then `00-cinder-cr.yaml` (`cinder-nfs-chaos`) and `01-cinderbackend-cr.yaml` (`nfs-chaos-nfs1`). Every sub-condition and `Ready=True/AllReady` are asserted, with `status.volumeServices` carrying the host identity step 4 looks the heartbeat row up by |
+| 2 | Baseline | `script` (8m) | A probe pod creates a volume through to `available` within 120 s, and its file is stat'ed on the share |
+| 3 | Take the export away | `script` (4m) | Stashes the `cinder-volume` pod UID and restart count as an annotation on its own Deployment, scales `deploy/nfs-server` to 0, and waits until the Service has no endpoint address and no pod left (`OUTAGE-OK`). The step cleanup scales the server back to 1 |
+| 4 | Under the outage | `script` (9m) + `assert` + `script` (2m) | A probe gets 200 from `/healthcheck`, then a create is accepted and has to reach `error` within 240 s (`FAILCLOSED-OK`); the registry row is printed as `HEARTBEAT-STATE`, which the step reports without gating on it. The CR still reports `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady`, and the recorded pod identity is compared against the live one |
+| 5 | Bring the export back and let the deployment recover | `script` (5m) + `script` (9m) + `script` (6m) | The server is scaled back to 1 and rolled out; a fresh create reaches `available` within `SETTLE_SECONDS = 240` with its file on the share (`RECOVERED-OK`); a third probe deletes the three volumes the suite is responsible for and waits for each to answer 404 (`CLEANUP-OK`) |
+| 6 | Tear the deployment down | `script` (8m) | Deletes the Cinder CR and waits out its pods, then deletes the `CinderBackend` |
+
+**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`. The suite writes no
+chaos-mesh CR.
+
+**Catch blocks:** a shared anchor calls
+`../diagnostics.sh chaos cinder-nfs-chaos` with `--cr-kind=cinder`,
+`--dep-label=app.kubernetes.io/name=nfs-server`, `--dep-ns=openstack` and
+`--log-label=app.kubernetes.io/instance=cinder-nfs-chaos`, dumps the
+`CinderBackend`, the NFS server's Deployment, pods and EndpointSlices, the Cinder
+pods with their logs, the `cinder-nfs-chaos-probe-*` logs, and the cinder-operator
+logs from `cinder-system`.
+
+**Design notes:**
+
+- The outage is a scale-down of `deploy/nfs-server`, not a `NetworkChaos`
+  partition. The share is mounted by the `csi-nfs-node` DaemonSet, which runs
+  with `hostNetwork: true`, so the kernel NFS client sends from the node's network
+  namespace and an iptables rule keyed on the `cinder-volume` pod IP never matches
+  a single mount packet. Removing the endpoint the client dials works instead,
+  which is what `deletion-stuck-finalizer` does to the mariadb-operator on this
+  same leg.
+- Recovery takes longer than the fault. A fresh nfsd comes up in its NFSv4 grace
+  period, up to 90 s in which it serves reclaims alone, and the client retries
+  through it without telling the application. The post-recovery create therefore
+  gets 240 s where the baseline gets 120 s.
+- The pod identity is recorded as a UID and a restart count together. A restart
+  count read on its own falls back to 0 on a replaced pod, which is the value a
+  pod that never restarted reports.
+- The suite's preamble records a product gap, and step 4 asserts it: the CR stays
+  `Ready=True/AllReady` through the outage while every create fails. The mount is
+  not something the operator reads, the volume service's readiness is the broker
+  socket, and no mount probe and no `BackendsHealthy` condition exist, so a reader
+  of the CR alone cannot see this outage. The assertion pins today's behavior
+  rather than a wanted one, so a mount probe or a `BackendsHealthy` condition
+  added later changes this suite with it. Until then the gap is on the
+  operational side too, as a troubleshooting row in
+  [Attach an NFS Backend to Cinder](../../guides/cinder/attach-an-nfs-backend.md#troubleshooting).
 
 ---
 
