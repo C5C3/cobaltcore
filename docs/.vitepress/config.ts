@@ -231,6 +231,7 @@ export default defineConfig({
               { text: 'Backup Backend CRD', link: '/reference/cinder/cinder-backup-backend-crd' },
               { text: 'Controller Events', link: '/reference/cinder/cinder-events' },
               { text: 'Reconciler Architecture', link: '/reference/cinder/cinder-reconciler' },
+              { text: 'Upgrade Flow', link: '/reference/cinder/cinder-upgrade-flow' },
             ],
           },
           {
