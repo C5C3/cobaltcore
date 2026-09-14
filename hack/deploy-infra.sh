@@ -2610,8 +2610,10 @@ main() {
     # satisfied and the projected service CRs can reconcile. Without the
     # glance-operator the Glance CRDs never install and the c5c3-operator's
     # controlplane cache never syncs, so the ControlPlane CR stays status-less.
-    # c5c3-operator, k-orc, and the c5c3-charts / k-orc sources are left
-    # un-suspended (the base applied them active).
+    # c5c3-operator and the c5c3-charts / k-orc sources are left un-suspended
+    # (the base applied them active). The k-orc Kustomization is the exception:
+    # the base applies it suspended (see deploy/kind/base/kustomization.yaml),
+    # and the WITH_CONTROLPLANE step below lifts that before waiting on it.
     log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, horizon-operator, glance-operator, placement-operator, barbican-operator, ovn-operator, neutron-operator, cinder-operator, k-orc, c5c3-operator)."
     kubectl patch helmrelease keystone-operator -n keystone-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
