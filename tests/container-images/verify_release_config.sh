@@ -418,7 +418,7 @@ test_test_excludes_files_match_services() {
       [ -f "$file" ] || continue
       local basename
       basename=$(basename "$file" .txt)
-      if echo "$services" | grep -qx "$basename"; then
+      if grep -qx "$basename" <<<"$services"; then
         echo "  PASS: $release_name/test-excludes/$basename.txt matches service key in source-refs.yaml"
         PASS=$((PASS + 1))
       else

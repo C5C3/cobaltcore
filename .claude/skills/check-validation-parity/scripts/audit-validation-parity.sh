@@ -189,7 +189,7 @@ for op in "${OPERATORS[@]}"; do
       continue
     fi
     # (c) server-rendered field path: every dot-segment is a real json tag
-    if printf '%s' "${sub}" | grep -qE '^[a-zA-Z][a-zA-Z0-9]*(\.[a-zA-Z][a-zA-Z0-9]*)+$'; then
+    if grep -qE '^[a-zA-Z][a-zA-Z0-9]*(\.[a-zA-Z][a-zA-Z0-9]*)+$' <<<"${sub}"; then
       all_tags=1
       for seg in $(printf '%s' "${sub}" | tr '.' ' '); do
         if ! grep -qE "json:\"${seg}[,\"]" "${sources[@]}" 2>/dev/null; then
@@ -220,7 +220,7 @@ V4_TOTAL=0
 V4_BAD=0
 while IFS= read -r line; do
   V4_TOTAL=$((V4_TOTAL + 1))
-  if ! printf '%s' "${line}" | grep -q 'message='; then
+  if ! grep -q 'message=' <<<"${line}"; then
     V4_BAD=$((V4_BAD + 1))
     fail "XValidation rule without message= — $(printf '%s' "${line}" | cut -d: -f1,2)"
   fi

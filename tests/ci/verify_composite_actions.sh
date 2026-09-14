@@ -101,7 +101,7 @@ test_sha_pinned_actions() {
     local line_count=0
     while IFS= read -r line; do
       line_count=$((line_count + 1))
-      if ! echo "$line" | grep -qE '@[a-f0-9]{40} # v'; then
+      if ! grep -qE '@[a-f0-9]{40} # v' <<<"$line"; then
         echo "  FAIL: $dir_name/action.yaml has unpinned uses: reference: $line"
         FAIL=$((FAIL + 1))
         all_pinned=false

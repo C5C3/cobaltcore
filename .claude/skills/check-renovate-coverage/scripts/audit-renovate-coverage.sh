@@ -91,7 +91,7 @@ matches_cm() {
   local path="$1" cmf
   while IFS= read -r cmf; do
     [[ -z "${cmf}" ]] && continue
-    if echo "${path}" | grep -qE "^${cmf}$"; then
+    if grep -qE "^${cmf}$" <<<"${path}"; then
       return 0
     fi
   done <<< "${cm_files}"
@@ -148,7 +148,7 @@ if [[ "${have_jq}" -eq 1 ]]; then
     glob=$(echo "${cmf}" | sed -E 's|^/||; s|\$/$||; s|\\\.|.|g; s|\.\*|**|g')
     # Heuristic match: any packageRule matchFileNames entry containing the basename.
     base=$(basename "${glob}")
-    if echo "${pr_files}" | grep -q "${base}"; then
+    if grep -q "${base}" <<<"${pr_files}"; then
       pass "customManager for ${cmf} has packageRules coverage (matched on ${base})"
     else
       fail "customManager for ${cmf} has NO packageRules entry — updates land untriaged"
@@ -234,7 +234,7 @@ done <<< "${mk_pins}"
 while IFS= read -r ci; do
   [[ -z "${ci}" ]] && continue
   name="${ci%%=*}"
-  if ! echo "${mk_pins}" | grep -q "^${name}="; then
+  if ! grep -q "^${name}=" <<<"${mk_pins}"; then
     info "${name} pinned only in ci.yaml (${ci#*=}) — no Makefile counterpart to drift against"
   fi
 done <<< "${ci_pins}"

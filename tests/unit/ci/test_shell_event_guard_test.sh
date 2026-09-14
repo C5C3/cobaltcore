@@ -62,7 +62,7 @@ assert_lists_entry() {
   local description="$1" block="$2" entry="$3"
   local boundary='[^A-Za-z0-9_./-]'
 
-  if printf '%s\n' "$block" | grep -qE "(^|${boundary})${entry}(${boundary}|\$)"; then
+  if grep -qE "(^|${boundary})${entry}(${boundary}|\$)" <<<"$block"; then
     echo "  PASS: $description"
     PASS=$((PASS + 1))
   else
@@ -89,7 +89,7 @@ test_shell_job_carries_no_event_guard() {
 
   # Job-level keys sit at four spaces; step-level keys are deeper, so this
   # matches the event guard without matching a step's own `if:`.
-  if printf '%s\n' "$block" | grep -qE '^    if:'; then
+  if grep -qE '^    if:' <<<"$block"; then
     echo "  FAIL: test-shell carries a job-level if: — it must run on push to main and v* tags too"
     printf '%s\n' "$block" | grep -E '^    if:' | sed 's/^/    /'
     FAIL=$((FAIL + 1))
@@ -115,7 +115,7 @@ test_push_trigger_covers_main_and_tags() {
   # A paths / paths-ignore filter takes the job off the very runs this guard
   # exists for — a push to main that only touches tests/ is exactly the
   # lockstep breakage that has to fail main's own run.
-  if printf '%s\n' "$block" | grep -qE '^ *paths(-ignore)?:'; then
+  if grep -qE '^ *paths(-ignore)?:' <<<"$block"; then
     echo "  FAIL: on.push carries a paths filter — it can skip test-shell on a push to main"
     printf '%s\n' "$block" | grep -E '^ *paths(-ignore)?:' | sed 's/^/    /'
     FAIL=$((FAIL + 1))

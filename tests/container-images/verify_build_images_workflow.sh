@@ -625,8 +625,8 @@ test_actions_pinned_to_sha() {
   while IFS= read -r line; do
     [ -z "$line" ] && continue
     # Local composite actions (uses: ./) do not require SHA pinning
-    echo "$line" | grep -qE 'uses:[[:space:]]+\./' && continue
-    if ! echo "$line" | grep -qE '@[0-9a-f]{40}'; then
+    grep -qE 'uses:[[:space:]]+\./' <<<"$line" && continue
+    if ! grep -qE '@[0-9a-f]{40}' <<<"$line"; then
       echo "  FAIL: action not pinned to SHA: $line"
       FAIL=$((FAIL + 1))
       all_pinned=false
@@ -648,8 +648,8 @@ test_actions_have_version_comments() {
   while IFS= read -r line; do
     [ -z "$line" ] && continue
     # Local composite actions (uses: ./) do not require version comments
-    echo "$line" | grep -qE 'uses:[[:space:]]+\./' && continue
-    if ! echo "$line" | grep -qE '# v[0-9]'; then
+    grep -qE 'uses:[[:space:]]+\./' <<<"$line" && continue
+    if ! grep -qE '# v[0-9]' <<<"$line"; then
       echo "  FAIL: action missing version comment: $line"
       FAIL=$((FAIL + 1))
       all_commented=false

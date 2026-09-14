@@ -283,7 +283,7 @@ test_production_caller_matches_self_contained_overlay() {
   raw="$(grep -E 'kubectl apply -k "\$\{REPO_ROOT\}/deploy/kind/prometheus"' "$DEPLOY_INFRA_SH" | head -1)"
   assert_not_empty "deploy-infra.sh has the prometheus kubectl apply line" "$raw"
 
-  if printf '%s' "$raw" | grep -q -- '--load-restrictor'; then
+  if grep -q -- '--load-restrictor' <<<"$raw"; then
     echo "  FAIL: deploy-infra.sh's prometheus apply line passes --load-restrictor (kubectl's embedded kustomize does not accept it)"
     FAIL=$((FAIL + 1))
   else

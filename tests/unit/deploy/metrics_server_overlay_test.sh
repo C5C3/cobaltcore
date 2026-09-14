@@ -157,7 +157,7 @@ test_kustomize_build_renders_bundle() {
 
   # The version range must be pinned within major 3 so in-range updates need
   # no Renovate pin (mirrors the chaos-mesh / kube-prometheus-stack posture).
-  if printf '%s' "$version" | grep -qE '>=3\.[0-9]+\.[0-9]+ <4\.0\.0'; then
+  if grep -qE '>=3\.[0-9]+\.[0-9]+ <4\.0\.0' <<<"$version"; then
     echo "  PASS: chart version range '$version' stays within major 3"
     PASS=$((PASS + 1))
   else

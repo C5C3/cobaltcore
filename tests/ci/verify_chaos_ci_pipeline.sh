@@ -43,7 +43,7 @@ assert_needs_entry() {
   needs_line=$(echo "$section" | grep "needs:" | head -1)
   # Strip YAML list syntax and whitespace, then match the exact entry
   entries=$(echo "$needs_line" | sed 's/.*\[//; s/\]//; s/ //g')
-  if echo ",$entries," | grep -qF ",${entry},"; then
+  if grep -qF ",${entry}," <<<",$entries,"; then
     echo "  PASS: $description"
     PASS=$((PASS + 1))
   else

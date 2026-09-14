@@ -143,7 +143,7 @@ if [[ -n "${PR_LABELS:-}" ]]; then
 fi
 
 has_label() {
-  [[ -n "$LABELS" ]] && printf '%s\n' "$LABELS" | grep -Fxq -- "$1"
+  [[ -n "$LABELS" ]] && grep -Fxq -- "$1" <<<"$LABELS"
 }
 
 # ---------------------------------------------------------------------------
