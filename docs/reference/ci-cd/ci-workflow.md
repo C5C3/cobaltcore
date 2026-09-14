@@ -714,7 +714,7 @@ guard.
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) with full history, which the resolver's revision check reads |
 | 2 | `docker/setup-buildx-action@v4` | Sets up BuildKit for `type=gha` cache support |
 | 3 | `docker/login-action@v4` | Authenticates to GHCR with `GITHUB_TOKEN` |
 | 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest` and `changed-proxy`; writes the `BUILD_*` variables and the `image-map` output |
@@ -735,6 +735,16 @@ its published tag (`<op>-operator:latest`, `<svc>:<release>`, `tempest:<release>
 `keystone-federation-proxy:latest`), which the run pulls instead of rebuilding.
 A source that has never been published, the state of a new operator before its first
 merge, is built instead of failing the run.
+
+An operator image is reused only when every commit in the checkout that touches the
+operator's sources is in the history of the commit its
+`org.opencontainers.image.revision` label names. Those sources are the paths of the
+operator's own change filter plus `go_common`, the two filters
+`hack/ci-resolve-changes.sh` marks an operator changed by. When one `build-and-push`
+leg fails on `main`, `merge-operator-images` publishes nothing, and every
+`<op>-operator:latest` keeps its previous revision. The resolver builds such an image
+instead. It does the same for an image without a revision label and for a revision the
+checkout does not have, and a notice in the job log names the reason.
 
 The OVN daemon image is the one image outside that set: it carries no OpenStack
 release and no `go.mod`, so nothing derives it from the tree. Its own step builds it
