@@ -129,6 +129,19 @@ export default defineConfig({
               { text: 'Enable Neutron Operator NetworkPolicy', link: '/guides/neutron/enable-neutron-operator-networkpolicy' },
             ],
           },
+          {
+            text: 'Cinder',
+            collapsed: true,
+            items: [
+              { text: 'Attach an NFS Backend to Cinder', link: '/guides/cinder/attach-an-nfs-backend' },
+              { text: 'Configure NFS Volume Backups', link: '/guides/cinder/configure-nfs-backups' },
+              { text: 'Enable Volume Encryption with Barbican', link: '/guides/cinder/enable-volume-encryption-with-barbican' },
+              { text: 'Enable the Image-Volume Cache', link: '/guides/cinder/enable-image-volume-cache' },
+              { text: 'Migrate Cinder DB to Dynamic Credentials', link: '/guides/cinder/migrate-cinder-db-to-dynamic-credentials' },
+              { text: 'Enable Cinder Operator Metrics', link: '/guides/cinder/enable-cinder-operator-metrics' },
+              { text: 'Enable Cinder Operator NetworkPolicy', link: '/guides/cinder/enable-cinder-operator-networkpolicy' },
+            ],
+          },
         ],
       },
       {
