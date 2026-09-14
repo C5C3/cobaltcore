@@ -137,12 +137,12 @@ IronCore. The table maps them to the state in this repository:
 | Management | GitOps hub, OpenBao, ESO, observability UI (Greenhouse, Aurora) | Collapsed into the single management cluster above; a dedicated cluster is a [sketch](../future/management-cluster.md) |
 | Control Plane | OpenStack control-plane services, K-ORC, infrastructure | Implemented as the management cluster, with optional [target clusters](../reference/target-clusters.md) for workload placement |
 | Hypervisor | Compute virtualization on bare metal (LibVirt, OVN, node agents) | [Sketch](../future/hypervisor-cluster.md) |
-| Storage | Ceph via Rook, storage observability | [Sketch](../future/storage-cluster.md) |
+| Storage | Ceph via Rook, storage observability | [Sketch](../future/storage-cluster.md); block storage itself is onboarded as the [Cinder](../reference/cinder/index.md) control-plane service on the management cluster |
 
 Beyond the clusters, the original document scopes services that are not
-onboarded yet: the Nova and Cinder operators with their Valkey infrastructure,
-the optional Cortex scheduler and Tempest operator, and consumer self-service
-via Crossplane.
+onboarded yet: the Nova operator with its Valkey infrastructure, the optional
+Cortex scheduler and Tempest operator, and consumer self-service via
+Crossplane.
 Tempest exists in this repository as a container image driven by the
 [e2e test infrastructure](../reference/testing/tempest-test-infrastructure.md),
 not as an operator. New services follow the onboarding path in

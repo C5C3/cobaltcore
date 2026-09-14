@@ -71,12 +71,6 @@ bottom when scaffolding `operators/<op>/`:
   webhook-configuration) is a one-line `include`; per-operator content is
   `Chart.yaml`, `values.yaml`, the `<op>-operator.rbacRules` helper, and the
   helm-unittest suite.
-- **`.gitignore`** — add `operators/<op>/helm/<op>-operator/charts/` (bare
-  pattern, no leading slash) so the `operator-library` tarball vendored by
-  `make helm-deps` stays untracked.
-- **`hack/gen-helm-values-schema.py`** — charts are discovered from the
-  directory layout; add the new chart's `WEBHOOK_ENABLED_DESCRIPTIONS` entry
-  (the generator fails loudly without it), then run `make gen-helm-schema`.
 - **Option catalog** (oslo-INI services only) — map the service to its
   upstream oslo-config-generator config in `hack/gen-option-catalog.sh`, add
   it to the service loops of the `gen-option-catalogs` and
@@ -129,14 +123,16 @@ bottom when scaffolding `operators/<op>/`:
   operator missing from the un-suspend list wedges the ControlPlane cache
   sync.
 - **Docs** — a CRD reference and reconciler reference under
-  `docs/reference/<op>/`, wired into `docs/.vitepress/config.ts`, plus a
-  naming-convention test in `tests/unit/docs/` (discovered by glob, so
-  nothing fails while it is missing).
+  `docs/reference/<op>/`, wired into `docs/.vitepress/config.ts`, and, for a
+  user-facing knob, a guide under `docs/guides/<op>/` per the
+  [guide conventions](./guide-conventions.md), plus a naming-convention test in
+  `tests/unit/docs/` (discovered by glob, so nothing fails while it is
+  missing).
 
 ## Design decisions the shared scaffolding encodes
 
-Three cross-service decisions were settled when the scaffolding was extracted;
-new operators build on them rather than reopening them:
+Five cross-service decisions were settled as the scaffolding grew; new
+operators build on them rather than reopening them:
 
 - **Cross-service endpoint discovery is convention-based.** Consumers derive a
   service URL from the naming convention (`internal/common/naming`):
@@ -168,6 +164,29 @@ new operators build on them rather than reopening them:
   gets a separate shared renderer package rather than bolting Python emission
   onto the INI renderer. `internal/common/pysettings` now exists, implemented
   with its first consumer, the horizon-operator.
+- **Multi-workload operators.** An operator may project more than one kind of
+  Deployment. Every non-API pod template then takes its own
+  `app.kubernetes.io/component` value from `naming.ComponentLabels`, and both
+  the API Service and the API PodDisruptionBudget select on `component=api`, so
+  a scheduler or a maintenance pod stays out of both. Cinder is the reference:
+  one CR owns four Deployment kinds (the API, the scheduler, one
+  `cinder-volume` per backend, and `cinder-backup`) beside the `db-purge` and
+  `service-remove` pods. An operator shaped that way narrows its selectors on
+  the first pass, because no unlabelled pod of its own predates the component
+  key. `tests/e2e/cinder/maintenance-endpoint-isolation` checks the result
+  against the endpoints controller.
+- **Satellite finalizers.** A satellite whose detach needs work inside the
+  parent gets a finalizer of its own: the satellite controller adds it, and a
+  sub-reconciler of the parent releases it, since the database and the workload
+  belong to the parent. `CinderBackend` is the reference, held by
+  `cinder.openstack.c5c3.io/service-remove`. The release runs in stages, one
+  pass each. The backend's `cinder-volume` Deployment is deleted first, because
+  a running service re-registers itself every few seconds. A later pass finds
+  the Deployment gone and runs a `service-remove` Job, tolerating exit code 2.
+  The backend's projected Secrets are swept, and the finalizer goes last.
+  `Owns(&batchv1.Job{})` on the parent's controller is what wakes the next
+  stage once that Job finishes. See
+  [Detaching a backend](../reference/cinder/cinder-backend-crd.md#detaching-a-backend).
 
 ## Node-level workloads
 
