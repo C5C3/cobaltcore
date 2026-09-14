@@ -120,8 +120,8 @@ check_guide() {
   if [[ -z "${container}" ]]; then
     info "V2 ${file}: no '::: info Devstack' container — structure is owned by ${GATE} (run --full)"
   else
-    printf '%s\n' "${container}" | grep -qE '\]\((\.\./)+quick-start-controlplane\.md' && links_cp=1
-    printf '%s\n' "${container}" | grep -qF 'WITH_CONTROLPLANE=true' && has_flag=1
+    grep -qE '\]\((\.\./)+quick-start-controlplane\.md' <<<"${container}" && links_cp=1
+    grep -qF 'WITH_CONTROLPLANE=true' <<<"${container}" && has_flag=1
     if [[ "${links_cp}" -eq 1 && "${has_flag}" -eq 0 ]]; then
       fail "V2 ${file}: devstack links quick-start-controlplane.md but the bring-up command lacks WITH_CONTROLPLANE=true"
     elif [[ "${links_cp}" -eq 0 && "${has_flag}" -eq 1 ]]; then

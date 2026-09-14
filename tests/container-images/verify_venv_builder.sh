@@ -87,7 +87,7 @@ test_common_packages_pinned() {
     name="${pin%%==*}"
     version="${pin#*==}"
     pattern="^${name//./\\.}==${version//./\\.}$"
-    if echo "$freeze" | grep -iqE "$pattern"; then
+    if grep -iqE "$pattern" <<<"$freeze"; then
       echo "  PASS: $pin installed at pinned version"
       PASS=$((PASS + 1))
     else

@@ -78,7 +78,7 @@ test_no_portforward_before_fallback() {
   local window
   window="$(sed -n "${access_line},$((fallback_line - 1))p" "$QUICK_START")"
 
-  if echo "$window" | grep -q 'kubectl port-forward svc/keystone'; then
+  if grep -q 'kubectl port-forward svc/keystone' <<<"$window"; then
     echo "  FAIL: 'kubectl port-forward svc/keystone' found in the primary section (should be in Fallback only)"
     FAIL=$((FAIL + 1))
   else
@@ -100,7 +100,7 @@ test_nip_io_explainer_present() {
   local window
   window="$(sed -n "${access_line},$((fallback_line - 1))p" "$QUICK_START")"
 
-  if echo "$window" | grep -q 'nip.io'; then
+  if grep -q 'nip.io' <<<"$window"; then
     echo "  PASS: primary section mentions nip.io"
     PASS=$((PASS + 1))
   else
@@ -134,7 +134,7 @@ test_fallback_contains_portforward() {
   local fallback_tail
   fallback_tail="$(tail -n +"$fallback_line" "$QUICK_START")"
 
-  if echo "$fallback_tail" | grep -q 'kubectl port-forward svc/keystone'; then
+  if grep -q 'kubectl port-forward svc/keystone' <<<"$fallback_tail"; then
     echo "  PASS: Fallback section contains the port-forward command"
     PASS=$((PASS + 1))
   else

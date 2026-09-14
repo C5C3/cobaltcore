@@ -228,7 +228,7 @@ test_helm_release_contract() {
   # Renovate bumps the pin (see the csi-driver-nfs chart customManager).
   local version
   version="$(render_value "$rendered" "$release | .spec.chart.spec.version")"
-  if printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  if grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' <<<"$version"; then
     echo "  PASS: chart version '$version' is an exact pin"
     PASS=$((PASS + 1))
   else
@@ -324,7 +324,7 @@ test_nfs_server_deployment_contract() {
   init_image="$(render_value "$rendered" "$init | .image")"
   assert_not_empty "the server container declares an image" "$server_image"
   assert_eq "the init container reuses the server image" "$server_image" "$init_image"
-  if printf '%s' "$server_image" | grep -qE "$SERVER_IMAGE_PATTERN"; then
+  if grep -qE "$SERVER_IMAGE_PATTERN" <<<"$server_image"; then
     echo "  PASS: the server image is a digest-pinned nfs-server-alpine tag"
     PASS=$((PASS + 1))
   else

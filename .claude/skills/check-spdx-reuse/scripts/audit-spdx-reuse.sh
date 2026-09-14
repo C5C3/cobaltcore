@@ -33,8 +33,8 @@ has_spdx_pair() {
   local f="$1"
   local head_buf
   head_buf=$(head -20 "${f}" 2>/dev/null) || return 1
-  echo "${head_buf}" | grep -q 'SPDX-FileCopyrightText' || return 1
-  echo "${head_buf}" | grep -q 'SPDX-License-Identifier' || return 1
+  grep -q 'SPDX-FileCopyrightText' <<<"${head_buf}" || return 1
+  grep -q 'SPDX-License-Identifier' <<<"${head_buf}" || return 1
   return 0
 }
 
@@ -138,7 +138,7 @@ if [[ -d LICENSES ]]; then
   for lf in LICENSES/*.txt; do
     [[ -f "${lf}" ]] || continue
     id=$(basename "${lf}" .txt)
-    if echo "${ids}" | grep -qx "${id}"; then
+    if grep -qx "${id}" <<<"${ids}"; then
       pass "${id} referenced"
     else
       info "${id} in LICENSES/ but no file references it — unused inventory"

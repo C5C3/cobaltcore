@@ -63,7 +63,7 @@ test_default_flow_table_has_no_chaos_mesh() {
     return
   fi
 
-  if printf '%s\n' "$table_rows" | grep -qiE 'chaos[- ]mesh'; then
+  if grep -qiE 'chaos[- ]mesh' <<<"$table_rows"; then
     echo "  FAIL: 'What happens' table mentions chaos-mesh in default flow"
     printf '%s\n' "$table_rows" | grep -iE 'chaos[- ]mesh' | sed 's/^/    > /'
     FAIL=$((FAIL + 1))
@@ -95,7 +95,7 @@ test_snapshot_has_no_chaos_mesh_namespace() {
     return
   fi
 
-  if printf '%s\n' "$snapshot_block" | grep -qE '^chaos-mesh[[:space:]]'; then
+  if grep -qE '^chaos-mesh[[:space:]]' <<<"$snapshot_block"; then
     echo "  FAIL: snapshot lists a chaos-mesh namespace row"
     printf '%s\n' "$snapshot_block" | grep -E '^chaos-mesh[[:space:]]' | sed 's/^/    > /'
     FAIL=$((FAIL + 1))
@@ -110,7 +110,7 @@ test_optin_tip_block_present() {
   echo "Test: Step 3 contains a '::: tip Enabling Chaos Mesh' block"
 
   # VitePress/Markdown custom container syntax for tip blocks.
-  if printf '%s\n' "$STEP3_BLOCK" | grep -qE '^::: tip Enabling Chaos Mesh'; then
+  if grep -qE '^::: tip Enabling Chaos Mesh' <<<"$STEP3_BLOCK"; then
     echo "  PASS: '::: tip Enabling Chaos Mesh' block found"
     PASS=$((PASS + 1))
   else
@@ -137,7 +137,7 @@ test_optin_tip_block_links_to_chaos_e2e_reference() {
   # (sibling docs/ directory traversal). Accept any link that resolves to the
   # chaos-e2e-tests page so future link-style refactors do not break this
   # test unnecessarily.
-  if printf '%s\n' "$STEP3_BLOCK" | grep -qE '\]\([^)]*chaos-e2e-tests\.md[^)]*\)'; then
+  if grep -qE '\]\([^)]*chaos-e2e-tests\.md[^)]*\)' <<<"$STEP3_BLOCK"; then
     echo "  PASS: tip block links to chaos-e2e-tests.md"
     PASS=$((PASS + 1))
   else

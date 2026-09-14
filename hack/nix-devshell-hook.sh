@@ -118,7 +118,7 @@ _helm_plugin_pinned() {
   local list="$1" name="$2" pin="$3" re
   re="${pin#v}"
   re="${re//./\\.}"
-  printf '%s\n' "${list}" | grep -qiE "${name}[[:space:]]+${re}([^0-9.]|$)"
+  grep -qiE "${name}[[:space:]]+${re}([^0-9.]|$)" <<<"${list}"
 }
 
 # _detect_platform — echo "<os> <arch>" (linux|darwin amd64|arm64) or fail.

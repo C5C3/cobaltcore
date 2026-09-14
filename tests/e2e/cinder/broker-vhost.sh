@@ -120,7 +120,7 @@ delete_vhost() {
 
   echo "${output}" >&2
   # A vhost the create step never got to is not a cleanup failure.
-  if printf '%s' "${output}" | grep -q 'no_such_vhost'; then
+  if grep -q 'no_such_vhost' <<<"${output}"; then
     echo "OK: vhost ${vhost} was already absent"
     return 0
   fi

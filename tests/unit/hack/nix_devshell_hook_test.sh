@@ -63,7 +63,7 @@ test_print_pins_emits_exactly_seven_keys() {
 
   local key
   for key in $EXPECTED_KEYS; do
-    if printf '%s\n' "$PINS_OUT" | grep -q "^${key}="; then
+    if grep -q "^${key}=" <<<"$PINS_OUT"; then
       echo "  PASS: key $key present"
       PASS=$((PASS + 1))
     else
@@ -92,7 +92,7 @@ test_pins_non_empty_and_well_formed() {
     esac
     val="$(pin_value "$key")"
     assert_not_empty "$key is non-empty" "$val"
-    if printf '%s' "$val" | grep -Eq "$fmt"; then
+    if grep -Eq "$fmt" <<<"$val"; then
       echo "  PASS: $key '$val' matches $fmt"
       PASS=$((PASS + 1))
     else

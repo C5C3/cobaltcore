@@ -83,7 +83,7 @@ test_namespaces_table_has_no_chaos_mesh_row() {
   # A namespace row uses the form `| `chaos-mesh` | <description> |`. We
   # anchor on the leading backticked name in the first column so prose
   # mentions of chaos-mesh in the surrounding paragraphs do not match.
-  if printf '%s\n' "$namespaces_section" | grep -qE '^\|[[:space:]]*`chaos-mesh`'; then
+  if grep -qE '^\|[[:space:]]*`chaos-mesh`' <<<"$namespaces_section"; then
     echo "  FAIL: Namespaces table still has a chaos-mesh row"
     FAIL=$((FAIL + 1))
   else
@@ -107,7 +107,7 @@ test_cross_reference_table_has_no_chaos_mesh_row() {
 
   # First column is the HelmRelease name in backticks. Prose mentions of
   # chaos-mesh outside table rows do not satisfy this regex.
-  if printf '%s\n' "$xref_section" | grep -qE '^\|[[:space:]]*`chaos-mesh`'; then
+  if grep -qE '^\|[[:space:]]*`chaos-mesh`' <<<"$xref_section"; then
     echo "  FAIL: Cross-reference table still has a chaos-mesh row"
     FAIL=$((FAIL + 1))
   else
@@ -129,7 +129,7 @@ test_kind_only_subsection_present() {
     return
   fi
 
-  if printf '%s\n' "$kind_section" | grep -qE '^### Chaos Mesh \(kind-only opt-in\)'; then
+  if grep -qE '^### Chaos Mesh \(kind-only opt-in\)' <<<"$kind_section"; then
     echo "  PASS: '### Chaos Mesh (kind-only opt-in)' subsection found"
     PASS=$((PASS + 1))
   else
@@ -166,7 +166,7 @@ test_kind_only_subsection_points_at_overlay_file() {
   # subsection's "File:" line. The on-disk file is reused from the kind
   # overlay, which the subsection prose can mention, but the **File:**
   # marker should point at the new overlay-root kustomization.
-  if printf '%s\n' "$subsection" | grep -qE '^\*\*File:\*\*[[:space:]]+`deploy/flux-system/releases/chaos-mesh\.yaml`'; then
+  if grep -qE '^\*\*File:\*\*[[:space:]]+`deploy/flux-system/releases/chaos-mesh\.yaml`' <<<"$subsection"; then
     echo "  FAIL: subsection 'File:' marker still points at the legacy production-base release path"
     FAIL=$((FAIL + 1))
   else

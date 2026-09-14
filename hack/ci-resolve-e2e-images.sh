@@ -106,7 +106,7 @@ fi
 
 # has_line <newline-separated list> <name>
 has_line() {
-  printf '%s\n' "$1" | grep -qxF -- "$2"
+  grep -qxF -- "$2" <<<"$1"
 }
 
 # ---------------------------------------------------------------------------

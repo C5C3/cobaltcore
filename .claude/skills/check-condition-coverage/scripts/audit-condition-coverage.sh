@@ -150,7 +150,7 @@ for op in "${OPERATORS[@]}"; do
   callsite_lits=$(grep -hE 'Type:[[:space:]]+"[A-Z][A-Za-z]+Ready"' ${RECONCILE_SRCS[@]+"${RECONCILE_SRCS[@]}"} 2>/dev/null \
     | grep -oE '"[A-Z][A-Za-z]+Ready"' | tr -d '"' | sort -u || true)
   for t in ${callsite_lits}; do
-    if echo "${resolved_set}" | grep -qx "${t}"; then
+    if grep -qx "${t}" <<<"${resolved_set}"; then
       pass "callsite literal ${t} is registered in instrumentation map"
     else
       fail "callsite literal ${t} is NOT in ${op} instrumentation map — Prometheus condition_type will resolve to UNKNOWN"
@@ -164,7 +164,7 @@ for op in "${OPERATORS[@]}"; do
       info "callsite const ${c} could not be resolved to a literal — confirm by hand"
     elif [[ "${v}" == "Ready" ]]; then
       info "callsite const ${c} resolves to the aggregate \"Ready\" — exempt from the map"
-    elif echo "${resolved_set}" | grep -qx "${v}"; then
+    elif grep -qx "${v}" <<<"${resolved_set}"; then
       pass "callsite const ${c} (\"${v}\") is registered in instrumentation map"
     else
       fail "callsite const ${c} (\"${v}\") is NOT in ${op} instrumentation map — Prometheus condition_type will resolve to UNKNOWN"
@@ -238,7 +238,7 @@ for op in "${OPERATORS[@]}"; do
   if [[ ${#DOC_FILES[@]} -gt 0 ]]; then
     doc_types=$(grep -hoE '\b[A-Z][A-Za-z]+Ready\b' "${DOC_FILES[@]}" 2>/dev/null | sort -u || true)
     for t in ${doc_types}; do
-      if echo "${resolved_set}" | grep -qx "${t}"; then
+      if grep -qx "${t}" <<<"${resolved_set}"; then
         pass "${t} (doc) is set somewhere in ${op} code"
       else
         # Could be set via a constant we did not resolve, set by another
@@ -247,7 +247,7 @@ for op in "${OPERATORS[@]}"; do
         stem="${t%Ready}"
         if grep -rqE "\"${t}\"|conditionType${t}\b|\b${t}\b" "${CONTROLLER_DIR}"; then
           info "${t} (doc) appears in ${op} code but not via the instrumentation map — confirm by hand"
-        elif echo "${resolved_set}" | grep -qE "^${stem}[A-Za-z]+Ready$"; then
+        elif grep -qE "^${stem}[A-Za-z]+Ready$" <<<"${resolved_set}"; then
           full=$(echo "${resolved_set}" | grep -E "^${stem}[A-Za-z]+Ready$" | head -1)
           info "${t} (doc) looks like a diagram abbreviation of ${full} — confirm by hand"
         elif grep -rqE "\"${t}\"" operators/*/internal/controller/ operators/*/api/ 2>/dev/null; then

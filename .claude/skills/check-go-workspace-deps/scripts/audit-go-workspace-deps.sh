@@ -67,7 +67,7 @@ fs_mods=$(find operators internal -name go.mod -exec dirname {} \; 2>/dev/null \
   | sort -u)
 while IFS= read -r d; do
   [[ -z "${d}" ]] && continue
-  if echo "${use_dirs}" | grep -qx "${d}"; then
+  if grep -qx "${d}" <<<"${use_dirs}"; then
     pass "fs module ${d} is in go.work"
   else
     fail "fs module ${d} has go.mod but is not listed in go.work — workspace ignores it"

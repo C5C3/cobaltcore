@@ -98,7 +98,7 @@ unknown_roots=()
 for entry in "${REPO_ROOT}"/*/; do
   [ -d "${entry}" ] || continue
   name="$(basename "${entry}")"
-  if ! printf '%s\n' "${declared_roots}" | grep -Fxq -- "${name}"; then
+  if ! grep -Fxq -- "${name}" <<<"${declared_roots}"; then
     unknown_roots+=("${name}")
   fi
 done

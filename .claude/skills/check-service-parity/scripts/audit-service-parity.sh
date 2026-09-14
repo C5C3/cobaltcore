@@ -85,7 +85,7 @@ horizon:P13:registration
 "
 
 allowed() { # allowed <svc> <check> <item>
-  printf '%s\n' "${ALLOWED_DEVIATIONS}" | grep -qx "${1}:${2}:${3}"
+  grep -qx "${1}:${2}:${3}" <<<"${ALLOWED_DEVIATIONS}"
 }
 
 # cleanup_matrix <output> — one list emitted by ci-generate-cleanup-matrix.sh.
