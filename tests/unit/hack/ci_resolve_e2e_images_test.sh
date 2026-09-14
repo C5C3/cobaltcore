@@ -12,10 +12,14 @@
 #     set and maps to the run-scoped tag the push step writes;
 #   - everything else maps to the index digest behind its published tag;
 #   - a source that has never been published is built instead of failing the
-#     run, which is what a new operator looks like before its first merge.
+#     run, which is what a new operator looks like before its first merge;
+#   - an operator image is reused only when its revision label carries every
+#     commit to that operator's sources, and built otherwise.
 #
 # The registry is stubbed through IMAGE_INSPECT_CMD, so the script itself runs
-# for real against the real tree; nothing here reimplements its decisions.
+# for real against the real tree; nothing here reimplements its decisions. The
+# revision tests run a copy of it in a throwaway git repository whose history
+# they control.
 #
 # Follows the project-native bash test pattern (tests/lib/assertions.sh),
 # mirroring tests/unit/hack/ci_generate_cleanup_matrix_test.sh.
@@ -53,10 +57,16 @@ DIGEST_RE='^ghcr\.io/c5c3/[a-z0-9-]+@sha256:[0-9a-f]{64}$'
 # A recording stand-in for `docker buildx imagetools inspect`: it appends the
 # reference it was asked about to $INSPECT_LOG and answers with a digest derived
 # from that reference, so each source resolves to a distinct, stable value.
+# Asked for a template that names .Image, it answers the way the real command
+# does for a two-platform index: a JSON object with the digest and both
+# platforms' image configs, which carry the revision label.
 # Steered from the test through the environment:
-#   STUB_MISSING    — space-separated refs that answer "not found" on stderr
-#   STUB_FLAKY      — space-separated refs that fail with a transient error
-#   STUB_BAD_DIGEST — when non-empty, answer with something that is not a digest
+#   STUB_MISSING     — space-separated refs that answer "not found" on stderr
+#   STUB_FLAKY       — space-separated refs that fail with a transient error
+#   STUB_BAD_DIGEST  — when non-empty, answer with something that is not a digest
+#   STUB_REVISION    — the revision label of every image
+#   STUB_REVISIONS   — space-separated <ref>=<revision> pairs that override it
+#   STUB_NO_REVISION — space-separated refs whose images carry no revision label
 make_inspect_stub() {
   local dir="$1"
   mkdir -p "$dir"
@@ -66,31 +76,49 @@ make_inspect_stub() {
 echo "$1" >>"$INSPECT_LOG"
 case " ${STUB_MISSING:-} " in *" $1 "*) echo "ERROR: $1: not found" >&2; exit 1 ;; esac
 case " ${STUB_FLAKY:-} " in *" $1 "*) echo "dial tcp: i/o timeout" >&2; exit 1 ;; esac
-if [ -n "${STUB_BAD_DIGEST:-}" ]; then
-  echo '"not-a-digest"'
-  exit 0
-fi
 if command -v sha256sum >/dev/null 2>&1; then
-  hash="$(printf '%s' "$1" | sha256sum | cut -d' ' -f1)"
+  digest="sha256:$(printf '%s' "$1" | sha256sum | cut -d' ' -f1)"
 else
-  hash="$(printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1)"
+  digest="sha256:$(printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1)"
 fi
-printf '"sha256:%s"\n' "$hash"
+if [ -n "${STUB_BAD_DIGEST:-}" ]; then
+  digest="not-a-digest"
+fi
+# $2 is --format and $3 the template.
+case "$3" in
+  *.Image*) ;;
+  *) printf '"%s"\n' "$digest"; exit 0 ;;
+esac
+revision="${STUB_REVISION:-}"
+for pair in ${STUB_REVISIONS:-}; do
+  if [ "${pair%%=*}" = "$1" ]; then
+    revision="${pair#*=}"
+  fi
+done
+labels="{\"org.opencontainers.image.revision\":\"${revision}\"}"
+case " ${STUB_NO_REVISION:-} " in *" $1 "*) labels='{}' ;; esac
+printf '{"digest":"%s","image":{"linux/amd64":{"config":{"Labels":%s}},"linux/arm64":{"config":{"Labels":%s}}}}\n' \
+  "$digest" "$labels" "$labels"
 STUB
   chmod +x "$dir/inspect"
 }
 
-# run_resolve [VAR=value ...]
-# Runs the resolver against the real tree with the stub registry and a fresh
-# log. Stores the combined stdout/stderr in OUTPUT, the exit status in RC and
-# the image-map JSON in MAP; the GITHUB_ENV lines stay in $ENV_FILE for
-# env_block and env_value.
-run_resolve() {
+# run_resolve_in <repo root> [VAR=value ...]
+# Runs the resolver of that tree with the stub registry and a fresh log. Every
+# image reports the tree's HEAD as its revision unless an assignment says
+# otherwise, so an operator image is current by default. Stores the combined
+# stdout/stderr in OUTPUT, the exit status in RC and the image-map JSON in MAP;
+# the GITHUB_ENV lines stay in $ENV_FILE for env_block and env_value.
+run_resolve_in() {
+  local root="$1"
+  shift
   RC=0
   : >"$INSPECT_LOG"
   : >"$ENV_FILE"
   : >"$OUT_FILE"
   OUTPUT="$(
+    STUB_REVISION="$(git -C "$root" rev-parse HEAD)"
+    export STUB_REVISION
     for assignment in "$@"; do
       export "${assignment?}"
     done
@@ -101,9 +129,46 @@ run_resolve() {
       INSPECT_RETRY_DELAY=0 \
       GITHUB_ENV="$ENV_FILE" \
       GITHUB_OUTPUT="$OUT_FILE" \
-      bash "$RESOLVE_SH" 2>&1
+      bash "$root/hack/ci-resolve-e2e-images.sh" 2>&1
   )" || RC=$?
   MAP="$(sed -n 's/^image-map=//p' "$OUT_FILE")"
+}
+
+# run_resolve [VAR=value ...] — run_resolve_in against the real tree.
+run_resolve() {
+  run_resolve_in "$PROJECT_ROOT" "$@"
+}
+
+# make_fixture_repo <dir>
+# A git repository with one commit that holds a copy of the resolver, the files
+# it reads, and two operators, c5c3 and keystone, with no release. The revision
+# tests move its history on with fixture_commit and hand the stub the revisions
+# they left behind.
+make_fixture_repo() {
+  local dir="$1" op
+  mkdir -p "$dir/hack" "$dir/.github/workflows"
+  cp "$RESOLVE_SH" "$PROJECT_ROOT/hack/ci-service-image-releases.sh" "$dir/hack/"
+  cp "$PROJECT_ROOT/.github/workflows/ci.yaml" "$dir/.github/workflows/"
+  for op in c5c3 keystone; do
+    mkdir -p "$dir/operators/$op"
+    echo "module example.com/$op" >"$dir/operators/$op/go.mod"
+  done
+  git -C "$dir" init -q
+  fixture_commit "$dir" "initial tree"
+}
+
+# fixture_commit <dir> <message> [path...] — append a line to each path and
+# commit the whole tree.
+fixture_commit() {
+  local dir="$1" message="$2" path
+  shift 2
+  for path in "$@"; do
+    mkdir -p "$(dirname "$dir/$path")"
+    echo "$message" >>"$dir/$path"
+  done
+  git -C "$dir" add -A
+  git -C "$dir" -c user.name=test -c user.email=test@example.invalid \
+    -c commit.gpgsign=false commit -q -m "$message"
 }
 
 # env_block <NAME> — the lines of that GITHUB_ENV heredoc block, space-joined.
@@ -445,6 +510,101 @@ test_the_outputs_have_the_shapes_the_workflow_reads() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 14-17: an operator image older than its sources
+# ---------------------------------------------------------------------------
+test_an_operator_image_behind_its_sources_is_built() {
+  echo "Test: an operator image whose revision lacks a commit to its sources is built"
+
+  # What a skipped merge-operator-images run leaves behind: :latest keeps the
+  # revision of the last push that published it while the tree moves on.
+  local repo="$TMP_DIR/behind-own-sources" published
+  make_fixture_repo "$repo"
+  published="$(git -C "$repo" rev-parse HEAD)"
+  fixture_commit "$repo" "change the c5c3 controller" operators/c5c3/controller.go
+
+  run_resolve_in "$repo" STUB_REVISION="$published"
+
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_contains "it says why the image is being built" "$OUTPUT" \
+    "::notice::ghcr.io/c5c3/c5c3-operator:latest is stale: revision ${published} lacks 1 commit(s) touching the c5c3 sources; building ghcr.io/c5c3/c5c3-operator:dev"
+  assert_eq "the stale image moves into the build set" "c5c3" "$(env_block BUILD_OPERATORS)"
+  assert_eq "the stale image carries the run-scoped tag" \
+    "ghcr.io/c5c3/c5c3-operator:e2e-test-dev" \
+    "$(map_value ghcr.io/c5c3/c5c3-operator:dev)"
+  assert_contains "the Image map line says it is built" "$OUTPUT" \
+    "ghcr.io/c5c3/c5c3-operator:dev -> ghcr.io/c5c3/c5c3-operator:e2e-test-dev (built)"
+
+  # The same revision is current for keystone: no commit since touched its
+  # sources, so one operator's stale image does not rebuild the others.
+  assert_contains "an operator whose sources did not move is pulled by digest" \
+    "$(map_value ghcr.io/c5c3/keystone-operator:dev)" \
+    "ghcr.io/c5c3/keystone-operator@sha256:"
+  assert_contains "the Image map line says it is reused" "$OUTPUT" \
+    "ghcr.io/c5c3/keystone-operator:dev -> ghcr.io/c5c3/keystone-operator@sha256:"
+  # The revision comes with the answer the digest came from.
+  assert_eq "the stale source is asked about once" "1" \
+    "$(attempts_on ghcr.io/c5c3/c5c3-operator:latest)"
+}
+
+test_a_commit_to_shared_go_code_makes_an_older_image_stale() {
+  echo "Test: a commit to the shared Go sources makes an operator image before it stale"
+
+  # operators/Dockerfile builds every operator from internal/ and go.work, which
+  # is why hack/ci-resolve-changes.sh marks every operator changed for go_common.
+  local repo="$TMP_DIR/behind-shared-sources" published
+  make_fixture_repo "$repo"
+  published="$(git -C "$repo" rev-parse HEAD)"
+  fixture_commit "$repo" "change shared code" internal/common/conditions.go
+
+  run_resolve_in "$repo" STUB_REVISIONS="ghcr.io/c5c3/keystone-operator:latest=${published}"
+
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_contains "it says why the image is being built" "$OUTPUT" \
+    "::notice::ghcr.io/c5c3/keystone-operator:latest is stale: revision ${published} lacks 1 commit(s) touching the keystone sources; building ghcr.io/c5c3/keystone-operator:dev"
+  assert_eq "only the image before the commit is built" "keystone" \
+    "$(env_block BUILD_OPERATORS)"
+  assert_contains "an image published after the commit is pulled by digest" \
+    "$(map_value ghcr.io/c5c3/c5c3-operator:dev)" "ghcr.io/c5c3/c5c3-operator@sha256:"
+}
+
+test_an_image_whose_revision_cannot_be_checked_is_built() {
+  echo "Test: an operator image with no revision label, or one the checkout lacks, is built"
+
+  # Neither proves the image carries the tree's commits. The second is also what
+  # a shallow checkout makes of every revision but its own HEAD.
+  local repo="$TMP_DIR/unknown-revision"
+  local unknown="1111111111111111111111111111111111111111"
+  make_fixture_repo "$repo"
+
+  run_resolve_in "$repo" \
+    STUB_NO_REVISION="ghcr.io/c5c3/c5c3-operator:latest" \
+    STUB_REVISIONS="ghcr.io/c5c3/keystone-operator:latest=${unknown}"
+
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_contains "it says the image carries no revision" "$OUTPUT" \
+    "::notice::ghcr.io/c5c3/c5c3-operator:latest carries no revision label to check; building ghcr.io/c5c3/c5c3-operator:dev"
+  assert_contains "it says the checkout lacks the revision" "$OUTPUT" \
+    "::notice::ghcr.io/c5c3/keystone-operator:latest is at revision ${unknown}, which this checkout does not have; building ghcr.io/c5c3/keystone-operator:dev"
+  assert_eq "both images are built" "c5c3 keystone" "$(env_block BUILD_OPERATORS)"
+}
+
+test_an_operator_without_a_change_filter_is_fatal() {
+  echo "Test: an operator with no change filter in ci.yaml fails the step"
+
+  # Without its own filter only go_common would count against the image, and a
+  # commit to the operator itself would never rebuild it.
+  local repo="$TMP_DIR/unwired-operator"
+  make_fixture_repo "$repo"
+  fixture_commit "$repo" "add an operator" operators/unwired/go.mod
+
+  run_resolve_in "$repo"
+
+  assert_nonzero_exit "the resolver fails the step" "$RC"
+  assert_contains "it names the missing filter" "$OUTPUT" \
+    "::error::.github/workflows/ci.yaml has no change filter named unwired"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 if ! command -v jq >/dev/null 2>&1 || ! command -v yq >/dev/null 2>&1; then
@@ -469,6 +629,10 @@ test_a_malformed_changed_list_is_fatal
 test_a_name_with_no_image_is_ignored
 test_missing_required_env_fails_loudly
 test_the_outputs_have_the_shapes_the_workflow_reads
+test_an_operator_image_behind_its_sources_is_built
+test_a_commit_to_shared_go_code_makes_an_older_image_stale
+test_an_image_whose_revision_cannot_be_checked_is_built
+test_an_operator_without_a_change_filter_is_fatal
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

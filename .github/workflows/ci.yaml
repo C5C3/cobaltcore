@@ -1056,7 +1056,12 @@ jobs:
     env:
       RUN_TAG: e2e-${{ github.run_id }}
     steps:
+      # Full history: the resolver checks the revision of every operator image
+      # it reuses against the commits in this checkout, and builds an image
+      # whose revision it cannot find here.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
 
       # Enable BuildKit (required for type=gha cache) as the default builder.
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
@@ -1072,6 +1077,9 @@ jobs:
       # the tag main last published, then hands the consumers one image-map so
       # they pull whatever it names. A run that changes no image source builds
       # nothing here and still leaves every consumer with a working reference.
+      # An operator image is reused only when its revision carries every commit
+      # to that operator's sources, so a :latest that main's manifest merge left
+      # behind is built here instead.
       - name: Resolve images
         id: images
         env:

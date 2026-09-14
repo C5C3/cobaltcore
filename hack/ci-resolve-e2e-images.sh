@@ -18,6 +18,15 @@
 # minutes rebuilding it. Consumers keep their canonical local references either
 # way: load-e2e-images looks each one up in the map written here.
 #
+# An operator image is reused only when the commit it was built from, its
+# org.opencontainers.image.revision label, has in its history every commit of
+# this checkout that touches the operator's sources: the paths of the operator's
+# own change filter and of go_common in the changes job of
+# .github/workflows/ci.yaml. When one build-and-push leg fails on main,
+# merge-operator-images publishes nothing and :latest keeps an older revision;
+# such an image is built instead. The check needs the checkout's full history,
+# and an image whose revision it cannot find is built too.
+#
 # Required env vars:
 #   IMAGE_PREFIX   — Registry and owner, e.g. ghcr.io/c5c3
 #   RUN_TAG        — Run-scoped tag prefix, e.g. e2e-<run_id>
@@ -109,6 +118,17 @@ has_line() {
   grep -qxF -- "$2" <<<"$1"
 }
 
+# The commit this run tests. On a pull request it is main merged with the
+# branch, and a reused operator image has to carry its commits.
+if ! HEAD_COMMIT=$(git -C "${REPO_ROOT}" rev-parse --verify HEAD 2>&1); then
+  echo "::error::cannot read HEAD of ${REPO_ROOT}: ${HEAD_COMMIT}"
+  exit 1
+fi
+
+# The change filters of the paths-filter step in the changes job, as YAML.
+CHANGE_FILTERS=$(yq '.jobs.changes.steps[] | select(.id == "filter") | .with.filters' \
+  "${REPO_ROOT}/.github/workflows/ci.yaml")
+
 # ---------------------------------------------------------------------------
 # 2. The key set, derived from the tree
 # ---------------------------------------------------------------------------
@@ -150,24 +170,41 @@ done <<<"${changed_services}"
 # 3. Build or reuse, per image
 # ---------------------------------------------------------------------------
 RESOLVED_DIGEST=""
+RESOLVED_REVISION=""
 
-# resolve_digest <published source> — set RESOLVED_DIGEST to the index digest of
-# that source. Returns 1 when the source is not published yet, so the caller
-# builds the image instead. Exits the step when the registry keeps failing or
-# answers with something that is not a digest.
+# resolve_digest <published source> [revision] — set RESOLVED_DIGEST to the index
+# digest of that source. Given "revision", the same inspect call also sets
+# RESOLVED_REVISION to the org.opencontainers.image.revision label the platform
+# images of the index agree on, or to "" when they carry none or disagree.
+# Returns 1 when the source is not published yet, so the caller builds the image
+# instead. Exits the step when the registry keeps failing or answers with
+# something that is not a digest.
 resolve_digest() {
-  local source="$1" attempt delay out
+  local source="$1" mode="${2:-}" format attempt delay out digest
+  # No --platform, so this is the multi-arch index digest, the same digest
+  # .github/workflows/check-base-image-updates.yaml compares against.
+  format='{{json .Manifest.Digest}}'
+  if [[ "${mode}" == "revision" ]]; then
+    # .Image is the image config of each platform in the index, keyed by
+    # platform, which is where build-and-push writes the revision label.
+    format='{"digest":{{json .Manifest.Digest}},"image":{{json .Image}}}'
+  fi
   delay="${INSPECT_RETRY_DELAY}"
   for attempt in $(seq 1 "${INSPECT_ATTEMPTS}"); do
-    # No --platform, so this is the multi-arch index digest, the same digest
-    # .github/workflows/check-base-image-updates.yaml compares against.
-    if out=$("${INSPECT_CMD[@]}" "${source}" --format '{{json .Manifest.Digest}}' 2>"${INSPECT_STDERR}"); then
-      out=$(tr -d '"' <<<"${out}")
-      if [[ ! "${out}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-        echo "::error::unexpected digest for ${source}: ${out}"
+    if out=$("${INSPECT_CMD[@]}" "${source}" --format "${format}" 2>"${INSPECT_STDERR}"); then
+      if [[ "${mode}" == "revision" ]]; then
+        digest=$(jq -r '.digest' <<<"${out}" 2>/dev/null) || digest="${out}"
+        RESOLVED_REVISION=$(jq -r '[.image[].config.Labels["org.opencontainers.image.revision"] // ""]
+          | unique | if length == 1 then .[0] else "" end' <<<"${out}" 2>/dev/null) ||
+          RESOLVED_REVISION=""
+      else
+        digest=$(tr -d '"' <<<"${out}")
+      fi
+      if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+        echo "::error::unexpected digest for ${source}: ${digest}"
         exit 1
       fi
-      RESOLVED_DIGEST="${out}"
+      RESOLVED_DIGEST="${digest}"
       return 0
     fi
     # A missing tag or package is not a flake. The image has never been
@@ -186,25 +223,81 @@ resolve_digest() {
   exit 1
 }
 
+PATHSPECS=()
+
+# add_pathspecs <change filter> — append the paths of that change filter to
+# PATHSPECS as git pathspecs. Exits the step when ci.yaml has no such filter,
+# since the commits under its paths would then never count against an image.
+add_pathspecs() {
+  local filter="$1" patterns pattern
+  patterns=$(FILTER="${filter}" yq '.[strenv(FILTER)] // [] | .[]' <<<"${CHANGE_FILTERS}")
+  if [[ -z "${patterns}" ]]; then
+    echo "::error::.github/workflows/ci.yaml has no change filter named ${filter}"
+    exit 1
+  fi
+  while read -r pattern; do
+    # git's glob magic reads ** the way paths-filter does.
+    PATHSPECS+=(":(glob)${pattern}")
+  done <<<"${patterns}"
+}
+
+# image_is_current <published source> <operator> <canonical key> — succeed when
+# RESOLVED_REVISION, the commit that source was built from, has in its history
+# every commit of HEAD that touches the operator's sources. Otherwise print a
+# notice that says why and fail, so the caller builds the image.
+image_is_current() {
+  local source="$1" operator="$2" key="$3" missing
+  if [[ ! "${RESOLVED_REVISION}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "::notice::${source} carries no revision label to check; building ${key}"
+    return 1
+  fi
+  if ! git -C "${REPO_ROOT}" cat-file -e "${RESOLVED_REVISION}^{commit}" 2>/dev/null; then
+    echo "::notice::${source} is at revision ${RESOLVED_REVISION}, which this checkout does not have; building ${key}"
+    return 1
+  fi
+  PATHSPECS=()
+  add_pathspecs "${operator}"
+  add_pathspecs go_common
+  # A commit the pull request itself adds under these paths already put the
+  # operator in CHANGED_OPERATORS, so what is left to count comes from main.
+  if ! missing=$(git -C "${REPO_ROOT}" rev-list --count \
+    "${RESOLVED_REVISION}..${HEAD_COMMIT}" -- "${PATHSPECS[@]}"); then
+    echo "::error::cannot count the commits between ${RESOLVED_REVISION} and ${HEAD_COMMIT}"
+    exit 1
+  fi
+  if [[ "${missing}" -gt 0 ]]; then
+    echo "::notice::${source} is stale: revision ${RESOLVED_REVISION} lacks ${missing} commit(s) touching the ${operator} sources; building ${key}"
+    return 1
+  fi
+}
+
 map_lines=()
 log_lines=()
 ENTRY_BUILT=false
 
-# add_entry <canonical key> <published source> <true when the run builds it>
+# add_entry <canonical key> <published source> <true when the run builds it> [operator]
 # Appends this key's map entry and sets ENTRY_BUILT to what the key ended up
-# being, which is "true" for a source that is not published yet.
+# being, which is "true" for a source that is not published yet and, given the
+# operator the image is built from, for an image older than that operator's
+# sources.
 add_entry() {
-  local key="$1" source="$2" built="$3"
-  local repo="${key%:*}" tag="${key##*:}"
+  local key="$1" source="$2" built="$3" operator="${4:-}"
+  local repo="${key%:*}" tag="${key##*:}" mode=""
 
   ENTRY_BUILT="${built}"
   if [[ "${built}" != "true" ]]; then
-    if resolve_digest "${source}"; then
-      map_lines+=("${key}"$'\t'"${repo}@${RESOLVED_DIGEST}")
-      log_lines+=("${key} -> ${repo}@${RESOLVED_DIGEST} (reused)")
-      return 0
+    if [[ -n "${operator}" ]]; then
+      mode=revision
     fi
-    echo "::notice::${source} is not published yet; building ${key}"
+    if resolve_digest "${source}" "${mode}"; then
+      if [[ -z "${operator}" ]] || image_is_current "${source}" "${operator}" "${key}"; then
+        map_lines+=("${key}"$'\t'"${repo}@${RESOLVED_DIGEST}")
+        log_lines+=("${key} -> ${repo}@${RESOLVED_DIGEST} (reused)")
+        return 0
+      fi
+    else
+      echo "::notice::${source} is not published yet; building ${key}"
+    fi
     ENTRY_BUILT=true
   fi
   # The exact reference the push step derives from the canonical one.
@@ -223,7 +316,7 @@ for operator in "${operators[@]}"; do
     built=true
   fi
   add_entry "${IMAGE_PREFIX}/${operator}-operator:dev" \
-    "${IMAGE_PREFIX}/${operator}-operator:latest" "${built}"
+    "${IMAGE_PREFIX}/${operator}-operator:latest" "${built}" "${operator}"
   if [[ "${ENTRY_BUILT}" == "true" ]]; then
     build_operators+=("${operator}")
   fi
