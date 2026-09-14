@@ -2106,6 +2106,12 @@ suite could hand a volume to the volume service of another. Managed mode
 (`spec.messaging.clusterRef`) always lands on the default vhost, so it is used
 only where a single Cinder runs alone on the cluster: the tempest legs.
 
+The c5c3 `full-controlplane-keystone` suite is the broker's second consumer. It
+calls the same helper, naming its vhost after the `ControlPlane` rather than
+after a `Cinder` CR, and the ControlPlane copies the transport URL out of the
+resulting `controlplane-keystone-messaging` Secret into both of its bus-consuming
+children, Neutron and Cinder.
+
 **Deploy-infra wiring.** With `WITH_MESSAGING=true`, `hack/deploy-infra.sh`
 applies `deploy/kind/messaging` after Step 5, where both prerequisites are
 settled: the `openstack` namespace from the Step 3 base overlay and the

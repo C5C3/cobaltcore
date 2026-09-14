@@ -1063,9 +1063,9 @@ the prometheus suite scrapes live operator metrics.
 ### e2e-controlplane
 
 Runs the full c5c3 `ControlPlane` → Keystone chain on kind. It deploys the
-`keystone`, `horizon`, `glance`, `placement`, `barbican`, `ovn`, and `neutron`
-operators plus K-ORC and `c5c3-operator` as local dev images (rather than the
-GHCR-published Flux chart) and runs the
+`keystone`, `horizon`, `glance`, `placement`, `barbican`, `ovn`, `neutron`, and
+`cinder` operators plus K-ORC and `c5c3-operator` as local dev images (rather
+than the GHCR-published Flux chart) and runs the
 `tests/e2e/c5c3/full-controlplane-keystone/` Chainsaw suite, which asserts the
 whole orchestration link by link: managed MariaDB/Memcached provisioning, the
 projected Keystone CR, the minted restricted K-ORC application credential, the
@@ -1074,7 +1074,14 @@ OpenBao → ESO credential round-trip, the identity catalog, and finally a live
 suite applies a standalone `OVNCentral` of its own beside the ControlPlane, since
 the plane only references a central and never projects one, and asserts the
 network service on top: `OVNReady` mirroring that central and `NeutronReady` over
-the projected `Neutron` child.
+the projected `Neutron` child. The block-storage service closes the chain:
+`cinder-operator:dev` and `cinder:2025.2` join the images loaded into kind, and
+the `Deploy cinder-operator` step runs between `Deploy neutron-operator` and
+`Deploy c5c3-operator` so the three Cinder CRDs exist before c5c3-operator
+projects the child and its satellites, and something drives that child to Ready
+once it lands. A second `hack/ci-dump-diagnostics.sh` invocation runs with
+`OPERATOR: cinder`, which points the operator half of the dump at
+`cinder-system` while the workload half stays on `openstack`.
 
 A second chainsaw step on the same cluster runs
 `tests/e2e/c5c3/keystone-service-foreign-namespace/`, the cross-namespace
@@ -1109,21 +1116,31 @@ suspends the Flux ControlPlane stack, so the dev-image operators deployed by the
 subsequent steps own the reconcile. K-ORC is applied by `hack/ci-deploy-korc.sh`
 at the tag pinned in `deploy/flux-system/sources/k-orc.yaml`.
 
+`setup-e2e-infra` also carries `WITH_NFS: "true"` and `WITH_MESSAGING: "true"`,
+neither of which `deploy-infra.sh` installs by default. The seventh service, Cinder,
+mounts both of its shares from the kind NFS export and takes a vhost of its own
+on the `shared-rabbitmq` broker, so the suite gates on both stacks being present
+the way the cinder `e2e-operator` leg does.
+
 The suite runs with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"`, which flips its
 presence guard from a silent SKIP to a hard failure — so a broken operator/CRD
 deployment fails the build instead of going green. Like `e2e-prometheus`, the
-job runs with `continue-on-error: false`, and it uses a 195-minute timeout on the
-larger runner because a real MariaDB + Memcached + Keystone + eight operators +
+job runs with `continue-on-error: false`, and it uses a 220-minute timeout on the
+larger runner because a real MariaDB + Memcached + Keystone + nine operators +
 OpenBao + ESO + K-ORC on one node is resource-heavy, and its three chainsaw
 suites run in sequence on that one node, so their budgets add up rather than
 overlap. A suite's ceiling is not its `exec` budget alone: chainsaw applies that
 budget to every script operation, so `try`, `catch` and `finally` each get one,
 and the `cleanup` budget runs after all three. Each of the three suites
 therefore pins its `catch` and `finally` timeouts explicitly, which puts the
-ceilings at 43, 80 and 90 minutes. The job wall has to outlast the bring-up plus
+ceilings at 65, 80 and 90 minutes. The job wall has to outlast the bring-up plus
 the suites that pass plus the full ceiling of the one that stalls, or a stalled
 suite is killed before its own timeout fires and reports as a cancelled job with
-no JUnit XML.
+no JUnit XML. The 220 minutes are the sum of roughly 40 minutes of bring-up, the
+65-minute ceiling of the full-chain suite, roughly 25 minutes for the
+foreign-namespace pass, and the 90-minute ceiling of the last suite; the
+bring-up and foreign-namespace terms are estimates, so confirm them against the
+first green run of the leg and re-derive the wall if either overruns.
 
 ### e2e-controlplane-sso
 

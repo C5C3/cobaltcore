@@ -95,18 +95,23 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 
 ### full-controlplane-keystone
 
-Applies one `ControlPlane` CR carrying six services (keystone, horizon, glance,
-placement, barbican, neutron) and asserts the whole chain link by link, gating
-each link on the previous one:
+Applies one `ControlPlane` CR carrying seven services (keystone, horizon,
+glance, placement, barbican, neutron, cinder) and asserts the whole chain link by
+link, gating each link on the previous one:
 
 1. **Infrastructure** — owned MariaDB (`openstack-db`) and Memcached
    (`openstack-memcached`) created and owned by the ControlPlane;
-   `InfrastructureReady=True`. The shared bus is referenced brownfield
-   (`04-messaging-secret.yaml`, a placeholder transport URL on the reserved
-   `.invalid` TLD), so no broker is projected: the RabbitMQ Cluster Operator's
-   default 1 CPU / 2Gi broker request does not fit the single 4-vCPU CI node
-   beside the other five services and the OVN control plane. The managed
-   projection is what the [messaging](#messaging) suite proves.
+   `InfrastructureReady=True`. The shared bus is referenced brownfield against a
+   vhost of this suite's own on the kind broker, so no broker is projected: the
+   RabbitMQ Cluster Operator's default 1 CPU / 2Gi broker request does not fit
+   the single 4-vCPU CI node beside the seven services and the OVN control
+   plane. `tests/e2e/cinder/broker-vhost.sh create` takes that vhost on
+   `shared-rabbitmq` and renders its transport URL into the
+   `controlplane-keystone-messaging` Secret; the suite's `finally` block calls
+   the helper with `delete`, which tolerates a broker that is absent or
+   restarting. A vhost of its own is what keeps these RPC topics out of the ones
+   the parallel Cinder suites hold. The managed projection is what the
+   [messaging](#messaging) suite proves.
    The suite then onboards the per-tenant OpenBao database-engine role
    (`setup-database-tenant.sh`), waits for `DBCredentialsReady=True`, and asserts
    the generator-backed ExternalSecret and engine-issued username.
@@ -181,11 +186,36 @@ each link on the previous one:
    public Endpoint, both advertising the in-cluster Neutron API
    (`http://controlplane-keystone-neutron.openstack.svc:9696`).
 
+5k. **Cinder child** — `CinderReady=True` over the owned Cinder CR
+   (`controlplane-keystone-cinder`) on the Neutron child's terms:
+   database/cache clusterRefs, the logical database `cinder`, an engine-issued
+   (Dynamic) DB credential, the derived Keystone endpoint, the registered
+   `cinder` service user, and the bus Secret
+   `controlplane-keystone-cinder-messaging` it references brownfield. The DB
+   credential is checked the way its peers are: a
+   `controlplane-keystone-cinder-db-credentials` ExternalSecret backed by a
+   `VaultDynamicSecret` reading `database/mariadb/creds/cinder-openstack`, no
+   static `data` refs, a `cinder-db-creds` ServiceAccount, and a materialised
+   Secret carrying an engine-issued username. On top of those it asserts what no
+   peer carries: the `glanceEndpoint` and `keyManager.barbican.endpoint` of the
+   sibling services, the `internalTenant` project and user IDs read off the
+   registration's `status.account` rather than hardcoded, the API replica count
+   taken from `services.cinder.replicas`, the two satellites `nfs1`
+   (`CinderBackend`) and `nfsbk` (`CinderBackupBackend`) carrying the bare entry
+   names and attached by `cinderRef`, and `status.volumeServices[0].host`
+   reporting `controlplane-keystone-cinder@nfs1`, the host identity the volumes
+   on that backend are keyed by.
+
+5l. **Block-storage catalog** — owned K-ORC block-storage Service plus an
+   internal and a public Endpoint. With no gateway in this fixture both
+   advertise the in-cluster Cinder API on the project-less `/v3` path
+   (`http://controlplane-keystone-cinder.openstack.svc:8776/v3`).
+
 6. **Aggregate** — `Ready=True` with reason `AllReady`.
 
-6a. **Service status** — `status.services[]` reports six entries, ready, in the
+6a. **Service status** — `status.services[]` reports seven entries, ready, in the
    order `setServicesStatus` emits them: keystone, horizon, glance, placement,
-   barbican, neutron.
+   barbican, neutron, cinder.
 
 6b. **Dynamic DB credential engine** — no static DB password remains at rest (the
    retired per-CR KV path is absent, AC 2/6); an engine-issued credential
@@ -208,7 +238,32 @@ each link on the previous one:
    `network create cp-verify-net`, a `network show` that has to report
    `ACTIVE`, and a `network delete`. `cp-verify-net` is a logical network
    alone, written into the Northbound database by the northd running in the
-   referenced central, so no chassis has to be bound for it.
+   referenced central, so no chassis has to be bound for it. The block-storage
+   half follows: the catalog carries a `block-storage` row, the `cinder` account
+   holds `service` **and** `admin`, and four round-trips run through the
+   projected Cinder endpoint. A 1 GiB volume on the `nfs1` backend reaches
+   `available` (`OK: volume round-trip`). A backup of it is created, restored
+   back into the same volume, and deleted (`OK: backup round-trip`). An
+   encrypted volume type is created with a LUKS provider and a volume of that
+   type counted into and back out of Barbican, so the key has to have reached
+   the key manager and left it again with the volume (`OK: encrypted volume
+   type`). Two volumes are created from one image: the first leaves a single
+   `image-<id>` cache volume, and the second has to leave that count at one,
+   since it clones the cached volume instead of pulling the image again
+   (`OK: image-volume cache`). The internal tenant owns that volume, so the
+   listing that counts it needs `--all-projects`. The suite greps the Job's logs
+   for each of those four lines.
+
+The block-storage service widens this suite's presence guard. Beyond the CRDs
+and operators its peers need, it requires a running cinder-operator, a
+`shared-rabbitmq` broker reporting `AllReplicasReady`, and an `nfs-server`
+Deployment in `openstack`: Cinder casts real RPC over the bus and mounts both of
+its shares from the in-cluster export, so a cluster missing either stack brings
+up no Cinder at all. `hack/deploy-infra.sh` installs neither by default, so the
+cluster has to be brought up with `WITH_MESSAGING=true` and `WITH_NFS=true`,
+which is what the `e2e-controlplane` job sets. Probing for them turns a missing
+stack into one gated line instead of a `CinderReady` wait that burns the script
+budget.
 
 ### external-keystone
 
@@ -666,8 +721,7 @@ tests/e2e/c5c3/
 │   ├── 00-controlplane-cr.yaml         ControlPlane CR (controlplane-keystone)
 │   ├── 01-openstack-verify-job.yaml    openstack CLI verify Job
 │   ├── 02-horizon-secret-key-externalsecret.yaml  Per-CP Horizon secret key
-│   ├── 03-ovncentral-cr.yaml           Standalone OVNCentral the ControlPlane references
-│   └── 04-messaging-secret.yaml        Brownfield bus Secret (placeholder URL, no broker)
+│   └── 03-ovncentral-cr.yaml           Standalone OVNCentral the ControlPlane references
 ├── invalid-cr/
 │   ├── chainsaw-test.yaml              ControlPlane admission rejections
 │   ├── _generate.py                    Canonical scaffold + generator for the fixtures

@@ -424,8 +424,9 @@ connection, a nil block for a plaintext one.
 
 Declares the per-service configuration of the control plane. Today
 Keystone, the Horizon dashboard, the Glance image service, the Placement
-service, the Barbican key manager, and the Neutron network service are modeled;
-additional services are added as fields as the operator grows.
+service, the Barbican key manager, the Neutron network service, and the Cinder
+block-storage service are modeled; additional services are added as fields as
+the operator grows.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -435,6 +436,7 @@ additional services are added as fields as the operator grows.
 | `placement` | [`*ServicePlacementSpec`](#serviceplacementspec) | No | `nil` | Configuration for the Placement service projected by the reconciler. Optional: when unset, this ControlPlane manages no placement service and `PlacementReady` is reported as not-managed (`PlacementNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Placement validates every token against the ControlPlane's Keystone child) and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. **Forbidden in External mode**: Placement needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Placement child by default; set the `c5c3.io/allow-placement-deletion: "true"` annotation to opt in to deleting the child (with its DB-credential ExternalSecret and the placement catalog CRs) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation, so no credential minter outlives the service. |
 | `barbican` | [`*ServiceBarbicanSpec`](#servicebarbicanspec) | No | `nil` | Configuration for the Barbican key manager projected by the reconciler. Optional: when unset, this ControlPlane manages no key manager and `BarbicanReady` is reported as not-managed (`BarbicanNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Barbican validates every token against the ControlPlane's Keystone child) and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. **Forbidden in External mode**: Barbican needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Barbican child by default; set the `c5c3.io/allow-barbican-deletion: "true"` annotation to opt in to deleting the child (with its `BarbicanSecretStore`, its DB-credential ExternalSecret, and the key-manager catalog CRs) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. Destroying a **dedicated** OpenBao instance and the secrets in it takes a second annotation on top, `c5c3.io/allow-barbican-secret-store-data-deletion: "true"`; see [ServiceBarbicanSecretStoreSpec](#servicebarbicansecretstorespec). |
 | `neutron` | [`*ServiceNeutronSpec`](#serviceneutronspec) | No | `nil` | Configuration for the Neutron network service projected by the reconciler. Optional: when unset, this ControlPlane manages no network service and `NeutronReady` is reported as not-managed (`NeutronNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Neutron validates every token against the ControlPlane's Keystone child), on **`OVNReady`** (the ML2/OVN mechanism driver writes every network into the referenced central's Northbound database), and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. It also **requires `spec.infrastructure.messaging`**: the Neutron CRD requires `spec.messaging`, and the child's transport URL is derived from the shared bus, so the webhook rejects a `neutron` block declared without one. **Forbidden in External mode**: Neutron needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Neutron child by default; set the `c5c3.io/allow-neutron-deletion: "true"` annotation to opt in to deleting the child (with its DB-credential ExternalSecret, the two messaging Secrets, and the network catalog registration) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. The referenced `OVNCentral` is never deleted: the ControlPlane only reads it. |
+| `cinder` | [`*ServiceCinderSpec`](#servicecinderspec) | No | `nil` | Configuration for the Cinder block-storage service projected by the reconciler. Optional: when unset, this ControlPlane manages no block-storage service and `CinderReady` is reported as not-managed (`CinderNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Cinder validates every token against the ControlPlane's Keystone child) and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. It also **requires `spec.infrastructure.messaging`**: the Cinder CRD requires `spec.messaging`, and the child's transport URL is derived from the shared bus, so the webhook rejects a `cinder` block declared without one. **Forbidden in External mode**: Cinder needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Cinder child by default; set the `c5c3.io/allow-cinder-deletion: "true"` annotation to opt in to deleting the child (with its `CinderBackend` and `CinderBackupBackend` satellites, its DB-credential ExternalSecret, the two messaging Secrets, and the block-storage catalog registration) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. |
 
 ---
 
@@ -943,6 +945,198 @@ block, which would request nothing, with the message
 | --- | --- | --- | --- | --- |
 | `database` | [`*commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | `nil` (shares `spec.infrastructure.database`) | Gives Neutron its own database cluster. In managed mode `clusterRef.name` defaults to `{controlplane}-neutron-db`. A dedicated **managed** database is **`Static`-only**: the defaulting webhook materializes `credentialsMode: Static` and an explicit `Dynamic` is rejected, for the same reason as Keystone (see [Credential modes](#credential-modes)): the OpenBao database engine is bootstrapped once per namespace against the shared cluster, so no engine role can issue credentials for a dedicated instance. Seed and rotate the credential at the OpenBao source. |
 | `cache` | [`*commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | `nil` (shares `spec.infrastructure.cache`) | Gives Neutron its own cache. In managed mode `clusterRef.name` defaults to `{controlplane}-neutron-cache`. |
+
+---
+
+## ServiceCinderSpec
+
+A **curated local subset** of the knobs the ControlPlane exposes for the Cinder
+block-storage service, mirroring `ServiceKeystoneSpec` and `ServiceNeutronSpec`.
+The reconciler (L2) **projects** it into a `Cinder` CR; the database, cache,
+message bus, Keystone endpoint, Glance endpoint, key manager, and internal tenant
+of that child are **derived** from the ControlPlane (`infrastructure.*`, the
+sibling children's naming convention, and operator policy) rather than set here.
+`spec.dbPurge`, `spec.networkPolicy`, `spec.autoscaling`, `spec.logging`,
+`spec.api.uwsgi`, and `spec.policyOverrides` on the child are not projected, so
+the cinder operator's own purge schedule, network policies, autoscaling, logging,
+uWSGI parameters, and policy defaults stay authoritative.
+
+Two fields have no counterpart on the other services. `backends` is required with
+at least one entry, because a Cinder with no volume backend accepts a volume
+request and leaves it in error. `backupBackend` names the driver the one backup
+service writes through, a single property of that service where a volume backend
+is one of several stores. Both project satellite CRs of their own kinds beside
+the `Cinder` child.
+
+Forbidden entirely when `services.keystone.mode` is `External` (Cinder needs its
+own External-mode design), so, like `ServiceNeutronSpec`, none of its fields carry
+per-field External-mode forbid-rules.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `replicas` | `*int32` | No | `nil` | Overrides the number of Cinder API replicas. When `nil` the reconciler applies the cinder operator's own default (3). It sizes the API Deployment alone; the scheduler, volume, and backup Deployments are pinned to one replica by the projection (see below). Minimum 1. |
+| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Cinder container image. When `nil` the reconciler derives `ghcr.io/c5c3/cinder:{spec.openStackRelease}`. When set, the validating webhook mirrors the `commonv1.ImageSpec` tag/digest XOR, so an override naming neither or both is rejected at admission. |
+| `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Cinder API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Cinder API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty and a usable DNS name, enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
+| `publicEndpoint` | `string` | No | `""` | Externally routable Cinder endpoint URL (e.g. `https://cinder.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public block-storage catalog Endpoint, the URL every client resolves to create its volumes, snapshots, and backups; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the ControlPlane appends `/v3` when it registers the row), and be at most 512 characters; a single trailing slash is tolerated and the reconciler trims it before appending `/v3`, so the row never carries `//v3`. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every volume call carries the caller's scoped Keystone token to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
+| `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Cinder on one mode while another service stays on the other. Empty (the default) **inherits** the shared mode, and is not materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Cinder declares a [dedicated](#cinderdedicatedbackingservicesspec) database (dedicated is `Static`-only; set `dedicatedBackingServices.database.credentialsMode` instead, see [Credential modes](#credential-modes)) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
+| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the block-storage service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the Cinder child's `spec.extraConfig`, which carries the `cinder.conf` sections. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block. See [ExtraConfig admission checks](#extraconfig-admission-checks). |
+| `backends` | [`[]CinderBackendEntry`](#cinderbackendentry) | Yes | — | The curated list of volume backends, projected one `CinderBackend` satellite per entry. At least one entry is required: a Cinder with no backend accepts a volume request and leaves it in error, so the `MinItems` floor keeps that shape out of the API. `MaxItems` 32 bounds the child-CR amplification of one admission, since each entry carries a cinder-volume Deployment of its own. A `listType=map` list keyed by `name`, so the API server rejects duplicate names. **Removing an entry is not gated by `c5c3.io/allow-cinder-deletion`** the way removing the whole `cinder` block is: the next pass prunes that entry's `CinderBackend` and the cinder operator unregisters its `cinder-volume` service, leaving every volume keyed to that host unmanageable while the plane still reports `CinderReady=True` off the backends that remain. The update webhook therefore raises an admission warning naming each dropped entry; re-adding it under the same name restores the host identity the volumes are keyed by. |
+| `backupBackend` | [`*CinderBackupBackendEntry`](#cinderbackupbackendentry) | No | `nil` | The driver the backup service writes volume backups through, projected into the one `CinderBackupBackend` satellite. Omitting it leaves the plane without a backup service; removing it from a ControlPlane that had one prunes the satellite, and the Cinder child drops its backup Deployment in turn. |
+| `dedicatedBackingServices` | [`*CinderDedicatedBackingServicesSpec`](#cinderdedicatedbackingservicesspec) | No | `nil` (shares the ControlPlane-wide instances) | Opts Cinder **out** of the shared `spec.infrastructure` instances and gives it a `database` and/or `cache` of its own. Cinder consumes both classes, so it can take either or both dedicated; a declared block must name at least one. |
+| `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the block-storage service, and the database, cache, secret store, and credential material that follow it, in a namespace of its own. Create-only: the validating webhook freezes the block after creation. See [Service Namespaces](#service-namespaces). |
+| `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | No | `nil` (the local cluster the operator runs on) | Places the block-storage service, its satellites, and the database, cache, secret store, and credential material that follow it, on a registered target cluster. The projected `Cinder` CR stays on the management cluster and carries the ref verbatim. Requires a `namespace` block of its own, plus a `publicEndpoint` or a `gateway` so the block-storage catalog advertises an address other clusters resolve (webhook). Create-only: the validating webhook freezes the ref after creation. See [ControlPlane placement](../target-clusters.md#controlplane-placement). |
+
+The logical database name is not exposed here. The projection forces it to
+`cinder` on the child, whether Cinder shares the ControlPlane's database cluster
+or takes a dedicated one: that is the one schema the pre-wired OpenBao engine
+role grants on, so any other name would be issued a credential it cannot use.
+
+Setting `services.cinder` requires `spec.infrastructure.messaging` beside it. The
+Cinder CRD requires `spec.messaging`, and the ControlPlane derives the child's
+transport URL from the shared bus, so a block-storage service declared without one
+would project a child its own admission rejects on every pass; the webhook reports
+the omission on `spec.infrastructure.messaging`. The bus is declared and read in
+the ControlPlane's namespace on the management cluster, while Cinder may run in a
+namespace of its own or on another cluster, so the reconciler resolves the
+transport URL itself and hands the child a **brownfield** `secretRef` naming
+`{controlplane.Name}-cinder-messaging` in the Cinder's own namespace on the
+Cinder's own cluster. A managed `clusterRef` and a brownfield `secretRef` on the
+ControlPlane both arrive there as that one Secret. When the shared bus declares
+`tls`, the CA bundle is mirrored beside it as
+`{controlplane.Name}-cinder-messaging-ca` and named by the child's
+`messaging.tls.caBundleSecretRef`; a bus without `tls` leaves no mirror behind.
+
+Setting `services.cinder` makes the reconciler project a `KeystoneService`
+registration named `{controlplane.Name}-cinder` into the namespace Cinder is
+placed in: the `block-storage` catalog entry plus the `cinder` service account,
+whose project `service-cinder` is created with the roles `service` **and**
+`admin`. That account is the Keystone user the projected child authenticates as,
+so the Cinder child is not projected until the registration reports it
+provisioned (`CinderReady=False/WaitingForServiceRegistration` until then). The
+`admin` role is what no peer registration holds: cinder deletes the Barbican
+secret of an encrypted volume as a fallback when the volume's owner cannot, and
+under Barbican's [secure-RBAC defaults](../barbican/barbican-crd.md#defaulting-and-validation)
+a bare `admin` is the reach that carries `secret:get` and `secret:delete` across
+projects. Both catalog rows carry the project-less `/v3` path the block-storage
+API is served under (decision D8 of #979).
+
+Three fields of the child are **derived** rather than set here. Two of them
+follow sibling service blocks, and neither sibling gates the projection:
+
+- `glanceEndpoint` is the in-cluster Glance API URL while `services.glance` is
+  declared, and empty otherwise. It is what create-volume-from-image reads the
+  image through.
+- `keyManager` names the Barbican child by naming convention while
+  `services.barbican` is declared, and is absent otherwise (decision D9 of #979).
+  It is where castellan stores the LUKS key of an encrypted volume.
+- `internalTenant` carries the `projectID` and `userID` the registration
+  publishes on its `status.account` (decision D10 of #979). It is the identity the
+  image-volume cache owns its cached volumes as, and the block stays unset until
+  the account publishes both IDs, since cinder passes them to the volume API
+  without resolving them through Keystone.
+
+Setting `services.cinder` bounds the ControlPlane's own name too. The projected
+child is `{controlplane.Name}-cinder`, and the Cinder CRD caps `metadata.name` at
+**43** characters so the cinder operator's purge CronJob name
+(`{name}-db-purge`) still fits the API server's 52-character CronJob bound. The
+ControlPlane name may therefore be at most **36** characters while
+`services.cinder` is set. The rule runs on create and on the update that newly
+enables Cinder.
+
+The projection writes `replicas: 1` onto the child's scheduler, volume, and backup
+Deployment blocks. All three are struct values rather than pointers, so
+`deployment: {}` reaches the API server whatever the projection assigns, and the
+shared `DeploymentSpec` default of three lands on the wire before the cinder
+operator's own defaulting webhook runs. The volume and backup blocks are the ones
+that must be pinned: the Cinder CRD's CEL rules admit only `1` there, because the
+NFS drivers refuse a second process under the same host identity, so leaving them
+alone has the Cinder API server reject the child on every pass. The scheduler has
+no CEL rule, and leaving it alone runs three schedulers silently.
+
+### CinderBackendEntry
+
+Declares one curated volume backend, projected one-to-one into a `CinderBackend`
+satellite CR.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | Yes | — | Keys the `listType=map` `backends` list and **is** the projected `CinderBackend`'s `metadata.name`, taken bare rather than prefixed with the ControlPlane's name: cinder keys every volume by the backend it was created on, so a rename would strand the volumes already there. It is also the backend's `[<name>]` section in `cinder.conf` and its `volume_backend_name`. A DNS-1123 label (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`), `MinLength` 1, `MaxLength` 35, the bound `cinderv1alpha1.MaxBackendNameLength` applies to the satellite's own name. The validating webhook adds the two rules the markers cannot express: the name `default` is refused because it names `cinder.conf`'s `[DEFAULT]` section, and `len(controlplane.Name) + 7 + len(name)` must stay at or below **47**, the budget the satellite shares with its `cinderRef` in the `<cinder>-<backend>-service-remove` Job name a detach spawns. |
+| `type` | `string` (`NFS`) | Yes | — | Selects the volume driver. Phase 1 supports `NFS` only; the enum mirrors the `CinderBackend` CR's own, so an entry admitted here can never be rejected downstream by the satellite CRD. |
+| `nfs` | [`*NFSShareSpec`](#nfssharespec) | Conditional | `nil` | Configures the NFS volume driver. A CEL `XValidation` rule (`(self.type == 'NFS') == has(self.nfs)`) requires the block exactly when `type` is `NFS` and forbids it otherwise, with the message `the nfs block must be set exactly when type is NFS`; the validating webhook mirrors it. |
+| `imageVolumeCache` | [`*CinderImageVolumeCacheSpec`](#cinderimagevolumecachespec) | No | `nil` (cache off) | Turns on the per-backend image-volume cache: the first volume created from a given image is kept, and later requests for the same image clone it on the backend instead of pulling through Glance again. The cached volumes are owned by the deployment rather than by the requesting tenant, so the reconciler gives the Cinder child an `internalTenant` as soon as any entry enables the cache. |
+
+Because the satellite carries the bare entry name, it is also the name a person
+naming a hand-made `CinderBackend` picks. `ensureProjectedSatellite` therefore
+refuses to adopt a same-named object this ControlPlane did not create in **every**
+namespace, the ControlPlane's own included, and the prune that follows each
+projection deletes only c5c3-owned satellites.
+
+### NFSShareSpec
+
+The curated NFS export shape projected onto a satellite's `spec.nfs`, shared by
+the volume backends and the backup backend because both mount one export the same
+way. The field bounds mirror the satellite CRD's own `NFSBackendSpec`, so a value
+admitted here can never be rejected downstream.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `server` | `string` | Yes | — | The NFS server the export lives on, as a hostname or an IP address. `MinLength` 1; Pattern `^[A-Za-z0-9.-]+$`, which is the character set a hostname or an IPv4 address carries, because the value reaches the mount command verbatim. |
+| `path` | `string` | Yes | — | The absolute export path on the server. Pattern `^/[!-~]*$`: printable ASCII only, since the satellite renders `server:path` into a config file the cinder pod reads back a line at a time and cuts at the first space. Whitespace would leave cinder addressing a shorter export than the one validated and mounted, and a newline would add a second export line outright. |
+| `mountOptions` | `string` | No | `""` | The comma-separated option string the export is mounted with. It carries **no** schema default: an unset value serializes away, so the satellite CRD's own default (`nfsvers=4.1,soft,timeo=30,retrans=2`) applies at one layer. Override it only where the server demands different semantics, and keep the mount soft: a hard mount blocks the cinder process on an unreachable server rather than failing the request. Pattern `^[^\n\r]*$`, since either character would divide the rendered option line. |
+
+### CinderImageVolumeCacheSpec
+
+Bounds the per-backend image-volume cache projected onto a `CinderBackend`'s
+`spec.imageVolumeCache`. The cache trades backend capacity for
+create-volume-from-image latency: a cached image volume is cloned on the backend,
+which skips the download through Glance.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `enabled` | `bool` | Yes | — | Turns the cache on for this backend. An explicit field rather than the presence of the block, so the bounds can be configured in a ControlPlane that keeps the cache off. |
+| `maxSizeGB` | `*int32` | No | `nil` (unbounded by size) | Caps the total size, in GiB, of the cached image volumes on this backend. Minimum 1. |
+| `maxCount` | `*int32` | No | `nil` (unbounded by count) | Caps the number of cached image volumes on this backend. Minimum 1. |
+
+Both bounds are optional and independent: whichever is reached first evicts the
+least recently used entry. Leaving both unset caches without a bound, which suits
+a backend with capacity to spare and nothing else.
+
+### CinderBackupBackendEntry
+
+Declares the curated backup driver, projected one-to-one into the one
+`CinderBackupBackend` satellite CR. It is a separate shape from
+[`CinderBackendEntry`](#cinderbackendentry) because the two describe different
+things: a backend is one of several volume stores and gets a cinder-volume
+Deployment of its own, while the backup driver is a single property of the one
+cinder-backup Deployment, with chunking and compression knobs no volume backend
+carries.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | Yes | — | Embedded verbatim in the projected `CinderBackupBackend`'s name, hence the DNS-1123 label shape (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`), `MinLength` 1, `MaxLength` 63. Unlike a volume backend's name it names no `cinder.conf` section, so it takes the full label bound, and it enters no Job name: detaching a backup backend runs no service-remove Job, so it carries no composed bound either. |
+| `type` | `string` (`NFS`) | Yes | — | Selects the backup driver. Phase 1 supports `NFS` only; the enum mirrors the `CinderBackupBackend` CR's own. |
+| `nfs` | [`*NFSShareSpec`](#nfssharespec) | Conditional | `nil` | Configures the NFS backup driver. The same CEL `XValidation` union rule as the volume backend: required exactly when `type` is `NFS`, forbidden otherwise. |
+| `fileSize` | `*int64` | No | `nil` (the satellite CRD's `52428800`, 50 MiB) | The size in bytes of one backup chunk: cinder splits a volume into objects of this size and writes them one at a time, so it bounds both the memory a backup holds and the work a failed chunk costs. Minimum `1048576` (1 MiB) and `MultipleOf` `32768`, the block size cinder hashes chunks in. It carries **no** schema default, so an unset value serializes away and the satellite CRD's own default applies at one layer. |
+| `compression` | `string` (`none` \| `zlib` \| `bz2` \| `zstd`) | No | `""` (the satellite CRD's `zlib`) | The algorithm each chunk is compressed with. `none` writes the chunks uncompressed, trading backup capacity for CPU on the backup pod. Like `fileSize` it carries **no** schema default. |
+
+### CinderDedicatedBackingServicesSpec
+
+Declares the backing-service instances the block-storage service gets for itself
+instead of the ControlPlane-wide shared ones, on the same contract as
+[`KeystoneDedicatedBackingServicesSpec`](#dedicatedbackingservices). Cinder
+consumes both a database and a cache, so it can take either or both dedicated; a
+class left unset resolves to the ControlPlane-wide instance in
+`spec.infrastructure`.
+
+The block is optional, but a declared one must name at least one class. A CEL
+`XValidation` rule (`has(self.database) || has(self.cache)`) rejects an empty
+block, which would request nothing, with the message
+`dedicatedBackingServices must declare at least one backing-service class (database, cache)`.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `database` | [`*commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | `nil` (shares `spec.infrastructure.database`) | Gives Cinder its own database cluster. In managed mode `clusterRef.name` defaults to `{controlplane}-cinder-db`. A dedicated **managed** database is **`Static`-only**: the defaulting webhook materializes `credentialsMode: Static` and an explicit `Dynamic` is rejected, for the same reason as Keystone (see [Credential modes](#credential-modes)): the OpenBao database engine is bootstrapped once per namespace against the shared cluster, so no engine role can issue credentials for a dedicated instance. Seed and rotate the credential at the OpenBao source. |
+| `cache` | [`*commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | `nil` (shares `spec.infrastructure.cache`) | Gives Cinder its own cache. In managed mode `clusterRef.name` defaults to `{controlplane}-cinder-cache`. |
 
 ---
 
@@ -1516,7 +1710,7 @@ the kind/name and applies it.
 | `conditions` | `[]metav1.Condition` | Latest available observations of the control-plane state. Each condition carries an `observedGeneration`. See [Status Conditions](#status-conditions). |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from a current one. |
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
-| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with one entry per managed service in a stable order — `keystone`, `horizon`, `glance`, `placement`, `barbican`, then `neutron` — each present only when its `spec.services.<svc>` is set. Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` / `NeutronReady` condition and its `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported. See [ServiceStatus](#servicestatus). |
+| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with one entry per managed service in a stable order — `keystone`, `horizon`, `glance`, `placement`, `barbican`, `neutron`, then `cinder` — each present only when its `spec.services.<svc>` is set. Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` / `NeutronReady` / `CinderReady` condition and its `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported. See [ServiceStatus](#servicestatus). |
 | `catalog` | [`*CatalogStatus`](#catalogstatus) | Observed state of the External-mode catalog imports. Nil in Managed mode, where the control plane creates the catalog entries rather than importing them. See [CatalogStatus](#catalogstatus). |
 
 > **`updatePhase` vs the Keystone CRD's `upgradePhase`.** These field names are
@@ -1744,7 +1938,7 @@ Keystone discipline:
 | `spec.services.keystone.external.caBundleSecretRef.name` | MinLength 1 (shared `SecretRefSpec` marker) |
 | `spec.services.keystone.caBundleSecretRef.name` | MinLength 1 (shared `SecretRefSpec` marker) |
 | `spec.services.keystone.databaseCredentialsMode` | Enum: `Static`, `Dynamic` |
-| `spec.services.{keystone,horizon,glance,placement,barbican,neutron}.targetClusterRef.name` | MinLength 1; Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` — a DNS-1123 subdomain, from the shared `commonv1.TargetClusterRefSpec` markers, so a name no registration Secret could carry is refused before the resolver ever sees it |
+| `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.targetClusterRef.name` | MinLength 1; Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` — a DNS-1123 subdomain, from the shared `commonv1.TargetClusterRefSpec` markers, so a name no registration Secret could carry is refused before the resolver ever sees it |
 | `spec.korc.adminCredential.applicationCredential.accessRules[].method` | Enum: `CONNECT`, `DELETE`, `GET`, `HEAD`, `OPTIONS`, `PATCH`, `POST`, `PUT`, `TRACE` |
 | `spec.korc.adminCredential.applicationCredential.accessRules[].path` | Pattern `^/` |
 | `spec.korc.adminCredential.bootstrapResources[].kind` | Enum: `Project`, `Role` |
@@ -1819,8 +2013,8 @@ short-circuit on the first error.
 | External caBundle name required | `spec.services.keystone.external.caBundleSecretRef.name` | `field.Required` | `caBundleSecretRef` set with an empty `name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
 | Managed-only field forbidden in External mode | `spec.services.keystone.{replicas,image,policyOverrides,extraConfig,rotationInterval,gateway,publicEndpoint,federationProxyImage}` | `field.Forbidden` | The field is set while `mode: External`. Defense-in-depth mirror of the per-field CEL rules. |
 | Keystone credentials-mode override forbidden in External mode | `spec.services.keystone.databaseCredentialsMode` | `field.Forbidden` | The per-service override is set while `mode: External` — no managed database is provisioned, so there is no credentials mode to override. Defense-in-depth mirror of the per-field CEL rule. |
-| Dynamic credentials-mode override on a dedicated database | `spec.services.{keystone,glance,placement,barbican,neutron}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while that service declares a dedicated database: the override retargets the shared database the service does not use, and a dedicated database is `Static`-only (set `dedicatedBackingServices.database.credentialsMode` instead). `Static` stays admitted. **Cross-field, webhook-only.** |
-| Dynamic credentials-mode override on a brownfield shared database | `spec.services.{keystone,glance,placement,barbican,neutron}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while the shared database is brownfield (`clusterRef` unset): the dynamic engine issues per-tenant DB users only against a cluster the operator provisions. **Cross-field, webhook-only.** |
+| Dynamic credentials-mode override on a dedicated database | `spec.services.{keystone,glance,placement,barbican,neutron,cinder}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while that service declares a dedicated database: the override retargets the shared database the service does not use, and a dedicated database is `Static`-only (set `dedicatedBackingServices.database.credentialsMode` instead). `Static` stays admitted. **Cross-field, webhook-only.** |
+| Dynamic credentials-mode override on a brownfield shared database | `spec.services.{keystone,glance,placement,barbican,neutron,cinder}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while the shared database is brownfield (`clusterRef` unset): the dynamic engine issues per-tenant DB users only against a cluster the operator provisions. **Cross-field, webhook-only.** |
 | Federation proxy image resolvable | `spec.services.keystone.federationProxyImage` | `field.Required` / `field.Invalid` | Empty `repository`, or neither/both of `tag` and `digest`. Surfaces on the ControlPlane the operator edits rather than as an opaque `KeystoneProjectionRejected` condition on the child. |
 | Dashboard public endpoint is a URL | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Not an absolute HTTP(S) URL with a host. Keystone matches the derived WebSSO origin verbatim, so an unusable endpoint could never match any dashboard. |
 | Dashboard public endpoint is a bare origin | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Carries a path, query, or fragment (a single trailing `/` is trimmed and allowed). The `^https?://` pattern anchors only the prefix, so `https://horizon.example.com?utm=1` is schema-legal and would render the trusted origin `https://horizon.example.com?utm=1/auth/websso/` — accepted by Keystone, matched by nothing. **Webhook-only.** |
@@ -1857,7 +2051,7 @@ short-circuit on the first error.
 | Glance ignored-role bounds | `spec.services.glance.importPlugins.injectMetadata.ignoreUserRoles` | `field.TooMany` / `field.Invalid` | The list exceeds 64 items, or an item is empty, longer than 255 characters, or carries a comma, newline, or carriage return. The rendered `ignore_user_roles` is a plain comma join, so a comma would split one role into two. The item markers bound length; the content checks are **webhook-only**. |
 | Glance decompression needs a chosen staging bound | `spec.services.glance.staging.sizeLimit` | `field.Required` | `services.glance.importPlugins.decompression` is set while `services.glance.staging` leaves both `sizeLimit` and `unbounded` unset. The plugin expands the staged image by a ratio the caller picks and nothing caps the result, which makes that bound the only one in the path — and the operator default was sized against the largest download, not the largest unpacked image. Both blocks are projected onto the Glance child untouched, so the same exported validator enforces the pairing there. **Cross-field, webhook-only.** |
 | Glance forbidden in External mode | `spec.services.glance` | `field.Forbidden` | `services.glance` set while `mode: External` (Glance needs its own External-mode design). **Cross-field, webhook-only.** |
-| Neutron needs the shared bus | `spec.infrastructure.messaging` | `field.Required` | `services.neutron` is set while `spec.infrastructure` carries no `messaging` block: "is required when services.neutron is set: the Neutron CRD requires spec.messaging, and the ControlPlane derives the child's transport URL from the shared bus". Without it the ControlPlane would project a child its own admission rejects on every pass. A nil `spec.infrastructure` is left to the mode matrix, which already requires the block outside External mode and forbids `services.neutron` inside it. The rule lives in `validateMessagingConsumers`, which requires the bus once per declared service whose child CRD needs it; Neutron is the one such service. **Cross-field, webhook-only.** |
+| Neutron needs the shared bus | `spec.infrastructure.messaging` | `field.Required` | `services.neutron` is set while `spec.infrastructure` carries no `messaging` block: "is required when services.neutron is set: the Neutron CRD requires spec.messaging, and the ControlPlane derives the child's transport URL from the shared bus". Without it the ControlPlane would project a child its own admission rejects on every pass. A nil `spec.infrastructure` is left to the mode matrix, which already requires the block outside External mode and forbids `services.neutron` inside it. The rule lives in `validateMessagingConsumers`, which requires the bus once per declared service whose child CRD needs it; Neutron and Cinder are the two such services. **Cross-field, webhook-only.** |
 | Neutron names its OVN control plane | `spec.services.neutron.ovn.centralRef.name` | `field.Required` | The name is empty: "must be set: it names the OVNCentral the projected Neutron programs". Defense-in-depth mirror of the `MinLength=1` marker; the ML2/OVN mechanism driver writes every network, subnet, and port into that central's Northbound database. |
 | OVN central namespace shape | `spec.services.neutron.ovn.centralRef.namespace` | `field.Invalid` | A non-empty namespace is not a lowercase alphanumeric RFC-1123 label; it names a Kubernetes namespace. Defense-in-depth mirror of the `Pattern` marker. |
 | OVN central stays inside the plane | `spec.services.neutron.ovn.centralRef.namespace` | `field.Forbidden` | The namespace is neither the ControlPlane's own nor one it claims through a `services.<service>.namespace` assignment, or it is such a claim with `lifecycle: Managed`. It is the one ControlPlane field that addresses another namespace: consuming a foreign central mirrors that central's client certificate — a full mTLS identity for its Northbound and Southbound databases — into this plane, and a `Managed` claim is deleted with the plane, taking the referenced central and its databases along. Runs on create and on the two updates that can newly violate it — the one that enables the network service and the one that moves the ref — so a grandfathered CR stays updatable and deletable; `reconcileOVN` re-runs the check as the controller-side backstop. **Cross-field, webhook-only.** |
@@ -1866,10 +2060,26 @@ short-circuit on the first error.
 | Neutron public endpoint agrees with the gateway | `spec.services.neutron.publicEndpoint` | `field.Invalid` | With `services.neutron.gateway` set: the scheme is not `https` (the listener terminates TLS, and every network call sends the caller's scoped Keystone token to this endpoint), or its host differs from `gateway.hostname` (the listener is what routes that hostname to the Neutron API). The port may differ, since Gateway API hostnames carry none. **Cross-field, webhook-only.** |
 | Neutron image resolvable | `spec.services.neutron.image` | `field.Invalid` | The image override sets neither or both of `tag` and `digest` (mirrors the `commonv1.ImageSpec` tag/digest XOR). |
 | Projected Neutron name bound | `metadata.name` | `field.Invalid` | The projected child `{controlplane.Name}-neutron` would exceed the 40-character `metadata.name` cap the Neutron CRD enforces, so a 33-character ControlPlane name is rejected ("would be 41 characters") and a 32-character one is accepted. Runs on create and on the update that newly declares `services.neutron`: the ControlPlane name is immutable, so on a routine update the rule could only fire against a CR a pre-upgrade operator already admitted, including the finalizer-removal update that completes its deletion. **Webhook-only.** |
-| Target-cluster ref shape | `spec.services.{keystone,horizon,glance,placement,barbican,neutron}.targetClusterRef.name` | `field.Required` | The ref is set with an empty `name`. Defense-in-depth mirror of the `MinLength=1` marker on the shared `commonv1.TargetClusterRefSpec`, applied through `validation.TargetClusterRef` for a caller that bypasses CRD schema admission. |
-| Placed service needs a namespace of its own | `spec.services.{keystone,horizon,glance,placement,barbican,neutron}.namespace` | `field.Required` | `targetClusterRef` is set while the service declares no `namespace` block. Every namespace maps to exactly one cluster and the ControlPlane's own stays on the local one, so the service's database, tenant store, and credential material would be provisioned in a namespace living on a different cluster than the ref names. **Cross-field, webhook-only.** |
-| Placed catalog service needs a public address | `spec.services.{keystone,glance,placement,barbican,neutron}.publicEndpoint` | `field.Required` | The service is placed with neither a `publicEndpoint` nor a `gateway`. The catalog would then advertise the in-cluster Service DNS name, which resolves nowhere outside the cluster that service runs on, so every client reading the catalog from elsewhere gets an address it cannot connect to. Horizon is exempt: the dashboard is reached by a browser rather than looked up in the catalog. **Cross-field, webhook-only.** |
-| Co-located services agree on the target cluster | `spec.services.{keystone,horizon,glance,placement,barbican,neutron}.targetClusterRef` | `field.Invalid` | Two services declare the same `namespace.name` but do not name the same cluster — an unplaced service counts as naming the local one. The namespace exists on exactly one cluster, together with the backing services, the tenant store, and the credential material scoped to it. The co-location rule of the `namespace` assignment, one level out. **Cross-item, webhook-only.** |
+| Cinder needs the shared bus | `spec.infrastructure.messaging` | `field.Required` | `services.cinder` is set while `spec.infrastructure` carries no `messaging` block: "is required when services.cinder is set: the Cinder CRD requires spec.messaging, and the ControlPlane derives the child's transport URL from the shared bus". Reported by the same `validateMessagingConsumers` as the Neutron rule above, once per declared consumer. **Cross-field, webhook-only.** |
+| Cinder declares a volume backend | `spec.services.cinder.backends` | `field.Required` | No backend is declared. Mirrors the `MinItems=1` marker: a Cinder with no backend accepts a volume request and leaves it in error. |
+| Cinder backend type/nfs union | `spec.services.cinder.backends[]` | `field.Invalid` | The `nfs` block is not set exactly when `type` is `NFS`. Mirrors the per-entry union CEL rule on `CinderBackendEntry`, with the same message (`the nfs block must be set exactly when type is NFS`). |
+| Cinder backup backend type/nfs union | `spec.services.cinder.backupBackend` | `field.Invalid` | The `nfs` block is not set exactly when `type` is `NFS`. Mirrors the union CEL rule on `CinderBackupBackendEntry`. |
+| Cinder NFS export addressable | `spec.services.cinder.backends[].nfs.server` / `.path`, `spec.services.cinder.backupBackend.nfs.server` / `.path` | `field.Required` | A declared `nfs` block leaves `server` or `path` empty. Mirrors the `MinLength` markers: without both, the satellite renders a `server:path` line the cinder pod cannot mount. |
+| Cinder NFS export renders one line | `spec.services.cinder.backends[].nfs.server` / `.path` / `.mountOptions`, and the same three under `spec.services.cinder.backupBackend.nfs` | `field.Invalid` | The `server` is not `^[A-Za-z0-9.-]+$` (it reaches the mount command verbatim), the `path` is not `^/[!-~]*$` (a space cuts the export short and a newline appends a second one to the rendered shares file cinder reads a line at a time), or `mountOptions` carries a newline or carriage return (it would divide the rendered option line). Mirrors the three `Pattern` markers on `NFSShareSpec`, so a caller reaching a current operator through a stale CRD copy is rejected at admission with the field named rather than admitted and wedged on the satellite webhook's `CinderReady=False` / `CinderBackendProjectionRejected`. |
+| Cinder backend name is not `default` | `spec.services.cinder.backends[].name` | `field.Invalid` | The name is `default`, compared case-insensitively because cinder reads section names that way. It names `cinder.conf`'s `[DEFAULT]` section, so the backend's options would be read as service-wide ones. **Webhook-only.** |
+| Cinder backend child-name budget | `spec.services.cinder.backends[].name` | `field.Invalid` | `len(controlplane.Name) + 7 + len(name)` exceeds **47**. Detaching a backend runs a `<cinder>-<backend>-service-remove` Job whose name is copied into a label value, so the projected Cinder name and the backend name share one budget; the message names the `service-remove Job name` and asks for a sum `at or below 47`. Without the guard the ControlPlane admits and the detach then fails on a Job the API server rejects. **Cross-field, webhook-only.** |
+| Cinder backup chunk size | `spec.services.cinder.backupBackend.fileSize` | `field.Invalid` | The chunk size is below `1048576` bytes (1 MiB) or is not a multiple of `32768`, the block size cinder hashes backup chunks in. Mirrors the `Minimum` and `MultipleOf` markers. |
+| Cinder backup compression | `spec.services.cinder.backupBackend.compression` | `field.NotSupported` | The algorithm is none of `none`, `zlib`, `bz2`, `zstd`. Mirrors the CRD enum marker. |
+| Cinder gateway hostname required | `spec.services.cinder.gateway.hostname` | `field.Required` | A `gateway` is configured but its `hostname` is empty. Mirrors the `+kubebuilder:validation:MinLength=1` marker on `commonv1.GatewaySpec.Hostname`; without it the derived public endpoint has an empty host. The same usable-DNS-name check that applies to the Keystone/Horizon gateway hostnames applies here too. |
+| Cinder public endpoint is a URL | `spec.services.cinder.publicEndpoint` | `field.Invalid` | Not an absolute HTTP(S) URL with a host. The value is advertised verbatim as the public block-storage catalog Endpoint and is projected into no child CR, so `https://` would register a hostless URL that no client can resolve and nothing downstream would catch. |
+| Cinder public endpoint is a bare origin | `spec.services.cinder.publicEndpoint` | `field.Invalid` | Carries a path, query, or fragment (a single trailing `/` is allowed, and `cinderCatalogURL` trims it before joining `/v3`). The `^https?://` pattern anchors only the prefix, so `https://cinder.example.com?utm=1` is schema-legal; the ControlPlane appends `/v3` when it registers the row, yielding `https://cinder.example.com?utm=1/v3` and a 404 on every volume call. **Webhook-only.** |
+| Cinder public endpoint agrees with the gateway | `spec.services.cinder.publicEndpoint` | `field.Invalid` | With `services.cinder.gateway` set: the scheme is not `https` (the listener terminates TLS, and every volume call sends the caller's scoped Keystone token to this endpoint), or its host differs from `gateway.hostname` (the listener is what routes that hostname to the Cinder API). The port may differ, since Gateway API hostnames carry none. **Cross-field, webhook-only.** |
+| Cinder image resolvable | `spec.services.cinder.image` | `field.Invalid` | The image override sets neither or both of `tag` and `digest` (mirrors the `commonv1.ImageSpec` tag/digest XOR). |
+| Projected Cinder name bound | `metadata.name` | `field.Invalid` | The projected child `{controlplane.Name}-cinder` would exceed the 43-character `metadata.name` cap the Cinder CRD enforces, which is itself the 52-character CronJob bound minus the `-db-purge` suffix of the purge CronJob. The ControlPlane name may therefore be at most 36 characters while `services.cinder` is set. Runs on create and on the update that newly declares `services.cinder`, for the reason the Neutron bound above is also gated. **Webhook-only.** |
+| Target-cluster ref shape | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.targetClusterRef.name` | `field.Required` | The ref is set with an empty `name`. Defense-in-depth mirror of the `MinLength=1` marker on the shared `commonv1.TargetClusterRefSpec`, applied through `validation.TargetClusterRef` for a caller that bypasses CRD schema admission. |
+| Placed service needs a namespace of its own | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.namespace` | `field.Required` | `targetClusterRef` is set while the service declares no `namespace` block. Every namespace maps to exactly one cluster and the ControlPlane's own stays on the local one, so the service's database, tenant store, and credential material would be provisioned in a namespace living on a different cluster than the ref names. **Cross-field, webhook-only.** |
+| Placed catalog service needs a public address | `spec.services.{keystone,glance,placement,barbican,neutron,cinder}.publicEndpoint` | `field.Required` | The service is placed with neither a `publicEndpoint` nor a `gateway`. The catalog would then advertise the in-cluster Service DNS name, which resolves nowhere outside the cluster that service runs on, so every client reading the catalog from elsewhere gets an address it cannot connect to. Horizon is exempt: the dashboard is reached by a browser rather than looked up in the catalog. **Cross-field, webhook-only.** |
+| Co-located services agree on the target cluster | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.targetClusterRef` | `field.Invalid` | Two services declare the same `namespace.name` but do not name the same cluster — an unplaced service counts as naming the local one. The namespace exists on exactly one cluster, together with the backing services, the tenant store, and the credential material scoped to it. The co-location rule of the `namespace` assignment, one level out. **Cross-item, webhook-only.** |
 | Target-cluster ref forbidden in External mode | `spec.services.keystone.targetClusterRef` | `field.Forbidden` | The ref is set while `mode: External` — no Keystone workload is deployed, so there is nothing to place. Defense-in-depth mirror of the per-field CEL rule. |
 | Placed service needs a published Keystone | `spec.services.keystone.publicEndpoint` | `field.Required` | Another service is placed on a target cluster while Keystone advertises neither a `publicEndpoint` nor a `gateway`. That service validates its tokens against Keystone and cannot resolve Keystone's in-cluster Service DNS name from another cluster, so the operator would project an empty `spec.keystoneEndpoint` onto the placed child — which the child's own CRD refuses (`MinLength=1`, `^https?://`) on every pass. The rule above only reaches a service carrying a ref of its own, so an unplaced Keystone falls outside it. **Cross-field, webhook-only.** |
 | Keystone endpoint must use https across a cluster boundary | `spec.services.keystone.publicEndpoint` | `field.Invalid` | The endpoint's scheme is `http` while Keystone carries a `targetClusterRef` **or** another service is placed away from an unplaced Keystone. Either way that URL is the `auth_url` the operator renders the admin password and every service-account password next to, and those credentials cross a cluster boundary to reach it — K-ORC dials it from the management cluster when Keystone moves, a placed service dials it from the target when the service moves. The `^https?://` pattern admits `http://` for the all-local case, where the URL feeds only the bootstrap and the catalog. **Cross-field, webhook-only.** |
@@ -1966,6 +2176,38 @@ Each one either points the mechanism driver at a logical model the operator does
 not own, copies credential material into the config Secret every pod mounts, or
 takes the API off token validation and the instance ports off their OVN ACLs, and
 all of it lands the moment the pods load the rendered file.
+
+The block-storage service's catalog is resolved from `spec.openStackRelease` and
+exempts no sections either: it is the flat union of the `cinder.conf` generator
+files, so the exemptions are keys-only. A section named after a declared backend
+is therefore reported as unknown, which is what the Cinder child's own catalog
+check does with it too. Cinder's always-rejected owned keys are
+`[DEFAULT] auth_strategy` and `api_paste_config` (the WSGI pipeline is what puts
+keystonemiddleware in front of an API `services.cinder.gateway` can publish
+outside the cluster), `[DEFAULT] transport_url`, `[database] connection`,
+`[keystone_authtoken] password` and `[service_user] password` (all four arrive
+through env overrides at runtime, so a file value is inert and only copies
+credential material into the config Secret every pod mounts), and the
+`helper_command` / `capabilities` pairs of `[cinder_sys_admin]` and
+`[privsep_osbrick]`, which are the command the volume and backup services run as
+root and the capability set it keeps.
+
+Three further keys are rejected only while `services.barbican` is declared:
+`[key_manager] backend`, `[barbican] barbican_endpoint`, and
+`[barbican] auth_endpoint`. The ControlPlane projects the Cinder child's
+`keyManager` from the Barbican child by naming convention (decision D9 of #979),
+so beside a declared key manager an override names one the plane does not own,
+and the volume-encryption keys are written to or read from a service this
+ControlPlane never provisioned. The message reads
+`is projected by the ControlPlane from services.barbican (<owner>); remove the
+override or unset services.barbican`. Without `services.barbican` the three keys
+stay Reported, which is what lets an external key manager be configured by hand.
+
+A backend name that collides with a `cinder.conf` catalog section other than
+`default` is admitted here and refused downstream: that catalog lives in the
+cinder module, so the cinder webhook rejects the projected `CinderBackend` and
+the ControlPlane reports `CinderReady=False` with reason
+`CinderBackendProjectionRejected`.
 
 The catalogs consulted here are the ones embedded in the **c5c3-operator** build.
 A deployed service operator of a different build may embed a different catalog;
@@ -2079,7 +2321,7 @@ migration feature can relax it.
 | Messaging clusterRef.name immutable | `spec.infrastructure.messaging.clusterRef.name` | Both managed, but the name changed: "managed messaging clusterRef.name is immutable" |
 | Cloud secretName immutable | `spec.korc.adminCredential.cloudCredentialsRef.secretName` | The value changed |
 | Region immutable | `spec.region` | The region changed |
-| Service target cluster immutable | `spec.services.{keystone,horizon,glance,placement,barbican,neutron}.targetClusterRef` | The ref was added, removed, or renamed on a service the old revision already declared; the message contains `targetClusterRef is immutable`, the same string the workload CRDs' CEL transition rules pin. Re-pointing a live service leaves its workload, its database, its tenant store, and its credential material on the cluster they were created on, and nothing in the following reconcile moves or reaps them. Webhook-only, with **no** CEL transition rule, so a migration between clusters can be gated later rather than being blocked forever — the same rationale as the `namespace` freeze. A service the old revision did **not** declare may appear placed: that is the service's creation, not a move. |
+| Service target cluster immutable | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.targetClusterRef` | The ref was added, removed, or renamed on a service the old revision already declared; the message contains `targetClusterRef is immutable`, the same string the workload CRDs' CEL transition rules pin. Re-pointing a live service leaves its workload, its database, its tenant store, and its credential material on the cluster they were created on, and nothing in the following reconcile moves or reaps them. Webhook-only, with **no** CEL transition rule, so a migration between clusters can be gated later rather than being blocked forever — the same rationale as the `namespace` freeze. A service the old revision did **not** declare may appear placed: that is the service's creation, not a move. |
 | Release downgrade rejected | `spec.openStackRelease` | New release `(year, minor)` is lower than the old (upgrades and same-release updates allowed) |
 
 ---
@@ -2202,12 +2444,19 @@ markers' documented values where a marker also exists.
 | `spec.services.neutron.ovn.centralRef.namespace` | `== ""` (a `neutron` block is declared) | the ControlPlane's own namespace | Webhook-only |
 | `spec.services.neutron.dedicatedBackingServices.database.clusterRef.name` | managed dedicated database declared, `== ""` | `{controlplane}-neutron-db` (and `credentialsMode` → `Static`) | Webhook-only, brownfield-guarded |
 | `spec.services.neutron.dedicatedBackingServices.cache.clusterRef.name` | managed dedicated cache declared, `len(servers) == 0` | `{controlplane}-neutron-cache` | Webhook-only, brownfield-guarded |
-| `spec.services.{keystone,horizon,glance,placement,barbican,neutron}.namespace.lifecycle` | `== ""` (a `namespace` block is declared) | `Managed` | Marker + webhook |
+| `spec.services.cinder.dedicatedBackingServices.database.clusterRef.name` | managed dedicated database declared, `== ""` | `{controlplane}-cinder-db` (and `credentialsMode` → `Static`) | Webhook-only, brownfield-guarded |
+| `spec.services.cinder.dedicatedBackingServices.cache.clusterRef.name` | managed dedicated cache declared, `len(servers) == 0` | `{controlplane}-cinder-cache` | Webhook-only, brownfield-guarded |
+| `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.namespace.lifecycle` | `== ""` (a `namespace` block is declared) | `Managed` | Marker + webhook |
 
 The `centralRef.namespace` default is a convenience only.
 `NeutronOVNCentralNamespace()` reads an empty value as the ControlPlane's
 namespace too, so a CR that bypassed the webhook is reconciled against the same
 `OVNCentral` as one that went through it.
+
+No leaf of `services.cinder.backends` or `services.cinder.backupBackend` is
+defaulted. `mountOptions`, `fileSize`, and `compression` carry no schema default
+on purpose, so an unset value serializes away and the satellite CRD's own default
+applies at one layer.
 
 <a id="secretref-default-note"></a>
 > **† `database.secretRef.name` default — managed-mode convenience name only.**
@@ -2280,19 +2529,20 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by seventeen sub-reconcilers, each owning one
+The ControlPlane status is driven by eighteen sub-reconcilers, each owning one
 condition type, plus an aggregate `Ready` condition. The condition-type
 constants in `controlplane_controller.go` (`subConditionTypes`) are the single
 source of truth; call sites reference the constants rather than inline literals.
 
 The sub-reconcilers run in dependency order; a stage that has not converged
 requeues and stops the chain, so later conditions are never computed against a
-half-built earlier stage. Eight stages additionally gate **explicitly** on an
+half-built earlier stage. Nine stages additionally gate **explicitly** on an
 earlier condition being `True` (`reconcileKeystone` on `InfrastructureReady`,
 `reconcileHorizon` on `KeystoneReady`, `reconcileGlance`, `reconcilePlacement`
 and `reconcileBarbican` on `KeystoneReady` and on the `AccountReady` of the
 `KeystoneService` registration each of them projects for itself,
 `reconcileNeutron` on `KeystoneReady` and `OVNReady` plus its own registration,
+`reconcileCinder` on `KeystoneReady` plus its own registration,
 `reconcileAdminCredential` on `KORCReady`, `reconcileCatalog` on
 `AdminCredentialReady`):
 
@@ -2300,8 +2550,8 @@ and `reconcileBarbican` on `KeystoneReady` and on the `AccountReady` of the
 NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady
   → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady
   → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady
-  → BarbicanReady → OVNReady → NeutronReady → ServiceAccountsReady
-  → RegistrationTenantStoresReady
+  → BarbicanReady → OVNReady → NeutronReady → CinderReady
+  → ServiceAccountsReady → RegistrationTenantStoresReady
 ```
 
 `ESOTenantStoreReady` runs ahead of every store-consuming stage because it
@@ -2512,6 +2762,46 @@ A registration that is provisioned but not yet fully `Ready` relays its own
 first failing sub-condition's reason onto `NeutronReady`, so a catalog-level
 collision surfaces here under the registration's own vocabulary.
 
+### CinderReady
+
+Set by `reconcileCinder`. It is gated on `KeystoneReady` (Cinder validates every
+token against the Keystone child) and on the projected `KeystoneService`
+registration having provisioned the `cinder` service account. There is no OVN
+gate, and Glance and Barbican are siblings rather than gates: a Cinder with an
+empty `glanceEndpoint` and no `keyManager` runs, and the pass that follows a
+sibling block being declared re-renders the child with it. Once gated through,
+the pass delivers the shared message bus into the namespace the block-storage
+service runs in, ensures the DB credential, and projects the `CinderBackend` and
+`CinderBackupBackend` satellites before the child, so everything the child
+references exists by the time the cinder operator resolves it. Cinder is
+**forbidden in External mode**, so it is only ever managed against a Managed-mode
+Keystone.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `CinderReady` | The projected Cinder CR reports Ready and its registration reports Ready. |
+| `True` | `CinderNotManaged` | `spec.services.cinder` is unset: no block-storage service is managed, so the aggregate `Ready` is not blocked. Any previously-projected Cinder child (with its two satellite kinds, its DB-credential ExternalSecret, the two messaging Secrets, and the registration) is **preserved** unless the `c5c3.io/allow-cinder-deletion: "true"` annotation opts in to its deletion. The dynamic DB-credential generator, its ServiceAccount, and its client Certificate are torn down **either way**. |
+| `False` | `WaitingForKeystone` | `KeystoneReady` is not `True`; Cinder projection deferred. Requeue 5s. |
+| `False` | `WaitingForMessagingCredentials` | The shared bus has not delivered its transport URL yet: the `RabbitmqCluster`, its default-user Secret, or the brownfield Secret is missing. Nothing is written, so the child never sees a partial URL. Requeue 15s. |
+| `False` | `WaitingForMessagingCABundle` | `spec.infrastructure.messaging.tls` names a CA bundle Secret that does not exist, or one that carries no data under the referenced key. Requeue 15s. |
+| `False` | `CinderMessagingError` | Error resolving the shared transport URL, writing either messaging Secret into the Cinder namespace, or removing the stale CA mirror after the `tls` block was dropped. |
+| `False` | `TargetClusterUnavailable` | The cluster the Cinder namespace lives on did not resolve, so the messaging Secrets, the registration's credential mirror, or the DB-credential objects cannot be written there. The resolver's own message is relayed. Requeue 15s from the bus delivery, 10s from the registration mirror and the DB credential. |
+| `False` | `WaitingForServiceRegistration` | The projected `KeystoneService` registration has not provisioned the `cinder` account yet; projection deferred until its Keystone user and password exist. The message relays the registration's own failing sub-condition, so a collision on the `cinder` user or its catalog row reads here verbatim. |
+| `False` | `ServiceRegistrationError` | Kubernetes-level error writing, reading, or mirroring the `KeystoneService` registration child; a refused adoption of a same-named foreign CR is among them. |
+| `False` | `ServiceRegistrationFieldsReclaimed` | The pass reset a spec field another field manager had written on the registration child (an `adopt` consent, a `rotation` block, or an extra catalog endpoint). The condition names the same fields as the `Warning` event and stands until a pass reads an untampered child. |
+| `False` | `SecretStoreNotReady` | The block-storage service is placed on a target cluster whose secret store is not ready, so the registration's consumer credentials cannot be materialised there. Requeue 10s. |
+| `False` | `CinderDBCredentialError` | Error ensuring or reading the Cinder DB-credential objects (managed database only). |
+| `False` | `WaitingForCinderDBCredential` | `credentialsMode: Dynamic` is in effect but no engine-issued credential has materialised yet: either the generator-backed DB-credential ExternalSecret has not synced, or (on a Static→Dynamic migration, where the ExternalSecret is updated in place and keeps reporting the previous Static sync's `Ready`) the Secret it targets still carries the retired static username. No Cinder CR is projected, and an existing child keeps its current mode, until one does. The message names the `database/mariadb/creds/cinder-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the stale username it found. Requeue 10s. |
+| `False` | `CinderBackendError` | Error projecting or pruning a `CinderBackend` or the `CinderBackupBackend` satellite. The pass halts here rather than applying the child behind it, which would run with a backend set the ControlPlane never projected. |
+| `False` | `CinderBackendProjectionRejected` | The Cinder API server rejected a projected satellite (HTTP 422). A backend name colliding with a `cinder.conf` catalog section other than `default` is the case the ControlPlane webhook deliberately leaves to the cinder module. Reconcile the `services.cinder.backends` / `services.cinder.backupBackend` entries to a valid projection to recover. |
+| `False` | `WaitingForCinder` | The Cinder CR is ensured but not yet Ready. Requeue 15s. |
+| `False` | `CinderProjectionRejected` | The Cinder API server rejected the projected Cinder spec (HTTP 422): the projection violates a CRD/webhook rule. Reconcile the ControlPlane spec to a valid projection to recover. |
+| `False` | `CinderError` | Error create-or-updating the Cinder CR. |
+
+A registration that is provisioned but not yet fully `Ready` relays its own first
+failing sub-condition's reason onto `CinderReady`, the same way the network
+service's does.
+
 ### KORCReady
 
 Set by `reconcileKORC`.
@@ -2660,7 +2950,7 @@ Set by `setReadyCondition`.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `AllReady` | All seventeen sub-conditions are `True`. |
+| `True` | `AllReady` | All eighteen sub-conditions are `True`. |
 | `False` | `NotAllReady` | One or more sub-conditions are not `True`. |
 
 ---
