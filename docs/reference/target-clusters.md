@@ -5,15 +5,18 @@ quadrant: operator
 
 # Target Clusters
 
-Nine workload CRDs carry an optional `spec.targetClusterRef`:
+Ten workload CRDs carry an optional `spec.targetClusterRef`:
 [Keystone](./keystone/keystone-crd.md), [Barbican](./barbican/barbican-crd.md),
 [Horizon](./horizon/horizon-crd.md), [Glance](./glance/glance-crd.md),
-[Placement](./placement/placement-crd.md), `OVNCentral`, `OVNChassis`,
-`Neutron`, and `NeutronMetadataAgent`. The field names a registered target
-cluster that receives every child the CR projects: Deployments, ConfigMaps,
-Secrets, and, for the services that have one, the database CRs. The CR itself
-does not move. It is created, reconciled, and deleted on the management cluster,
-and so are its status, its finalizers, and the webhooks that admit it.
+[Placement](./placement/placement-crd.md), [Cinder](./cinder/cinder-crd.md),
+`OVNCentral`, `OVNChassis`, `Neutron`, and `NeutronMetadataAgent`. The field
+names a registered target cluster that receives every child the CR projects:
+Deployments, ConfigMaps, Secrets, and, for the services that have one, the
+database CRs. The CR itself does not move. It is created, reconciled, and
+deleted on the management cluster, and so are its status, its finalizers, and
+the webhooks that admit it. Four attachment kinds reach a target cluster through
+a parent instead of a ref of their own: `BarbicanSecretStore`, `GlanceBackend`,
+`CinderBackend`, and `CinderBackupBackend`.
 
 Omitting the field selects the local cluster, the one the operator runs on. The
 children are created there and the deployment behaves like a single-cluster one,
@@ -21,11 +24,11 @@ so an existing CR keeps its behavior without an edit.
 
 The [ControlPlane](./c5c3/controlplane-crd.md) carries the ref per service
 instead of once per CR: `services.keystone`, `services.horizon`,
-`services.glance`, `services.placement`, `services.barbican`, and
-`services.neutron` each take one, so one control plane can run its identity
-service on one cluster and its dashboard on another. Everything on this page
-applies to it, and what is specific to it is collected under
-[ControlPlane placement](#controlplane-placement).
+`services.glance`, `services.placement`, `services.barbican`,
+`services.neutron`, and `services.cinder` each take one, so one control plane
+can run its identity service on one cluster and its dashboard on another.
+Everything on this page applies to it, and what is specific to it is collected
+under [ControlPlane placement](#controlplane-placement).
 
 ## The field
 
@@ -104,7 +107,7 @@ Two grants therefore need locking down on the management cluster:
 | Grant | Why |
 | --- | --- |
 | `create`/`update` on Secrets in `c5c3-clusters` | A labelled Secret here registers a cluster. Whoever can write one decides which clusters the operator holds credentials for |
-| `create` on `keystones`, `barbicans`, `glances`, `horizons`, `placements`, `controlplanes` | A CR author picks the cluster its children land on, from every name registered. A ControlPlane picks one per service |
+| `create` on `keystones`, `barbicans`, `glances`, `horizons`, `placements`, `cinders`, `controlplanes` | A CR author picks the cluster its children land on, from every name registered. A ControlPlane picks one per service |
 
 An install that needs no target clusters carries neither exposure: a
 namespace-scoped install clears `--clusters-namespace` (see below), the operator
@@ -181,9 +184,9 @@ it, surfaces on the CR's first gate condition:
 
 | CR | Condition | Status | Reason | Message |
 | --- | --- | --- | --- | --- |
-| Keystone, Barbican, Horizon, Glance, Placement, Neutron | `SecretsReady` | `False` | `TargetClusterUnavailable` | The resolver's error, `cluster not found` for a name that was never registered |
-| BarbicanSecretStore, GlanceBackend | `CredentialsReady` | `False` | `TargetClusterUnavailable` | Same |
-| ControlPlane | `NamespacesReady` usually, since it runs first; otherwise whichever sub-reconciler reaches the cluster first, out of `InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`, `AdminPasswordReady`, `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `ServiceAccountsReady`, and `KORCReady` | `False` | `TargetClusterUnavailable` | Same |
+| Keystone, Barbican, Horizon, Glance, Placement, Neutron, Cinder | `SecretsReady` | `False` | `TargetClusterUnavailable` | The resolver's error, `cluster not found` for a name that was never registered |
+| BarbicanSecretStore, GlanceBackend, CinderBackend, CinderBackupBackend | `CredentialsReady` | `False` | `TargetClusterUnavailable` | Same |
+| ControlPlane | `NamespacesReady` usually, since it runs first; otherwise whichever sub-reconciler reaches the cluster first, out of `InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`, `AdminPasswordReady`, `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `CinderReady`, `ServiceAccountsReady`, and `KORCReady` | `False` | `TargetClusterUnavailable` | Same |
 
 The pass ends there. The CR requeues after 15 seconds, on a flat poll rather than
 a backoff, and nothing is created on any cluster. Resolution runs before any
@@ -222,17 +225,18 @@ CR leave etcd. The MariaDB CRs and the workload on the deregistered cluster are
 left behind — unreachable, so nothing else was ever possible — and have to be
 removed on that cluster by hand.
 
-`BarbicanSecretStore` and `GlanceBackend` carry no `targetClusterRef` of their
-own. Each resolves the target of the parent named by `spec.barbicanRef` or
-`spec.glanceRef`, so an attachment lands on the same cluster as its parent's
+`BarbicanSecretStore`, `GlanceBackend`, `CinderBackend` and
+`CinderBackupBackend` carry no `targetClusterRef` of their own. Each resolves
+the target of the parent named by `spec.barbicanRef`, `spec.glanceRef` or
+`spec.cinderRef`, so an attachment lands on the same cluster as its parent's
 children. A parent that does not exist — a dangling ref, or a GitOps apply that
-has not landed it yet — leaves the target unknown, and both hold their first
+has not landed it yet — leaves the target unknown, and all four hold their first
 gate condition at `WaitingForParent` rather than falling back to the management
 cluster.
 
 ## Prerequisites on the target cluster
 
-For the nine workload CRDs, the CR's namespace must already exist on the target.
+For the ten workload CRDs, the CR's namespace must already exist on the target.
 Their operators do not create it, and a child write into a missing namespace
 fails. A ControlPlane is the exception: it ensures the namespaces it places
 services in, on both clusters (see
@@ -307,6 +311,68 @@ A `NeutronMetadataAgent`'s namespace needs the same entry. Its
 bidirectional `/run/netns` mount, which is why the kind is projected into the
 namespace of the `OVNChassis` it attaches to: one entry covers both node-level
 workloads, and the `Neutron` API needs none.
+
+A placed `Cinder` mounts every backend export and the backup share as an inline
+CSI volume in the pod spec, so the target cluster needs an NFS CSI mounter of
+its own. The kind devstack installs `csi-driver-nfs` with
+`feature.enableInlineVolume: true`, and its `CSIDriver` object has to list the
+`Ephemeral` lifecycle mode. `spec.volumeLifecycleModes` is immutable, so a
+driver that predates the flag is deleted and recreated; `hack/deploy-infra.sh`
+does that on kind. The mount asks nothing more of the access chart: no volume
+claim objects are created, and the volume rides in the pod template the
+namespaced `deployments` grant already covers. The nodes that run the volume and
+backup pods need the `nfs` and `nfsv4` kernel modules. The node plugin image
+brings its own `mount.nfs`.
+
+::: warning The `Ephemeral` lifecycle mode is a cluster-wide grant
+It is a property of the `CSIDriver` object, not of a namespace. Once
+`nfs.csi.k8s.io` lists the mode, a pod in *any* namespace on that cluster may
+carry `volumes[].csi` naming the driver with a `server` and a `share` of its
+own. No PersistentVolume, no claim and no StorageClass sit in that path, so
+there is no object left to bind RBAC to: `create` on `pods` in one namespace is
+read/write access to every export the nodes can reach, every other tenant's raw
+volume file and the backup share included.
+
+Kubernetes contains this nowhere by default, and Pod Security admission does not
+reach it: the `restricted` profile's volume allow-list carries `csi`, so
+enforcing it changes nothing here. Upstream names two mechanisms — dropping
+`Ephemeral` from the `CSIDriver`'s `spec.volumeLifecycleModes`, and an admission
+policy — and the first is unavailable on a cluster that runs a `Cinder`, because
+its pods need the mode. That leaves one gate: deny the driver outside the
+block-storage namespaces with a `ValidatingAdmissionPolicy`, and apply it before
+enabling the mode.
+
+```yaml
+validations:
+  - expression: "!has(object.spec.volumes) || !object.spec.volumes.exists(v, has(v.csi) && v.csi.driver == 'nfs.csi.k8s.io')"
+    message: inline nfs.csi.k8s.io volumes are confined to the block-storage namespaces
+```
+
+The kind devstack enables the mode without that policy, which is one more reason
+it is a devstack.
+:::
+
+All four Cinder workloads dial the message bus: the API hands a volume request
+to the scheduler, the scheduler to a `cinder-volume`, and the backup service
+takes its jobs the same way. A ControlPlane delivers the bus into the service's
+namespace on its own cluster, as the Secret `<cp>-cinder-messaging`, while the
+broker stays on the management cluster. The transport URL in it has to name an
+address the target's pods can open a connection to: an in-cluster Service DNS
+name resolves on one cluster only. A `Cinder` placed without a ControlPlane
+names the bus with `spec.messaging.secretRef` unless a broker runs in its own
+namespace on the target, because the managed mode reads the `RabbitmqCluster`
+through the target's client, in the CR's namespace. No e2e suite runs that
+crossing; Cinder placement is covered by envtest alone.
+
+The verdict of the migrate Job's `cinder-status upgrade check` comes from the
+pod's termination message. The operator lists the Job's pods through the
+target's credentials and reads the message off the terminated container, so it
+needs `get` and `list` on `pods` in the service's namespace; the access chart's
+per-namespace Role carries both. A target whose RBAC was assembled by hand
+without them runs the check and loses its verdict: the operator records an
+`UpgradeCheckCompleted` event reading `cinder-status upgrade check exit code
+unavailable`. The phases the Job runs in are described under
+[Cinder Upgrade Flow](./cinder/cinder-upgrade-flow.md).
 
 `patch` on `Nodes` is deliberately granted nowhere in this chart, for the same
 reason. Kubernetes cannot narrow the verb to one annotation key: it carries
@@ -460,8 +526,9 @@ A CR whose namespace is outside a declared set fails differently, on a cluster
 that engaged perfectly well. Its first cached read on the target returns
 controller-runtime's `unknown namespace for the cache`, which the credential
 gate records on the CR's first gate condition, carrying that message. That is
-`SecretsReady` on a Keystone, Barbican, Horizon, Glance, Placement or Neutron.
-The other three start their pipeline on a different condition: `TLSReady` on an
+`SecretsReady` on a Keystone, Barbican, Horizon, Glance, Placement, Neutron or
+Cinder. The other three start their pipeline on a different condition:
+`TLSReady` on an
 OVNCentral, `CentralReady` on an OVNChassis, `ChassisReady` on a
 NeutronMetadataAgent. Nothing is created on the target: the reconciler writes
 nothing it could not first read. Neither retrying nor waiting changes a cache's
@@ -535,9 +602,9 @@ is recorded in three labels the operator stamps on every remote child:
 
 | Label | Value |
 | --- | --- |
-| `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, `Placement`, `OVNCentral`, `OVNChassis`, `Neutron`, `NeutronMetadataAgent`, or `ControlPlane` |
+| `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, `Placement`, `Cinder`, `OVNCentral`, `OVNChassis`, `Neutron`, `NeutronMetadataAgent`, or `ControlPlane` |
 | `openstack.c5c3.io/owner-name` | The owning CR's name |
-| `openstack.c5c3.io/owner-namespace` | The owning CR's namespace. For the nine workload CRDs that is also the namespace the child lands in. A ControlPlane's remote children land in the namespace of the service it placed, so for them the label names the ControlPlane's namespace and the child sits elsewhere |
+| `openstack.c5c3.io/owner-namespace` | The owning CR's namespace. For the ten workload CRDs that is also the namespace the child lands in. A ControlPlane's remote children land in the namespace of the service it placed, so for them the label names the ControlPlane's namespace and the child sits elsewhere |
 
 The kind is part of the key because a Keystone and a Barbican of the same name
 in the same namespace project into one target namespace, and each has to select
@@ -628,7 +695,7 @@ its target cluster; everything it writes afterwards carries the labels alone.
 
 ## ControlPlane placement
 
-A ControlPlane names a cluster per service. Each of the five service blocks takes
+A ControlPlane names a cluster per service. Each of the seven service blocks takes
 its own ref, and a block without one keeps its service on the management cluster:
 
 ```yaml
@@ -645,8 +712,8 @@ spec:
 Five rules apply at admission on top of the name-only shape. A placed service
 needs a `namespace` block of its own, because a namespace exists on exactly one
 cluster and the ControlPlane's own namespace stays where the ControlPlane is. A
-placed catalog service (keystone, glance, placement, barbican, neutron) needs a
-`publicEndpoint` or a `gateway`, since its catalog entry would otherwise
+placed catalog service (keystone, glance, placement, barbican, neutron, cinder)
+needs a `publicEndpoint` or a `gateway`, since its catalog entry would otherwise
 advertise an in-cluster Service DNS name that resolves nowhere else; the
 dashboard is exempt, being reached by a browser rather than looked up in the
 catalog. And services sharing a namespace must name the same cluster, an unplaced
@@ -704,8 +771,8 @@ What a placed service takes with it, and what stays behind:
 
 | Object | Created on |
 | --- | --- |
-| The five projected service CRs, each carrying `spec.targetClusterRef` verbatim | The management cluster |
-| The `BarbicanSecretStore` and `GlanceBackend` CRs, which carry no ref and follow their parent's | The management cluster |
+| The seven projected service CRs, each carrying `spec.targetClusterRef` verbatim | The management cluster |
+| The `BarbicanSecretStore`, `GlanceBackend`, `CinderBackend` and `CinderBackupBackend` CRs, which carry no ref and follow their parent's | The management cluster |
 | Every K-ORC CR: the admin `ApplicationCredential`, the catalog `Service` and `Endpoint` rows, the adopted `Region`, and the service accounts' `User`, `Project`, `Domain`, `Role`, and `RoleAssignment` | The management cluster |
 | The admin-credential chain: the minted application-credential Secret, its backup `PushSecret`, and the `clouds.yaml` `ExternalSecret` | The management cluster |
 | The per-generation service-account password Secrets the K-ORC `User` CRs reference | The management cluster |
@@ -826,19 +893,23 @@ The operators that act on the kinds a placed service takes with it have to run o
 that service's cluster: mariadb-operator, memcached-operator, external-secrets,
 cert-manager, and, for a dedicated Barbican secret store, openbao-operator. The
 service operators are not among them. The `Keystone`, `Horizon`, `Glance`,
-`Placement`, `Barbican`, and `Neutron` CRs stay on the management cluster, and
-their operators project onto the target from there. The `OVNCentral` a placed
-network service references is placed the same way: the ovn-operator reconciles it
-on the management cluster and projects its children onto the target its own
-`targetClusterRef` names. When the central and the network service land on
-different clusters, the central has to publish both databases with
-`externallyReachable: true`, because the Neutron pods then reach them over the
-node network rather than through cluster DNS.
+`Placement`, `Barbican`, `Neutron`, and `Cinder` CRs stay on the management
+cluster, and their operators project onto the target from there. The
+`OVNCentral` a placed network service references is placed the same way: the
+ovn-operator reconciles it on the management cluster and projects its children
+onto the target its own `targetClusterRef` names. When the central and the
+network service land on different clusters, the central has to publish both
+databases with `externallyReachable: true`, because the Neutron pods then reach
+them over the node network rather than through cluster DNS.
 
 The Secrets a placed service reads but does not create have to exist in its
 namespace on its own cluster: the dashboard's `SECRET_KEY` Secret, every Glance
-backend's S3 credentials Secret, and, on a brownfield database, the database
+backend's S3 credentials Secret, the transport-URL Secret a placed Cinder's
+`spec.messaging.secretRef` names, and, on a brownfield database, the database
 credential Secret and the admin-password Secret the Keystone bootstrap reads. The
+transport URL is the one of them a ControlPlane delivers: it writes
+`<cp>-cinder-messaging` into that namespace, and `<cp>-cinder-messaging-ca` with
+the broker's CA bundle under `ca.crt` beside it while the bus runs TLS. The
 admin-password one is needed on both clusters, because the ControlPlane reads it
 in its own namespace at home to mint the K-ORC application credential.
 
