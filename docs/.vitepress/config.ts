@@ -262,6 +262,7 @@ export default defineConfig({
             collapsed: true,
             items: [
               { text: 'Keystone E2E Tests', link: '/reference/testing/keystone-e2e-tests' },
+              { text: 'Cinder E2E Tests', link: '/reference/testing/cinder-e2e-tests' },
               { text: 'ControlPlane E2E Tests', link: '/reference/testing/controlplane-e2e-tests' },
               { text: 'Operator Upgrade E2E Tests', link: '/reference/testing/operator-upgrade-e2e-tests' },
               { text: 'Chaos E2E Tests', link: '/reference/testing/chaos-e2e-tests' },
