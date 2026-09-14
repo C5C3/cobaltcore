@@ -195,13 +195,27 @@ kubectl get events --field-selector type=Warning,reportingComponent=cinder-contr
 ### Prometheus Alertmanager Example
 
 With [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics) and
-event metrics enabled, the two Warning reasons that leave work undone are worth
-alerting on:
+event metrics enabled, the Warning reasons that leave work undone are worth
+alerting on: a failed db-sync, a failed purge, a stuck detach, and a failed
+upgrade phase.
 
 ```yaml
 groups:
   - name: cinder-events
     rules:
+      - alert: CinderDBSyncFailed
+        expr: |
+          increase(kube_event_count{
+            reason="DBSyncFailed",
+            involved_object_kind="Cinder"
+          }[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Cinder db-sync failed"
+          description: "The Cinder db-sync Job has failed. Check the Job logs for details."
+
       - alert: CinderDBPurgeFailed
         expr: |
           increase(kube_event_count{

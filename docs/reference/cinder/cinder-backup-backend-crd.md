@@ -122,9 +122,13 @@ host = cinder-backup
 ```
 
 `host` is derived from the Cinder rather than from this CR, so replacing the
-backup backend keeps the existing backups restorable. `backup_use_same_host` is
-`false` because the backup service owns its target through that identity and a
-backup is never handed to another host.
+backup backend with one pointing at the same export keeps the existing backups
+restorable. `backup_use_same_host` is `false` because the backup service owns
+its target through that identity and a backup is never handed to another host.
+It decides which backup service may serve a restore, and nothing more: the
+transition rules above freeze `cinderRef` and `type` alone, so a `spec.nfs`
+repointed at another export is admitted silently and strands every backup
+already written, with both conditions staying `True`.
 
 The backup pod mounts two kinds of export: its own target under
 `/var/lib/cinder/backup_mount/<md5 of "server:path">`, and every volume
@@ -137,6 +141,19 @@ A restore writes into an existing volume: it is a request against a volume that
 is already there, not a way to recreate one that is gone (decision D6 of issue
 [#979](https://github.com/C5C3/cobaltcore/issues/979)). Plan a recovery
 accordingly, by creating the target volume first.
+
+The file the driver writes into is what makes the difference. Restoring into a
+volume the request creates opens that file with truncation, and the chunked
+driver writes only the non-zero blocks it stored, so the file ends up as large
+as the data written and no larger. `qemu-img info` then reports a virtual size
+below the volume's, and the driver refuses to attach it. Restoring into a volume
+that already exists seeks to each block's offset and writes every byte, and the
+volume comes back byte-identical to the source.
+
+The backup process holds one object and its compressed form in memory at a time,
+so its footprint follows `spec.fileSize`. The rendered default is `52428800`
+bytes, and the defaulting webhook sizes the backup Deployment's memory limit at
+`2Gi` to match (see [CinderBackupSpec](./cinder-crd.md#cinderbackupspec)).
 
 ## Deleting a backup backend
 
@@ -173,6 +190,10 @@ and writes the aggregated `BackupBackendReady` condition onto the Cinder CR.
 | `BackupBackendReady` | Cinder | True | `NoBackupBackend` | No CinderBackupBackend is attached. Backups are opt-in, and a Cinder without them still serves volumes. |
 | `BackupBackendReady` | Cinder | False | `WaitingForBackupBackend` | The attached backup backend is not yet credential-ready, or was skipped for a fault; the message names it. |
 | `BackupBackendReady` | Cinder | False | `MultipleBackupBackends` | More than one attached backup backend is credential-ready; nothing is rendered. |
+
+`status.observedGeneration` carries the `metadata.generation` of the last spec
+the controller observed (`cinderbackupbackend_types.go`), so a status reported
+against an older spec is distinguishable from a current one.
 
 A backup backend whose `spec.nfs` block is absent, or whose rendered section
 carries a control character, is skipped: the cinder-side step emits a

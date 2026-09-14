@@ -38,7 +38,7 @@ part of this spec. Volume backends attach through
 | `keystonePublicEndpoint` | `string` | no | The browser-facing Keystone base URL rendered as `www_authenticate_uri`, the address a 401 points unauthenticated clients at. When empty the operator falls back to `keystoneEndpoint` at render time (`EffectiveKeystonePublicEndpoint`), correct only when the internal and public URLs coincide |
 | `serviceUser` | [`ServiceUserSpec`](#serviceuserspec) | no | The Keystone service account and the Secret holding its password. Required exactly when `keystoneEndpoint` is set |
 | `region` | `string` | no | The Keystone region (`region_name` in both identity sections); omitted when empty, and Cinder then uses the catalog's default region |
-| `glanceEndpoint` | `string` | no | The image service `create volume from image` reads through (`[DEFAULT] glance_api_servers`); pattern `^https?://`. Omitted when empty, and Cinder resolves Glance from the Keystone catalog, which a Keystone-free deployment cannot do |
+| `glanceEndpoint` | `string` | no | The image service `create volume from image` reads through (`[DEFAULT] glance_api_servers`); pattern `^https?://`. Omitted when empty, and Cinder resolves Glance from the Keystone catalog, which a Keystone-free deployment cannot do. The operator renders `glance_api_servers` and no `[glance]` service-to-service credentials, so cinder logs `WARNING cinder.image.glance … a dedicated [glance] section is required` on every image fetch at both 27.0.0 and 28.0.0; the warning is expected and harmless, and the credentials are a follow-up |
 | `keyManager` | [`KeyManagerSpec`](#keymanagerspec) | no | The castellan key manager volume-encryption keys live in. Setting it requires `keystoneEndpoint` (CEL rule), because castellan authenticates with the same credentials |
 | `internalTenant` | [`InternalTenantSpec`](#internaltenantspec) | no | The Keystone project and user Cinder owns its internal volumes as. The image-volume cache needs it: a cached volume belongs to the deployment rather than to the tenant whose request populated it |
 | `dbPurge` | [`DBPurgeSpec`](#dbpurgespec) | no | The recurring purge of the rows Cinder only soft-deletes. A nil block resolves exactly like an empty one: 30 days of retention, daily at `1 0 * * *`, not suspended |
@@ -360,6 +360,16 @@ The migration, purge and service-remove Jobs mount the whole config ConfigMap at
 `/etc/cinder/cinder.conf.d`. The one extra file they see is `scheduler.conf`,
 whose host identity `cinder-manage` never consults. The four workloads mount
 every key except that one, so no pod registers under the scheduler's identity.
+
+`BuildWorkload` stamps `fsGroup: 42424` on every pod it builds, and kubelet's
+ownership pass walks every file under a mounted volume at each pod start. On an
+NFS export holding a fleet's volumes, that pass is an unbounded recursive chown
+over the network, and it overwrites the ownership the storage administrator set.
+The volume and backup Deployments therefore carry
+`fsGroupChangePolicy: OnRootMismatch` (`withFSGroupChangePolicy` in
+`reconcile_volumeservices.go`, applied again in `reconcile_backupservice.go`),
+so kubelet checks the export's root and leaves it alone when the group already
+matches.
 
 The launch commands:
 

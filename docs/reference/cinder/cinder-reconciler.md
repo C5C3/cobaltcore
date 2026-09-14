@@ -221,6 +221,54 @@ A failed Job stops at step 2 and keeps the finalizer:
 `VolumeServicesReady=False` under `ServiceRemoveJobFailed` names the Job, and
 deleting that Job retries the removal once the cause is understood.
 
+## DBPurge
+
+The DBPurge step runs sequentially, before the parallel group: it needs only the
+rendered config the Config step produced. It projects the `{name}-db-purge`
+CronJob on every pass with the settings `effectiveDBPurge` resolves, and it
+takes its run visibility from the Jobs the CronJob spawned instead of from the
+CronJob object. It lists the Jobs carrying the Cinder's common labels and
+reports on the newest that reached a terminal state.
+
+The command is `cinder-manage db purge <retentionDays>`, and the age is its
+whole argument list. Neither 27.0.0 nor 28.0.0 accepts a `--max_rows` cap, so
+there is no per-invocation bound to set. The purge issues one unbounded
+`DELETE … WHERE deleted IS TRUE AND deleted_at < <age>` per table, all of them
+in a single transaction. `spec.dbPurge.retentionDays` is therefore the only
+lever on how much one run deletes; `spec.dbPurge.schedule` moves when a run
+fires and nothing else, so it is no help against a backlog a single run cannot
+finish.
+
+Two CronJob settings bound what that costs. `ConcurrencyPolicy: Forbid` keeps a
+run that outlasts its interval from being overtaken by the next firing, which is
+what a first pass over a long backlog invites. `activeDeadlineSeconds: 3600`
+catches a run that wedges instead of failing: an unschedulable pod, or a
+`cinder-manage` blocked on a database lock. Either reaches a terminal `Failed`
+state within the hour and surfaces as `DBPurgeReady=False` under
+`DBPurgeJobFailed` with a matching Warning event, instead of leaving the
+condition reporting a purge that never happened. A later successful run flips it
+back to `True`. A CronJob suspended through `spec.dbPurge.suspend` keeps
+`DBPurgeReady` at `True` under its own reason `DBPurgeSuspended`, because
+nothing else would report it: a suspended CronJob never fires, so no run fails
+and no event follows.
+
+The hour is sized for a steady state that deletes a day of rows, which makes a
+brownfield backlog the case the deadline is least forgiving of: a first pass
+that runs past it is terminated mid-transaction, the database rolls the whole
+thing back, and the next firing spends another hour on the same rows. Walk such
+a backlog down instead of leaving it to a retention window a single run cannot
+reach the end of. Suspend the CronJob, raise `spec.dbPurge.retentionDays` past
+the age of the oldest soft-deleted row so the first run finds nothing to delete,
+unsuspend, and lower it a step at a time, letting one run succeed at each step
+before taking the next. `spec.dbPurge.suspend` exists for exactly this pass.
+
+The purge is also what finally removes the registry rows a detach leaves behind.
+`cinder-manage service remove` flips the backend's `services` row to
+`deleted=1`, and no other code path deletes it.
+
+See [DBPurgeSpec](./cinder-crd.md#dbpurgespec) for the settings and the defaults
+they resolve to: 30 days of retention, daily at `1 0 * * *`, not suspended.
+
 ## Requeue semantics
 
 | Interval | Constant | Used by |
