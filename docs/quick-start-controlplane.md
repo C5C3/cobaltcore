@@ -78,15 +78,15 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 `WITH_CONTROLPLANE=true` brings up the shared infrastructure and then the
 ControlPlane operator stack (keystone-operator, horizon-operator,
 glance-operator, placement-operator, barbican-operator, ovn-operator,
-neutron-operator, K-ORC, c5c3-operator) from the published charts. It does not
-create the `ControlPlane` CR itself; you create and apply that in Step 3. The
-RabbitMQ Cluster Operator that serves the managed bus arrives through a Flux
-Kustomization of its own, on every cluster this script provisions, with or
-without `WITH_CONTROLPLANE=true`. In this mode the ControlPlane provisions
-its own MariaDB/Memcached (managed mode), so deploy-infra does not create the
-shared ones. `KIND_HOST_PORT=8443` maps the Gateway to a non-privileged host
-port for macOS; on Linux with rootful Docker drop the override and use port
-`443`. Expect 5 to 10 minutes.
+neutron-operator, cinder-operator, K-ORC, c5c3-operator) from the published
+charts. It does not create the `ControlPlane` CR itself; you create and apply
+that in Step 3. The RabbitMQ Cluster Operator that serves the managed bus
+arrives through a Flux Kustomization of its own, on every cluster this script
+provisions, with or without `WITH_CONTROLPLANE=true`. In this mode the
+ControlPlane provisions its own MariaDB/Memcached (managed mode), so
+deploy-infra does not create the shared ones. `KIND_HOST_PORT=8443` maps the
+Gateway to a non-privileged host port for macOS; on Linux with rootful Docker
+drop the override and use port `443`. Expect 5 to 10 minutes.
 
 If a download or image pull fails, run `make teardown-infra` and repeat Step 2.
 
@@ -100,6 +100,20 @@ requests a Flux reconcile so the operators roll to the freshly built images.
 You do not need to redeploy. The helper prefers `docker buildx`, but falls back
 to `curl` if Docker is unavailable.
 :::
+
+Block storage is an opt-in. If you want the Cinder block of Step 3, run Step 2
+with the NFS overlay instead:
+
+```bash
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra
+```
+
+That adds the NFS server to `openstack` and `csi-driver-nfs` to `kube-system`.
+On a Linux host it also loads the `nfsd`, `nfs` and `nfsv4` kernel modules
+through sudo. On macOS the script skips the module step: those modules belong
+to the Linux VM kernel Docker Desktop runs. The
+[NFS storage stack](./reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-kind-only-opt-in)
+reference describes the overlay.
 
 ## Step 3 — Create the ControlPlane CR
 
@@ -303,10 +317,11 @@ Keystone tokens it receives. Its database and cache derive from
 `spec.infrastructure` the same way Keystone's do. On the managed shared
 database its DB credential is engine-issued and auto-rotated like Keystone's,
 as short-lived leases from the OpenBao database engine, and the Step 4
-onboarding provisions the engine tenant for all five database services
-(keystone, glance, placement, barbican, and neutron). A `GlanceReady` condition
-joins the chain, gated on `KeystoneReady` plus that registration having
-provisioned the account, and `status.services` gains a third entry.
+onboarding provisions the engine tenant for all database services (keystone,
+glance, placement, barbican, neutron, and cinder when the block-storage block
+is present). A `GlanceReady` condition joins the chain, gated on
+`KeystoneReady` plus that registration having provisioned the account, and
+`status.services` gains a third entry.
 
 The `placement` block projects a Placement child, `controlplane-placement`: the
 API deployment, its own logical schema on the shared MariaDB, and a Keystone
@@ -358,6 +373,55 @@ the bus delivery, and the registration. The `gateway` block puts the API on the
 eighth HTTPS listener, `neutron.127-0-0-1.nip.io`, and `publicEndpoint` carries
 the `:8443` host port into the public network catalog row. `status.services`
 gains a sixth entry.
+
+::: details Optional: block storage (needs WITH_NFS=true in Step 2)
+The `cinder` block adds the block-storage service on the two NFS exports the
+Step 2 overlay pre-creates. Drop the fragment into `spec.services` of either CR
+shape on this page, beside the `neutron` block, and apply it again.
+
+```yaml
+# block-storage.yaml
+# Goes under `spec.services`, beside the `neutron` block above.
+cinder:
+  replicas: 1
+  # Drop publicEndpoint on the default port 443 and the operator derives
+  # https://cinder.127-0-0-1.nip.io from the gateway hostname.
+  publicEndpoint: https://cinder.127-0-0-1.nip.io:8443
+  # Exposed through the same shared Envoy Gateway, via the ninth HTTPS
+  # listener the kind overlay adds for cinder.127-0-0-1.nip.io.
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: cinder.127-0-0-1.nip.io
+  # One volume backend per entry. The paths are NFSv4 share strings below the
+  # server's /exports pseudo-root, so /volumes, never /exports/volumes.
+  backends:
+    - name: nfs1
+      type: NFS
+      nfs:
+        server: nfs-server.openstack.svc.cluster.local
+        path: /volumes
+  # The driver the backup service writes through, on the second export.
+  backupBackend:
+    name: nfsbk
+    type: NFS
+    nfs:
+      server: nfs-server.openstack.svc.cluster.local
+      path: /backups
+```
+
+The block projects a `Cinder` child `controlplane-cinder` with one
+`cinder-volume` Deployment per backend and one `cinder-backup` Deployment, plus
+the `CinderBackend` `nfs1` and the `CinderBackupBackend` `nfsbk`. Both
+satellites carry the bare entry name from the CR. `status.services` gains a
+seventh entry. The message bus is required here as well and
+`spec.infrastructure.messaging` above already declares it: a volume create
+travels from the API through the scheduler to the volume service over that bus.
+
+Without `WITH_NFS=true` in Step 2 the volume pod stays `ContainerCreating` with
+a `FailedMount` event that names `nfs.csi.k8s.io` as not registered, and
+`CinderReady` stays `False/WaitingForCinder`.
+:::
 
 Manual work remains after the apply: a hand-applied ControlPlane needs the
 one-time OpenBao onboarding in Step 4 before the chain can progress past its
@@ -542,7 +606,7 @@ ControlPlane. See the
 
 ## Step 5 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all 17 sub-conditions are met, in
+The aggregate `Ready` flips to `True` once all 18 sub-conditions are met, in
 dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady`,
 `PlacementReady`, and `BarbicanReady` gate on `KeystoneReady` plus the
 `KeystoneService` registration each service projects for itself; `OVNReady`
@@ -550,11 +614,13 @@ gates on nothing and only mirrors the readiness of the referenced
 `controlplane-ovn`, since nothing this chain produces can converge a central it
 does not own; `NeutronReady` carries the two gates its siblings do, plus
 `OVNReady` and the delivery of the message bus into the network service's
-namespace; `ServiceAccountsReady` then folds those four registrations, so it
-comes after them; the K-ORC branch runs alongside):
+namespace; `CinderReady` gates on `KeystoneReady`, its registration and the bus
+delivery, and reads `True/CinderNotManaged` when the block-storage block is
+absent; `ServiceAccountsReady` then folds those five registrations, so it comes
+after them; the K-ORC branch runs alongside):
 
 ```
-NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady → BarbicanReady → OVNReady → NeutronReady → ServiceAccountsReady → RegistrationTenantStoresReady
+NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady → BarbicanReady → OVNReady → NeutronReady → CinderReady → ServiceAccountsReady → RegistrationTenantStoresReady
 ```
 
 `RegistrationTenantStoresReady` closes the chain and reads
@@ -620,6 +686,7 @@ sudo sh -c 'cat >> /etc/hosts <<EOF
 127.0.0.1 placement.127-0-0-1.nip.io
 127.0.0.1 barbican.127-0-0-1.nip.io
 127.0.0.1 neutron.127-0-0-1.nip.io
+127.0.0.1 cinder.127-0-0-1.nip.io
 EOF'
 ```
 
@@ -657,8 +724,8 @@ openstack --insecure token issue
 > `foo-keystone-admin-credentials` instead.
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
-> and drop all five `publicEndpoint` lines (keystone, glance, placement,
-> barbican, and neutron) from the CR in Step 3.
+> and drop all six `publicEndpoint` lines (keystone, glance, placement,
+> barbican, neutron, and cinder) from the CR in Step 3.
 
 ### Upload a first image
 
@@ -824,6 +891,48 @@ openstack --insecure network delete demo-net
 either, and with it set the create call fails with `public endpoint for network
 service in RegionOne region not found`.
 
+### Create a first volume
+
+This check belongs to the optional block-storage block of Step 3; skip it if you
+left that block out. With the same `OS_*` variables still exported, confirm the
+block-storage service reached the catalog:
+
+```bash
+openstack --insecure catalog list
+```
+
+A `block-storage` row proves the ControlPlane registered both endpoints: the
+in-cluster one at `http://controlplane-cinder.openstack.svc:8776/v3` and the
+public one at `https://cinder.127-0-0-1.nip.io:8443/v3`, the `publicEndpoint`
+from Step 3 with the `/v3` the registration appends. Create a 1 GiB volume and
+read its status back:
+
+```bash
+openstack --insecure volume create --size 1 demo-vol
+openstack --insecure volume show demo-vol -c status -f value
+```
+
+The last command prints `available`. That one word covers the whole
+block-storage chain: the catalog row resolved the endpoint, the gateway listener
+routed the request to the Cinder API, the API cast the request to the scheduler
+over the message bus, the scheduler picked the `nfs1` backend, and the volume
+service wrote a `volume-<id>` file into the export. That file sits at the md5
+mount point `/var/lib/cinder/mnt/<md5>`, owned `42424:42424` with mode `660`.
+These are core `python-openstackclient` commands, so no plugin is needed here.
+
+Clean the volume up when you are done:
+
+```bash
+openstack --insecure volume delete demo-vol
+```
+
+[Configure NFS backups](./guides/cinder/configure-nfs-backups.md) starts from
+the `demo-vol` this check leaves behind, so keep the volume if that guide is
+your next stop.
+
+`OS_REGION_NAME` has to stay unset here too: the block-storage rows carry no
+region either, and with it set the volume create finds no endpoint.
+
 ### Open the Horizon dashboard
 
 The dashboard is exposed through the same shared Envoy Gateway as Keystone, on
@@ -869,6 +978,9 @@ make teardown-infra
   service, its `BarbicanSecretStore` attachment, and the reconciler chain.
 - [Neutron Operator](./reference/neutron/index.md) — the projected network
   service, its ML2/OVN posture, and the reconciler chain.
+- [Cinder Operator](./reference/cinder/index.md) — the projected block-storage
+  service, its `CinderBackend` and `CinderBackupBackend` satellites, and the
+  reconciler chain.
 - [OVN Operator](./reference/ovn/index.md) — the referenced `OVNCentral`, the
   `OVNChassis` node layer, and the reconciler chain.
 - [Quick Start](./quick-start.md) — the compact per-service Keystone path.
