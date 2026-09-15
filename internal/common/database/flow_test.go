@@ -59,11 +59,7 @@ func readyMariaDB() *mariadbv1alpha1.MariaDB {
 }
 
 func readyDatabaseCR() *mariadbv1alpha1.Database {
-	db := &mariadbv1alpha1.Database{ObjectMeta: metav1.ObjectMeta{Name: flowInstance, Namespace: flowNamespace}}
-	meta.SetStatusCondition(&db.Status.Conditions, metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Created",
-	})
-	return db
+	return readyDatabaseNamed(flowInstance)
 }
 
 func flowScheme() *runtime.Scheme {
@@ -86,6 +82,72 @@ func provisionParamsFor(spec *commonv1.DatabaseSpec, conds *[]metav1.Condition, 
 		Generation:    1,
 		ConditionType: "DatabaseReady",
 		RequeueAfter:  30 * time.Second,
+	}
+}
+
+// cellDBSpec is the Nova cell block's DatabaseSpec: the primary nova schema on
+// the nova SQL user.
+func cellDBSpec() *commonv1.DatabaseSpec {
+	return &commonv1.DatabaseSpec{
+		ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
+		Database:   "nova",
+		SecretRef:  commonv1.SecretRefSpec{Name: "nova-db"},
+	}
+}
+
+// cellProvisionParams is provisionParamsFor with the Nova cell block's instance
+// name and its one additional schema.
+func cellProvisionParams(spec *commonv1.DatabaseSpec, conds *[]metav1.Condition, owner client.Object) ProvisionFlowParams {
+	p := provisionParamsFor(spec, conds, owner)
+	p.InstanceName = "nova"
+	p.AdditionalDatabaseNames = []string{"nova_cell0"}
+	return p
+}
+
+func readyDatabaseNamed(name string) *mariadbv1alpha1.Database {
+	db := &mariadbv1alpha1.Database{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: flowNamespace}}
+	meta.SetStatusCondition(&db.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Created",
+	})
+	return db
+}
+
+func readyUserNamed(name string) *mariadbv1alpha1.User {
+	user := &mariadbv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: flowNamespace}}
+	meta.SetStatusCondition(&user.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Created",
+	})
+	return user
+}
+
+func readyGrantNamed(name string) *mariadbv1alpha1.Grant {
+	grant := &mariadbv1alpha1.Grant{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: flowNamespace}}
+	meta.SetStatusCondition(&grant.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Created",
+	})
+	return grant
+}
+
+// applyRecorder records every applied resource as "<Kind>/<name>" in *applied
+// and fails the apply of failKind/failName with boom. The ensure path writes
+// through Server-Side Apply rather than Create, so Apply is the hook that
+// observes the provisioning order.
+func applyRecorder(applied *[]string, failKind, failName string, boom error) interceptor.Funcs {
+	return interceptor.Funcs{
+		Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration,
+			opts ...client.ApplyOption,
+		) error {
+			co, ok := obj.(client.Object)
+			if !ok {
+				return cl.Apply(ctx, obj, opts...)
+			}
+			kind := co.GetObjectKind().GroupVersionKind().Kind
+			*applied = append(*applied, kind+"/"+co.GetName())
+			if kind == failKind && co.GetName() == failName {
+				return boom
+			}
+			return cl.Apply(ctx, obj, opts...)
+		},
 	}
 }
 
@@ -263,6 +325,310 @@ func TestReconcileProvision_dynamicSkipsUser(t *testing.T) {
 	users := &mariadbv1alpha1.UserList{}
 	g.Expect(c.List(context.Background(), users)).To(Succeed())
 	g.Expect(users.Items).To(BeEmpty())
+}
+
+// A block without additional schemas provisions exactly the three resources it
+// always did: both additional loops are no-ops on an empty slice.
+func TestReconcileProvision_noAdditionalIsUnchanged(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, readyMariaDB(), readyDatabaseCR(), readyUserNamed(flowInstance), readyGrantNamed(flowInstance)).
+		WithStatusSubresource(readyDatabaseCR(), readyUserNamed(flowInstance), readyGrantNamed(flowInstance)).
+		Build()
+
+	p := provisionParamsFor(managedDBSpec(), &conds, owner)
+	p.Client, p.Scheme = c, s
+
+	res, err := ReconcileProvision(context.Background(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+
+	dbs := &mariadbv1alpha1.DatabaseList{}
+	g.Expect(c.List(context.Background(), dbs, client.InNamespace(flowNamespace))).To(Succeed())
+	g.Expect(dbs.Items).To(HaveLen(1))
+	g.Expect(dbs.Items[0].Name).To(Equal(flowInstance))
+	grants := &mariadbv1alpha1.GrantList{}
+	g.Expect(c.List(context.Background(), grants, client.InNamespace(flowNamespace))).To(Succeed())
+	g.Expect(grants.Items).To(HaveLen(1))
+	g.Expect(grants.Items[0].Name).To(Equal(flowInstance))
+}
+
+// The ordering contract: every schema exists before the user is applied, and
+// every additional Grant follows the user and the primary Grant.
+func TestReconcileProvision_additionalSchemasStatic(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	var applied []string
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, readyMariaDB(),
+			readyDatabaseNamed("nova"), readyDatabaseNamed("nova-nova-cell0"),
+			readyUserNamed("nova"), readyGrantNamed("nova"), readyGrantNamed("nova-nova-cell0")).
+		WithStatusSubresource(
+			readyDatabaseNamed("nova"), readyDatabaseNamed("nova-nova-cell0"),
+			readyUserNamed("nova"), readyGrantNamed("nova"), readyGrantNamed("nova-nova-cell0")).
+		WithInterceptorFuncs(applyRecorder(&applied, "", "", nil)).
+		Build()
+
+	p := cellProvisionParams(cellDBSpec(), &conds, owner)
+	p.Client, p.Scheme = c, s
+
+	res, err := ReconcileProvision(context.Background(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(applied).To(Equal([]string{
+		"Database/nova", "Database/nova-nova-cell0",
+		"User/nova", "Grant/nova", "Grant/nova-nova-cell0",
+	}))
+}
+
+// In Dynamic mode the engine role's creation_statements carry the grants of the
+// additional schemas too, so only their Databases are provisioned.
+func TestReconcileProvision_dynamicSkipsAdditionalGrants(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, readyMariaDB(), readyDatabaseNamed("nova"), readyDatabaseNamed("nova-nova-cell0")).
+		WithStatusSubresource(readyDatabaseNamed("nova"), readyDatabaseNamed("nova-nova-cell0")).
+		Build()
+
+	spec := cellDBSpec()
+	spec.CredentialsMode = commonv1.CredentialsModeDynamic
+	p := cellProvisionParams(spec, &conds, owner)
+	p.Client, p.Scheme = c, s
+
+	res, err := ReconcileProvision(context.Background(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+
+	grants := &mariadbv1alpha1.GrantList{}
+	g.Expect(c.List(context.Background(), grants, client.InNamespace(flowNamespace))).To(Succeed())
+	g.Expect(grants.Items).To(BeEmpty())
+	users := &mariadbv1alpha1.UserList{}
+	g.Expect(c.List(context.Background(), users, client.InNamespace(flowNamespace))).To(Succeed())
+	g.Expect(users.Items).To(BeEmpty())
+	// The additional schema is still operator-managed.
+	db := &mariadbv1alpha1.Database{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "nova-nova-cell0", Namespace: flowNamespace}, db)).To(Succeed())
+}
+
+// An additional schema that is applied but not yet Ready parks the flow before
+// the user, and names the schema in the condition message.
+func TestReconcileProvision_additionalDatabaseNotReady(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, readyMariaDB(), readyDatabaseNamed("nova")).
+		WithStatusSubresource(readyDatabaseNamed("nova")).
+		Build()
+
+	p := cellProvisionParams(cellDBSpec(), &conds, owner)
+	p.Client, p.Scheme = c, s
+
+	res, err := ReconcileProvision(context.Background(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(30 * time.Second))
+	cond := meta.FindStatusCondition(conds, "DatabaseReady")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(ReasonWaitingForDatabase))
+	g.Expect(cond.Message).To(Equal(`MariaDB Database CR for schema "nova_cell0" is not ready`))
+	// The Database was applied; only its readiness is outstanding.
+	db := &mariadbv1alpha1.Database{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "nova-nova-cell0", Namespace: flowNamespace}, db)).To(Succeed())
+}
+
+// The additional Grant gates provisioning the same way the primary one does.
+func TestReconcileProvision_additionalGrantNotReady(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, readyMariaDB(),
+			readyDatabaseNamed("nova"), readyDatabaseNamed("nova-nova-cell0"),
+			readyUserNamed("nova"), readyGrantNamed("nova")).
+		WithStatusSubresource(
+			readyDatabaseNamed("nova"), readyDatabaseNamed("nova-nova-cell0"),
+			readyUserNamed("nova"), readyGrantNamed("nova")).
+		Build()
+
+	p := cellProvisionParams(cellDBSpec(), &conds, owner)
+	p.Client, p.Scheme = c, s
+
+	res, err := ReconcileProvision(context.Background(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(30 * time.Second))
+	cond := meta.FindStatusCondition(conds, "DatabaseReady")
+	g.Expect(cond.Reason).To(Equal(ReasonWaitingForDatabase))
+	g.Expect(cond.Message).To(Equal(`MariaDB Grant CR for schema "nova_cell0" is not ready`))
+	grant := &mariadbv1alpha1.Grant{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "nova-nova-cell0", Namespace: flowNamespace}, grant)).To(Succeed())
+}
+
+// An invalid additional-schema slice fails the flow before the first apply, and
+// the error names its cause: an entry outside the schema identifier set, an
+// entry that derives an invalid object name, the primary schema listed again (a
+// second Database CR on one SQL schema), or two entries that derive one object
+// name. The check runs before the brownfield return, so a brownfield block
+// rejects the same slice.
+func TestReconcileProvision_rejectsInvalidAdditional(t *testing.T) {
+	cases := []struct {
+		name       string
+		spec       *commonv1.DatabaseSpec
+		additional []string
+		want       string
+	}{
+		{
+			"primary schema listed again",
+			cellDBSpec(),
+			[]string{"nova"},
+			`additional database "nova" equals the primary schema`,
+		},
+		{
+			"same schema listed twice",
+			cellDBSpec(),
+			[]string{"nova_cell0", "nova_cell0"},
+			`additional databases "nova_cell0" and "nova_cell0" both derive the object name "nova-nova-cell0"`,
+		},
+		{
+			"schemas differing only in case",
+			cellDBSpec(),
+			[]string{"nova_cell0", "Nova_Cell0"},
+			`additional databases "nova_cell0" and "Nova_Cell0" both derive the object name "nova-nova-cell0"`,
+		},
+		{
+			"schema outside the identifier set",
+			cellDBSpec(),
+			[]string{"nova-cell0"},
+			`additional database "nova-cell0" must match ^[A-Za-z0-9_]{1,64}$`,
+		},
+		{
+			// The pattern admits a trailing underscore, but the derived name then
+			// ends in a hyphen and no API server accepts it.
+			"schema deriving an invalid object name",
+			cellDBSpec(),
+			[]string{"nova_cell0_"},
+			`additional database "nova_cell0_" derives the invalid object name "nova-nova-cell0-": ` +
+				`a lowercase RFC 1123 subdomain must consist of lower case alphanumeric characters, '-' or '.', ` +
+				`and must start and end with an alphanumeric character (e.g. 'example.com', ` +
+				`regex used for validation is '[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*')`,
+		},
+		{
+			"primary schema listed again on a brownfield block",
+			&commonv1.DatabaseSpec{Host: "db.example.com", Database: "nova", SecretRef: commonv1.SecretRefSpec{Name: "nova-db"}},
+			[]string{"nova"},
+			`additional database "nova" equals the primary schema`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			s := flowScheme()
+			owner := flowOwner()
+			var conds []metav1.Condition
+			// The cluster is Ready, so an unvalidated slice would reach the apply.
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, readyMariaDB()).Build()
+
+			p := cellProvisionParams(tc.spec, &conds, owner)
+			p.Client, p.Scheme = c, s
+			p.AdditionalDatabaseNames = tc.additional
+
+			res, err := ReconcileProvision(context.Background(), p)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(Equal(tc.want))
+			g.Expect(res.IsZero()).To(BeTrue())
+			dbs := &mariadbv1alpha1.DatabaseList{}
+			g.Expect(c.List(context.Background(), dbs, client.InNamespace(flowNamespace))).To(Succeed())
+			g.Expect(dbs.Items).To(BeEmpty())
+			g.Expect(conds).To(BeEmpty())
+		})
+	}
+}
+
+// An empty schema name would derive the object name "nova-", which no API
+// server accepts, so it is rejected before the first apply as well.
+func TestReconcileProvision_rejectsEmptyAdditional(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, readyMariaDB()).Build()
+
+	p := cellProvisionParams(cellDBSpec(), &conds, owner)
+	p.Client, p.Scheme = c, s
+	p.AdditionalDatabaseNames = []string{""}
+
+	res, err := ReconcileProvision(context.Background(), p)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(Equal("additional database name must not be empty"))
+	g.Expect(res.IsZero()).To(BeTrue())
+	dbs := &mariadbv1alpha1.DatabaseList{}
+	g.Expect(c.List(context.Background(), dbs, client.InNamespace(flowNamespace))).To(Succeed())
+	g.Expect(dbs.Items).To(BeEmpty())
+	g.Expect(conds).To(BeEmpty())
+}
+
+// A failing apply of an additional Database surfaces as a hard error naming the
+// schema, not as a requeue.
+func TestReconcileProvision_additionalDatabaseError(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	var applied []string
+	boom := errors.New("apply rejected")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, readyMariaDB(), readyDatabaseNamed("nova")).
+		WithStatusSubresource(readyDatabaseNamed("nova")).
+		WithInterceptorFuncs(applyRecorder(&applied, "Database", "nova-nova-cell0", boom)).
+		Build()
+
+	p := cellProvisionParams(cellDBSpec(), &conds, owner)
+	p.Client, p.Scheme = c, s
+
+	_, err := ReconcileProvision(context.Background(), p)
+	g.Expect(errors.Is(err, boom)).To(BeTrue())
+	g.Expect(err.Error()).To(HavePrefix(`ensuring additional Database "nova_cell0": `))
+	// The flow stops at the failed apply: no User or Grant follows it.
+	g.Expect(applied).To(Equal([]string{"Database/nova", "Database/nova-nova-cell0"}))
+}
+
+// The same for a failing apply of an additional Grant.
+func TestReconcileProvision_additionalGrantError(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	var applied []string
+	boom := errors.New("apply rejected")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, readyMariaDB(),
+			readyDatabaseNamed("nova"), readyDatabaseNamed("nova-nova-cell0"),
+			readyUserNamed("nova"), readyGrantNamed("nova")).
+		WithStatusSubresource(
+			readyDatabaseNamed("nova"), readyDatabaseNamed("nova-nova-cell0"),
+			readyUserNamed("nova"), readyGrantNamed("nova")).
+		WithInterceptorFuncs(applyRecorder(&applied, "Grant", "nova-nova-cell0", boom)).
+		Build()
+
+	p := cellProvisionParams(cellDBSpec(), &conds, owner)
+	p.Client, p.Scheme = c, s
+
+	_, err := ReconcileProvision(context.Background(), p)
+	g.Expect(errors.Is(err, boom)).To(BeTrue())
+	g.Expect(err.Error()).To(HavePrefix(`ensuring additional Grant "nova_cell0": `))
+	g.Expect(applied).To(Equal([]string{
+		"Database/nova", "Database/nova-nova-cell0",
+		"User/nova", "Grant/nova", "Grant/nova-nova-cell0",
+	}))
 }
 
 // --- ReconcileSyncJobs ---

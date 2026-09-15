@@ -7,6 +7,8 @@ package database
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
@@ -15,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -90,6 +93,51 @@ type ProvisionFlowParams struct {
 	// MaxUserConnections is forwarded to the User builder; see
 	// ProvisionParams.MaxUserConnections for the zero-value contract.
 	MaxUserConnections int32
+	// AdditionalDatabaseNames are the extra SQL schemas of this block. Each is
+	// provisioned as one more Database CR and, in Static mode, one more Grant CR
+	// on the block's user, both named AdditionalResourceName(InstanceName,
+	// schema). That name must not be the instance name of a second block on the
+	// same CR: schema api on block nova derives nova-api. No operator sets it
+	// yet; Nova's cell block (#1017) is the planned consumer.
+	AdditionalDatabaseNames []string
+}
+
+// additionalSchemaPattern mirrors the DatabaseSpec.Database validation: the
+// MySQL identifier set and length that AdditionalResourceName maps onto an
+// object name.
+var additionalSchemaPattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
+
+// validateAdditionalDatabaseNames rejects an additional-schema list before the
+// flow applies anything from it. Every entry must match the DatabaseSpec.Database
+// pattern and must not be the primary schema, which already has its own Database
+// CR. Its AdditionalResourceName must be a valid object name: nova_cell0_
+// matches the pattern but derives nova-nova-cell0-, which the API server would
+// reject only after the primary Database was applied. No two entries may derive
+// the same AdditionalResourceName: schemas that differ only in case are distinct
+// SQL schemas but would share one Database and one Grant CR, which each apply
+// would rewrite for the other.
+func validateAdditionalDatabaseNames(instanceName, primary string, names []string) error {
+	seen := make(map[string]string, len(names))
+	for _, name := range names {
+		if name == "" {
+			return fmt.Errorf("additional database name must not be empty")
+		}
+		if !additionalSchemaPattern.MatchString(name) {
+			return fmt.Errorf("additional database %q must match %s", name, additionalSchemaPattern)
+		}
+		if name == primary {
+			return fmt.Errorf("additional database %q equals the primary schema", name)
+		}
+		objName := AdditionalResourceName(instanceName, name)
+		if errs := utilvalidation.IsDNS1123Subdomain(objName); len(errs) > 0 {
+			return fmt.Errorf("additional database %q derives the invalid object name %q: %s", name, objName, strings.Join(errs, "; "))
+		}
+		if prev, dup := seen[objName]; dup {
+			return fmt.Errorf("additional databases %q and %q both derive the object name %q", prev, name, objName)
+		}
+		seen[objName] = name
+	}
+	return nil
 }
 
 // ReconcileProvision ensures the MariaDB Database, User, and Grant CRs exist and
@@ -98,15 +146,37 @@ type ProvisionFlowParams struct {
 // ensures the User and Grant. In brownfield mode (ClusterRef nil) it is a no-op:
 // no MariaDB CRs are provisioned.
 //
+// It also provisions the block's additional schemas, in the order primary
+// Database, additional Databases, User with primary Grant, additional Grants,
+// so a Grant is never applied before its schema and its user exist. An
+// AdditionalDatabaseNames slice that validateAdditionalDatabaseNames rejects
+// fails the flow before any apply, in brownfield mode too.
+//
 // A zero ctrl.Result with a nil error means provisioning is complete and the
 // caller should continue to the sync path; a non-zero result means the flow set
 // a not-ready condition and the caller must return it unchanged.
 func ReconcileProvision(ctx context.Context, p ProvisionFlowParams) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	if err := validateAdditionalDatabaseNames(p.InstanceName, p.Database.Database, p.AdditionalDatabaseNames); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Brownfield mode: the database is external, no MariaDB CRs are managed.
 	if p.Database.ClusterRef == nil {
 		return ctrl.Result{}, nil
+	}
+
+	// notReady sets the not-ready condition and requeues.
+	notReady := func(reason, message string) (ctrl.Result, error) {
+		conditions.SetCondition(p.Conditions, metav1.Condition{
+			Type:               p.ConditionType,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: p.Generation,
+			Reason:             reason,
+			Message:            message,
+		})
+		return ctrl.Result{RequeueAfter: p.RequeueAfter}, nil
 	}
 
 	clusterReady, err := IsClusterReady(ctx, p.Client, p.Database, p.Namespace)
@@ -115,14 +185,7 @@ func ReconcileProvision(ctx context.Context, p ProvisionFlowParams) (ctrl.Result
 	}
 	if !clusterReady {
 		logger.Info("MariaDB cluster not ready, requeuing", "cluster", p.Database.ClusterRef.Name)
-		conditions.SetCondition(p.Conditions, metav1.Condition{
-			Type:               p.ConditionType,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: p.Generation,
-			Reason:             ReasonClusterNotReady,
-			Message:            fmt.Sprintf("MariaDB cluster %q is not ready", p.Database.ClusterRef.Name),
-		})
-		return ctrl.Result{RequeueAfter: p.RequeueAfter}, nil
+		return notReady(ReasonClusterNotReady, fmt.Sprintf("MariaDB cluster %q is not ready", p.Database.ClusterRef.Name))
 	}
 
 	pp := ProvisionParams{
@@ -141,14 +204,18 @@ func ReconcileProvision(ctx context.Context, p ProvisionFlowParams) (ctrl.Result
 	}
 	if !dbReady {
 		logger.Info("MariaDB Database not ready, requeuing")
-		conditions.SetCondition(p.Conditions, metav1.Condition{
-			Type:               p.ConditionType,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: p.Generation,
-			Reason:             ReasonWaitingForDatabase,
-			Message:            "MariaDB Database CR is not ready",
-		})
-		return ctrl.Result{RequeueAfter: p.RequeueAfter}, nil
+		return notReady(ReasonWaitingForDatabase, "MariaDB Database CR is not ready")
+	}
+
+	for _, name := range p.AdditionalDatabaseNames {
+		ready, err := EnsureDatabase(ctx, p.Client, p.Scheme, p.Owner, BuildAdditionalDatabase(pp, name))
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("ensuring additional Database %q: %w", name, err)
+		}
+		if !ready {
+			logger.Info("MariaDB Database not ready, requeuing", "schema", name)
+			return notReady(ReasonWaitingForDatabase, fmt.Sprintf("MariaDB Database CR for schema %q is not ready", name))
+		}
 	}
 
 	// In Dynamic credentials mode the OpenBao database engine owns the DB user
@@ -156,6 +223,8 @@ func ReconcileProvision(ctx context.Context, p ProvisionFlowParams) (ctrl.Result
 	// creation_statements) and revokes them at lease end, so the operator does
 	// NOT provision a MariaDB User/Grant CR. The engine's GRANT covers the same
 	// database, so the schema (EnsureDatabase above) is still operator-managed.
+	// The same holds for the block's additional schemas: the engine role's grants
+	// cover them, so no additional Grant CR is applied either.
 	//
 	// A pre-existing operator-provisioned User/Grant (from a Static deployment
 	// mid-migration) is intentionally NOT deleted here so its grant overlaps the
@@ -168,14 +237,18 @@ func ReconcileProvision(ctx context.Context, p ProvisionFlowParams) (ctrl.Result
 		}
 		if !userReady {
 			logger.Info("MariaDB User/Grant not ready, requeuing")
-			conditions.SetCondition(p.Conditions, metav1.Condition{
-				Type:               p.ConditionType,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: p.Generation,
-				Reason:             ReasonWaitingForDatabase,
-				Message:            "MariaDB User or Grant CR is not ready",
-			})
-			return ctrl.Result{RequeueAfter: p.RequeueAfter}, nil
+			return notReady(ReasonWaitingForDatabase, "MariaDB User or Grant CR is not ready")
+		}
+
+		for _, name := range p.AdditionalDatabaseNames {
+			ready, err := ensureGrant(ctx, p.Client, p.Scheme, p.Owner, BuildAdditionalGrant(pp, name))
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("ensuring additional Grant %q: %w", name, err)
+			}
+			if !ready {
+				logger.Info("MariaDB Grant not ready, requeuing", "schema", name)
+				return notReady(ReasonWaitingForDatabase, fmt.Sprintf("MariaDB Grant CR for schema %q is not ready", name))
+			}
 		}
 	}
 
