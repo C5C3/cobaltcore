@@ -97,3 +97,13 @@ cinder:
     # cinder/image/image_utils.py (fetch_to_raw, resize_image, convert_image)
     # and the LUKS qcow2 pre-create in cinder/volume/drivers/remotefs.py.
     - qemu-utils
+nova:
+  pip_extras: []
+  pip_packages: []
+  apt_packages:
+    # uWSGI is compiled in venv-builder against the shared libpython; without
+    # this, uwsgi fails to load (python-base ships no libpython3.12.so.1.0).
+    - libpython3.12t64
+    # No qemu-utils: the control-plane roles convert nothing (#1014 D14). No
+    # libvirt0: the fake driver of #1018 needs no libvirt, and nova.virt.fake
+    # imports without it (#1015 section (a.1)).

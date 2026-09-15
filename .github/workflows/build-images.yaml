@@ -21,6 +21,7 @@ name: Build Images
       - operators/glance/api/v1alpha1/catalogs/**
       - operators/neutron/api/v1alpha1/catalogs/**
       - operators/cinder/api/v1alpha1/catalogs/**
+      - operators/nova/api/v1alpha1/catalogs/**
       - .github/actions/**
       - tests/container-images/**
       - .github/workflows/build-images.yaml
@@ -55,6 +56,7 @@ name: Build Images
       - operators/glance/api/v1alpha1/catalogs/**
       - operators/neutron/api/v1alpha1/catalogs/**
       - operators/cinder/api/v1alpha1/catalogs/**
+      - operators/nova/api/v1alpha1/catalogs/**
       - .github/actions/build-push-image/**
       - .github/actions/checkout-service-source/**
       - .github/actions/derive-service-tags/**
@@ -155,6 +157,11 @@ jobs:
               - 'patches/cinder/**'
               - 'operators/cinder/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_cinder.sh'
+            svc_nova:
+              - 'images/nova/**'
+              - 'patches/nova/**'
+              - 'operators/nova/api/v1alpha1/catalogs/**'
+              - 'tests/container-images/verify_nova.sh'
             # ---------------------------------------------------------------
             # Everything every service image is built from: the two base
             # images, the release pins, the build scripts, the constraint
@@ -211,7 +218,7 @@ jobs:
         id: result
         env:
           EVENT_NAME: ${{ github.event_name }}
-          ALL_SERVICES: keystone horizon glance placement barbican neutron cinder
+          ALL_SERVICES: keystone horizon glance placement barbican neutron cinder nova
           FILTER_svc_keystone: ${{ steps.filter.outputs.svc_keystone }}
           FILTER_svc_horizon: ${{ steps.filter.outputs.svc_horizon }}
           FILTER_svc_glance: ${{ steps.filter.outputs.svc_glance }}
@@ -219,6 +226,7 @@ jobs:
           FILTER_svc_barbican: ${{ steps.filter.outputs.svc_barbican }}
           FILTER_svc_neutron: ${{ steps.filter.outputs.svc_neutron }}
           FILTER_svc_cinder: ${{ steps.filter.outputs.svc_cinder }}
+          FILTER_svc_nova: ${{ steps.filter.outputs.svc_nova }}
           FILTER_base: ${{ steps.filter.outputs.base }}
           FILTER_tempest: ${{ steps.filter.outputs.tempest }}
           FILTER_ovn: ${{ steps.filter.outputs.ovn }}
@@ -244,6 +252,7 @@ jobs:
           - images/barbican/Dockerfile
           - images/neutron/Dockerfile
           - images/cinder/Dockerfile
+          - images/nova/Dockerfile
           - images/tempest/Dockerfile
           - images/keystone-federation-proxy/Dockerfile
           - images/ovn/Dockerfile
@@ -1041,7 +1050,7 @@ jobs:
           verify-image-ref: ${{ steps.tags.outputs.composite }}
 
       - name: Verify option catalog
-        if: github.event_name == 'pull_request' && (matrix.service == 'keystone' || matrix.service == 'glance' || matrix.service == 'neutron' || matrix.service == 'cinder')
+        if: github.event_name == 'pull_request' && (matrix.service == 'keystone' || matrix.service == 'glance' || matrix.service == 'neutron' || matrix.service == 'cinder' || matrix.service == 'nova')
         env:
           MATRIX_SERVICE: ${{ matrix.service }}
           MATRIX_RELEASE: ${{ matrix.release }}
@@ -1205,7 +1214,7 @@ jobs:
           bash "tests/container-images/verify_${SERVICE_NAME}.sh" "$IMAGE_REF"
 
       - name: Verify option catalog
-        if: matrix.service == 'keystone' || matrix.service == 'glance' || matrix.service == 'neutron' || matrix.service == 'cinder'
+        if: matrix.service == 'keystone' || matrix.service == 'glance' || matrix.service == 'neutron' || matrix.service == 'cinder' || matrix.service == 'nova'
         env:
           MATRIX_SERVICE: ${{ matrix.service }}
           MATRIX_RELEASE: ${{ matrix.release }}
