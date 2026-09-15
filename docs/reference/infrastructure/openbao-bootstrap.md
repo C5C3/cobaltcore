@@ -335,8 +335,9 @@ engine here the enable is guarded by a `bao secrets list` check.
 ### setup-database-tenant.sh
 
 **Purpose:** Provision the per-tenant `database` engine connection and role for one
-managed ControlPlane's per-service DB users — Keystone always, and Glance and
-Placement each when they share the managed database.
+managed ControlPlane's per-service DB users: Keystone always, and each
+`SERVICE_TENANTS` service when the ControlPlane declares it on the shared managed
+database.
 
 **File:** `deploy/openbao/bootstrap/setup-database-tenant.sh`
 
@@ -344,39 +345,63 @@ Placement each when they share the managed database.
 
 **Usage:** `setup-database-tenant.sh <namespace> <controlplane>`
 
-It resolves each service leg's MariaDB name, database name, and root credential
-from the live ControlPlane and MariaDB CRs — independently and in that service's
-own namespace, so Glance's engine plumbing is keystone-independent — then writes
-one connection+role pair per leg. The **Keystone** leg is **always** provisioned:
+It resolves each leg's MariaDB name, schema list, and root credential from the
+live ControlPlane and MariaDB CRs, then writes one connection+role pair per leg.
+The **Keystone** leg is **always** provisioned, on the schema from
+`spec.infrastructure.database.database` (default `keystone`):
 
 | Object | Path |
 | --- | --- |
 | Connection | `database/mariadb/config/keystone-{namespace}` |
 | Role | `database/mariadb/roles/keystone-{namespace}` |
 
-The **Glance** leg is provisioned **only** when the live ControlPlane declares
-`spec.services.glance` on the shared managed database; a Glance that declares a
-dedicated database (`spec.services.glance.dedicatedBackingServices.database`) is
-`Static`-only and is **skipped** here. Its glance service namespace defaults to
-the ControlPlane's own:
+The optional legs come from the `SERVICE_TENANTS` table in the script, one row
+per engine role, as three space-separated fields:
+
+| Field | Meaning |
+| --- | --- |
+| `<role>` | The first half of the role name `<role>-{namespace}`, and of the auth-role and policy names in `setup-auth.sh` and `deploy/openbao/policies/<role>-db-dynamic.hcl` |
+| `<spec-service>` | The `spec.services.<name>` block that gates the leg |
+| `<schemas>` | The comma-separated schema list the role grants on |
+
+Two rules skip a leg, both keyed on `<spec-service>`: the live ControlPlane
+declares no such block, or the block declares a dedicated database
+(`spec.services.<spec-service>.dedicatedBackingServices.database`), which is
+`Static`-only and has no engine role. A service that owns two engine roles is two
+rows gated on the same block, so a skip removes both.
+
+Every optional leg writes the same pair of objects under its own `<role>`:
 
 | Object | Path |
 | --- | --- |
-| Connection | `database/mariadb/config/glance-{namespace}` |
-| Role | `database/mariadb/roles/glance-{namespace}` |
+| Connection | `database/mariadb/config/<role>-{namespace}` |
+| Role | `database/mariadb/roles/<role>-{namespace}` |
 
-Each role's `creation_statements` create a short-lived MySQL user with `ALL
-PRIVILEGES` on that service's database; `revocation_statements` drop it at lease
-end. `default_ttl` (48h) and `max_ttl` (72h) are tunable via `DB_CREDS_DEFAULT_TTL`
+A role's `creation_statements` create one short-lived MySQL user and grant it
+`ALL PRIVILEGES` on every schema of the row's list: one `GRANT` per element, in
+list order, inside the one `creation_statements` value.
+`revocation_statements` drop the user at lease end.
+
+`{namespace}` is that service's own namespace, taken from
+`spec.services.<spec-service>.namespace.name` and defaulting to the
+ControlPlane's own. Each leg is keyed and root-resolved in that namespace
+independently of Keystone, against the MariaDB named by
+`spec.infrastructure.database.clusterRef.name` (default `openstack-db`). The role
+names stay in sync with `dbDynamicRoleFor` in
+`operators/c5c3/internal/controller/reconcile_dbcredentials.go` for Keystone, and
+with `<svc>DBDynamicRoleFor` in `reconcile_<svc>_dbcredentials.go` for every
+`SERVICE_TENANTS` row.
+
+`default_ttl` (48h) and `max_ttl` (72h) are tunable via `DB_CREDS_DEFAULT_TTL`
 / `DB_CREDS_MAX_TTL`; `default_ttl` stays a full day above the operator's
-ExternalSecret refresh interval (24h) so the operator has a wide window to roll
-pods onto a fresh credential before the previous, still-in-use lease is revoked —
+ExternalSecret refresh interval (24h), so the operator has a wide window to roll
+pods onto a fresh credential before the previous, still-in-use lease is revoked:
 long enough that a stalled rollout pages on-call before it can become an outage.
-Each role name is keyed on its own service namespace alone (`{namespace}` above is
-that service's namespace) and stays in sync with `dbDynamicRoleFor` /
-`glanceDBDynamicRoleFor` in the c5c3 operator (`reconcile_dbcredentials.go` /
-`reconcile_glance_dbcredentials.go`). Config and role writes are upserts, so
-re-running is idempotent.
+Config and role writes are upserts, so re-running is idempotent. OpenBao runs
+`creation_statements` only when it issues a credential, so a schema added to an
+existing row reaches only the leases issued after the re-run: force a refresh of
+the service's DB-credential ExternalSecret (a fresh `force-sync` annotation)
+before the operator's db-sync Job needs the new grant.
 
 ### setup-eso-tenant.sh
 
