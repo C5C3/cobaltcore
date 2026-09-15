@@ -9,11 +9,14 @@
 # creation_statements value of the database-engine role, so one role can cover
 # every schema of a service that owns more than one. A one-element list renders
 # the single-schema statement unchanged, and an empty list or an empty element
-# fails before any bao write.
+# fails before any bao write. main writes each SERVICE_TENANTS row under the
+# row's role and schema list, gated on the row's spec-service, so two rows on
+# one spec.services block are both written or both skipped.
 #
-# The script is sourced (its source guard keeps main from running) and its
-# bao_exec / bao_exec_stdin are redefined to record their arguments in a log
-# file, so nothing touches a cluster or an OpenBao.
+# The script is sourced (its source guard keeps main from running until a test
+# calls it), its bao_exec / bao_exec_stdin are redefined to record their
+# arguments in a log file, and kubectl is a stub, so nothing touches a cluster
+# or an OpenBao.
 #
 # Usage: bash tests/unit/deploy/setup_database_tenant_multi_schema_test.sh
 
@@ -36,10 +39,20 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 BAO_LOG="$tmp/bao.log"
 
-# kubectl stub answering the three lookups provision_service_tenant makes: the
-# MariaDB root-secret name and key, then the root Secret payload.
+# kubectl stub answering the three lookups provision_service_tenant makes (the
+# MariaDB root-secret name and key, then the root Secret payload) and the
+# ControlPlane lookups main makes. The ControlPlane exists and declares
+# spec.services.nova, with a dedicated nova database only when
+# STUB_NOVA_DEDICATED_DB is set; every other field is unset.
 cat >"$tmp/kubectl" <<'STUB'
 #!/bin/bash
+if [[ "$*" == *"get controlplane"* ]]; then
+  case "$*" in
+    *"jsonpath={.spec.services.nova}") printf 'map[]' ;;
+    *"jsonpath={.spec.services.nova.dedicatedBackingServices.database}") printf '%s' "${STUB_NOVA_DEDICATED_DB:-}" ;;
+  esac
+  exit 0
+fi
 if [[ "$*" == *"get mariadb"* && "$*" == *"rootPasswordSecretKeyRef.name"* ]]; then
   printf 'openstack-db-root'
   exit 0
@@ -169,12 +182,62 @@ test_empty_schema_element_fails() {
 }
 
 # ---------------------------------------------------------------------------
+# Test: main writes each SERVICE_TENANTS row under its own role and schemas
+# ---------------------------------------------------------------------------
+# Every shipped row repeats one name in all three fields, so only rows that
+# split them catch a swapped field: here two roles share spec.services.nova.
+test_service_tenants_rows_split_role_and_spec_service() {
+  echo "Test: main writes every row of a spec-service under the row's role and schemas"
+
+  : >"$BAO_LOG"
+
+  local exit_code written
+  (
+    SERVICE_TENANTS=("cell nova nova,nova_cell0" "api nova nova_api")
+    main
+  ) >/dev/null 2>&1
+  exit_code=$?
+  written="$(cat "$BAO_LOG")"
+
+  assert_eq "main succeeds" "0" "$exit_code"
+  assert_contains "the cell role grants the cell row's schemas" "$written" \
+    "roles/cell-openstack db_name=cell-openstack creation_statements=CREATE USER '{{name}}'@'%' IDENTIFIED BY '{{password}}'; GRANT ALL PRIVILEGES ON \`nova\`.* TO '{{name}}'@'%'; GRANT ALL PRIVILEGES ON \`nova\\_cell0\`.* TO '{{name}}'@'%'; revocation_statements="
+  assert_contains "the api role grants the api row's schema" "$written" \
+    "roles/api-openstack db_name=api-openstack creation_statements=CREATE USER '{{name}}'@'%' IDENTIFIED BY '{{password}}'; GRANT ALL PRIVILEGES ON \`nova\\_api\`.* TO '{{name}}'@'%'; revocation_statements="
+}
+
+# ---------------------------------------------------------------------------
+# Test: a dedicated database skips every row of its spec-service
+# ---------------------------------------------------------------------------
+test_dedicated_database_skips_every_row() {
+  echo "Test: main skips every row of a spec-service that declares a dedicated database"
+
+  : >"$BAO_LOG"
+
+  local exit_code written
+  (
+    export STUB_NOVA_DEDICATED_DB=nova-db
+    SERVICE_TENANTS=("cell nova nova,nova_cell0" "api nova nova_api")
+    main
+  ) >/dev/null 2>&1
+  exit_code=$?
+  written="$(cat "$BAO_LOG")"
+
+  assert_eq "main succeeds" "0" "$exit_code"
+  assert_contains "the Keystone leg still runs" "$written" "roles/keystone-openstack"
+  assert_not_contains "the cell row is skipped" "$written" "cell-openstack"
+  assert_not_contains "the api row is skipped" "$written" "api-openstack"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_multi_schema_grants_each_schema
 test_single_schema_is_unchanged
 test_empty_schema_list_fails
 test_empty_schema_element_fails
+test_service_tenants_rows_split_role_and_spec_service
+test_dedicated_database_skips_every_row
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

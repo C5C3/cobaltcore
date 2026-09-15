@@ -5,8 +5,8 @@
 
 # setup-database-tenant.sh — Provision the per-tenant MariaDB database-engine
 # connection and role for one MANAGED ControlPlane's per-service DB users
-# (Keystone always; Glance, Placement, Barbican, Neutron, and Cinder when they
-# share the managed database).
+# (Keystone always; every SERVICE_TENANTS service when it shares the managed
+# database).
 #
 # MODE: this is a managed-database onboarding step. An External-mode ControlPlane
 # (spec.services.keystone.mode: External) has NO managed database — the c5c3
@@ -28,15 +28,13 @@
 #       a role that issues short-lived MySQL users with ALL PRIVILEGES on every
 #       schema of the service's schema list and auto-revokes them at lease end.
 #
-# It ALWAYS provisions the Keystone pair. It also provisions a Glance pair when
-# the ControlPlane declares spec.services.glance on the SHARED managed database,
-# and Placement, Barbican, Neutron and Cinder pairs under the same condition for
-# spec.services.placement, spec.services.barbican, spec.services.neutron and
-# spec.services.cinder; a service that declares a dedicated database
-# (spec.services.<service>.dedicatedBackingServices.database) is Static-only and
-# is skipped here. Each service's pair is keyed and root-resolved independently
-# in ITS OWN service namespace, so the Glance, Placement, Barbican, Neutron, and
-# Cinder engine plumbing is keystone-independent.
+# It ALWAYS provisions the Keystone pair. It also provisions one pair per
+# SERVICE_TENANTS row whose spec.services.<service> block the ControlPlane
+# declares on the SHARED managed database; a service that declares a dedicated
+# database (spec.services.<service>.dedicatedBackingServices.database) is
+# Static-only and is skipped here. Each service's pair is keyed and root-resolved
+# independently in ITS OWN service namespace, so the engine plumbing of every
+# SERVICE_TENANTS service is keystone-independent.
 #
 # The role is keyed on the KEYSTONE SERVICE NAMESPACE alone — the namespace the
 # MariaDB lives in and the generator's ServiceAccount authenticates from. That is
@@ -226,6 +224,58 @@ provision_service_tenant() {
 }
 
 ###############################################################################
+# SERVICE_TENANTS: the optional per-service database-engine legs
+###############################################################################
+# One row per engine role, as "<role> <spec-service> <schemas>":
+#
+#   <role>         the first half of the role name <role>-<svc_ns>, and of the
+#                  auth-role and policy names in setup-auth.sh and
+#                  deploy/openbao/policies/<role>-db-dynamic.hcl.
+#   <spec-service> the spec.services.<name> block that gates the leg. A service
+#                  with two roles is gated once per role on the same block, and
+#                  a dedicated database skips both.
+#   <schemas>      the comma-separated schema list the role grants on. OpenBao
+#                  runs creation_statements only when it issues a credential,
+#                  so a schema appended to a live row reaches only the leases
+#                  issued after the re-run.
+#
+# MUST STAY IN SYNC (glance, placement): the <service>-<namespace> role name
+# below is the derivation glanceDBDynamicRoleFor / placementDBDynamicRoleFor
+# assert in
+# operators/c5c3/internal/controller/reconcile_<service>_dbcredentials.go, and
+# the row's schema list mirrors defaultGlanceDatabaseName /
+# defaultPlacementDatabaseName in
+# operators/c5c3/internal/controller/reconcile_<service>.go.
+#
+# MUST STAY IN SYNC (barbican): the barbican-<namespace> role name below is the
+# derivation barbicanDBDynamicRoleFor asserts in
+# operators/c5c3/internal/controller/reconcile_barbican_dbcredentials.go, and the
+# row's schema list is 'barbican'. This leg is the engine half of the barbican
+# onboarding, next to the presence-independent barbican-db auth role in
+# setup-auth.sh.
+#
+# MUST STAY IN SYNC (neutron): the neutron-<namespace> role name below is the
+# derivation neutronDBDynamicRoleFor asserts in
+# operators/c5c3/internal/controller/reconcile_neutron_dbcredentials.go, and the
+# row's schema list is 'neutron'. This leg is the engine half of the neutron
+# onboarding; the auth half is in setup-auth.sh, where the neutron-db role binds
+# the neutron-db-dynamic policy that grants exactly this creds path.
+#
+# MUST STAY IN SYNC (cinder): the cinder-<namespace> role name below is the
+# derivation cinderDBDynamicRoleFor asserts in
+# operators/c5c3/internal/controller/reconcile_cinder_dbcredentials.go, and the
+# row's schema list is 'cinder'. This leg is the engine half of the cinder
+# onboarding; the auth half is in setup-auth.sh, where the cinder-db role binds
+# the cinder-db-dynamic policy that grants exactly this creds path.
+SERVICE_TENANTS=(
+  "glance glance glance"
+  "placement placement placement"
+  "barbican barbican barbican"
+  "neutron neutron neutron"
+  "cinder cinder cinder"
+)
+
+###############################################################################
 # Main
 ###############################################################################
 main() {
@@ -261,57 +311,29 @@ main() {
   keystone_db="$(get_controlplane_field '{.spec.infrastructure.database.database}' 'keystone')"
   provision_service_tenant keystone "${keystone_ns}" "${keystone_mariadb}" "${keystone_db}"
 
-  # --- Glance, Placement, Barbican, Neutron, Cinder (shared managed DB only) ---
-  # Each of these services gets its OWN keystone-independent engine pair when the
+  # --- SERVICE_TENANTS legs (shared managed DB only) --------------------------
+  # Each row's service gets its OWN keystone-independent engine pair when the
   # ControlPlane declares spec.services.<service>. A service that declares a
   # dedicated database (spec.services.<service>.dedicatedBackingServices.database)
   # is Static-only — there is no engine role for a dedicated service DB — so it is
   # skipped. Its service namespace defaults to the ControlPlane's own namespace
   # and is spec.services.<service>.namespace.name when the service is placed in a
   # namespace of its own; its MariaDB is the shared managed cluster resolved in
-  # THAT namespace, and its database name is the fixed '<service>' schema.
-  #
-  # MUST STAY IN SYNC (glance, placement): the <service>-<namespace> role name
-  # below is the derivation glanceDBDynamicRoleFor / placementDBDynamicRoleFor
-  # assert in
-  # operators/c5c3/internal/controller/reconcile_<service>_dbcredentials.go, and
-  # the fixed database name mirrors defaultGlanceDatabaseName /
-  # defaultPlacementDatabaseName in
-  # operators/c5c3/internal/controller/reconcile_<service>.go.
-  #
-  # MUST STAY IN SYNC (barbican): the barbican-<namespace> role name below is the
-  # derivation barbicanDBDynamicRoleFor asserts in
-  # operators/c5c3/internal/controller/reconcile_barbican_dbcredentials.go, and the
-  # schema is the fixed 'barbican' one. This leg is the engine half of the barbican
-  # onboarding, next to the presence-independent barbican-db auth role in
-  # setup-auth.sh.
-  #
-  # MUST STAY IN SYNC (neutron): the neutron-<namespace> role name below is the
-  # derivation neutronDBDynamicRoleFor asserts in
-  # operators/c5c3/internal/controller/reconcile_neutron_dbcredentials.go, and the
-  # schema is the fixed 'neutron' one. This leg is the engine half of the neutron
-  # onboarding; the auth half is in setup-auth.sh, where the neutron-db role binds
-  # the neutron-db-dynamic policy that grants exactly this creds path.
-  #
-  # MUST STAY IN SYNC (cinder): the cinder-<namespace> role name below is the
-  # derivation cinderDBDynamicRoleFor asserts in
-  # operators/c5c3/internal/controller/reconcile_cinder_dbcredentials.go, and the
-  # schema is the fixed 'cinder' one. This leg is the engine half of the cinder
-  # onboarding; the auth half is in setup-auth.sh, where the cinder-db role binds
-  # the cinder-db-dynamic policy that grants exactly this creds path.
-  local svc svc_ns svc_mariadb
-  for svc in glance placement barbican neutron cinder; do
-    if [[ -z "$(get_controlplane_field "{.spec.services.${svc}}" '')" ]]; then
-      log "ControlPlane declares no spec.services.${svc} — skipping the ${svc} database-engine tenant."
+  # THAT namespace, and its schemas are the row's list.
+  local entry role_svc spec_svc schemas svc_ns svc_mariadb
+  for entry in "${SERVICE_TENANTS[@]}"; do
+    read -r role_svc spec_svc schemas <<<"${entry}"
+    if [[ -z "$(get_controlplane_field "{.spec.services.${spec_svc}}" '')" ]]; then
+      log "ControlPlane declares no spec.services.${spec_svc} — skipping the ${role_svc} database-engine tenant."
       continue
     fi
-    if [[ -n "$(get_controlplane_field "{.spec.services.${svc}.dedicatedBackingServices.database}" '')" ]]; then
-      log "ControlPlane declares a dedicated ${svc} database (Static-only) — skipping the ${svc} database-engine tenant."
+    if [[ -n "$(get_controlplane_field "{.spec.services.${spec_svc}.dedicatedBackingServices.database}" '')" ]]; then
+      log "ControlPlane declares a dedicated ${spec_svc} database (Static-only) — skipping the ${role_svc} database-engine tenant."
       continue
     fi
-    svc_ns="$(get_controlplane_field "{.spec.services.${svc}.namespace.name}" "${CP_NS}")"
+    svc_ns="$(get_controlplane_field "{.spec.services.${spec_svc}.namespace.name}" "${CP_NS}")"
     svc_mariadb="$(get_controlplane_field '{.spec.infrastructure.database.clusterRef.name}' 'openstack-db')"
-    provision_service_tenant "${svc}" "${svc_ns}" "${svc_mariadb}" "${svc}"
+    provision_service_tenant "${role_svc}" "${svc_ns}" "${svc_mariadb}" "${schemas}"
   done
 
   log "=== Done ==="
