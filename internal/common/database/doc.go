@@ -12,7 +12,9 @@
 //
 //   - ReconcileProvision drives the managed/brownfield provisioning branch: the
 //     MariaDB cluster-Ready gate, the Database/User/Grant ensure, and the
-//     Dynamic-credentials skip of the User/Grant.
+//     Dynamic-credentials skip of the User/Grant. It also provisions a block's
+//     additional schemas (AdditionalDatabaseNames) as one more Database per
+//     schema and, in Static mode, one more Grant per schema on the block's user.
 //   - ReconcileSyncJobs sequences the db-sync and schema-check migration Jobs
 //     (built from the parameterized JobSetParams table) and promotes the
 //     installed-release marker.
@@ -24,6 +26,10 @@
 //     and returns the digest that rolls the pods on a credential rotation.
 //   - FinalizeResources and HasLiveResources drive the finalizer cleanup of the
 //     owned MariaDB CRs.
+//
+// A CR that owns several database blocks calls the flows once per block with a
+// derived instance name (for example <name>-api), so every derived resource,
+// Secret, and env var follows the instance-name convention.
 //
 // The flows are parameterized by the service-specific bits (manage command,
 // config mount, image, job naming, condition vocabulary) so keystone, glance,

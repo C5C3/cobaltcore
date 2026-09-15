@@ -6,6 +6,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -19,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func newScheme() *runtime.Scheme {
@@ -428,6 +430,73 @@ func TestEnsureDatabaseUser_idempotent(t *testing.T) {
 	grantList := &mariadbv1alpha1.GrantList{}
 	g.Expect(c.List(ctx, grantList, client.InNamespace("default"))).To(Succeed())
 	g.Expect(grantList.Items).To(BeEmpty())
+}
+
+// --- ensureGrant ---
+
+func TestEnsureGrant_creates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner).
+		Build()
+
+	ready, err := ensureGrant(context.Background(), c, s, owner, testGrant())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse(), "newly created grant should not be ready")
+
+	created := &mariadbv1alpha1.Grant{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-grant", Namespace: "default"}, created)).To(Succeed())
+	g.Expect(created.OwnerReferences).To(HaveLen(1))
+	g.Expect(created.OwnerReferences[0].Name).To(Equal("test-owner"))
+}
+
+func TestEnsureGrant_ready(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	grant := testGrant()
+	meta.SetStatusCondition(&grant.Status.Conditions, metav1.Condition{
+		Type:   "Ready",
+		Status: metav1.ConditionTrue,
+		Reason: "Created",
+	})
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, grant).
+		WithStatusSubresource(grant).
+		Build()
+
+	ready, err := ensureGrant(context.Background(), c, s, owner, testGrant())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeTrue())
+}
+
+func TestEnsureGrant_propagatesError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	boom := errors.New("apply rejected")
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(_ context.Context, _ client.WithWatch, _ runtime.ApplyConfiguration, _ ...client.ApplyOption) error {
+				return boom
+			},
+		}).
+		Build()
+
+	ready, err := ensureGrant(context.Background(), c, s, owner, testGrant())
+	g.Expect(ready).To(BeFalse())
+	g.Expect(errors.Is(err, boom)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring("applying Grant"))
 }
 
 // --- isUserReady / isGrantReady ---

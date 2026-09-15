@@ -61,6 +61,11 @@ func ensureUser(ctx context.Context, c client.Client, scheme *runtime.Scheme, ow
 	return isUserReady(user), nil
 }
 
+// ensureGrant applies a Grant for a User that already exists. The caller has
+// seen the User report Ready, because the mariadb-operator can only issue the
+// GRANT once the SQL user exists. It returns (true, nil) when the Grant has a
+// Ready condition with status True, (false, nil) when it exists but is not yet
+// ready, and (false, error) on unexpected failures.
 func ensureGrant(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, grant *mariadbv1alpha1.Grant) (bool, error) {
 	if err := apply.EnsureObject(ctx, c, scheme, owner, grant, apply.FieldManager); err != nil {
 		return false, err
