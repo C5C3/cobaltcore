@@ -75,3 +75,66 @@ func TestBuildGrant(t *testing.T) {
 	g.Expect(grant.Spec.Table).To(gomega.Equal("*"))
 	g.Expect(grant.Spec.Username).To(gomega.Equal("keystone"))
 }
+
+func TestAdditionalResourceName(t *testing.T) {
+	tests := []struct {
+		name         string
+		instanceName string
+		schema       string
+		want         string
+	}{
+		{
+			name:         "underscore becomes a dash",
+			instanceName: "nova",
+			schema:       "nova_cell0",
+			want:         "nova-nova-cell0",
+		},
+		{
+			name:         "upper case is lowered",
+			instanceName: "svc",
+			schema:       "Api_DB",
+			want:         "svc-api-db",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(AdditionalResourceName(tt.instanceName, tt.schema)).To(gomega.Equal(tt.want))
+		})
+	}
+}
+
+func TestBuildAdditionalDatabase(t *testing.T) {
+	g := gomega.NewWithT(t)
+	p := provisionParams()
+	base := BuildDatabase(p)
+	db := BuildAdditionalDatabase(p, "nova_cell0")
+	g.Expect(db.Name).To(gomega.Equal("keystone-nova-cell0"))
+	g.Expect(db.Namespace).To(gomega.Equal("openstack"))
+	g.Expect(db.Spec.Name).To(gomega.Equal("nova_cell0"))
+	// Only the object name and the SQL name differ from BuildDatabase(p).
+	g.Expect(db.Spec.MariaDBRef).To(gomega.Equal(base.Spec.MariaDBRef))
+	g.Expect(db.Spec.CharacterSet).To(gomega.Equal(base.Spec.CharacterSet))
+	g.Expect(db.Spec.Collate).To(gomega.Equal(base.Spec.Collate))
+	g.Expect(db.Labels).To(gomega.Equal(base.Labels))
+	g.Expect(db.Labels).To(gomega.BeNil())
+}
+
+func TestBuildAdditionalDatabase_Labels(t *testing.T) {
+	g := gomega.NewWithT(t)
+	p := provisionParams()
+	p.Labels = map[string]string{"app": "nova"}
+	db := BuildAdditionalDatabase(p, "nova_cell0")
+	g.Expect(db.Labels).To(gomega.HaveKeyWithValue("app", "nova"))
+}
+
+func TestBuildAdditionalGrant(t *testing.T) {
+	g := gomega.NewWithT(t)
+	grant := BuildAdditionalGrant(provisionParams(), "nova_cell0")
+	g.Expect(grant.Name).To(gomega.Equal("keystone-nova-cell0"))
+	g.Expect(grant.Spec.Database).To(gomega.Equal("nova_cell0"))
+	g.Expect(grant.Spec.Username).To(gomega.Equal("keystone"))
+	g.Expect(grant.Spec.Privileges).To(gomega.Equal([]string{"ALL PRIVILEGES"}))
+	g.Expect(grant.Spec.Table).To(gomega.Equal("*"))
+	g.Expect(grant.Spec.MariaDBRef.Name).To(gomega.Equal("mariadb"))
+}
