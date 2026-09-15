@@ -15,6 +15,12 @@
 # requests while the pipeline stays green. This test is what makes the static
 # list safe, and it runs under make test-shell on every pull request.
 #
+# The option-catalog check is wired by name the same way: the two `Verify
+# option catalog` steps, the push and pull_request trigger lists and the
+# svc_<service> filter each name the services whose catalog the build
+# re-derives, and a name dropped from any of them merges a drifted catalog
+# with every suite green.
+#
 # Usage: bash tests/unit/ci/build_images_services_lockstep_test.sh
 
 set -uo pipefail
@@ -118,11 +124,45 @@ test_no_orphan_service_filter() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 4: the option-catalog check is wired for cinder and nova
+# ---------------------------------------------------------------------------
+test_catalog_check_is_wired() {
+  local service="$1"
+  echo "Test: build-images.yaml checks the ${service} option catalog"
+
+  # Two `Verify option catalog` steps run the check, one on the pull-request
+  # build and one on the push build, and both list the services by name.
+  local gates
+  gates=$(grep -A1 -F "name: Verify option catalog" "$WORKFLOW" |
+    grep -F "if:")
+  assert_eq "both catalog gates run for ${service}" "2" \
+    "$(printf '%s\n' "$gates" | grep -cF "matrix.service == '${service}'")"
+
+  # A catalog edited on its own has to start the workflow at all: the two
+  # trigger lists decide that, and the svc_<service> filter decides whether
+  # the image is among the ones the run builds and checks.
+  assert_eq "the push and pull_request triggers list the ${service} catalogs" "2" \
+    "$(grep -cF -- "- operators/${service}/api/v1alpha1/catalogs/**" "$WORKFLOW")"
+
+  local filter
+  filter=$(awk -v header="            svc_${service}:" '
+    $0 == header { in_block = 1; next }
+    in_block && /^            [a-z0-9_]+:$/ { exit }
+    in_block { print }
+  ' "$WORKFLOW")
+  assert_contains "the svc_${service} filter covers the ${service} catalogs" \
+    "$filter" "operators/${service}/api/v1alpha1/catalogs/**"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_all_services_matches_the_releases
 test_every_service_is_wired
 test_no_orphan_service_filter
+for service in cinder nova; do
+  test_catalog_check_is_wired "$service"
+done
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
