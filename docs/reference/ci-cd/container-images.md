@@ -832,8 +832,7 @@ The image stays config-free. The package data files `api-paste.ini`,
 `setup.cfg` at 32.0.0 and under `[tool.setuptools.data-files]` in
 `pyproject.toml` at 33.0.0. `api-paste.ini` is byte-identical at the two tags.
 Nothing in the Dockerfile copies `etc/nova/` by hand, and the contract script
-asserts the three files. The nova-operator points `api_paste_config` and
-`rootwrap_config` at those absolute paths.
+asserts the three files.
 
 **Runtime packages:**
 
@@ -935,6 +934,18 @@ are what a plain `docker run` gets.
   module paths
 - The noVNC console assets under `/usr/share/novnc`
 - `sudo` present with no sudoers entry
+
+**Unit tests:** nova ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
+runs its suite under stestr. That script sets
+`OS_NOVA_DISABLE_EVENTLET_PATCHING=False` for every service, the value nova's
+tox py3 env uses: at 33.0.0 `nova/cmd/scheduler.py` selects the threading
+backend at import while `nova/tests/unit/__init__.py` has already selected
+eventlet, and oslo.service raises `BackendAlreadySelected` during stestr
+discovery, before any exclude list applies. 32.0.0 and the other services
+ignore the variable. Both releases carry an exclude file that excludes
+nothing. The first run of the 32.0.0 suite counted 16,488 tests and the
+33.0.0 suite 16,803, each with 63 skips and 2 expected failures and no
+environment-dependent failure.
 
 **Image contract check:** `tests/container-images/verify_nova.sh` is the hard
 gate. Its 13 tests cover `nova-manage --version` and `nova-status --help`, the
