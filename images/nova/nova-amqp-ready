@@ -3,27 +3,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Readiness probe of the cinder-scheduler, cinder-volume and cinder-backup
-# processes (#979 D2), run as an exec probe.
+# Readiness probe of the nova-scheduler and nova-conductor processes (#1014
+# decision D1), run as an exec probe. The nova-operator (#1017) wires it as
+# `readinessProbe.exec.command: ["/var/lib/openstack/bin/nova-amqp-ready"]`.
 #
-# None of the three serves an HTTP port, so readiness here is "a process of
-# this container holds a socket that is established to the message broker
-# port", the semantics of kolla's healthcheck_port. The probe reads the
-# connection tables /proc/net/tcp and /proc/net/tcp6 and therefore needs no
-# capability and no writable filesystem. The broker port comes from
-# CINDER_AMQP_PORT and defaults to 5672.
+# Neither serves an HTTP port, so readiness here is "a process of this
+# container holds a socket that is established to the message broker port",
+# the semantics of kolla's healthcheck_port. The probe reads the connection
+# tables /proc/net/tcp and /proc/net/tcp6 and therefore needs no capability
+# and no writable filesystem. The broker port comes from NOVA_AMQP_PORT and
+# defaults to 5672.
 #
 # /proc/net/tcp* is scoped to the network namespace, and every container of a
 # pod shares one. The connection state alone would therefore also report ready
-# for a pod-mate's connection: co-locate cinder-volume with cinder-backup and
-# one healthy connection answers for both. Each row is matched against the
+# for a pod-mate's connection: a pod-mate holding its own broker connection
+# would otherwise answer for this container. Each row is matched against the
 # socket inodes held by the processes in /proc that share this process' mount
 # namespace, so the answer is about this container's own socket. The mount
 # namespace is what a container keeps to itself no matter what the pod spec
 # says: shareProcessNamespace: true lists the pod-mates' processes in /proc,
 # and the probe walks past them because their /proc/<pid>/ns/mnt is another
 # one. The isolation is therefore enforced here rather than owed by the
-# cinder-operator (#987).
+# nova-operator (#1017).
 #
 # What the probe cannot see: a broker that dies or is partitioned away without
 # a FIN or an RST leaves the socket ESTABLISHED until the TCP keepalive
@@ -33,7 +34,7 @@
 #
 # A table that does not exist is skipped: a kernel without IPv6 has no
 # /proc/net/tcp6, and with neither table present the answer is "not ready",
-# never a traceback. A CINDER_AMQP_PORT that is not a port number is a
+# never a traceback. A NOVA_AMQP_PORT that is not a port number is a
 # one-line message, not a traceback either.
 
 import os
@@ -45,19 +46,19 @@ ESTABLISHED = "01"
 TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
 
 try:
-    PORT = int(os.environ.get("CINDER_AMQP_PORT", "5672"))
+    PORT = int(os.environ.get("NOVA_AMQP_PORT", "5672"))
 except ValueError:
     # The value stays out of the message. Kubelet copies an exec probe's
     # output verbatim into the Unhealthy event, and the key this
     # misconfiguration is confused with is the transport URL, which carries
     # the broker password.
-    sys.exit("CINDER_AMQP_PORT is not a port number")
+    sys.exit("NOVA_AMQP_PORT is not a port number")
 if not 1 <= PORT <= 65535:
     # int() also accepts numbers no port can take: 0 from an unset int32
     # field, a negative value, one above 65535. No connection table row can
-    # ever match those, so every cinder pod would stay NotReady for the life
+    # ever match those, so every nova pod would stay NotReady for the life
     # of the deployment with the message a broker outage prints.
-    sys.exit("CINDER_AMQP_PORT is not a port number")
+    sys.exit("NOVA_AMQP_PORT is not a port number")
 
 
 def candidate_inodes() -> set:
@@ -97,7 +98,7 @@ def holds_one_of(inodes: set) -> bool:
                 target = os.readlink(f"/proc/{pid}/fd/{fd}")
             except OSError:
                 # The descriptor was closed since the listing. The remaining
-                # descriptors of this process still count: cinder-volume
+                # descriptors of this process still count: nova-conductor
                 # closes descriptors constantly, and giving up on the process
                 # here would drop the broker socket along with them.
                 continue
