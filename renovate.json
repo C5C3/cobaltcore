@@ -465,6 +465,20 @@
       "packageNameTemplate": "ovn-org/ovn",
       "extractVersionTemplate": "^v(?<version>.+)$",
       "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "noVNC console assets bundled into images/nova/Dockerfile: the tag and the commit it names move together",
+      "managerFilePatterns": [
+        "/images/nova/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "(?m)^ARG NOVNC_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)[ \\t]*\\n^ARG NOVNC_COMMIT=(?<currentDigest>[a-f0-9]{40})[ \\t]*$"
+      ],
+      "depNameTemplate": "novnc/noVNC",
+      "datasourceTemplate": "github-tags",
+      "packageNameTemplate": "novnc/noVNC",
+      "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
     }
   ],
   "packageRules": [
@@ -888,6 +902,29 @@
       "automerge": false,
       "minimumReleaseAge": "3 days",
       "groupName": "OVN LTS patch releases"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/nova/Dockerfile"],
+      "matchPackageNames": ["novnc/noVNC"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/nova/Dockerfile"],
+      "matchPackageNames": ["novnc/noVNC"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "noVNC releases"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/nova/Dockerfile"],
+      "matchPackageNames": ["novnc/noVNC"],
+      "matchUpdateTypes": ["digest"],
+      "enabled": false
     }
   ]
 }
