@@ -1033,6 +1033,13 @@ jobs:
             venv-builder=docker-image://${{ needs.merge-base-images.outputs.venv-builder-image }}
             ${{ matrix.service }}=src/${{ matrix.service }}
             upper-constraints=releases/${{ matrix.release }}/
+          # A Dockerfile that fetches from github.com with the git noble ships
+          # mounts this secret into that one RUN (see images/nova/Dockerfile,
+          # the only service image doing so today, for the noVNC tree); the
+          # others never read it. A secret, not a build-arg: it reaches no
+          # layer.
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
           labels-title: ${{ matrix.service }}
           labels-description: OpenStack ${{ matrix.service }} service
           metadata-tags: |
