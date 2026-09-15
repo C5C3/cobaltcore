@@ -66,6 +66,14 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Run unit tests in container
 # ---------------------------------------------------------------------------
+# nova's unit suite runs under eventlet, the way its tox py3 env does
+# (OS_NOVA_DISABLE_EVENTLET_PATCHING=False in nova's tox.ini). At 33.0.0
+# nova/cmd/scheduler.py selects the threading backend at import while
+# nova/tests/unit/__init__.py has already selected eventlet, and oslo.service
+# raises BackendAlreadySelected during stestr discovery, before any exclude
+# list applies. With the variable set, every monkey_patch.patch() call patches
+# eventlet and the scheduler import is a no-op. The other services never read
+# the variable.
 docker run --rm --network host \
   -v "${WORKSPACE_DIR}/src/${SERVICE_NAME}:/workspace/src:rw" \
   -v "${WORKSPACE_DIR}/releases/${RELEASE}/upper-constraints.txt:/workspace/upper-constraints.txt:ro" \
@@ -77,6 +85,7 @@ docker run --rm --network host \
   -e SERVICE_VERSION="${SERVICE_VERSION}" \
   -e INSTALL_SPEC="${INSTALL_SPEC}" \
   -e OS_TEST_DBAPI_ADMIN_CONNECTION="${OS_TEST_DBAPI_ADMIN_CONNECTION:-}" \
+  -e OS_NOVA_DISABLE_EVENTLET_PATCHING=False \
   "${VENV_BUILDER_IMAGE}" \
   bash -c '
     set -e
