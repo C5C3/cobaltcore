@@ -15,8 +15,11 @@
 #
 # Optional env vars:
 #   RELEASE       — Release directory name (default: 2025.2)
-#   GITHUB_TOKEN  — Authenticates the clone from github.com; CI passes the
-#                   workflow token, a run without one clones anonymously
+#   GITHUB_TOKEN  — Authenticates the clone from github.com, and is mounted
+#                   as the github_token BuildKit secret for a Dockerfile that
+#                   fetches from github.com itself (today
+#                   images/nova/Dockerfile); CI passes the workflow token, a
+#                   run without one clones and fetches anonymously
 #
 # Reusable service image build script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -170,8 +173,19 @@ cache_args=()
 [[ -n "${DOCKER_BUILD_CACHE_FROM:-}" ]] && cache_args+=(--cache-from "${DOCKER_BUILD_CACHE_FROM}")
 [[ -n "${DOCKER_BUILD_CACHE_TO:-}" ]] && cache_args+=(--cache-to "${DOCKER_BUILD_CACHE_TO}")
 
+# The token goes in as a BuildKit secret read from the environment: a
+# Dockerfile that fetches from github.com (images/nova/Dockerfile, for the
+# noVNC tree) mounts it into that one RUN, so it is in no build-arg, no layer
+# and no image metadata. The other service Dockerfiles mount nothing and
+# never see it.
+secret_args=()
+[[ -n "${GITHUB_TOKEN:-}" ]] && secret_args+=(--secret "id=github_token,env=GITHUB_TOKEN")
+
+# ${secret_args[@]+"…"} guards the empty case: bash 3.2, which contributors
+# run `make test-shell` under on macOS, aborts on an empty array under set -u.
 docker build -t "${IMAGE_PREFIX}/${OPERATOR}:${RELEASE}" \
   "${cache_args[@]}" \
+  ${secret_args[@]+"${secret_args[@]}"} \
   --build-arg "PIP_EXTRAS=${PIP_EXTRAS}" \
   --build-arg "PIP_PACKAGES=${PIP_PACKAGES}" \
   --build-arg "EXTRA_APT_PACKAGES=${APT_PACKAGES}" \

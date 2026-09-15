@@ -11,8 +11,12 @@
 #     basic-auth header actions/checkout sends, scoped to https://github.com/,
 #     through git's environment config, and the raw token reaches neither
 #     git's argv nor docker's;
+#   - with GITHUB_TOKEN set, docker build receives the token as the
+#     github_token BuildKit secret read from the environment
+#     (--secret id=github_token,env=GITHUB_TOKEN), never as an argument;
 #   - a GIT_CONFIG_COUNT the caller set is appended to, not overwritten;
-#   - without a token the clone stays anonymous;
+#   - without a token the clone stays anonymous and no --secret reaches
+#     docker;
 #   - a github.com that rejects the clone is retried and then handed over to
 #     opendev.org at the same ref;
 #   - when no source serves the ref the build fails with a ::error:: before
@@ -181,6 +185,7 @@ test_anonymous_without_token() {
   assert_not_contains "no extraheader reaches git without a token" "$GIT_CALLS" "extraheader"
   assert_contains "the service image is built from the clone" "$DOCKER_CALLS" \
     "docker build -t ghcr.io/c5c3/barbican:2025.2"
+  assert_not_contains "no BuildKit secret is mounted without a token" "$DOCKER_CALLS" "--secret"
 }
 
 # ---------------------------------------------------------------------------
@@ -208,6 +213,8 @@ test_token_becomes_scoped_auth_header() {
     "GIT_CONFIG_VALUE_0=${expected_value}"
   assert_not_contains "the raw token is in no git argument" "$argv_only" "$token"
   assert_not_contains "the raw token is in no docker argument" "$DOCKER_CALLS" "$token"
+  assert_contains "the token is mounted as the github_token BuildKit secret" "$DOCKER_CALLS" \
+    "--secret id=github_token,env=GITHUB_TOKEN"
   assert_contains "the clone still goes to the GitHub mirror" "$clone" "${GITHUB_URL}"
 }
 
