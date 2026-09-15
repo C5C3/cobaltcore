@@ -38,7 +38,7 @@ The keystone operator is the reference consumer for most packages listed (for
 | `internal/common/secrets` | ESO primitives, `OpenBaoClusterStoreName`, per-CR store-ref resolution (`EffectiveStoreRef`, `IsStoreRefReady`, `ESOSecretStoreRef`, `PushSecretStoreRefs`), the `GateSyncedSecret` ladder, the `GateStoreReady` store-ref gate and `GateCredential`/`GateCredentials` condition-reporting loop |
 | `internal/common/validation` | Shared webhook validators (DB/cache XOR, dynamic-credentials rule, cron parse, TSC selector, PriorityClass lookup), `AttachedSiblings` (the List-and-filter skeleton the cross-CR sibling rules share), `ExtraOptions` with `ExtraOptionsRules`/`DefaultExtraOptionKeyPattern` (the extraOptions validator), `HasControlChars` |
 | `internal/common/webhook` | `NoopDeleteValidator` (the never-invoked `ValidateDelete` embed for webhooks that guard create and update only) |
-| `internal/common/database`, `internal/common/cache` | MariaDB CR apply, `BuildDatabase`/`BuildUser`/`BuildGrant` provisioning builders, host/port/username resolution, pymysql DSN + TLS params + rollout digest, memcache server resolution; plus the reconcile flows layered on top: `ReconcileProvision` (cluster gate + Database/User/Grant ensure + Dynamic-credentials skip), `ReconcileSyncJobs` (db-sync + schema-check via the parameterized `JobSetParams` table, `InstalledRelease` tracking), `ReconcileConnectionSecret` + `ConnectionEnvVar`/`ConnectionSecretName` (derived `<name>-db-connection` Secret + DSN digest), and `FinalizeResources`/`HasLiveResources` finalizer cleanup |
+| `internal/common/database`, `internal/common/cache` | MariaDB CR apply, `BuildDatabase`/`BuildUser`/`BuildGrant` provisioning builders, host/port/username resolution, pymysql DSN + TLS params + rollout digest, memcache server resolution; plus the reconcile flows layered on top: `ReconcileProvision` (cluster gate + Database/User/Grant ensure + Dynamic-credentials skip, `AdditionalDatabaseNames` for a block's extra schemas), `ReconcileSyncJobs` (db-sync + schema-check via the parameterized `JobSetParams` table, `InstalledRelease` tracking), `ReconcileConnectionSecret` + `ConnectionEnvVar`/`ConnectionSecretName` (derived `<name>-db-connection` Secret + DSN digest), and `FinalizeResources`/`HasLiveResources` finalizer cleanup |
 | `internal/common/rotation` | Split-compute-write credential rotation: `EnsureStagingSecret`, `CommitStaged`/`CommitSpec`, `EnsureRBAC`, `CompletedAt`/`ObserveAge`, `BuildCronJob`/`CronJobParams` |
 | `internal/common/tls` | `EnsureCertificate` for cert-manager Certificate objects |
 | `internal/common/release` | OpenStack release parsing and upgrade/downgrade classification |
@@ -50,6 +50,23 @@ The keystone operator is the reference consumer for most packages listed (for
 | `internal/common/plugins` | Paste-pipeline and middleware/plugin config rendering for services with a paste-deploy stack |
 | `internal/common/pysettings` | Python-settings rendering for non-INI services (Django `local_settings.py`); see the design decisions below |
 | `internal/common/testutil/envtest` | envtest bootstrap, `BuildScheme`, `CommonExternalSchemes`, `CommonFakeCRDDirs`, `StartManagedEnvTest`, `SetupEnvTestWithCRDs` (webhook-less), `SetupUnstartedManager` |
+
+A second database block on one CR passes a derived instance name (`<cr>-api`)
+to `ReconcileProvision`, `ReconcileConnectionSecret` and `FinalizeResources`, so
+it gets its own Database, User, Grant and `<cr>-api-db-connection` Secret from
+the naming convention alone. It reaches its own config section through
+`ConnectionEnvVarForSection`; placement's `placement_database` section is the
+consumer to copy. `ReconcileConnectionSecret` returns a second DSN digest, which
+the operator threads into the pod-template hash annotation beside the first.
+Extra schemas on the same SQL user go in `AdditionalDatabaseNames`, which ensures
+one more Database per schema and, in `Static` credentials mode, one more Grant on
+that user. The db-sync Job stays a single Job. It chains both commands in one
+`SyncCommand` (the glance chain in `glanceJobSetParams`,
+`operators/glance/internal/controller/reconcile_database.go`) and carries both
+connection env vars in `JobSetParams.Env` (the two-entry env in
+`neutronJobSetParams`, `operators/neutron/internal/controller/reconcile_database.go`). The
+block's OpenBao engine role is one row of `SERVICE_TENANTS` in
+`deploy/openbao/bootstrap/setup-database-tenant.sh`.
 
 ## Residual touch list
 
