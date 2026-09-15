@@ -36,7 +36,7 @@ Usage: hack/gen-option-catalog.sh [--check] <service> <release> [image-ref]
 
   --check       diff the generated catalog against the committed file instead
                 of writing it; non-zero exit on any difference.
-  service       keystone, glance, placement, barbican, neutron, or cinder.
+  service       keystone, glance, placement, barbican, neutron, cinder, or nova.
   release       release directory name (e.g. 2025.2).
   image-ref     service image to extract from
                 (default: ghcr.io/c5c3/<service>:<release>).
@@ -131,6 +131,21 @@ case "${SERVICE}" in
     # oslo.* namespaces; the file is identical at 27.0.0 and 28.0.0. 10 is the
     # same loose floor keystone, glance, barbican and neutron use.
     GEN_CONFIG_PATHS="tools/config/cinder-config-generator.conf"
+    MIN_SECTIONS=10
+    ;;
+  nova)
+    # nova ships a single generator config, etc/nova/nova-config-generator.conf,
+    # identical at 32.0.0 and 33.0.0. It lists sixteen namespaces: nova.conf,
+    # oslo.limit, oslo.log, oslo.messaging, oslo.policy, oslo.privsep,
+    # oslo.service.periodic_task, oslo.service.service, oslo.middleware,
+    # oslo.concurrency, oslo.reports, oslo.versionedobjects,
+    # keystonemiddleware.auth_token, osprofiler, os_vif and os_brick.
+    # osprofiler is an extra the image does not install, so the generator
+    # prints "WARNING:stevedore.named:Could not load osprofiler" and
+    # continues, the path glance's os_brick already takes; it is not dropped.
+    # 10 is the same loose floor the other services use; a full nova
+    # extraction registers 60 sections, 59 of them carrying live options.
+    GEN_CONFIG_PATHS="etc/nova/nova-config-generator.conf"
     MIN_SECTIONS=10
     ;;
   *)

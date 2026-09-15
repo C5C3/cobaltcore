@@ -506,7 +506,7 @@ verify-invalid-cr-fixtures:
 # and no CI job.
 gen-option-catalogs:
 	@for release in $(notdir $(patsubst %/,%,$(wildcard releases/*/))); do \
-		for service in keystone glance placement barbican neutron cinder; do \
+		for service in keystone glance placement barbican neutron cinder nova; do \
 			echo "Generating $$service $$release option catalog..."; \
 			hack/gen-option-catalog.sh $$service $$release || exit 1; \
 		done; \
@@ -520,7 +520,7 @@ gen-option-catalogs:
 # aggregate target and no CI job.
 verify-option-catalogs:
 	@for release in $(notdir $(patsubst %/,%,$(wildcard releases/*/))); do \
-		for service in keystone glance placement barbican neutron cinder; do \
+		for service in keystone glance placement barbican neutron cinder nova; do \
 			echo "Checking $$service $$release option catalog..."; \
 			hack/gen-option-catalog.sh --check $$service $$release || exit 1; \
 		done; \
