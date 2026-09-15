@@ -25,14 +25,17 @@ ubuntu:noble
 │   │   ├── placement    Stage 1 (build): install Placement, write WSGI entry
 │   │   ├── barbican     Stage 1 (build): install Barbican into virtualenv
 │   │   ├── neutron      Stage 1 (build): install Neutron into virtualenv
-│   │   └── cinder       Stage 1 (build): install Cinder into virtualenv
+│   │   ├── cinder       Stage 1 (build): install Cinder into virtualenv
+│   │   ├── nova         Stage 0 (novnc): fetch the pinned noVNC tree
+│   │   └── nova         Stage 1 (build): install Nova into virtualenv
 │   ├── keystone         Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── horizon          Stage 2 (runtime): copy virtualenv + static assets
 │   ├── glance           Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── placement        Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── barbican         Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── neutron          Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   └── cinder           Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   ├── cinder           Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   └── nova             Stage 2 (runtime): copy virtualenv and noVNC, add runtime apt packages
 ```
 
 The `venv-builder` image is used only as a build stage — it never runs in production.
@@ -756,6 +759,220 @@ rejects a module whose only module-level binding of `application` is the
 and 14, and passes only the three shared checks (non-root, no build tools,
 uwsgi).
 
+### nova
+
+**Location:** `images/nova/Dockerfile`
+
+The Nova service image uses the same two-stage build as Keystone, plus a
+`novnc` stage for the noVNC console assets `nova-novncproxy` serves. It is
+built from nova 32.0.0
+(2025.2) and 33.0.0 (2026.1) and ships no WSGI entry script. The nova-operator
+of issue #1017 launches uWSGI on the module paths
+`nova.wsgi.osapi_compute:application` for the compute API and
+`nova.wsgi.metadata:application` for the metadata API, and passes the
+configuration through `OS_NOVA_CONFIG_DIR` and `OS_NOVA_CONFIG_FILES`
+(decision D1 of issue #1014). Both modules build their application at import
+time through `wsgi_app.init_application`, so importing either one inside a
+bare image raises `ConfigFilesNotFoundError`. At 33.0.0 both also call
+`monkey_patch.patch(backend='threading')` at import.
+
+**Stage 0 (`novnc`)** extends `python-base`:
+
+- Declares `ARG NOVNC_VERSION` and `ARG NOVNC_COMMIT`, the noVNC pin
+- Installs `git` from the signed noble archive. The stage does not extend
+  `venv-builder`, which also carries git, and stays out of the `build` stage:
+  both run third-party build code from PyPI as root (`venv-builder` builds
+  uwsgi from its sdist after installing git), and the `github_token` secret
+  must not reach a git binary or a git configuration that code could have
+  replaced. `tests/unit/images/github_token_stage_base_test.sh` fails on any
+  stage mounting the secret that takes files from `venv-builder`, through its
+  `FROM`, a `COPY --from` or a bind mount
+- Fetches the pinned noVNC tree from github.com, with up to three attempts and
+  a linear backoff, and stages nine paths of it under `/opt/novnc`. A stage of
+  its own keeps the fetch off the install's cache chain, so only a pin bump
+  fetches again
+
+**Stage 1 (`build`)** extends `venv-builder`:
+
+- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for nova today;
+  nova's `osprofiler`, `zvm` and `vmware` extras are not wanted, and the
+  wiring mirrors the other service images so `extra-packages.yaml` stays the
+  single edit point)
+- Mounts `upper-constraints.txt` and the Nova source tree via named build
+  contexts (`--build-context nova=...` /
+  `--build-context upper-constraints=...`)
+- Installs Nova into the virtualenv using `uv pip install --constraint`, with
+  no `setuptools<81` constraint: nova carries no `os-win` and imports no
+  `pkg_resources`, so the 32.0.0 image resolves setuptools 84. The `--prefix`
+  install generates the eleven console scripts declared in `[console_scripts]`
+  of `setup.cfg` (32.0.0) and `[project.scripts]` of `pyproject.toml`
+  (33.0.0): `nova-compute`, `nova-conductor`, `nova-manage`,
+  `nova-novncproxy`, `nova-policy`, `nova-rootwrap`, `nova-rootwrap-daemon`,
+  `nova-scheduler`, `nova-serialproxy`, `nova-spicehtml5proxy` and
+  `nova-status`. 32.0.0 declares two PBR `wsgi_scripts` on top of them,
+  `nova-api-wsgi` and `nova-metadata-wsgi`, which uv generates and nothing
+  calls; 33.0.0 dropped both
+
+**Stage 2 (runtime)** extends `python-base`:
+
+- Declares `ARG EXTRA_APT_PACKAGES`, which carries one package: the shared
+  libpython the venv-builder-compiled uwsgi links against. The `sudo` that
+  `nova-rootwrap` would use comes from `python-base`
+- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
+- Copies the staged `/opt/novnc` from the `novnc` stage to `/usr/share/novnc`
+- Creates the two state directories under `/var/lib/nova`, empty and owned by
+  UID/GID 42424
+- Copies `nova-amqp-ready` to `/var/lib/openstack/bin/nova-amqp-ready` with
+  mode 0755
+- Sets `USER openstack` for non-root execution
+
+The image stays config-free. The package data files `api-paste.ini`,
+`rootwrap.conf` and `rootwrap.d/compute.filters` land under
+`/var/lib/openstack/etc/nova/` at both tags, declared as `data_files` in
+`setup.cfg` at 32.0.0 and under `[tool.setuptools.data-files]` in
+`pyproject.toml` at 33.0.0. `api-paste.ini` is byte-identical at the two tags.
+Nothing in the Dockerfile copies `etc/nova/` by hand, and the contract script
+asserts the three files. The nova-operator points `api_paste_config` and
+`rootwrap_config` at those absolute paths.
+
+**Runtime packages:**
+
+| Package | Purpose |
+| --- | --- |
+| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
+| `sudo` | The root helper `nova-rootwrap` is a compute-side tool, and the image carries no sudoers entry. `sudo` comes from `python-base`, not from `extra-packages.yaml` |
+
+`qemu-utils` and `libvirt0` stay out (decision D14 of issue #1014). The
+control-plane roles convert no images, and the fake driver of issue #1018
+needs no libvirt: `nova.virt.fake` imports without it.
+
+**noVNC pin:** `ARG NOVNC_VERSION` names the upstream tag, `v1.7.0`, and
+`ARG NOVNC_COMMIT` the commit that tag resolves to. `v1.7.0` is an annotated
+tag, so the pin names the peeled commit, not the tag object. The build fetches
+by commit and then greps the checked-out `package.json` for the version the
+tag carries. A tree that disagrees fails the build with
+`noVNC package.json version does not match NOVNC_VERSION=<tag>: NOVNC_COMMIT
+is stale`, so a bump that moved one line and left the other behind stops there
+instead of shipping old assets under a new version. A fetch that fails three
+times ends the build with `noVNC fetch of <commit> failed after 3 attempts`
+instead, so a rejected token or a network error does not read as a stale pin.
+
+Nine paths are copied: `app/`, `core/`, `vendor/`, `vnc.html`,
+`vnc_lite.html`, `defaults.json`, `mandatory.json`, `package.json` and
+`LICENSE.txt`. `vnc_lite.html` is the page `[vnc] novncproxy_base_url` names
+(decision D8 of issue #1014; the tree ships no `vnc_auto.html`) and it imports
+`core/rfb.js`. `vnc.html` loads `app/ui.js`, which reads `defaults.json`,
+`mandatory.json` and `package.json`, the version the console shows. `vendor/`
+carries pako, the inflate library `core/` imports. `LICENSE.txt` is the
+licence notice of the assets: MPL-2.0 for the core library, plus the licences
+it lists for the bundled parts. The tests, the docs, `po/`, `snap/`, `utils/`
+and the lint configuration are not copied.
+
+The fetching `RUN` mounts the `github_token` BuildKit secret that the
+`Build service image` step of
+[build-service-images](./build-images-workflow.md#build-service-images) and
+`hack/ci-build-service-image.sh` pass; a build without it, such as a local
+`docker build`, fetches anonymously. Renovate tracks both ARGs through one
+custom manager (`github-tags` on `novnc/noVNC`, regex versioning for the
+leading `v`), whose single `matchStrings` entry spans the two adjacent lines,
+so the tag and the commit move in one PR. Majors are disabled; minors and
+patches wait the 3-day cooldown and are not automerged, because the console
+page is user-facing and no e2e suite loads it before issue #1018. Digest
+updates are disabled too: a tag moved upstream to another commit is not a
+release, and the pin stays on the reviewed commit.
+`tests/unit/renovate/novnc_pin_custommanager_test.sh` replays the regex over
+the Dockerfile, checks the three rules, and resolves `refs/tags/v1.7.0^{}`
+upstream when it has network access, which is where a moved tag shows up.
+
+**Readiness probe:** `images/nova/nova-amqp-ready` is the exec readiness probe
+of the nova-scheduler and nova-conductor processes (decision D1 of issue
+#1014). Neither serves an HTTP port, so readiness here is "a process of this
+container holds a socket established to the message broker port", the
+semantics of kolla's `healthcheck_port`. The script is cinder's
+`cinder-amqp-ready` with `NOVA_AMQP_PORT` in place of `CINDER_AMQP_PORT`, same
+default of `5672` and same semantics; the two images are independent build
+contexts, so each carries its own copy, and
+`tests/unit/images/amqp_ready_probe_copies_test.sh` fails when the code of the
+two copies drifts apart. It reads `/proc/net/tcp` and
+`/proc/net/tcp6`, skips a table that does not exist, and exits 0 with
+`established to broker port <n>` when a row in state `01` has a remote port
+equal to `NOVA_AMQP_PORT` **and** an inode one of the container's own
+processes holds. Otherwise it exits 1 with `no established connection to
+broker port <n>`. It walks the processes' descriptors only once a table holds
+such a row, and stops at the first socket of its own, because the walk is the
+expensive half on a service running a worker per CPU. The inode match is what
+keeps the answer local:
+`/proc/net/tcp*` is scoped to the network namespace every container of a pod
+shares, so the row alone would let one healthy connection report ready for
+every co-located nova process. A process counts as the container's own when it
+shares the probe's mount namespace, which a container keeps to itself whatever
+the pod spec says. A `NOVA_AMQP_PORT` that is not a port number, including the
+`0` an unset field renders as, exits with a one-line message naming the
+variable but not its value: kubelet copies an exec probe's output verbatim
+into the `Unhealthy` event, and the key this misconfiguration is confused with
+carries the broker password. Like `healthcheck_port`, the probe answers "the
+connection exists", not "the broker answers": a broker that died without a
+`FIN` or an `RST` leaves the socket `ESTABLISHED` until the TCP keepalive
+expires. It needs no capability and no writable filesystem. The nova-operator
+wires it as
+`readinessProbe.exec.command: ["/var/lib/openstack/bin/nova-amqp-ready"]`.
+
+**State directories:** `/var/lib/nova` is `[DEFAULT] state_path`, where a
+compute stores its node identity `compute_id`. `tmp` is
+`[oslo_concurrency] lock_path`, and `instances` is `instances_path`, whose
+default `$state_path/instances` a compute expects to exist. The nova-operator
+mounts an `emptyDir` over `/var/lib/nova`, so the two directories in the image
+are what a plain `docker run` gets.
+
+**Final image properties:**
+
+- Runs as `openstack` user (UID 42424, GID 42424)
+- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Virtualenv at `/var/lib/openstack` with all Nova dependencies
+- The eleven console scripts and `nova-amqp-ready` available via `PATH`
+- No WSGI entry script; the two APIs are launched via the
+  `nova.wsgi.osapi_compute:application` and `nova.wsgi.metadata:application`
+  module paths
+- The noVNC console assets under `/usr/share/novnc`
+- `sudo` present with no sudoers entry
+
+**Image contract check:** `tests/container-images/verify_nova.sh` is the hard
+gate. Its 13 tests cover `nova-manage --version` and `nova-status --help`, the
+importability of `nova` and of `nova.virt.fake`, `os_vif`, `os_brick`,
+`websockify`, `oslo_privsep` and `oslo_limit`, together with the
+`ModuleNotFoundError` an `import libvirt` has to raise. Then come the three
+package data files, the eleven console scripts as executables, and `--help` on
+`nova-scheduler`, `nova-conductor`, `nova-novncproxy` and `nova-compute`. The
+noVNC test asserts that the copied files are present and readable by the
+service user and that the `package.json` version equals the
+`ARG NOVNC_VERSION` pin it reads out of the Dockerfile; with that pin edited
+to `v9.9.9` it is the only test that fails, reporting `1.7.0` against `9.9.9`.
+The probe test covers its presence and executability, the exit 1 that names
+port 5672 in a bare container, that it honours `NOVA_AMQP_PORT=1`, that a
+`NOVA_AMQP_PORT` carrying a transport URL and one carrying `0` are both
+refused without a traceback, the exit 0 against a connection the container
+itself holds and past a descriptor that vanished mid-scan, that a connection
+to 5671 counts with `NOVA_AMQP_PORT=5671` and one to 5672 does not, and the
+exit 1 against the same connection seen from a second container joined to its
+network namespace, with and without a shared PID namespace, once that
+container has been shown the connection's row. The connection is held against
+a listener that never accepts, so the container owns the client end alone and
+a probe that read a row's local port would fail the ready checks.
+`uwsgi --version`, the absence of `qemu-img`, `sudo --version` and a refused
+`sudo -n true` prove the apt wiring. The remaining tests check non-root
+execution, the absence of build tools, and the two state directories, empty
+and owned by 42424 along with their parent. The WSGI check inspects the two
+modules instead of importing them: an import runs
+`wsgi_app.init_application` at module level and dies with
+`ConfigFilesNotFoundError` in a bare image. So it pairs
+`importlib.util.find_spec` for each module path with an `ast.parse` of the
+module source, and rejects a module whose only module-level binding of
+`application` is the `None` sentinel. Both release images pass all 56 assertions.
+Pointed at a cinder image the script exits 1 with 37 of them failing: every
+test but the non-root and build-tool ones fails, while the wrong image still
+satisfies the uwsgi and sudo halves of the apt test and the libvirt-absence
+half of the import test.
+
 ## Release-independent images
 
 These images ship software from outside the OpenStack release matrix. They have
@@ -1232,7 +1449,7 @@ user is created) and in every service Dockerfile that uses it instead of a
 per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`,
 `images/glance/Dockerfile`, `images/placement/Dockerfile`,
 `images/barbican/Dockerfile`, `images/neutron/Dockerfile`,
-`images/cinder/Dockerfile`).
+`images/cinder/Dockerfile`, `images/nova/Dockerfile`).
 
 `images/ovn/Dockerfile` and `images/backup-shifter/Dockerfile` carry the comment
 for the other half of the same decision. Neither derives from `python-base`, so

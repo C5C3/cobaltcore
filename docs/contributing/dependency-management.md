@@ -54,6 +54,7 @@ The custom managers cover:
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`.
 - **`renovate-config-validator` pin** — the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
 - **OVN image pin** — the `ARG OVN_VERSION` line in `images/ovn/Dockerfile` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix). A second manager tracks the same upstream tag in `defaultOVNVersion`, the constant in `operators/ovn/internal/controller/image.go` that the ovn-operator resolves for a CR leaving `spec.image` unset. It carries the bare version, so its versioning regex expects no `v` and an `extractVersionTemplate` strips the one the tag has. Both pins are grouped under `OVN LTS patch releases`, so they move in a single PR; `TestDefaultOVNVersionMatchesDockerfilePin` fails when they diverge.
+- **noVNC console assets** — the `ARG NOVNC_VERSION` and `ARG NOVNC_COMMIT` lines in `images/nova/Dockerfile` (github-tags on `novnc/noVNC`, regex versioning because the tags carry a `v` prefix). One `matchStrings` entry spans both adjacent lines, so the tag and the commit it names move in a single PR. Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged, because the console page is user-facing and no e2e suite loads it before #1018. Digest updates are disabled: a tag moved upstream to another commit is not a release, and the pin stays on the reviewed commit.
 
 Major updates are **disabled** for all custom-regex managers — these touch deploy-time
 CRDs, the OpenStack release matrix, and build tooling where a major bump always needs
@@ -97,6 +98,11 @@ PR** — they clone the new tag, read both SHAs with
 onto the branch. That step is why the OVN patch rule does not automerge: an automerged
 PR would leave nobody to carry the pins across, and the group would stall red until
 someone noticed OVN security patches had stopped landing.
+
+`ARG NOVNC_COMMIT` in `images/nova/Dockerfile` is the exception to that split.
+Renovate tracks it as the `currentDigest` of the noVNC manager: a plain tag
+has no second gitlink to carry across, and the github-tags datasource resolves
+the tag to the commit it names.
 
 ---
 
