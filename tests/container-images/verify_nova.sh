@@ -102,6 +102,9 @@ test_wsgi_modules_resolvable() {
   # (#1015 section (a.1)). find_spec answers half the question this test asks,
   # whether the module path handed to uWSGI resolves, without running
   # module-level code, so do not simplify it into a plain import.
+  # find_spec imports the parent packages of a dotted name and raises
+  # ModuleNotFoundError when one is missing, so that case is folded into the
+  # same `does not resolve` exit.
   # ast.parse over the module source answers the other half without executing
   # it either. Both pinned tags open with an `application = None` sentinel and
   # rebind it only inside `with lock:` and `if application is None:`, so the
@@ -124,7 +127,10 @@ test_wsgi_modules_resolvable() {
       /var/lib/openstack/bin/python -c \
       'import ast, importlib.util, sys
 module = sys.argv[1]
-spec = importlib.util.find_spec(module)
+try:
+    spec = importlib.util.find_spec(module)
+except ModuleNotFoundError:
+    spec = None
 if spec is None or spec.origin is None:
     sys.exit(f"{module} does not resolve to a module file")
 tree = ast.parse(open(spec.origin).read())
