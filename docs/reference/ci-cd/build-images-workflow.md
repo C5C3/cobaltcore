@@ -476,6 +476,9 @@ as the `github_token` secret (`secrets: github_token=...`), which the
 Dockerfile mounts into the one `RUN` that fetches and turns into the
 basic-auth header `actions/checkout` sends. A secret reaches no layer; a build
 without it, such as a local `docker build`, fetches anonymously.
+`images/nova/Dockerfile` is the second Dockerfile here fetching from
+github.com, for the noVNC console assets, and gets the same secret from the
+`Build service image` step of `build-service-images`.
 
 `build-ovn` needs `changes`, `lint-dockerfiles` and `prepare`, and carries
 `if: needs.changes.outputs.build-ovn == 'true'`: on a pull request it runs when
@@ -655,7 +658,7 @@ locally for inline verification instead of being pushed to GHCR.
 | 5 | Prepare platform pair | `.github/actions/platform-pair` | Converts `linux/amd64` → `linux-amd64` for artifact names and cache scopes |
 | 6 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login (cosign disabled) |
 | 7 | Generate metadata for service image | `docker/metadata-action@v6` | Produces OCI labels and overrides version to the upstream release ref via `type=raw` strategy |
-| 8 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args. Non-PR: `push-by-digest=true`, digest exported as artifact. PR: `load: true`, composite tag |
+| 8 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args, and passes the workflow token as the `github_token` BuildKit secret. A secret reaches only a `RUN` that mounts it, and `images/nova/Dockerfile` (the noVNC fetch) is the one service Dockerfile that does. Non-PR: `push-by-digest=true`, digest exported as artifact. PR: `load: true`, composite tag |
 | 9 | Export service image digest | `.github/actions/export-digest` | Non-PR only. Uploads artifact `digests-service-<service>-<release>-<platform-pair>` |
 | 10 | Supply chain scan (PR) | `.github/actions/supply-chain-attest` | PR only: scans locally loaded image via Grype (`scan-mode: image`); no SARIF upload |
 | 11 | Verify service image (PR) | Shell (conditional) | PR only: runs `verify_${{ matrix.service }}.sh` with the locally loaded image ref |
