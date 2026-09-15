@@ -25,8 +25,8 @@
 #   - database/mariadb/config/<service>-<service-namespace>
 #       the connection to the service's MariaDB, authenticated as root.
 #   - database/mariadb/roles/<service>-<service-namespace>
-#       a role that issues short-lived MySQL users with ALL PRIVILEGES on the
-#       service database and auto-revokes them at lease end.
+#       a role that issues short-lived MySQL users with ALL PRIVILEGES on every
+#       schema of the service's schema list and auto-revokes them at lease end.
 #
 # It ALWAYS provisions the Keystone pair. It also provisions a Glance pair when
 # the ControlPlane declares spec.services.glance on the SHARED managed database,
@@ -121,19 +121,29 @@ get_controlplane_field() {
 }
 
 ###############################################################################
-# provision_service_tenant <service> <svc_ns> <mariadb_name> <database_name>
+# provision_service_tenant <service> <svc_ns> <mariadb_name> <database_names>
 ###############################################################################
 # Write the database-engine connection+role pair for one service tenant:
 #   database/mariadb/config/<service>-<svc_ns>
 #   database/mariadb/roles/<service>-<svc_ns>
 # resolving the MariaDB root credential from the <mariadb_name> CR in <svc_ns>
-# and issuing short-lived users with ALL PRIVILEGES on <database_name>. Fails
-# loudly if that namespace's MariaDB root Secret is missing.
+# and issuing short-lived users with ALL PRIVILEGES on every schema of
+# <database_names>, a comma-separated schema list. Fails loudly if that
+# namespace's MariaDB root Secret is missing.
 provision_service_tenant() {
   local service="$1"
   local svc_ns="$2"
   local mariadb_name="$3"
-  local database_name="$4"
+  local database_names="${4:?database name list required}"
+
+  # A leading, trailing or doubled comma leaves an unnamed schema in the list.
+  if [[ ",${database_names}," == *,,* ]]; then
+    log "ERROR: empty schema in list '${database_names}'"
+    exit 1
+  fi
+
+  local schemas
+  IFS=, read -r -a schemas <<<"${database_names}"
 
   # Keyed on the service namespace alone (see header): unique + collision-free,
   # and matched exactly by the <service>-db-dynamic templated policy, whose ACL
@@ -146,7 +156,7 @@ provision_service_tenant() {
   log "Service NS: ${svc_ns}"
   log "Role      : database/mariadb/roles/${role_name}"
   log "MariaDB   : ${mariadb_name}.${svc_ns}.svc:3306"
-  log "Database  : ${database_name}"
+  log "Database  : ${database_names}"
 
   # Resolve the MariaDB root credential from the effective
   # spec.rootPasswordSecretKeyRef on the live MariaDB CR. mariadb-operator
@@ -190,12 +200,19 @@ provision_service_tenant() {
     verify_connection=false
   log "Connection config written."
 
-  # Write the role. creation_statements creates a short-lived MySQL user with
-  # ALL PRIVILEGES on the service database; revocation_statements drops it at
-  # lease end. The database identifier is backtick-quoted (escaped \` for the
-  # bash double-quoted string) so a hyphenated database name is valid MySQL.
-  local creation_stmt revocation_stmt
-  creation_stmt="CREATE USER '{{name}}'@'%' IDENTIFIED BY '{{password}}'; GRANT ALL PRIVILEGES ON \`${database_name}\`.* TO '{{name}}'@'%';"
+  # Write the role. creation_statements creates a short-lived MySQL user and
+  # grants it ALL PRIVILEGES: one GRANT is rendered per schema of the list, in
+  # list order, inside the one creation_statements value. revocation_statements
+  # drops the user at lease end. Each schema identifier is backtick-quoted
+  # (escaped \` for the bash double-quoted string) so a hyphenated schema name
+  # is valid MySQL, and its underscores are escaped as \_ because a
+  # database-level GRANT reads a bare _ as a one-character wildcard: nova_cell0
+  # would also cover novaXcell0.
+  local creation_stmt revocation_stmt schema
+  creation_stmt="CREATE USER '{{name}}'@'%' IDENTIFIED BY '{{password}}';"
+  for schema in "${schemas[@]}"; do
+    creation_stmt+=" GRANT ALL PRIVILEGES ON \`${schema//_/\\_}\`.* TO '{{name}}'@'%';"
+  done
   revocation_stmt="DROP USER IF EXISTS '{{name}}'@'%';"
 
   log "Writing database/mariadb/roles/${role_name} (default_ttl=${DB_CREDS_DEFAULT_TTL}, max_ttl=${DB_CREDS_MAX_TTL}) ..."
@@ -300,4 +317,6 @@ main() {
   log "=== Done ==="
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
