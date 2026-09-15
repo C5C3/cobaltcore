@@ -5,6 +5,8 @@
 package database
 
 import (
+	"strings"
+
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -106,4 +108,37 @@ func BuildGrant(p ProvisionParams) *mariadbv1alpha1.Grant {
 			Username:   p.Name,
 		},
 	}
+}
+
+// AdditionalResourceName derives the Database and Grant object name of an
+// additional schema of the block whose instance name is instanceName. The
+// lower-casing and the underscore swap map a schema that matches the
+// DatabaseSpec.Database pattern (^[A-Za-z0-9_]+$) onto the DNS-1123 character
+// set: instance name nova with schema nova_cell0 gives nova-nova-cell0. The
+// result is not valid for every such schema: one ending in _ derives a name
+// ending in -, so callers validate it before applying. It is
+// exported because the finalizer, the callers, and the tests derive the same
+// name.
+func AdditionalResourceName(instanceName, schema string) string {
+	return instanceName + "-" + strings.ToLower(strings.ReplaceAll(schema, "_", "-"))
+}
+
+// BuildAdditionalDatabase builds the mariadb-operator Database CR for one
+// additional schema of the block. It differs from BuildDatabase(p) only in its
+// object name and its SQL database name.
+func BuildAdditionalDatabase(p ProvisionParams, schema string) *mariadbv1alpha1.Database {
+	db := BuildDatabase(p)
+	db.Name = AdditionalResourceName(p.Name, schema)
+	db.Spec.Name = schema
+	return db
+}
+
+// BuildAdditionalGrant builds the Grant CR that grants the block's user
+// (p.Name) ALL PRIVILEGES on one additional schema. The privileges and the
+// table are those of BuildGrant.
+func BuildAdditionalGrant(p ProvisionParams, schema string) *mariadbv1alpha1.Grant {
+	grant := BuildGrant(p)
+	grant.Name = AdditionalResourceName(p.Name, schema)
+	grant.Spec.Database = schema
+	return grant
 }
