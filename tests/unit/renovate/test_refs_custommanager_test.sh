@@ -147,9 +147,54 @@ test_package_rules_for_test_refs() {
     "PyPI"
 }
 
+# The 2025.2 upper-constraints.txt pins testtools===2.7.2, and
+# neutron-tempest-plugin 3.1.0 and later require testtools>=2.8.4, so the
+# 2025.2 tempest image cannot resolve them. Without a hold Renovate keeps
+# proposing the newest plugin for 2025.2 and the build-tempest leg fails.
+test_neutron_tempest_plugin_hold_for_2025_2() {
+  echo "Test: neutron-tempest-plugin stays below 3.1.0 for 2025.2"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
+    return
+  fi
+
+  local hold_rule pin
+  hold_rule="$(jq -c '.packageRules[]
+    | select(
+        ((.matchFileNames // []) | index("releases/2025.2/test-refs.yaml")) != null
+        and (((.matchPackageNames // []) | index("neutron-tempest-plugin")) != null)
+      )' "$RENOVATE_FILE" | head -1)"
+
+  if [ -z "$hold_rule" ]; then
+    echo "  FAIL: no packageRule holds neutron-tempest-plugin for releases/2025.2/test-refs.yaml"
+    FAIL=$((FAIL + 3))
+    return
+  fi
+
+  assert_eq "the 2025.2 neutron-tempest-plugin rule allows only versions below 3.1.0" \
+    "<3.1.0" \
+    "$(jq -r '.allowedVersions' <<<"$hold_rule")"
+  assert_eq "the hold does not disable the pin" \
+    "null" \
+    "$(jq -r '.enabled // "null"' <<<"$hold_rule")"
+
+  pin="$(awk -F'"' '/^neutron-tempest-plugin:/ {print $2; exit}' \
+    "$PROJECT_ROOT/releases/2025.2/test-refs.yaml")"
+  if [[ "$pin" =~ ^3\.0\.[0-9]+$ ]]; then
+    echo "  PASS: releases/2025.2/test-refs.yaml pins neutron-tempest-plugin on the 3.0 line ($pin)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: releases/2025.2/test-refs.yaml pins neutron-tempest-plugin '$pin', outside the 3.0 line the hold allows"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
 test_custom_manager_uses_pypi_datasource
 test_regex_captures_tempest_and_plugin
 test_package_rules_for_test_refs
+test_neutron_tempest_plugin_hold_for_2025_2
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
