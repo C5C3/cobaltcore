@@ -138,7 +138,20 @@ func DynamicCredentialsRequireClusterRef(fldPath *field.Path, db *commonv1.Datab
 // CronSchedule rejects a schedule cron.ParseStandard cannot parse. Callers
 // keep their own empty-schedule guards — the required-vs-defaulted semantics
 // (and the message naming the default) are per-field policy.
+//
+// It also rejects a TZ= or CRON_TZ= prefix, which cron.ParseStandard accepts but
+// the API server refuses in a CronJob's spec.schedule on create. Admitting one
+// would leave the CR valid and its CronJob unapplicable, failing every reconcile
+// on a spec field the controller cannot repair. The check matches the API
+// server's own, which looks for "TZ" anywhere in the schedule.
 func CronSchedule(fldPath *field.Path, schedule string) field.ErrorList {
+	if strings.Contains(schedule, "TZ") {
+		return field.ErrorList{field.Invalid(
+			fldPath,
+			schedule,
+			"TZ and CRON_TZ are not allowed in the schedule: the CronJob API rejects them",
+		)}
+	}
 	if _, err := cron.ParseStandard(schedule); err != nil {
 		return field.ErrorList{field.Invalid(
 			fldPath,

@@ -13,6 +13,7 @@ use (
 	./operators/horizon
 	./operators/keystone
 	./operators/neutron
+	./operators/nova
 	./operators/ovn
 	./operators/placement
 )
