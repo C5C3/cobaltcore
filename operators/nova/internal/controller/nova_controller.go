@@ -11,6 +11,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
@@ -92,4 +93,24 @@ type NovaReconciler struct {
 // vocabulary.
 func setReadyCondition(nova *novav1alpha1.Nova) {
 	novaSkeleton.SetReady(nova)
+}
+
+// conditionReasonConfigError is the SecretsReady=False reason set when
+// reconcileConfig fails. Config artefacts (the rendered nova.conf ConfigMap)
+// gate the same downstream graph as the upstream credential Secrets, so failures
+// reuse SecretsReady rather than a dedicated condition, matching
+// reconcileDBConnectionSecrets' Config to SecretsReady mapping.
+const conditionReasonConfigError = "ConfigError"
+
+// markConfigFailed flips SecretsReady to False so a reconcileConfig failure
+// cannot leave the aggregate Ready condition stale-True at the new
+// ObservedGeneration. It mirrors the sibling operators' markConfigFailed helper.
+func markConfigFailed(nova *novav1alpha1.Nova, err error) {
+	conditions.SetCondition(&nova.Status.Conditions, metav1.Condition{
+		Type:               "SecretsReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: nova.Generation,
+		Reason:             conditionReasonConfigError,
+		Message:            err.Error(),
+	})
 }
