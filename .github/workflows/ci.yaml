@@ -596,8 +596,9 @@ jobs:
   # contexts, so a `needs.changes.outputs.<name>` that no job exports fails here
   # rather than silently evaluating to the empty string and leaving a job
   # unscheduled — the failure mode the change classes above are built on. It
-  # also runs shellcheck over every `run:` script. Custom runner labels are
-  # declared in .github/actionlint.yaml.
+  # also runs shellcheck over every `run:` script. `self-hosted` is a built-in
+  # label; a custom runner pool would have to be declared in
+  # .github/actionlint.yaml before it can be used in `runs-on:`.
   actionlint:
     needs: [changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.actionlint == 'true'
@@ -1255,10 +1256,7 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # The keystone leg is pinned back to Blacksmith for now: it is by far the
-    # largest suite in this matrix and has not been stable on the self-hosted
-    # runners since they took over. The other legs stay self-hosted.
-    runs-on: ${{ matrix.operator == 'keystone' && 'blacksmith-4vcpu-ubuntu-2404' || 'self-hosted' }}
+    runs-on: self-hosted
     timeout-minutes: 68
     permissions:
       contents: read
@@ -1617,12 +1615,9 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # The pod leg is pinned back to Blacksmith for now: it is the blocking leg
-    # and has not been stable on the self-hosted runners since they took over.
-    # The network and ovn legs stay self-hosted. The split into three matrix
-    # entries is kept so PodChaos, NetworkChaos and the OVN datapath suite stay
-    # independently gated (see continue-on-error below) and so the suites run
-    # in parallel.
+    # The split into three matrix entries is kept so PodChaos, NetworkChaos and
+    # the OVN datapath suite stay independently gated (see continue-on-error
+    # below) and so the suites run in parallel.
     #
     # test_dirs lists the per-suite test directories explicitly. chainsaw
     # v0.2.14 accepts --{include,exclude}-test-regex flags but does not apply
@@ -1639,7 +1634,6 @@ jobs:
           # runner sets WITH_CHAOS_MESH=true via setup-e2e-infra (env block
           # below), so the test's runtime presence guard never SKIPs here.
           - suite: pod
-            runner: blacksmith-4vcpu-ubuntu-2404
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/api-pod-kill-pdb
@@ -1657,7 +1651,6 @@ jobs:
               tests/e2e-chaos/placement-operator-pod-kill
               tests/e2e-chaos/barbican-operator-pod-kill
           - suite: network
-            runner: self-hosted
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/mariadb-network-latency
@@ -1676,11 +1669,10 @@ jobs:
           # non-blocking. No suite here touches Keystone, so this leg deploys
           # the ovn-operator alone and skips the keystone stack.
           - suite: ovn
-            runner: self-hosted
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/ovn-southbound-outage
-    runs-on: ${{ matrix.runner }}
+    runs-on: self-hosted
     timeout-minutes: 90
     # Pod-chaos is blocking; network-chaos and ovn stay non-blocking (their
     # kernel-module dependency keeps them flakiness-prone). See the gating note

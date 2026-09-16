@@ -220,10 +220,7 @@ The E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`,
 infrastructure setup via
 the `setup-e2e-infra` composite action and diagnostic teardown via
 `hack/ci-dump-diagnostics.sh`. They run on the `self-hosted` runners, as does
-`test-integration` — with two exceptions: the keystone leg of the
-`e2e-operator` matrix and the `pod` leg of the `e2e-chaos` matrix are pinned
-back to the `blacksmith-4vcpu-ubuntu-2404` runner for now, because those suites
-have not been stable on the self-hosted runners.
+`test-integration`.
 
 ## Jobs
 
@@ -382,9 +379,10 @@ The binary is pinned and checksummed the way `verify-container-images.yaml`
 installs `yq`. Renovate bumps `ACTIONLINT_VERSION`; the checksum then fails until
 it is updated alongside, which is the intended signal.
 
-`.github/actionlint.yaml` declares `blacksmith-4vcpu-ubuntu-2404`. actionlint
-validates `runs-on:` against the labels GitHub itself provides, so a self-hosted
-pool has to be declared there or the lint fails on a runner that exists.
+actionlint validates `runs-on:` against the labels GitHub itself provides plus
+the built-in `self-hosted`. The workflows use only those, so no
+`.github/actionlint.yaml` exists; a custom runner pool would have to be declared
+there first or the lint fails on a runner that exists.
 
 Three `run:` scripts carry inline `# shellcheck disable=` directives for
 deliberate word splitting: the release-list loops in `e2e-operator` (SC2086), the
@@ -899,16 +897,15 @@ pre-validation of any leg is available via the `ci:chaos` PR label, with
 The job runs as a three-entry matrix, split by chaos type and by the stack each
 leg needs:
 
-| Leg | Runner | Operators deployed | Suites |
-| --- | --- | --- | --- |
-| `pod` | `blacksmith-4vcpu-ubuntu-2404` | keystone, horizon, glance, placement, barbican | the PodChaos suites |
-| `network` | `self-hosted` | keystone, horizon, glance, barbican, ovn, neutron, cinder | the NetworkChaos suites, `neutron-mariadb-outage` and `neutron-broker-outage` among them, plus the three Cinder suites `cinder-operator-pod-kill`, `cinder-broker-outage` and `cinder-nfs-outage` |
-| `ovn` | `self-hosted` | ovn | `ovn-southbound-outage` |
+| Leg | Operators deployed | Suites |
+| --- | --- | --- |
+| `pod` | keystone, horizon, glance, placement, barbican | the PodChaos suites |
+| `network` | keystone, horizon, glance, barbican, ovn, neutron, cinder | the NetworkChaos suites, `neutron-mariadb-outage` and `neutron-broker-outage` among them, plus the three Cinder suites `cinder-operator-pod-kill`, `cinder-broker-outage` and `cinder-nfs-outage` |
+| `ovn` | ovn | `ovn-southbound-outage` |
 
-The `pod` leg is pinned to the `blacksmith-4vcpu-ubuntu-2404` runner for now,
-because it is the blocking leg and has not been stable on the self-hosted
-runners. The split keeps the legs independently gated and lets them run in
-parallel. Each matrix entry lists its per-suite test directories explicitly.
+All three legs run on the `self-hosted` runners. The split keeps the legs
+independently gated and lets them run in parallel. Each matrix entry lists its
+per-suite test directories explicitly.
 
 A `Resolve OVN version` step reads the pin from `images/ovn/Dockerfile` through
 `hack/ci-resolve-ovn-version.sh` and writes `OVN_VERSION` into `$GITHUB_ENV`, so
