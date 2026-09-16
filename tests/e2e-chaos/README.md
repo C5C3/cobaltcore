@@ -31,17 +31,15 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   matrix leg (chainsaw v0.2.14's include/exclude-regex flags are
   no-ops). A new suite **must** be added to the `pod`, `network` or `ovn`
   leg there, or it never runs in CI.
-- **Runner split:** the `pod` leg is pinned to
-  `blacksmith-4vcpu-ubuntu-2404` for now (it is the blocking leg and has not
-  been stable on the self-hosted runners); the `network` leg runs on the
-  `self-hosted` runners. The NetworkChaos suites
+- **Runners:** all three legs run on the `self-hosted` runners. The
+  NetworkChaos suites
   (`mariadb-network-latency`, `-partition`, `glance-garage-outage`,
   `barbican-openbao-outage`, `neutron-mariadb-outage`,
   `neutron-broker-outage`, `cinder-broker-outage`) need the
   `sch_netem`/`ip_set` kernel modules, which `hack/deploy-infra.sh` loads
   (installing `linux-modules-extra-$(uname -r)` on demand); that leg stays
-  `continue-on-error`. The `ovn` leg runs `ovn-southbound-outage` on the
-  `self-hosted` runners as well, with `WITH_OVN_KERNEL_MODULES=true` so
+  `continue-on-error`. The `ovn` leg runs `ovn-southbound-outage` with
+  `WITH_OVN_KERNEL_MODULES=true` so
   `hack/deploy-infra.sh` loads the `openvswitch`/`geneve` modules the chassis
   DaemonSets need, and only the ovn-operator deployed. It stays
   `continue-on-error` too: the suite builds a datapath on the node itself.
