@@ -62,6 +62,20 @@ extract_pinned_hash() {
   awk -F'"' -v v="$var" '$0 ~ "^" v "=" {print $2; exit}' "$INSTALL_SCRIPT"
 }
 
+# extract_pinned_version <tool> — returns the FOO_VERSION constant from
+# install-test-deps.sh. The version stubs and the expected log lines read the
+# pins from there, as the hashes above do, so a version bump in the script does
+# not also have to be repeated in this test.
+extract_pinned_version() {
+  local var="${1}_VERSION"
+  awk -F'"' -v v="$var" '$0 ~ "^" v "=" {print $2; exit}' "$INSTALL_SCRIPT"
+}
+
+CHAINSAW_PIN="$(extract_pinned_version CHAINSAW)"
+FLUX_PIN="$(extract_pinned_version FLUX)"
+KIND_PIN="$(extract_pinned_version KIND)"
+KUBECTL_PIN="$(extract_pinned_version KUBECTL)"
+
 # ---------------------------------------------------------------------------
 # Stub factory — populates <dir> with stubs for curl / tar / sha256sum that
 # let install_flux reach `install` without touching the network.
@@ -130,17 +144,17 @@ STUB
 prepopulate_non_flux_tools() {
   local dir="$1"
   mkdir -p "$dir"
-  cat >"$dir/chainsaw" <<'STUB'
+  cat >"$dir/chainsaw" <<STUB
 #!/bin/bash
-echo "v0.2.15"
+echo "${CHAINSAW_PIN}"
 STUB
-  cat >"$dir/kind" <<'STUB'
+  cat >"$dir/kind" <<STUB
 #!/bin/bash
-echo "kind v0.32.0 go1.23.0 linux/amd64"
+echo "kind ${KIND_PIN} go1.23.0 linux/amd64"
 STUB
-  cat >"$dir/kubectl" <<'STUB'
+  cat >"$dir/kubectl" <<STUB
 #!/bin/bash
-echo "Client Version: v1.36.4"
+echo "Client Version: ${KUBECTL_PIN}"
 STUB
   chmod +x "$dir/chainsaw" "$dir/kind" "$dir/kubectl"
 }
@@ -152,11 +166,11 @@ STUB
 prepopulate_flux_with_correct_version() {
   local dir="$1"
   mkdir -p "$dir"
-  cat >"$dir/flux" <<'STUB'
+  cat >"$dir/flux" <<STUB
 #!/bin/bash
-# Mirror `flux version --client` output shape closely enough for the
+# Mirror \`flux version --client\` output shape closely enough for the
 # grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 extractor in install_flux.
-echo "flux: v2.9.4"
+echo "flux: v${FLUX_PIN}"
 STUB
   chmod +x "$dir/flux"
 }
@@ -207,11 +221,11 @@ test_default_skips_install_flux() {
   # install_flux must not run — neither the "Installing" branch nor the
   # "already installed" short-circuit should appear.
   assert_not_contains "no 'Installing flux' log line" "$output" "Installing flux"
-  assert_not_contains "no 'flux ... already installed' log line" "$output" "flux 2.9.4 already installed"
+  assert_not_contains "no 'flux ... already installed' log line" "$output" "flux ${FLUX_PIN} already installed"
   # Other installers still run (they short-circuit on the pre-populated stubs).
-  assert_contains "install_chainsaw still runs" "$output" "chainsaw v0.2.15 already installed"
-  assert_contains "install_kind still runs" "$output" "kind v0.32.0 already installed"
-  assert_contains "install_kubectl still runs" "$output" "kubectl v1.36.4 already installed"
+  assert_contains "install_chainsaw still runs" "$output" "chainsaw ${CHAINSAW_PIN} already installed"
+  assert_contains "install_kind still runs" "$output" "kind ${KIND_PIN} already installed"
+  assert_contains "install_kubectl still runs" "$output" "kubectl ${KUBECTL_PIN} already installed"
   # Script did not abort before "=== Done ===".
   assert_contains "script reached Done" "$output" "=== Done ==="
 }
@@ -239,11 +253,11 @@ test_with_flux_cli_true_invokes_install_flux() {
 
   assert_eq "install-test-deps.sh exits 0 with WITH_FLUX_CLI=true" "0" "$exit_code"
   # install_flux ran: network download log line present.
-  assert_contains "install_flux was invoked" "$output" "Installing flux 2.9.4"
+  assert_contains "install_flux was invoked" "$output" "Installing flux ${FLUX_PIN}"
   # verify_sha256 ran and succeeded (signature: "SHA256 checksum verified.").
   assert_contains "verify_sha256 was invoked" "$output" "SHA256 checksum verified."
   # Final install log line from install_flux.
-  assert_contains "install_flux completed" "$output" "flux 2.9.4 installed to"
+  assert_contains "install_flux completed" "$output" "flux ${FLUX_PIN} installed to"
   # Binary actually landed in INSTALL_DIR.
   if [[ -x "$tmp/install/flux" ]]; then
     echo "  PASS: flux binary installed under INSTALL_DIR"
@@ -281,9 +295,9 @@ test_with_flux_cli_true_short_circuits_on_correct_version() {
 
   assert_eq "install-test-deps.sh exits 0 with flux pre-installed" "0" "$exit_code"
   # Short-circuit log line from install_flux is emitted.
-  assert_contains "short-circuit log line appears" "$output" "flux 2.9.4 already installed"
+  assert_contains "short-circuit log line appears" "$output" "flux ${FLUX_PIN} already installed"
   # The download + verify branches must NOT have run.
-  assert_not_contains "no 'Installing flux' log line" "$output" "Installing flux 2.9.4"
+  assert_not_contains "no 'Installing flux' log line" "$output" "Installing flux ${FLUX_PIN}"
   assert_not_contains "no 'SHA256 checksum verified.' log line" "$output" "SHA256 checksum verified."
   # Script still reaches Done.
   assert_contains "script reached Done" "$output" "=== Done ==="
