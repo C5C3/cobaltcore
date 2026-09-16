@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.dbArchive.schedule outside the cron grammar is rejected by the
+# validating webhook alone. The field carries no CRD pattern on purpose: the
+# accepted grammar includes descriptors such as @daily, which no regex
+# expresses without also rejecting valid expressions, so
+# validation.CronSchedule is the sole gate. The value carries four fields
+# where five are expected, so it is rejected at admission rather than by
+# the CronJob create the reconciler would otherwise attempt.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-invalid
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  apiDatabase:
+    clusterRef:
+      name: mariadb
+    database: nova_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: mariadb
+    database: nova
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: memcached
+  messaging:
+    clusterRef:
+      name: rabbitmq
+  keystoneEndpoint: http://keystone.openstack.svc:5000
+  serviceUser:
+    secretRef:
+      name: nova-service-user
+  metadata:
+    sharedSecretRef:
+      name: nova-metadata-secret
+  dbArchive:
+    schedule: "* * * *"

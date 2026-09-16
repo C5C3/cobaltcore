@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.messaging omitted. What answers is the MessagingSpec XOR CEL rule, not
+# the required-properties list: the defaulting webhook marshals the whole
+# typed object back into its admission patch, and NovaSpec.Messaging is a
+# non-pointer struct without an omitempty tag, so the patch materializes the
+# block as an empty object. By the time the schema is checked the property
+# is present and names neither mode. The fixture still earns its place: it
+# pins that no layer invents a broker for a CR that names none. The API
+# hands every instance request to the conductor over the bus and every
+# nova-compute reaches the control plane the same way, so a Nova without a
+# broker accepts requests nothing acts on.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-invalid
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  apiDatabase:
+    clusterRef:
+      name: mariadb
+    database: nova_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: mariadb
+    database: nova
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: memcached
+  keystoneEndpoint: http://keystone.openstack.svc:5000
+  serviceUser:
+    secretRef:
+      name: nova-service-user
+  metadata:
+    sharedSecretRef:
+      name: nova-metadata-secret

@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A metadata.name ending in -api is rejected by the validating webhook alone.
+# The Nova nova-invalid in the same namespace names its nova_api MariaDB
+# Database, User and Grant nova-invalid-api, which is exactly what this CR
+# would name its cell schema's, so deleting either CR would delete the
+# other's. The rule runs in ValidateCreate only, like the length bound.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-invalid-api
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  apiDatabase:
+    clusterRef:
+      name: mariadb
+    database: nova_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: mariadb
+    database: nova
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: memcached
+  messaging:
+    clusterRef:
+      name: rabbitmq
+  keystoneEndpoint: http://keystone.openstack.svc:5000
+  serviceUser:
+    secretRef:
+      name: nova-service-user
+  metadata:
+    sharedSecretRef:
+      name: nova-metadata-secret
