@@ -243,3 +243,146 @@ func TestServiceUserPasswordEnvVar(t *testing.T) {
 		})
 	}
 }
+
+// assertAbsent fails the test when got carries any of the keys the client
+// section must never render.
+func assertAbsent(t *testing.T, got map[string]string, keys ...string) {
+	t.Helper()
+	for _, k := range keys {
+		if _, ok := got[k]; ok {
+			t.Errorf("ClientSection() unexpectedly contains key %q", k)
+		}
+	}
+}
+
+// TestClientSection_RendersPasswordAuthWithoutSecrets pins the exact key set of
+// a client section and the options it must not inherit: the password reaches the
+// service through ClientPasswordEnvVar, and the token-middleware options belong
+// to Section and ServiceUserSection.
+func TestClientSection_RendersPasswordAuthWithoutSecrets(t *testing.T) {
+	got := ClientSection(SectionParams{
+		AuthURL:            "http://keystone.svc:5000/v3",
+		WWWAuthenticateURI: "https://keystone.example.com/v3",
+		Username:           "nova",
+		ProjectName:        "service",
+		UserDomainName:     "Default",
+		ProjectDomainName:  "Default",
+		RegionName:         "RegionOne",
+		MemcachedServers:   "mc-0:11211,mc-1:11211",
+	})
+
+	want := map[string]string{
+		"auth_type":           "password",
+		"auth_url":            "http://keystone.svc:5000/v3",
+		"username":            "nova",
+		"project_name":        "service",
+		"user_domain_name":    "Default",
+		"project_domain_name": "Default",
+		"region_name":         "RegionOne",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ClientSection() = %#v, want %#v", got, want)
+	}
+	assertAbsent(t, got, "password", "www_authenticate_uri", "memcached_servers", "send_service_user_token")
+}
+
+func TestClientSection_OmitsRegionWhenEmpty(t *testing.T) {
+	tests := []struct {
+		name   string
+		params SectionParams
+		want   map[string]string
+	}{
+		{
+			name: "empty region omits region_name",
+			params: SectionParams{
+				AuthURL:           "http://keystone.svc:5000/v3",
+				Username:          "nova",
+				ProjectName:       "service",
+				UserDomainName:    "Default",
+				ProjectDomainName: "Default",
+			},
+			want: map[string]string{
+				"auth_type":           "password",
+				"auth_url":            "http://keystone.svc:5000/v3",
+				"username":            "nova",
+				"project_name":        "service",
+				"user_domain_name":    "Default",
+				"project_domain_name": "Default",
+			},
+		},
+		{
+			name:   "zero value renders the always-present keys empty",
+			params: SectionParams{},
+			want: map[string]string{
+				"auth_type":           "password",
+				"auth_url":            "",
+				"username":            "",
+				"project_name":        "",
+				"user_domain_name":    "",
+				"project_domain_name": "",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ClientSection(tc.params)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ClientSection() = %#v, want %#v", got, tc.want)
+			}
+			assertAbsent(t, got, "region_name", "password")
+		})
+	}
+}
+
+func TestClientPasswordEnvVar_UppercasesSection(t *testing.T) {
+	tests := []struct {
+		name       string
+		section    string
+		secretName string
+		key        string
+		wantName   string
+	}{
+		{
+			name:       "lower-case section",
+			section:    "placement",
+			secretName: "s",
+			key:        "k",
+			wantName:   "OS_PLACEMENT__PASSWORD",
+		},
+		{
+			name:       "mixed-case section",
+			section:    "Neutron",
+			secretName: "nova-neutron",
+			key:        "password",
+			wantName:   "OS_NEUTRON__PASSWORD",
+		},
+		{
+			name:       "empty secret and key still name the override",
+			section:    "cinder",
+			secretName: "",
+			key:        "",
+			wantName:   "OS_CINDER__PASSWORD",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := ClientPasswordEnvVar(tc.section, tc.secretName, tc.key)
+
+			if env.Name != tc.wantName {
+				t.Errorf("EnvVar name = %q, want %q", env.Name, tc.wantName)
+			}
+			if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
+				t.Fatalf("EnvVar is not sourced from a Secret key: %#v", env)
+			}
+			sel := env.ValueFrom.SecretKeyRef
+			if sel.Name != tc.secretName {
+				t.Errorf("SecretKeySelector name = %q, want %q", sel.Name, tc.secretName)
+			}
+			if sel.Key != tc.key {
+				t.Errorf("SecretKeySelector key = %q, want %q", sel.Key, tc.key)
+			}
+		})
+	}
+}
