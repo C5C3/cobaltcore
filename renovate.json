@@ -511,6 +511,13 @@
       "groupName": "OpenStack test tooling (PyPI)"
     },
     {
+      "description": "neutron-tempest-plugin 3.1.0 and later require testtools>=2.8.4, and the 2025.2 upper-constraints.txt pins testtools===2.7.2, so the 2025.2 tempest image cannot resolve them",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["releases/2025.2/test-refs.yaml"],
+      "matchPackageNames": ["neutron-tempest-plugin"],
+      "allowedVersions": "<3.1.0"
+    },
+    {
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["overrides/**/constraints.txt"],
       "matchUpdateTypes": ["major"],
