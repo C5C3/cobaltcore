@@ -19,7 +19,7 @@ require (
 	github.com/onsi/gomega v1.43.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
-	golang.org/x/text v0.41.0
+	golang.org/x/text v0.42.0
 	k8s.io/api v0.37.0
 	k8s.io/apiextensions-apiserver v0.37.0
 	k8s.io/apimachinery v0.37.0
