@@ -81,6 +81,15 @@ type NovaReconciler struct {
 	// health check uses http.DefaultClient; tests inject a stub transport.
 	HTTPClient healthcheck.HTTPDoer
 
+	// apiReader is the management cluster's direct, uncached reader, set during
+	// SetupWithManager from mgr.GetAPIReader(). The database step reads the
+	// termination message of a finished migration Job's pod through it (or
+	// through the target cluster's own uncached reader), so that one read per Job
+	// does not start a cluster-wide pod informer the operator's RBAC cannot
+	// watch. Nil in unit tests that construct the reconciler without a manager;
+	// those read through the children client.
+	apiReader client.Reader
+
 	// Resolver resolves the target cluster a Nova CR names in
 	// spec.targetClusterRef into the client its children are read and written
 	// with. Nil means always-local: every CR keeps its children on the management
