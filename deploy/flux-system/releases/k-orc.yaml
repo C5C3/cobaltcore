@@ -73,7 +73,7 @@ spec:
     - name: controller
       newName: quay.io/orc/openstack-resource-controller
       # Documentation + drift anchor; the digest below is what resolves the pull.
-      newTag: commit-3f02592
-      digest: sha256:9e015256145f6fb5103b401cd0d59ea29a4b609c99564db26c5d7c392cf047fd
+      newTag: commit-ddb5fbb
+      digest: sha256:3e89e8aff0cce8558be50fab9efad6fc06a1e04b6b7d6d4c96ee363125e038ec
   prune: true
   wait: true

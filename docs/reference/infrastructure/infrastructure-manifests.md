@@ -224,7 +224,9 @@ particular chart.
 **K-ORC is sourced from Git, not Helm.** K-ORC publishes no Helm chart (its
 `github.io` page serves no Helm index), so `sources/k-orc.yaml` is a `GitRepository`
 — still `source.toolkit.fluxcd.io/v1`, in `flux-system`, polling at `interval: 1h`
-— pinned to the upstream release tag `v2.6.0` and scoped to `/dist` via `spec.ignore`.
+— pinned by `ref.commit` to an upstream `main` commit and scoped to `/config` via
+`spec.ignore`. No released K-ORC ships the `RoleAssignment` and `Region` kinds the
+c5c3-operator owns, so the pin returns to a release tag once one does.
 It is applied by a Flux `Kustomization`, not a HelmRelease; see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller).
 
@@ -680,21 +682,27 @@ Flux merges `valuesFrom` first and `spec.values` on top per-key, so
 | --- | --- |
 | Kind | `Kustomization` (`kustomize.toolkit.fluxcd.io/v1`) |
 | Target namespace | `orc-system` (the upstream installer self-namespaces) |
-| Source | `k-orc` `GitRepository` (tag `v2.6.0`) |
-| Path | `./dist` |
+| Source | `k-orc` `GitRepository` (commit `ddb5fbb7f1d3824d233d371a5d5bfc3e1198072e` on `main`) |
+| Path | `./config/default` |
+| Image | `quay.io/orc/openstack-resource-controller:commit-ddb5fbb`, pulled by digest |
 | Dependencies | None |
 
 K-ORC (the OpenStack Resource Controller) installs the declarative Keystone resource
 CRDs — `ApplicationCredential`, `Service`, `Endpoint`, and related kinds — that the
 c5c3-operator drives to project a `ControlPlane`'s desired state into Keystone.
 
-K-ORC ships no Helm chart, so it is applied as a Flux `Kustomization` over the upstream
-release manifest rather than a HelmRelease. The `GitRepository` source vendors `./dist`
-from the pinned tag `v2.6.0`; `dist/install.yaml` there is byte-identical to the
-published `install.yaml` release asset. The path carries no `kustomization.yaml`, so the
-kustomize-controller generates one over `dist/install.yaml` and applies it verbatim
-(`prune: true`, `wait: true`). The installer already declares the `orc-system`
-Namespace and namespaces every resource into it, so no `spec.targetNamespace` is set.
+K-ORC ships no Helm chart, so it is applied as a Flux `Kustomization` rather than a
+HelmRelease. Upstream flattens its installer into `dist/install.yaml` only at release
+time, and no release ships the `RoleAssignment` and `Region` kinds the c5c3-operator
+owns. The `GitRepository` source is therefore pinned to a `main` commit and vendors
+`./config`, and the Kustomization builds `./config/default` (`prune: true`,
+`wait: true`). That base references the placeholder image `controller:latest`, so
+`spec.images` rewrites it to the per-commit image upstream publishes. The digest is
+what resolves the pull, and the `commit-<short sha>` tag next to it is the drift anchor
+`hack/ci-deploy-korc.sh` checks against the source commit. A commit bump moves the
+source commit, the image tag and digest, and the Go pseudo-version in
+`operators/c5c3/go.mod` together. The base declares the `orc-system` Namespace and
+namespaces every resource into it, so no `spec.targetNamespace` is set.
 The short, stable name `k-orc` (not the upstream `openstack-resource-controller`) keeps
 diagnostics and cross-references terse.
 
