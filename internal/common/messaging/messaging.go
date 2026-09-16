@@ -52,6 +52,11 @@ const TransportURLEnvVarName = "OS_DEFAULT__TRANSPORT_URL"
 // materialised with partial credentials.
 const ReasonWaitingForMessagingCredentials = "WaitingForMessagingCredentials"
 
+// ReasonTransportURLRejected is the readiness-condition reason set while the
+// caller's TransportURLSecretFlowParams.CheckURL refuses the resolved URL, so the
+// derived Secret keeps the last URL the caller accepted.
+const ReasonTransportURLRejected = "TransportURLRejected"
+
 // defaultAMQPPort is the port an oslo.messaging consumer connects to when the
 // transport URL names none.
 const defaultAMQPPort int32 = 5672
@@ -182,6 +187,12 @@ type TransportURLSecretFlowParams struct {
 	// RequeueAfter is the polling interval while the broker credentials are not
 	// yet available.
 	RequeueAfter time.Duration
+	// CheckURL, when set, refuses a resolved URL before the derived Secret is
+	// written: every consumer pod reads that Secret on start, so a URL written and
+	// refused afterwards would still reach the next pod that restarts. Its error
+	// message becomes the condition message, so it must not quote the URL, which
+	// carries the broker password.
+	CheckURL func(transportURL string) error
 }
 
 // ResolveTransportURL resolves the shared bus into the rabbit:// transport URL
@@ -221,7 +232,9 @@ func ResolveTransportURL(ctx context.Context, p TransportURLSecretFlowParams) (t
 // commonv1.DefaultTransportURLSecretKey. When an upstream object or one of its
 // required keys is missing it sets the readiness condition False with reason
 // WaitingForMessagingCredentials and requeues; it never writes a derived Secret
-// with a partial URL.
+// with a partial URL. A URL the caller's CheckURL refuses sets the condition
+// False with reason TransportURLRejected and requeues the same way, leaving the
+// derived Secret untouched.
 //
 // It returns the transport URL it materialised together with that URL's SHA-256
 // digest. The digest lets the deployment step roll the Pods when the broker
@@ -243,6 +256,9 @@ func ReconcileTransportURLSecret(ctx context.Context, p TransportURLSecretFlowPa
 			Reason:             ReasonWaitingForMessagingCredentials,
 			Message:            waitMsg,
 		})
+		return ctrl.Result{RequeueAfter: p.RequeueAfter}, "", "", nil
+	}
+	if urlRejected(p, transportURL) {
 		return ctrl.Result{RequeueAfter: p.RequeueAfter}, "", "", nil
 	}
 
@@ -314,6 +330,27 @@ func ReconcileTransportURLSecret(ctx context.Context, p TransportURLSecretFlowPa
 	}
 
 	return ctrl.Result{}, transportURL, digest, nil
+}
+
+// urlRejected reports whether the caller's CheckURL refuses transportURL, and
+// flips the readiness condition False with reason TransportURLRejected when it
+// does. A nil CheckURL accepts every URL.
+func urlRejected(p TransportURLSecretFlowParams, transportURL string) bool {
+	if p.CheckURL == nil {
+		return false
+	}
+	err := p.CheckURL(transportURL)
+	if err == nil {
+		return false
+	}
+	conditions.SetCondition(p.Conditions, metav1.Condition{
+		Type:               p.ConditionType,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: p.Generation,
+		Reason:             ReasonTransportURLRejected,
+		Message:            err.Error(),
+	})
+	return true
 }
 
 // resolveManaged assembles the transport URL from the referenced RabbitmqCluster:

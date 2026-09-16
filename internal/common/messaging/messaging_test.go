@@ -731,6 +731,96 @@ func TestReconcileTransportURLSecret_brownfieldRejectsForeignScheme(t *testing.T
 	}
 }
 
+// TestReconcileTransportURLSecret_checkURLRefusesBeforeWriting pins the caller's
+// veto: a refused URL reports on the condition and requeues without writing, so
+// a consumer pod that restarts keeps reading the last accepted URL rather than
+// the refused one. An accepted URL is materialised as usual.
+func TestReconcileTransportURLSecret_checkURLRefusesBeforeWriting(t *testing.T) {
+	const (
+		accepted = "rabbit://svc:pw@bus.example.com:5671/"
+		refused  = "rabbit://svc:pw@bus.example.com/"
+	)
+	checkURL := func(transportURL string) error {
+		if transportURL == refused {
+			return errors.New("transport URL must name an explicit port")
+		}
+		return nil
+	}
+
+	for _, tc := range []struct {
+		name     string
+		existing *corev1.Secret
+	}{
+		{name: "no derived Secret yet"},
+		{
+			name: "derived Secret carries the last accepted URL",
+			existing: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: msgDerived, Namespace: msgNamespace},
+				Data:       map[string][]byte{commonv1.DefaultTransportURLSecretKey: []byte(accepted)},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			s := msgScheme()
+			owner := msgOwner()
+			var conds []metav1.Condition
+			objects := []client.Object{owner, brownfieldSecret(map[string][]byte{
+				commonv1.DefaultTransportURLSecretKey: []byte(refused),
+			})}
+			if tc.existing != nil {
+				objects = append(objects, tc.existing)
+			}
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
+			p := msgParams(c, s, owner, brownfieldSpec(""), &conds)
+			p.CheckURL = checkURL
+
+			res, transportURL, digest, err := ReconcileTransportURLSecret(context.Background(), p)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res.RequeueAfter).To(Equal(msgRequeue))
+			g.Expect(transportURL).To(BeEmpty())
+			g.Expect(digest).To(BeEmpty())
+
+			cond := findMsgCond(conds, msgCondition)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(ReasonTransportURLRejected))
+			g.Expect(cond.Message).To(Equal("transport URL must name an explicit port"))
+			g.Expect(cond.ObservedGeneration).To(Equal(int64(3)))
+
+			if tc.existing == nil {
+				expectNoDerivedSecret(g, c)
+				return
+			}
+			derived := &corev1.Secret{}
+			g.Expect(c.Get(context.Background(),
+				client.ObjectKey{Name: msgDerived, Namespace: msgNamespace}, derived)).To(Succeed())
+			g.Expect(string(derived.Data[commonv1.DefaultTransportURLSecretKey])).To(Equal(accepted),
+				"the refused URL must not replace the one the pods already read")
+		})
+	}
+
+	t.Run("accepted URL is materialised", func(t *testing.T) {
+		g := NewWithT(t)
+		s := msgScheme()
+		owner := msgOwner()
+		var conds []metav1.Condition
+		c := fake.NewClientBuilder().WithScheme(s).
+			WithObjects(owner, brownfieldSecret(map[string][]byte{
+				commonv1.DefaultTransportURLSecretKey: []byte(accepted),
+			})).Build()
+		p := msgParams(c, s, owner, brownfieldSpec(""), &conds)
+		p.CheckURL = checkURL
+
+		res, transportURL, digest, err := ReconcileTransportURLSecret(context.Background(), p)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res.IsZero()).To(BeTrue())
+		g.Expect(transportURL).To(Equal(accepted))
+		g.Expect(digest).NotTo(BeEmpty())
+		g.Expect(conds).To(BeEmpty())
+	})
+}
+
 // --- read-only resolve ---
 
 // TestResolveTransportURL_ReadsWithoutWriting pins the projector entry point:
