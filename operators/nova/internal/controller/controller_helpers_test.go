@@ -6,7 +6,6 @@ package controller
 
 import (
 	"context"
-	"slices"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
@@ -54,15 +53,6 @@ const (
 // on its Ready condition.
 const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
 
-// NovaSecretNameIndexKey is the field-indexer key under which Nova CRs are
-// indexed by the union of their referenced Secret names, so a Secret event
-// resolves to the referencing CR(s) in O(1) instead of listing every Nova in the
-// namespace. It lives here until the watches package registers it on the
-// manager; the fake client below registers the same key so the tests index the
-// CRs the way production does.
-// #nosec G101 -- field-indexer key (a JSONPath-like field selector), not a credential.
-const NovaSecretNameIndexKey = "spec.secretRefs.name"
-
 // testScheme registers the types the fake client resolves in this package's
 // tests: core/apps/batch/policy/autoscaling/networking via the client-go scheme,
 // the Nova API, the external-secrets v1 group the credential gate reads to
@@ -87,46 +77,6 @@ func novaFakeClientBuilder(objs ...client.Object) *fake.ClientBuilder {
 		WithObjects(objs...).
 		WithStatusSubresource(&novav1alpha1.Nova{}).
 		WithIndex(&novav1alpha1.Nova{}, NovaSecretNameIndexKey, novaSecretNameExtractor)
-}
-
-// novaSecretNameExtractor returns the deduplicated, non-empty union of Secret
-// names a Nova CR references: the two database credentials, the TLS material of
-// each schema whose block is enabled, the service-user password, the metadata
-// shared secret, the brownfield transport URL, and the broker CA bundle. It
-// stands in for the field-indexer registration SetupWithManager performs.
-func novaSecretNameExtractor(o client.Object) []string {
-	nova, ok := o.(*novav1alpha1.Nova)
-	if !ok {
-		return nil
-	}
-
-	referenced := []string{
-		nova.Spec.APIDatabase.SecretRef.Name,
-		nova.Spec.Database.SecretRef.Name,
-		nova.Spec.ServiceUser.SecretRef.Name,
-		nova.Spec.Metadata.SharedSecretRef.Name,
-	}
-	for _, db := range []commonv1.DatabaseSpec{nova.Spec.APIDatabase, nova.Spec.Database} {
-		if db.TLS.IsEnabled() {
-			referenced = append(referenced,
-				db.TLS.CABundleSecretRef.Name, db.TLS.ClientCertSecretRef.Name)
-		}
-	}
-	if nova.Spec.Messaging.SecretRef != nil {
-		referenced = append(referenced, nova.Spec.Messaging.SecretRef.Name)
-	}
-	if nova.Spec.Messaging.TLS != nil {
-		referenced = append(referenced, nova.Spec.Messaging.TLS.CABundleSecretRef.Name)
-	}
-
-	names := make([]string, 0, len(referenced))
-	for _, name := range referenced {
-		if name == "" || slices.Contains(names, name) {
-			continue
-		}
-		names = append(names, name)
-	}
-	return names
 }
 
 // newNovaTestReconciler builds a NovaReconciler over a fake client pre-loaded
