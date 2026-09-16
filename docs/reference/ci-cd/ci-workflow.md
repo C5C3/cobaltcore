@@ -416,7 +416,7 @@ Timeout: 8 minutes.
 ### test
 
 Runs unit tests with a matrix strategy resolved per pull request out of
-`[common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron, cinder]`.
+`[common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron, cinder, nova]`.
 Each matrix leg tests a single target — either `internal/common` or one operator — producing
 a single coverage profile uploaded to Codecov under a dedicated flag.
 
@@ -457,7 +457,7 @@ coverage data is not lost.
 ### test-integration
 
 Runs envtest-based integration tests with a matrix strategy resolved per pull
-request out of `[common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron, cinder]`
+request out of `[common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron, cinder, nova]`
 and coverage uploaded to Codecov. Requires `setup-envtest` to
 download kubebuilder assets (kube-apiserver, etcd) for the test API server.
 
@@ -1982,7 +1982,7 @@ to `CODECOV_TOKEN`. This prevents CI from failing due to upload issues on forks.
 The `flag_management` section in `.codecov.yml` links CI-uploaded flags to coverage tracking
 rules. Flags follow the `[unit|integration]-<target>` naming convention, matching the CI
 matrix targets (`common`, `keystone`, `c5c3`, `horizon`, `glance`, `placement`, `barbican`,
-`ovn`, `neutron`, `cinder`).
+`ovn`, `neutron`, `cinder`, `nova`).
 Each flag has `carryforward: true`, which ensures that when only a subset of flags is
 uploaded (e.g., only one operator changed), the missing flags carry forward their
 last-known coverage instead of reducing the total.
@@ -2001,6 +2001,7 @@ Defined flags:
 | `unit-ovn` | `operators/ovn/` | `test` job, `ovn` matrix leg |
 | `unit-neutron` | `operators/neutron/` | `test` job, `neutron` matrix leg |
 | `unit-cinder` | `operators/cinder/` | `test` job, `cinder` matrix leg |
+| `unit-nova` | `operators/nova/` | `test` job, `nova` matrix leg |
 | `integration-common` | `internal/common/` | `test-integration` job, `common` matrix leg |
 | `integration-keystone` | `operators/keystone/` | `test-integration` job, `keystone` matrix leg |
 | `integration-c5c3` | `operators/c5c3/` | `test-integration` job, `c5c3` matrix leg |
@@ -2011,6 +2012,7 @@ Defined flags:
 | `integration-ovn` | `operators/ovn/` | `test-integration` job, `ovn` matrix leg |
 | `integration-neutron` | `operators/neutron/` | `test-integration` job, `neutron` matrix leg |
 | `integration-cinder` | `operators/cinder/` | `test-integration` job, `cinder` matrix leg |
+| `integration-nova` | `operators/nova/` | `test-integration` job, `nova` matrix leg |
 
 ### Component Thresholds
 
