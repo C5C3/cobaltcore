@@ -378,3 +378,17 @@ func rabbitmqDefaultUserSecret(port string, omit ...string) *corev1.Secret {
 func novaCondition(nova *novav1alpha1.Nova, conditionType string) *metav1.Condition {
 	return conditions.GetCondition(nova.Status.Conditions, conditionType)
 }
+
+// collectEvents drains a FakeRecorder and returns the events it buffered, so a
+// test can assert on the whole set rather than on the first one off the channel.
+func collectEvents(rec *record.FakeRecorder) []string {
+	var out []string
+	for {
+		select {
+		case e := <-rec.Events:
+			out = append(out, e)
+		default:
+			return out
+		}
+	}
+}
