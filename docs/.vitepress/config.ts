@@ -248,6 +248,17 @@ export default defineConfig({
             ],
           },
           {
+            text: 'Nova',
+            link: '/reference/nova/',
+            collapsed: true,
+            items: [
+              { text: 'Overview', link: '/reference/nova/' },
+              { text: 'CRD', link: '/reference/nova/nova-crd' },
+              { text: 'Controller Events', link: '/reference/nova/nova-events' },
+              { text: 'Reconciler Architecture', link: '/reference/nova/nova-reconciler' },
+            ],
+          },
+          {
             text: 'c5c3 (ControlPlane)',
             collapsed: true,
             items: [
