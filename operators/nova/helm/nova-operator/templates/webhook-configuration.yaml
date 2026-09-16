@@ -1,0 +1,8 @@
+{{- include "operator-library.webhookConfiguration" (dict
+      "root" .
+      "mutatingWebhookName" "mnova.kb.io"
+      "validatingWebhookName" "vnova.kb.io"
+      "mutatePath" "/mutate-nova-openstack-c5c3-io-v1alpha1-nova"
+      "validatePath" "/validate-nova-openstack-c5c3-io-v1alpha1-nova"
+      "apiGroup" "nova.openstack.c5c3.io"
+      "resource" "novas") }}
