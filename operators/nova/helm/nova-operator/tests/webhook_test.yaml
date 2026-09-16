@@ -1,0 +1,106 @@
+# Webhook configuration unit tests.
+#
+# The operator serves admission for the Nova kind alone, so each configuration
+# carries exactly one entry.
+suite: Webhook Configuration
+templates:
+  - templates/webhook-configuration.yaml
+tests:
+  - it: should render MutatingWebhookConfiguration when webhook is enabled
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: MutatingWebhookConfiguration
+      - matchRegex:
+          path: metadata.name
+          pattern: -mutating$
+      - equal:
+          path: webhooks[0].name
+          value: mnova.kb.io
+      - equal:
+          path: webhooks[0].clientConfig.service.path
+          value: /mutate-nova-openstack-c5c3-io-v1alpha1-nova
+      - equal:
+          path: webhooks[0].rules[0].apiGroups
+          value:
+            - nova.openstack.c5c3.io
+      - contains:
+          path: webhooks[0].rules[0].resources
+          content: novas
+      - equal:
+          path: webhooks[0].admissionReviewVersions
+          value:
+            - v1
+      - equal:
+          path: webhooks[0].failurePolicy
+          value: Fail
+      - equal:
+          path: webhooks[0].sideEffects
+          value: None
+      - lengthEqual:
+          path: webhooks
+          count: 1
+
+  - it: should render ValidatingWebhookConfiguration when webhook is enabled
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: ValidatingWebhookConfiguration
+      - matchRegex:
+          path: metadata.name
+          pattern: -validating$
+      - equal:
+          path: webhooks[0].name
+          value: vnova.kb.io
+      - equal:
+          path: webhooks[0].clientConfig.service.path
+          value: /validate-nova-openstack-c5c3-io-v1alpha1-nova
+      - contains:
+          path: webhooks[0].rules[0].resources
+          content: novas
+      - equal:
+          path: webhooks[0].admissionReviewVersions
+          value:
+            - v1
+      - equal:
+          path: webhooks[0].failurePolicy
+          value: Fail
+      - equal:
+          path: webhooks[0].sideEffects
+          value: None
+      - contains:
+          path: webhooks[0].rules[0].operations
+          content: CREATE
+      - contains:
+          path: webhooks[0].rules[0].operations
+          content: UPDATE
+      # DELETE must NOT be intercepted: with failurePolicy=Fail a down operator
+      # would otherwise block CR and namespace deletion.
+      - notContains:
+          path: webhooks[0].rules[0].operations
+          content: DELETE
+      - lengthEqual:
+          path: webhooks
+          count: 1
+
+  - it: should set cert-manager CA injection annotation on both configs
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: NAMESPACE/RELEASE-NAME-nova-operator-webhook
+
+  - it: should set cert-manager CA injection annotation on validating config
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: NAMESPACE/RELEASE-NAME-nova-operator-webhook
+
+  - it: should not render any documents when webhook is disabled
+    set:
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
