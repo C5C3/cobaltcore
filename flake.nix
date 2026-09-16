@@ -38,13 +38,13 @@
           # Plain mkShell (with a C compiler): `go test -race` needs cgo, matching
           # the CI runner. The GNU userland is included on purpose so macOS
           # behaves like the Linux-only CI runner (e.g. chainsaw-lint uses GNU
-          # xargs). go_1_26 / nodejs_24 fall back to the unversioned attrs if a
+          # xargs). go_1_27 / nodejs_24 fall back to the unversioned attrs if a
           # future nixpkgs revision renames them.
           default = pkgs.mkShell {
             name = "cobaltcore-devshell";
 
             packages = [
-              (pkgs.go_1_26 or pkgs.go)
+              (pkgs.go_1_27 or pkgs.go)
               (pkgs.nodejs_24 or pkgs.nodejs)
               pkgs.python3
               pkgs.kubernetes-helm

@@ -62,7 +62,7 @@ reference sibling modules.
 
 | Stage | Base Image | Purpose |
 | --- | --- | --- |
-| `builder` | `golang:1.26` (digest-pinned) | Compiles the operator binary with CGO disabled |
+| `builder` | `golang:1.27` (digest-pinned) | Compiles the operator binary with CGO disabled |
 | runtime | `gcr.io/distroless/static:nonroot` | Minimal runtime with no shell or package manager |
 
 ### Image Layers

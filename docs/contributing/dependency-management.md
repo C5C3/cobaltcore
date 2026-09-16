@@ -143,7 +143,7 @@ to individual `go.mod` files.
 ### Worked example: 1.25.10 → 1.26.3
 
 An illustrative past minor upgrade (the workspace has since moved on — at the time of
-writing all four files are on `go 1.26.6`). Substitute the current and target versions
+writing all four files are on `go 1.27.1`). Substitute the current and target versions
 for your own bump; the mechanics below are unchanged.
 
 ```bash
@@ -173,7 +173,7 @@ go work sync
 ```
 
 The shared operator Dockerfile (`operators/Dockerfile`, parameterized via
-`--build-arg OPERATOR=<op>`) carries the `FROM golang:1.26@sha256:…` builder line,
+`--build-arg OPERATOR=<op>`) carries the `FROM golang:1.27@sha256:…` builder line,
 maintained by Renovate — confirm that the digest update has landed on `main` *before*
 opening the minor-bump PR, otherwise the builder image lags behind the `go.mod`
 directive and CI fails on the image-build job.
@@ -293,7 +293,7 @@ markers). Treat this as a major-style review:
 Renovate maintains both the floating tag and the SHA digest, e.g.
 
 ```dockerfile
-FROM golang:1.26@sha256:6df14f4a4bc9d979a3721f488981e0d1b318006377e473ed23d026796f5f4c0a AS builder
+FROM golang:1.27@sha256:f44f6e88636cfb311f9ebace870ded69d943f227bb3cb27d32ffd84ea18c43ea AS builder
 ```
 
 The pattern (recently exercised in #330 and #342): the floating tag is

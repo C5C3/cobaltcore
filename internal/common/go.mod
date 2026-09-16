@@ -1,6 +1,6 @@
 module github.com/c5c3/cobaltcore/internal/common
 
-go 1.26.6
+go 1.27.1
 
 require (
 	github.com/cert-manager/cert-manager v1.20.2

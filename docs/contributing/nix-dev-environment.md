@@ -62,7 +62,7 @@ pin them to an exact patch:
 
 | Tool | Note |
 |------|------|
-| Go | `go_1_26` from nixpkgs; `go.work` sets only the minimum the modules need |
+| Go | `go_1_27` from nixpkgs; `go.work` sets only the minimum the modules need |
 | Node | `nodejs_24` from nixpkgs (CI pins the major only, `node-version: 24`) |
 | Python 3 | the runtime the Helm-schema generator and the docs site need |
 | Helm | CI uses `azure/setup-helm` with no version input, so it floats |
