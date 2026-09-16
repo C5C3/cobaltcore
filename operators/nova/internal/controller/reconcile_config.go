@@ -452,10 +452,10 @@ func vncSection(nova *novav1alpha1.Nova) map[string]string {
 // say) needs.
 func consoleBaseURL(nova *novav1alpha1.Nova) string {
 	if gateway := nova.Spec.ConsoleProxy.Gateway; gateway != nil {
-		return fmt.Sprintf("https://%s/vnc_lite.html", gateway.Hostname)
+		return "https://" + gateway.Hostname + consoleProxyVNCPath
 	}
-	return fmt.Sprintf("http://%s-novncproxy.%s.svc.cluster.local:%d/vnc_lite.html",
-		nova.Name, nova.Namespace, novaConsolePort)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d%s",
+		consoleProxyName(nova), nova.Namespace, novaConsolePort, consoleProxyVNCPath)
 }
 
 // effectiveLogging returns the LoggingSpec to use for config rendering,
