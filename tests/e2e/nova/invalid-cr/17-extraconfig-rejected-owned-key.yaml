@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraConfig setting [database] connection is rejected by the
+# validating webhook: extraConfig is a preserve-unknown-fields map, so CEL
+# cannot constrain its keys and admission is the only gate. The key is
+# Rejected rather than merely owned because the runtime value arrives
+# through the OS_DATABASE__CONNECTION env override, so a file override is
+# inert at runtime and only achieves copying the database password into the
+# config Secret every pod mounts.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-invalid
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  apiDatabase:
+    clusterRef:
+      name: mariadb
+    database: nova_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: mariadb
+    database: nova
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: memcached
+  messaging:
+    clusterRef:
+      name: rabbitmq
+  keystoneEndpoint: http://keystone.openstack.svc:5000
+  serviceUser:
+    secretRef:
+      name: nova-service-user
+  metadata:
+    sharedSecretRef:
+      name: nova-metadata-secret
+  extraConfig:
+    database:
+      connection: mysql+pymysql://nova:secret@elsewhere.example.com/nova
