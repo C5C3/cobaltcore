@@ -164,6 +164,14 @@ func TestCronSchedule(t *testing.T) {
 	// An empty schedule is a parse error here — the required-vs-defaulted
 	// decision (and its message) is the caller's per-field policy.
 	g.Expect(CronSchedule(testPath, "")).To(gomega.HaveLen(1))
+
+	// cron.ParseStandard accepts a time-zone prefix, but the CronJob API refuses
+	// one in spec.schedule, so both spellings are rejected here.
+	for _, schedule := range []string{"CRON_TZ=UTC 0 0 * * *", "TZ=Europe/Berlin @daily"} {
+		errs = CronSchedule(testPath, schedule)
+		g.Expect(errs).To(gomega.HaveLen(1), schedule)
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("TZ and CRON_TZ are not allowed"))
+	}
 }
 
 func TestTopologySpreadSelector(t *testing.T) {

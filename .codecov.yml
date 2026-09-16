@@ -74,6 +74,10 @@ flag_management:
       paths:
         - operators/cinder/
       carryforward: true
+    - name: unit-nova
+      paths:
+        - operators/nova/
+      carryforward: true
     - name: integration-common
       paths:
         - internal/common/
@@ -113,6 +117,10 @@ flag_management:
     - name: integration-cinder
       paths:
         - operators/cinder/
+      carryforward: true
+    - name: integration-nova
+      paths:
+        - operators/nova/
       carryforward: true
 
 # Component-level thresholds: each component is tracked independently on the
