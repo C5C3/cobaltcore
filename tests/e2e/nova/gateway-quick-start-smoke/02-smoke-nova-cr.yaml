@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Minimal Nova CR fixture for the Gateway quick-start smoke test, the compute
+# counterpart to tests/e2e/keystone/gateway-quick-start-smoke,
+# tests/e2e/glance/gateway-quick-start-smoke and
+# tests/e2e/cinder/gateway-quick-start-smoke.
+#
+# This smoke test exercises the end-to-end TLS + Gateway data-plane path on all
+# three front ends a Nova publishes, so the CR carries three gateway blocks.
+# Each hostname MUST match a listener on the kind overlay's `openstack-gw`
+# Gateway AND the dnsName of that listener's Certificate, so the listener's TLS
+# Secret matches the SNI the client presents
+# (deploy/kind/base/openstack-gateway.yaml):
+#
+#   spec.gateway                → https-nova          nova.127-0-0-1.nip.io
+#   spec.metadata.gateway       → https-nova-metadata nova-metadata.127-0-0-1.nip.io
+#   spec.consoleProxy.gateway   → https-nova-console  nova-console.127-0-0-1.nip.io
+#
+# The console block carries no path. The console URL the API hands a browser
+# names the page at the root of the console hostname and the noVNC client opens
+# its WebSocket there too, so the webhook accepts only an empty path or "/" on
+# that block and the proxy gets a hostname of its own rather than a prefix under
+# the API's.
+#
+# Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
+# so this fixture uses a unique CR name (`nova-smoke`) to avoid clashing with
+# the sibling nova suites that share the `openstack` namespace, the backing
+# services (`openstack-db`, `openstack-memcached`) and the HTTPRoute object
+# names inside the namespace. No other nova suite attaches to the nip.io
+# Gateway hostnames.
+#
+# Keystone is configured although none runs: spec.keystoneEndpoint and
+# spec.serviceUser are required on every Nova. Nothing the smoke asserts needs a
+# validated token: the compute API's version document at "/" is served above the
+# auth pipeline, the metadata API answers its own version list there, and the
+# console proxy serves a static page. The `keystone-admin` Secret the service
+# user points at is the kind overlay's own shim
+# (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml), which is what
+# lets SecretsReady pass.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-smoke
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  apiDatabase:
+    clusterRef:
+      name: openstack-db
+    database: nova_smoke_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: openstack-db
+    database: nova_smoke
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: nova-smoke-messaging
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-smoke-metadata-secret
+    gateway:
+      parentRef:
+        name: openstack-gw
+      hostname: nova-metadata.127-0-0-1.nip.io
+      path: /
+  consoleProxy:
+    gateway:
+      parentRef:
+        name: openstack-gw
+      hostname: nova-console.127-0-0-1.nip.io
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: nova.127-0-0-1.nip.io
+    path: /

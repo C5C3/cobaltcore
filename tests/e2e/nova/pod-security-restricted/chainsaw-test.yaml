@@ -1,0 +1,433 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a Nova reconciling under restricted PodSecurity.
+#
+# Decisions worth knowing before reading the steps:
+#
+#   - Opt-out from per-test namespace (`spec.namespace: ""`): Chainsaw's
+#     per-test namespace plumbing creates a chainsaw-* namespace WITHOUT PSS
+#     labels. To exercise restricted-profile admission we must own the
+#     namespace, so this test sets `spec.namespace: ""` to OPT OUT of the
+#     plumbing entirely; Chainsaw then creates no namespace and the test
+#     applies its own labelled namespace `nova-pss` from 00-namespace.yaml.
+#     Chainsaw's applied-resource cleanup deletes that namespace (and
+#     everything in it, including the per-tenant store objects setup-eso-tenant.sh
+#     creates and the two Secrets Step 1 creates) when the test finishes.
+#
+#   - Every workload kind the operator projects is in the subject: the API, the
+#     metadata API, the scheduler, the conductor, the console proxy, the db-sync
+#     Job and the archive CronJob. The suite triggers the CronJob by hand so a
+#     Job pod that only the restricted profile would reject is created inside
+#     the sampling window rather than at midnight.
+#
+#   - Brownfield mode (host + cache.servers, no clusterRef): the shared
+#     provisioning flow resolves `Database.ClusterRef` / `Cache.ClusterRef` in
+#     the Nova CR's own namespace, so a CR in `nova-pss` cannot reach
+#     `openstack/openstack-db` through clusterRef. Brownfield wiring reaches the
+#     existing cluster DB/cache without duplicating infra; the three schemas and
+#     their two users are pre-created in `openstack` by Step 1.
+#
+#   - The two ESO-managed credential Secrets: `reconcileSecrets` gates
+#     SecretsReady on the per-tenant store and on the ESO-synced credential
+#     Secrets. A Nova has two database blocks with separate SQL users, so the
+#     Step-1 script seeds two namespace-scoped OpenBao paths by COPYING the
+#     shared standalone values, then provisions this namespace's per-tenant
+#     store via setup-eso-tenant.sh.
+#
+#   - Zero-PSS-violation event scan (Step 5): the parent controller emits a
+#     `FailedCreate` event with the violation listed verbatim when PSS rejects
+#     a Pod, so a zero-match scan on `violates PodSecurity "restricted:latest"`
+#     is the explicit regression net for any future sub-reconciler that forgets
+#     the restricted securityContext.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-pod-security-restricted
+spec:
+  # Disable Chainsaw's per-test namespace plumbing so Pods land in our
+  # PSS-labelled namespace.
+  namespace: ""
+  timeouts:
+    # The two-schema migration, the cell mapping and the cold start of five
+    # workloads all precede the first assertion, and that does not fit the 120s
+    # the shared config allows.
+    # The first CI run measured the bring-up: the eight MariaDB CRs take 3
+    # minutes at the operator's 30 s requeue and the six nova-manage invocations
+    # of the db-sync about 3 more, so Ready lands roughly 8 minutes after the
+    # apply. 10m keeps a margin for a leg that runs two suites at once.
+    assert: 10m
+  steps:
+  # ── Step 1: Apply the namespace and the schemas, seed OpenBao, take a vhost ─
+  # Asserts the PSS enforce label is present so a mis-typed label would surface
+  # here, before any Pod is created, and asserts each MariaDB object reaches
+  # Ready so a broken schema names itself rather than surfacing as a db-sync
+  # failure three steps later.
+  - try:
+    - apply:
+        file: 00-namespace.yaml
+    - apply:
+        file: 00-brownfield-db-setup.yaml
+    # Provision this namespace's per-tenant OpenBao store and seed its two
+    # namespace-scoped db paths by COPYING the shared standalone values, so the
+    # ExternalSecrets (which authenticate as the eso-tenant identity) can sync
+    # and the nova_api and nova MariaDB users' passwords still match the values
+    # the brownfield User CRs reconcile onto the same shared users: no SET
+    # PASSWORD race. Chainsaw runs scripts with the test directory as CWD.
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          BAO_NS="shared-services"
+          BAO_POD="openbao-0"
+          TENANT_NS="nova-pss"
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n "${BAO_NS}" \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          bao_exec() {
+            kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+              env BAO_ADDR="https://127.0.0.1:8200" BAO_TOKEN="${BAO_TOKEN}" \
+              VAULT_CACERT="/openbao/tls/ca.crt" \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key "$@"
+          }
+          # Both halves of the Nova pair: the API schema's nova_api user lives
+          # under .../standalone/api-db and the cell schema's nova user under
+          # .../standalone/db.
+          for half in api-db db; do
+            DB_USER="$(bao_exec bao kv get -mount=kv-v2 -field=username \
+              "openstack/nova/openstack/standalone/${half}")"
+            DB_PASS="$(bao_exec bao kv get -mount=kv-v2 -field=password \
+              "openstack/nova/openstack/standalone/${half}")"
+            bao_exec bao kv put -mount=kv-v2 "openstack/nova/${TENANT_NS}/pss/${half}" \
+              username="${DB_USER}" password="${DB_PASS}" >/dev/null
+          done
+          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
+    # One vhost per suite: nova's RPC topics are named after the service rather
+    # than after the CR, so two suites on one vhost would share the scheduler
+    # and conductor queues. See ../../cinder/broker-vhost.sh. The Secret lands
+    # in the labelled namespace beside the CR that reads it. The step cleanup
+    # runs at the end of the test.
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh create nova-pss nova-pss-messaging nova-pss
+    # The two Secrets the Nova reads that no ExternalSecret provides here. The
+    # service-user password is never validated: no Keystone runs beside this
+    # suite, and the gate is that SecretsReady finds the key at all. The shared
+    # secret is 32 characters, the width nova's own documentation uses, and its
+    # key is the one the defaulting webhook fills in. Both are rendered and
+    # applied rather than created, so a retried step converges.
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -euo pipefail
+          NS=nova-pss
+          kubectl create secret generic nova-pss-service-user -n "$NS" \
+            --from-literal=password=e2e-nova-pss-service-user \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic nova-pss-metadata-secret -n "$NS" \
+            --from-literal=shared_secret=e2e-nova-pss-metadata-secret0000 \
+            --dry-run=client -o yaml | kubectl apply -f -
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: nova-pss
+            labels:
+              pod-security.kubernetes.io/enforce: restricted
+              pod-security.kubernetes.io/enforce-version: latest
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: nova-pss-api-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: nova-pss-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: nova-pss-cell0-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: nova-pss-api-user
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: nova-pss-user
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: nova-pss-api-grant
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: nova-pss-grant
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: nova-pss-cell0-grant
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch: &nova-pss-dump
+    - script:
+        content: |
+          NS=nova-pss
+          echo "=== Nova CR status ==="
+          kubectl get nova nova-pss -n "$NS" -o yaml 2>&1 || true
+          echo "=== ExternalSecrets and SecretStores ==="
+          kubectl get externalsecret,secretstore -n "$NS" -o yaml 2>&1 || true
+          echo "=== MariaDB CRs (openstack) ==="
+          kubectl get database,user,grant -n openstack 2>&1 | grep nova-pss || true
+          echo "=== Pod securityContext (CR namespace) ==="
+          kubectl get pods -n "$NS" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.securityContext}{"\t"}{.spec.containers[*].securityContext}{"\n"}{end}' 2>&1 || true
+          echo "=== Workloads ==="
+          kubectl get deploy,job,cronjob -n "$NS" -o wide 2>&1 || true
+          echo "=== Pod logs ==="
+          for pod in $(kubectl get pods -n "$NS" -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NS" "$pod" --all-containers --tail=60 2>&1 || true
+            echo "--- $pod describe (last 30 lines) ---"
+            kubectl describe -n "$NS" "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Sorted events (last 30, CR namespace) ==="
+          kubectl get events -n "$NS" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh delete nova-pss || true
+  # ── Step 2: Assert both credential Secrets sync, then apply the CR ─────
+  # Asserting the ExternalSecrets first means a regression that broke ESO sync
+  # fails here, not deeper in Step 3 where the operator's SecretsReady condition
+  # would be the only signal.
+  - try:
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: nova-api-db
+            namespace: nova-pss
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: nova-db
+            namespace: nova-pss
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - apply:
+        file: 01-nova-cr.yaml
+    catch: *nova-pss-dump
+  # ── Step 3: Assert Ready and every workload under the restricted profile ─
+  # Ready=True is the primary end-to-end gate: every Pod the reconciler creates
+  # (five Deployments plus the db-sync Job) must have been admitted under
+  # restricted PSS for the sub-conditions to flip True.
+  #
+  # The trailing `error` assertions enforce the brownfield-mode invariant: NO
+  # Database, User or Grant CR may be created in the test namespace, whatever
+  # its name. The Nova's three schemas exist already, in `openstack`.
+  - try:
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-pss
+            namespace: nova-pss
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-pss
+            namespace: nova-pss
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-pss-metadata
+            namespace: nova-pss
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-pss-scheduler
+            namespace: nova-pss
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-pss-conductor
+            namespace: nova-pss
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-pss-novncproxy
+            namespace: nova-pss
+          status:
+            availableReplicas: 1
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            namespace: nova-pss
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            namespace: nova-pss
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            namespace: nova-pss
+    catch: *nova-pss-dump
+  # ── Step 4: Run the archive CronJob by hand under the profile ──────────
+  # The archive runs daily, so a scheduled firing would never fall inside a test
+  # run. `kubectl create job --from=cronjob` copies the jobTemplate the operator
+  # rendered, so the pod that is admitted here is the one the schedule would have
+  # produced. With no soft-deleted rows to move, nova-manage answers 0 on its
+  # first batch and the script's `test "$rc" -le 1` exits 0.
+  - try:
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+          kubectl create job nova-pss-archive-now \
+            --from=cronjob/nova-pss-db-archive -n nova-pss
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-pss-archive-now
+            namespace: nova-pss
+          status:
+            succeeded: 1
+    catch: *nova-pss-dump
+  # ── Step 5: Assert zero PSS-violation FailedCreate events ──────────────
+  # PSS admission rejection emits a `FailedCreate` event on the Pod's parent
+  # (Deployment/Job) with the violation listed verbatim. A zero-match scan on
+  # `violates PodSecurity "restricted:latest"` is the explicit regression net
+  # for any future sub-reconciler that forgets the restricted securityContext.
+  # The scan is scoped to the test namespace so unrelated FailedCreate events
+  # in `openstack` are not picked up.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=nova-pss
+          NEEDLE='violates PodSecurity "restricted:latest"'
+
+          MSGS=$(kubectl get events -n "$NS" \
+            --field-selector reason=FailedCreate \
+            -o jsonpath='{range .items[*]}{.message}{"\n"}{end}')
+          # grep -c returns 1 when zero matches; guard with `|| true` so
+          # `set -e` does not abort before the count check runs.
+          COUNT=$(printf '%s\n' "$MSGS" | grep -cF "$NEEDLE" || true)
+          if [ "$COUNT" -ne 0 ]; then
+            echo "FAIL: $COUNT FailedCreate event(s) carry the PSS-restricted violation:"
+            printf '%s\n' "$MSGS" | grep -F "$NEEDLE" || true
+            exit 1
+          fi
+          echo "OK: zero PSS-restricted FailedCreate events in $NS"
+    catch:
+    - script:
+        content: |
+          NS=nova-pss
+          echo "=== Pod securityContext (CR namespace) ==="
+          kubectl get pods -n "$NS" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.securityContext}{"\t"}{.spec.containers[*].securityContext}{"\n"}{end}' 2>&1 || true
+          echo "=== All FailedCreate events (CR namespace) ==="
+          kubectl get events -n "$NS" --field-selector reason=FailedCreate \
+            -o custom-columns=LAST:.lastTimestamp,OBJ:.involvedObject.kind/.involvedObject.name,MSG:.message 2>&1 || true
+          echo "=== Sorted events (last 30, CR namespace) ==="
+          kubectl get events -n "$NS" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
