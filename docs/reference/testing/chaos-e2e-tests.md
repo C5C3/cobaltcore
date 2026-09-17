@@ -137,8 +137,8 @@ Individual test suites override the assert timeout to 5 minutes (`5m`) at the sp
 ## CI Trigger Policy
 
 Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow.
-The job is path-filtered; its three matrix legs gate differently. The pod leg is
-blocking, the network and ovn legs are not (see below). See
+The job is path-filtered; its four matrix legs gate differently. The pod leg is
+blocking, the network, ovn and nova legs are not (see below). See
 [CI Workflow — e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for full job documentation.
 
 **Path filter (`e2e_chaos`):** Changes to `tests/e2e-chaos/**`, `hack/**`, `deploy/**`,
@@ -162,13 +162,15 @@ of which files were touched.
 `test-integration`, `verify-codegen`). It only runs if no dependency failed or was
 cancelled.
 
-**Per-leg gating (<code v-pre>continue-on-error: ${{ matrix.suite != 'pod' }}</code>):** The `pod`
-leg is **blocking** — a failure in any PodChaos suite (operator restart, PDB, rotation)
-fails the build. The `network` leg stays **non-blocking**, because its
-`ip_set`/`sch_netem` kernel-module dependency remains prone to environment
-flakiness; its failures are visible but do not
-block merges. The `ci:chaos` PR label runs every leg on demand for pre-validation.
-`run-chaos` still works as an alias for it.
+**Per-leg gating (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' }}</code>):** The `pod`
+leg is **blocking**: a failure in any PodChaos suite (operator restart, PDB, rotation)
+fails the build. The `network`, `ovn` and `nova` legs stay **non-blocking**,
+because the `ip_set`/`sch_netem` kernel-module dependency their NetworkChaos
+partitions carry remains prone to environment flakiness; their failures are
+visible but do not block merges. The three are named rather than the blocking one
+negated, so a fifth leg gates merges until it is argued out of that. The
+`ci:chaos` PR label runs every leg on demand for pre-validation. `run-chaos`
+still works as an alias for it.
 
 **Legs and what they carry:** the `network` leg runs the NetworkChaos suites, the two
 Neutron ones (`neutron-mariadb-outage`, `neutron-broker-outage`) among them, and
@@ -198,6 +200,19 @@ separate from the network leg because it builds a datapath on the node itself: i
 probe pods own `/run/openvswitch` and `/run/netns`, which no other suite may hold at
 the same time.
 
+The `nova` leg is the fourth, on the `self-hosted` runners and
+`continue-on-error` like the other two. It carries the heaviest stack in the job:
+each of its three suites (`nova-broker-outage`, `nova-mariadb-outage`,
+`nova-placement-outage`) brings up a Keystone, and the first and third add an
+OVNCentral, a Neutron, a Placement, a Glance and a fake-driver compute behind the
+Nova. On top of the keystone stack it deploys the placement, ovn, neutron and
+nova operators, and it sets `WITH_MESSAGING=true`: every Nova process dials the
+bus, `nova-mariadb-outage` and `nova-placement-outage` take a vhost on the shared
+broker, and `nova-broker-outage` brings a RabbitmqCluster of its own, because its
+fault severs a whole broker. The suites run on a leg of their own rather than on
+the network one, which already spends 78 of its 90 minutes and deploys no
+placement-operator.
+
 **Timeout:** 90 minutes to accommodate serial test execution and longer recovery
 assertion windows.
 
@@ -222,6 +237,9 @@ assertion windows.
 | [cinder-operator-pod-kill](#cinder-operator-pod-kill) | — | `cinder-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted, `PodChaos mode: one` replaces one operator pod, a workload pod restart fails the suite, a replica patch afterwards reaches the API Deployment |
 | [cinder-broker-outage](#cinder-broker-outage) | — | `cinder-broker-chaos` | Message-bus partition (degrade and recover) | `SchedulerReady=False/WaitingForScheduler` and `VolumeServicesReady=False/WaitingForVolumeServices` within 180 s, `/healthcheck` 200 and API `restartCount` 0 throughout, `POST /v3/volumes` unanswered within 20 s (`BLOCKED-OK`), the blocked create settling to `available` after the partition (`RECOVERED-OK`) |
 | [cinder-nfs-outage](#cinder-nfs-outage) | — | `cinder-nfs-chaos` | Storage outage (fail-closed create) | `Ready=True/AllReady` maintained, a create ending in `error` within 240 s (`FAILCLOSED-OK`), a post-recovery create reaching `available` within 240 s (`RECOVERED-OK`) |
+| [nova-broker-outage](#nova-broker-outage) | — | `nova-broker-chaos` | Message-bus partition (degrade and recover) | `SchedulerReady=False/WaitingForScheduler`, `ConductorReady=False/WaitingForConductor` and `Ready=False/NotAllReady` within 180 s, the API container ready at `restartCount` 0 throughout, a server create unanswered within 45 s while `GET /` answers 200 (`BLOCKED-OK`), the two conditions True again within 120 s of the lift and the stalled create reaching ACTIVE (`RECOVERED-OK`) |
+| [nova-mariadb-outage](#nova-mariadb-outage) | — | `nova-db-chaos` | Database partition (fail-closed read) | `DeploymentReady`, `NovaAPIReady`, `SchedulerReady` and `ConductorReady` all `True` maintained, a Keystone token still obtainable, `GET /v2.1/servers` answering 5xx or timing out and never 4xx (`FAILCLOSED-OK`), the same list answering an empty array before and after (`LIST-OK`) |
+| [nova-placement-outage](#nova-placement-outage) | — | `nova-placement-chaos` | Scheduling outage (fail-closed build) | `SchedulerReady=True/SchedulerReady`, `NovaAPIReady=True/APIHealthy` and `Ready=True/AllReady` maintained, `GET /`, a server list and a 202 on create all answered under the fault, the build reaching ERROR within 300 s with a fault that reports an unplaced build (`FAILCLOSED-OK`), a fresh create reaching ACTIVE after the lift (`RECOVERED-OK`) |
 
 ---
 
@@ -1102,6 +1120,218 @@ logs from `cinder-system`.
 
 ---
 
+### nova-broker-outage
+
+**File:** `tests/e2e-chaos/nova-broker-outage/chainsaw-test.yaml`
+
+**Scenario:** —
+
+**Purpose:** The message bus disappears under a running Nova. The scheduler and
+the conductor take their readiness off the broker socket, so both go NotReady
+and the CR reports `Ready=False/NotAllReady`, while the API keeps its ready
+container and never restarts: both of its probes GET the version document. A
+server create written during the outage does not answer at all, and its build
+request is listed BUILD out of the API database. Once the partition is lifted
+both processes reconnect on their own, the stalled create finishes, and a fresh
+one reaches ACTIVE.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Bring up the broker | `apply` + `script` (11m) | `00-rabbitmqcluster.yaml` (`nova-chaos-rabbitmq`), polled for `AllReplicasReady=True` for up to 600 s, since the RabbitMQ Cluster Operator publishes no Ready condition |
+| 2 | Bring up Keystone | `apply` + `assert` (8m) | `keystone-nova-broker-chaos` Ready, because the catalog Job, the four sibling CRs and the Nova all authenticate against it |
+| 3 | Register the four services in the catalog | `script` (6m) + `assert` | `02-catalog-setup-job.yaml`, `succeeded: 1` |
+| 4 | Bring up the four services the boot path depends on | `apply` + `assert` (8m) | The Neutron transport-URL Secret, `nova-broker-chaos-ovn`, `neutron-nova-broker-chaos`, `placement-nova-broker-chaos`, `glance-nova-broker-chaos` and `glance-nova-broker-chaos-s3` |
+| 5 | Seed the image the servers boot from | `script` (6m) + `assert` | `09-image-seed-job.yaml`, `succeeded: 1` |
+| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-broker-chaos` with all fifteen sub-conditions True and `Ready=True/AllReady`, the baseline the partition phase is read against |
+| 7 | Start the fake compute and map it into cell1 | `apply` + `assert` + `script` (3m) | `12-fake-compute.yaml` available, then `../../e2e/nova/discover-hosts.sh nova-broker-chaos` |
+| 8 | Baseline | `script` (11m) + `script` (2m) | `14-baseline-job.yaml` boots a server end to end (`BASELINE-OK`) and prints how long the create call took; the scheduler, conductor and API containers are recorded ready (`BASELINE-READY-OK`) |
+| 9 | Inject NetworkChaos to partition the broker | `apply` + `script` (60s) | `13-networkchaos.yaml` (`partition-rabbitmq-nova`), waited for `AllInjected`. The step cleanup deletes it |
+| 10 | Under the partition | `script` (5m) + `assert` + `script` (2m) + `script` (4m) | Both bus consumers report `ready=false` within 180 s; the CR reads `SchedulerReady=False/WaitingForScheduler`, `ConductorReady=False/WaitingForConductor`, `Ready=False/NotAllReady`; the API container is still ready at `restartCount` 0 (`API-UP-OK`); `15-blocked-job.yaml` gets 200 from `GET /` and no answer from a create inside 45 s, then lists the build request as BUILD (`BLOCKED-OK`) |
+| 11 | Lift the partition and let the deployment recover | `delete` + `script` (3m) + `assert` + `script` (13m) | Both consumers are ready again within 120 s, the two conditions and `Ready` read True, and `16-recovered-job.yaml` finds the stalled server ACTIVE and creates a second one (`RECOVERED-OK`) |
+| 12 | Tear the broker down through its own operator | `script` (12m) | The compute and the three Jobs first, then the Nova and its pods, then the RabbitmqCluster and its broker pod |
+
+**Fixtures:** `00-rabbitmqcluster.yaml`, `01-keystone-cr.yaml`,
+`02-catalog-setup-job.yaml`, `03-messaging-secret.yaml`, `04-ovncentral-cr.yaml`,
+`05-neutron-cr.yaml`, `06-placement-cr.yaml`, `07-glance-cr.yaml`,
+`08-glancebackend-cr.yaml`, `09-image-seed-job.yaml`, `10-metadata-secret.yaml`,
+`11-nova-cr.yaml`, `12-fake-compute.yaml`, `13-networkchaos.yaml`,
+`14-baseline-job.yaml`, `15-blocked-job.yaml`, `16-recovered-job.yaml`
+
+**Catch blocks:** a shared anchor calls
+`../diagnostics.sh chaos nova-broker-chaos` with `--cr-kind=nova`,
+`--dep-label=app.kubernetes.io/name=nova-chaos-rabbitmq`, `--dep-ns=openstack`
+and `--log-label=app.kubernetes.io/instance=nova-broker-chaos`, dumps the
+NetworkChaos and RabbitmqCluster objects, the Keystone, OVNCentral, Neutron,
+Placement, Glance and GlanceBackend CRs, the fake compute and the five Job logs,
+and the operator logs from `nova-system`, `keystone-system`, `ovn-system`,
+`neutron-system`, `placement-system`, `glance-system` and `rabbitmq-system`.
+
+**Design notes:**
+
+- The readiness flip gets 180 seconds rather than one probe period. A partition
+  drops packets without a FIN or an RST, so the socket `nova-amqp-ready` reads
+  stays ESTABLISHED until the client closes it; the probe documents that blind
+  spot at `images/nova/nova-amqp-ready:28-36`. What closes the socket is
+  oslo.messaging's heartbeat, which gives up after `heartbeat_timeout_threshold`
+  (60 s by default, with no operator override), and the probe then needs one
+  more failure at its 5-second period.
+- The drop rule is installed on the broker pods and targets the Nova pods. Nova
+  dials a ClusterIP, and kube-proxy only DNATs it to a pod IP in the node's root
+  namespace, after the packet has left the client pod, so a client-side rule
+  would never match a Service-routed packet.
+- The blocked create is capped at `timeout 45`. The baseline Job prints the same
+  call taking well under 20 seconds on a healthy bus, so a create that answers
+  inside 45 has answered rather than stalled. The worker survives the stall
+  because `spec.api.uwsgi.harakiri` is nil by default, which leaves the flag off
+  the uWSGI command entirely, so nothing kills the blocked request and the cast
+  goes out once the broker is back.
+- The suite brings its own broker rather than taking a vhost on the kind-only
+  `shared-rabbitmq`: the fault severs a whole broker, and doing that to the
+  shared one would take the rest of the leg with it. On a broker of its own the
+  Nova uses managed messaging, which is the mode the fault is about.
+
+---
+
+### nova-mariadb-outage
+
+**File:** `tests/e2e-chaos/nova-mariadb-outage/chainsaw-test.yaml`
+
+**Scenario:** —
+
+**Purpose:** The databases disappear under the Nova API. The outage fails
+requests closed while the process stays healthy: `GET /` still answers 200 and a
+Keystone token is still obtainable, while one `GET /v2.1/servers` ends in a 5xx
+or a bounded timeout and never in a 4xx or a listing. The four workload
+conditions stay True throughout, which is the contract: both API probes GET the
+version document, which renders without touching a table, so the pod stays
+pooled and only the database-backed requests fail.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Give the suite its vhost and bring up Keystone | `script` (2m) + `apply` + `assert` (5m) | `../../e2e/cinder/broker-vhost.sh create nova-db-chaos nova-db-chaos-messaging openstack`, then `keystone-nova-db-chaos` Ready. The step cleanup deletes the vhost at the end of the test |
+| 2 | Register the compute service in the catalog | `script` (6m) + `assert` | `01-catalog-setup-job.yaml`, `succeeded: 1` |
+| 3 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-db-chaos` with `NovaAPIReady=True/APIHealthy`, `SchedulerReady`, `ConductorReady` and `Ready=True/AllReady`, the three the partition phase reads again |
+| 4 | Baseline | `script` (6m) | `05-list-job.yaml` lists zero servers through openstacksdk (the `openstack` CLI needs an image endpoint this suite's catalog does not have), which reads the API database and the cell it points at (`LIST-OK`) |
+| 5 | Inject NetworkChaos to partition MariaDB traffic | `apply` + `script` (60s) | `04-networkchaos.yaml` (`partition-mariadb-nova`), waited for `AllInjected`. The step cleanup deletes it |
+| 6 | Under the partition | `script` (5m) + `assert` | `06-failclosed-job.yaml` gets 200 from `GET /`, mints a token, watches `GET /v2.1/servers` fail, and gets 200 from `GET /` again afterwards (`FAILCLOSED-OK`); `DeploymentReady`, `NovaAPIReady`, `SchedulerReady` and `ConductorReady` all still True |
+| 7 | Delete NetworkChaos to lift the partition | `delete` | `partition-mariadb-nova` removed |
+| 8 | Recovery | `script` (6m) | The same `05-list-job.yaml` answers an empty list again within the 120 s it polls, with no pod restart and no operator action in between |
+| 9 | Tear the deployment down | `script` (8m) | Deletes the three Jobs best-effort, then the Nova CR, and waits its pods out |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-catalog-setup-job.yaml`,
+`02-metadata-secret.yaml`, `03-nova-cr.yaml`, `04-networkchaos.yaml`,
+`05-list-job.yaml`, `06-failclosed-job.yaml`
+
+**Catch blocks:** a shared anchor calls
+`../diagnostics.sh chaos nova-db-chaos` with `--cr-kind=nova`,
+`--dep-label=app.kubernetes.io/name=mariadb`, `--dep-ns=openstack` and
+`--log-label=app.kubernetes.io/instance=nova-db-chaos`, dumps the NetworkChaos
+objects, the Keystone CR, the three Job logs, and the operator logs from
+`nova-system` and `keystone-system`, plus the events of the `openstack`
+namespace.
+
+**Design notes:**
+
+- The partition targets the API pods of this Nova alone. The scheduler, the
+  conductor, the metadata API and the console proxy hold database connections of
+  their own, and leaving them outside the fault is what lets the suite assert
+  they stay Ready while the request path fails. A partition of all five would
+  prove the outage failed requests closed and say nothing about what survived
+  it.
+- The drop rule is installed on the MariaDB pods and targets the Nova API pods,
+  for the same reason the broker suite installs its rule server-side: a packet
+  still carries the Service ClusterIP when it leaves the client pod, so a
+  client-side rule keyed on MariaDB pod IPs would never match.
+- The failing read is one attempt bounded at 90 seconds, not a retry loop. A
+  retry would blur which attempt the verdict came from, and the bound keeps the
+  probe inside the 600 s the NetworkChaos runs for.
+- There is no Placement, no Neutron, no Glance and no compute here. A list of
+  zero servers is the smallest request that reaches both nova schemas, and a
+  deployment with nothing else in it leaves one possible cause for a list that
+  fails.
+
+---
+
+### nova-placement-outage
+
+**File:** `tests/e2e-chaos/nova-placement-outage/chainsaw-test.yaml`
+
+**Scenario:** —
+
+**Purpose:** Placement disappears under the scheduler. The claim has two halves:
+a Placement outage fails scheduling, and it fails nothing else. `GET /` answers,
+a server list answers, and a create is accepted with the 202 it answers on a
+healthy cluster, because none of those paths calls Placement. The accepted build
+then reaches ERROR with a fault reporting an unplaced build, while the CR stays
+`Ready=True/AllReady`: the scheduler's readiness is the broker socket, not its
+Placement client.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Give the suite its vhost | `script` (2m) | `../../e2e/cinder/broker-vhost.sh create nova-placement-chaos nova-placement-chaos-messaging openstack`. The step cleanup deletes the vhost at the end of the test |
+| 2 | Bring up Keystone | `apply` + `assert` (8m) | `keystone-nova-placement-chaos` Ready |
+| 3 | Register the four services in the catalog | `script` (6m) + `assert` | `02-catalog-setup-job.yaml`, `succeeded: 1` |
+| 4 | Bring up the four services the boot path depends on | `apply` + `assert` (8m) | The Neutron transport-URL Secret, `nova-placement-chaos-ovn`, `neutron-nova-placement-chaos`, `placement-nova-placement-chaos`, `glance-nova-placement-chaos` and `glance-nova-placement-chaos-s3` |
+| 5 | Seed the image the servers boot from | `script` (6m) + `assert` | `09-image-seed-job.yaml`, `succeeded: 1` |
+| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-placement-chaos` with all fifteen sub-conditions True and `Ready=True/AllReady` |
+| 7 | Start the fake compute and map it into cell1 | `apply` + `assert` + `script` (3m) | `12-fake-compute.yaml` available, then `../../e2e/nova/discover-hosts.sh nova-placement-chaos` |
+| 8 | Baseline | `script` (11m) | `14-baseline-job.yaml` boots a server to ACTIVE, which means the scheduler reached Placement for candidates and claimed the host it picked (`BASELINE-OK`) |
+| 9 | Inject NetworkChaos to partition Placement | `apply` + `script` (60s) | `13-networkchaos.yaml` (`partition-placement-nova`), waited for `AllInjected`. The step cleanup deletes it |
+| 10 | Under the partition | `script` (8m) + `assert` | `15-failclosed-job.yaml` proves the serving half and the failing half in one pod: `GET /`, a server list, a create accepted with 202, then a build ending in ERROR inside 300 s with a fault that reports an unplaced build, read by server id (`FAILCLOSED-OK`). The CR still reads `SchedulerReady`, `NovaAPIReady` and `Ready` True |
+| 11 | Lift the partition and schedule again | `delete` + `script` (13m) | `16-recovered-job.yaml` creates a fresh server that reaches ACTIVE with no pod restart and no operator action (`RECOVERED-OK`) |
+| 12 | Tear the deployment down | `script` (10m) | Deletes the compute and the three Jobs best-effort, then the Nova CR, and waits its pods out |
+
+**Fixtures:** `01-keystone-cr.yaml`, `02-catalog-setup-job.yaml`,
+`03-messaging-secret.yaml`, `04-ovncentral-cr.yaml`, `05-neutron-cr.yaml`,
+`06-placement-cr.yaml`, `07-glance-cr.yaml`, `08-glancebackend-cr.yaml`,
+`09-image-seed-job.yaml`, `10-metadata-secret.yaml`, `11-nova-cr.yaml`,
+`12-fake-compute.yaml`, `13-networkchaos.yaml`, `14-baseline-job.yaml`,
+`15-failclosed-job.yaml`, `16-recovered-job.yaml`
+
+**Catch blocks:** a shared anchor calls
+`../diagnostics.sh chaos nova-placement-chaos` with `--cr-kind=nova`,
+`--dep-label=app.kubernetes.io/instance=placement-nova-placement-chaos`,
+`--dep-ns=openstack` and
+`--log-label=app.kubernetes.io/instance=nova-placement-chaos`, dumps the
+NetworkChaos objects, the Keystone, OVNCentral, Neutron, Placement, Glance and
+GlanceBackend CRs, the fake compute and the five Job logs, and the operator logs
+from `nova-system`, `keystone-system`, `ovn-system`, `neutron-system`,
+`placement-system` and `glance-system`.
+
+**Design notes:**
+
+- The ERROR takes its time and cannot do otherwise. The drop rule takes the SYN
+  without an ICMP reject, so the scheduler's connection attempt runs out the
+  kernel's own retry ladder, roughly 130 seconds of exponential backoff, before
+  it sees an error at all. That is why the fail-closed Job gives the ERROR 300
+  seconds and why the NetworkChaos runs for 600.
+- The partition is scoped to the scheduler pods. The API never calls Placement
+  and the conductor only relays to the scheduler over the bus, so cutting all
+  five workloads off would leave nothing serving to read the second half of the
+  claim against. The fake compute is outside the target for the same reason: it
+  reports its inventory into Placement, and cutting that at the same time would
+  put a second failure under one verdict.
+- The rule is installed on the Placement pods and targets the scheduler pods,
+  the same server-side placement the other two Nova suites use, because a
+  client-side rule never matches Service-routed traffic.
+- The fault is matched on `No valid host` or `allocation_candidates`. The first is
+  what the conductor writes when the scheduler returns no candidate. Under a drop
+  rule the scheduler's Placement request ends in a `ConnectTimeout` instead, which
+  reaches the conductor as a `RemoteError`; nova records that under its class name
+  and keeps the request that timed out in the fault details.
+- The fault is read by server id. `openstack server show <name>` resolves a name
+  through the server list, and nova's list path reads faults from the schema the
+  API's `[database]` connection names (the cell), while a buried build and its
+  fault live in cell0. Only `GET /servers/<id>` targets the mapped cell.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -1406,9 +1636,55 @@ tests/e2e-chaos/
 │   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator (mode: all)
 │   ├── 02-patch-replicas.yaml        Patch replicas 1→2 for post-failover reconciliation
 │   └── chainsaw-test.yaml            Test: Leader re-election, conditions maintained, replica patch
-└── deletion-stuck-finalizer/         SC-CHAOS-010: Deletion with mariadb-operator down
-    ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-stuck)
-    └── chainsaw-test.yaml            Test: scale mariadb-operator to 0, delete CR, assert stuck → recovery
+├── deletion-stuck-finalizer/         SC-CHAOS-010: Deletion with mariadb-operator down
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-stuck)
+│   └── chainsaw-test.yaml            Test: scale mariadb-operator to 0, delete CR, assert stuck → recovery
+├── nova-broker-outage/               Message-bus partition under a Nova
+│   ├── 00-rabbitmqcluster.yaml       The broker of this suite (nova-chaos-rabbitmq)
+│   ├── 01-keystone-cr.yaml           Keystone keystone-nova-broker-chaos
+│   ├── 02-catalog-setup-job.yaml     Compute, placement, image and network catalog rows
+│   ├── 03-messaging-secret.yaml      Transport URL for the Neutron beside the Nova
+│   ├── 04-ovncentral-cr.yaml         OVNCentral nova-broker-chaos-ovn
+│   ├── 05-neutron-cr.yaml            Neutron neutron-nova-broker-chaos
+│   ├── 06-placement-cr.yaml          Placement placement-nova-broker-chaos
+│   ├── 07-glance-cr.yaml             Glance glance-nova-broker-chaos
+│   ├── 08-glancebackend-cr.yaml      S3 backend glance-nova-broker-chaos-s3
+│   ├── 09-image-seed-job.yaml        The image the servers boot from
+│   ├── 10-metadata-secret.yaml       The metadata shared secret
+│   ├── 11-nova-cr.yaml               Nova CR nova-broker-chaos on managed messaging
+│   ├── 12-fake-compute.yaml          nova-compute on the fake driver, host fake-1
+│   ├── 13-networkchaos.yaml          NetworkChaos severing nova↔broker traffic (server-side)
+│   ├── 14-baseline-job.yaml          A server boots on a healthy bus (BASELINE-OK)
+│   ├── 15-blocked-job.yaml           GET / serves while a create stalls (BLOCKED-OK)
+│   ├── 16-recovered-job.yaml         The stalled create finishes, a new one runs (RECOVERED-OK)
+│   └── chainsaw-test.yaml            Test: both bus consumers NotReady → recovery
+├── nova-mariadb-outage/              Database partition under the Nova API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-nova-db-chaos
+│   ├── 01-catalog-setup-job.yaml     The compute catalog row
+│   ├── 02-metadata-secret.yaml       The metadata shared secret
+│   ├── 03-nova-cr.yaml               Nova CR nova-db-chaos
+│   ├── 04-networkchaos.yaml          NetworkChaos severing nova-api↔MariaDB traffic (server-side)
+│   ├── 05-list-job.yaml              The server list before and after the fault (LIST-OK)
+│   ├── 06-failclosed-job.yaml        GET / serves while the read fails (FAILCLOSED-OK)
+│   └── chainsaw-test.yaml            Test: four conditions maintained, the read fails closed
+└── nova-placement-outage/            Placement partition under the scheduler
+    ├── 01-keystone-cr.yaml           Keystone keystone-nova-placement-chaos
+    ├── 02-catalog-setup-job.yaml     Compute, placement, image and network catalog rows
+    ├── 03-messaging-secret.yaml      Transport URL for the Neutron beside the Nova
+    ├── 04-ovncentral-cr.yaml         OVNCentral nova-placement-chaos-ovn
+    ├── 05-neutron-cr.yaml            Neutron neutron-nova-placement-chaos
+    ├── 06-placement-cr.yaml          Placement placement-nova-placement-chaos
+    ├── 07-glance-cr.yaml             Glance glance-nova-placement-chaos
+    ├── 08-glancebackend-cr.yaml      S3 backend glance-nova-placement-chaos-s3
+    ├── 09-image-seed-job.yaml        The image the servers boot from
+    ├── 10-metadata-secret.yaml       The metadata shared secret
+    ├── 11-nova-cr.yaml               Nova CR nova-placement-chaos on a shared-broker vhost
+    ├── 12-fake-compute.yaml          nova-compute on the fake driver, host fake-1
+    ├── 13-networkchaos.yaml          NetworkChaos severing scheduler↔Placement traffic (server-side)
+    ├── 14-baseline-job.yaml          A server boots through a reachable Placement (BASELINE-OK)
+    ├── 15-failclosed-job.yaml        The build ends in ERROR, nothing else fails (FAILCLOSED-OK)
+    ├── 16-recovered-job.yaml         The scheduler places servers again (RECOVERED-OK)
+    └── chainsaw-test.yaml            Test: Ready maintained, the build fails closed
 ```
 
 ## Adding New Scenarios
