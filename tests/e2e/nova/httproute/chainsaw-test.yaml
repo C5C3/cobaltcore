@@ -1,0 +1,260 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the three optional HTTPRoute sub-reconcilers.
+# Nova publishes three front ends a browser or a peer service reaches over
+# HTTP, each with a gateway block and a readiness condition of its own, so the
+# suite drives all three through the same lifecycle:
+#   - apply a Nova with spec.gateway, spec.metadata.gateway and
+#     spec.consoleProxy.gateway and assert the three HTTPRoutes are created
+#     with the expected ParentRef/Hostname/BackendRef (API 8774, metadata 8775,
+#     console proxy 6080)
+#   - before any Gateway controller reports Accepted, all three conditions are
+#     False with reason HTTPRouteNotAccepted
+#   - simulate a Gateway controller accepting the routes by patching their
+#     parent status, then assert the three conditions flip
+#     True/HTTPRouteAccepted and status.endpoint advertises the API hostname
+#   - unset the three gateway blocks and assert the routes are deleted and the
+#     conditions read True/HTTPRouteNotRequired
+#
+# The console route is named nova-route-console while its backend Service is
+# nova-route-novncproxy: the Deployment carries the process name the image
+# ships, the route is named after what it exposes.
+#
+# SCOPE: this suite covers the operator's HTTPRoute contract only. It patches
+# the Accepted condition itself rather than running a Gateway controller, so
+# nothing here proves traffic reaches any of the three front ends.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-httproute
+spec:
+  namespace: openstack
+  timeouts:
+    # The two-schema migration, the cell mapping and the cold start of five
+    # workloads precede the parallel group that owns the routes, and that does
+    # not fit the 120s the shared config allows.
+    # The first CI run measured the bring-up: the eight MariaDB CRs take 3
+    # minutes at the operator's 30 s requeue and the six nova-manage invocations
+    # of the db-sync about 3 more, so Ready lands roughly 8 minutes after the
+    # apply. 10m keeps a margin for a leg that runs two suites at once.
+    assert: 10m
+  steps:
+  # ── Step 1: Install the stub CRD, take the vhost, apply the CR ─────────
+  # The E2E cluster may not install a Gateway controller, so the minimal CRD
+  # goes in first: it lets the operator create HTTPRoute objects and lets the
+  # acceptance step patch their status.
+  #
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../cinder/broker-vhost.sh. The step cleanup runs
+  # at the end of the test.
+  - try:
+    - apply:
+        file: 00-httproute-crd.yaml
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh create nova-route nova-route-messaging openstack
+    - apply:
+        file: 01-metadata-secret.yaml
+    - apply:
+        file: 02-nova-cr.yaml
+    catch: &nova-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-route
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== HTTPRoutes ==="
+          kubectl get httproute -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== Deployments ==="
+          kubectl describe deploy -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-route 2>&1 | tail -200 || true
+          echo "=== Pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-route -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh delete nova-route || true
+  # ── Step 2: Assert the three routes and the unaccepted conditions ──────
+  # No Gateway controller reconciles not-a-real-gateway, so every route's
+  # parent status stays empty and the operator reports all three as unaccepted.
+  - try:
+    - assert:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: nova-route
+            namespace: openstack
+          spec:
+            parentRefs:
+            - name: not-a-real-gateway
+            hostnames:
+            - nova-route.example.test
+            rules:
+            - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+              backendRefs:
+              - name: nova-route
+                port: 8774
+    - assert:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: nova-route-metadata
+            namespace: openstack
+          spec:
+            parentRefs:
+            - name: not-a-real-gateway
+            hostnames:
+            - nova-route-metadata.example.test
+            rules:
+            - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+              backendRefs:
+              - name: nova-route-metadata
+                port: 8775
+    # The console block carries no path, and the shared builder normalizes an
+    # empty one to "/", so this route matches the whole console hostname.
+    - assert:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: nova-route-console
+            namespace: openstack
+          spec:
+            parentRefs:
+            - name: not-a-real-gateway
+            hostnames:
+            - nova-route-console.example.test
+            rules:
+            - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+              backendRefs:
+              - name: nova-route-novncproxy
+                port: 6080
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-route
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "False"
+              reason: HTTPRouteNotAccepted
+            (conditions[?type == 'MetadataHTTPRouteReady']):
+            - status: "False"
+              reason: HTTPRouteNotAccepted
+            (conditions[?type == 'ConsoleHTTPRouteReady']):
+            - status: "False"
+              reason: HTTPRouteNotAccepted
+    catch: *nova-dump
+  # ── Step 3: Accept all three routes and assert the conditions flip ─────
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          for route in nova-route nova-route-metadata nova-route-console; do
+            kubectl patch httproute "$route" -n "$NAMESPACE" \
+              --subresource=status --type=merge -p '{
+                "status": {
+                  "parents": [{
+                    "parentRef": {"name": "not-a-real-gateway"},
+                    "controllerName": "e2e.example.com/fake-gateway-controller",
+                    "conditions": [{
+                      "type": "Accepted",
+                      "status": "True",
+                      "reason": "Accepted",
+                      "message": "Simulated Accepted condition for E2E test",
+                      "lastTransitionTime": "2026-07-05T00:00:00Z",
+                      "observedGeneration": 1
+                    }]
+                  }]
+                }
+              }'
+          done
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-route
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteAccepted
+            (conditions[?type == 'MetadataHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteAccepted
+            (conditions[?type == 'ConsoleHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteAccepted
+            # With spec.gateway set the endpoint advertises the external API
+            # hostname rather than the Service URL, while the health probe keeps
+            # reading the cluster-local one. The other two front ends publish no
+            # endpoint on the CR.
+            endpoint: https://nova-route.example.test/
+    catch: *nova-dump
+  # ── Step 4: Unset the three gateway blocks and assert the deletions ────
+  - try:
+    - patch:
+        file: 03-patch-remove-gateways.yaml
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-route
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'MetadataHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'ConsoleHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          for route in nova-route nova-route-metadata nova-route-console; do
+            if kubectl get httproute "$route" -n "$NAMESPACE" >/dev/null 2>&1; then
+              echo "FAIL: HTTPRoute $route should have been deleted"
+              exit 1
+            fi
+          done
+          echo "PASS: all three HTTPRoutes correctly deleted"
+    catch: *nova-dump
