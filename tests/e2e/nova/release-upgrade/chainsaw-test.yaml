@@ -1,0 +1,642 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a cross-release Nova upgrade from 2025.2 to 2026.1.
+#
+# Every other nova suite installs a release into fresh, empty schemas and so
+# only ever runs the steady-state db-sync; none of them enters the four-phase
+# machine of operators/nova/internal/controller/reconcile_database.go. This
+# suite is the one that does, against schemas the 2025.2 db-sync already
+# populated. Verifies:
+#   (1) A fresh deployment at 2025.2 reaches Ready=True/AllReady with
+#       installedRelease=2025.2 and no phase Job in sight
+#   (2) Patching spec.openStackRelease and spec.image.tag to 2026.1 walks
+#       status.upgradePhase through an ordered subsequence of
+#       Expanding -> Migrating -> RollingUpdate -> Contracting that contains
+#       RollingUpdate, then clears the phase and promotes installedRelease
+#   (3) The three phase Jobs each succeed on the :2026.1 image, and the expand
+#       Job's pod carries the nova-status verdict in its termination message
+#   (4) All five Deployments flip to :2026.1 with a converged rollout, and the
+#       four processes behind the API carry the installed-release stamp that
+#       makes them drop their cached RPC versions
+#   (5) The steady-state db-sync Job re-runs on :2026.1
+#   (6) The cell mappings survive the upgrade and the API on the new release
+#       serves its version document
+#
+# A live Keystone and a live Placement stand beside the Nova, which the light
+# fixture tier of the other single-CR suites does without: the expand phase runs
+# nova-status upgrade check, and that check reads Placement as an authenticated
+# client, so without either the check exits above 1 and the script stops the
+# phase. Both sit at 2026.1 for the whole run. A check run by 2026.1 nova
+# against an older Placement is not a pairing this repository proves, and
+# identity and placement move ahead of the computes in any upgrade order.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-release-upgrade
+spec:
+  namespace: openstack
+  timeouts:
+    # Two services come up before the Nova is applied, the Nova then runs a
+    # two-schema migration, a cell mapping and five workloads, and the upgrade
+    # adds three more Jobs and a five-Deployment rollout. That fits neither the
+    # 120s the shared config allows nor the 5m the single-release suites use.
+    assert: 10m
+  steps:
+  # ── Step 1: Give the suite its vhost, then bring up Keystone ───────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../cinder/broker-vhost.sh. The step cleanup runs at
+  # the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh create nova-upgrade nova-upgrade-messaging openstack
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-upgrade
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &upgrade-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-upgrade
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Keystone and Placement ==="
+          kubectl get keystone/keystone-nova-upgrade placement/placement-nova-upgrade \
+            -n "$NAMESPACE" -o yaml 2>&1 | tail -200 || true
+          echo "=== Deployments ==="
+          kubectl describe deploy -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-upgrade 2>&1 | tail -200 || true
+          echo "=== Services and endpoints ==="
+          kubectl get svc,endpointslices -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-upgrade -o wide 2>&1 || true
+          echo "=== Pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          # The three phase Jobs and the steady-state sync by name: a phase that
+          # failed leaves its pod behind, and its log is where nova-manage says
+          # what it could not migrate.
+          echo "=== Jobs ==="
+          kubectl get jobs -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-upgrade -o wide 2>&1 || true
+          for job in nova-upgrade-db-expand nova-upgrade-db-migrate nova-upgrade-db-contract nova-upgrade-db-sync; do
+            echo "--- job/$job ---"
+            kubectl describe job "$job" -n "$NAMESPACE" 2>&1 | tail -30 || true
+            kubectl logs -n "$NAMESPACE" "job/$job" --all-containers --tail=80 2>&1 || true
+          done
+          echo "--- job/nova-upgrade-catalog-setup ---"
+          kubectl logs -n "$NAMESPACE" job/nova-upgrade-catalog-setup 2>&1 || true
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/name=placement-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh delete nova-upgrade || true
+  # ── Step 2: Register compute and placement in the catalog ──────────────
+  # The Job is deleted first because a Job's pod template is immutable, so a
+  # re-run against a leftover object would fail on the update rather than on
+  # anything the suite is testing. The step carries a timeout of its own because
+  # the suite sets no exec default and the shared 30s would kill the script
+  # while the Job's pod is still starting; 6m leaves the 5m wait room to print
+  # the Job's log on its failure path.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-upgrade-catalog-setup -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 01-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/nova-upgrade-catalog-setup \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-upgrade-catalog-setup 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-upgrade-catalog-setup -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-upgrade-catalog-setup
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *upgrade-dump
+  # ── Step 3: Bring up the Placement the upgrade check reads ─────────────
+  - try:
+    - apply:
+        file: 02-placement-cr.yaml
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-nova-upgrade
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *upgrade-dump
+  # ── Step 4: Assert the pre-upgrade steady state on :2025.2 ─────────────
+  - try:
+    - apply:
+        file: 03-metadata-secret.yaml
+    - apply:
+        file: 04-nova-cr.yaml
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2025.2"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: nova-api
+                  image: ghcr.io/c5c3/nova:2025.2
+          status:
+            (availableReplicas > `0`): true
+    # No phase Job exists before the release moves. Asserting their absence here
+    # is what makes their presence in step 6 evidence of the upgrade rather than
+    # of the steady-state flow.
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-upgrade-db-expand
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-upgrade-db-migrate
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-upgrade-db-contract
+            namespace: openstack
+    catch: *upgrade-dump
+  # ── Step 5: Patch the release and follow the phase to the end ──────────
+  # The phase is a transient field, so it is sampled rather than asserted: the
+  # loop records each distinct value in the order it saw it and stops when the
+  # release has been promoted and the phase is empty again. A sample interval
+  # can miss a short phase, which is why the recorded sequence is checked as an
+  # ordered SUBSEQUENCE of the canonical four rather than as an exact match.
+  # RollingUpdate is required, because it is the phase that makes the contract
+  # step safe: the online data migrations it clears the way for may only run
+  # once every pod serves the target release.
+  - try:
+    - patch:
+        file: 05-patch-upgrade.yaml
+    - script:
+        timeout: 10m
+        # Chainsaw defaults to `sh`, which lacks the function-local `local`
+        # this uses.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CR=nova-upgrade
+          CANON="Expanding Migrating RollingUpdate Contracting"
+
+          # phase_rank maps a phase onto its position in the canonical order,
+          # and 0 onto anything the flow never sets.
+          phase_rank() {
+            case "$1" in
+            Expanding) printf '1' ;;
+            Migrating) printf '2' ;;
+            RollingUpdate) printf '3' ;;
+            Contracting) printf '4' ;;
+            *) printf '0' ;;
+            esac
+          }
+
+          # check_phases fails unless every recorded phase is a known one and
+          # the ranks increase strictly, which is what "ordered subsequence of
+          # four distinct values" means, and unless RollingUpdate is among them.
+          check_phases() {
+            local observed="$1" prev=0 rank phase
+            for phase in $observed; do
+              rank="$(phase_rank "$phase")"
+              if [ "$rank" -eq 0 ]; then
+                echo "FAIL: unknown upgrade phase '$phase' in observed sequence [$observed]; want a subsequence of [$CANON]"
+                return 1
+              fi
+              if [ "$rank" -le "$prev" ]; then
+                echo "FAIL: upgrade phase '$phase' is out of order in observed sequence [$observed]; want a subsequence of [$CANON]"
+                return 1
+              fi
+              prev="$rank"
+            done
+            case " $observed " in
+            *" RollingUpdate "*) ;;
+            *)
+              echo "FAIL: observed sequence [$observed] never entered RollingUpdate; want a subsequence of [$CANON] containing it"
+              return 1
+              ;;
+            esac
+            echo "OK: observed upgrade phases [$observed] are an ordered subsequence of [$CANON]"
+          }
+
+          # Both fields come off one read, so a sample can never pair a phase
+          # with a release the CR did not carry at the same moment. The bound is
+          # a wall-clock deadline rather than a round count: each round issues a
+          # kubectl call of unbounded duration, so a fixed count of rounds
+          # cannot keep the loop inside the step budget, and an overrun produces
+          # the opaque chainsaw timeout this loop exists to replace.
+          SEEN=""
+          LAST=""
+          SETTLED=0
+          DEADLINE=$(( $(date +%s) + 540 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            OUT="$(kubectl get nova "$CR" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.upgradePhase}|{.status.installedRelease}' 2>/dev/null || true)"
+            PHASE="${OUT%%|*}"
+            RELEASE="${OUT##*|}"
+            if [ -n "$PHASE" ] && [ "$PHASE" != "$LAST" ]; then
+              SEEN="${SEEN}${SEEN:+ }${PHASE}"
+              LAST="$PHASE"
+              echo "upgradePhase=$PHASE installedRelease=$RELEASE"
+            fi
+            if [ -z "$PHASE" ] && [ "$RELEASE" = "2026.1" ]; then
+              SETTLED=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$SETTLED" -ne 1 ]; then
+            echo "FAIL: the upgrade did not settle within 9m (observed phases [$SEEN])"
+            kubectl get nova "$CR" -n "$NAMESPACE" -o yaml 2>&1 | tail -60 || true
+            exit 1
+          fi
+          echo "OK: installedRelease is 2026.1 and status.upgradePhase is empty"
+
+          check_phases "$SEEN"
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *upgrade-dump
+  # ── Step 6: Assert the three phase Jobs ran on the new release ─────────
+  # The operator leaves the phase Jobs in place, and each runs spec.image: the
+  # contract is that the image moves with spec.openStackRelease, so the new
+  # release's migration tree owns the schema deltas. A Job left on :2025.2 would
+  # mean the flow migrated with the old tree and promoted installedRelease
+  # anyway.
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-upgrade-db-expand
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: db-expand
+                  image: ghcr.io/c5c3/nova:2026.1
+          status:
+            succeeded: 1
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-upgrade-db-migrate
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: db-migrate
+                  image: ghcr.io/c5c3/nova:2026.1
+          status:
+            succeeded: 1
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-upgrade-db-contract
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: db-contract
+                  image: ghcr.io/c5c3/nova:2026.1
+          status:
+            succeeded: 1
+    # The expand phase runs `nova-status upgrade check` ahead of both schema
+    # migrations, and its exit code is a severity the Job swallows so a warning
+    # cannot wedge the upgrade: 0 is clean, 1 carries warnings a deployment
+    # without Cinder keeps, and anything above stops the phase. The code
+    # survives in the pod's termination message, the only place the operator
+    # reads it back from, so a Job that stopped writing it would leave the
+    # operator reporting the check as unavailable forever.
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -euo pipefail
+          JOB=nova-upgrade-db-expand
+
+          POD="$(kubectl get pod -n "$NAMESPACE" \
+            -l "batch.kubernetes.io/job-name=$JOB" \
+            -o 'jsonpath={.items[0].metadata.name}' 2>/dev/null || true)"
+          if [ -z "$POD" ]; then
+            echo "FAIL: the $JOB Job has no pod to read a termination message off"
+            kubectl get pods -n "$NAMESPACE" -l "batch.kubernetes.io/job-name=$JOB" -o wide 2>&1 || true
+            exit 1
+          fi
+
+          # The current termination state, falling back to the previous one when
+          # the container was restarted: the same two places the operator's
+          # reportUpgradeCheck looks.
+          MSG="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+            -o 'jsonpath={.status.containerStatuses[0].state.terminated.message}' 2>/dev/null || true)"
+          if [ -z "$MSG" ]; then
+            MSG="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.containerStatuses[0].lastState.terminated.message}' 2>/dev/null || true)"
+          fi
+
+          # Only 0 and 1 are tolerated here. The script itself exits on anything
+          # above, so a 2 would have failed the Job asserted above, and matching
+          # the exact codes keeps this from passing on a message that says the
+          # check never ran.
+          if ! printf '%s' "$MSG" | grep -Eq '^nova-status upgrade check exit [01]$'; then
+            echo "FAIL: pod $POD termination message is ${MSG:-<empty>}, want 'nova-status upgrade check exit 0' or 'exit 1'"
+            kubectl describe pod "$POD" -n "$NAMESPACE" 2>&1 | tail -40 || true
+            exit 1
+          fi
+          echo "OK: pod $POD reports '$MSG'"
+    catch: *upgrade-dump
+  # ── Step 7: Assert all five Deployments rolled onto :2026.1 ────────────
+  # updatedReplicas == replicas is what separates a rollout that finished from
+  # one that merely started: the Deployment carries the new pod template from
+  # the moment it is patched, while the old pods keep serving until the new ones
+  # are available.
+  #
+  # The four processes behind the API also carry the installed-release
+  # annotation. It is what rolls them once more after the contract phase: the
+  # scheduler and the conductor cache the RPC version their peers announced at
+  # startup, and the metadata API and the console proxy read rows that phase
+  # rewrites. The API carries no such stamp, because it rolled during
+  # RollingUpdate and came up holding the new minimum
+  # (operators/nova/internal/controller/reconcile_deployment.go).
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-upgrade
+            namespace: openstack
+          spec:
+            template:
+              metadata:
+                (contains(keys(annotations || `{}`), 'nova.c5c3.io/installed-release')): false
+              spec:
+                containers:
+                - name: nova-api
+                  image: ghcr.io/c5c3/nova:2026.1
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-upgrade-metadata
+            namespace: openstack
+          spec:
+            template:
+              metadata:
+                annotations:
+                  nova.c5c3.io/installed-release: "2026.1"
+              spec:
+                containers:
+                - name: nova-metadata
+                  image: ghcr.io/c5c3/nova:2026.1
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-upgrade-scheduler
+            namespace: openstack
+          spec:
+            template:
+              metadata:
+                annotations:
+                  nova.c5c3.io/installed-release: "2026.1"
+              spec:
+                containers:
+                - name: scheduler
+                  image: ghcr.io/c5c3/nova:2026.1
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-upgrade-conductor
+            namespace: openstack
+          spec:
+            template:
+              metadata:
+                annotations:
+                  nova.c5c3.io/installed-release: "2026.1"
+              spec:
+                containers:
+                - name: conductor
+                  image: ghcr.io/c5c3/nova:2026.1
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-upgrade-novncproxy
+            namespace: openstack
+          spec:
+            template:
+              metadata:
+                annotations:
+                  nova.c5c3.io/installed-release: "2026.1"
+              spec:
+                containers:
+                - name: novncproxy
+                  image: ghcr.io/c5c3/nova:2026.1
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          JOB=nova-upgrade-db-sync
+          echo "=== Verifying the steady-state db-sync Job re-ran on :2026.1 ==="
+          # RunJob deletes and re-creates a completed Job in place when its
+          # pod-spec hash changes, so the same-named db-sync Job is replaced on
+          # the :2026.1 image after the contract phase promotes installedRelease.
+          # Poll to ride out the brief delete/re-create window right after the
+          # upgrade settles, then assert the current Job carries :2026.1 and
+          # succeeded. Both fields come off one read, the way the phase loop in
+          # step 5 reads them: the Job is deleted and re-created under this
+          # loop, so two calls could pair the image of the old object with the
+          # succeeded of the new one. No image reference carries a `|`, so it
+          # is a safe separator. The bound is a wall-clock deadline rather than
+          # a round count: each round issues a kubectl call of unbounded
+          # duration, so a fixed count of rounds cannot keep the loop inside
+          # the 5m step budget. 240s leaves the report below a minute.
+          IMG=""
+          SUCC=""
+          DEADLINE=$(( $(date +%s) + 240 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            OUT="$(kubectl get job "$JOB" -n "$NAMESPACE" \
+              -o 'jsonpath={.spec.template.spec.containers[0].image}|{.status.succeeded}' 2>/dev/null || true)"
+            IMG="${OUT%%|*}"
+            SUCC="${OUT##*|}"
+            case "$IMG" in
+            *:2026.1)
+              if [ "$SUCC" = "1" ]; then
+                echo "OK: $JOB at $IMG succeeded=$SUCC"
+                exit 0
+              fi
+              ;;
+            esac
+            sleep 5
+          done
+          echo "FAIL: $JOB did not reach :2026.1 succeeded=1 (image=${IMG:-<none>} succeeded=${SUCC:-<none>})"
+          exit 1
+    catch: *upgrade-dump
+  # ── Step 8: Assert the cells survived and the upgraded API answers ─────
+  # The conditions and the images are the operator's view. status.cells is
+  # nova's own: the mappings live in the nova_api schema the expand phase
+  # migrated, and the db-sync Job that re-ran on :2026.1 reports them back. A
+  # second cell1 would mean the Job mapped the cell again instead of finding the
+  # one that was there.
+  - try:
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-upgrade
+            namespace: openstack
+          status:
+            # cell0 keeps its fixed all-zero uuid across the upgrade; cell1
+            # carries one nova generated, so only its count can be asserted. The
+            # `|| `[]`` guard is what keeps an assert from aborting on the first
+            # poll: a filter over a field that is still absent under an existing
+            # status fails outright instead of retrying.
+            (cells[?name == 'cell0'] || `[]`):
+            - uuid: 00000000-0000-0000-0000-000000000000
+            (length(cells[?name == 'cell1'] || `[]`) == `1`): true
+    # The version document is the one route the compute API answers without a
+    # token and without touching a database, so a 200 carrying v2.1 means the
+    # upgraded WSGI app is serving. The request runs from the conductor pod this
+    # CR already owns: it carries the same image, so the interpreter is there,
+    # and it is a client of the Service like any other pod, so the request still
+    # crosses kube-proxy. A `kubectl run` pod is not an option on a leg whose
+    # node is already carrying every workload of this suite. Connection-level
+    # failures are retried inside the pod, because kube-proxy's endpoint
+    # programming can trail the rollout by a second or two; HTTP errors fail
+    # hard.
+    - script:
+        timeout: 2m
+        content: |
+          kubectl exec -n "$NAMESPACE" deploy/nova-upgrade-conductor -c conductor -- \
+            /var/lib/openstack/bin/python -c "
+          import time, urllib.error, urllib.request
+          last = None
+          for _ in range(15):
+              try:
+                  r = urllib.request.urlopen('http://nova-upgrade.openstack.svc.cluster.local:8774/')
+                  body = r.read().decode()
+                  assert r.status == 200, r.status
+                  assert 'v2.1' in body, body
+                  print('version document OK, status %d: %s' % (r.status, body))
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit('GET / -> HTTP %d' % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print('version document retry: %s' % exc)
+                  time.sleep(2)
+          else:
+              raise SystemExit('version document never answered after retries: %r' % last)
+          "
+    catch: *upgrade-dump

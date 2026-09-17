@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Nova CR for the release-upgrade E2E test, installed at 2025.2.
+#
+# The light fixture tier of the Nova suites with one addition: a Keystone and a
+# Placement stand beside it, because the expand phase runs nova-status upgrade
+# check and that check reads Placement as an authenticated client. No Neutron,
+# Glance or Cinder runs here, and no server is booted, so no compute is deployed
+# either.
+#
+# The two schemas nova_upgrade_api and nova_upgrade live on the openstack-db
+# MariaDB cluster (cell0 is derived as nova_upgrade_cell0), the cache is
+# openstack-memcached, and the credentials are the ESO-synced nova-api-db and
+# nova-db Secrets.
+#
+# The bus is the per-suite vhost broker-vhost.sh writes into
+# nova-upgrade-messaging. Managed messaging is not usable here: the URL it
+# renders always names the root vhost, so two suites would share the scheduler
+# and conductor RPC topics.
+#
+# One API replica: the suite reads the rollout off updatedReplicas == replicas,
+# which is meaningful at one replica and only slower at two.
+#
+# 05-patch-upgrade.yaml moves spec.openStackRelease and spec.image.tag to
+# 2026.1, which is what puts the CR through the expand-migrate-contract machine
+# instead of the steady-state db-sync every other nova suite exercises.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-upgrade
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  apiDatabase:
+    clusterRef:
+      name: openstack-db
+    database: nova_upgrade_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: openstack-db
+    database: nova_upgrade
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: nova-upgrade-messaging
+  keystoneEndpoint: http://keystone-nova-upgrade.openstack.svc.cluster.local:5000/v3
+  region: RegionOne
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-upgrade-metadata-secret
