@@ -15,8 +15,10 @@
 #     hostname and its own certificate.
 #   - deploy/kind/infrastructure ships the three matching Certificates and the
 #     two kind-only database shims, one per database block of a Nova.
-#   - every new file carries its SPDX header, and none of them is named by a
-#     Renovate manager: they pin no third-party version.
+#   - every file the package adds, the deploy artifacts and the read-only e2e
+#     suite that proves them on a live cluster, carries its SPDX header, and
+#     none of them is named by a Renovate manager: they pin no third-party
+#     version.
 #
 # The rendering tests need kustomize and yq; each skips with a counted SKIP when
 # either is missing. The header and Renovate tests run either way.
@@ -50,6 +52,7 @@ NEW_FILES=(
   "deploy/kind/infrastructure/nova-db-externalsecret.yaml"
   "deploy/openbao/policies/nova-api-db-dynamic.hcl"
   "deploy/openbao/policies/nova-cell-db-dynamic.hcl"
+  "tests/e2e/infrastructure/nova-deploy-stack/chainsaw-test.yaml"
 )
 
 # The three Nova listeners, as "<listener> <hostname> <certificate secret>".
@@ -114,8 +117,15 @@ test_new_files_carry_spdx() {
 # Every pinned third-party version under deploy/ is named by a customManager and
 # a paired packageRule. These files pin nothing third-party: the chart is built
 # from this repository and tracked by a semver range, the certificates and the
-# ESO shims carry no version at all. A file that appears here means either a pin
-# slipped in or a manager is matching a file it cannot bump.
+# ESO shims carry no version at all, and the e2e suite runs no image of its own.
+# A file that appears here means either a pin slipped in or a manager is
+# matching a file it cannot bump.
+#
+# The search runs over the path rather than the basename: every chainsaw suite
+# file is called chainsaw-test.yaml, and two sibling suites (garage-health,
+# nfs-health) do pin an image and are named by a manager. Both spellings
+# renovate.json uses are searched, the plain path and the escaped form its
+# managerFilePatterns carry (chainsaw-test\.yaml).
 test_renovate_names_none_of_the_new_files() {
   echo "Test: renovate.json names none of the new deploy-stack files"
 
@@ -125,11 +135,11 @@ test_renovate_names_none_of_the_new_files() {
     return
   fi
 
-  local rel base hits
+  local rel escaped hits
   for rel in "${NEW_FILES[@]}"; do
-    base="$(basename "$rel")"
-    hits="$( { grep -c "$base" "$RENOVATE_CONFIG" || true; } )"
-    assert_eq "renovate.json does not name $base" "0" "${hits// /}"
+    escaped="${rel//./\\.}"
+    hits="$( { grep -cF -e "$rel" -e "$escaped" "$RENOVATE_CONFIG" || true; } )"
+    assert_eq "renovate.json does not name $rel" "0" "${hits// /}"
   done
 }
 
