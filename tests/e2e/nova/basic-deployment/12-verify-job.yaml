@@ -1,0 +1,194 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Drives one server through its whole life against the deployment the suite
+# brought up: the compute registers, Placement learns its inventory, the
+# scheduler places a boot on it, the instance resizes onto the same host and is
+# deleted again.
+#
+# backoffLimit is 0 because the script is not idempotent: a second attempt would
+# find the server s1 the first one created and fail on the name. A failed Job
+# therefore keeps the pod whose log says why.
+#
+# The client reads plain OS_* variables rather than a clouds.yaml. The Secret
+# this suite authenticates with holds a password, not a credential document, and
+# the catalog Job wrote the rows for the same account.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-basic-verify
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: verify
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-basic.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # The image the servers boot from, seeded by 08-image-seed-job.yaml
+              # under an id this suite owns.
+              SEED=4e0a0000-0000-4000-8000-000000000001
+
+              # wait_status <kind> <name> <want> <timeoutSeconds>: poll one
+              # object's status every 5s. On the deadline it prints the object's
+              # own show output, whose fault message is what explains a server
+              # that reached ERROR.
+              wait_status() {
+                ws_deadline=$(( $(date +%s) + $4 ))
+                while true; do
+                  ws_status="$(openstack "$1" show "$2" -f value -c status 2>/dev/null || true)"
+                  if [ "${ws_status}" = "$3" ]; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${ws_deadline}" ]; then
+                    echo "ERROR: $1 $2 status '${ws_status:-<none>}' != $3 within $4s"
+                    openstack "$1" show "$2" 2>&1 || true
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+
+              # wait_gone <kind> <name> <timeoutSeconds>: poll until a show of
+              # the object fails, which is how the client reports one that is
+              # gone. A delete is asynchronous, so a later check would race it.
+              wait_gone() {
+                wg_deadline=$(( $(date +%s) + $3 ))
+                while true; do
+                  if ! openstack "$1" show "$2" >/dev/null 2>&1; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${wg_deadline}" ]; then
+                    echo "ERROR: $1 $2 still present after $3s"
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+
+              # Two flavors, because the resize needs a second one to move to.
+              # Both are tiny: the fake driver allocates nothing, and the
+              # scheduler still checks the claim against the inventory the
+              # compute published.
+              openstack flavor show m1.nano >/dev/null 2>&1 \
+                || openstack flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
+              echo "OK: flavor m1.nano"
+              openstack flavor show m1.small >/dev/null 2>&1 \
+                || openstack flavor create --vcpus 1 --ram 256 --disk 1 m1.small
+              echo "OK: flavor m1.small"
+
+              # The compute reports itself over the bus, so this is the first
+              # thing that says the vhost carries traffic in both directions.
+              # 24 x 5s = 2m.
+              SERVICES=""
+              COMPUTE_UP=""
+              for _ in $(seq 1 24); do
+                SERVICES="$(openstack compute service list --service nova-compute \
+                  -f value -c Host -c State || true)"
+                if grep -qx 'fake-1 up' <<<"${SERVICES}"; then
+                  COMPUTE_UP=yes
+                  break
+                fi
+                sleep 5
+              done
+              if [ -z "${COMPUTE_UP}" ]; then
+                echo "ERROR: nova-compute fake-1 never reported state up within 120s"
+                echo "${SERVICES}"
+                exit 1
+              fi
+              echo "OK: compute service fake-1 is up"
+
+              # The same host through the hypervisor API, which reads the
+              # compute node record the driver wrote rather than the service
+              # record. The output is captured before it is matched: a
+              # `openstack ... | grep -q` pipeline fails under pipefail exactly
+              # when it matches, because grep closes the pipe first.
+              HYPERVISORS="$(openstack hypervisor list -f value -c "Hypervisor Hostname")"
+              if ! grep -qx fake-1 <<<"${HYPERVISORS}"; then
+                echo "ERROR: fake-1 is not listed as a hypervisor"
+                echo "${HYPERVISORS}"
+                exit 1
+              fi
+              echo "OK: hypervisor fake-1 is registered"
+
+              # The resource provider the compute publishes its capacity as.
+              # Without it the scheduler has nothing to claim against, so a boot
+              # would fail with no valid host rather than with anything about
+              # the compute.
+              RP="$(openstack resource provider list --name fake-1 -f value -c uuid)"
+              if [ -z "${RP}" ]; then
+                echo "ERROR: no resource provider named fake-1"
+                openstack resource provider list -f value || true
+                exit 1
+              fi
+              INVENTORY="$(openstack resource provider inventory list "${RP}" -f value -c resource_class)"
+              for class in VCPU MEMORY_MB DISK_GB; do
+                if ! grep -qx "${class}" <<<"${INVENTORY}"; then
+                  echo "ERROR: resource provider ${RP} carries no ${class} inventory"
+                  echo "${INVENTORY}"
+                  exit 1
+                fi
+              done
+              echo "OK: resource provider ${RP} reports VCPU, MEMORY_MB and DISK_GB"
+
+              # --nic none: no port is bound, so the boot needs neither an ML2
+              # agent nor a network of its own. Everything else about the boot is
+              # real, the image download included.
+              openstack server create --image "${SEED}" --flavor m1.nano --nic none s1
+              wait_status server s1 ACTIVE 300
+              echo "OK: server s1 is ACTIVE"
+
+              SERVER_HOST="$(openstack server show s1 -f value -c OS-EXT-SRV-ATTR:host)"
+              if [ "${SERVER_HOST}" != fake-1 ]; then
+                echo "ERROR: server s1 landed on '${SERVER_HOST}', want fake-1"
+                exit 1
+              fi
+              echo "OK: server s1 landed on fake-1"
+
+              # The resize goes back to the one compute there is, which is what
+              # allow_resize_to_same_host in the Nova CR allows. It spans the
+              # API, the conductor, the scheduler and the compute, and it is
+              # confirmed rather than reverted so the new flavor is the one that
+              # sticks.
+              openstack server resize --flavor m1.small s1
+              wait_status server s1 VERIFY_RESIZE 300
+              openstack server resize confirm s1
+              wait_status server s1 ACTIVE 120
+              SERVER_FLAVOR="$(openstack server show s1 -f value -c flavor)"
+              if ! grep -q m1.small <<<"${SERVER_FLAVOR}"; then
+                echo "ERROR: server s1 still runs '${SERVER_FLAVOR}', want m1.small"
+                exit 1
+              fi
+              echo "OK: server s1 resized to m1.small and confirmed"
+
+              openstack server delete s1
+              wait_gone server s1 120
+              echo "OK: server s1 deleted"
+
+              echo NOVA-VERIFY-OK

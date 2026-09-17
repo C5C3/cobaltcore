@@ -1,0 +1,826 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a happy-path Nova deployment (2025.2 release).
+# Validates the full reconciliation cycle of a Nova against real pods, a real
+# broker vhost and a fake-driver nova-compute:
+#   - all fifteen sub-conditions progress to True with their expected reasons,
+#     ExtraConfigHealthy stays True on NoOwnedKeysOverridden, and the aggregate
+#     Ready=True with reason AllReady
+#   - status publishes what a client and a compute cluster read off the CR: the
+#     API endpoint, the installed release, the compute-contract Secret and both
+#     cell mappings, cell0 under the fixed all-zero uuid
+#   - the API Deployment runs uWSGI against the module the image ships
+#     (--module nova.wsgi.osapi_compute:application) and carries no --pyargv,
+#     because nova's WSGI entry points take no arguments and read their
+#     documents from OS_NOVA_CONFIG_DIR and OS_NOVA_CONFIG_FILES; both database
+#     URLs and the transport URL arrive as oslo.config env overrides sourced
+#     from Secrets
+#   - the scheduler and the conductor take their readiness off the message bus
+#     and carry no liveness probe, with the RPC termination window the webhook
+#     defaults
+#   - the owned children exist: the three Services, the PodDisruptionBudget that
+#     excludes Job pods, the db-sync Job and the archive CronJob
+#   - the rendered nova.conf carries the discovery periodic, the metadata
+#     posture, the console URL and the internal catalog interface, and no
+#     credential; the compute contract carries the client sections a hypervisor
+#     needs and none of the database ones
+#   - a compute on the fake driver registers over that bus, is mapped into cell1
+#     by the scheduler's own periodic, and a server boots on it, resizes onto
+#     the same host and is deleted through the openstack CLI
+#
+# Two fixture tiers exist across the Nova suites. A suite that only asserts on
+# the CR needs nothing but a broker vhost. This one boots a server, so it
+# carries the whole stack a boot touches: its own Keystone and catalog rows,
+# an OVNCentral and a Neutron for the network service, a Placement for the
+# scheduler's allocation candidates, a Glance with an S3 store and a seeded
+# image, and the compute itself. Every fixture is hand-maintained and names no
+# file outside this directory except ../../cinder/broker-vhost.sh.
+#
+# Host discovery is not run by hand. nova-scheduler maps a newly registered
+# compute into cell1 from a periodic whose interval is
+# [scheduler] discover_hosts_in_cells_interval, and nova 32.0.0 runs it with
+# run_immediately=True, so the first scan happens at scheduler start, before the
+# compute registers, and the mapping lands on the next one. Step 7 waits that
+# interval out. The interval itself is not overridden: the key is Reported in
+# operators/nova/api/v1alpha1/config_ownership.go, so a spec.extraConfig entry
+# for it would flip ExtraConfigHealthy and break the assertion above.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-basic-deployment
+spec:
+  namespace: openstack
+  timeouts:
+    # Five services come up before the Nova is even applied, and the Nova then
+    # runs a two-schema migration, a cell mapping and five workloads. That does
+    # not fit the 120s the shared config allows.
+    # The first CI run measured the bring-up: the eight MariaDB CRs take 3
+    # minutes at the operator's 30 s requeue and the six nova-manage invocations
+    # of the db-sync about 3 more, so Ready lands roughly 8 minutes after the
+    # apply. 10m keeps a margin for a leg that runs two suites at once.
+    assert: 10m
+    # The default for a script step that carries no timeout of its own. The
+    # longest is the one driving the verify Job, which waits up to 10 minutes
+    # on a server boot, a resize and a delete before it reads the log back.
+    exec: 12m
+  steps:
+  # ── Step 1: Give the suite its vhost, then bring up Keystone ───────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues and a compute could answer the other suite's API. See
+  # ../../cinder/broker-vhost.sh. The step cleanup runs at the end of the test.
+  #
+  # Keystone goes first because the catalog Job, the four sibling CRs and the
+  # Nova all authenticate against it.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh create nova-basic nova-basic-messaging openstack
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-basic
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &nova-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-basic
+        namespace: openstack
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-nova-basic
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNCentral
+        name: nova-basic-ovn
+        namespace: openstack
+    - get:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: Neutron
+        name: neutron-nova-basic
+        namespace: openstack
+    - get:
+        apiVersion: placement.openstack.c5c3.io/v1alpha1
+        kind: Placement
+        name: placement-nova-basic
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: Glance
+        name: glance-nova-basic
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: GlanceBackend
+        name: glance-nova-basic-s3
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Deployments ==="
+          kubectl describe deploy -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-basic 2>&1 | tail -200 || true
+          echo "=== Pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Services and endpoints ==="
+          kubectl get svc,endpointslices -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-basic -o wide 2>&1 || true
+          echo "=== Fake compute ==="
+          kubectl logs -n "$NAMESPACE" deploy/nova-basic-fake-compute --tail=100 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-basic-catalog-setup nova-basic-image-seed nova-basic-verify; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 200
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/name=neutron-operator
+        tail: 200
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/name=placement-operator
+        tail: 200
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/name=glance-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh delete nova-basic || true
+  # ── Step 2: Register the four services in the catalog ──────────────────
+  # The Job is deleted first because a Job's pod template is immutable, so a
+  # re-run against a leftover object would fail on the update rather than on
+  # anything the suite is testing.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-basic-catalog-setup -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 01-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/nova-basic-catalog-setup \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-basic-catalog-setup 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-basic-catalog-setup -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-basic-catalog-setup
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-dump
+  # ── Step 3: Bring up the four services the boot path depends on ────────
+  - try:
+    - apply:
+        file: 02-messaging-secret.yaml
+    - apply:
+        file: 03-ovncentral-cr.yaml
+    - apply:
+        file: 04-neutron-cr.yaml
+    - apply:
+        file: 05-placement-cr.yaml
+    - apply:
+        file: 06-glance-cr.yaml
+    - apply:
+        file: 07-glancebackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: nova-basic-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-nova-basic
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-nova-basic
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-nova-basic
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-nova-basic-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-dump
+  # ── Step 4: Seed the image the server boots from ───────────────────────
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-basic-image-seed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 08-image-seed-job.yaml
+          kubectl wait --for=condition=complete job/nova-basic-image-seed \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-basic-image-seed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-basic-image-seed -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-basic-image-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-dump
+  # ── Step 5: Assert the conditions, the children and the config ─────────
+  - try:
+    - apply:
+        file: 09-metadata-secret.yaml
+    - apply:
+        file: 10-nova-cr.yaml
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-basic
+            namespace: openstack
+          status:
+            # The URL an in-cluster client dials. No gateway is configured, so
+            # it is the API Service rather than a public hostname.
+            endpoint: http://nova-basic.openstack.svc.cluster.local:8774
+            # Promoted by the db-sync Job, which is what says the schema is at
+            # the release the pods run.
+            installedRelease: "2025.2"
+            # The Secret a compute cluster mounts. Publishing it is the whole
+            # contract between this CR and a hypervisor.
+            computeConfigSecretRef:
+              name: nova-basic-compute-config
+            # cell0 is the holding pen for an instance that never reached a
+            # cell. nova maps it under this fixed uuid, so the value is a
+            # constant rather than something the Job generated. The `|| `[]``
+            # guard is what keeps an assert from aborting on the first poll:
+            # a filter over a field that is still absent under an existing
+            # status fails outright instead of retrying.
+            (cells[?name == 'cell0'] || `[]`):
+            - uuid: 00000000-0000-0000-0000-000000000000
+            # cell1 is the real cell, created by the same Job under a uuid nova
+            # generates, so only its presence can be asserted.
+            (length(cells[?name == 'cell1'] || `[]`) == `1`): true
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'ComputeConfigReady']):
+            - status: "True"
+              reason: ComputeConfigPublished
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'MetadataReady']):
+            - status: "True"
+              reason: MetadataReady
+            (conditions[?type == 'ConsoleProxyReady']):
+            - status: "True"
+              reason: ConsoleProxyReady
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'DBArchiveReady']):
+            - status: "True"
+              reason: DBArchiveScheduled
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            # The five members of the parallel group. This CR asks for no
+            # autoscaling, no NetworkPolicy and no gateway, and each member
+            # reports that absence as True, which is what lets the aggregate
+            # resolve on a cluster that has none of them.
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'MetadataHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'ConsoleHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            # spec.extraConfig sets one key the operator does not render, so the
+            # overlay overrides nothing the operator owns.
+            (conditions[?type == 'ExtraConfigHealthy']):
+            - status: "True"
+              reason: NoOwnedKeysOverridden
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-basic
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: nova-api
+                  # Both probes GET the version document, the only route the
+                  # compute API answers without a token.
+                  readinessProbe:
+                    httpGet:
+                      path: /
+                      port: 8774
+                # The nova image ships no WSGI entry script, so the application
+                # is imported as a module.
+                (contains(join(' ', containers[0].command), '--module nova.wsgi.osapi_compute:application')): true
+                # Unlike the sibling operators, nova's WSGI entry points take no
+                # arguments: they read the documents they load from the two
+                # OS_NOVA_CONFIG_* variables below, so there is nothing to pass
+                # on through uWSGI's argv.
+                (contains(join(' ', containers[0].command), '--pyargv')): false
+                (containers[0].env[?name == 'OS_NOVA_CONFIG_DIR'].value | [0]): /etc/nova/nova.conf.d
+                # The paste pipeline by absolute path, because the image ships
+                # it outside the config directory, then the shared document by
+                # its ConfigMap key.
+                (containers[0].env[?name == 'OS_NOVA_CONFIG_FILES'].value | [0]): /var/lib/openstack/etc/nova/api-paste.ini;nova.conf
+                # Nova opens two schemas, so two connection URLs arrive as
+                # oslo.config env overrides sourced from derived Secrets and
+                # neither enters the rendered ConfigMap.
+                (containers[0].env[?name == 'OS_API_DATABASE__CONNECTION'].valueFrom.secretKeyRef.name | [0]): nova-basic-api-db-connection
+                (containers[0].env[?name == 'OS_API_DATABASE__CONNECTION'].valueFrom.secretKeyRef.key | [0]): connection
+                (containers[0].env[?name == 'OS_DATABASE__CONNECTION'].valueFrom.secretKeyRef.name | [0]): nova-basic-db-connection
+                (containers[0].env[?name == 'OS_DATABASE__CONNECTION'].valueFrom.secretKeyRef.key | [0]): connection
+                (containers[0].env[?name == 'OS_DEFAULT__TRANSPORT_URL'].valueFrom.secretKeyRef.name | [0]): nova-basic-transport-url
+                (containers[0].env[?name == 'OS_DEFAULT__TRANSPORT_URL'].valueFrom.secretKeyRef.key | [0]): transport_url
+          status:
+            availableReplicas: 2
+    # The metadata API is the second WSGI front end. It reads the same shared
+    # document plus the overlay that makes it trust a proxied identity, and it
+    # is the only process holding the shared secret a Neutron metadata agent
+    # signs a request with.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-basic-metadata
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: nova-metadata
+                (containers[0].env[?name == 'OS_NOVA_CONFIG_FILES'].value | [0]): /var/lib/openstack/etc/nova/api-paste.ini;nova.conf;metadata.conf
+                (containers[0].env[?name == 'OS_NEUTRON__METADATA_PROXY_SHARED_SECRET'].valueFrom.secretKeyRef.name | [0]): nova-basic-metadata-secret
+                (containers[0].env[?name == 'OS_NEUTRON__METADATA_PROXY_SHARED_SECRET'].valueFrom.secretKeyRef.key | [0]): shared_secret
+          status:
+            availableReplicas: 1
+    # The scheduler serves no HTTP, so its readiness is the message-bus check
+    # the image ships. It carries no liveness probe: a broker outage would
+    # otherwise restart a process that is merely waiting, and the restart would
+    # drop the RPC calls in flight. The grace period is the RPC default the
+    # webhook fills in, long enough for a call already accepted to finish.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-basic-scheduler
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                terminationGracePeriodSeconds: 200
+                containers:
+                - name: scheduler
+                  readinessProbe:
+                    exec:
+                      command:
+                      - /var/lib/openstack/bin/nova-amqp-ready
+                (contains(keys(containers[0]), 'livenessProbe')): false
+                (containers[0].env[?name == 'NOVA_AMQP_PORT'].value | [0]): "5672"
+          status:
+            availableReplicas: 1
+    # The conductor is the scheduler's twin: the same bus readiness, the same
+    # absence of an HTTP surface. It is also the one process that holds both
+    # database connections, which is what step 7 execs into.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-basic-conductor
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                terminationGracePeriodSeconds: 200
+                containers:
+                - name: conductor
+                  readinessProbe:
+                    exec:
+                      command:
+                      - /var/lib/openstack/bin/nova-amqp-ready
+                (contains(keys(containers[0]), 'livenessProbe')): false
+                (containers[0].env[?name == 'NOVA_AMQP_PORT'].value | [0]): "5672"
+          status:
+            availableReplicas: 1
+    # The console proxy is projected without being asked for: the switch
+    # defaults to on. Its readiness is the noVNC client page it serves itself.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-basic-novncproxy
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: novncproxy
+                  readinessProbe:
+                    httpGet:
+                      path: /vnc_lite.html
+                      port: 6080
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nova-basic
+            namespace: openstack
+          spec:
+            ports:
+            - port: 8774
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nova-basic-metadata
+            namespace: openstack
+          spec:
+            ports:
+            - port: 8775
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nova-basic-novncproxy
+            namespace: openstack
+          spec:
+            ports:
+            - port: 6080
+    # The API is the only role with a budget: the other four take their work off
+    # the bus or serve a session that reconnects.
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: nova-basic
+            namespace: openstack
+          spec:
+            # Two API replicas, so the shared builder renders minAvailable
+            # rather than the single-replica maxUnavailable that exists to avoid
+            # a drain deadlock.
+            minAvailable: 1
+            selector:
+              # The db-sync and archive pods carry no readiness probe, so they
+              # count as healthy from their first moment. Without this exclusion
+              # they inflate currentHealthy and let a drain evict the API pods
+              # the budget protects.
+              matchExpressions:
+              - key: batch.kubernetes.io/job-name
+                operator: DoesNotExist
+    # Nova only ever soft-deletes, so the archive is what keeps the row backlog
+    # bounded. It runs on every Nova, with the webhook's defaults.
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: nova-basic-db-archive
+            namespace: openstack
+          spec:
+            schedule: "@daily"
+            # Two archives moving the same rows contend on the same tables, so a
+            # run that outlasts its interval is not overtaken by the next firing.
+            concurrencyPolicy: Forbid
+            suspend: false
+            jobTemplate:
+              spec:
+                template:
+                  spec:
+                    (contains(join(' ', containers[0].command), 'archive_deleted_rows --all-cells')): true
+                    # --purge would empty the shadow tables the archive promises
+                    # to keep, and --until-complete would run until the backlog
+                    # is empty however long that takes, past the Job's deadline.
+                    (contains(join(' ', containers[0].command), '--purge')): false
+                    (contains(join(' ', containers[0].command), '--until-complete')): false
+                    (containers[0].env[?name == 'MAX_ROWS'].value | [0]): "1000"
+                    (containers[0].env[?name == 'SLEEP'].value | [0]): "1"
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-basic-db-sync
+            namespace: openstack
+          status:
+            succeeded: 1
+    # The compute contract: the config fragment plus four values whatever runs
+    # a compute reads on its own rather than through oslo.config. ca.crt ships
+    # only for a bus the CR asked to verify, and this one is plaintext, so the
+    # key would name a file nothing reads.
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nova-basic-compute-config
+            namespace: openstack
+          (contains(keys(data), 'nova-compute.conf')): true
+          (contains(keys(data), 'transport_url')): true
+          (contains(keys(data), 'password')): true
+          (contains(keys(data), 'metadata_proxy_shared_secret')): true
+          (contains(keys(data), 'cell_name')): true
+          (contains(keys(data), 'ca.crt')): false
+    # The rendered nova.conf. The ConfigMap is content-hashed, so it is
+    # resolved through the API Deployment's config volume rather than guessed
+    # by name.
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          CM="$(kubectl get deploy nova-basic -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')"
+          test -n "$CM"
+          kubectl get cm "$CM" -n "$NAMESPACE" -o 'jsonpath={.data.nova\.conf}' \
+            > /tmp/nova-basic.conf
+
+          # The periodic that maps a newly registered compute into its cell.
+          # Step 7 waits exactly this interval out.
+          grep -Fxq 'discover_hosts_in_cells_interval = 300' /tmp/nova-basic.conf
+          echo "OK: $CM renders the 300s host-discovery periodic"
+
+          # Instance lifecycle notifications are dropped at the source: nothing
+          # this deployment runs drains that queue.
+          grep -Fxq 'driver = noop' /tmp/nova-basic.conf
+          echo "OK: notifications are dropped at the source"
+
+          # One global metadata front end rather than one per cell, so an
+          # instance is resolved through the API database.
+          grep -Fxq 'local_metadata_per_cell = false' /tmp/nova-basic.conf
+          echo "OK: the metadata API is global rather than per-cell"
+
+          # The suite's one spec.extraConfig entry reaches the rendered
+          # document, which is what makes the resize in step 8 possible.
+          grep -Fxq 'allow_resize_to_same_host = true' /tmp/nova-basic.conf
+          echo "OK: the extraConfig override reached nova.conf"
+
+          # The address the API hands a browser as the console of an instance.
+          # Without a gateway it is the proxy's own Service.
+          grep -Fxq 'novncproxy_base_url = http://nova-basic-novncproxy.openstack.svc.cluster.local:6080/vnc_lite.html' \
+            /tmp/nova-basic.conf
+          echo "OK: the console URL points at the proxy Service"
+
+          # valid_interfaces appears in several client sections, so [placement]
+          # is cut out before the line is matched.
+          awk '/^\[placement\]$/{f=1;next} /^\[/{f=0} f' /tmp/nova-basic.conf \
+            > /tmp/nova-basic-placement.conf
+          test -s /tmp/nova-basic-placement.conf
+          grep -Fxq 'valid_interfaces = internal' /tmp/nova-basic-placement.conf
+          echo "OK: [placement] resolves the internal catalog entry"
+
+          # Every credential travels as an env override sourced from a Secret,
+          # so none of them may reach a ConfigMap every pod mounts.
+          if grep -q '^password =' /tmp/nova-basic.conf; then
+            echo "ERROR: nova.conf carries a password line"
+            exit 1
+          fi
+          if grep -q 'metadata_proxy_shared_secret' /tmp/nova-basic.conf; then
+            echo "ERROR: nova.conf carries the metadata shared secret"
+            exit 1
+          fi
+          echo "OK: nova.conf carries no credential"
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl get secret nova-basic-compute-config -n "$NAMESPACE" \
+            -o 'jsonpath={.data.nova-compute\.conf}' | base64 -d > /tmp/nova-basic-compute.conf
+
+          # What a hypervisor needs to reach the rest of the deployment.
+          for section in placement neutron glance service_user vnc; do
+            if ! grep -Fxq "[$section]" /tmp/nova-basic-compute.conf; then
+              echo "ERROR: nova-compute.conf carries no [$section] section"
+              exit 1
+            fi
+          done
+          echo "OK: the fragment carries the client sections a compute needs"
+
+          # A compute node reaches no schema directly: the conductor reads the
+          # cell database on its behalf, which is the point of the split.
+          for section in database api_database; do
+            if grep -Fxq "[$section]" /tmp/nova-basic-compute.conf; then
+              echo "ERROR: nova-compute.conf carries a [$section] section"
+              exit 1
+            fi
+          done
+          echo "OK: the fragment names no database"
+
+          # The cell the compute registers into. It has to be the one the
+          # db-sync Job created, or the compute looks for a cell that does not
+          # exist.
+          CELL="$(kubectl get secret nova-basic-compute-config -n "$NAMESPACE" \
+            -o 'jsonpath={.data.cell_name}' | base64 -d)"
+          test "$CELL" = "cell1"
+          echo "OK: the contract names cell1"
+    catch: *nova-dump
+  # ── Step 6: Start the fake-driver compute ──────────────────────────────
+  # Applied only now: the Deployment mounts the compute-contract Secret, which
+  # the step above has just asserted exists.
+  - try:
+    - apply:
+        file: 11-fake-compute.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-basic-fake-compute
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch: *nova-dump
+  # ── Step 7: Wait for the scheduler to map the compute into cell1 ───────
+  # No discover_hosts is run here, unlike ../discover-hosts.sh: a mapping that
+  # appears on its own is the proof that the scheduler's periodic did the work.
+  # The scan runs at scheduler start (run_immediately=True) and then every 300
+  # seconds, and the compute registers after that first pass, so the mapping
+  # lands within one interval. 84 x 5s = 420s is that interval plus margin.
+  # The step timeout is 10m rather than 7m: every poll also pays a kubectl exec
+  # round trip on top of its sleep, and a step killed at the deadline would
+  # print none of the diagnostics the failure path exists for.
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          TABLE=""
+          MAPPED=""
+          for _ in $(seq 1 84); do
+            TABLE="$(kubectl exec -n "$NAMESPACE" deploy/nova-basic-conductor -c conductor -- \
+              nova-manage --config-dir /etc/nova/nova.conf.d cell_v2 list_hosts 2>&1 || true)"
+            # list_hosts prints one prettytable with the columns Cell Name, Cell
+            # UUID and Hostname. Splitting on the pipes puts Hostname in field
+            # 4: field 1 is the empty string in front of the first pipe, and the
+            # rules between the rows carry no pipe at all. The column is
+            # captured before it is matched, because a `... | grep -q` pipeline
+            # fails under pipefail exactly when it matches.
+            HOSTS="$(printf '%s\n' "$TABLE" |
+              awk -F'|' 'NF>=4 {gsub(/^ +| +$/, "", $4); print $4}')"
+            if grep -qx fake-1 <<<"$HOSTS"; then
+              MAPPED=yes
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$MAPPED" ]; then
+            echo "ERROR: host fake-1 was not mapped into cell1 within 420s"
+            printf '%s\n' "$TABLE"
+            kubectl logs -n "$NAMESPACE" deploy/nova-basic-scheduler --tail=100 2>&1 || true
+            exit 1
+          fi
+          echo "OK: host fake-1 is mapped into cell1"
+
+          # The periodic names what it mapped at INFO. Reading it back is what
+          # separates the scheduler doing the work from anything else having
+          # written the mapping.
+          LOGS="$(kubectl logs -n "$NAMESPACE" deploy/nova-basic-scheduler --tail=500)"
+          if ! grep -q 'Discovered 1 new hosts' <<<"$LOGS"; then
+            echo "ERROR: the scheduler log does not report the discovery"
+            printf '%s\n' "$LOGS"
+            exit 1
+          fi
+          echo "OK: the scheduler reported the discovery itself"
+    catch: *nova-dump
+  # ── Step 8: Boot, resize and delete a server ───────────────────────────
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-basic-verify -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 12-verify-job.yaml
+          kubectl wait --for=condition=complete job/nova-basic-verify \
+            -n "$NAMESPACE" --timeout=10m || {
+            kubectl logs -n "$NAMESPACE" job/nova-basic-verify 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-basic-verify -o wide
+            exit 1
+          }
+          # The log is fetched once and asserted on the captured text: a
+          # `kubectl logs | grep -q` pipeline fails under pipefail exactly when
+          # it matches, because grep closes the pipe while kubectl is still
+          # writing.
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-basic-verify)"
+          echo "$LOGS"
+          grep -q 'NOVA-VERIFY-OK' <<<"$LOGS"
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-basic-verify
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-dump

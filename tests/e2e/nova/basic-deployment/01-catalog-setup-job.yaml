@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Registers the four services this suite runs in the keystone-nova-basic
+# catalog, each with its public and internal endpoint. keystone-manage bootstrap
+# only creates the identity service, so the rest has to be added out-of-band.
+#
+# Both interfaces are written for every service because two different clients
+# read them. nova resolves Placement, Neutron and Glance through its own client
+# sections, which pin valid_interfaces = internal
+# (operators/nova/internal/controller/reconcile_config.go), while the openstack
+# CLI in the verify Job resolves the public compute row.
+#
+# The Job runs before the four CRs are applied. The catalog is what the services
+# read at their first request, and a row written after a pod started is only
+# picked up once the token middleware's catalog cache expires.
+#
+# It authenticates as the bootstrap admin (keystone-admin Secret) and every step
+# is idempotent, so a Job retry converges rather than erroring on a duplicate.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-basic-catalog-setup
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-basic.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # Both guards read one listing taken up front, not one per
+              # resource. An `openstack` invocation costs about 12 s on the CI
+              # node, and a listing in front of every create put this Job at 25
+              # invocations, which is the whole five minutes the suite waits.
+              existing_services="$(openstack service list --format value -c Name)"
+              existing_endpoints="$(openstack endpoint list --format value \
+                -c "Service Name" -c Interface -c URL)"
+
+              # Service create is guarded by a name-list grep rather than by a
+              # show: `openstack service show` of a missing resource can exit 0
+              # on this image, so a show-guard would skip the create.
+              create_service() {
+                name="$1"
+                type="$2"
+                description="$3"
+                if ! grep -qx "${name}" <<<"${existing_services}"; then
+                  openstack service create --name "${name}" \
+                    --description "${description}" "${type}"
+                fi
+              }
+
+              # Endpoints are guarded by matching the service name, interface
+              # and exact URL as one fixed string, so the dotted FQDN is not
+              # read as a regex.
+              create_endpoint() {
+                service="$1"
+                interface="$2"
+                url="$3"
+                if ! grep -qxF "${service} ${interface} ${url}" <<<"${existing_endpoints}"; then
+                  openstack endpoint create --region RegionOne "${service}" "${interface}" "${url}"
+                fi
+              }
+
+              create_service nova compute "OpenStack Compute"
+              create_service placement placement "OpenStack Placement"
+              create_service glance image "OpenStack Image Service"
+              create_service neutron network "OpenStack Networking"
+
+              # The compute URL carries the version prefix the client appends
+              # its paths to; the other three serve their resources off the
+              # bare Service address.
+              NOVA_URL="http://nova-basic.openstack.svc:8774/v2.1"
+              create_endpoint nova public "${NOVA_URL}"
+              create_endpoint nova internal "${NOVA_URL}"
+
+              PLACEMENT_URL="http://placement-nova-basic.openstack.svc:8778"
+              create_endpoint placement public "${PLACEMENT_URL}"
+              create_endpoint placement internal "${PLACEMENT_URL}"
+
+              GLANCE_URL="http://glance-nova-basic.openstack.svc:9292"
+              create_endpoint glance public "${GLANCE_URL}"
+              create_endpoint glance internal "${GLANCE_URL}"
+
+              NEUTRON_URL="http://neutron-nova-basic.openstack.svc:9696"
+              create_endpoint neutron public "${NEUTRON_URL}"
+              create_endpoint neutron internal "${NEUTRON_URL}"
+
+              echo "OK: compute, placement, image and network services registered"
+              openstack endpoint list --format value -c "Service Name" -c Interface -c URL
