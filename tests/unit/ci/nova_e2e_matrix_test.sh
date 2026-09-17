@@ -496,6 +496,53 @@ test_nova_leg_deploys_the_sibling_operators() {
   rm -f "$script" "$output"
 }
 
+test_nova_leg_narrows_parallelism_and_budget() {
+  echo "Test: the nova e2e leg runs two suites at a time inside a 90-minute wall"
+
+  # A Nova suite of #1039 stands a Keystone, an OVNCentral, a Neutron, a
+  # Placement, a Glance and the five Nova workloads on one kind node, so at the
+  # shared config's parallel: 4 the Pods stay Pending on "Insufficient cpu" and
+  # the CRs never reach Ready. Read the condition together with its body, so a
+  # nova arm on a branch that no longer narrows anything does not pass.
+  #
+  # The wall covers what the leg does before its first suite: the kind broker,
+  # fourteen sibling image loads and five sibling deploys. It is an expression
+  # on the matrix operator rather than a higher flat number, so only the nova
+  # leg spends the extra runner time and no other leg's wall moves with it.
+  local narrowing
+  narrowing=$(job_step e2e-operator "Run E2E tests" | awk '
+    /^ *parallel=\(\)$/ { in_block = 1; next }
+    in_block && /^ *fi$/ { exit }
+    in_block { print }
+  ')
+
+  assert_not_empty "the chainsaw run step narrows the parallelism" "$narrowing"
+  assert_contains "the nova leg is one of the narrowed ones" "$narrowing" \
+    '[ "${OPERATOR}" = "nova" ]'
+  assert_contains "it runs two suites at a time" "$narrowing" \
+    "parallel=(--parallel 2)"
+
+  # The arm was added, not swapped in: both legs that were narrowed before it
+  # still are.
+  assert_contains "the neutron narrowing is kept" "$narrowing" \
+    '[ "${OPERATOR}" = "neutron" ]'
+  assert_contains "the cinder narrowing is kept" "$narrowing" \
+    '[ "${OPERATOR}" = "cinder" ]'
+
+  local job
+  job=$(job_block e2e-operator)
+  assert_contains "the nova leg gets 90 minutes and the others keep 68" "$job" \
+    "timeout-minutes: \${{ matrix.operator == 'nova' && 90 || 68 }}"
+  assert_not_contains "no flat wall is left beside the expression" "$job" \
+    "timeout-minutes: 68"
+
+  # runs-on on the line above already branches on the same matrix key, which is
+  # the precedent this one follows. Asserting it here breaks both together if
+  # the axis is ever renamed.
+  assert_contains "runs-on branches on the same matrix key" "$job" \
+    "runs-on: \${{ matrix.operator == 'keystone'"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -512,6 +559,7 @@ test_nova_image_filter_is_wired
 test_nova_e2e_filter_is_wired
 test_nova_leg_opts_into_the_broker
 test_nova_leg_deploys_the_sibling_operators
+test_nova_leg_narrows_parallelism_and_budget
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
