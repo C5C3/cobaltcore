@@ -1,0 +1,159 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Brownfield MariaDB Database/User/Grant pre-creation for the PSS-restricted
+# E2E test.
+#
+# The Nova CR lives in the labelled `nova-pss` namespace, but
+# `Database.ClusterRef` / `Cache.ClusterRef` are `LocalObjectReference` and the
+# shared provisioning flow (`IsClusterReady` in
+# internal/common/database/flow.go) only looks up MariaDB CRs in the Nova CR's
+# own namespace: cross-namespace lookup is not supported. To reach the cluster's
+# existing `openstack/openstack-db` without copying MariaDB CRs into the test
+# namespace, the test uses brownfield mode (host + cache.servers) and pre-creates
+# the Database/User/Grant CRs here, in `openstack`.
+#
+# A Nova needs three schemas rather than one. spec.apiDatabase names nova_pss_api,
+# spec.database names nova_pss, and the operator derives nova_pss_cell0 from the
+# second. In managed mode reconcileDatabase would create all three; in brownfield
+# mode it creates nothing, so all three are pre-created here.
+#
+# The two User CRs manage the canonical `nova_api` and `nova` MariaDB users
+# against the existing `openstack/nova-api-db` and `openstack/nova-db` Secrets
+# (synced from OpenBao by the cluster's shims), so each User's SET PASSWORD lands
+# the same value the PSS-namespace Secret carries (copied from the same
+# standalone OpenBao path): no race. The two users are the ones
+# deploy/openbao/bootstrap/write-bootstrap-secrets.sh seeds for a standalone
+# Nova. `cleanupPolicy: Skip` keeps both alive when this test's User CRs are
+# deleted, so a sibling test still managing the same canonical user is not
+# stranded mid-flight.
+#
+# All resource names are prefixed `nova-pss-` and the schemas carry the `pss`
+# infix so this fixture cannot collide with sibling tests. The cell user holds
+# grants on both cell schemas, which is how the operator grants them in managed
+# mode: cell0 travels as an additional schema on the cell block's user.
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Database
+metadata:
+  name: nova-pss-api-db
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  characterSet: utf8
+  collate: utf8_general_ci
+  name: nova_pss_api
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Database
+metadata:
+  name: nova-pss-db
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  characterSet: utf8
+  collate: utf8_general_ci
+  name: nova_pss
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Database
+metadata:
+  name: nova-pss-cell0-db
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  characterSet: utf8
+  collate: utf8_general_ci
+  name: nova_pss_cell0
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: User
+metadata:
+  name: nova-pss-api-user
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  name: nova_api
+  # What novaMaxUserConnections (reconcile_database.go) sizes for the API block
+  # on the one-replica default topology of 01-nova-cr.yaml. A
+  # brownfield user is not the operator's to size, and the CRD default of 10
+  # is below the fleet's steady state: the API and metadata workers then fail
+  # their pool with MySQL error 1226 and never answer a probe.
+  maxUserConnections: 36
+  passwordSecretKeyRef:
+    name: nova-api-db
+    key: password
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: User
+metadata:
+  name: nova-pss-user
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  name: nova
+  # What novaMaxUserConnections (reconcile_database.go) sizes for the cell block, which adds the console proxy
+  # on the one-replica default topology of 01-nova-cr.yaml. A
+  # brownfield user is not the operator's to size, and the CRD default of 10
+  # is below the fleet's steady state: the API and metadata workers then fail
+  # their pool with MySQL error 1226 and never answer a probe.
+  maxUserConnections: 40
+  passwordSecretKeyRef:
+    name: nova-db
+    key: password
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Grant
+metadata:
+  name: nova-pss-api-grant
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  privileges:
+  - "ALL PRIVILEGES"
+  database: nova_pss_api
+  table: "*"
+  username: nova_api
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Grant
+metadata:
+  name: nova-pss-grant
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  privileges:
+  - "ALL PRIVILEGES"
+  database: nova_pss
+  table: "*"
+  username: nova
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Grant
+metadata:
+  name: nova-pss-cell0-grant
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  privileges:
+  - "ALL PRIVILEGES"
+  database: nova_pss_cell0
+  table: "*"
+  username: nova
