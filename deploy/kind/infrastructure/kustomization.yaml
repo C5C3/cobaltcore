@@ -41,6 +41,15 @@ resources:
   # TLS for the ninth Gateway listener (`https-cinder`) the Cinder
   # block-storage API is exposed through (deploy/kind/base/openstack-gateway.yaml).
   - cinder-nip-io-tls-certificate.yaml
+  # TLS for the tenth Gateway listener (`https-nova`) the Nova compute
+  # API is exposed through (deploy/kind/base/openstack-gateway.yaml).
+  - nova-nip-io-tls-certificate.yaml
+  # TLS for the eleventh Gateway listener (`https-nova-metadata`) the Nova
+  # metadata API is exposed through (deploy/kind/base/openstack-gateway.yaml).
+  - nova-metadata-nip-io-tls-certificate.yaml
+  # TLS for the twelfth Gateway listener (`https-nova-console`) the Nova
+  # console proxy is exposed through (deploy/kind/base/openstack-gateway.yaml).
+  - nova-console-nip-io-tls-certificate.yaml
   # kind-only: standalone Keystone CRs (Quick Start, keystone e2e/tempest/
   # chaos suites) reference the Secret "keystone-db"; ControlPlane-based
   # deployments use the operator-projected per-ControlPlane ExternalSecret
