@@ -1689,10 +1689,10 @@ openbao_bootstrap() {
 # Ready. This is the stage-(b) tenant-onboarding step (#439): managed-mode
 # Keystone draws engine-issued credentials from database/mariadb/creds/keystone-
 # <ns>-<cp>, which only exist after setup-database-tenant.sh configures the role.
-# setup-database-tenant.sh ALSO provisions the glance, placement, and barbican
-# engine connection+role pairs (database/mariadb/creds/<service>-<ns>) when the
-# ControlPlane declares those services on the shared managed database, so this
-# single call onboards every service tenant.
+# setup-database-tenant.sh ALSO provisions the engine connection+role pair of
+# every SERVICE_TENANTS row (database/mariadb/creds/<role>-<ns>; nova has two
+# rows, nova-api and nova-cell) whose service the ControlPlane declares on the
+# shared managed database, so this single call onboards every service tenant.
 #
 # Arguments:
 #   $1 — ControlPlane namespace
@@ -1709,8 +1709,8 @@ openbao_onboard_database_tenant() {
   # Wait on the MariaDB in EVERY namespace setup-database-tenant.sh will read a
   # root credential from, not just the ControlPlane's. Each service leg of that
   # script resolves its own service namespace and hard-exits when that namespace's
-  # MariaDB root Secret is missing, so a ControlPlane that places Keystone,
-  # Glance, Placement, or Barbican in a namespace of its own provisions a SECOND
+  # MariaDB root Secret is missing, so a ControlPlane that places Keystone or any
+  # SERVICE_TENANTS service in a namespace of its own provisions a SECOND
   # openstack-db there on an independent timeline. Waiting only on the
   # ControlPlane's namespace lets the Keystone leg succeed and the Glance leg
   # exit 1 — a partially applied onboarding, with the operator already primed to
@@ -1719,9 +1719,12 @@ openbao_onboard_database_tenant() {
   # The namespaces are resolved from the live CR with the same defaults the
   # operator projects (an unset namespace block means the ControlPlane's own) and
   # under the same conditions the script applies, so the wait set matches the read
-  # set exactly. The Glance leg in particular is SKIPPED for a dedicated glance
-  # database (Static-only, no engine role), which also has its own clusterRef name
-  # — waiting for the shared one in that namespace would block until timeout.
+  # set exactly. tests/unit/hack/deploy_infra_tenant_wait_set_test.sh pins the loop
+  # below against the spec-service column of SERVICE_TENANTS, so a service added
+  # to that table without a wait here fails the shell unit tests. The Glance leg
+  # in particular is SKIPPED for a dedicated glance database (Static-only, no
+  # engine role), which also has its own clusterRef name — waiting for the shared
+  # one in that namespace would block until timeout.
   #
   # Seeded with the ControlPlane's own namespace (the default every unset service
   # namespace resolves to), which also keeps the dedup test below from expanding
@@ -1729,17 +1732,25 @@ openbao_onboard_database_tenant() {
   local svc_ns_list=("${cp_ns}")
   local ns candidates=()
 
-  candidates+=("$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
-    -o 'jsonpath={.spec.services.keystone.namespace.name}' 2>/dev/null || true)")
+  # One read of the CR; a present block counts even when empty ({}), and a
+  # present dedicatedBackingServices.database, even empty, skips the service.
+  # An unreadable CR fails here, as setup-database-tenant.sh does: an empty spec
+  # would shrink the wait set to the ControlPlane's namespace and bring back the
+  # partial onboarding above, or time out on a MariaDB no CR will project.
+  local cp_json
+  if ! cp_json="$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" -o json)"; then
+    log "ERROR: ControlPlane '${cp_name}' not found in namespace '${cp_ns}' (or the cluster is unreachable); cannot resolve the MariaDB wait set."
+    exit 1
+  fi
+
+  candidates+=("$(jq -r '.spec.services.keystone.namespace.name // empty' <<<"${cp_json}")")
 
   local svc
-  for svc in glance placement barbican; do
-    if [[ -n "$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
-        -o "jsonpath={.spec.services.${svc}}" 2>/dev/null || true)" &&
-      -z "$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
-        -o "jsonpath={.spec.services.${svc}.dedicatedBackingServices.database}" 2>/dev/null || true)" ]]; then
-      candidates+=("$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
-        -o "jsonpath={.spec.services.${svc}.namespace.name}" 2>/dev/null || true)")
+  for svc in glance placement barbican neutron cinder nova; do
+    if jq -e --arg s "${svc}" \
+        '.spec.services[$s] != null and .spec.services[$s].dedicatedBackingServices.database == null' \
+        <<<"${cp_json}" >/dev/null; then
+      candidates+=("$(jq -r --arg s "${svc}" '.spec.services[$s].namespace.name // empty' <<<"${cp_json}")")
     fi
   done
 

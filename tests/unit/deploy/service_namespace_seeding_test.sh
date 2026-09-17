@@ -616,7 +616,7 @@ test_db_tenant_skips_cinder_with_a_dedicated_database() {
 # connection for a schema nothing will ever connect to, against a MariaDB that
 # need not even exist in that namespace.
 test_db_tenant_skips_undeclared_services() {
-  echo "Test: setup-database-tenant.sh skips glance, placement, barbican, neutron and cinder when none is declared"
+  echo "Test: setup-database-tenant.sh skips glance, placement, barbican, neutron, cinder and nova when none is declared"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -638,6 +638,8 @@ test_db_tenant_skips_undeclared_services() {
     "$output" "ControlPlane declares no spec.services.neutron"
   assert_contains "the undeclared cinder leg is skipped, loudly" \
     "$output" "ControlPlane declares no spec.services.cinder"
+  assert_contains "the undeclared nova legs are skipped, loudly" \
+    "$output" "ControlPlane declares no spec.services.nova"
   assert_not_contains "no glance engine role is written for an undeclared service" \
     "$output" "database/mariadb/roles/glance-"
   assert_not_contains "no placement engine role is written for an undeclared service" \
@@ -648,6 +650,8 @@ test_db_tenant_skips_undeclared_services() {
     "$output" "database/mariadb/roles/neutron-"
   assert_not_contains "no cinder engine role is written for an undeclared service" \
     "$output" "database/mariadb/roles/cinder-"
+  assert_not_contains "no nova engine role is written for an undeclared service" \
+    "$output" "database/mariadb/roles/nova-"
   assert_contains "keystone is still provisioned" \
     "$output" "database/mariadb/roles/keystone-openstack"
 }
