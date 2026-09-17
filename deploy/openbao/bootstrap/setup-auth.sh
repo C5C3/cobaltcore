@@ -323,6 +323,67 @@ main() {
     token_max_ttl=72h
   log "cinder-db role written."
 
+  # nova-api-db role on the management cluster's Kubernetes auth mount. It covers
+  # the Nova API database nova_api, the cell-independent half of Nova's schema
+  # split. The c5c3 operator's per-ControlPlane VaultDynamicSecret generator
+  # arrives with #1019 and authenticates with the "nova-api-db-creds"
+  # ServiceAccount to read short-lived DB credentials at
+  # database/mariadb/creds/nova-api-<namespace>.
+  # bound_service_account_namespaces="*" lets any ControlPlane namespace
+  # authenticate; the fixed SA name is what tells this role apart from
+  # keystone-db, glance-db, placement-db, barbican-db, neutron-db, cinder-db, and
+  # nova-cell-db (a nova-api-db-creds token can never read their creds paths),
+  # and the cross-tenant boundary is enforced by the nova-api-db-dynamic policy,
+  # which templates the readable creds path to the caller's OWN
+  # service_account_namespace (an exact match).
+  #
+  # Token TTLs are pinned to DB_CREDS_MAX_TTL (72h, setup-database-tenant.sh) for
+  # the same reason spelled out on the keystone-db role above: OpenBao revokes a
+  # dynamic-secret lease together with the token that minted it, so the token must
+  # outlive the lease or the issued DB credential dies early under a running Nova.
+  #
+  # The role is written unconditionally but stays dormant until a ControlPlane
+  # projects a Nova: no nova-api-db-creds ServiceAccount exists before then, so
+  # nothing authenticates against it. Pre-creating it (as the per-cluster ESO
+  # roles above are pre-created) gets the auth half of that onboarding out of the
+  # way.
+  #
+  # The ENGINE half is the "nova-api" row of SERVICE_TENANTS in
+  # setup-database-tenant.sh, which writes the database/mariadb connection+role
+  # pair behind database/mariadb/creds/nova-api-<ns>, the exact path
+  # nova-api-db-dynamic grants.
+  log "Writing nova-api-db role on kubernetes/management..."
+  bao_exec bao write "auth/kubernetes/management/role/nova-api-db" \
+    bound_service_account_names=nova-api-db-creds \
+    bound_service_account_namespaces="*" \
+    token_policies=nova-api-db-dynamic \
+    token_ttl=72h \
+    token_max_ttl=72h
+  log "nova-api-db role written."
+
+  # nova-cell-db role on the management cluster's Kubernetes auth mount, the cell
+  # half of the pair above: it covers the cell database nova together with its
+  # nova_cell0 schema, on the same terms as nova-api-db (fixed SA name, "*"
+  # namespaces, 72h token TTLs so the token outlives the lease, dormant until a
+  # ControlPlane projects a Nova). Its generator also arrives with #1019 and
+  # authenticates with the "nova-cell-db-creds" ServiceAccount to read
+  # database/mariadb/creds/nova-cell-<namespace>, which the nova-cell-db-dynamic
+  # policy templates to the caller's OWN service_account_namespace.
+  #
+  # The role is named nova-cell and not nova because the per-tenant engine role
+  # name is <role>-<namespace> and no role name may be a hyphen-prefix of
+  # another: a role nova in namespace api-x and a role nova-api in namespace x
+  # would both flatten to nova-api-x. The ENGINE half is the "nova-cell" row of
+  # SERVICE_TENANTS in setup-database-tenant.sh.
+  log "Writing nova-cell-db role on kubernetes/management..."
+  bao_exec bao write "auth/kubernetes/management/role/nova-cell-db" \
+    bound_service_account_names=nova-cell-db-creds \
+    bound_service_account_namespaces="*" \
+    token_policies=nova-cell-db-dynamic \
+    token_ttl=72h \
+    token_max_ttl=72h
+  log "nova-cell-db role written."
+
   # eso-tenant role on the management cluster's Kubernetes auth mount. This is
   # the per-ControlPlane ESO identity a namespaced SecretStore authenticates
   # with (created per tenant by setup-eso-tenant.sh with the "eso-tenant-auth"
