@@ -50,8 +50,14 @@
 # barbican-db ExternalSecret (openstack/barbican/{ns}/standalone/db), the
 # neutron-db ExternalSecret (openstack/neutron/{ns}/standalone/db), the
 # cinder-db ExternalSecret (openstack/cinder/{ns}/standalone/db), the
+# nova-db ExternalSecret (openstack/nova/{ns}/standalone/db), the nova-api-db
+# ExternalSecret (openstack/nova/{ns}/standalone/api-db), the
 # keystone-admin ExternalSecret (bootstrap/{ns}/{name}/admin), and the read-back
 # leg of every PushSecret below.
+#
+# Nova is the one service with two of those paths: its cell database and its API
+# database carry separate SQL users. Both sit under openstack/nova/{ns}, so the
+# single nova grant below covers them together.
 path "kv-v2/data/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/*" {
   capabilities = ["read"]
 }
@@ -73,6 +79,10 @@ path "kv-v2/data/openstack/neutron/{{identity.entity.aliases.KUBERNETES_MANAGEME
 }
 
 path "kv-v2/data/openstack/cinder/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/*" {
+  capabilities = ["read"]
+}
+
+path "kv-v2/data/openstack/nova/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/*" {
   capabilities = ["read"]
 }
 

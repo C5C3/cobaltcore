@@ -91,6 +91,14 @@ resources:
   # names (keystone-admin/keystone-db/mariadb-root-password), so it survives that
   # filter on the ControlPlane path.
   - cinder-db-externalsecret.yaml
+  # kind-only: standalone Nova CRs (the nova e2e suites) reference two Secrets,
+  # one per database block: "nova-db" through the Nova CR's database.secretRef
+  # for the cell database, and "nova-api-db" through apiDatabase.secretRef for
+  # the API database. Neither is one of the WITH_CONTROLPLANE shim-drop names
+  # (keystone-admin/keystone-db/mariadb-root-password), so both survive that
+  # filter on the ControlPlane path.
+  - nova-api-db-externalsecret.yaml
+  - nova-db-externalsecret.yaml
   - keystone-admin-externalsecret.yaml
   - mariadb-root-password-externalsecret.yaml
   # horizon-secret-key is the Django SECRET_KEY shim for standalone Horizon
