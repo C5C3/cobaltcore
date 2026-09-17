@@ -1,0 +1,97 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Registers the compute service this suite runs in the catalog of
+# keystone-nova-db-chaos, with its public and internal endpoint.
+# keystone-manage bootstrap only creates the identity service, so the rest has
+# to be added out-of-band.
+#
+# One service, not the four ../nova-placement-outage/ registers. No server is
+# ever booted here, so no Placement, Glance or Neutron runs beside the Nova and
+# nothing resolves a row for them.
+#
+# Both interfaces are written because two different clients read them: the
+# openstack CLI of 05-list-job.yaml resolves the public compute row, and nova's
+# own client sections pin valid_interfaces = internal
+# (operators/nova/internal/controller/reconcile_config.go).
+#
+# The Job runs before the Nova CR is applied. The catalog is what a service
+# reads at its first request, and a row written after a pod started is only
+# picked up once the token middleware's catalog cache expires.
+#
+# It authenticates as the bootstrap admin (keystone-admin Secret) and every
+# step is idempotent, so a Job retry converges rather than erroring on a
+# duplicate.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-db-chaos-catalog-setup
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-db-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # Service create is guarded by a name-list grep rather than by a
+              # show: `openstack service show` of a missing resource can exit 0
+              # on this image, so a show-guard would skip the create.
+              create_service() {
+                name="$1"
+                type="$2"
+                description="$3"
+                if ! openstack service list --format value -c Name | grep -qx "${name}"; then
+                  openstack service create --name "${name}" \
+                    --description "${description}" "${type}"
+                fi
+              }
+
+              # Endpoints are guarded by listing the service's existing
+              # endpoints for the interface and matching the exact URL as a
+              # fixed string, so the dotted FQDN is not read as a regex.
+              create_endpoint() {
+                service="$1"
+                interface="$2"
+                url="$3"
+                if ! openstack endpoint list --service "${service}" --interface "${interface}" \
+                     --format value -c URL | grep -qxF "${url}"; then
+                  openstack endpoint create --region RegionOne "${service}" "${interface}" "${url}"
+                fi
+              }
+
+              create_service nova compute "OpenStack Compute"
+
+              # The compute URL carries the version prefix the client appends
+              # its paths to.
+              NOVA_URL="http://nova-db-chaos.openstack.svc:8774/v2.1"
+              create_endpoint nova public "${NOVA_URL}"
+              create_endpoint nova internal "${NOVA_URL}"
+
+              echo "OK: compute service registered"
+              openstack endpoint list --format value -c "Service Name" -c Interface -c URL

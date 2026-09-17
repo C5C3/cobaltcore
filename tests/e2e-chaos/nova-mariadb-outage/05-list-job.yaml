@@ -1,0 +1,129 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The reference read this suite is built around: an authenticated server list
+# that answers with an empty array.
+#
+# A list of zero servers is not a trivial request. nova-api resolves the token,
+# reads the instance mappings out of the API database and queries the cell it
+# is pointed at, so a reply of [] says both schemas answered. Nothing else in
+# this suite creates a server, which is what keeps the expected answer fixed.
+#
+# The same Job runs twice: once before 04-networkchaos.yaml as the baseline,
+# and once after the partition is lifted as the recovery check. It is a pure
+# read with no state of its own, so the second run needs nothing but a delete
+# of the completed object (a Job's pod template is immutable).
+#
+# A connection error or a 5xx is retried for two minutes. The first run waits
+# out an API pod that has just been rolled, the second waits out the database
+# connections nova re-establishes after the drop rule goes away. A 4xx is fatal
+# instead: the suite is about the database, and a 401 from a broken auth
+# pipeline or a 404 from a missing catalog row would otherwise be retried until
+# the deadline and reported as an outage.
+#
+# backoffLimit is 0 because the script carries its own deadline. A Job retry
+# would only restart the same poll and take the log that says why with it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-db-chaos-list
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: list
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-db-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # openstacksdk rather than `openstack server list`: the CLI builds
+              # an image client before it lists anything (python-openstackclient
+              # 8.2.0, ListServer.take_action), and the catalog of this suite
+              # has no image row, so the command ends in "public endpoint for
+              # image service not found" without having sent nova a request.
+              # The call below is the same GET /servers/detail and nothing
+              # else. A status is printed the way the CLI prints it,
+              # "(HTTP <code>)", which is what the retry decision reads.
+              list_servers() {
+                python3 -c '
+              import json, sys
+              import openstack
+              from openstack import exceptions
+              try:
+                  conn = openstack.connect()
+                  print(json.dumps([s.id for s in conn.compute.servers()]))
+              except exceptions.HttpException as e:
+                  print("%s (HTTP %s)" % (e, e.status_code))
+                  sys.exit(1)
+              except Exception as e:
+                  print("%s: %s" % (type(e).__name__, e))
+                  sys.exit(1)
+              '
+              }
+
+              DEADLINE=$(( $(date +%s) + 120 ))
+
+              while true; do
+                # Both streams are captured: the answer goes to stdout and a
+                # diagnosis may go to either, and the retry decision below
+                # reads the diagnosis.
+                set +e
+                OUT="$(list_servers 2>&1)"
+                rc=$?
+                set -e
+
+                if [ "${rc}" -eq 0 ]; then
+                  COUNT="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<<"${OUT}")"
+                  if [ "${COUNT}" = "0" ]; then
+                    echo "OK: the compute API listed zero servers"
+                    echo LIST-OK
+                    exit 0
+                  fi
+                  echo "FAIL: the compute API listed ${COUNT} servers, want 0"
+                  echo "${OUT}"
+                  exit 1
+                fi
+
+                # list_servers prints the status it got as "(HTTP <code>)". A
+                # client error is not what a database outage looks like, so it
+                # ends the run instead of being retried.
+                if grep -qE '\(HTTP 4[0-9][0-9]\)' <<<"${OUT}"; then
+                  echo "FAIL: the compute API answered a client error, which does not report a database"
+                  echo "${OUT}"
+                  exit 1
+                fi
+
+                if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+                  echo "FAIL: server list did not answer an empty list within 120s"
+                  echo "${OUT}"
+                  exit 1
+                fi
+
+                echo "retrying after rc=${rc}: ${OUT}"
+                sleep 5
+              done

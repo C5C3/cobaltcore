@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Nova CR for the database-outage chaos test (2025.2 release).
+#
+# The light fixture tier, the one ../../e2e/nova/healthcheck/ uses: no
+# Placement, no Neutron and no Glance run beside it, and no compute registers.
+# A Nova reaches Ready with only Secrets, its databases and the bus, because
+# the API and metadata probes GET the API root and the scheduler and conductor
+# probes read the broker socket. That is exactly the deployment this suite
+# wants: a server list of zero rows reads the API database and nothing else, so
+# a failing list under the partition has one possible cause.
+#
+# The two schemas nova_db_chaos_api and nova_db_chaos live on the openstack-db
+# MariaDB cluster (cell0 is derived as nova_db_chaos_cell0), which is the
+# cluster 04-networkchaos.yaml partitions away from the API pods.
+#
+# The bus is the per-suite vhost ../../e2e/cinder/broker-vhost.sh writes into
+# nova-db-chaos-messaging on the kind-only shared-rabbitmq. Managed messaging
+# is not usable here: the URL it renders always names the root vhost, and
+# nova's RPC topics are named after the service, so two suites there would
+# share the scheduler and conductor queues.
+#
+# One API replica. The suite reads what one API pod answers under the fault,
+# and a second replica would let a request land on a pod the assertion is not
+# about. The scheduler, the conductor, the metadata API and the console proxy
+# take the webhook's defaults; the partition leaves all four alone, which is
+# how the suite reads the "nothing else" half of its claim.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-db-chaos
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  apiDatabase:
+    clusterRef:
+      name: openstack-db
+    database: nova_db_chaos_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: openstack-db
+    database: nova_db_chaos
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: nova-db-chaos-messaging
+  keystoneEndpoint: http://keystone-nova-db-chaos.openstack.svc.cluster.local:5000/v3
+  region: RegionOne
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-db-chaos-metadata-secret

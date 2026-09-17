@@ -1,0 +1,319 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a database outage under the Nova API.
+# The partition severs nova-api <-> MariaDB traffic on the MariaDB side, which
+# is the side that catches the ClusterIP-routed connection the API actually
+# uses (see 04-networkchaos.yaml for why a client-side rule would be a no-op).
+# The claim is that the outage fails requests closed while the process stays
+# healthy:
+#
+#   - baseline: an authenticated server list answers with an empty array, which
+#     reads the API database and the cell it points at
+#   - under the partition: GET / stays 200 and a Keystone token is still
+#     obtainable, while one GET /v2.1/servers fails the way a database outage
+#     fails, with a 5xx or a bounded timeout and never with a 4xx or a listing
+#   - under the partition: DeploymentReady, NovaAPIReady, SchedulerReady and
+#     ConductorReady all stay True. Both API probes GET the API root, which
+#     renders the version document without touching a table, so the outage is
+#     invisible to readiness. That is the contract: the pod stays pooled and
+#     answers, and only the database-backed requests fail
+#   - after the partition is lifted: the same list answers [] again within two
+#     minutes, with no pod restart and no operator action
+#
+# There is no Placement, no Neutron, no Glance and no compute here. A list of
+# zero servers is the smallest request that reaches both nova schemas, and a
+# deployment with nothing else in it leaves one possible cause for a list that
+# fails.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-mariadb-outage
+spec:
+  namespace: openstack
+  timeouts:
+    # The suite default. The Nova bring-up in step 3 carries 8m of its own; the
+    # rest read a deployment that is already up, and keeping the default at 5m
+    # is what holds the partition phase inside the 600s the NetworkChaos runs
+    # for.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost and bring up Keystone ──────────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../e2e/cinder/broker-vhost.sh. The step cleanup
+  # runs at the end of the test.
+  #
+  # Keystone goes up in the same step because the catalog Job and the Nova both
+  # authenticate against it.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create nova-db-chaos nova-db-chaos-messaging openstack
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-db-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &db-dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos nova-db-chaos --cr-kind=nova --dep-label=app.kubernetes.io/name=mariadb --dep-ns=openstack --log-label=app.kubernetes.io/instance=nova-db-chaos
+    - script:
+        timeout: 1m
+        content: kubectl get networkchaos -n "$NAMESPACE" -o yaml 2>&1 || true
+    - script:
+        timeout: 1m
+        content: kubectl get keystone keystone-nova-db-chaos -n "$NAMESPACE" -o yaml 2>&1 || true
+    # The three Jobs. diagnostics.sh reads the pods of the Nova itself; these
+    # are the ones outside that label.
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Job logs ==="
+          for job in nova-db-chaos-catalog-setup nova-db-chaos-list nova-db-chaos-failclosed; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete nova-db-chaos || true
+  # ── Step 2: Register the compute service in the catalog ─────────────────
+  # The Job is deleted first because a Job's pod template is immutable, so a
+  # re-run against a leftover object would fail on the update rather than on
+  # anything the suite is testing.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-db-chaos-catalog-setup -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 01-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/nova-db-chaos-catalog-setup \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-db-chaos-catalog-setup 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-db-chaos-catalog-setup -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-db-chaos-catalog-setup
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *db-dump
+  # ── Step 3: Apply the Nova CR and assert its conditions ─────────────────
+  # The three per-workload conditions are named beside the aggregate because
+  # they are what step 6 reads again under the partition. The rest of the
+  # condition set is what ../../e2e/nova/basic-deployment/ pins; repeating it
+  # here would say nothing this suite can say.
+  - try:
+    - apply:
+        file: 02-metadata-secret.yaml
+    - apply:
+        file: 03-nova-cr.yaml
+    - assert:
+        # 8m: two schema migrations, a cell mapping and five workloads. The
+        # same bring-up took 6m55s in ../nova-broker-outage/ on 2026-09-19.
+        timeout: 8m
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-db-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *db-dump
+  # ── Step 4: Baseline — the server list answers an empty array ───────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-db-chaos-list -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 05-list-job.yaml
+          kubectl wait --for=condition=complete job/nova-db-chaos-list \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-db-chaos-list 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-db-chaos-list -o wide
+            exit 1
+          }
+          # The log is fetched once and asserted on the captured text: a
+          # `kubectl logs | grep -q` pipeline fails under pipefail exactly when
+          # it matches, because grep closes the pipe while kubectl is still
+          # writing.
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-db-chaos-list)"
+          echo "$LOGS"
+          grep -q 'LIST-OK' <<<"$LOGS"
+    catch: *db-dump
+  # ── Step 5: Inject NetworkChaos to partition MariaDB traffic ────────────
+  - try:
+    - apply:
+        file: 04-networkchaos.yaml
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          # `kubectl wait --for=condition=AllInjected` instead of a chainsaw
+          # resource assert: NetworkChaos.status.conditions is a fixed 4-item
+          # list (Selected/AllInjected/AllRecovered/Paused) and chainsaw's
+          # list-merge rejects a shorter expected slice with "lengths of slices
+          # don't match". Asserting the negative conditions instead would be
+          # worse than verbose: chaos-mesh writes ALL four False before the
+          # selector has run, so a Selected=False assertion passes on an
+          # experiment that never injected anything.
+          kubectl wait networkchaos/partition-mariadb-nova -n "$NAMESPACE" \
+            --for=condition=AllInjected --timeout=60s
+    catch: *db-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 04-networkchaos.yaml --ignore-not-found
+          echo "OK: the MariaDB partition is lifted"
+  # ── Step 6: Under the partition — the read fails, the process holds ─────
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-db-chaos-failclosed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 06-failclosed-job.yaml
+          kubectl wait --for=condition=complete job/nova-db-chaos-failclosed \
+            -n "$NAMESPACE" --timeout=4m || {
+            kubectl logs -n "$NAMESPACE" job/nova-db-chaos-failclosed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-db-chaos-failclosed -o wide
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-db-chaos-failclosed)"
+          echo "$LOGS"
+          grep -q 'FAILCLOSED-OK' <<<"$LOGS"
+    # What survived the outage. The API keeps its ready container because both
+    # its probes GET the version document, and the other three workloads were
+    # never inside the partition at all.
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-db-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+    catch: *db-dump
+  # ── Step 7: Delete NetworkChaos to lift the partition ───────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: partition-mariadb-nova
+          namespace: openstack
+    catch: *db-dump
+  # ── Step 8: Recovery — the same list answers [] again ───────────────────
+  # The same Job as step 4, which is what makes this a comparison rather than a
+  # new assertion: the read that worked before the fault works after it, inside
+  # the 120 seconds the script polls for, with no pod restart and no operator
+  # action in between.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-db-chaos-list -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 05-list-job.yaml
+          kubectl wait --for=condition=complete job/nova-db-chaos-list \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-db-chaos-list 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-db-chaos-list -o wide
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-db-chaos-list)"
+          echo "$LOGS"
+          grep -q 'LIST-OK' <<<"$LOGS"
+          echo "OK: the compute API reads its databases again"
+    catch: *db-dump
+  # ── Step 9: Tear the deployment down ────────────────────────────────────
+  # Chainsaw's own cleanup deletes what the suite applied, under the 120s the
+  # chaos config allows, and the vhost goes in step 1's cleanup. Waiting out
+  # five workloads does not fit that budget, so the suite does it here. The
+  # Jobs are deleted best-effort: a suite that already failed must still reach
+  # the CR delete.
+  - try:
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          kubectl delete job -n "$NAMESPACE" --ignore-not-found \
+            nova-db-chaos-catalog-setup nova-db-chaos-list nova-db-chaos-failclosed || true
+
+          kubectl delete nova nova-db-chaos -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=nova-db-chaos -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a nova pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-db-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Nova CR and its pods are gone"
+    catch: *db-dump
