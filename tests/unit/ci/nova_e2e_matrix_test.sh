@@ -18,10 +18,10 @@
 # charts do, so every helm-validate scenario has to render.
 #
 # The assertions this file does not carry yet are the ones whose wiring is not
-# in ci.yaml yet: the image_nova, tests_e2e_nova and tempest_nova paths filters,
-# the e2e suites beyond the invalid-cr rejection corpus, the tempest legs, the
-# chaos suites and the ControlPlane leg. They arrive with #1018 and #1019 and
-# belong here once that wiring exists.
+# in ci.yaml yet: the tempest_nova paths filter and the tempest legs (#1040),
+# the e2e suites beyond the invalid-cr rejection corpus and the chaos leg
+# (#1039), and the ControlPlane leg (#1019). They belong here once that wiring
+# exists.
 #
 # Usage: bash tests/unit/ci/nova_e2e_matrix_test.sh
 
@@ -223,6 +223,73 @@ test_a_keystone_only_change_produces_no_nova_leg() {
   assert_not_contains "and no nova leg" "$matrix" '"nova"'
 }
 
+test_nova_image_filter_is_wired() {
+  echo "Test: an images/nova change reaches changed-services"
+
+  # changed-services is the list build-e2e-images rebuilds from source. An
+  # image edit missing from it leaves the nova leg loading whatever main last
+  # published, so the suites pass against the old image and the change under
+  # review is never run. patches/nova/ belongs in the same filter:
+  # hack/ci-build-service-image.sh applies patches/<op>/<release>/*.patch into
+  # the source it builds, so a patch edited on its own changes that image.
+  assert_filter_is_wired image_nova changed-services
+
+  local block
+  block=$(filter_block image_nova)
+  assert_contains "the image build context is covered" "$block" "images/nova/**"
+  assert_contains "the source patches are covered" "$block" "patches/nova/**"
+
+  assert_eq "an image change rebuilds nova and nothing else" \
+    'changed-services=["nova"]' \
+    "$(resolve_output changed-services refs/heads/main "$ALL_OPS" \
+      FILTER_image_nova=true)"
+
+  # The rebuild is what schedules the leg here: the operator's own Go gates stay
+  # shut, so the image is the only thing that puts nova on the runner.
+  local outputs
+  outputs=$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_image_nova=true)
+  assert_contains "the rebuilt image schedules the nova leg" "$outputs" \
+    'e2e-operators={"operator":["nova"]}'
+  assert_contains "no Go job is asked for" "$outputs" "go=false"
+  assert_contains "and no operator counts as changed" "$outputs" \
+    "changed-operators=[]"
+
+  # And it still gates: a run that matched no filter rebuilds nothing.
+  assert_eq "an untouched image is not rebuilt" 'changed-services=[]' \
+    "$(resolve_output changed-services refs/heads/main "$ALL_OPS")"
+}
+
+test_nova_e2e_filter_is_wired() {
+  echo "Test: an edit to the nova suites alone runs the nova leg"
+
+  # The suites sit in two directories and the e2e-operator run step probes for
+  # the -operator one. tests/e2e/nova-operator/ arrives with #1039's
+  # scrape-target suite; the filter names it ahead of that, so the first suite
+  # landing there schedules the leg instead of none.
+  assert_filter_is_wired tests_e2e_nova e2e-operators
+
+  local block
+  block=$(filter_block tests_e2e_nova)
+  assert_contains "the per-CR suites are covered" "$block" "tests/e2e/nova/**"
+  assert_contains "the operator-level suites are covered" "$block" \
+    "tests/e2e/nova-operator/**"
+
+  local outputs
+  outputs=$(resolve_outputs refs/heads/main "$ALL_OPS" \
+    FILTER_tests_e2e_nova=true)
+  assert_contains "a suite edit runs the nova leg" "$outputs" \
+    'e2e-operators={"operator":["nova"]}'
+  assert_contains "and spends no runner on the Go matrices" "$outputs" \
+    'test-targets={"target":["__none__"]}'
+
+  # That leg and no other, in both directions: a sibling's suite edit schedules
+  # its own leg alone and leaves nova out.
+  assert_eq "a glance suite edit runs the glance leg alone" \
+    'e2e-operators={"operator":["glance"]}' \
+    "$(resolve_output e2e-operators refs/heads/main "$ALL_OPS" \
+      FILTER_tests_e2e_glance=true)"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -235,6 +302,8 @@ test_helm_validate_renders_the_nova_chart
 test_go_matrices_list_nova
 test_cleanup_matrices_cover_the_nova_images
 test_a_keystone_only_change_produces_no_nova_leg
+test_nova_image_filter_is_wired
+test_nova_e2e_filter_is_wired
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

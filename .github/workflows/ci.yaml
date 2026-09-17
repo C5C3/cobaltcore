@@ -154,6 +154,9 @@ jobs:
             image_cinder:
               - 'images/cinder/**'
               - 'patches/cinder/**'
+            image_nova:
+              - 'images/nova/**'
+              - 'patches/nova/**'
             # ovn ships the OVS/OVN daemons the CRs project and the rclone
             # shifter the OVNCentral backup CronJob uploads with. Neither is a
             # per-release service image, so they steer the ovn e2e leg rather
@@ -210,7 +213,7 @@ jobs:
               - 'tests/tempest/cinder-*/**'
             # ---------------------------------------------------------------
             # Per-operator e2e suites. Editing one operator's suite runs that
-            # operator's leg, not all eight.
+            # operator's leg, not the other nine.
             # ---------------------------------------------------------------
             tests_e2e_keystone:
               - 'tests/e2e/keystone/**'
@@ -236,6 +239,9 @@ jobs:
             tests_e2e_cinder:
               - 'tests/e2e/cinder/**'
               - 'tests/e2e/cinder-operator/**'
+            tests_e2e_nova:
+              - 'tests/e2e/nova/**'
+              - 'tests/e2e/nova-operator/**'
             # ---------------------------------------------------------------
             # Suites that live in a job of their own. Each filter names exactly
             # the suite its job runs, so an edit schedules that job and no
@@ -378,6 +384,7 @@ jobs:
           FILTER_image_barbican: ${{ steps.filter.outputs.image_barbican }}
           FILTER_image_neutron: ${{ steps.filter.outputs.image_neutron }}
           FILTER_image_cinder: ${{ steps.filter.outputs.image_cinder }}
+          FILTER_image_nova: ${{ steps.filter.outputs.image_nova }}
           FILTER_image_ovn: ${{ steps.filter.outputs.image_ovn }}
           FILTER_image_proxy: ${{ steps.filter.outputs.image_proxy }}
           FILTER_image_tempest: ${{ steps.filter.outputs.image_tempest }}
@@ -398,6 +405,7 @@ jobs:
           FILTER_tests_e2e_ovn: ${{ steps.filter.outputs.tests_e2e_ovn }}
           FILTER_tests_e2e_neutron: ${{ steps.filter.outputs.tests_e2e_neutron }}
           FILTER_tests_e2e_cinder: ${{ steps.filter.outputs.tests_e2e_cinder }}
+          FILTER_tests_e2e_nova: ${{ steps.filter.outputs.tests_e2e_nova }}
           FILTER_tests_controlplane: ${{ steps.filter.outputs.tests_controlplane }}
           FILTER_tests_controlplane_sso: ${{ steps.filter.outputs.tests_controlplane_sso }}
           FILTER_tests_external_keystone: ${{ steps.filter.outputs.tests_external_keystone }}
