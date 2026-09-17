@@ -582,8 +582,13 @@ test_nova_leg_dumps_the_siblings() {
     "for op in keystone placement glance ovn neutron; do"
   # The step has no OPERATOR in its env, so a bare call would fall back to
   # OPERATOR="" and print the infrastructure section alone, five times.
+  # OPERATOR_ONLY on every pass: the infrastructure block and the openstack Job
+  # and pod logs do not change with OPERATOR, and the first dump already
+  # emitted them. Without it this step dumps them five more times, which buries
+  # the operator evidence it exists for and spends the grace window the cluster
+  # delete below needs when the job wall cancels the run.
   assert_contains "each pass hands its sibling to the dump script" "$dump" \
-    'OPERATOR="${op}" hack/ci-dump-diagnostics.sh'
+    'OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh'
 
   # The neutron leg's dump was not widened: on the nova leg the loop above is
   # what covers ovn-system, and the first dump still reads the matrix operator.
@@ -664,6 +669,185 @@ test_nova_leg_loads_the_tempest_image() {
   rm -f "$script" "$output"
 }
 
+test_chaos_nova_leg_runs_the_nova_suites() {
+  echo "Test: the e2e-chaos nova leg runs all three nova outage suites"
+
+  # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
+  # flags are no-ops in v0.2.14), so a suite missing from the list is
+  # lint-checked and never applied to a cluster. The images, the two opt-ins
+  # and the three operator deploys are the rest of what the suites need: kind
+  # pulls nothing the run did not load, and a CR whose operator never deployed
+  # sits without status until the suite times out.
+  local entry
+  entry=$(e2e_chaos_matrix_entry nova)
+
+  assert_not_empty "the matrix carries a nova leg" "$entry"
+  assert_contains "it runs on the self-hosted runners" "$entry" \
+    "runner: self-hosted"
+  assert_contains "it runs the broker outage suite" "$entry" \
+    "tests/e2e-chaos/nova-broker-outage"
+  assert_contains "it runs the MariaDB outage suite" "$entry" \
+    "tests/e2e-chaos/nova-mariadb-outage"
+  assert_contains "it runs the placement outage suite" "$entry" \
+    "tests/e2e-chaos/nova-placement-outage"
+
+  # The health check comes first, so a Chaos Mesh that never answers is read
+  # off one short suite instead of three that each stand a six-service stack up
+  # before their fault fails to inject.
+  local health_at first_outage_at
+  health_at=$(printf '%s\n' "$entry" |
+    grep -nF "tests/e2e/infrastructure/chaos-mesh-health" | head -1 | cut -d: -f1)
+  first_outage_at=$(printf '%s\n' "$entry" |
+    grep -nF "tests/e2e-chaos/nova-broker-outage" | head -1 | cut -d: -f1)
+  assert_not_empty "the leg health-checks the chaos-mesh install" "$health_at"
+  assert_gte "and does it before the first outage suite" \
+    "$first_outage_at" "$health_at"
+
+  # All three faults are NetworkChaos partitions, so the leg carries the same
+  # sch_netem/ip_set dependency that keeps the network leg non-blocking. The
+  # whole expression is read, not the nova arm alone: the other two legs stay
+  # where they were.
+  local job
+  job=$(job_block e2e-chaos)
+  assert_contains "the nova leg is named non-blocking beside the other two" \
+    "$job" \
+    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' }}"
+
+  # Seven refs on top of the keystone stack every non-ovn leg loads and the OVN
+  # pair the `!= 'pod'` entries already cover here.
+  local load kind_load ref
+  load=$(job_step e2e-chaos "Load E2E images")
+  kind_load=$(job_step e2e-chaos "Load nova leg images into kind")
+  assert_not_empty "the leg loads its own images onto the node" "$kind_load"
+  assert_contains "that load runs on the nova leg alone" "$kind_load" \
+    "if: matrix.suite == 'nova'"
+  for ref in placement-operator:dev placement:2025.2 neutron-operator:dev \
+    neutron:2025.2 nova-operator:dev nova:2025.2 tempest:2025.2; do
+    # Pulled from GHCR ...
+    assert_contains "the leg pulls ${ref}" "$load" \
+      "matrix.suite == 'nova' && format('{0}/${ref}', env.IMAGE_PREFIX)"
+    # ... and handed to the kind node, which the per-leg steps above do not do
+    # for this leg: the placement pair is gated on pod, the neutron pair on
+    # network.
+    assert_contains "and ${ref} reaches the kind node" "$kind_load" \
+      "kind load docker-image \${{ env.IMAGE_PREFIX }}/${ref}"
+  done
+
+  # nova-mariadb-outage and nova-placement-outage take a vhost on the shared
+  # broker (nova-broker-outage brings its own RabbitmqCluster, the one its
+  # fault severs), so the leg asks deploy-infra.sh for it. The NFS export is
+  # not widened: no nova suite mounts a volume.
+  local setup
+  setup=$(job_step e2e-chaos "Setup E2E infrastructure")
+  assert_contains "the nova leg opts into the shared broker" "$setup" \
+    "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova') && 'true' || '' }}"
+  assert_contains "the NFS export stays network-only" "$setup" \
+    "WITH_NFS: \${{ matrix.suite == 'network' && 'true' || '' }}"
+
+  # Three deploys on top of the keystone stack and the ovn-operator the
+  # `!= 'pod'` step installs here already. The first two names carry a
+  # "(nova leg)" suffix: job_step returns the first step of an exact name, and
+  # the network leg's placement and neutron steps are pinned by theirs, so a
+  # second step under either name would be invisible to every assertion in this
+  # directory.
+  local spec name op ns deploy
+  for spec in \
+    "Deploy placement operator (nova leg)|placement|placement-system" \
+    "Deploy neutron operator (nova leg)|neutron|neutron-system" \
+    "Deploy nova operator|nova|nova-system"; do
+    IFS='|' read -r name op ns <<<"$spec"
+    deploy=$(job_step e2e-chaos "$name")
+    assert_not_empty "the ${op}-operator is deployed" "$deploy"
+    # The whole condition, not a substring of it: an extra `|| always()` would
+    # install this operator on all four legs.
+    assert_eq "the ${op} deploy runs on the nova leg alone" \
+      "if: matrix.suite == 'nova'" \
+      "$(grep -E '^ *if:' <<<"$deploy" | sed 's/^ *//')"
+    assert_contains "it goes through the shared deploy script" "$deploy" \
+      "run: hack/ci-deploy-operator.sh"
+    assert_contains "it deploys the ${op} operator" "$deploy" "OPERATOR: ${op}"
+    assert_contains "it uses the run-tagged ${op}-operator image" "$deploy" \
+      "IMAGE_PREFIX }}/${op}-operator"
+    assert_contains "it lands in its own Namespace" "$deploy" "NAMESPACE: ${ns}"
+  done
+
+  # Order is the load-bearing part: every suite's Nova resolves a Keystone
+  # endpoint, a Placement and a Neutron, that Neutron reaches Ready only behind
+  # a live OVNCentral, and none of them is reconciled by an operator that has
+  # not been installed yet. The image load comes before the infrastructure step
+  # for the same reason the other legs' do: deploy-infra.sh is what first
+  # schedules Pods against those tags.
+  local keystone_at ovn_at placement_at neutron_at nova_at run_at
+  local kind_load_at setup_at
+  keystone_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Deploy operator" | head -1 | cut -d: -f1)
+  ovn_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Deploy ovn operator" | head -1 | cut -d: -f1)
+  placement_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Deploy placement operator (nova leg)" | head -1 | cut -d: -f1)
+  neutron_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Deploy neutron operator (nova leg)" | head -1 | cut -d: -f1)
+  nova_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Deploy nova operator" | head -1 | cut -d: -f1)
+  run_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Run chaos E2E tests" | head -1 | cut -d: -f1)
+  kind_load_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Load nova leg images into kind" | head -1 | cut -d: -f1)
+  setup_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Setup E2E infrastructure" | head -1 | cut -d: -f1)
+  assert_not_empty "the job deploys the keystone-operator" "$keystone_at"
+  assert_not_empty "the job deploys the ovn-operator" "$ovn_at"
+  assert_not_empty "the job runs the chaos suites" "$run_at"
+  assert_gte "the ovn deploy comes after the keystone one" \
+    "$ovn_at" "$keystone_at"
+  assert_gte "the leg's placement deploy after the ovn one" \
+    "$placement_at" "$ovn_at"
+  assert_gte "its neutron deploy after the placement one" \
+    "$neutron_at" "$placement_at"
+  assert_gte "its nova deploy last of the three" "$nova_at" "$neutron_at"
+  assert_gte "and every deploy before the suites run" "$run_at" "$nova_at"
+  assert_gte "the image load comes before the infrastructure step" \
+    "$setup_at" "$kind_load_at"
+
+  # The first dump derives its Namespace from the matrix suite and reads
+  # keystone-system on this leg, so a failed nova suite would carry no nova-,
+  # placement-, glance-, ovn- or neutron-operator log at all. always() keeps it
+  # there when the bring-up itself failed.
+  local dump
+  dump=$(job_step e2e-chaos "Dump diagnostic info (nova leg)")
+  assert_not_empty "the leg dumps the Namespaces the first dump misses" "$dump"
+  assert_contains "it dumps even when the suites failed" "$dump" \
+    "if: always() && matrix.suite == 'nova'"
+  assert_contains "it goes through the shared dump script" "$dump" \
+    "hack/ci-dump-diagnostics.sh"
+  # One pass per operator because the script reads a single OPERATOR, and a
+  # bare call would fall back to OPERATOR="" and print the infrastructure
+  # section alone, five times.
+  assert_contains "one call per Namespace beyond keystone-system" "$dump" \
+    "for op in nova placement glance ovn neutron; do"
+  # OPERATOR_ONLY on every pass: the infrastructure block and the openstack Job
+  # and pod logs do not change with OPERATOR, and the step above already
+  # emitted them. Without it this step dumps them five more times, which buries
+  # the operator evidence it exists for and spends the grace window the cluster
+  # delete below needs when the job wall cancels the run.
+  assert_contains "each pass hands its operator to the dump script" "$dump" \
+    'OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh'
+
+  # The wall. The leg loads eighteen images, runs eight operator deploys and
+  # then three full-stack suites one after the other (parallel: 1), so 90
+  # minutes — sized for the network leg, which runs ten lighter suites — would
+  # arrive mid-suite: chainsaw is killed outright, no catch block runs and no
+  # JUnit report is written, and a non-blocking leg then reports a cancellation
+  # that names no suite.
+  assert_contains "the nova leg gets a wall of its own" "$job" \
+    "timeout-minutes: \${{ matrix.suite == 'nova' && 150 || 90 }}"
+
+  # And the leg is its own: the network leg, at 78 of its 90 minutes, was not
+  # widened into these suites.
+  assert_not_contains "the network leg runs no nova suite" \
+    "$(e2e_chaos_matrix_entry network)" "tests/e2e-chaos/nova-"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -683,6 +867,7 @@ test_nova_leg_deploys_the_sibling_operators
 test_nova_leg_narrows_parallelism_and_budget
 test_nova_leg_dumps_the_siblings
 test_nova_leg_loads_the_tempest_image
+test_chaos_nova_leg_runs_the_nova_suites
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
