@@ -1270,7 +1270,11 @@ jobs:
     # largest suite in this matrix and has not been stable on the self-hosted
     # runners since they took over. The other legs stay self-hosted.
     runs-on: ${{ matrix.operator == 'keystone' && 'blacksmith-4vcpu-ubuntu-2404' || 'self-hosted' }}
-    timeout-minutes: 68
+    # 90 minutes for the nova leg: the kind broker, fourteen extra image loads
+    # (about 4 minutes) and five sibling deploys (about 2 minutes) come before
+    # its suites, and each suite brings five services up. The other legs keep
+    # 68; the neutron leg, with one sibling, took 41 minutes on 2026-09-17.
+    timeout-minutes: ${{ matrix.operator == 'nova' && 90 || 68 }}
     permissions:
       contents: read
       packages: read
@@ -1526,10 +1530,14 @@ jobs:
           # A cinder suite is the same size: three or four Deployments, a
           # db-sync Job and a probe pod, which four at once do not fit on a
           # 4-vCPU node either.
-          # Only these two legs are narrowed; the shared config's parallel: 4
+          # A Nova suite of #1039 carries a Keystone, an OVNCentral, a Neutron,
+          # a Placement, a Glance and the five Nova workloads, so four at once
+          # do not fit either; the nova leg is narrowed before the first such
+          # suite exists.
+          # Only these three legs are narrowed; the shared config's parallel: 4
           # is what every other operator runs at.
           parallel=()
-          if [ "${OPERATOR}" = "neutron" ] || [ "${OPERATOR}" = "cinder" ]; then
+          if [ "${OPERATOR}" = "neutron" ] || [ "${OPERATOR}" = "cinder" ] || [ "${OPERATOR}" = "nova" ]; then
             parallel=(--parallel 2)
           fi
           chainsaw test --config tests/e2e/chainsaw-config.yaml "${parallel[@]}" "${test_dirs[@]}"
