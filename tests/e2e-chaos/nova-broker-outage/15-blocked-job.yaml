@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# What the API does while its broker is partitioned away: it serves, and the
+# write path stalls instead of answering.
+#
+# GET / is the version document the compute API answers without a token, and
+# it is the endpoint both nova-api probes read
+# (operators/nova/internal/controller/reconcile_deployment.go). Nova registers
+# no oslo healthcheck middleware, so / is the request that says the WSGI
+# application is loaded and serving with the bus gone.
+#
+# The create is the other half. nova-api writes the build request into the API
+# database and then casts to the conductor, and oslo.messaging retries that
+# publish for as long as the broker is unreachable, so the call does not come
+# back: neither with the 202 it answers on a healthy bus nor with an error
+# status, both of which would be the deployment reporting on a request it
+# cannot carry out. The worker survives the stall because
+# spec.api.uwsgi.harakiri is nil by default and the flag is then left off the
+# uWSGI command entirely (internal/common/types/uwsgi.go), so nothing kills the
+# blocked request.
+#
+# 45 seconds is the cap. 14-baseline-job.yaml prints how long the same call
+# takes on a healthy bus (well under 20), so a create that answers inside 45
+# has answered rather than stalled.
+#
+# The listing afterwards is served from the API database, which is where the
+# build request landed before the cast, so the row is visible as BUILD while
+# nothing has scheduled it.
+#
+# backoffLimit is 0 because the script is not idempotent: the second attempt
+# would find the build request s-blocked the first one wrote.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-broker-chaos-blocked
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: blocked
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-broker-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              SEED=4e0a0000-0000-4000-8000-000000000005
+
+              # urllib rather than the openstack client: the claim is about the
+              # HTTP status of one unauthenticated request, and the client
+              # would resolve a catalog and mint a token in front of it.
+              python3 -c '
+              import sys
+              import urllib.request
+
+              URL = "http://nova-broker-chaos.openstack.svc.cluster.local:8774/"
+
+              try:
+                  response = urllib.request.urlopen(URL, timeout=15)
+              except Exception as exc:
+                  sys.exit("FAIL: GET / raised %r under the partition, want 200" % (exc,))
+              if response.status != 200:
+                  sys.exit("FAIL: GET / answered %d under the partition, want 200"
+                           % response.status)
+              print("OK: the API answers GET / with 200 under the partition")
+              '
+
+              # timeout exits 124 when it had to kill the command, which is the
+              # only outcome that says the create never answered. set +e keeps
+              # the non-zero exit from ending the script before it is read.
+              set +e
+              timeout 45 openstack server create \
+                --image "${SEED}" --flavor m1.nano --nic none s-blocked
+              rc=$?
+              set -e
+              if [ "${rc}" -ne 124 ]; then
+                echo "FAIL: create returned rc=${rc} within 45s"
+                exit 1
+              fi
+              echo "OK: the create did not answer within 45s"
+
+              # The listing is captured before it is matched, for the pipefail
+              # reason 14-baseline-job.yaml records.
+              LIST="$(openstack server list -f value -c Name -c Status)"
+              if ! grep -qx 's-blocked BUILD' <<<"${LIST}"; then
+                echo "FAIL: s-blocked is not listed as BUILD"
+                echo "${LIST}"
+                exit 1
+              fi
+              echo "OK: s-blocked is listed BUILD out of the API database"
+
+              echo BLOCKED-OK

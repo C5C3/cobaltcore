@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Placement CR for the broker-outage chaos test (2025.2 release).
+#
+# The scheduler picks a host by asking Placement for allocation candidates, and
+# nova-compute publishes the resource provider its inventory hangs off. Without
+# this service a server never leaves the scheduling step, so the suite runs one
+# Placement of its own on the schema placement_nova_broker_chaos.
+#
+# One replica: the suite issues a handful of requests, and the node already
+# carries a Keystone, an OVN control plane, a Neutron, a Glance and the five
+# Nova workloads.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-nova-broker-chaos
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement_nova_broker_chaos
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-nova-broker-chaos.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

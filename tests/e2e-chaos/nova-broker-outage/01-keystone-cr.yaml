@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the broker-outage chaos test (2025.2 release).
+#
+# The suite boots a server, so every call in it is authenticated: the Nova API
+# validates the token, nova reaches Placement, Neutron and Glance with the same
+# account, and the three Jobs talk to all of them as a client. The suite brings
+# its own Keystone because the Service the operator projects carries the CR
+# name, which is what keeps the catalog rows and the service users of parallel
+# suites apart.
+#
+# One replica and the database keystone_nova_broker_chaos. The bootstrap admin
+# password comes from the pre-seeded keystone-admin Secret
+# (deploy/kind/infrastructure), which is also the serviceUser password of the
+# Nova, the Neutron, the Placement and the Glance below, so all of them are one
+# identity.
+#
+# The partition of 13-networkchaos.yaml does not reach this deployment: it
+# drops traffic between the broker pod and the Nova pods alone, and Keystone
+# holds no broker connection.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-nova-broker-chaos
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_nova_broker_chaos
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
