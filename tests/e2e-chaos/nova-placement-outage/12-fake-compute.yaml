@@ -1,0 +1,201 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The nova-compute this suite schedules onto, on nova's fake virt driver.
+#
+# The operator projects no compute workload: a nova-compute belongs to a
+# hypervisor, not to the control plane, and what the operator publishes for one
+# is the contract Secret nova-placement-chaos-compute-config. This Deployment
+# is what a compute cluster would build out of that Secret, cut down to what
+# runs inside kind, so the suite can prove the contract end to end.
+#
+# It is applied only after the Nova reports
+# ComputeConfigReady=True/ComputeConfigPublished, because the Secret it mounts
+# is written by that step.
+#
+# The labels are app.kubernetes.io/name: nova-fake-compute rather than "nova".
+# Every selector the operator writes (the three Services, the
+# PodDisruptionBudget, the NetworkPolicy pod selector) matches on
+# app.kubernetes.io/name: nova, so a pod under that name would join workloads
+# it is not part of. The name also keeps this pod out of the partition target
+# of 13-networkchaos.yaml, which selects on that key. That target narrows
+# further to the scheduler component, so the compute sits outside it twice
+# over, and it has to: the compute holds a Placement connection of its own to
+# report its inventory, and cutting that at the same time would put a second
+# failure under one verdict. The instance label stays nova-placement-chaos so
+# the suite's diagnostic dumps and its teardown still find the pod.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nova-placement-chaos-fake-compute-conf
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nova-fake-compute
+    app.kubernetes.io/instance: nova-placement-chaos
+data:
+  # The overlay the contract fragment says nothing about: what to drive, where
+  # to write and which console address to report. oslo.config reads every file
+  # in a --config-dir, so this lands beside the fragment rather than replacing
+  # it.
+  #
+  # FakeDriverWithoutFakeNodes reports one node named after [DEFAULT] host,
+  # which keeps the hypervisor, the compute service and the resource provider
+  # under one name the suite can assert on. vif plugging is switched off and
+  # given a zero timeout because no ML2 agent runs here to report a port as
+  # bound; the servers carry no NIC either way.
+  #
+  # server_proxyclient_address is the loopback the fake driver would serve a
+  # console on. Nothing connects to it, but [vnc] enabled is true in the
+  # fragment, so the option has to resolve.
+  compute.conf: |
+    [DEFAULT]
+    compute_driver = fake.FakeDriverWithoutFakeNodes
+    vif_plugging_is_fatal = false
+    vif_plugging_timeout = 0
+    state_path = /var/lib/nova
+    [oslo_concurrency]
+    lock_path = /var/lib/nova/tmp
+    [vnc]
+    server_listen = 0.0.0.0
+    server_proxyclient_address = 127.0.0.1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nova-placement-chaos-fake-compute
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nova-fake-compute
+    app.kubernetes.io/instance: nova-placement-chaos
+spec:
+  replicas: 1
+  # Recreate, because the two pods of a rolling update would register under the
+  # same [DEFAULT] host and hold the same compute node record open twice.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nova-fake-compute
+      app.kubernetes.io/instance: nova-placement-chaos
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nova-fake-compute
+        app.kubernetes.io/instance: nova-placement-chaos
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 42424
+        runAsGroup: 42424
+        fsGroup: 42424
+      initContainers:
+        # nova-compute writes a uuid to state_path/compute_id on its first start
+        # and refuses to start again if the file is gone while its service
+        # record is not. state_path is an emptyDir here, so the file dies with
+        # the pod: seeding a fixed uuid is what lets the pod restart.
+        - name: node-identity
+          image: ghcr.io/c5c3/nova:2025.2
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", 'printf %s "$COMPUTE_ID" > /var/lib/nova/compute_id']
+          env:
+            - name: COMPUTE_ID
+              value: d13d13d1-0000-4000-8000-000000000006
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/nova
+      containers:
+        - name: nova-compute
+          image: ghcr.io/c5c3/nova:2025.2
+          imagePullPolicy: IfNotPresent
+          # The fragment by absolute path, the overlay as a directory: the
+          # fragment is one key of a Secret whose other keys are values rather
+          # than config files, so a --config-dir over the mount would hand
+          # oslo.config the transport URL as if it were a document.
+          command:
+            - nova-compute
+            - --config-file
+            - /etc/nova/compute-config/nova-compute.conf
+            - --config-dir
+            - /etc/nova/compute.conf.d
+          env:
+            # The identity the compute registers under, and the one the suite
+            # asserts the hypervisor, the service and the resource provider by.
+            - name: OS_DEFAULT__HOST
+              value: fake-1
+            - name: OS_DEFAULT__TRANSPORT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: nova-placement-chaos-compute-config
+                  key: transport_url
+            # The four client sections of the fragment and the token middleware
+            # all authenticate as the one service account the contract publishes
+            # under the password key, which is why every override reads it.
+            - name: OS_KEYSTONE_AUTHTOKEN__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nova-placement-chaos-compute-config
+                  key: password
+            - name: OS_SERVICE_USER__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nova-placement-chaos-compute-config
+                  key: password
+            - name: OS_PLACEMENT__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nova-placement-chaos-compute-config
+                  key: password
+            - name: OS_NEUTRON__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nova-placement-chaos-compute-config
+                  key: password
+            - name: OS_CINDER__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nova-placement-chaos-compute-config
+                  key: password
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: compute-config
+              mountPath: /etc/nova/compute-config
+              readOnly: true
+            - name: compute-overlay
+              mountPath: /etc/nova/compute.conf.d
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/nova
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # The whole Secret, not one key: on a TLS bus the contract adds ca.crt
+        # beside the fragment, which is where its ssl_ca_file points.
+        - name: compute-config
+          secret:
+            secretName: nova-placement-chaos-compute-config
+        - name: compute-overlay
+          configMap:
+            name: nova-placement-chaos-fake-compute-conf
+        - name: state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

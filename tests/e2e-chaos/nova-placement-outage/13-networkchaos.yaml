@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos CR to partition nova-scheduler <-> Placement traffic.
+#
+# The partition is enforced on the Placement (server) side on purpose. The
+# scheduler does not connect to a Placement pod IP: it reads the internal
+# catalog row, which names the ClusterIP Service
+# placement-nova-placement-chaos.openstack.svc. chaos-mesh installs its drop
+# rule inside the *selector* pods' network namespace and matches the *target*
+# pods by their pod IPs. If the rule were installed on the scheduler (client)
+# side, it would match Placement pod IPs. At that point the packet still
+# carries the Service ClusterIP, because kube-proxy only DNATs ClusterIP ->
+# pod IP later, in the node's root namespace, after the packet has left the
+# pod. The rule would therefore never match and the partition would be a no-op
+# for Service-routed traffic.
+#
+# Installing the rule on the Placement pods and dropping traffic *from* the
+# scheduler pods works because, by the time the packet reaches the Placement
+# namespace, it has already been DNATed and carries the real scheduler pod
+# source IP. It is the same reason Kubernetes NetworkPolicies can match
+# Service-routed traffic by client pod IP. direction 'both' fully severs the
+# link in either direction.
+#
+# The target is narrowed to the scheduler component of this suite's Nova, and
+# that narrowing is the claim. On the boot path only the scheduler talks to
+# Placement: it asks for allocation candidates and claims the resources of the
+# host it picks. The API never calls Placement, which is why it keeps accepting
+# server creates under this fault, and the conductor only relays the request to
+# the scheduler over the bus. A wider target would take those two down with the
+# scheduler and leave nothing to read the "and nothing else" half of the claim
+# against. The three labels are what reconcile_deployment.go stamps on the
+# scheduler pod template (naming.ComponentLabels("nova", <cr>, "scheduler")).
+#
+# The fake compute of 12-fake-compute.yaml holds a Placement connection too, to
+# report its inventory, and it is not a target: it carries
+# app.kubernetes.io/name=nova-fake-compute, and cutting its reporting at the
+# same time would put a second failure under one verdict.
+#
+# Duration is a safety net for auto-expiry if the test does not explicitly
+# delete the CR; the suite lifts the partition explicitly. It must *exceed* the
+# Chainsaw assert window, not equal it: an equal duration self-heals at the
+# exact deadline, restoring the scheduler's Placement client in the same
+# instant an assertion is still reading the state under the fault. 600s sits
+# above the 5m assert window with margin, and above the roughly 130 seconds of
+# kernel SYN retries the scheduler spends before its Placement call gives up
+# (chainsaw-test.yaml step 10 derives its budget).
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-placement-nova
+  namespace: openstack
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: placement
+      app.kubernetes.io/instance: placement-nova-placement-chaos
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - openstack
+      labelSelectors:
+        app.kubernetes.io/name: nova
+        app.kubernetes.io/instance: nova-placement-chaos
+        app.kubernetes.io/component: scheduler
+  duration: "600s"

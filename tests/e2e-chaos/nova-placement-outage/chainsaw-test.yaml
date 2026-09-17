@@ -1,0 +1,561 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a Placement outage under a Nova deployment.
+# The partition severs nova-scheduler <-> Placement traffic on the Placement
+# side (see 13-networkchaos.yaml for why a client-side rule would be a no-op).
+# What the suite pins is one claim in two halves: a Placement outage fails
+# scheduling, and it fails nothing else. The phases below take that apart:
+#
+#   - baseline: the CR is Ready and a server boots to ACTIVE, which means the
+#     scheduler reached Placement for candidates and claimed the host it picked
+#   - under the partition: GET / answers 200, a server list answers, and a
+#     server create is accepted with the 202 it answers on a healthy cluster.
+#     None of those three paths calls Placement
+#   - under the partition: the accepted build reaches ERROR with a fault that
+#     reports an unplaced build, and the CR stays Ready=True/AllReady. The
+#     scheduler's readiness is the broker socket, not its Placement client, so
+#     the outage is invisible to the conditions while it is plainly visible to
+#     the build
+#   - after the partition is lifted: a fresh create reaches ACTIVE with no pod
+#     restart and no operator action
+#
+# The ERROR is not immediate and cannot be. The drop rule takes the SYN without
+# an ICMP reject, so the scheduler's connection attempt runs out the kernel's
+# own retry ladder, roughly 130 seconds of exponential backoff, before it sees
+# an error at all. That is why 15-failclosed-job.yaml gives the ERROR 300
+# seconds and why the NetworkChaos runs for 600.
+#
+# The partition is scoped to the scheduler pods on purpose. The API never calls
+# Placement and the conductor only relays to the scheduler over the bus, so
+# cutting all five workloads off would leave nothing serving to read the second
+# half of the claim against. The fake compute is outside the target for the
+# same reason: it reports its inventory into Placement, and cutting that at the
+# same time would put a second failure under one verdict.
+#
+# The Nova takes a vhost on the kind-only shared-rabbitmq rather than a broker
+# of its own. Nothing here partitions the bus, so the shared broker is the
+# right one; it has to be a vhost because nova's RPC topics are named after the
+# service, so two suites on one vhost would share the scheduler and conductor
+# queues.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-placement-outage
+spec:
+  namespace: openstack
+  timeouts:
+    # The suite default. Every assert that waits out a service bring-up carries
+    # 8m of its own (../nova-broker-outage/ and ../../e2e/nova/db-archive/ need
+    # that for the same fixtures); the rest read a deployment that is already
+    # up, and keeping the default at 5m is what holds the partition phase
+    # inside the 600s the NetworkChaos runs for.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost ────────────────────────────────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../e2e/cinder/broker-vhost.sh. The step cleanup
+  # runs at the end of the test, which is why the vhost is taken here rather
+  # than beside the Nova CR six steps down.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create nova-placement-chaos nova-placement-chaos-messaging openstack
+    catch: &placement-dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos nova-placement-chaos --cr-kind=nova --dep-label=app.kubernetes.io/instance=placement-nova-placement-chaos --dep-ns=openstack --log-label=app.kubernetes.io/instance=nova-placement-chaos
+    - script:
+        timeout: 1m
+        content: kubectl get networkchaos -n "$NAMESPACE" -o yaml 2>&1 || true
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-nova-placement-chaos
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNCentral
+        name: nova-placement-chaos-ovn
+        namespace: openstack
+    - get:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: Neutron
+        name: neutron-nova-placement-chaos
+        namespace: openstack
+    - get:
+        apiVersion: placement.openstack.c5c3.io/v1alpha1
+        kind: Placement
+        name: placement-nova-placement-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: Glance
+        name: glance-nova-placement-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: GlanceBackend
+        name: glance-nova-placement-chaos-s3
+        namespace: openstack
+    # The compute and the five Jobs. diagnostics.sh reads the pods of the Nova
+    # itself; these are the ones outside that label.
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Fake compute ==="
+          kubectl logs -n "$NAMESPACE" deploy/nova-placement-chaos-fake-compute --tail=100 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-placement-chaos-catalog-setup nova-placement-chaos-image-seed \
+            nova-placement-chaos-baseline nova-placement-chaos-failclosed \
+            nova-placement-chaos-recovered; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 200
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/name=neutron-operator
+        tail: 200
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/name=placement-operator
+        tail: 200
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/name=glance-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete nova-placement-chaos || true
+  # ── Step 2: Bring up Keystone ───────────────────────────────────────────
+  # It goes first because the catalog Job, the four sibling CRs and the Nova
+  # all authenticate against it.
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        # 8m, not the suite's 5m: a service bring-up on this leg runs a db-sync
+        # Job before its pods start.
+        timeout: 8m
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-placement-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *placement-dump
+  # ── Step 3: Register the four services in the catalog ───────────────────
+  # The Job is deleted first because a Job's pod template is immutable, so a
+  # re-run against a leftover object would fail on the update rather than on
+  # anything the suite is testing.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-placement-chaos-catalog-setup -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 02-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/nova-placement-chaos-catalog-setup \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-placement-chaos-catalog-setup 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-placement-chaos-catalog-setup -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-placement-chaos-catalog-setup
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *placement-dump
+  # ── Step 4: Bring up the four services the boot path depends on ─────────
+  - try:
+    - apply:
+        file: 03-messaging-secret.yaml
+    - apply:
+        file: 04-ovncentral-cr.yaml
+    - apply:
+        file: 05-neutron-cr.yaml
+    - apply:
+        file: 06-placement-cr.yaml
+    - apply:
+        file: 07-glance-cr.yaml
+    - apply:
+        file: 08-glancebackend-cr.yaml
+    - assert:
+        # 8m for the same reason step 2 takes it, and these four come up at
+        # once.
+        timeout: 8m
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: nova-placement-chaos-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-nova-placement-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-nova-placement-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-nova-placement-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-nova-placement-chaos-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *placement-dump
+  # ── Step 5: Seed the image the servers boot from ────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-placement-chaos-image-seed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 09-image-seed-job.yaml
+          kubectl wait --for=condition=complete job/nova-placement-chaos-image-seed \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-placement-chaos-image-seed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-placement-chaos-image-seed -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-placement-chaos-image-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *placement-dump
+  # ── Step 6: Apply the Nova CR and assert its conditions ─────────────────
+  # The workload, Service and configuration assertions of
+  # ../../e2e/nova/basic-deployment/ are not repeated: this suite shares its
+  # fixtures with that one, so the only thing it can say that the other cannot
+  # is what an unreachable Placement does. The conditions are asserted in full
+  # because they are the baseline the partition phase is read against.
+  - try:
+    - apply:
+        file: 10-metadata-secret.yaml
+    - apply:
+        file: 11-nova-cr.yaml
+    - assert:
+        # 8m: two schema migrations, a cell mapping and five workloads.
+        timeout: 8m
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-placement-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'ComputeConfigReady']):
+            - status: "True"
+              reason: ComputeConfigPublished
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'MetadataReady']):
+            - status: "True"
+              reason: MetadataReady
+            (conditions[?type == 'ConsoleProxyReady']):
+            - status: "True"
+              reason: ConsoleProxyReady
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            # The CR sets no spec.dbArchive, so the schedule is the webhook's
+            # @daily default and the CronJob is projected all the same.
+            (conditions[?type == 'DBArchiveReady']):
+            - status: "True"
+              reason: DBArchiveScheduled
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            # The five members of the parallel group. This CR asks for no
+            # autoscaling, no NetworkPolicy and no gateway, and each member
+            # reports that absence as True, which is what lets the aggregate
+            # resolve on a cluster that has none of them.
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'MetadataHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'ConsoleHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            # The CR carries no spec.extraConfig, and the ownership guard runs
+            # on every reconcile either way
+            # (operators/nova/internal/controller/reconcile_config.go).
+            (conditions[?type == 'ExtraConfigHealthy']):
+            - status: "True"
+              reason: NoOwnedKeysOverridden
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *placement-dump
+  # ── Step 7: Start the fake compute and map it into cell1 ────────────────
+  # The Deployment is applied only now: it mounts the compute-contract Secret
+  # the step above has just asserted. Discovery is then run by hand, unlike
+  # ../../e2e/nova/basic-deployment/, which waits out the scheduler's
+  # 300-second periodic. That wait is what the other suite proves; spending it
+  # here would put five idle minutes in front of a partition window.
+  - try:
+    - apply:
+        file: 12-fake-compute.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-placement-chaos-fake-compute
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          ../../e2e/nova/discover-hosts.sh nova-placement-chaos "$NAMESPACE"
+    catch: *placement-dump
+  # ── Step 8: Baseline — a server boots through a reachable Placement ─────
+  - try:
+    - script:
+        shell: bash
+        timeout: 11m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-placement-chaos-baseline -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 14-baseline-job.yaml
+          kubectl wait --for=condition=complete job/nova-placement-chaos-baseline \
+            -n "$NAMESPACE" --timeout=10m || {
+            kubectl logs -n "$NAMESPACE" job/nova-placement-chaos-baseline 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-placement-chaos-baseline -o wide
+            exit 1
+          }
+          # The log is fetched once and asserted on the captured text: a
+          # `kubectl logs | grep -q` pipeline fails under pipefail exactly when
+          # it matches, because grep closes the pipe while kubectl is still
+          # writing.
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-placement-chaos-baseline)"
+          echo "$LOGS"
+          grep -q 'BASELINE-OK' <<<"$LOGS"
+    catch: *placement-dump
+  # ── Step 9: Inject NetworkChaos to partition Placement ──────────────────
+  - try:
+    - apply:
+        file: 13-networkchaos.yaml
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          # `kubectl wait --for=condition=AllInjected` instead of a chainsaw
+          # resource assert: NetworkChaos.status.conditions is a fixed 4-item
+          # list (Selected/AllInjected/AllRecovered/Paused) and chainsaw's
+          # list-merge rejects a shorter expected slice with "lengths of slices
+          # don't match". Asserting the negative conditions instead would be
+          # worse than verbose: chaos-mesh writes ALL four False before the
+          # selector has run, so a Selected=False assertion passes on an
+          # experiment that never injected anything.
+          kubectl wait networkchaos/partition-placement-nova -n "$NAMESPACE" \
+            --for=condition=AllInjected --timeout=60s
+    catch: *placement-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 13-networkchaos.yaml --ignore-not-found
+          echo "OK: the Placement partition is lifted"
+  # ── Step 10: Under the partition — scheduling fails, nothing else does ──
+  # The Job proves the serving half and the failing half in one pod: GET /, a
+  # server list and an accepted create, then a build that ends in ERROR with a
+  # fault reporting an unplaced build. The assert after it reads the conditions:
+  # the scheduler takes its readiness off the broker socket, which the
+  # partition never touches, so the CR stays Ready through an outage its own
+  # build path cannot survive.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-placement-chaos-failclosed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 15-failclosed-job.yaml
+          kubectl wait --for=condition=complete job/nova-placement-chaos-failclosed \
+            -n "$NAMESPACE" --timeout=7m || {
+            kubectl logs -n "$NAMESPACE" job/nova-placement-chaos-failclosed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-placement-chaos-failclosed -o wide
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-placement-chaos-failclosed)"
+          echo "$LOGS"
+          grep -q 'FAILCLOSED-OK' <<<"$LOGS"
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-placement-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *placement-dump
+  # ── Step 11: Lift the partition and schedule again ──────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: partition-placement-nova
+          namespace: openstack
+    - script:
+        shell: bash
+        timeout: 13m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-placement-chaos-recovered -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 16-recovered-job.yaml
+          kubectl wait --for=condition=complete job/nova-placement-chaos-recovered \
+            -n "$NAMESPACE" --timeout=12m || {
+            kubectl logs -n "$NAMESPACE" job/nova-placement-chaos-recovered 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-placement-chaos-recovered -o wide
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-placement-chaos-recovered)"
+          echo "$LOGS"
+          grep -q 'RECOVERED-OK' <<<"$LOGS"
+          echo "OK: the scheduler places servers again"
+    catch: *placement-dump
+  # ── Step 12: Tear the deployment down ───────────────────────────────────
+  # Chainsaw's own cleanup deletes what the suite applied, under the 120s the
+  # chaos config allows, and the vhost goes in step 1's cleanup. What it cannot
+  # do inside that budget is wait out five workloads, so the suite does that
+  # itself.
+  #
+  # The order runs from the bus consumers inward. The fake compute holds a
+  # broker connection of its own and is not part of the CR, so it goes before
+  # the Nova. The fake compute and the three Jobs are deleted best-effort: a
+  # suite that already failed must still reach the CR delete.
+  - try:
+    - script:
+        timeout: 10m
+        content: |
+          set -eu
+
+          kubectl delete -f 12-fake-compute.yaml --ignore-not-found \
+            --wait=true --timeout=120s || true
+          kubectl delete job -n "$NAMESPACE" --ignore-not-found \
+            nova-placement-chaos-baseline nova-placement-chaos-failclosed \
+            nova-placement-chaos-recovered || true
+
+          kubectl delete nova nova-placement-chaos -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=nova-placement-chaos -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a nova pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-placement-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Nova CR and its pods are gone"
+    catch: *placement-dump

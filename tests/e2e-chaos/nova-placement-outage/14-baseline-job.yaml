@@ -1,0 +1,126 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The baseline the partition is read against: with Placement reachable, a
+# server boots end to end.
+#
+# The boot is what proves the scheduling path works before the fault. The API
+# casts the build to the conductor, the conductor asks the scheduler for a
+# host, the scheduler asks Placement for allocation candidates and claims the
+# one it picks, and the compute takes the work off the bus. A server that
+# reaches ACTIVE says every one of those hops answered.
+#
+# s-base is left running. The suite deletes the Nova CR in its teardown, and a
+# server the partition never touched is what says the later ones are about the
+# outage rather than about the deployment.
+#
+# backoffLimit is 0 because the script is not idempotent: a second attempt
+# would find the server s-base the first one created and fail on the name. A
+# failed Job therefore keeps the pod whose log says why.
+#
+# The client reads plain OS_* variables rather than a clouds.yaml. The Secret
+# this suite authenticates with holds a password, not a credential document,
+# and the catalog Job wrote the rows for the same account.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-placement-chaos-baseline
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: baseline
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-placement-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # The image the servers boot from, seeded by
+              # 09-image-seed-job.yaml under an id this suite owns.
+              SEED=4e0a0000-0000-4000-8000-000000000006
+
+              # wait_status <kind> <name> <want> <timeoutSeconds>: poll one
+              # object's status every 5s. On the deadline it prints the
+              # object's own show output, whose fault message is what explains
+              # a server that reached ERROR.
+              wait_status() {
+                ws_deadline=$(( $(date +%s) + $4 ))
+                while true; do
+                  ws_status="$(openstack "$1" show "$2" -f value -c status 2>/dev/null || true)"
+                  if [ "${ws_status}" = "$3" ]; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${ws_deadline}" ]; then
+                    echo "ERROR: $1 $2 status '${ws_status:-<none>}' != $3 within $4s"
+                    openstack "$1" show "$2" 2>&1 || true
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+
+              # One flavor: this suite boots servers and never resizes them.
+              # It is tiny because the fake driver allocates nothing, and the
+              # scheduler still checks the claim against the inventory the
+              # compute published in Placement, which is the service the
+              # partition takes away.
+              openstack flavor show m1.nano >/dev/null 2>&1 \
+                || openstack flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
+              echo "OK: flavor m1.nano"
+
+              # The compute reports itself over the bus and its inventory into
+              # Placement, so this is the first thing that says both paths
+              # carry traffic. 24 x 5s = 2m. The output is captured before it
+              # is matched: an `openstack ... | grep -q` pipeline fails under
+              # pipefail exactly when it matches, because grep closes the pipe
+              # first.
+              SERVICES=""
+              COMPUTE_UP=""
+              for _ in $(seq 1 24); do
+                SERVICES="$(openstack compute service list --service nova-compute \
+                  -f value -c Host -c State || true)"
+                if grep -qx 'fake-1 up' <<<"${SERVICES}"; then
+                  COMPUTE_UP=yes
+                  break
+                fi
+                sleep 5
+              done
+              if [ -z "${COMPUTE_UP}" ]; then
+                echo "ERROR: nova-compute fake-1 never reported state up within 120s"
+                echo "${SERVICES}"
+                exit 1
+              fi
+              echo "OK: compute service fake-1 is up"
+
+              # --nic none: no port is bound, so the boot needs neither an ML2
+              # agent nor a network of its own. Everything else about the boot
+              # is real, the image download included.
+              openstack server create --image "${SEED}" --flavor m1.nano --nic none s-base
+              wait_status server s-base ACTIVE 300
+              echo "OK: server s-base is ACTIVE"
+
+              echo BASELINE-OK
