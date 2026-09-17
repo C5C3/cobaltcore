@@ -385,12 +385,17 @@ test_e2e_chaos_if_condition() {
 }
 
 test_e2e_chaos_timeout() {
-  echo "Test: e2e-chaos job timeout is 90 minutes"
+  echo "Test: e2e-chaos job timeout is 90 minutes, 150 on the nova leg"
 
+  # The nova leg loads eighteen images, runs eight operator deploys and then
+  # three full-stack suites one after the other, which does not fit the wall
+  # the network leg was sized for. A leg that hits the wall is killed outright:
+  # no catch block, no JUnit report, and a non-blocking leg reporting a
+  # cancellation that names no suite.
   assert_contains \
-    "e2e-chaos timeout-minutes is 90" \
+    "e2e-chaos timeout-minutes is 90, with the nova leg at 150" \
     "$E2E_CHAOS_JOB_SECTION" \
-    "timeout-minutes: 90"
+    "timeout-minutes: \${{ matrix.suite == 'nova' && 150 || 90 }}"
 }
 
 test_e2e_chaos_continue_on_error() {
