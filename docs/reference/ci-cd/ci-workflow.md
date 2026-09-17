@@ -789,13 +789,13 @@ Chainsaw E2E test suites.
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
-| 5 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs |
-| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn` and `neutron` legs pass `WITH_OVN_KERNEL_MODULES: true` |
-| 7 | `hack/ci-deploy-operator.sh` (`neutron` leg) | Deploys the ovn-operator into `ovn-system` |
+| 5 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2025.2 and 2026.1) and `ovn:<pin>` |
+| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn` and `neutron` legs pass `WITH_OVN_KERNEL_MODULES: true`, the `cinder` and `nova` legs pass `WITH_MESSAGING: true`, and the `cinder` leg alone passes `WITH_NFS: true` |
+| 7 | `hack/ci-deploy-operator.sh` (sibling operators) | `nova` leg: keystone-, placement- and glance-operator; `neutron` and `nova` legs: ovn-operator; `nova` leg: neutron-operator. Each goes into its `<op>-system` Namespace, ahead of the matrix operator |
 | 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
 | 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` |
 | 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, node pressure (capacity and allocated requests, containers with restarts and their last termination reason, per-pod memory working set, kernel OOM lines from the kind node), events, operator logs |
-| 11 | `hack/ci-dump-diagnostics.sh` (always, `neutron` leg) | Same dump for `ovn-system` |
+| 11 | `hack/ci-dump-diagnostics.sh` (always, sibling operators) | The `neutron` leg dumps `ovn-system`; the `nova` leg dumps `keystone-system`, `placement-system`, `glance-system`, `ovn-system` and `neutron-system`, one call per operator |
 | 12 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
 | 13 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
@@ -809,7 +809,8 @@ strategy:
 
 The operator matrix is dynamically constructed by the `changes` job, including only operators
 whose code (or shared code) changed. The `imagePullPolicy: Never` Helm value ensures the
-kind-loaded image is used instead of attempting a registry pull. Timeout: 68 minutes.
+kind-loaded image is used instead of attempting a registry pull. Timeout: 68
+minutes, 90 for the `nova` leg.
 
 **The two OVN legs.** `ovn` ships no per-release service image. Its Pods all
 run `ghcr.io/c5c3/ovn:<pin>`, where `<pin>` is what
@@ -833,14 +834,55 @@ DaemonSets. See
 `WITH_MESSAGING: true`, neither of which `hack/deploy-infra.sh` installs by
 default: the suites mount their volumes as inline CSI volumes from the kind NFS
 export, and each one takes its own vhost on the `shared-rabbitmq` broker. The
-chainsaw step runs with `--parallel 2`, as the `neutron` leg does. A cinder
-suite brings up three or four Deployments, a db-sync Job and a probe pod, and
-four of those at once do not fit on a 4-vCPU node; the other legs keep the
-shared config's `parallel: 4`. Chart-level suites live in
+chainsaw step runs with `--parallel 2`, as the `neutron` and `nova` legs do. A
+cinder suite brings up three or four Deployments, a db-sync Job and a probe
+pod, and four of those at once do not fit on a 4-vCPU node; the other legs keep
+the shared config's `parallel: 4`. Chart-level suites live in
 `tests/e2e/cinder-operator/`, which the `-operator` directory probe appends to
 `tests/e2e/cinder/`. The leg runs on a `self-hosted` runner, like every leg but
 `keystone`, and one diagnostics dump covers it, because it deploys a single
 operator. See [Cinder E2E Test Suites](../testing/cinder-e2e-tests.md).
+
+**The nova leg.** It deploys five sibling operators through
+`hack/ci-deploy-operator.sh` before the nova-operator: keystone, placement,
+glance, ovn and neutron, each into its own `<op>-system` Namespace.
+`spec.keystoneEndpoint` and `spec.serviceUser` are required on the Nova CRD,
+and a booted server needs a Placement allocation, a Glance image and a Neutron
+port. The Neutron waits on a live OVNCentral, so the ovn-operator comes with
+it. No chassis runs here. A sibling deploy that fails stops the job at `helm
+install --wait --timeout 120s`, the chainsaw step is skipped, and the dumps
+still run. The `setup-e2e-infra` step passes `WITH_MESSAGING: true`: every Nova
+process dials the bus, and the scheduler and the conductor report ready off
+their broker connection. `WITH_NFS` stays off, since `spec.endpoints.cinder` is
+opt-in on the Nova CRD, and so does `WITH_OVN_KERNEL_MODULES`, since no Nova
+suite places an OVNChassis.
+
+On top of `nova-operator:dev`, `nova:2025.2` and `nova:2026.1`, the leg also
+resolves the five sibling operator images; `keystone`, `placement`, `glance`
+and `neutron` at every release each one ships (2025.2 and 2026.1 today, per
+`hack/ci-service-image-releases.sh`); and `ovn:<pin>`. It loads the whole list
+in one `kind load docker-image` call, so the base layers the service images
+share go onto the node once. Both releases are there so a 2026.1 Nova suite can
+pair with 2026.1 siblings.
+Chainsaw runs with `--parallel 2`, because a Nova suite of #1039 carries a
+Keystone, an OVNCentral, a Neutron, a Placement, a Glance and the five Nova
+workloads. The wall is
+`timeout-minutes: ${{ matrix.operator == 'nova' && 90 || 68 }}`, so only this
+leg pays for its image loads, its sibling deploys and the suites #1039 stacks on
+it. A third step, `Dump diagnostic info (nova siblings)`,
+calls `hack/ci-dump-diagnostics.sh` once per sibling under `always()`.
+
+Nova stays out of the two-cluster placed-services suite
+(`tests/e2e-multicluster/placed-services/`), decided on 2026-09-17. That suite
+proves where the children land, and every target-cluster-access grant a Nova
+would touch (Deployments, Jobs, CronJobs, HTTPRoutes, NetworkPolicies,
+HorizontalPodAutoscalers) the placed Keystone, Barbican, OVNCentral and Neutron
+cover already. The placed Neutron runs against a broker address that resolves
+nowhere (`rabbitmq.openstack.invalid`), which a Nova cannot do: membership
+would mean a real broker on the target cluster, a seventh operator on the
+management cluster and an eighth image inside a 90-minute job. The operator's
+envtest keeps Nova's remote teardown covered, and #1013 covers it against a
+real second cluster when compute clusters arrive. #1019 does not reopen it.
 
 ### e2e-operator-upgrade
 
