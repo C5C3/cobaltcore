@@ -1475,8 +1475,8 @@ load_nfs_kernel_modules() {
 # enable_operator_servicemonitor RELEASE NAMESPACE [TIMEOUT] — Toggle the given
 # operator chart's `monitoring.serviceMonitor.enabled` value to true so the
 # kube-prometheus-stack Prometheus instance can scrape the operator metrics
-# endpoint via the rendered ServiceMonitor. Used for both keystone-operator
-# (keystone-system) and horizon-operator (horizon-system).
+# endpoint via the rendered ServiceMonitor. Used for every self-built service
+# operator.
 #
 # Callable only when WITH_PROMETHEUS=true. Patches spec.values via
 # strategic-merge so any other values set on the HelmRelease (including the
@@ -2605,16 +2605,17 @@ main() {
     # Deploy the full ControlPlane stack via Flux from the published c5c3-operator
     # chart and the K-ORC GitRepository/Kustomization. The kind base overlay
     # suspends the keystone-, horizon-, glance-, placement-, barbican-, ovn-,
-    # neutron- and cinder-operator HelmReleases for the local-build E2E path;
-    # un-suspend all eight here so the c5c3-operator HelmRelease's dependsOn is
-    # satisfied and the projected service CRs can reconcile. Without the
-    # glance-operator the Glance CRDs never install and the c5c3-operator's
-    # controlplane cache never syncs, so the ControlPlane CR stays status-less.
+    # neutron-, cinder- and nova-operator HelmReleases for the local-build E2E
+    # path; un-suspend all nine here so the c5c3-operator HelmRelease's
+    # dependsOn is satisfied and the projected service CRs can reconcile.
+    # Without the glance-operator the Glance CRDs never install and the
+    # c5c3-operator's controlplane cache never syncs, so the ControlPlane CR
+    # stays status-less.
     # c5c3-operator and the c5c3-charts / k-orc sources are left un-suspended
     # (the base applied them active). The k-orc Kustomization is the exception:
     # the base applies it suspended (see deploy/kind/base/kustomization.yaml),
     # and the WITH_CONTROLPLANE step below lifts that before waiting on it.
-    log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, horizon-operator, glance-operator, placement-operator, barbican-operator, ovn-operator, neutron-operator, cinder-operator, k-orc, c5c3-operator)."
+    log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, horizon-operator, glance-operator, placement-operator, barbican-operator, ovn-operator, neutron-operator, cinder-operator, nova-operator, k-orc, c5c3-operator)."
     kubectl patch helmrelease keystone-operator -n keystone-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
     kubectl patch helmrelease horizon-operator -n horizon-system \
@@ -2630,6 +2631,8 @@ main() {
     kubectl patch helmrelease neutron-operator -n neutron-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
     kubectl patch helmrelease cinder-operator -n cinder-system \
+      --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
+    kubectl patch helmrelease nova-operator -n nova-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
     # Pin the GHCR :latest operator images to their current digest so a
     # feature merged since the last deploy actually rolls out (the tag is
@@ -2675,7 +2678,7 @@ main() {
   # children from a management cluster and must run no CobaltCore operator of its own.
   #
   # Every operator, not just c5c3: the WITH_CONTROLPLANE=true / flux branch above
-  # un-suspends the eight service operators the kind base overlay suspends, so
+  # un-suspends the nine service operators the kind base overlay suspends, so
   # covering c5c3 alone would leave that combination with two controller sets
   # server-side-applying the same Deployments, ConfigMaps and credential Secrets.
   # Both commands tolerate absence — the HelmRelease may not be applied yet on a
@@ -2685,7 +2688,8 @@ main() {
     log "INFRA_ONLY=true: suspending every CobaltCore operator HelmRelease and scaling its Deployment to zero."
     for operator in c5c3:c5c3-system keystone:keystone-system horizon:horizon-system \
                     glance:glance-system placement:placement-system barbican:barbican-system \
-                    ovn:ovn-system neutron:neutron-system cinder:cinder-system; do
+                    ovn:ovn-system neutron:neutron-system cinder:cinder-system \
+                    nova:nova-system; do
       kubectl patch helmrelease "${operator%%:*}-operator" -n "${operator##*:}" \
         --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
       kubectl scale deployment -n "${operator##*:}" "${operator%%:*}-operator" --replicas=0 2>/dev/null || true
@@ -2852,6 +2856,7 @@ main() {
     enable_operator_servicemonitor ovn-operator ovn-system "${HELMRELEASE_TIMEOUT}"
     enable_operator_servicemonitor neutron-operator neutron-system "${HELMRELEASE_TIMEOUT}"
     enable_operator_servicemonitor cinder-operator cinder-system "${HELMRELEASE_TIMEOUT}"
+    enable_operator_servicemonitor nova-operator nova-system "${HELMRELEASE_TIMEOUT}"
   fi
 
   # Step 5: Apply infrastructure kustomize overlay (CRD-dependent resources)

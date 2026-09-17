@@ -45,6 +45,7 @@ BARBICAN_DIGEST="sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 OVN_DIGEST="sha256:1111111111111111111111111111111111111111111111111111111111111111"
 NEUTRON_DIGEST="sha256:2222222222222222222222222222222222222222222222222222222222222222"
 CINDER_DIGEST="sha256:3333333333333333333333333333333333333333333333333333333333333333"
+NOVA_DIGEST="sha256:4444444444444444444444444444444444444444444444444444444444444444"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -95,6 +96,7 @@ if [ "${1:-}" = "buildx" ] && [ "${2:-}" = "imagetools" ] && [ "${3:-}" = "inspe
     *ovn-operator*)      printf '"sha256:1111111111111111111111111111111111111111111111111111111111111111"' ;;
     *neutron-operator*)  printf '"sha256:2222222222222222222222222222222222222222222222222222222222222222"' ;;
     *cinder-operator*)   printf '"sha256:3333333333333333333333333333333333333333333333333333333333333333"' ;;
+    *nova-operator*)     printf '"sha256:4444444444444444444444444444444444444444444444444444444444444444"' ;;
     *) exit 1 ;;
   esac
   exit 0
@@ -152,6 +154,7 @@ case "$repo" in
   *ovn-operator*)      digest="sha256:1111111111111111111111111111111111111111111111111111111111111111" ;;
   *neutron-operator*)  digest="sha256:2222222222222222222222222222222222222222222222222222222222222222" ;;
   *cinder-operator*)   digest="sha256:3333333333333333333333333333333333333333333333333333333333333333" ;;
+  *nova-operator*)     digest="sha256:4444444444444444444444444444444444444444444444444444444444444444" ;;
 esac
 
 if [ -n "$headers_file" ]; then
@@ -175,6 +178,7 @@ if [ "${1:-}" = "get" ] && [ "${2:-}" = "configmap" ]; then
       ovn-operator-image-digest)      printf 'image:\n  digest: sha256:1111111111111111111111111111111111111111111111111111111111111111\n' ;;
       neutron-operator-image-digest)  printf 'image:\n  digest: sha256:2222222222222222222222222222222222222222222222222222222222222222\n' ;;
       cinder-operator-image-digest)   printf 'image:\n  digest: sha256:3333333333333333333333333333333333333333333333333333333333333333\n' ;;
+      nova-operator-image-digest)     printf 'image:\n  digest: sha256:4444444444444444444444444444444444444444444444444444444444444444\n' ;;
     esac
   fi
   exit 0
@@ -311,10 +315,10 @@ test_resolve_image_digest_fallback_to_curl() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: the loop applies all nine ConfigMaps and requests reconciles
+# Test 5: the loop applies all ten ConfigMaps and requests reconciles
 # ---------------------------------------------------------------------------
 test_refresh_applies_and_annotates_all_operators() {
-  echo "Test: refresh applies 9 ConfigMaps and annotates 9 HelmReleases"
+  echo "Test: refresh applies 10 ConfigMaps and annotates 10 HelmReleases"
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
@@ -355,8 +359,11 @@ test_refresh_applies_and_annotates_all_operators() {
   assert_contains "cinder ConfigMap applied" "$apply_log" "name: cinder-operator-image-digest"
   assert_contains "cinder ConfigMap namespace" "$apply_log" "namespace: cinder-system"
   assert_contains "cinder digest in payload" "$apply_log" "$CINDER_DIGEST"
+  assert_contains "nova ConfigMap applied" "$apply_log" "name: nova-operator-image-digest"
+  assert_contains "nova ConfigMap namespace" "$apply_log" "namespace: nova-system"
+  assert_contains "nova digest in payload" "$apply_log" "$NOVA_DIGEST"
 
-  assert_eq "nine reconcile annotations" "9" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
+  assert_eq "ten reconcile annotations" "10" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
   assert_contains "keystone reconcile requested" "$annotate_log" "helmrelease/keystone-operator"
   assert_contains "keystone reconcile namespace" "$annotate_log" "-n keystone-system"
   assert_contains "c5c3 reconcile requested" "$annotate_log" "helmrelease/c5c3-operator"
@@ -370,6 +377,8 @@ test_refresh_applies_and_annotates_all_operators() {
   assert_contains "neutron reconcile namespace" "$annotate_log" "-n neutron-system"
   assert_contains "cinder reconcile requested" "$annotate_log" "helmrelease/cinder-operator"
   assert_contains "cinder reconcile namespace" "$annotate_log" "-n cinder-system"
+  assert_contains "nova reconcile requested" "$annotate_log" "helmrelease/nova-operator"
+  assert_contains "nova reconcile namespace" "$annotate_log" "-n nova-system"
   assert_contains "requestedAt annotation" "$annotate_log" "reconcile.fluxcd.io/requestedAt="
   assert_contains "annotation is idempotent (overwrite)" "$annotate_log" "overwrite"
   assert_contains "pinned log line" "$out" "pinned to"
@@ -388,7 +397,7 @@ test_refresh_skips_annotate_when_digest_unchanged() {
   local out rc=0
   out=$(run_refresh "$tmp" KUBECTL_CM_EXISTS=true) || rc=$?
   assert_eq "refresh succeeds" "0" "$rc"
-  assert_eq "nine ConfigMap applies (idempotent re-apply)" "9" "$(grep -c -- '--- kubectl apply' "$tmp/apply.log")"
+  assert_eq "ten ConfigMap applies (idempotent re-apply)" "10" "$(grep -c -- '--- kubectl apply' "$tmp/apply.log")"
   assert_eq "no reconcile annotations" "0" "$(grep -c 'annotate' "$tmp/annotate.log")"
   assert_contains "unchanged log line" "$out" "digest unchanged"
 }
@@ -419,7 +428,8 @@ test_refresh_continues_on_resolve_failure() {
   assert_contains "ovn ConfigMap still applied" "$apply_log" "name: ovn-operator-image-digest"
   assert_contains "neutron ConfigMap still applied" "$apply_log" "name: neutron-operator-image-digest"
   assert_contains "cinder ConfigMap still applied" "$apply_log" "name: cinder-operator-image-digest"
-  assert_eq "eight reconcile annotations" "8" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
+  assert_contains "nova ConfigMap still applied" "$apply_log" "name: nova-operator-image-digest"
+  assert_eq "nine reconcile annotations" "9" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
 }
 
 # ---------------------------------------------------------------------------
