@@ -267,12 +267,26 @@ provision_service_tenant() {
 # row's schema list is 'cinder'. This leg is the engine half of the cinder
 # onboarding; the auth half is in setup-auth.sh, where the cinder-db role binds
 # the cinder-db-dynamic policy that grants exactly this creds path.
+#
+# MUST STAY IN SYNC (nova): the nova-api-<namespace> and nova-cell-<namespace>
+# role names below are the derivations the nova credential generators must
+# assert once #1019 adds them; #1019 replaces this sentence with the function
+# names. The rows' schema lists are the defaults fixed by #1014 D2: nova_api for
+# the API role, nova and its nova_cell0 for the cell role.
+# The auth half is in setup-auth.sh, where the nova-api-db and nova-cell-db
+# roles bind the nova-api-db-dynamic / nova-cell-db-dynamic policies that grant
+# exactly these creds paths. The cell role is named nova-cell and not nova
+# because no role name may be a hyphen-prefix of another: a role nova in
+# namespace api-x and a role nova-api in namespace x would both flatten to
+# nova-api-x and overwrite each other's connection config.
 SERVICE_TENANTS=(
   "glance glance glance"
   "placement placement placement"
   "barbican barbican barbican"
   "neutron neutron neutron"
   "cinder cinder cinder"
+  "nova-api nova nova_api"
+  "nova-cell nova nova,nova_cell0"
 )
 
 ###############################################################################
