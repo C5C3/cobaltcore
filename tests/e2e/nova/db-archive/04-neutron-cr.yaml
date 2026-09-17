@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR for the db-archive E2E test (2025.2 release).
+#
+# Nova needs a network service in the catalog it can reach: the API resolves
+# [neutron] on every request that touches ports, and the metadata API verifies a
+# proxied request against the shared secret this deployment's agents would sign
+# with. The servers here are created with --nic none, so no port is ever bound.
+#
+# spec.nova is not set. The notification flip that makes Neutron report port
+# state back to Nova belongs to its own issue, and a server without a NIC sends
+# no event to report.
+#
+# One API replica and one worker replica: neither serves a request this suite
+# makes, so more pods would only lengthen the bring-up on a node that already
+# carries five services.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-nova-archive
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_nova_archive
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-nova-archive-messaging
+  ovn:
+    centralRef:
+      name: nova-archive-ovn
+  keystoneEndpoint: http://keystone-nova-archive.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
