@@ -1,0 +1,88 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# What the deployment does once the partition is lifted: it finishes the
+# request it was holding, and it takes new ones.
+#
+# s-blocked first. The API worker that stalled on the cast is still in
+# oslo.messaging's retry loop, so the publish goes out as soon as the broker is
+# reachable again, the conductor schedules the build and the server reaches
+# ACTIVE without anyone re-submitting it. A build request that stayed in BUILD
+# would mean the deployment accepted a server it then dropped.
+#
+# s-after is the fresh one. It says the scheduler and the conductor are serving
+# again rather than only reporting ready, and that the reconnect needed no pod
+# restart and no operator action.
+#
+# backoffLimit is 0 because the script is not idempotent: a second attempt
+# would find the server s-after the first one created and fail on the name.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-broker-chaos-recovered
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: recovered
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-broker-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              SEED=4e0a0000-0000-4000-8000-000000000005
+
+              # wait_status <kind> <name> <want> <timeoutSeconds>: poll one
+              # object's status every 5s. On the deadline it prints the
+              # object's own show output, whose fault message is what explains
+              # a server that reached ERROR.
+              wait_status() {
+                ws_deadline=$(( $(date +%s) + $4 ))
+                while true; do
+                  ws_status="$(openstack "$1" show "$2" -f value -c status 2>/dev/null || true)"
+                  if [ "${ws_status}" = "$3" ]; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${ws_deadline}" ]; then
+                    echo "ERROR: $1 $2 status '${ws_status:-<none>}' != $3 within $4s"
+                    openstack "$1" show "$2" 2>&1 || true
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+
+              # The cast 15-blocked-job.yaml left in the retry loop.
+              wait_status server s-blocked ACTIVE 300
+              echo "OK: the create that blocked under the partition reached ACTIVE"
+
+              # m1.nano is the flavor 14-baseline-job.yaml created.
+              openstack server create --image "${SEED}" --flavor m1.nano --nic none s-after
+              wait_status server s-after ACTIVE 300
+              echo "OK: server s-after is ACTIVE"
+
+              echo RECOVERED-OK
