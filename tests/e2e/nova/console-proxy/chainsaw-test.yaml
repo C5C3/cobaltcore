@@ -1,0 +1,556 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Nova console proxy behind the kind Gateway
+# (2025.2 release). It proves three things a suite without a booted instance
+# cannot:
+#   - the console URL the API hands a client carries the gateway hostname the
+#     operator rendered into [vnc] novncproxy_base_url, so
+#     `openstack console url show` answers with the address a browser outside
+#     the cluster reaches rather than with the in-cluster Service
+#   - the token handshake through that hostname: the noVNC page answers 200,
+#     the WebSocket upgrade is switched to 101 by the proxy, and the proxy
+#     resolves the token and dials the console host the fake driver reports
+#     (fakevncconsole.com:6969)
+#   - the invalid-token path: a made-up token is upgraded to 101 as well, and
+#     the proxy rejects it in its log rather than opening a session
+#
+# The fixtures are the full-stack tier of ../basic-deployment, because only an
+# instance that reached ACTIVE has a console: the suite carries its own
+# Keystone and catalog rows, an OVNCentral and a Neutron for the network
+# service, a Placement for the scheduler, a Glance with an S3 store and a seeded
+# image, and a fake-driver compute. Every object carries the nova-vnc prefix and
+# the seed image has an id of its own, since every Glance on the leg writes into
+# the one glance-images bucket keyed by image id. No file outside this directory
+# is named except ../../cinder/broker-vhost.sh and ../discover-hosts.sh.
+#
+# ── The CR is nova-vnc, not nova-console ─────────────────────────────
+# "-console" is one of the suffixes the validating webhook rejects a Nova name
+# for (operators/nova/api/v1alpha1/nova_webhook.go): <name>-console is the name
+# of the console proxy's HTTPRoute, so a Nova called nova-console would name the
+# route of a Nova called "nova". The children here are therefore
+# nova-vnc-novncproxy (Deployment and Service) and the route nova-vnc-console.
+#
+# ── The bring-up sits inside the guarded script ──────────────────────
+# Like ../gateway-quick-start-smoke, step 1 first checks that GatewayClass/envoy,
+# Gateway/openstack-gw, the Nova CRD and the listener https-nova-console are
+# present, and exits 0 with a SKIP line if any is not. Everything the suite
+# applies sits behind that guard, so a cluster without the console listener
+# creates nothing at all: a `chainsaw apply` outside the script would abort the
+# run with `no matches for kind "Nova"` on an overlay that has no operator.
+#
+# ── The teardown is a step cleanup, not a finally ────────────────────
+# A per-step `finally:` runs as soon as its own step ends, which would take the
+# stack down between the bring-up and the handshake. A step `cleanup:` is
+# deferred to the end of the test, which is what the suite needs: the objects
+# are created with kubectl from inside the guarded script, so chainsaw's own
+# namespace teardown never sees them and the shared `openstack` namespace would
+# keep them for good.
+#
+# ── The console hostname is shared ───────────────────────────────────
+# nova-console.127-0-0-1.nip.io is a single listener on the one kind Gateway,
+# and ../gateway-quick-start-smoke claims it too. Two HTTPRoutes on one hostname
+# are resolved by creation timestamp, so the catch block lists every route on
+# the hostname: a handshake that reached another suite's proxy reports an
+# invalid token for a token the API had just minted.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-console-proxy
+spec:
+  namespace: openstack
+  timeouts:
+    # Five services come up before the Nova is even applied, and the Nova then
+    # runs a two-schema migration, a cell mapping and five workloads. That does
+    # not fit the 120s the shared config allows.
+    # The first CI run measured the bring-up: the eight MariaDB CRs take 3
+    # minutes at the operator's 30 s requeue and the six nova-manage invocations
+    # of the db-sync about 3 more, so Ready lands roughly 8 minutes after the
+    # apply. 10m keeps a margin for a leg that runs two suites at once.
+    assert: 10m
+    # The envelope of the bring-up step, which drives the whole stack and the
+    # boot in one script. The `kubectl wait` bounds inside it are per-object
+    # diagnostics rather than a budget that sums to this one: each names the
+    # object that never became ready, and this cap is what ends a run in which
+    # several of them crawl.
+    exec: 25m
+  steps:
+  # ── Step 1: Bring the stack up and publish the console URL ─────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 25m
+        content: |
+          set -euo pipefail
+
+          # ── Presence guard ──────────────────────────────────────
+          # The kind overlay alone applies deploy/kind/base/openstack-gateway.yaml,
+          # which materialises GatewayClass/envoy and Gateway/openstack-gw. Their
+          # absence unambiguously signals a non-kind cluster, so exit 0 with a
+          # SKIP line.
+          if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
+            echo "SKIP: GatewayClass/envoy not present (non-kind overlay)."
+            exit 0
+          fi
+          if ! kubectl get gateway openstack-gw -n "$NAMESPACE" >/dev/null 2>&1; then
+            echo "SKIP: Gateway/openstack-gw not present in the $NAMESPACE namespace"
+            echo "      (non-kind overlay)."
+            exit 0
+          fi
+          if ! kubectl get crd novas.nova.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Nova CRD not present (operator not deployed)."
+            exit 0
+          fi
+          # Listener gate: the console hostname terminates on a listener of its
+          # own, and an overlay that predates it would answer 404 for an SNI no
+          # listener claims. The name is matched space-delimited because
+          # https-nova is a prefix of it.
+          LISTENERS="$(kubectl get gateway openstack-gw -n "$NAMESPACE" \
+            -o jsonpath='{.spec.listeners[*].name}')"
+          case " ${LISTENERS} " in
+            *" https-nova-console "*) ;;
+            *)
+              echo "SKIP: Gateway/openstack-gw has no listener https-nova-console"
+              echo "      (overlay predates the Nova console listener)."
+              exit 0
+              ;;
+          esac
+          echo "OK: the Gateway, its console listener and the Nova CRD are present"
+
+          # run_job <name> <fixture> <timeout>: the Job is deleted first because
+          # a Job's pod template is immutable, so a re-run against a leftover
+          # object would fail on the update rather than on anything the suite is
+          # testing. On the deadline the log and the pod list of the run say
+          # why.
+          run_job() {
+            kubectl delete job "$1" -n "$NAMESPACE" --ignore-not-found
+            kubectl apply -f "$2"
+            kubectl wait --for=condition=complete "job/$1" -n "$NAMESPACE" --timeout="$3" || {
+              kubectl logs -n "$NAMESPACE" "job/$1" 2>&1 || true
+              kubectl get pods -n "$NAMESPACE" -l job-name="$1" -o wide
+              exit 1
+            }
+          }
+
+          # One vhost per suite: nova's RPC topics are named after the service
+          # rather than after the CR, so two suites on one vhost would share the
+          # scheduler and conductor queues and a compute could answer the other
+          # suite's API. See ../../cinder/broker-vhost.sh. Chainsaw runs scripts
+          # with the test directory as CWD, so the relative paths resolve.
+          ../../cinder/broker-vhost.sh create nova-vnc nova-vnc-messaging openstack
+
+          # Keystone goes first because the catalog Job, the five sibling CRs and
+          # the Nova all authenticate against it.
+          kubectl apply -f 00-keystone-cr.yaml
+          kubectl wait --for=condition=Ready --timeout=8m \
+            keystone/keystone-nova-vnc -n "$NAMESPACE"
+          echo "OK: Keystone/keystone-nova-vnc is Ready"
+
+          # The catalog rows are written before the services start: a row added
+          # after a pod came up is only picked up once the token middleware's
+          # catalog cache expires.
+          run_job nova-vnc-catalog-setup 01-catalog-setup-job.yaml 5m
+          echo "OK: the compute, placement, image and network rows are registered"
+
+          # The Neutron transport-URL Secret and the four CRs the boot path
+          # depends on: an OVN control plane, the Neutron that programs it, a
+          # Placement for the scheduler and a Glance with its S3 store. They go
+          # in together and are waited for one after the other, so their
+          # bring-ups overlap.
+          for fixture in 02-messaging-secret.yaml 03-ovncentral-cr.yaml \
+                         04-neutron-cr.yaml 05-placement-cr.yaml \
+                         06-glance-cr.yaml 07-glancebackend-cr.yaml; do
+            kubectl apply -f "$fixture"
+          done
+          for target in ovncentral/nova-vnc-ovn neutron/neutron-nova-vnc \
+                        placement/placement-nova-vnc glance/glance-nova-vnc \
+                        glancebackend/glance-nova-vnc-s3; do
+            kubectl wait --for=condition=Ready --timeout=8m "$target" -n "$NAMESPACE"
+            echo "OK: $target is Ready"
+          done
+
+          # The image the server boots from, seeded now that the Glance serves.
+          run_job nova-vnc-image-seed 08-image-seed-job.yaml 5m
+          echo "OK: the seed image is registered"
+
+          kubectl apply -f 09-metadata-secret.yaml
+          kubectl apply -f 10-nova-cr.yaml
+          kubectl wait --for=condition=Ready --timeout=8m nova/nova-vnc -n "$NAMESPACE"
+          echo "OK: Nova/nova-vnc is Ready"
+          # The route condition on its own: it flips True only after a Gateway
+          # controller published Accepted on the route's parent, so it is the
+          # operator reporting that Envoy took the console route rather than
+          # that it wrote it.
+          kubectl wait --for=condition=ConsoleHTTPRouteReady --timeout=5m \
+            nova/nova-vnc -n "$NAMESPACE"
+          echo "OK: Nova/nova-vnc reports ConsoleHTTPRouteReady=True"
+
+          # The fake compute is applied only now: the Deployment mounts the
+          # compute-contract Secret the Nova publishes while it becomes Ready.
+          kubectl apply -f 11-fake-compute.yaml
+          kubectl wait --for=condition=Available deploy/nova-vnc-fake-compute \
+            -n "$NAMESPACE" --timeout=5m
+          echo "OK: the fake compute is available"
+
+          # The host mapping by hand. nova-scheduler writes it from a 300-second
+          # periodic, and waiting that out is what ../basic-deployment proves;
+          # here it would be five idle minutes in front of the boot.
+          ../discover-hosts.sh nova-vnc "$NAMESPACE"
+
+          run_job nova-vnc-verify 12-verify-job.yaml 10m
+          # The log is fetched once and asserted on the captured text: a
+          # `kubectl logs | grep -q` pipeline fails under pipefail exactly when
+          # it matches, because grep closes the pipe while kubectl is still
+          # writing.
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-vnc-verify)"
+          # The token in the CONSOLE-URL line is a live bearer credential for
+          # the instance console, good for nova's [consoleauth] token_ttl, and
+          # step 2 proves it by replaying it through the Gateway. The rule here
+          # and in the catch block: the paths that always print redact it, so a
+          # green run leaves the shape of the URL in the job log and not the
+          # credential. The error paths of step 2 keep the raw value, because a
+          # URL that failed its own shape check is what has to be readable then.
+          redact() { sed 's/token%3D[0-9a-fA-F-]*/token%3D<redacted>/g'; }
+          redact <<<"$LOGS"
+          grep -q 'NOVA-VERIFY-OK' <<<"$LOGS"
+
+          URL="$(sed -n 's/^CONSOLE-URL=//p' <<<"$LOGS")"
+          if [ -z "$URL" ]; then
+            echo "ERROR: the verify Job printed no CONSOLE-URL line"
+            exit 1
+          fi
+          echo "OK: the API published the console URL $(redact <<<"$URL")"
+
+          # Recorded because the steps below run in shells of their own, and
+          # because its absence is how they tell a skipped bring-up from a
+          # failed one. A Secret rather than a ConfigMap: the URL carries the
+          # token, `get configmaps` in the shared openstack Namespace is a far
+          # wider grant than `get secrets`, and the catch block below dumps a
+          # ConfigMap verbatim.
+          kubectl create secret generic nova-vnc-console-url -n "$NAMESPACE" \
+            --from-literal=url="$URL" --dry-run=client -o yaml | kubectl apply -f -
+    catch: &nova-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-vnc
+        namespace: openstack
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-nova-vnc
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNCentral
+        name: nova-vnc-ovn
+        namespace: openstack
+    - get:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: Neutron
+        name: neutron-nova-vnc
+        namespace: openstack
+    - get:
+        apiVersion: placement.openstack.c5c3.io/v1alpha1
+        kind: Placement
+        name: placement-nova-vnc
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: Glance
+        name: glance-nova-vnc
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: GlanceBackend
+        name: glance-nova-vnc-s3
+        namespace: openstack
+    - script:
+        content: |
+          # This block always prints, so it follows the rule step 1 states: the
+          # paths that always print redact the console token. It reaches the
+          # dump from the verify Job, which prints it on its CONSOLE-URL line,
+          # from the proxy, which logs the query of every upgrade it answers
+          # (in the pod loop below and again in its own tail), and from the
+          # recorded Secret, which holds the whole URL. Both spellings: the URL
+          # carries the token percent-encoded inside the noVNC path query, the
+          # upgrade sends it plain.
+          redact() {
+            sed -e 's/token%3D[0-9a-fA-F-]*/token%3D<redacted>/g' \
+                -e 's/token=[0-9a-fA-F-]*/token=<redacted>/g'
+          }
+          echo "=== Deployments ==="
+          kubectl describe deploy -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-vnc 2>&1 | tail -200 || true
+          echo "=== Pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-vnc -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 | redact || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 | redact || true
+          done
+          echo "=== Services and endpoints ==="
+          kubectl get svc,endpointslices -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-vnc -o wide 2>&1 || true
+          echo "=== Fake compute ==="
+          kubectl logs -n "$NAMESPACE" deploy/nova-vnc-fake-compute --tail=100 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-vnc-catalog-setup nova-vnc-image-seed nova-vnc-verify nova-vnc-delete-server; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 | redact || true
+          done
+          # The console proxy the suite is about. Its Deployment carries one
+          # container, so the log needs no container name. The tail is longer
+          # than the loop above gives it: the token lines the steps match are
+          # printed among the proxy's own request logging.
+          echo "=== Console proxy ==="
+          kubectl logs -n "$NAMESPACE" deploy/nova-vnc-novncproxy --tail=200 2>&1 | redact || true
+          echo "=== Console route and recorded URL ==="
+          kubectl get httproute -n "$NAMESPACE" nova-vnc-console -o yaml 2>&1 || true
+          # The recorded URL without its token: what a failing handshake needs
+          # is the hostname and the path the operator rendered, and the token
+          # itself is a live credential.
+          kubectl get secret nova-vnc-console-url -n "$NAMESPACE" \
+            -o jsonpath='{.data.url}' 2>/dev/null | base64 -d 2>/dev/null \
+            | redact || true
+          echo
+          # Every route in the namespace with its hostnames and its age. Two
+          # routes on one hostname are resolved by creation timestamp, so a
+          # second claimant of nova-console.127-0-0-1.nip.io is what a handshake
+          # that reached another suite's proxy looks like.
+          kubectl get httproute -n "$NAMESPACE" \
+            -o custom-columns=NAME:.metadata.name,HOSTNAMES:.spec.hostnames,CREATED:.metadata.creationTimestamp 2>&1 || true
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 200
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/name=neutron-operator
+        tail: 200
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/name=placement-operator
+        tail: 200
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/name=glance-operator
+        tail: 200
+    - podLogs:
+        namespace: envoy-gateway-system
+        selector: app.kubernetes.io/name=gateway-helm
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    # Deferred to the end of the test, not to the end of this step. Everything
+    # below is best-effort: a SKIP run created nothing, and a cleanup failure
+    # must not mask the verdict of the steps. The Nova goes first and is waited
+    # for, because its finalizer drives the MariaDB teardown and needs the
+    # database credentials that come down with the rest.
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          kubectl delete nova nova-vnc -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=300s || true
+          kubectl delete deploy nova-vnc-fake-compute -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete configmap nova-vnc-fake-compute-conf -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete job nova-vnc-catalog-setup nova-vnc-image-seed \
+            nova-vnc-verify nova-vnc-delete-server -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete secret nova-vnc-console-url -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete glancebackend glance-nova-vnc-s3 -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete glance glance-nova-vnc -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete placement placement-nova-vnc -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete neutron neutron-nova-vnc -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete ovncentral nova-vnc-ovn -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete secret nova-vnc-messaging neutron-nova-vnc-messaging \
+            nova-vnc-metadata-secret -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete keystone keystone-nova-vnc -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete memcached keystone-nova-vnc-cache -n "$NAMESPACE" --ignore-not-found || true
+          ../../cinder/broker-vhost.sh delete nova-vnc || true
+  # ── Step 2: The token handshake through the Gateway ────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+
+          # The Secret step 1 records is the handover and the guard in one: a
+          # run that skipped the bring-up never wrote it.
+          kubectl get secret nova-vnc-console-url -n "$NAMESPACE" >/dev/null 2>&1 || {
+            echo "SKIP: no console URL recorded (guarded bring-up skipped)"
+            exit 0
+          }
+          URL="$(kubectl get secret nova-vnc-console-url -n "$NAMESPACE" \
+            -o jsonpath='{.data.url}' | base64 -d)"
+
+          HOST=nova-console.127-0-0-1.nip.io
+          # What the operator renders for a console proxy behind a gateway:
+          # https://<hostname>/vnc_lite.html plus the query the noVNC client
+          # reads its socket path out of, which carries the token percent-encoded
+          # twice over (operators/nova/internal/controller/reconcile_config.go).
+          PREFIX="https://${HOST}/vnc_lite.html?path=%3Ftoken%3D"
+          case "$URL" in
+            "$PREFIX"*) ;;
+            *)
+              echo "ERROR: the console URL is '$URL'"
+              echo "       want it to start with $PREFIX"
+              exit 1
+              ;;
+          esac
+          echo "OK: the console URL names the gateway hostname"
+
+          TOKEN="$(sed -n 's/.*token%3D\([0-9a-f-]*\).*/\1/p' <<<"$URL")"
+          if [ -z "$TOKEN" ]; then
+            echo "ERROR: no token in the console URL '$URL'"
+            exit 1
+          fi
+
+          # ── The client page ─────────────────────────────────────
+          # curl runs from the chainsaw host: the nip.io mapping is external DNS
+          # and hack/kind-config.yaml bridges host 127.0.0.1:443 to the proxy
+          # NodePort, so this is the URL a user opens. `-k` accepts the
+          # self-signed kind certificate. Envoy's xDS push can race the route
+          # condition by a few seconds, so the page is retried 15 times 2s apart
+          # the way ../gateway-quick-start-smoke does.
+          CODE=""
+          for attempt in $(seq 1 15); do
+            CODE="$(curl -sk -o /dev/null -w '%{http_code}' "https://${HOST}/vnc_lite.html" || true)"
+            if [ "$CODE" = "200" ]; then
+              echo "OK: the noVNC page answered 200 on attempt $attempt"
+              break
+            fi
+            echo "attempt $attempt: /vnc_lite.html HTTP $CODE (retrying in 2s)"
+            sleep 2
+          done
+          if [ "$CODE" != "200" ]; then
+            echo "ERROR: https://${HOST}/vnc_lite.html returned HTTP $CODE"
+            exit 1
+          fi
+
+          # ── The WebSocket upgrade ───────────────────────────────
+          # upgrade <token> <outfile>: the handshake the noVNC client makes,
+          # spelled out with curl. --http1.1 pins the version an RFC 6455
+          # upgrade needs, since Envoy would otherwise negotiate h2 over ALPN.
+          #
+          # The socket is opened on /websockify, the path websockify serves its
+          # own endpoint under. nova's URL instead names "/" with the same
+          # token query, and the route is a PathPrefix on "/", so both reach the
+          # proxy the same way; /websockify is the form the lab of #1015 proved.
+          #
+          # A switched socket ends four ways here and none of them says the
+          # handshake failed: curl reaching --max-time (28), the proxy closing
+          # the stream behind a frame it sent (0), the proxy closing it without
+          # having sent a byte (52), and the gateway resetting a stream it was
+          # holding open (56). 52 is how a handler exception reads from here,
+          # the fake console's unresolvable host included: websockify drops the
+          # socket without a close frame, and curl leaves the bytes of a 1xx
+          # response out of its count, so it reports an empty reply with the 101
+          # in hand. A 52 with no response at all still fails, on the status
+          # line check below. Anything else is the request itself failing.
+          upgrade() {
+            set +e
+            curl -sk -i -N --http1.1 --max-time 10 \
+              -H 'Connection: Upgrade' \
+              -H 'Upgrade: websocket' \
+              -H 'Sec-WebSocket-Version: 13' \
+              -H "Sec-WebSocket-Key: $(head -c 16 /dev/urandom | base64)" \
+              "https://${HOST}/websockify?token=$1" >"$2" 2>&1
+            up_rc=$?
+            set -e
+            case "$up_rc" in
+              0|28|52|56) ;;
+              *)
+                echo "ERROR: curl exited $up_rc on the upgrade with token $1"
+                head -20 "$2" || true
+                exit 1
+                ;;
+            esac
+            up_head="$(head -1 "$2" | tr -d '\r')"
+            case "$up_head" in
+              "HTTP/1.1 101"*) ;;
+              *)
+                echo "ERROR: the upgrade answered '$up_head', want HTTP/1.1 101"
+                head -20 "$2" || true
+                exit 1
+                ;;
+            esac
+          }
+
+          # wait_log <needle>...: poll the proxy log for up to 30s until every
+          # needle is in it. The proxy writes its verdict after the switch, so
+          # the log is what says whether the token resolved; the 101 alone only
+          # says Envoy routed the upgrade.
+          wait_log() {
+            for _ in $(seq 1 30); do
+              wl_logs="$(kubectl logs -n "$NAMESPACE" deploy/nova-vnc-novncproxy \
+                --tail=200 2>/dev/null || true)"
+              wl_missing=""
+              for needle in "$@"; do
+                if ! grep -qF "$needle" <<<"$wl_logs"; then
+                  wl_missing="$needle"
+                  break
+                fi
+              done
+              if [ -z "$wl_missing" ]; then
+                return 0
+              fi
+              sleep 1
+            done
+            echo "ERROR: the console proxy log never carried '$wl_missing' within 30s"
+            printf '%s\n' "$wl_logs"
+            return 1
+          }
+
+          upgrade "$TOKEN" /tmp/nova-vnc-upgrade-valid
+          echo "OK: the valid token was switched to 101"
+          # The console the fake driver reports for every instance. Reaching it
+          # is the end of the proxy's own work: it resolved the token against
+          # the cell database and dialled the address it found.
+          wait_log 'connect info:' 'connecting to: fakevncconsole.com:6969'
+          echo "OK: the proxy resolved the token and dialled the instance console"
+
+          # The rejection path, with a token no API ever minted. Envoy switches
+          # it too, because the route knows nothing about tokens, and the proxy
+          # is the one that turns it down.
+          upgrade 00000000-0000-0000-0000-000000000000 /tmp/nova-vnc-upgrade-invalid
+          echo "OK: the invalid token was switched to 101 as well"
+          wait_log 'is invalid or has expired'
+          echo "OK: the proxy rejected the invalid token"
+
+          echo CONSOLE-OK
+    catch: *nova-dump
+  # ── Step 3: Delete the server the handshake ran against ────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+
+          kubectl get secret nova-vnc-console-url -n "$NAMESPACE" >/dev/null 2>&1 || {
+            echo "SKIP: no console URL recorded (guarded bring-up skipped)"
+            exit 0
+          }
+
+          kubectl delete job nova-vnc-delete-server -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 13-delete-server-job.yaml
+          kubectl wait --for=condition=complete job/nova-vnc-delete-server \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-vnc-delete-server 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-vnc-delete-server -o wide
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-vnc-delete-server)"
+          echo "$LOGS"
+          grep -q 'DELETE-OK' <<<"$LOGS"
+    catch: *nova-dump

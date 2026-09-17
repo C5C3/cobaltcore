@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Nova CR for the console-proxy E2E test (2025.2 release).
+#
+# Managed mode throughout: the two schemas nova_vnc_api and nova_vnc
+# on the openstack-db MariaDB cluster (cell0 is derived as
+# nova_vnc_cell0), the openstack-memcached cache, the ESO-synced
+# nova-api-db and nova-db credentials and the pre-seeded keystone-admin
+# service-user password (all from deploy/kind/infrastructure).
+#
+# The bus is the per-suite vhost broker-vhost.sh writes into
+# nova-vnc-messaging. Managed messaging is not usable here: the URL it
+# renders always names the root vhost, so two suites would share the
+# scheduler and conductor RPC topics.
+#
+# The CR is named nova-vnc rather than nova-console. "-console" is one of the
+# suffixes the validating webhook rejects a Nova name for
+# (operators/nova/api/v1alpha1/nova_webhook.go), because <name>-console is the
+# name of the console proxy's own HTTPRoute.
+#
+# One API replica. This suite asserts nothing about the PodDisruptionBudget the
+# second replica of ../basic-deployment exists for, and the node already runs
+# six services. The scheduler, the conductor, the metadata API and the console
+# proxy take the webhook's defaults.
+#
+# spec.consoleProxy.gateway is what the suite is about: with it set the operator
+# renders [vnc] novncproxy_base_url as https://<hostname>/vnc_lite.html
+# (operators/nova/internal/controller/reconcile_config.go), so the URL the API
+# hands a client names the address a browser outside the cluster reaches. The
+# hostname matches the https-nova-console listener of the kind overlay's
+# openstack-gw Gateway and the dnsName of that listener's Certificate
+# (deploy/kind/base/openstack-gateway.yaml), so the SNI the curl presents finds
+# both. The block carries no path: the console page and the WebSocket that
+# follows it are both served from the root of that hostname, which is why the
+# webhook accepts only an empty path or "/" there.
+#
+# No other gateway block. The API keeps its cluster-local endpoint, which is
+# what the catalog rows of 01-catalog-setup-job.yaml point at.
+#
+# allow_resize_to_same_host is the suite's only override, and it is carried for
+# fixture uniformity with the sibling full-stack suites rather than for
+# anything this one does: no server is resized here. The option is not rendered
+# by the operator (it is listed in
+# operators/nova/api/v1alpha1/catalogs/2025.2.json), so ExtraConfigHealthy stays
+# True on NoOwnedKeysOverridden.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-vnc
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  apiDatabase:
+    clusterRef:
+      name: openstack-db
+    database: nova_vnc_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: openstack-db
+    database: nova_vnc
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: nova-vnc-messaging
+  keystoneEndpoint: http://keystone-nova-vnc.openstack.svc.cluster.local:5000/v3
+  region: RegionOne
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-vnc-metadata-secret
+  consoleProxy:
+    gateway:
+      parentRef:
+        name: openstack-gw
+      hostname: nova-console.127-0-0-1.nip.io
+  extraConfig:
+    DEFAULT:
+      allow_resize_to_same_host: "true"
