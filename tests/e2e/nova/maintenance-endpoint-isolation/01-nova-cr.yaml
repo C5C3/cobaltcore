@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Nova CR for the maintenance-endpoint-isolation E2E test (2025.2 release).
+#
+# The light fixture tier: no Keystone, no Placement, no Neutron and no Glance
+# run beside it. A Nova reaches Ready with only Secrets and the broker, because
+# the API and metadata probes GET the API root and the scheduler and conductor
+# probes read the broker socket. spec.keystoneEndpoint is a convention URL
+# nothing serves, and spec.serviceUser reads the kind-only keystone-admin
+# Secret from deploy/kind/infrastructure.
+#
+# The two schemas nova_isolation_api and nova_isolation live on the openstack-db
+# MariaDB cluster (cell0 is derived as nova_isolation_cell0), the cache is
+# openstack-memcached, and the credentials are the ESO-synced nova-api-db and
+# nova-db Secrets.
+#
+# The bus is the per-suite vhost broker-vhost.sh writes into
+# nova-isolation-messaging. Managed messaging is not usable here: the URL it
+# renders always names the root vhost, so two suites would share the scheduler
+# and conductor RPC topics.
+#
+# The API runs two replicas, so the upper bound the suite samples sits above
+# one: with a single replica an archive pod that had become a backend would
+# push the count from one to two, which is a number a rolling API pod reaches
+# as well. At two the bound is the replica count of a Deployment nothing rolls,
+# because the CR is never patched after it is applied.
+#
+# The metadata API and the console proxy keep the one replica the defaulting
+# webhook gives them, which is the bound the suite samples for their two
+# Services.
+#
+# No spec.dbArchive: the archive CronJob is projected from the operator
+# defaults (@daily), and the suite starts one run of it by hand.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-isolation
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 2
+  apiDatabase:
+    clusterRef:
+      name: openstack-db
+    database: nova_isolation_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: openstack-db
+    database: nova_isolation
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: nova-isolation-messaging
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-isolation-metadata-secret

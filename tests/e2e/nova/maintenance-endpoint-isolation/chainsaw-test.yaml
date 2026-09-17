@@ -1,0 +1,340 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for maintenance-pod isolation from the three Nova Services.
+# Verifies, while one db-archive run is live:
+#   - No Service gains a backend it has no pod for: the API Service never lists
+#     more addresses than the API Deployment's replica count, and the metadata
+#     and console Services never list more than the one address their
+#     single-replica Deployments contribute
+#   - No Service is left without backends: the API Service is observed with its
+#     full replica count at least once, so a selector that matches nothing
+#     cannot satisfy the bound above
+#   - The archive pod is live inside the sampling window, holding a pod IP, and
+#     that IP is never an address of any of the three Services
+#
+# Nova is the operator with three HTTP front ends under one instance label, so
+# each Service narrows its selector by its own component: the API Service
+# selects app.kubernetes.io/component=api (naming.APISelectorLabels in
+# operators/nova/internal/controller/reconcile_deployment.go), the metadata and
+# console Services their own component
+# (operators/nova/internal/controller/reconcile_metadata.go and
+# reconcile_consoleproxy.go). The archive pods carry component=db-archive
+# (reconcile_dbarchive.go). This suite is what checks those four claims against
+# the endpoints controller rather than against the rendered selectors.
+#
+# The archive pod must never become a backend of any of them because it serves
+# no HTTP: it runs nova-manage against the databases and listens on no port. It
+# also carries no readiness probe, so the endpoints controller would publish its
+# address the moment it is scheduled. A request routed there is refused, which a
+# caller sees as a failed API call, as a booting instance whose cloud-init
+# metadata never arrives, or as a console session that does not open. The
+# component key in the three selectors is the only thing keeping it out.
+#
+# The archive run is triggered by hand: the CronJob fires daily, so a scheduled
+# run would never fall inside a test run on its own.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-maintenance-endpoint-isolation
+spec:
+  namespace: openstack
+  timeouts:
+    # The two-schema migration, the cell mapping and the cold start of five
+    # workloads all precede Ready, and that does not fit the 120s the shared
+    # config allows.
+    # The first CI run measured the bring-up: the eight MariaDB CRs take 3
+    # minutes at the operator's 30 s requeue and the six nova-manage invocations
+    # of the db-sync about 3 more, so Ready lands roughly 8 minutes after the
+    # apply. 10m keeps a margin for a leg that runs two suites at once.
+    assert: 10m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CR ────────────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../cinder/broker-vhost.sh. The step cleanup runs
+  # at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh create nova-isolation nova-isolation-messaging openstack
+    - apply:
+        file: 00-metadata-secret.yaml
+    - apply:
+        file: 01-nova-cr.yaml
+    catch: &nova-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-isolation
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Deployments ==="
+          kubectl describe deploy -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-isolation 2>&1 | tail -200 || true
+          echo "=== Services and endpoints ==="
+          kubectl get svc,endpointslices -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-isolation -o wide 2>&1 || true
+          echo "=== Archive CronJob and Jobs ==="
+          kubectl describe cronjob nova-isolation-db-archive -n "$NAMESPACE" 2>&1 | tail -40 || true
+          kubectl get jobs -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-isolation -o wide 2>&1 || true
+          echo "=== Pods ==="
+          kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-isolation -o wide --show-labels 2>&1 || true
+          echo "=== Pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-isolation -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh delete nova-isolation || true
+  # ── Step 2: Wait for Ready=True with both API pods up ──────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-isolation
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-isolation
+            namespace: openstack
+          status:
+            availableReplicas: 2
+    catch: *nova-dump
+  # ── Step 3: Sample the three Services across the archive run ───────────
+  # The CR is never patched after Step 1: any spec change would roll the API
+  # Deployment and put a surge pod into the EndpointSlices, which the address
+  # count below would report as a failure.
+  - try:
+    - script:
+        timeout: 5m
+        # Chainsaw defaults to `sh`, which lacks the here-string-free `while
+        # read` over a heredoc this keeps its counters across.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          API_SVC=nova-isolation
+          METADATA_SVC=nova-isolation-metadata
+          CONSOLE_SVC=nova-isolation-novncproxy
+          CRONJOB=nova-isolation-db-archive
+          ARCHIVE_JOB=nova-isolation-archive-now
+
+          # The slices of all three Services in one read. Each kubectl call is a
+          # process start, a TLS handshake and an authn round trip against the
+          # API server this suite is measuring, and the tick cost comes straight
+          # off the sample count: the window is wall-clock and the archive pod
+          # inside it lives about 15 seconds, so three reads where one does
+          # thins out exactly the samples SAW_ARCHIVE_POD depends on. The
+          # service-name label is set by the EndpointSlice controller itself, so
+          # a set-based selector over the three names is exact.
+          slices() {
+            kubectl get endpointslices -n "$NAMESPACE" \
+              -l "kubernetes.io/service-name in ($API_SVC,$METADATA_SVC,$CONSOLE_SVC)" \
+              -o json 2>/dev/null || true
+          }
+
+          # Every non-terminating address of every slice of one Service counts,
+          # not just the ready ones: a maintenance pod that satisfies a Service
+          # selector is published as an address as soon as it is scheduled, and a
+          # Job pod carries no readiness probe, so it is Ready from its first
+          # moment. Counting only ready addresses would hide the very state this
+          # suite is about. Terminating addresses are excluded so an ordinary
+          # API-pod replacement (which briefly puts the old and the new address
+          # in the slice) is not misreported as a maintenance-pod leak.
+          addresses_of() {
+            jq -r --arg svc "$1" '.items[]?
+                     | select(.metadata.labels["kubernetes.io/service-name"] == $svc)
+                     | .endpoints[]?
+                     | select((.conditions.terminating // false) == false)
+                     | .addresses[]?' <<<"$SLICES" 2>/dev/null || true
+          }
+
+          count_of() {
+            printf '%s\n' "$1" | grep -c . || true
+          }
+
+          # Read the API bound off the live Deployment rather than restating the
+          # fixture: a copy here would silently stop matching the CR. The
+          # metadata and console bound is one, the replica count the defaulting
+          # webhook gives both blocks when the CR sizes neither.
+          api_replicas() {
+            kubectl get deploy "$API_SVC" -n "$NAMESPACE" \
+              -o jsonpath='{.spec.replicas}' 2>/dev/null || true
+          }
+
+          # assert_not_backend ends the run when the archive pod IP $3 is one of
+          # the addresses $2 that Service $1 was read with.
+          assert_not_backend() {
+            if printf '%s\n' "$2" | grep -qx "$3"; then
+              echo "FAIL: the db-archive pod IP $3 is an address of Service $1"
+              dump_state
+              exit 1
+            fi
+          }
+
+          dump_state() {
+            for svc in "$API_SVC" "$METADATA_SVC" "$CONSOLE_SVC"; do
+              echo "=== EndpointSlices of $svc ==="
+              kubectl get endpointslices -n "$NAMESPACE" \
+                -l kubernetes.io/service-name="$svc" -o yaml 2>&1 || true
+            done
+            echo "=== Pods ==="
+            kubectl get pods -n "$NAMESPACE" \
+              -l app.kubernetes.io/instance="$API_SVC" -o wide --show-labels 2>&1 || true
+          }
+
+          REPLICAS=$(api_replicas)
+          [ -n "$REPLICAS" ] || { echo "FAIL: could not read spec.replicas of Deployment $API_SVC"; exit 1; }
+
+          # The archive run is started before the window opens and is not waited
+          # for: nova-manage finds an empty backlog, answers 0 on its first batch
+          # and the pod is gone again in about 15 s. Blocking on the Job would
+          # put the whole run outside the window it has to fall inside.
+          kubectl create job "$ARCHIVE_JOB" --from="cronjob/$CRONJOB" -n "$NAMESPACE"
+
+          # 90 s covers the scheduling of the archive pod and the run itself
+          # several times over; SAW_ARCHIVE_POD below turns that from an
+          # expectation into an observation.
+          WINDOW=90
+          DEADLINE=$(( $(date +%s) + WINDOW ))
+          SAW_FULL=false
+          SAW_ARCHIVE_POD=false
+          ARCHIVE_IPS=""
+
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            # Re-read each tick. Nothing patches the CR, so this is the same
+            # number every time; reading it live is what keeps the bound tied to
+            # the Deployment instead of to a literal in this script. An empty
+            # read is a transient API-server error, and the previous tick's bound
+            # stays in force rather than failing the suite on a blip.
+            CURRENT=$(api_replicas)
+            if [ -n "$CURRENT" ]; then
+              REPLICAS="$CURRENT"
+            fi
+
+            # One read for the three Services, so their address sets are also
+            # the same instant rather than three consecutive ones.
+            SLICES=$(slices)
+            # An empty read is a failed API call, never a Service without
+            # backends: `get -o json` prints an items array either way. Kept as
+            # a sample it would blank all three address sets at once, pass every
+            # upper bound at zero and run assert_not_backend against nothing, so
+            # a real leak would report green. The tick is dropped instead, and
+            # SAW_FULL and SAW_ARCHIVE_POD below fail the suite if the reads
+            # never come back.
+            if [ -z "$SLICES" ]; then
+              sleep 1
+              continue
+            fi
+            API_ADDRS=$(addresses_of "$API_SVC")
+            METADATA_ADDRS=$(addresses_of "$METADATA_SVC")
+            CONSOLE_ADDRS=$(addresses_of "$CONSOLE_SVC")
+            API_COUNT=$(count_of "$API_ADDRS")
+            METADATA_COUNT=$(count_of "$METADATA_ADDRS")
+            CONSOLE_COUNT=$(count_of "$CONSOLE_ADDRS")
+
+            if [ "$API_COUNT" -gt "$REPLICAS" ]; then
+              echo "FAIL: API Service $API_SVC has $API_COUNT endpoint addresses, expected at most $REPLICAS"
+              dump_state
+              exit 1
+            fi
+            if [ "$METADATA_COUNT" -gt 1 ]; then
+              echo "FAIL: metadata Service $METADATA_SVC has $METADATA_COUNT endpoint addresses, expected at most 1"
+              dump_state
+              exit 1
+            fi
+            if [ "$CONSOLE_COUNT" -gt 1 ]; then
+              echo "FAIL: console Service $CONSOLE_SVC has $CONSOLE_COUNT endpoint addresses, expected at most 1"
+              dump_state
+              exit 1
+            fi
+
+            # The upper bound alone is satisfied by an empty Service, which is
+            # the opposite failure: a selector that matches no API pod at all.
+            if [ "$API_COUNT" -eq "$REPLICAS" ]; then
+              SAW_FULL=true
+            fi
+
+            # An archive pod holding a pod IP is the state that could land in the
+            # EndpointSlices, so it is what the sampling above has to overlap.
+            # Completed pods are excluded: they keep their IP in status but the
+            # endpoints controller ignores them, so a leftover from an earlier
+            # run would prove nothing. The heredoc keeps the loop in this shell,
+            # so the flags it sets survive it.
+            LIVE=$(kubectl get pods -n "$NAMESPACE" \
+              -l app.kubernetes.io/component=db-archive,app.kubernetes.io/instance="$API_SVC" \
+              -o json 2>/dev/null \
+              | jq -r '.items[]
+                       | select(.status.phase == "Running")
+                       | select((.status.podIP // "") != "")
+                       | .status.podIP' 2>/dev/null || true)
+            while read -r ip; do
+              [ -n "$ip" ] || continue
+              SAW_ARCHIVE_POD=true
+              case " $ARCHIVE_IPS " in
+              *" $ip "*) ;;
+              *)
+                ARCHIVE_IPS="${ARCHIVE_IPS}${ARCHIVE_IPS:+ }${ip}"
+                echo "Observed a live db-archive pod at $ip"
+                ;;
+              esac
+              # The address sets are the ones read this same tick, so an archive
+              # pod that reached a slice is caught in the sample that created it
+              # rather than after the fact.
+              assert_not_backend "$API_SVC" "$API_ADDRS" "$ip"
+              assert_not_backend "$METADATA_SVC" "$METADATA_ADDRS" "$ip"
+              assert_not_backend "$CONSOLE_SVC" "$CONSOLE_ADDRS" "$ip"
+            done <<EOF
+          $LIVE
+          EOF
+
+            sleep 1
+          done
+
+          if [ "$SAW_FULL" = false ]; then
+            echo "FAIL: API Service $API_SVC never had its full $REPLICAS endpoint addresses during the ${WINDOW}s window"
+            echo "The selector matches no API pod, so the upper bounds above prove nothing."
+            echo "=== Services ==="
+            kubectl get svc -n "$NAMESPACE" -l app.kubernetes.io/instance="$API_SVC" -o yaml 2>&1 || true
+            dump_state
+            exit 1
+          fi
+
+          if [ "$SAW_ARCHIVE_POD" = false ]; then
+            echo "FAIL: the ${WINDOW}s window did not overlap a live db-archive pod"
+            echo "The endpoint counts above prove nothing without one."
+            echo "=== Jobs ==="
+            kubectl get jobs -n "$NAMESPACE" -o wide 2>&1 || true
+            kubectl describe job "$ARCHIVE_JOB" -n "$NAMESPACE" 2>&1 | tail -40 || true
+            echo "=== db-archive pods ==="
+            kubectl get pods -n "$NAMESPACE" \
+              -l app.kubernetes.io/component=db-archive,app.kubernetes.io/instance="$API_SVC" \
+              -o wide --show-labels 2>&1 || true
+            exit 1
+          fi
+
+          echo "ISOLATION-OK: $API_SVC kept its $REPLICAS backends and $METADATA_SVC and $CONSOLE_SVC one each while the db-archive pod at [$ARCHIVE_IPS] was live"
+    catch: *nova-dump
