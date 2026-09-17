@@ -23,6 +23,22 @@
 # (#1039), and the ControlPlane leg (#1019). They belong here once that wiring
 # exists.
 #
+# Nova stays out of the two-cluster placed-services suite
+# (tests/e2e-multicluster/placed-services/), per the author on 2026-09-17. The
+# suite proves where the children land, and every grant of the
+# target-cluster-access chart a Nova would exercise (Deployments, Jobs,
+# CronJobs, HTTPRoutes, NetworkPolicies, HorizontalPodAutoscalers) is exercised
+# by the placed Keystone, Barbican, OVNCentral and Neutron already. The placed
+# Neutron runs against a deliberately unreachable broker
+# (rabbitmq.openstack.invalid in its messaging Secret), and a Nova cannot: its
+# scheduler and conductor report ready only off a live broker connection, so
+# membership would mean a real broker on the target cluster, a seventh operator
+# on the management cluster and an eighth image inside a 90-minute job. Nova's
+# remote teardown stays proven by the operator's envtest
+# (operators/nova/internal/controller/) and, against a real second cluster, by
+# #1013 when compute clusters arrive. Nothing here asserts on that suite, and
+# #1019 does not reopen the question.
+#
 # Usage: bash tests/unit/ci/nova_e2e_matrix_test.sh
 
 set -uo pipefail
@@ -543,6 +559,40 @@ test_nova_leg_narrows_parallelism_and_budget() {
     "runs-on: \${{ matrix.operator == 'keystone'"
 }
 
+test_nova_leg_dumps_the_siblings() {
+  echo "Test: the nova e2e leg dumps its five sibling Namespaces"
+
+  # The first dump derives its Namespace from the matrix operator and never
+  # looks at the siblings', so a failed nova suite would carry no keystone-,
+  # placement-, glance-, ovn- or neutron-operator log at all. The dump runs
+  # under always(), so it is there when the bring-up itself failed: a sibling
+  # deploy that fails at `helm install --wait` skips the chainsaw step but not
+  # this one.
+  local dump
+  dump=$(job_step e2e-operator "Dump diagnostic info (nova siblings)")
+
+  assert_not_empty "the sibling dump step exists" "$dump"
+  assert_contains "it dumps on the nova leg even when the suites failed" \
+    "$dump" "if: always() && matrix.operator == 'nova'"
+  assert_contains "it goes through the shared dump script" "$dump" \
+    "hack/ci-dump-diagnostics.sh"
+  assert_contains "one call per sibling operator" "$dump" \
+    "for op in keystone placement glance ovn neutron; do"
+  # The step has no OPERATOR in its env, so a bare call would fall back to
+  # OPERATOR="" and print the infrastructure section alone, five times.
+  assert_contains "each pass hands its sibling to the dump script" "$dump" \
+    'OPERATOR="${op}" hack/ci-dump-diagnostics.sh'
+
+  # The neutron leg's dump was not widened: on the nova leg the loop above is
+  # what covers ovn-system, and the first dump still reads the matrix operator.
+  assert_contains "the ovn dump stays neutron-only" \
+    "$(job_step e2e-operator "Dump diagnostic info (ovn)")" \
+    "if: always() && matrix.operator == 'neutron'"
+  assert_contains "the first dump still follows the matrix operator" \
+    "$(job_step e2e-operator "Dump diagnostic info")" \
+    "OPERATOR: \${{ matrix.operator }}"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -560,6 +610,7 @@ test_nova_e2e_filter_is_wired
 test_nova_leg_opts_into_the_broker
 test_nova_leg_deploys_the_sibling_operators
 test_nova_leg_narrows_parallelism_and_budget
+test_nova_leg_dumps_the_siblings
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
