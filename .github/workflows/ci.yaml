@@ -1554,6 +1554,18 @@ jobs:
         run: hack/ci-dump-diagnostics.sh
         env:
           OPERATOR: ovn
+      # The nova leg runs five more operators, each in its own Namespace the
+      # first dump never looks at. One call per operator: the script's
+      # infrastructure section and the openstack Namespace's Job and pod logs
+      # are repeated each time, since NAMESPACE stays at its default. The
+      # neutron leg's second dump and the e2e-controlplane job's two dumps
+      # accept the same repeat.
+      - name: Dump diagnostic info (nova siblings)
+        if: always() && matrix.operator == 'nova'
+        run: |
+          for op in keystone placement glance ovn neutron; do
+            OPERATOR="${op}" hack/ci-dump-diagnostics.sh
+          done
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
