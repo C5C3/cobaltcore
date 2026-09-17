@@ -62,6 +62,14 @@ helm_template_scenarios() {
     sed -e 's/^helm template test "\$chart" *//' -e 's/ 2>&1).*$//'
 }
 
+# Echo how many releases the operator ships a service image for. The resolve
+# step reads the same script, so a release added under releases/ moves the
+# expected ref counts below with it.
+release_count() {
+  OPERATOR="$1" "$PROJECT_ROOT/hack/ci-service-image-releases.sh" |
+    grep -c . || true
+}
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -319,6 +327,175 @@ test_nova_leg_opts_into_the_broker() {
     "nova"
 }
 
+test_nova_leg_deploys_the_sibling_operators() {
+  echo "Test: the nova e2e leg deploys and loads its five sibling operators"
+
+  # A Nova has no identity-free posture: spec.keystoneEndpoint and
+  # spec.serviceUser are required on the CRD, so the leg needs a Keystone. The
+  # functional suites boot a server, which takes a Placement allocation, a
+  # Glance image and a Neutron port, and that Neutron reaches Ready only behind
+  # a live OVNCentral. A sibling missing from the job leaves its CRs
+  # unreconciled and every suite that reads one waiting out its own timeout.
+  local deploy op
+  for op in keystone placement glance neutron; do
+    deploy=$(job_step e2e-operator "Deploy ${op}-operator")
+    assert_not_empty "the ${op}-operator deploy step exists" "$deploy"
+    # The whole condition, not a substring of it: an extra `|| always()` would
+    # install this operator on all ten legs.
+    assert_eq "the ${op} deploy runs on the nova leg alone" \
+      "if: matrix.operator == 'nova'" \
+      "$(grep -E '^ *if:' <<<"$deploy" | sed 's/^ *//')"
+    assert_contains "it goes through the shared deploy script" "$deploy" \
+      "run: hack/ci-deploy-operator.sh"
+    assert_contains "it deploys the ${op} operator" "$deploy" "OPERATOR: ${op}"
+    assert_contains "it uses the run-tagged ${op}-operator image" "$deploy" \
+      "IMAGE_PREFIX }}/${op}-operator"
+    assert_contains "it lands in the ${op} Namespace" "$deploy" \
+      "NAMESPACE: ${op}-system"
+  done
+
+  # The keystone install here is a plain one: the CIDR allowlist belongs to the
+  # keystone leg's oidc-federation suite, and ci-deploy-operator.sh would
+  # render it into this chart too.
+  assert_not_contains "the keystone sibling takes no federation override" \
+    "$(job_step e2e-operator "Deploy keystone-operator")" \
+    "FEDERATION_METADATA_ALLOW_CIDRS"
+
+  # The neutron leg's ovn step is widened rather than copied: job_step returns
+  # the first step of a name, so a second "Deploy ovn-operator" would be
+  # invisible to every assertion in this directory.
+  local ovn
+  ovn=$(job_step e2e-operator "Deploy ovn-operator")
+  assert_eq "the ovn deploy runs on the neutron and nova legs alone" \
+    "if: matrix.operator == 'neutron' || matrix.operator == 'nova'" \
+    "$(grep -E '^ *if:' <<<"$ovn" | sed 's/^ *//')"
+
+  # Order is the load-bearing part: the nova-operator's own Nova never resolves
+  # a Keystone endpoint, a Placement or a Neutron that nothing reconciles yet.
+  local job keystone_at placement_at glance_at ovn_at neutron_at nova_at
+  job=$(job_block e2e-operator)
+  keystone_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Deploy keystone-operator" | head -1 | cut -d: -f1)
+  placement_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Deploy placement-operator" | head -1 | cut -d: -f1)
+  glance_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Deploy glance-operator" | head -1 | cut -d: -f1)
+  ovn_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Deploy ovn-operator" | head -1 | cut -d: -f1)
+  neutron_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Deploy neutron-operator" | head -1 | cut -d: -f1)
+  nova_at=$(printf '%s\n' "$job" |
+    grep -nF "name: Deploy operator" | head -1 | cut -d: -f1)
+  assert_not_empty "the job deploys keystone-operator" "$keystone_at"
+  assert_not_empty "the job deploys placement-operator" "$placement_at"
+  assert_not_empty "the job deploys glance-operator" "$glance_at"
+  assert_not_empty "the job deploys ovn-operator" "$ovn_at"
+  assert_not_empty "the job deploys neutron-operator" "$neutron_at"
+  assert_not_empty "the job deploys the matrix operator itself" "$nova_at"
+  assert_gte "placement-operator comes after keystone-operator" \
+    "$placement_at" "$keystone_at"
+  assert_gte "glance-operator after placement-operator" \
+    "$glance_at" "$placement_at"
+  assert_gte "ovn-operator after glance-operator" "$ovn_at" "$glance_at"
+  assert_gte "neutron-operator after ovn-operator" "$neutron_at" "$ovn_at"
+  assert_gte "and the matrix operator's own deploy last" \
+    "$nova_at" "$neutron_at"
+
+  # kind pulls nothing the run did not load, so the load step reads the list the
+  # resolve step publishes rather than naming the images a second time: the
+  # five operator images and every service image each sibling publishes (ovn
+  # publishes none). Pinning 2025.2 alone would leave a 2026.1 Nova talking to
+  # 2025.2 siblings.
+  local resolve load
+  resolve=$(job_step e2e-operator "Resolve E2E images")
+  load=$(job_step e2e-operator "Load images into kind")
+  assert_contains "the resolve step branches on the nova leg" "$resolve" \
+    'if [ "${OPERATOR}" = "nova" ]'
+  assert_contains "it resolves the five sibling operator images" "$resolve" \
+    'for sibling in keystone placement glance ovn neutron; do'
+  assert_contains "at the run-scoped dev tag" "$resolve" \
+    '${IMAGE_PREFIX}/${sibling}-operator:dev'
+  assert_contains "with their release list read from source-refs.yaml" \
+    "$resolve" 'OPERATOR="${sibling}" hack/ci-service-image-releases.sh'
+  assert_contains "one service image per release" "$resolve" \
+    '${IMAGE_PREFIX}/${sibling}:${release}'
+  assert_contains "plus the OVN daemon image at the resolved pin" "$resolve" \
+    '${IMAGE_PREFIX}/ovn:${OVN_VERSION}'
+  assert_contains "the load step branches on the nova leg too" "$load" \
+    'if [ "${OPERATOR}" = "nova" ]'
+  assert_contains "it reads the resolved list" "$load" \
+    'REFS: ${{ steps.e2e-images.outputs.refs }}'
+  assert_contains "and loads every ref in it onto the kind node in one call" \
+    "$load" 'kind load docker-image ${REFS} --name "${KIND_CLUSTER}"'
+
+  # Reading the branch proves the shape, not the count. Run the step's own
+  # script to see which refs the leg actually pulls and loads: a ref the
+  # resolver drops is an ImagePullBackOff halfway through the suites.
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local script output refs
+  script=$(mktemp)
+  output=$(mktemp)
+  yq -r '.jobs.e2e-operator.steps[]
+    | select(.name == "Resolve E2E images") | .run' "$CI_YAML" >"$script"
+
+  # The script shells out to hack/ by relative path.
+  (cd "$PROJECT_ROOT" &&
+    OPERATOR=nova IMAGE_PREFIX=ghcr.io/c5c3 GITHUB_OUTPUT="$output" \
+      bash "$script")
+  refs=$(awk '/^refs<<EOF$/ { in_b = 1; next }
+    in_b && /^EOF$/ { exit }
+    in_b { print }' "$output")
+
+  # nova-operator:dev and one nova image per release, then each sibling's
+  # operator image and its service images, then ovn:<pin>.
+  local expected sibling
+  expected=$((1 + $(release_count nova)))
+  for sibling in keystone placement glance ovn neutron; do
+    expected=$((expected + 1 + $(release_count "$sibling")))
+  done
+  expected=$((expected + 1))
+  assert_eq "the nova leg resolves its own images plus every sibling's" \
+    "$expected" "$(printf '%s\n' "$refs" | wc -l | tr -d ' ')"
+  assert_contains "its own operator image" "$refs" \
+    "ghcr.io/c5c3/nova-operator:dev"
+  for op in keystone placement glance ovn neutron; do
+    assert_contains "the ${op}-operator image" "$refs" \
+      "ghcr.io/c5c3/${op}-operator:dev"
+  done
+  assert_contains "the 2025.2 keystone service image" "$refs" \
+    "ghcr.io/c5c3/keystone:2025.2"
+  assert_contains "and the 2026.1 one beside it" "$refs" \
+    "ghcr.io/c5c3/keystone:2026.1"
+  assert_contains "every release each sibling ships" "$refs" \
+    "ghcr.io/c5c3/neutron:2026.1"
+  assert_contains "the OVN daemon image at the pin the scripts resolve" \
+    "$refs" "ghcr.io/c5c3/ovn:$(cd "$PROJECT_ROOT" &&
+      hack/ci-resolve-ovn-version.sh)"
+
+  # And the branch still gates: the neutron leg keeps the refs it had.
+  : >"$output"
+  (cd "$PROJECT_ROOT" &&
+    OPERATOR=neutron IMAGE_PREFIX=ghcr.io/c5c3 GITHUB_OUTPUT="$output" \
+      bash "$script")
+  refs=$(awk '/^refs<<EOF$/ { in_b = 1; next }
+    in_b && /^EOF$/ { exit }
+    in_b { print }' "$output")
+
+  # neutron-operator:dev, one neutron image per release, ovn-operator:dev and
+  # ovn:<pin>.
+  assert_eq "the neutron leg resolves its own images plus the two OVN ones" \
+    "$((1 + $(release_count neutron) + 2))" \
+    "$(printf '%s\n' "$refs" | wc -l | tr -d ' ')"
+  assert_not_contains "the sibling block is nova-only" "$refs" "keystone"
+
+  rm -f "$script" "$output"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -334,6 +511,7 @@ test_a_keystone_only_change_produces_no_nova_leg
 test_nova_image_filter_is_wired
 test_nova_e2e_filter_is_wired
 test_nova_leg_opts_into_the_broker
+test_nova_leg_deploys_the_sibling_operators
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
