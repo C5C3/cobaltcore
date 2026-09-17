@@ -116,6 +116,8 @@ deploy/
 │       ├── placement-db-dynamic.hcl    Per-tenant dynamic Placement DB credential read policy
 │       ├── neutron-db-dynamic.hcl      Per-tenant dynamic Neutron DB credential read policy
 │       ├── cinder-db-dynamic.hcl       Per-tenant dynamic Cinder DB credential read policy
+│       ├── nova-api-db-dynamic.hcl     Per-tenant dynamic Nova API DB credential read policy
+│       ├── nova-cell-db-dynamic.hcl    Per-tenant dynamic Nova cell DB credential read policy
 │       ├── barbican-secretstore.hcl    Barbican secret-store policy on the KV v2 mount barbican/
 │       └── pki-issuer.hcl             cert-manager PKI issuing policy
 ├── eso/
@@ -469,18 +471,22 @@ Each Kubernetes auth mount creates a role named `eso-<cluster>` that binds to th
 linked to the corresponding `eso-<cluster>` policy.
 
 The management mount additionally carries a `keystone-db`, a `glance-db`, a
-`placement-db`, a `neutron-db`, and a `cinder-db` role, each bound to a fixed
-per-ControlPlane ServiceAccount (`keystone-db-creds` / `glance-db-creds` /
-`placement-db-creds` / `neutron-db-creds` / `cinder-db-creds`, any namespace) and
-linked to its own dynamic-credential policy (`keystone-db-dynamic` /
-`glance-db-dynamic` / `placement-db-dynamic` / `neutron-db-dynamic` /
-`cinder-db-dynamic`). The c5c3 operator's per-ControlPlane
+`placement-db`, a `neutron-db`, a `cinder-db`, a `nova-api-db`, and a
+`nova-cell-db` role, each bound to a fixed per-ControlPlane ServiceAccount
+(`keystone-db-creds` / `glance-db-creds` / `placement-db-creds` /
+`neutron-db-creds` / `cinder-db-creds` / `nova-api-db-creds` /
+`nova-cell-db-creds`, any namespace) and linked to its own dynamic-credential
+policy (`keystone-db-dynamic` / `glance-db-dynamic` / `placement-db-dynamic` /
+`neutron-db-dynamic` / `cinder-db-dynamic` / `nova-api-db-dynamic` /
+`nova-cell-db-dynamic`). The c5c3 operator's per-ControlPlane
 `VaultDynamicSecret` generators authenticate with them to read short-lived DB
 credentials at `database/mariadb/creds/keystone-{namespace}`,
 `database/mariadb/creds/glance-{namespace}`,
 `database/mariadb/creds/placement-{namespace}`,
-`database/mariadb/creds/neutron-{namespace}`, and
-`database/mariadb/creds/cinder-{namespace}` respectively. All five roles
+`database/mariadb/creds/neutron-{namespace}`,
+`database/mariadb/creds/cinder-{namespace}`,
+`database/mariadb/creds/nova-api-{namespace}`, and
+`database/mariadb/creds/nova-cell-{namespace}` respectively. All seven roles
 deliberately bind `namespaces="*"` so any ControlPlane namespace may
 authenticate; the fixed SA name is what tells them apart (a `glance-db-creds`
 token can never read a Keystone creds path, or vice versa), and cross-tenant
@@ -488,16 +494,26 @@ isolation is enforced by each policy, which templates the readable path to the c
 `service_account_namespace` (an exact match — a token minted in one namespace
 cannot read another namespace's path).
 
+The two Nova roles stay dormant until a ControlPlane projects a Nova: their
+`VaultDynamicSecret` generators arrive with #1019, and without a
+`nova-api-db-creds` or a `nova-cell-db-creds` ServiceAccount nothing
+authenticates against them. The cell role is called `nova-cell-db`; the shorter
+name `nova-db` is unavailable because the per-tenant engine role name is
+`<role>-<namespace>` and no role name may be a hyphen-prefix of another (a role
+`nova` in namespace `api-x` and a role `nova-api` in namespace `x` would both
+flatten to `nova-api-x`).
+
 Unlike the `eso-<cluster>` roles, the `keystone-db`, `glance-db`,
-`placement-db`, `neutron-db`, and `cinder-db` token TTLs are pinned to the
-database engine's `max_ttl` (`DB_CREDS_MAX_TTL`, 72h): OpenBao
-revokes a dynamic-secret lease together with the auth token that minted it, so a
-token shorter than the lease silently caps the effective credential lifetime at
-the token's — with an eso-style 1h token, every issued DB credential died after
-~1h while the ExternalSecret refresh only re-mints every 24h, dropping the
-ephemeral MySQL user under a running service. The longer-lived token is bounded by
-the read-only `keystone-db-dynamic` / `glance-db-dynamic` /
-`placement-db-dynamic` / `neutron-db-dynamic` / `cinder-db-dynamic` policy.
+`placement-db`, `neutron-db`, `cinder-db`, `nova-api-db`, and `nova-cell-db`
+token TTLs are pinned to the database engine's `max_ttl` (`DB_CREDS_MAX_TTL`,
+72h): OpenBao revokes a dynamic-secret lease together with the auth token that
+minted it, so a token shorter than the lease silently caps the effective
+credential lifetime at the token's — with an eso-style 1h token, every issued DB
+credential died after ~1h while the ExternalSecret refresh only re-mints every
+24h, dropping the ephemeral MySQL user under a running service. The longer-lived
+token is bounded by the read-only `keystone-db-dynamic` / `glance-db-dynamic` /
+`placement-db-dynamic` / `neutron-db-dynamic` / `cinder-db-dynamic` /
+`nova-api-db-dynamic` / `nova-cell-db-dynamic` policy.
 
 | Mount Path | Role | Bound SA | Bound NS | Policy | TTL | Max TTL |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -506,6 +522,8 @@ the read-only `keystone-db-dynamic` / `glance-db-dynamic` /
 | `kubernetes/management` | `placement-db` | `placement-db-creds` | `*` | `placement-db-dynamic` | 72h | 72h |
 | `kubernetes/management` | `neutron-db` | `neutron-db-creds` | `*` | `neutron-db-dynamic` | 72h | 72h |
 | `kubernetes/management` | `cinder-db` | `cinder-db-creds` | `*` | `cinder-db-dynamic` | 72h | 72h |
+| `kubernetes/management` | `nova-api-db` | `nova-api-db-creds` | `*` | `nova-api-db-dynamic` | 72h | 72h |
+| `kubernetes/management` | `nova-cell-db` | `nova-cell-db-creds` | `*` | `nova-cell-db-dynamic` | 72h | 72h |
 | `kubernetes/management` | `eso-tenant` | `eso-tenant-auth` | `*` | `eso-tenant` | 1h | 4h |
 
 The management mount also carries an `eso-tenant` role — the per-ControlPlane
@@ -622,7 +640,7 @@ change. The `KUBERNETES_MANAGEMENT_ACCESSOR` placeholder in the templated
 policies is substituted with the live `kubernetes/management` auth-mount accessor
 at apply time.
 
-Six policies are **namespace-templated** rather than statically scoped, so a
+Eight policies are **namespace-templated** rather than statically scoped, so a
 single policy backs every tenant while confining each token to its own namespace:
 
 - `keystone-db-dynamic` — read on the caller's own dynamic Keystone DB-credential path.
@@ -630,6 +648,8 @@ single policy backs every tenant while confining each token to its own namespace
 - `placement-db-dynamic` — read on the caller's own dynamic Placement DB-credential path.
 - `neutron-db-dynamic` — read on the caller's own dynamic Neutron DB-credential path.
 - `cinder-db-dynamic` — read on the caller's own dynamic Cinder DB-credential path.
+- `nova-api-db-dynamic` — read on the caller's own dynamic Nova API DB-credential path.
+- `nova-cell-db-dynamic` — read on the caller's own dynamic Nova cell DB-credential path.
 - `eso-tenant` — the per-ControlPlane ESO identity and the **sole write path**
   for per-ControlPlane Keystone key material: read on the caller's own
   `openstack/keystone/{ns}/*` and `bootstrap/{ns}/*` subtrees, and
@@ -750,6 +770,8 @@ Ceph client key for Nova and Nova compute configuration, not broader secret path
 | `placement-db-dynamic` | <code v-pre>database/mariadb/creds/placement-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Placement DB credential reads (bound to the `placement-db` role), on the same terms as the Glance policy. The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard). The `placement-db-creds` SA name is what keeps a Placement generator off a Keystone creds path when both services share a namespace. Read-only: a dynamic engine has no static password to push. |
 | `neutron-db-dynamic` | <code v-pre>database/mariadb/creds/neutron-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Neutron DB credential reads (bound to the `neutron-db` role), on the same terms as the Placement policy. The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard). The `neutron-db-creds` SA name is what keeps a Neutron generator off a Keystone creds path when both services share a namespace. Read-only: a dynamic engine has no static password to push. |
 | `cinder-db-dynamic` | <code v-pre>database/mariadb/creds/cinder-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Cinder DB credential reads (bound to the `cinder-db` role), on the same terms as the Neutron policy. The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard). The `cinder-db-creds` SA name is what keeps a Cinder generator off a Keystone or a Neutron creds path when those services share a namespace. Read-only: a dynamic engine has no static password to push. |
+| `nova-api-db-dynamic` | <code v-pre>database/mariadb/creds/nova-api-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Nova API DB credential reads (bound to the `nova-api-db` role), on the same terms as the Cinder policy. The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard). The `nova-api-db-creds` SA name is what keeps the Nova API generator off the cell creds path, and off every other service's path, when those services share a namespace. Read-only: a dynamic engine has no static password to push. |
+| `nova-cell-db-dynamic` | <code v-pre>database/mariadb/creds/nova-cell-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Nova cell DB credential reads (bound to the `nova-cell-db` role), covering the cell database and its `nova_cell0` schema on the same terms as the Nova API policy. The `nova-cell-db-creds` SA name keeps the cell generator off the API creds path, and the role name `nova-cell` is prefix-free against `nova-api`, so the two creds paths never coincide in any namespace. Read-only: a dynamic engine has no static password to push. |
 
 **Note:** `ci-cd-provisioner` intentionally lacks `delete` capability. The CI/CD
 pipeline can create, update, and read secrets but cannot delete them, preventing
