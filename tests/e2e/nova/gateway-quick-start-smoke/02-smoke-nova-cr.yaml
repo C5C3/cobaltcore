@@ -28,8 +28,8 @@
 # so this fixture uses a unique CR name (`nova-smoke`) to avoid clashing with
 # the sibling nova suites that share the `openstack` namespace, the backing
 # services (`openstack-db`, `openstack-memcached`) and the HTTPRoute object
-# names inside the namespace. No other nova suite attaches to the nip.io
-# Gateway hostnames.
+# names inside the namespace. The console-proxy suite attaches to the console
+# hostname too, so this test runs with `spec.concurrent: false`.
 #
 # Keystone is configured although none runs: spec.keystoneEndpoint and
 # spec.serviceUser are required on every Nova. Nothing the smoke asserts needs a
