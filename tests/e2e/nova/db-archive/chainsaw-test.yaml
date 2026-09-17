@@ -1,0 +1,590 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Nova database archive (2025.2 release).
+# Validates that the CronJob the operator projects moves rows rather than only
+# existing:
+#   - an archive on a minute schedule fires on its own, and a run started after
+#     the verify Job deleted its server leaves the instance in shadow_instances
+#     with no soft-deleted row behind in the live table
+#   - the operator reports the schedule as
+#     DBArchiveReady=True/DBArchiveScheduled and records no DBArchiveJobFailed
+#     event on the CR
+#
+# The fixtures are the full-stack tier of ../basic-deployment, because a server
+# has to boot and be deleted before there is anything to archive: the suite
+# carries its own Keystone and catalog rows, an OVNCentral and a Neutron for
+# the network service, a Placement for the scheduler, a Glance with an S3 store
+# and a seeded image, and a fake-driver compute. Every object carries the
+# nova-archive prefix and the seed image has an id of its own, since every
+# Glance on the leg writes into the one glance-images bucket keyed by image id.
+# No file outside this directory is named except ../../cinder/broker-vhost.sh
+# and ../discover-hosts.sh.
+#
+# Host discovery is run by hand in step 7. nova-scheduler writes the host
+# mapping from a 300-second periodic, and waiting that out is what
+# ../basic-deployment proves; here it would be five idle minutes in front of a
+# poll that already waits up to three more on the archive.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-db-archive
+spec:
+  namespace: openstack
+  timeouts:
+    # Five services come up before the Nova is even applied, and the Nova then
+    # runs a two-schema migration, a cell mapping and five workloads. That does
+    # not fit the 120s the shared config allows.
+    # The first CI run measured the bring-up: the eight MariaDB CRs take 3
+    # minutes at the operator's 30 s requeue and the six nova-manage invocations
+    # of the db-sync about 3 more, so Ready lands roughly 8 minutes after the
+    # apply. 10m keeps a margin for a leg that runs two suites at once.
+    assert: 10m
+    # The default for a script step that carries no timeout of its own. The
+    # longest is the one driving the verify Job, which waits up to 10 minutes
+    # on a server boot, a resize and a delete before it reads the log back.
+    exec: 12m
+  steps:
+  # ── Step 1: Give the suite its vhost, then bring up Keystone ───────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues and a compute could answer the other suite's API. See
+  # ../../cinder/broker-vhost.sh. The step cleanup runs at the end of the test.
+  #
+  # Keystone goes first because the catalog Job, the four sibling CRs and the
+  # Nova all authenticate against it.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh create nova-archive nova-archive-messaging openstack
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-archive
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &nova-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-archive
+        namespace: openstack
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-nova-archive
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNCentral
+        name: nova-archive-ovn
+        namespace: openstack
+    - get:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: Neutron
+        name: neutron-nova-archive
+        namespace: openstack
+    - get:
+        apiVersion: placement.openstack.c5c3.io/v1alpha1
+        kind: Placement
+        name: placement-nova-archive
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: Glance
+        name: glance-nova-archive
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: GlanceBackend
+        name: glance-nova-archive-s3
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Deployments ==="
+          kubectl describe deploy -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-archive 2>&1 | tail -200 || true
+          echo "=== Pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-archive -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Services and endpoints ==="
+          kubectl get svc,endpointslices -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-archive -o wide 2>&1 || true
+          echo "=== Fake compute ==="
+          kubectl logs -n "$NAMESPACE" deploy/nova-archive-fake-compute --tail=100 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-archive-catalog-setup nova-archive-image-seed nova-archive-verify; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+          # The archive runs the suite is about. The CronJob names each Job
+          # after the firing timestamp, so both the listing and the logs go by
+          # the labels the jobTemplate carries
+          # (operators/nova/internal/controller/reconcile_dbarchive.go).
+          echo "=== Archive CronJob and runs ==="
+          kubectl get cronjob,jobs -n "$NAMESPACE" \
+            -l app.kubernetes.io/component=db-archive,app.kubernetes.io/instance=nova-archive -o wide 2>&1 || true
+          kubectl logs -n "$NAMESPACE" \
+            -l app.kubernetes.io/component=db-archive,app.kubernetes.io/instance=nova-archive --tail=100 2>&1 || true
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 200
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/name=neutron-operator
+        tail: 200
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/name=placement-operator
+        tail: 200
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/name=glance-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh delete nova-archive || true
+  # ── Step 2: Register the four services in the catalog ──────────────────
+  # The Job is deleted first because a Job's pod template is immutable, so a
+  # re-run against a leftover object would fail on the update rather than on
+  # anything the suite is testing.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-archive-catalog-setup -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 01-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/nova-archive-catalog-setup \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-archive-catalog-setup 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-archive-catalog-setup -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-archive-catalog-setup
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-dump
+  # ── Step 3: Bring up the four services the boot path depends on ────────
+  - try:
+    - apply:
+        file: 02-messaging-secret.yaml
+    - apply:
+        file: 03-ovncentral-cr.yaml
+    - apply:
+        file: 04-neutron-cr.yaml
+    - apply:
+        file: 05-placement-cr.yaml
+    - apply:
+        file: 06-glance-cr.yaml
+    - apply:
+        file: 07-glancebackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: nova-archive-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-nova-archive
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-nova-archive
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-nova-archive
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-nova-archive-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-dump
+  # ── Step 4: Seed the image the server boots from ───────────────────────
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-archive-image-seed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 08-image-seed-job.yaml
+          kubectl wait --for=condition=complete job/nova-archive-image-seed \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-archive-image-seed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-archive-image-seed -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-archive-image-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-dump
+  # ── Step 5: Assert the conditions and the archive CronJob ──────────────
+  # The workload, Service and configuration assertions of ../basic-deployment
+  # are not repeated here: this suite shares its fixtures with that one, so the
+  # only thing it can say that the other cannot is what the archive does.
+  - try:
+    - apply:
+        file: 09-metadata-secret.yaml
+    - apply:
+        file: 10-nova-cr.yaml
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-archive
+            namespace: openstack
+          status:
+            # Promoted by the db-sync Job, which is what says the schema is at
+            # the release the pods run.
+            installedRelease: "2025.2"
+            # The Secret the fake compute of step 6 mounts.
+            computeConfigSecretRef:
+              name: nova-archive-compute-config
+            # Both cells, because the archive walks the cell mappings
+            # (--all-cells) rather than the schema it is pointed at. cell0 is
+            # the holding pen for an instance that never reached a cell, mapped
+            # under a fixed uuid; cell1 is the real one, under a uuid nova
+            # generates, so only its presence can be asserted. The `|| `[]``
+            # guard is what keeps an assert from aborting on the first poll: a
+            # filter over a field that is still absent under an existing status
+            # fails outright instead of retrying.
+            (cells[?name == 'cell0'] || `[]`):
+            - uuid: 00000000-0000-0000-0000-000000000000
+            (length(cells[?name == 'cell1'] || `[]`) == `1`): true
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'ComputeConfigReady']):
+            - status: "True"
+              reason: ComputeConfigPublished
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'MetadataReady']):
+            - status: "True"
+              reason: MetadataReady
+            (conditions[?type == 'ConsoleProxyReady']):
+            - status: "True"
+              reason: ConsoleProxyReady
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'DBArchiveReady']):
+            - status: "True"
+              reason: DBArchiveScheduled
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            # The five members of the parallel group. This CR asks for no
+            # autoscaling, no NetworkPolicy and no gateway, and each member
+            # reports that absence as True, which is what lets the aggregate
+            # resolve on a cluster that has none of them.
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'MetadataHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'ConsoleHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            # spec.extraConfig sets one key the operator does not render, so the
+            # overlay overrides nothing the operator owns.
+            (conditions[?type == 'ExtraConfigHealthy']):
+            - status: "True"
+              reason: NoOwnedKeysOverridden
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: nova-archive-db-archive
+            namespace: openstack
+          spec:
+            # The suite's own schedule, not the @daily default: nothing would
+            # fire inside a chainsaw run at the default.
+            schedule: "* * * * *"
+            # Two archives moving the same rows contend on the same tables, so a
+            # run that outlasts its interval is not overtaken by the next
+            # firing. At a minute schedule that is the policy doing real work.
+            concurrencyPolicy: Forbid
+            suspend: false
+            jobTemplate:
+              spec:
+                template:
+                  spec:
+                    (contains(join(' ', containers[0].command), 'archive_deleted_rows --all-cells')): true
+                    # --purge would empty the shadow tables step 9 reads, and
+                    # --until-complete would run until the backlog is empty
+                    # however long that takes, past the Job's deadline.
+                    (contains(join(' ', containers[0].command), '--purge')): false
+                    (contains(join(' ', containers[0].command), '--until-complete')): false
+                    (containers[0].env[?name == 'MAX_ROWS'].value | [0]): "1000"
+                    (containers[0].env[?name == 'SLEEP'].value | [0]): "1"
+                    # The CR sets no retentionDays, so the variable the script
+                    # assembles --before from is absent and every soft-deleted
+                    # row is eligible. That is what lets the run of step 9 pick
+                    # up a server deleted seconds earlier.
+                    (length(containers[0].env[?name == 'RETENTION_DAYS'] || `[]`) == `0`): true
+    catch: *nova-dump
+  # ── Step 6: Start the fake-driver compute ──────────────────────────────
+  # Applied only now: the Deployment mounts the compute-contract Secret the
+  # step above has just asserted.
+  - try:
+    - apply:
+        file: 11-fake-compute.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-archive-fake-compute
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch: *nova-dump
+  # ── Step 7: Map the compute into cell1 ─────────────────────────────────
+  # By hand, unlike ../basic-deployment, which waits out the scheduler's
+  # 300-second discovery periodic. That wait is what the other suite proves;
+  # spending it here would put five idle minutes in front of the archive poll
+  # of step 9, which itself waits up to three.
+  - try:
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          ../discover-hosts.sh nova-archive "$NAMESPACE"
+    catch: *nova-dump
+  # ── Step 8: Boot and delete a server ───────────────────────────────────
+  # The delete leaves the instance row and its children in nova_archive with
+  # deleted != 0, which is the backlog step 9 waits for an archive run to move.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-archive-verify -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 12-verify-job.yaml
+          kubectl wait --for=condition=complete job/nova-archive-verify \
+            -n "$NAMESPACE" --timeout=10m || {
+            kubectl logs -n "$NAMESPACE" job/nova-archive-verify 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-archive-verify -o wide
+            exit 1
+          }
+          # The log is fetched once and asserted on the captured text: a
+          # `kubectl logs | grep -q` pipeline fails under pipefail exactly when
+          # it matches, because grep closes the pipe while kubectl is still
+          # writing.
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-archive-verify)"
+          echo "$LOGS"
+          grep -q 'NOVA-VERIFY-OK' <<<"$LOGS"
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-archive-verify
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-dump
+  # ── Step 9: Wait for a run that saw the delete, then read the tables ───
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          SELECTOR=app.kubernetes.io/component=db-archive,app.kubernetes.io/instance=nova-archive
+
+          # Stamped before the poll. The minute schedule also fires while the
+          # verify Job is still running, and such a run archives nothing: s1 is
+          # deleted at the very end of that Job. Only a run created from here on
+          # can have seen the soft-deleted rows, so the poll ignores everything
+          # older.
+          T0=$(date -u +%s)
+
+          # 36 x 5s = 3m: three firings of the minute schedule plus the time one
+          # run takes.
+          JOB=""
+          for _ in $(seq 1 36); do
+            # The CronJob names each Job after the firing timestamp, so the runs
+            # are listed by the labels the jobTemplate carries
+            # (operators/nova/internal/controller/reconcile_dbarchive.go).
+            ROWS="$(kubectl get jobs -n "$NAMESPACE" -l "$SELECTOR" -o json |
+              jq -r '.items[] | "\(.metadata.name) \(.metadata.creationTimestamp) \(.status.succeeded // 0)"')"
+            while read -r name created succeeded; do
+              [ -n "$name" ] || continue
+              [ "$succeeded" = "1" ] || continue
+              [ "$(date -u -d "$created" +%s)" -ge "$T0" ] || continue
+              JOB="$name"
+              break
+            done <<<"$ROWS"
+            [ -z "$JOB" ] || break
+            sleep 5
+          done
+
+          if [ -z "$JOB" ]; then
+            echo "ERROR: no archive run created after $(date -u -d "@$T0" +%Y-%m-%dT%H:%M:%SZ) succeeded within 180s"
+            kubectl get jobs -n "$NAMESPACE" -l "$SELECTOR" -o wide 2>&1 || true
+            # The newest pod is the run that was going when the deadline hit,
+            # and its log is the only place a failing nova-manage says why.
+            POD="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" \
+              --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | tail -1 || true)"
+            if [ -n "$POD" ]; then
+              kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true
+            fi
+            exit 1
+          fi
+          echo "OK: archive run $JOB succeeded after the server was deleted"
+          kubectl logs -n "$NAMESPACE" "job/$JOB"
+
+          # The SQL user of the cell block is named after the instance
+          # (internal/common/database/builders.go builds the managed User under
+          # p.Name), and its password is the one the CR's database.secretRef
+          # points at.
+          PW="$(kubectl get secret nova-db -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+
+          # Under set -e a client that cannot connect fails the step with its
+          # own message: a wrong password prints "Access denied", which is what
+          # separates a bad credential from an empty result.
+          OUT="$(kubectl exec -n "$NAMESPACE" openstack-db-0 -c mariadb -- \
+            mariadb -unova-archive -p"$PW" nova_archive -N \
+            -e "SELECT COUNT(*) FROM shadow_instances; SELECT COUNT(*) FROM instances WHERE deleted != 0")"
+          SHADOW="$(sed -n 1p <<<"$OUT")"
+          LIVE="$(sed -n 2p <<<"$OUT")"
+          echo "shadow_instances=$SHADOW, soft-deleted rows left in instances=$LIVE"
+
+          if [ "$SHADOW" -lt 1 ]; then
+            echo "ERROR: the archive moved no row into shadow_instances"
+            exit 1
+          fi
+          if [ "$LIVE" -ne 0 ]; then
+            echo "ERROR: $LIVE soft-deleted rows are still in the instances table"
+            exit 1
+          fi
+          echo "OK: the deleted server is in the shadow tables and the live table carries none"
+    catch: *nova-dump
+  # ── Step 10: The operator reports the schedule and no failed run ───────
+  - try:
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-archive
+            namespace: openstack
+          status:
+            (conditions[?type == 'DBArchiveReady']):
+            - status: "True"
+              reason: DBArchiveScheduled
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -euo pipefail
+          # reconcileDBArchive records a Warning under this reason for every
+          # terminally failed run and flips the condition with it
+          # (operators/nova/internal/controller/reconcile_dbarchive.go). The
+          # condition alone would not catch a run that failed and was followed
+          # by one that succeeded, because the next reconcile reports the newer
+          # run; the event stays.
+          EVENTS="$(kubectl get events -n "$NAMESPACE" \
+            --field-selector reason=DBArchiveJobFailed,involvedObject.name=nova-archive -o name)"
+          if [ -n "$EVENTS" ]; then
+            echo "ERROR: the operator recorded a failed archive run"
+            kubectl get events -n "$NAMESPACE" \
+              --field-selector reason=DBArchiveJobFailed,involvedObject.name=nova-archive
+            exit 1
+          fi
+          echo "OK: no DBArchiveJobFailed event on nova-archive"
+    catch: *nova-dump
