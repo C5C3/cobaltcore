@@ -1,0 +1,235 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Nova deploy stack: what `make deploy-infra` leaves
+# behind on a kind cluster for a standalone Nova. Auto-discovered by the
+# e2e-infra job, which runs `chainsaw test tests/e2e/infrastructure/` after the
+# deploy and a second time after the unchanged re-run.
+#
+# Covers:
+#   - HelmRelease/nova-operator in nova-system, suspended by the kind base
+#     overlay (deploy/kind/base/kustomization.yaml) so the CI job can install
+#     the chart itself with a locally built dev image
+#   - The three per-listener Certificates in openstack (nova-nip-io-tls,
+#     nova-metadata-nip-io-tls, nova-console-nip-io-tls) reporting Ready
+#   - The two kind-only database shims nova-api-db and nova-db reporting
+#     SecretSynced, and the Secrets they materialize carrying the two SQL users
+#     the two Nova databases need (nova_api and nova) plus a password each
+#   - The three Gateway listeners https-nova, https-nova-metadata and
+#     https-nova-console on openstack-gw, each Programmed with its
+#     certificate reference resolved
+#
+# The suite is read-only: it applies no fixture and creates nothing, so it
+# asserts the deploy stack alone (the deploy-stack package of #1037). The
+# HTTPRoutes and the Nova CRs that first attach to these listeners and read
+# these Secrets arrive with the #1039 suites.
+#
+# Scope gate (`metadata.labels.overlay: kind`): every resource below is a kind
+# overlay artifact. The production stack (deploy/flux-system/) ships neither
+# the certificates nor the database shims nor the Nova listeners, and it leaves
+# the release unsuspended. Non-kind runs exclude this suite with
+# `chainsaw test --selector 'overlay!=kind' tests/e2e/infrastructure/`, the
+# same gate flux-web-health carries.
+#
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-deploy-stack
+  labels:
+    # Overlay gate, see header. Non-kind runs must pass
+    # `--selector 'overlay!=kind'` to exclude this test.
+    overlay: kind
+spec:
+  # Extended assert timeout (~5min), matching the sibling infrastructure
+  # suites: cert-manager issues three certificates and ESO syncs two
+  # ExternalSecrets while the rest of the stack still converges.
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: the operator release is installed and suspended ─────────────
+  # The release itself comes from deploy/flux-system/releases/nova-operator.yaml;
+  # the kind base overlay patches `suspend: true` onto it. A release that
+  # reconciles here would install the published chart over the dev image the
+  # e2e-operator job installs under the same release name.
+  - try:
+    - assert:
+        resource:
+          apiVersion: helm.toolkit.fluxcd.io/v2
+          kind: HelmRelease
+          metadata:
+            name: nova-operator
+            namespace: nova-system
+          spec:
+            suspend: true
+    catch:
+    - describe:
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        name: nova-operator
+        namespace: nova-system
+
+  # ── Step 2: the three listener certificates are issued ──────────────────
+  # cert-manager publishes Ready=True on each Certificate once it has issued
+  # the TLS Secret the matching listener references by name. One certificate
+  # per hostname, so a failure names the listener that loses TLS.
+  - try:
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: nova-nip-io-tls
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: nova-metadata-nip-io-tls
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: nova-console-nip-io-tls
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch:
+    - describe:
+        apiVersion: cert-manager.io/v1
+        kind: Certificate
+        name: nova-nip-io-tls
+        namespace: openstack
+    - describe:
+        apiVersion: cert-manager.io/v1
+        kind: Certificate
+        name: nova-metadata-nip-io-tls
+        namespace: openstack
+    - describe:
+        apiVersion: cert-manager.io/v1
+        kind: Certificate
+        name: nova-console-nip-io-tls
+        namespace: openstack
+
+  # ── Step 3: the two database shims sync their Secrets ───────────────────
+  # nova-api-db and nova-db read the two standalone OpenBao paths seeded by
+  # deploy/openbao/bootstrap/write-bootstrap-secrets.sh through the per-tenant
+  # SecretStore openbao-tenant-store. SecretSynced proves the read succeeded;
+  # the script then proves the materialized Secrets carry the right SQL user,
+  # because a standalone Nova takes the user from the Secret and the two
+  # databases must not share one.
+  - try:
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: nova-api-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: SecretSynced
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: nova-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: SecretSynced
+    - script:
+        timeout: 1m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
+        # infra/keystone e2e script pins bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # check_secret <secret> <expected username>
+          # Reads the two keys a standalone Nova consumes. The username is
+          # pinned; the password is checked for presence only and never
+          # printed, so a failing CI log carries no credential.
+          check_secret() {
+            local secret="$1" expected="$2" username password
+            username="$(kubectl get secret "$secret" -n openstack \
+              -o jsonpath='{.data.username}' | base64 -d)"
+            if [ "$username" != "$expected" ]; then
+              echo "ERROR: Secret/$secret carries username '$username', expected '$expected'"
+              exit 1
+            fi
+            password="$(kubectl get secret "$secret" -n openstack \
+              -o jsonpath='{.data.password}' | base64 -d)"
+            if [ -z "$password" ]; then
+              echo "ERROR: Secret/$secret carries an empty password"
+              exit 1
+            fi
+            echo "OK: Secret/$secret carries username '$expected' and a non-empty password (${#password} characters)"
+          }
+
+          check_secret nova-api-db nova_api
+          check_secret nova-db nova
+    catch:
+    - describe:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        name: nova-api-db
+        namespace: openstack
+    - describe:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        name: nova-db
+        namespace: openstack
+    - describe:
+        apiVersion: external-secrets.io/v1
+        kind: SecretStore
+        name: openbao-tenant-store
+        namespace: openstack
+
+  # ── Step 4: the three Nova listeners are programmed ─────────────────────
+  # Envoy Gateway publishes per-listener conditions on the shared
+  # openstack-gw. Programmed means the listener is live on the proxy;
+  # ResolvedRefs means it found the certificate Secret of step 2. Each
+  # listener is projected with `| [0]` first: the plain filter form returns
+  # no match in go-jmespath (see tests/e2e/keystone/gateway-quick-start/).
+  - try:
+    - assert:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: Gateway
+          metadata:
+            name: openstack-gw
+            namespace: openstack
+          status:
+            (listeners[?name == 'https-nova'] | [0].conditions[?type == 'Programmed']):
+            - status: "True"
+            (listeners[?name == 'https-nova'] | [0].conditions[?type == 'ResolvedRefs']):
+            - status: "True"
+            (listeners[?name == 'https-nova-metadata'] | [0].conditions[?type == 'Programmed']):
+            - status: "True"
+            (listeners[?name == 'https-nova-metadata'] | [0].conditions[?type == 'ResolvedRefs']):
+            - status: "True"
+            (listeners[?name == 'https-nova-console'] | [0].conditions[?type == 'Programmed']):
+            - status: "True"
+            (listeners[?name == 'https-nova-console'] | [0].conditions[?type == 'ResolvedRefs']):
+            - status: "True"
+    catch:
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        name: openstack-gw
+        namespace: openstack
