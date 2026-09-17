@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Nova CR for the placement-outage chaos test (2025.2 release).
+#
+# The bus is the per-suite vhost ../../e2e/cinder/broker-vhost.sh writes into
+# nova-placement-chaos-messaging on the kind-only shared-rabbitmq. Nothing in
+# this suite partitions the bus, so the broker can be the shared one, and it
+# has to be a vhost rather than managed messaging: the URL managed mode renders
+# always names the root vhost, and nova's RPC topics are named after the
+# service, so two suites there would share the scheduler and conductor queues.
+#
+# Everything else is managed too: the two schemas nova_placement_chaos_api and
+# nova_placement_chaos on the openstack-db MariaDB cluster (cell0 is derived as
+# nova_placement_chaos_cell0), the openstack-memcached cache, the ESO-synced
+# nova-api-db and nova-db credentials and the pre-seeded keystone-admin
+# service-user password (all from deploy/kind/infrastructure).
+#
+# One API replica: the suite makes a handful of API calls and the node already
+# carries five services. The scheduler, the conductor, the metadata API and the
+# console proxy take the webhook's defaults, which is one replica each, so the
+# partition of 13-networkchaos.yaml reaches the one scheduler pod there is.
+#
+# No spec.dbArchive and no spec.extraConfig: the archive is what
+# ../../e2e/nova/db-archive/ pins, and the resize override the full-stack
+# suites carry exists for a resize this suite never performs.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-placement-chaos
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  apiDatabase:
+    clusterRef:
+      name: openstack-db
+    database: nova_placement_chaos_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: openstack-db
+    database: nova_placement_chaos
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: nova-placement-chaos-messaging
+  keystoneEndpoint: http://keystone-nova-placement-chaos.openstack.svc.cluster.local:5000/v3
+  region: RegionOne
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-placement-chaos-metadata-secret
