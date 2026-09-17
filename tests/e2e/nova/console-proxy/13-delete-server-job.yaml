@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Deletes the server 12-verify-job.yaml booted, once the console handshake has
+# run against it.
+#
+# It is a Job of its own rather than the last lines of the verify Job because
+# the console token only resolves while the instance exists: the proxy looks the
+# token up in the cell database and dials the console host it finds there, so
+# the handshake has to happen between the two Jobs.
+#
+# Deleting the server also leaves the cell empty before the suite's cleanup
+# takes the Nova and the fake compute down, so no compute is removed underneath
+# a running instance.
+#
+# backoffLimit is 0 because the script is not idempotent: a retry would find no
+# server s1 and fail on the delete. A failed Job therefore keeps the pod whose
+# log says why.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-vnc-delete-server
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: delete-server
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-vnc.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # wait_gone <kind> <name> <timeoutSeconds>: poll until a show of
+              # the object fails, which is how the client reports one that is
+              # gone. A delete is asynchronous, so a later check would race it.
+              wait_gone() {
+                wg_deadline=$(( $(date +%s) + $3 ))
+                while true; do
+                  if ! openstack "$1" show "$2" >/dev/null 2>&1; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${wg_deadline}" ]; then
+                    echo "ERROR: $1 $2 still present after $3s"
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+
+              openstack server delete s1
+              wait_gone server s1 120
+              echo "OK: server s1 deleted"
+
+              echo DELETE-OK
