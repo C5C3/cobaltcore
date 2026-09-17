@@ -72,6 +72,13 @@ kind: Test
 metadata:
   name: nova-gateway-quick-start-smoke
 spec:
+  # spec.concurrent is false because nova-console.127-0-0-1.nip.io is a single
+  # listener on the one kind Gateway, and ../console-proxy handshakes a token
+  # its own novncproxy minted through that hostname. Two HTTPRoutes on one
+  # hostname are resolved by creation timestamp, so an older route of this
+  # suite would capture that handshake and its proxy would reject the token.
+  # Running this shorter suite alone costs about three minutes on the leg.
+  concurrent: false
   # The two-schema migration, the cell mapping and five cold starts make the
   # envelope 15m: the first CI run measured 3 minutes for the eight MariaDB CRs
   # at the operator's 30 s requeue and about 3 more for the six nova-manage
