@@ -290,6 +290,35 @@ test_nova_e2e_filter_is_wired() {
       FILTER_tests_e2e_glance=true)"
 }
 
+test_nova_leg_opts_into_the_broker() {
+  echo "Test: the nova e2e leg asks for the broker and nothing else"
+
+  # Every Nova process dials the bus, and the scheduler and the conductor
+  # report ready off their broker connection. deploy-infra.sh installs the
+  # broker only when it is asked to, and setup-e2e-infra reads the flag from
+  # this step's env, so a Nova on a leg without it waits out its readiness on
+  # an unreachable transport. The NFS export and the host kernel modules stay
+  # off: no Nova suite mounts a volume or places a chassis.
+  local setup
+  setup=$(job_step e2e-operator "Setup E2E infrastructure")
+
+  assert_not_empty "the setup step is readable" "$setup"
+  assert_contains "the step uses the shared composite action" "$setup" \
+    "uses: ./.github/actions/setup-e2e-infra"
+  assert_contains "the nova leg opts into the shared broker" "$setup" \
+    "WITH_MESSAGING: \${{ (matrix.operator == 'cinder' || matrix.operator == 'nova') && 'true' || '' }}"
+  assert_contains "the NFS export stays cinder-only" "$setup" \
+    "WITH_NFS: \${{ matrix.operator == 'cinder' && 'true' || '' }}"
+
+  # The kernel modules are loaded on the runner host itself, so a nova arm on
+  # that line would touch the host for suites that place no chassis.
+  local modules
+  modules=$(grep WITH_OVN_KERNEL_MODULES <<<"$setup")
+  assert_not_empty "the kernel-module flag is readable" "$modules"
+  assert_not_contains "the chassis modules stay off the nova leg" "$modules" \
+    "nova"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -304,6 +333,7 @@ test_cleanup_matrices_cover_the_nova_images
 test_a_keystone_only_change_produces_no_nova_leg
 test_nova_image_filter_is_wired
 test_nova_e2e_filter_is_wired
+test_nova_leg_opts_into_the_broker
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

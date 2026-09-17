@@ -189,6 +189,8 @@ test_cinder_leg_opts_into_nfs_and_messaging() {
   # installs neither by default and setup-e2e-infra reads both flags from env,
   # so the values have to sit in this step's own env block; anywhere else the
   # suites come up against a missing StorageClass and an unreachable transport.
+  # The broker line is shared with the nova leg, whose Nova processes dial the
+  # same bus.
   local setup
   setup=$(job_step e2e-operator "Setup E2E infrastructure")
 
@@ -197,7 +199,7 @@ test_cinder_leg_opts_into_nfs_and_messaging() {
   assert_contains "the cinder leg opts into the NFS stack" "$setup" \
     "WITH_NFS: \${{ matrix.operator == 'cinder' && 'true' || '' }}"
   assert_contains "and into the shared broker" "$setup" \
-    "WITH_MESSAGING: \${{ matrix.operator == 'cinder' && 'true' || '' }}"
+    "WITH_MESSAGING: \${{ (matrix.operator == 'cinder' || matrix.operator == 'nova') && 'true' || '' }}"
 
   # Sixteen suites of three or four Deployments, a db-sync Job and a probe pod
   # each do not run four at a time on one kind node: at the shared config's
