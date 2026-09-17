@@ -1342,6 +1342,10 @@ jobs:
               done
             done
             refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+            # The catalog, seed and verify Jobs of the functional Nova suites
+            # run the `openstack` client the tempest image bundles, at 2025.2
+            # on both per-release suites, so it is loaded once.
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/tempest:2025.2"
           fi
           {
             echo "releases<<EOF"; echo "${releases}"; echo "EOF"

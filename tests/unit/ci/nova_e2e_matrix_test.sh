@@ -19,9 +19,8 @@
 #
 # The assertions this file does not carry yet are the ones whose wiring is not
 # in ci.yaml yet: the tempest_nova paths filter and the tempest legs (#1040),
-# the e2e suites beyond the invalid-cr rejection corpus and the chaos leg
-# (#1039), and the ControlPlane leg (#1019). They belong here once that wiring
-# exists.
+# and the ControlPlane leg (#1019). They belong here once that wiring exists.
+# The e2e suites and the chaos leg are wired, and asserted below.
 #
 # Nova stays out of the two-cluster placed-services suite
 # (tests/e2e-multicluster/placed-services/), per the author on 2026-09-17. The
@@ -468,13 +467,14 @@ test_nova_leg_deploys_the_sibling_operators() {
     in_b { print }' "$output")
 
   # nova-operator:dev and one nova image per release, then each sibling's
-  # operator image and its service images, then ovn:<pin>.
+  # operator image and its service images, then ovn:<pin> and the tempest
+  # image.
   local expected sibling
   expected=$((1 + $(release_count nova)))
   for sibling in keystone placement glance ovn neutron; do
     expected=$((expected + 1 + $(release_count "$sibling")))
   done
-  expected=$((expected + 1))
+  expected=$((expected + 2))
   assert_eq "the nova leg resolves its own images plus every sibling's" \
     "$expected" "$(printf '%s\n' "$refs" | wc -l | tr -d ' ')"
   assert_contains "its own operator image" "$refs" \
@@ -492,6 +492,8 @@ test_nova_leg_deploys_the_sibling_operators() {
   assert_contains "the OVN daemon image at the pin the scripts resolve" \
     "$refs" "ghcr.io/c5c3/ovn:$(cd "$PROJECT_ROOT" &&
       hack/ci-resolve-ovn-version.sh)"
+  assert_contains "the tempest image the functional suites' Jobs run" \
+    "$refs" "ghcr.io/c5c3/tempest:2025.2"
 
   # And the branch still gates: the neutron leg keeps the refs it had.
   : >"$output"
@@ -593,6 +595,75 @@ test_nova_leg_dumps_the_siblings() {
     "OPERATOR: \${{ matrix.operator }}"
 }
 
+test_nova_leg_loads_the_tempest_image() {
+  echo "Test: the nova e2e leg loads the tempest image its suites' Jobs run"
+
+  # Every functional Nova suite drives its fixture through the `openstack`
+  # client, and the client comes out of the tempest image: the catalog setup
+  # Jobs, the image seed Jobs and the verify Jobs all name
+  # ghcr.io/c5c3/tempest:2025.2, the 2026.1 suites included. kind pulls nothing
+  # the run did not load, so a missing ref here is an ImagePullBackOff in the
+  # first Job of every suite. The ref sits inside the nova branch: no other leg
+  # of this job runs the client, and the ControlPlane suites that do sit in
+  # e2e-controlplane with an image list of their own.
+  local resolve nova_block
+  resolve=$(job_step e2e-operator "Resolve E2E images")
+  nova_block=$(awk '
+    index($0, "[ \"${OPERATOR}\" = \"nova\" ]") {
+      match($0, /^ */); prefix = substr($0, 1, RLENGTH); in_block = 1; next
+    }
+    in_block && $0 == prefix "fi" { exit }
+    in_block { print }
+  ' <<<"$resolve")
+
+  assert_not_empty "the nova branch of the resolve step is readable" \
+    "$nova_block"
+  assert_contains "the tempest ref is resolved inside it" "$nova_block" \
+    '${IMAGE_PREFIX}/tempest:2025.2'
+
+  # Where the line sits is not the same claim as what the step publishes: the
+  # list is built by concatenation and read back out of GITHUB_OUTPUT, so run
+  # the script and look at the refs it actually emits.
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local script output refs
+  script=$(mktemp)
+  output=$(mktemp)
+  yq -r '.jobs.e2e-operator.steps[]
+    | select(.name == "Resolve E2E images") | .run' "$CI_YAML" >"$script"
+
+  (cd "$PROJECT_ROOT" &&
+    OPERATOR=nova IMAGE_PREFIX=ghcr.io/c5c3 GITHUB_OUTPUT="$output" \
+      bash "$script")
+  refs=$(awk '/^refs<<EOF$/ { in_b = 1; next }
+    in_b && /^EOF$/ { exit }
+    in_b { print }' "$output")
+
+  assert_eq "the tempest image is the last ref the nova leg resolves" \
+    "ghcr.io/c5c3/tempest:2025.2" "$(printf '%s\n' "$refs" | tail -1)"
+  # Eighteen: the leg's own two, the five siblings' fifteen, the OVN daemon
+  # image and this one. A release added under releases/ moves the number.
+  assert_eq "it comes on top of the seventeen the leg already had" "18" \
+    "$(printf '%s\n' "$refs" | wc -l | tr -d ' ')"
+
+  # And the branch still gates: the cinder leg, whose suites run no client Job,
+  # resolves no tempest ref and loads no gigabyte it never uses.
+  : >"$output"
+  (cd "$PROJECT_ROOT" &&
+    OPERATOR=cinder IMAGE_PREFIX=ghcr.io/c5c3 GITHUB_OUTPUT="$output" \
+      bash "$script")
+  refs=$(awk '/^refs<<EOF$/ { in_b = 1; next }
+    in_b && /^EOF$/ { exit }
+    in_b { print }' "$output")
+  assert_not_contains "and no sibling leg pulls it" "$refs" "tempest"
+
+  rm -f "$script" "$output"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -611,6 +682,7 @@ test_nova_leg_opts_into_the_broker
 test_nova_leg_deploys_the_sibling_operators
 test_nova_leg_narrows_parallelism_and_budget
 test_nova_leg_dumps_the_siblings
+test_nova_leg_loads_the_tempest_image
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
