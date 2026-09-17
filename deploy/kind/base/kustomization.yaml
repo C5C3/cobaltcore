@@ -242,6 +242,25 @@ patches:
       spec:
         suspend: true
 
+  # nova-operator: suspend Flux management in kind for the same reason as
+  # keystone-operator above — the e2e CI job installs it manually with a
+  # locally built dev image, and the published chart and the dev image cannot
+  # share the same release name without one overwriting the other.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: nova-operator
+      namespace: nova-system
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: nova-operator
+        namespace: nova-system
+      spec:
+        suspend: true
+
   # k-orc: suspend the Flux Kustomization in kind for the same reason as the
   # operator HelmReleases above. The e2e-controlplane CI job installs K-ORC out
   # of band (hack/ci-deploy-korc.sh), and hack/deploy-infra.sh suspends this

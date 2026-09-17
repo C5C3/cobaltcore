@@ -8,8 +8,8 @@
 #
 # The Flux HelmReleases for the self-built operators (keystone-operator,
 # c5c3-operator, horizon-operator, glance-operator, placement-operator,
-# barbican-operator, ovn-operator, neutron-operator, cinder-operator) reference
-# the mutable :latest image tag.
+# barbican-operator, ovn-operator, neutron-operator, cinder-operator,
+# nova-operator) reference the mutable :latest image tag.
 # A moved tag alone never rolls a running Deployment: the kubelet does not
 # re-pull an image that is already present on the node, and the HelmRelease
 # does not upgrade when neither chart version nor values change. This script
@@ -51,6 +51,7 @@ OPERATOR_DIGEST_TARGETS=(
   "ovn-operator|ovn-system|ghcr.io/c5c3/ovn-operator:latest"
   "neutron-operator|neutron-system|ghcr.io/c5c3/neutron-operator:latest"
   "cinder-operator|cinder-system|ghcr.io/c5c3/cinder-operator:latest"
+  "nova-operator|nova-system|ghcr.io/c5c3/nova-operator:latest"
 )
 
 # ---------------------------------------------------------------------------

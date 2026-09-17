@@ -111,12 +111,13 @@ test_gate_suspends_and_scales() {
   assert_not_empty "the suspend patch is inside the gate" "$suspend_line"
   assert_not_empty "the scale-to-zero is inside the gate" "$scale_line"
 
-  # All nine: c5c3 plus the eight service operators the WITH_CONTROLPLANE=true /
+  # All ten: c5c3 plus the nine service operators the WITH_CONTROLPLANE=true /
   # flux branch un-suspends right above this gate.
   local operator
   for operator in c5c3:c5c3-system keystone:keystone-system horizon:horizon-system \
                   glance:glance-system placement:placement-system barbican:barbican-system \
-                  ovn:ovn-system neutron:neutron-system cinder:cinder-system; do
+                  ovn:ovn-system neutron:neutron-system cinder:cinder-system \
+                  nova:nova-system; do
     assert_not_empty "the loop covers ${operator%%:*}-operator" \
       "$(awk -v lo="${gate_line:-0}" -v hi="${block_end:-0}" -v want="$operator" \
         'NR > lo && NR < hi && index($0, want) { print NR; exit }' "$DEPLOY_INFRA_SH")"

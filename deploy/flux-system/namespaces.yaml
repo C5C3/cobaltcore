@@ -125,6 +125,13 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  # nova-system hosts the nova-operator controller; the Nova CRs and their
+  # payload live in the tenant Namespace they are created in.
+  name: nova-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: c5c3-system
 ---
 apiVersion: v1
