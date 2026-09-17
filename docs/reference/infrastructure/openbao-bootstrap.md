@@ -131,6 +131,8 @@ deploy/
 │       ├── placement-db-externalsecret.yaml          Secret placement-db
 │       ├── neutron-db-externalsecret.yaml            Secret neutron-db
 │       ├── cinder-db-externalsecret.yaml             Secret cinder-db
+│       ├── nova-api-db-externalsecret.yaml           Secret nova-api-db
+│       ├── nova-db-externalsecret.yaml               Secret nova-db
 │       └── placement-nip-io-tls-certificate.yaml     Certificate placement-nip-io-tls
 └── flux-system/
     ├── releases/
@@ -892,6 +894,8 @@ deployment-specific.
 | `keystone-db` (kind only) | `openstack` | `openstack/keystone/openstack/standalone/db` | `username`, `password` | `keystone-db` | `username`, `password` |
 | `neutron-db` (kind only) | `openstack` | `openstack/neutron/openstack/standalone/db` | `username`, `password` | `neutron-db` | `username`, `password` |
 | `cinder-db` (kind only) | `openstack` | `openstack/cinder/openstack/standalone/db` | `username`, `password` | `cinder-db` | `username`, `password` |
+| `nova-api-db` (kind only) | `openstack` | `openstack/nova/openstack/standalone/api-db` | `username`, `password` | `nova-api-db` | `username`, `password` |
+| `nova-db` (kind only) | `openstack` | `openstack/nova/openstack/standalone/db` | `username`, `password` | `nova-db` | `username`, `password` |
 
 **Note:** The static `deploy/eso/externalsecrets/` directory has been removed, so
 the production stack ships **no** ExternalSecret resources — its ESO

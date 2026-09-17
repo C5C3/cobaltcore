@@ -308,7 +308,7 @@ main() {
     "username=keystone" \
     "password=${GENERATED_PASSWORD}"
 
-  # The five optional services seed the same shape as the Keystone standalone
+  # The six optional services seed the same shape as the Keystone standalone
   # credential above, one path per service, and differ only in the service
   # segment: openstack/<svc>/{namespace}/standalone/db. Each is read by the
   # kind-only <svc>-db ExternalSecret
@@ -318,15 +318,31 @@ main() {
   # targets any of them, so no mark_eso_managed is needed.
   #
   # A loop rather than one block per service, matching the presence-gated loop
-  # in setup-database-tenant.sh: the fifth copy of a fourteen-line block whose
-  # only varying token is the service name is a place for the sixth to be
+  # in setup-database-tenant.sh: the sixth copy of a fourteen-line block whose
+  # only varying token is the service name is a place for the seventh to be
   # subtly wrong.
+  #
+  # Nova is the one service that needs a second path. A Nova has two database
+  # blocks (spec.database for the cell database, spec.apiDatabase for the API
+  # database), and each one carries its own SQL user, so the loop's
+  # username=nova covers the cell half alone. The API half is seeded below at
+  # openstack/nova/{namespace}/standalone/api-db with username=nova_api and is
+  # read by the kind-only nova-api-db ExternalSecret
+  # (deploy/kind/infrastructure/nova-api-db-externalsecret.yaml), which a
+  # standalone Nova selects via apiDatabase.secretRef. Both paths sit under the
+  # same openstack/nova/{namespace} subtree, so the single nova grant in
+  # eso-tenant.hcl covers them together.
   local svc
-  for svc in glance placement barbican neutron cinder; do
+  for svc in glance placement barbican neutron cinder nova; do
     write_secret_if_missing "kv-v2/openstack/${svc}/openstack/standalone/db" \
       "username=${svc}" \
       "password=${GENERATED_PASSWORD}"
   done
+
+  # The API database half of the Nova pair described above.
+  write_secret_if_missing "kv-v2/openstack/nova/openstack/standalone/api-db" \
+    "username=nova_api" \
+    "password=${GENERATED_PASSWORD}"
 
   log "=== Done ==="
 }
