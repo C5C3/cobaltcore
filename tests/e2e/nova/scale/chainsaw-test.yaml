@@ -1,0 +1,256 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for replica scaling and PDB policy.
+# Verifies that patching spec.api.deployment.replicas propagates to the API
+# Deployment and its PDB:
+#   - initial deployment with replicas: 3 (PDB: minAvailable=1)
+#   - scale up to 5 replicas, where updatedReplicas proves new pods started
+#   - scale down to 1 replica (PDB: maxUnavailable=1)
+#
+# Steps 2 and 4 also assert the other four Deployments. The scheduler runs two
+# replicas and the conductor, the metadata API and the console proxy one each,
+# all fed by spec fields of their own, so a builder that read the API replica
+# count for every workload would scale them along and only these assertions
+# would catch it.
+#
+# spec.concurrent is false because of the CPU the scale-up requests. Every Nova
+# pod carries the shared 100m request (internal/common/types/workload.go), so
+# step 3 holds 1000m on the single node hack/kind-config.yaml declares: five
+# API pods, two schedulers, the conductor, the metadata API and the console
+# proxy. Run alone, before the concurrent suites start, the peak fits the node.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-scale
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The two-schema migration, the cell mapping and three API cold starts
+    # precede the first assertion, and two rollouts follow it. That does not
+    # fit the 120s the shared config allows.
+    # The first CI run measured the bring-up: the eight MariaDB CRs take 3
+    # minutes at the operator's 30 s requeue and the six nova-manage invocations
+    # of the db-sync about 3 more, so Ready lands roughly 8 minutes after the
+    # apply. 10m keeps a margin for a leg that runs two suites at once.
+    assert: 10m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CR ────────────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../cinder/broker-vhost.sh. The step cleanup runs
+  # at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh create nova-scale nova-scale-messaging openstack
+    - apply:
+        file: 00-metadata-secret.yaml
+    - apply:
+        file: 01-nova-cr.yaml
+    catch: &nova-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-scale
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Deployments and PDB ==="
+          kubectl get deploy,pdb -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-scale -o wide 2>&1 || true
+          kubectl describe deploy -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-scale 2>&1 | tail -200 || true
+          echo "=== Pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-scale -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh delete nova-scale || true
+  # ── Step 2: Assert Ready and the initial replica counts ────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-scale
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-scale
+            namespace: openstack
+          spec:
+            replicas: 3
+          status:
+            readyReplicas: 3
+            availableReplicas: 3
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: nova-scale
+            namespace: openstack
+          spec:
+            minAvailable: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-scale-scheduler
+            namespace: openstack
+          status:
+            availableReplicas: 2
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-scale-conductor
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-scale-metadata
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-scale-novncproxy
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch: *nova-dump
+  # ── Step 3: Scale up to 5 and assert the rollout completed ─────────────
+  - try:
+    - patch:
+        file: 02-patch-scale-up.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-scale
+            namespace: openstack
+          spec:
+            replicas: 5
+          status:
+            availableReplicas: 5
+            updatedReplicas: 5
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-scale
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-dump
+  # ── Step 4: Scale down to 1 and assert the PDB flips ───────────────────
+  - try:
+    - patch:
+        file: 03-patch-scale-to-one.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-scale
+            namespace: openstack
+          spec:
+            replicas: 1
+          status:
+            availableReplicas: 1
+            updatedReplicas: 1
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: nova-scale
+            namespace: openstack
+          spec:
+            maxUnavailable: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-scale-scheduler
+            namespace: openstack
+          status:
+            availableReplicas: 2
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-scale-conductor
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-scale-metadata
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-scale-novncproxy
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-scale
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-dump

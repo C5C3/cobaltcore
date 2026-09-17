@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the HealthCheck sub-reconciler.
+# Verifies the operator's HTTP probe of the Nova API drives NovaAPIReady and
+# status.endpoint:
+#   - NovaAPIReady=True with reason APIHealthy once the Deployment serves
+#   - status.endpoint carries the cluster-local Service URL
+#
+# The probe GETs the API root, which answers the version document without a
+# token and without touching either database or the message bus, so a 2xx there
+# means the WSGI app is serving requests. The compute API ships no /healthcheck
+# route of its own, which is what separates this probe from the sibling
+# services. Nova writes the internal URL into status.endpoint whenever
+# spec.gateway is unset, and this CR sets none, so the probe target and the
+# advertised endpoint coincide here.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-healthcheck
+spec:
+  namespace: openstack
+  timeouts:
+    # The two-schema migration, the cell mapping and the cold start of five
+    # workloads all precede Ready, and that does not fit the 120s the shared
+    # config allows.
+    # The first CI run measured the bring-up: the eight MariaDB CRs take 3
+    # minutes at the operator's 30 s requeue and the six nova-manage invocations
+    # of the db-sync about 3 more, so Ready lands roughly 8 minutes after the
+    # apply. 10m keeps a margin for a leg that runs two suites at once.
+    assert: 10m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CR ────────────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../cinder/broker-vhost.sh. The step cleanup runs
+  # at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh create nova-health nova-health-messaging openstack
+    - apply:
+        file: 00-metadata-secret.yaml
+    - apply:
+        file: 01-nova-cr.yaml
+    catch: &nova-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-health
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Deployments ==="
+          kubectl describe deploy -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-health 2>&1 | tail -200 || true
+          echo "=== Service and endpoints ==="
+          kubectl get svc,endpointslices -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-health -o wide 2>&1 || true
+          echo "=== Pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-health -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh delete nova-health || true
+  # ── Step 2: Assert NovaAPIReady and the endpoint ───────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-health
+            namespace: openstack
+          status:
+            endpoint: http://nova-health.openstack.svc.cluster.local:8774
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-dump
