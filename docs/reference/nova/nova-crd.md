@@ -361,11 +361,16 @@ workers = 2
 ```
 
 `novncproxy.conf`, the client directory the proxy serves and the address pair
-its Service routes to:
+its Service routes to. The empty `[api_database]` connection blanks the
+placeholder of the shared document: the proxy gets no nova_api credentials, and
+nova reads a non-empty value as a reachable API database:
 
 ```ini
 [DEFAULT]
 web = /usr/share/novnc
+
+[api_database]
+connection =
 
 [vnc]
 novncproxy_host = 0.0.0.0

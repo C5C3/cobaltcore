@@ -281,12 +281,29 @@ func TestPinNovaOverlays(t *testing.T) {
 
 	g.Expect(metadataOverlay).To(Equal("[neutron]\nservice_metadata_proxy = true\n"))
 	g.Expect(novncproxyOverlay).To(Equal(
-		"[DEFAULT]\nweb = /usr/share/novnc\n\n[vnc]\nnovncproxy_host = 0.0.0.0\nnovncproxy_port = 6080\n"))
+		"[DEFAULT]\nweb = /usr/share/novnc\n\n[api_database]\nconnection =\n\n" +
+			"[vnc]\nnovncproxy_host = 0.0.0.0\nnovncproxy_port = 6080\n"))
 
 	g.Expect(schedulerOverlay(2)).To(Equal("[scheduler]\nworkers = 2\n"))
 	g.Expect(schedulerOverlay(5)).To(Equal("[scheduler]\nworkers = 5\n"))
 	g.Expect(conductorOverlay(2)).To(Equal("[conductor]\nworkers = 2\n"))
 	g.Expect(conductorOverlay(5)).To(Equal("[conductor]\nworkers = 5\n"))
+}
+
+// TestConsoleProxyReachesNoAPIDatabase covers the two halves that have to agree.
+// The shared document carries a placeholder [api_database] connection that every
+// other role overrides from a Secret. The console proxy gets no such override, so
+// its overlay has to blank the key: nova reads any non-empty value as a reachable
+// API database and dials the host "placeholder" on every console token.
+func TestConsoleProxyReachesNoAPIDatabase(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	g.Expect(operatorDefaults(validNova())[apiDatabaseSection]["connection"]).To(
+		Equal(dbConnectionPlaceholder), "the shared document carries the placeholder")
+	g.Expect(envNames(novaWorkloadEnv(validNova(), roleConsoleProxy))).NotTo(
+		ContainElement("OS_API_DATABASE__CONNECTION"), "the proxy gets no override for it")
+	g.Expect(novncproxyOverlay).To(ContainSubstring("[api_database]\nconnection =\n"),
+		"so the overlay, which oslo.config reads after the shared document, blanks it")
 }
 
 // TestOperatorDefaults_IsAPureFunction pins that the defaults depend on the spec
