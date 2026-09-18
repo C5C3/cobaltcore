@@ -359,10 +359,11 @@ func buildAPIDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 				Name:          "nova-api",
 				ContainerPort: novaAPIPort,
 			}},
-			// Both probes GET /, the version document the compute API answers
+			// All three probes GET /, the version document the compute API answers
 			// without a token. Nova registers no oslo healthcheck middleware in its
 			// paste pipeline, so / is the cheapest route that proves the WSGI
 			// application is loaded. The timings are the sibling operators'.
+			StartupProbe: novaUWSGIStartupProbe(novaAPIPort),
 			LivenessProbe: &corev1.Probe{
 				ProbeHandler:        novaUWSGIProbeHandler(novaAPIPort),
 				InitialDelaySeconds: 15,
@@ -408,6 +409,23 @@ func novaUWSGIProbeHandler(port int32) corev1.ProbeHandler {
 			Path: "/",
 			Port: intstr.FromInt32(port),
 		},
+	}
+}
+
+// novaUWSGIStartupProbe returns the startup probe of an HTTP front end. It
+// carries the cold-start window: every uWSGI worker imports nova under the
+// container's CPU limit, which measured 40 to 78 seconds on a CI node, while the
+// liveness probe alone gives up 55 seconds after the container started and
+// restarts a front end that is still loading. The timings are the sibling
+// operators': 30x10s of startup budget, and an 8s timeout because a
+// cold-starting WSGI app can hold even a plain HTTP GET past the kubelet's 1s
+// default.
+func novaUWSGIStartupProbe(port int32) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler:     novaUWSGIProbeHandler(port),
+		FailureThreshold: 30,
+		PeriodSeconds:    10,
+		TimeoutSeconds:   8,
 	}
 }
 

@@ -126,6 +126,7 @@ func buildMetadataDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 				Name:          "nova-metadata",
 				ContainerPort: novaMetadataPort,
 			}},
+			StartupProbe: novaUWSGIStartupProbe(novaMetadataPort),
 			LivenessProbe: &corev1.Probe{
 				ProbeHandler:        novaUWSGIProbeHandler(novaMetadataPort),
 				InitialDelaySeconds: 15,

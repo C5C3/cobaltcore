@@ -645,6 +645,35 @@ func TestPodTemplateAnnotationsPerRole(t *testing.T) {
 	}
 }
 
+// TestUWSGIFrontEndsCarryAStartupProbe covers the cold start of the two HTTP
+// front ends. Importing nova took 77 seconds on a CI node, and the liveness probe
+// alone restarts the container 55 seconds after it started, so without a startup
+// probe holding it back the API never finishes loading.
+func TestUWSGIFrontEndsCarryAStartupProbe(t *testing.T) {
+	g := NewGomegaWithT(t)
+	nova := validNova()
+	art := workloadArtifacts()
+	digests := workloadTestDigests()
+
+	for name, tc := range map[string]struct {
+		deploy *appsv1.Deployment
+		port   int
+	}{
+		"api":      {buildAPIDeployment(nova, art, digests), 8774},
+		"metadata": {buildMetadataDeployment(nova, art, digests), 8775},
+	} {
+		container := tc.deploy.Spec.Template.Spec.Containers[0]
+		probe := container.StartupProbe
+		g.Expect(probe).NotTo(BeNil(), name+" startup probe")
+		g.Expect(probe.HTTPGet.Path).To(Equal("/"), name+" startup probe path")
+		g.Expect(probe.HTTPGet.Port.IntValue()).To(Equal(tc.port), name+" startup probe port")
+		g.Expect(probe.FailureThreshold*probe.PeriodSeconds).To(
+			BeNumerically(">=", 300), name+" startup budget in seconds")
+		g.Expect(probe.TimeoutSeconds).To(BeNumerically(">", 1),
+			name+": a loading WSGI app holds a GET past the kubelet's 1s default")
+	}
+}
+
 // TestBuildAPIService_And_PDB covers the selectors: one Nova owns five kinds of
 // Deployment, so the API Service and its budget must reach the API pods and
 // nothing else.
