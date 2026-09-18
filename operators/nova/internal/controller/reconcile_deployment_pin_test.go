@@ -157,6 +157,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /
+            port: 8774
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/nova/nova.conf.d
           name: config
@@ -343,6 +350,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /
+            port: 8774
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/nova/nova.conf.d
           name: config
@@ -525,6 +539,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /
+            port: 8774
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/nova/nova.conf.d
           name: config
