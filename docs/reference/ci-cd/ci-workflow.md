@@ -810,7 +810,7 @@ strategy:
 The operator matrix is dynamically constructed by the `changes` job, including only operators
 whose code (or shared code) changed. The `imagePullPolicy: Never` Helm value ensures the
 kind-loaded image is used instead of attempting a registry pull. Timeout: 68
-minutes, 90 for the `nova` leg.
+minutes, 150 for the `nova` leg.
 
 **The two OVN legs.** `ovn` ships no per-release service image. Its Pods all
 run `ghcr.io/c5c3/ovn:<pin>`, where `<pin>` is what
@@ -872,7 +872,7 @@ pair with 2026.1 siblings. The suites the leg carries are the fourteen under
 Chainsaw runs with `--parallel 2`, because a full-stack Nova suite carries a
 Keystone, an OVNCentral, a Neutron, a Placement, a Glance and the five Nova
 workloads. The wall is
-`timeout-minutes: ${{ matrix.operator == 'nova' && 90 || 68 }}`, so only this
+`timeout-minutes: ${{ matrix.operator == 'nova' && 150 || 68 }}`, so only this
 leg pays for its image loads, its sibling deploys and the suites stacked on
 it. A third step, `Dump diagnostic info (nova siblings)`,
 calls `hack/ci-dump-diagnostics.sh` once per sibling under `always()`, each
@@ -1016,7 +1016,7 @@ estimate — confirm it against the first green run of the leg.
 | Matrix | Dynamic per-operator | Four suites (`pod` / `network` / `ovn` / `nova`) on different runners |
 | Test config | `tests/e2e/chainsaw-config.yaml` | `tests/e2e-chaos/chainsaw-config.yaml` |
 | Test directory | `tests/e2e/<operator>/` | per-suite `test_dirs` under `tests/e2e-chaos/` |
-| Timeout | 68 minutes, 90 for the `nova` leg | 90 minutes, 150 for the `nova` leg |
+| Timeout | 68 minutes, 150 for the `nova` leg | 90 minutes, 150 for the `nova` leg |
 | Blocking | Yes | `pod` leg blocking; `network`, `ovn` and `nova` legs non-blocking (`continue-on-error: ${{ matrix.suite == 'network' \|\| matrix.suite == 'ovn' \|\| matrix.suite == 'nova' }}`) |
 | Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
 | Service images | 2025.2 + 2025.2-upgraded + 2026.1 | 2025.2 only, plus the pinned OVN daemon image |

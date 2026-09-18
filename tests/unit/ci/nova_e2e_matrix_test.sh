@@ -515,7 +515,7 @@ test_nova_leg_deploys_the_sibling_operators() {
 }
 
 test_nova_leg_narrows_parallelism_and_budget() {
-  echo "Test: the nova e2e leg runs two suites at a time inside a 90-minute wall"
+  echo "Test: the nova e2e leg runs two suites at a time inside a 150-minute wall"
 
   # A Nova suite of #1039 stands a Keystone, an OVNCentral, a Neutron, a
   # Placement, a Glance and the five Nova workloads on one kind node, so at the
@@ -523,8 +523,10 @@ test_nova_leg_narrows_parallelism_and_budget() {
   # the CRs never reach Ready. Read the condition together with its body, so a
   # nova arm on a branch that no longer narrows anything does not pass.
   #
-  # The wall covers what the leg does before its first suite: the kind broker,
-  # fourteen sibling image loads and five sibling deploys. It is an expression
+  # The wall covers what the leg does before its first suite (the kind broker,
+  # fourteen sibling image loads and five sibling deploys) and the fifteen
+  # suites behind it: at 90 minutes the leg was cancelled on 2026-09-18 with
+  # three full-tier suites unfinished and no suite failing. It is an expression
   # on the matrix operator rather than a higher flat number, so only the nova
   # leg spends the extra runner time and no other leg's wall moves with it.
   local narrowing
@@ -549,8 +551,8 @@ test_nova_leg_narrows_parallelism_and_budget() {
 
   local job
   job=$(job_block e2e-operator)
-  assert_contains "the nova leg gets 90 minutes and the others keep 68" "$job" \
-    "timeout-minutes: \${{ matrix.operator == 'nova' && 90 || 68 }}"
+  assert_contains "the nova leg gets 150 minutes and the others keep 68" "$job" \
+    "timeout-minutes: \${{ matrix.operator == 'nova' && 150 || 68 }}"
   assert_not_contains "no flat wall is left beside the expression" "$job" \
     "timeout-minutes: 68"
 

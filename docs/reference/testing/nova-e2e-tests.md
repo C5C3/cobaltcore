@@ -117,7 +117,7 @@ The nova `e2e-operator` leg deploys five sibling operators through
 `hack/ci-deploy-operator.sh` before the nova-operator (keystone, placement,
 glance, ovn and neutron), each into its own `<op>-system` namespace, and passes
 `WITH_MESSAGING: true` to the infrastructure bring-up. Chainsaw runs with
-`--parallel 2` rather than the shared config's four, under a 90-minute wall
+`--parallel 2` rather than the shared config's four, under a 150-minute wall
 instead of the 68 the other legs take: a full-stack Nova suite is a Keystone, an
 OVNCentral, a Neutron, a Placement, a Glance and the five Nova workloads. Beside
 the operator and service images the leg loads `tempest:2025.2`, which is where
