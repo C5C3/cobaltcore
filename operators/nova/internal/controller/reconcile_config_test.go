@@ -603,6 +603,10 @@ func parseOverlaySections(t *testing.T, overlay string) map[string]map[string]st
 			sections[current] = map[string]string{}
 		default:
 			key, value, ok := strings.Cut(line, " = ")
+			if !ok {
+				// An option set to the empty value renders without one.
+				key, ok = strings.CutSuffix(line, " =")
+			}
 			if !ok || current == "" {
 				t.Fatalf("overlay line %q is neither a section header nor a key", line)
 			}
