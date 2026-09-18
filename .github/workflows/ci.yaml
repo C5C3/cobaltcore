@@ -1270,11 +1270,19 @@ jobs:
     # largest suite in this matrix and has not been stable on the self-hosted
     # runners since they took over. The other legs stay self-hosted.
     runs-on: ${{ matrix.operator == 'keystone' && 'blacksmith-4vcpu-ubuntu-2404' || 'self-hosted' }}
-    # 90 minutes for the nova leg: the kind broker, fourteen extra image loads
+    # 150 minutes for the nova leg: the kind broker, fourteen extra image loads
     # (about 4 minutes) and five sibling deploys (about 2 minutes) come before
-    # its suites, and each suite brings five services up. The other legs keep
-    # 68; the neutron leg, with one sibling, took 41 minutes on 2026-09-17.
-    timeout-minutes: ${{ matrix.operator == 'nova' && 90 || 68 }}
+    # its suites, and each suite brings five services up. On 2026-09-18 the leg
+    # reached its first suite after 14.5 minutes and spent the next 76 on twelve
+    # of its fifteen suites, two at a time and without a failed step, before a
+    # 90-minute wall cancelled it with three full-tier suites unfinished. A wall
+    # that arrives first kills chainsaw outright: no catch block runs and no
+    # JUnit report is written, so the job says nothing about which suite it
+    # stopped in. 150 is the estimate for the whole leg (about 125 minutes)
+    # plus headroom; confirm it against the first green run of this leg and
+    # re-derive if it overruns. The other legs keep 68; the neutron leg, with
+    # one sibling, took 41 minutes on 2026-09-17.
+    timeout-minutes: ${{ matrix.operator == 'nova' && 150 || 68 }}
     permissions:
       contents: read
       packages: read
