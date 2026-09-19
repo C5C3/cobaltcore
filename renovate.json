@@ -4,6 +4,7 @@
     "config:recommended"
   ],
   "platformAutomerge": false,
+  "postUpdateOptions": ["gomodTidy"],
   "nix": {
     "enabled": true,
     "lockFileMaintenance": {
