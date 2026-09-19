@@ -1,0 +1,154 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# What the deployment does while Placement is partitioned away from the
+# scheduler: it serves, it accepts the request, and the build fails closed.
+#
+# GET / is the version document the compute API answers without a token, and
+# it is the endpoint both nova-api probes read
+# (operators/nova/internal/controller/reconcile_deployment.go). Nova registers
+# no oslo healthcheck middleware, so / is the request that says the WSGI
+# application is loaded and serving while the scheduler is cut off.
+#
+# The server list is the second half of "and nothing else". It reads the API
+# database and the cell, neither of which the partition touches, so a listing
+# that answers says the fault stayed inside the scheduling path.
+#
+# The create is accepted, and that is not a defect. nova-api writes the build
+# request and casts to the conductor without ever calling Placement, so the
+# 202 it answers with is the correct answer to a request the deployment has
+# taken responsibility for. The failure surfaces where the deployment can
+# report it: the scheduler's Placement client gives up, the conductor buries
+# the build in cell0, and the server reaches ERROR with a fault that says why.
+# A server that reached ACTIVE would mean it had been placed without a claim.
+#
+# ERROR gets 300 seconds because the scheduler does not fail fast. A partition
+# drops the SYN without an ICMP reject, so the connection attempt runs out the
+# kernel's own retry ladder, roughly 130 seconds of exponential backoff, before
+# the client sees an error at all.
+#
+# The fault is matched on either of two texts, and both say the build was not
+# placed, which is the claim. 'No valid host' is what the conductor writes when
+# the scheduler returns no candidate. Under a drop rule the scheduler returns
+# nothing at all: its GET /allocation_candidates ends in a keystoneauth
+# ConnectTimeout, which reaches the conductor as an oslo.messaging RemoteError
+# (CI, 2026-09-19). nova records a non-nova exception under its class name, so
+# the message is the bare word RemoteError and the request that timed out is in
+# the details, which an admin token is shown.
+#
+# The fault is read by server id. `openstack server show <name>` resolves a name
+# through the server list, and nova's list path reads faults from the database
+# the API's [database] connection names, which is the cell schema, while a
+# buried build and its fault live in cell0. Only GET /servers/<id> targets the
+# cell the instance mapping names, so only that answer carries the fault.
+#
+# backoffLimit is 0 because the script is not idempotent: the second attempt
+# would find the server s-fail the first one created and fail on the name.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-placement-chaos-failclosed
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: failclosed
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-placement-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              SEED=4e0a0000-0000-4000-8000-000000000006
+
+              # wait_status <kind> <name> <want> <timeoutSeconds>: poll one
+              # object's status every 5s. On the deadline it prints the
+              # object's own show output, whose fault message is what explains
+              # a server that did not reach the wanted status.
+              wait_status() {
+                ws_deadline=$(( $(date +%s) + $4 ))
+                while true; do
+                  ws_status="$(openstack "$1" show "$2" -f value -c status 2>/dev/null || true)"
+                  if [ "${ws_status}" = "$3" ]; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${ws_deadline}" ]; then
+                    echo "ERROR: $1 $2 status '${ws_status:-<none>}' != $3 within $4s"
+                    openstack "$1" show "$2" 2>&1 || true
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+
+              # urllib rather than the openstack client: the claim is about the
+              # HTTP status of one unauthenticated request, and the client
+              # would resolve a catalog and mint a token in front of it.
+              python3 -c '
+              import sys
+              import urllib.request
+
+              URL = "http://nova-placement-chaos.openstack.svc.cluster.local:8774/"
+
+              try:
+                  response = urllib.request.urlopen(URL, timeout=15)
+              except Exception as exc:
+                  sys.exit("FAIL: GET / raised %r under the partition, want 200" % (exc,))
+              if response.status != 200:
+                  sys.exit("FAIL: GET / answered %d under the partition, want 200"
+                           % response.status)
+              print("OK: the API answers GET / with 200 under the partition")
+              '
+
+              # The listing touches the API database and the cell, so it says
+              # the fault did not spread past the scheduler.
+              openstack server list >/dev/null
+              echo "OK: the API listed servers under the partition"
+
+              # The create must be accepted: nova-api never calls Placement.
+              openstack server create --image "${SEED}" --flavor m1.nano --nic none s-fail
+              echo "OK: the API accepted the create under the partition"
+
+              wait_status server s-fail ERROR 300
+              echo "OK: server s-fail reached ERROR"
+
+              # Read by id, for the reason the header gives. The whole answer
+              # is fetched and the fault taken out of it: the client drops a
+              # column it has no value for, so `-c fault` on a server without
+              # one is an error about columns rather than an empty answer.
+              # Captured before it is matched, for the pipefail reason
+              # 14-baseline-job.yaml records.
+              SERVER_ID="$(openstack server show s-fail -f value -c id)"
+              SHOWN="$(openstack server show "${SERVER_ID}" -f json)"
+              FAULT="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("fault")))' <<<"${SHOWN}")"
+              echo "fault of s-fail: ${FAULT}"
+              if ! grep -qE 'No valid host|allocation_candidates' <<<"${FAULT}"; then
+                echo "FAIL: the fault of s-fail does not report an unplaced build"
+                exit 1
+              fi
+              echo "OK: the fault of s-fail reports a build the scheduler could not place"
+
+              echo FAILCLOSED-OK

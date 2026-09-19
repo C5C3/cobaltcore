@@ -1,0 +1,756 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a message-bus outage under a Nova deployment.
+# The partition severs nova <-> RabbitMQ traffic on the broker side (see
+# 13-networkchaos.yaml for why a client-side rule would be a no-op). What the
+# suite pins is the claim the Nova service profile makes: a broker outage
+# stalls requests and leaves the API up, and the scheduler and the conductor
+# report ready off the broker socket. The phases below take that apart:
+#
+#   - baseline: the CR is Ready, a server boots to ACTIVE through the bus, and
+#     the scheduler, the conductor and the API all report a ready container
+#   - under the partition: the scheduler and the conductor go NotReady.
+#     nova-amqp-ready looks for an established socket to the broker port and
+#     there is none, so the CR reports
+#     SchedulerReady=False/WaitingForScheduler,
+#     ConductorReady=False/WaitingForConductor and the aggregate
+#     Ready=False/NotAllReady. The API keeps its ready container and never
+#     restarts: both its probes GET /, the version document, which the bus does
+#     not reach into
+#   - under the partition: GET / answers 200 while a server create does not
+#     answer at all, and the build request the create wrote is listed BUILD out
+#     of the API database
+#   - after the partition is lifted: both processes reconnect on their own, the
+#     conditions go True again, the create that stalled finishes, and a fresh
+#     create reaches ACTIVE
+#
+# Two facts make the blocked create the right verdict rather than a flaky one.
+# nova-api writes the build request into the API database and then casts to the
+# conductor, and oslo.messaging retries that publish for as long as the broker
+# is unreachable, so the request hangs rather than reporting a success the
+# deployment cannot deliver. And the worker survives the stall:
+# spec.api.uwsgi.harakiri is nil by default, which leaves the flag off the
+# uWSGI command entirely (internal/common/types/uwsgi.go), so nothing kills the
+# blocked request and the cast goes out once the broker is back.
+#
+# The readiness flip gets 180 seconds rather than one probe period. A partition
+# drops packets without a FIN or an RST, so the socket nova-amqp-ready reads
+# stays ESTABLISHED until the client itself closes it; the probe documents that
+# blind spot at images/nova/nova-amqp-ready:28-36. What closes the socket is
+# oslo.messaging's heartbeat, which gives up after
+# heartbeat_timeout_threshold, 60s by default with no operator override. The
+# probe then needs one more failure at its 5s period, so 60s is the earliest
+# the flip can happen and never the budget for it.
+#
+# The suite brings its own broker (00-rabbitmqcluster.yaml) rather than taking
+# a vhost on the kind-only shared-rabbitmq: the fault severs a whole broker,
+# and doing that to the shared one would take the rest of the leg with it. On a
+# broker of its own the Nova can use managed messaging, which is the mode the
+# fault is about; managed mode always lands on the root vhost, and one Nova on
+# one broker has no second tenant to keep apart.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-broker-outage
+spec:
+  namespace: openstack
+  timeouts:
+    # The suite default. Every assert that waits out a service bring-up carries
+    # 8m of its own (../../e2e/nova/db-archive/ needs that for the same
+    # fixtures); the rest read a deployment that is already up, and keeping the
+    # default at 5m is what holds the partition phase inside the 600s the
+    # NetworkChaos runs for.
+    assert: 5m
+  steps:
+  # ── Step 1: Bring up the broker ─────────────────────────────────────────
+  # The RabbitMQ Cluster Operator publishes no Ready condition, so the wait
+  # follows AllReplicasReady, which is the condition the messaging helper and
+  # tests/e2e/c5c3/messaging/ gate on too. Ten minutes: the broker pulls its own
+  # image, binds a PersistentVolumeClaim and runs its boot sequence before it
+  # reports a ready replica.
+  - try:
+    - apply:
+        file: 00-rabbitmqcluster.yaml
+    - script:
+        timeout: 11m
+        content: |
+          set -eu
+          BUS=nova-chaos-rabbitmq
+          DEADLINE=$(( $(date +%s) + 600 ))
+          while true; do
+            STATUS="$(kubectl get rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
+              -o "jsonpath={.status.conditions[?(@.type=='AllReplicasReady')].status}" 2>/dev/null || true)"
+            if [ "${STATUS}" = "True" ]; then
+              echo "OK: rabbitmqcluster/${BUS} AllReplicasReady=True"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+              echo "FAIL: rabbitmqcluster/${BUS} AllReplicasReady not True within 600s (last: '${STATUS:-<none>}')"
+              kubectl get pods,pvc -n "$NAMESPACE" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+    catch: &broker-dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos nova-broker-chaos --cr-kind=nova --dep-label=app.kubernetes.io/name=nova-chaos-rabbitmq --dep-ns=openstack --log-label=app.kubernetes.io/instance=nova-broker-chaos
+    - script:
+        timeout: 1m
+        content: kubectl get networkchaos,rabbitmqcluster -n "$NAMESPACE" -o yaml 2>&1 || true
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-nova-broker-chaos
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNCentral
+        name: nova-broker-chaos-ovn
+        namespace: openstack
+    - get:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: Neutron
+        name: neutron-nova-broker-chaos
+        namespace: openstack
+    - get:
+        apiVersion: placement.openstack.c5c3.io/v1alpha1
+        kind: Placement
+        name: placement-nova-broker-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: Glance
+        name: glance-nova-broker-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: GlanceBackend
+        name: glance-nova-broker-chaos-s3
+        namespace: openstack
+    # The compute and the three Jobs. diagnostics.sh reads the pods of the Nova
+    # itself; these four are the ones outside that label.
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Fake compute ==="
+          kubectl logs -n "$NAMESPACE" deploy/nova-broker-chaos-fake-compute --tail=100 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-broker-chaos-catalog-setup nova-broker-chaos-image-seed \
+            nova-broker-chaos-baseline nova-broker-chaos-blocked nova-broker-chaos-recovered; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 200
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/name=neutron-operator
+        tail: 200
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/name=placement-operator
+        tail: 200
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/name=glance-operator
+        tail: 200
+    # The broker is this suite's subject, and it is brought up and torn down by
+    # an operator of its own.
+    - podLogs:
+        namespace: rabbitmq-system
+        selector: app.kubernetes.io/name=rabbitmq-cluster-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 2: Bring up Keystone ───────────────────────────────────────────
+  # It goes first because the catalog Job, the four sibling CRs and the Nova
+  # all authenticate against it.
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        # 8m, not the suite's 5m: a service bring-up on this leg runs a db-sync
+        # Job before its pods start, on a node that already carries the broker.
+        timeout: 8m
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *broker-dump
+  # ── Step 3: Register the four services in the catalog ───────────────────
+  # The Job is deleted first because a Job's pod template is immutable, so a
+  # re-run against a leftover object would fail on the update rather than on
+  # anything the suite is testing.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-broker-chaos-catalog-setup -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 02-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/nova-broker-chaos-catalog-setup \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-broker-chaos-catalog-setup 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-broker-chaos-catalog-setup -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-broker-chaos-catalog-setup
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *broker-dump
+  # ── Step 4: Bring up the four services the boot path depends on ─────────
+  - try:
+    - apply:
+        file: 03-messaging-secret.yaml
+    - apply:
+        file: 04-ovncentral-cr.yaml
+    - apply:
+        file: 05-neutron-cr.yaml
+    - apply:
+        file: 06-placement-cr.yaml
+    - apply:
+        file: 07-glance-cr.yaml
+    - apply:
+        file: 08-glancebackend-cr.yaml
+    - assert:
+        # 8m for the same reason step 2 takes it, and these four come up at
+        # once.
+        timeout: 8m
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: nova-broker-chaos-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-nova-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-nova-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-nova-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-nova-broker-chaos-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *broker-dump
+  # ── Step 5: Seed the image the servers boot from ────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-broker-chaos-image-seed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 09-image-seed-job.yaml
+          kubectl wait --for=condition=complete job/nova-broker-chaos-image-seed \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-broker-chaos-image-seed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-broker-chaos-image-seed -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-broker-chaos-image-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *broker-dump
+  # ── Step 6: Apply the Nova CR and assert its conditions ─────────────────
+  # The workload, Service and configuration assertions of
+  # ../../e2e/nova/basic-deployment/ are not repeated: this suite shares its
+  # fixtures with that one, so the only thing it can say that the other cannot
+  # is what an unreachable broker does. The conditions are asserted in full
+  # because they are the baseline the partition phase is read against.
+  - try:
+    - apply:
+        file: 10-metadata-secret.yaml
+    - apply:
+        file: 11-nova-cr.yaml
+    - assert:
+        # 8m: two schema migrations, a cell mapping and five workloads.
+        timeout: 8m
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'ComputeConfigReady']):
+            - status: "True"
+              reason: ComputeConfigPublished
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'MetadataReady']):
+            - status: "True"
+              reason: MetadataReady
+            (conditions[?type == 'ConsoleProxyReady']):
+            - status: "True"
+              reason: ConsoleProxyReady
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            # The CR sets no spec.dbArchive, so the schedule is the webhook's
+            # @daily default and the CronJob is projected all the same.
+            (conditions[?type == 'DBArchiveReady']):
+            - status: "True"
+              reason: DBArchiveScheduled
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            # The five members of the parallel group. This CR asks for no
+            # autoscaling, no NetworkPolicy and no gateway, and each member
+            # reports that absence as True, which is what lets the aggregate
+            # resolve on a cluster that has none of them.
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'MetadataHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'ConsoleHTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            # The CR carries no spec.extraConfig, and the ownership guard runs
+            # on every reconcile either way
+            # (operators/nova/internal/controller/reconcile_config.go).
+            (conditions[?type == 'ExtraConfigHealthy']):
+            - status: "True"
+              reason: NoOwnedKeysOverridden
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *broker-dump
+  # ── Step 7: Start the fake compute and map it into cell1 ────────────────
+  # The Deployment is applied only now: it mounts the compute-contract Secret
+  # the step above has just asserted. Discovery is then run by hand, unlike
+  # ../../e2e/nova/basic-deployment/, which waits out the scheduler's
+  # 300-second periodic. That wait is what the other suite proves; spending it
+  # here would put five idle minutes in front of a partition window.
+  - try:
+    - apply:
+        file: 12-fake-compute.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-broker-chaos-fake-compute
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          ../../e2e/nova/discover-hosts.sh nova-broker-chaos "$NAMESPACE"
+    catch: *broker-dump
+  # ── Step 8: Baseline — a server boots and all three pods are ready ──────
+  - try:
+    - script:
+        shell: bash
+        timeout: 11m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-broker-chaos-baseline -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 14-baseline-job.yaml
+          kubectl wait --for=condition=complete job/nova-broker-chaos-baseline \
+            -n "$NAMESPACE" --timeout=10m || {
+            kubectl logs -n "$NAMESPACE" job/nova-broker-chaos-baseline 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-broker-chaos-baseline -o wide
+            exit 1
+          }
+          # The log is fetched once and asserted on the captured text: a
+          # `kubectl logs | grep -q` pipeline fails under pipefail exactly when
+          # it matches, because grep closes the pipe while kubectl is still
+          # writing.
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-broker-chaos-baseline)"
+          echo "$LOGS"
+          grep -q 'BASELINE-OK' <<<"$LOGS"
+    # The three container readiness flags the partition is read against below.
+    # They are recorded here rather than assumed: the CR being Ready says the
+    # Deployments are available, and this says which container each of the
+    # three pods reports ready on.
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -euo pipefail
+
+          ready_flag() {
+            kubectl get pods -n "$NAMESPACE" \
+              -l "app.kubernetes.io/instance=nova-broker-chaos,app.kubernetes.io/component=$1" \
+              -o "jsonpath={.items[0].status.containerStatuses[?(@.name=='$2')].ready}"
+          }
+
+          check_ready() {
+            flag="$(ready_flag "$1" "$2")"
+            echo "component $1, container $2: ready=${flag:-<none>}"
+            if [ "${flag}" != "true" ]; then
+              echo "FAIL: the $2 container is not ready before the partition"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-broker-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+          }
+
+          # scheduler and conductor take their readiness off the broker socket,
+          # the API off GET /. All three are ready on a healthy bus.
+          check_ready scheduler scheduler
+          check_ready conductor conductor
+          check_ready api nova-api
+          echo "BASELINE-READY-OK"
+    catch: *broker-dump
+  # ── Step 9: Inject NetworkChaos to partition the broker ─────────────────
+  - try:
+    - apply:
+        file: 13-networkchaos.yaml
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          # `kubectl wait --for=condition=AllInjected` instead of a chainsaw
+          # resource assert: NetworkChaos.status.conditions is a fixed 4-item
+          # list (Selected/AllInjected/AllRecovered/Paused) and chainsaw's
+          # list-merge rejects a shorter expected slice with "lengths of slices
+          # don't match". Asserting the negative conditions instead would be
+          # worse than verbose: chaos-mesh writes ALL four False before the
+          # selector has run, so a Selected=False assertion passes on an
+          # experiment that never injected anything.
+          kubectl wait networkchaos/partition-rabbitmq-nova -n "$NAMESPACE" \
+            --for=condition=AllInjected --timeout=60s
+    catch: *broker-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 13-networkchaos.yaml --ignore-not-found
+          echo "OK: the broker partition is lifted"
+  # ── Step 10: Under the partition — the consumers drop, the API serves ───
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+
+          # The flip is not immediate, and it cannot be. nova-amqp-ready looks
+          # for a socket ESTABLISHED to the broker port, and a partition drops
+          # packets without a FIN or an RST, so the socket stays ESTABLISHED
+          # until the client itself closes it. images/nova/nova-amqp-ready
+          # documents exactly this blind spot at lines 28-36. What closes it is
+          # oslo.messaging's heartbeat, which gives up after
+          # heartbeat_timeout_threshold (60s by default, and the operator
+          # renders no override). The probe then needs one failure at its 5s
+          # period, with failureThreshold 1
+          # (operators/nova/internal/controller/reconcile_scheduler.go). 180s
+          # covers that ~70s worst case with room and stays well inside the
+          # 600s the NetworkChaos runs for.
+          DEADLINE=$(( $(date +%s) + 180 ))
+
+          ready_flag() {
+            kubectl get pods -n "$NAMESPACE" \
+              -l "app.kubernetes.io/instance=nova-broker-chaos,app.kubernetes.io/component=$1" \
+              -o "jsonpath={.items[0].status.containerStatuses[?(@.name=='$2')].ready}"
+          }
+
+          while true; do
+            sched="$(ready_flag scheduler scheduler)"
+            cond="$(ready_flag conductor conductor)"
+            if [ "${sched}" = "false" ] && [ "${cond}" = "false" ]; then
+              echo "both bus consumers report ready=false under the partition"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+              echo "FAIL: scheduler=${sched:-<none>} conductor=${cond:-<none>} 180s into the partition, want both false"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-broker-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            echo "scheduler=${sched:-<none>} conductor=${cond:-<none>}, waiting"
+            sleep 5
+          done
+    # What the two NotReady Deployments become on the CR.
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SchedulerReady']):
+            - status: "False"
+              reason: WaitingForScheduler
+            (conditions[?type == 'ConductorReady']):
+            - status: "False"
+              reason: WaitingForConductor
+            (conditions[?type == 'Ready']):
+            - status: "False"
+              reason: NotAllReady
+    # The API is the contrast. Both of its probes GET /, the version document,
+    # which never touches the bus, so the same partition leaves it ready. The
+    # liveness probe reads that endpoint too, so a restart here would mean the
+    # outage reached the request path after all.
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -euo pipefail
+
+          api_field() {
+            kubectl get pods -n "$NAMESPACE" \
+              -l 'app.kubernetes.io/instance=nova-broker-chaos,app.kubernetes.io/component=api' \
+              -o "jsonpath={.items[0].status.containerStatuses[?(@.name=='nova-api')].$1}"
+          }
+
+          flag="$(api_field ready)"
+          restarts="$(api_field restartCount)"
+          echo "api container: ready=${flag:-<none>} restartCount=${restarts:-<none>}"
+          if [ "${flag}" != "true" ]; then
+            echo "FAIL: the API container went NotReady under a broker partition"
+            exit 1
+          fi
+          if [ "${restarts}" != "0" ]; then
+            echo "FAIL: the API container restarted ${restarts} time(s) under a broker partition"
+            exit 1
+          fi
+          echo "API-UP-OK"
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-broker-chaos-blocked -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 15-blocked-job.yaml
+          kubectl wait --for=condition=complete job/nova-broker-chaos-blocked \
+            -n "$NAMESPACE" --timeout=3m || {
+            kubectl logs -n "$NAMESPACE" job/nova-broker-chaos-blocked 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-broker-chaos-blocked -o wide
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-broker-chaos-blocked)"
+          echo "$LOGS"
+          grep -q 'BLOCKED-OK' <<<"$LOGS"
+          echo "OK: the API served the version document while the write path blocked"
+    catch: *broker-dump
+  # ── Step 11: Lift the partition and let the deployment recover itself ───
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: partition-rabbitmq-nova
+          namespace: openstack
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+
+          # oslo.messaging is already in its reconnect loop when the drop rule
+          # goes away, so the socket comes back within a retry interval and the
+          # probe passes on its next 5s period. 120s is that with room for the
+          # kubelet to record it.
+          DEADLINE=$(( $(date +%s) + 120 ))
+
+          ready_flag() {
+            kubectl get pods -n "$NAMESPACE" \
+              -l "app.kubernetes.io/instance=nova-broker-chaos,app.kubernetes.io/component=$1" \
+              -o "jsonpath={.items[0].status.containerStatuses[?(@.name=='$2')].ready}"
+          }
+
+          while true; do
+            sched="$(ready_flag scheduler scheduler)"
+            cond="$(ready_flag conductor conductor)"
+            if [ "${sched}" = "true" ] && [ "${cond}" = "true" ]; then
+              echo "both bus consumers are ready again"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+              echo "FAIL: scheduler=${sched:-<none>} conductor=${cond:-<none>} 120s after the partition was lifted, want both true"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-broker-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            echo "scheduler=${sched:-<none>} conductor=${cond:-<none>}, waiting"
+            sleep 5
+          done
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 13m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-broker-chaos-recovered -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 16-recovered-job.yaml
+          kubectl wait --for=condition=complete job/nova-broker-chaos-recovered \
+            -n "$NAMESPACE" --timeout=12m || {
+            kubectl logs -n "$NAMESPACE" job/nova-broker-chaos-recovered 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-broker-chaos-recovered -o wide
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-broker-chaos-recovered)"
+          echo "$LOGS"
+          grep -q 'RECOVERED-OK' <<<"$LOGS"
+          echo "OK: the stalled create finished and the write path takes new work"
+    catch: *broker-dump
+  # ── Step 12: Tear the broker down through its own operator ──────────────
+  # Chainsaw's cleanup deletes what the suite applied, under the 120s the chaos
+  # config allows. The broker pod carries the RabbitMQ Cluster Operator's
+  # default terminationGracePeriodSeconds of 604800s (seven days, so its preStop
+  # drain can finish), and the path that gets it to exit promptly is the
+  # RabbitmqCluster delete: the operator labels the pod skipPreStopChecks and
+  # releases its finalizer. So the suite performs that delete itself and waits
+  # for the pod, the way tests/e2e/c5c3/messaging/ tears its bus down, rather
+  # than leaving a seven-day grace period inside a two-minute budget.
+  #
+  # The order runs from the bus consumers inward. The fake compute holds a
+  # broker connection of its own and is not part of the CR, so it goes before
+  # the Nova; the Nova goes before the broker, because a reconcile that ran
+  # between the two deletes would find a RabbitmqCluster mid-teardown and
+  # report the CR unready for a bus that is meant to be gone. The fake compute
+  # and the three Jobs are deleted best-effort: a suite that already failed
+  # must still reach the broker teardown, which is the one thing chainsaw's
+  # own cleanup cannot do inside its budget.
+  - try:
+    - script:
+        timeout: 12m
+        content: |
+          set -eu
+          BUS=nova-chaos-rabbitmq
+
+          kubectl delete -f 12-fake-compute.yaml --ignore-not-found \
+            --wait=true --timeout=120s || true
+          kubectl delete job -n "$NAMESPACE" --ignore-not-found \
+            nova-broker-chaos-baseline nova-broker-chaos-blocked nova-broker-chaos-recovered || true
+
+          kubectl delete nova nova-broker-chaos -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=nova-broker-chaos -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a nova pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-broker-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Nova CR and its pods are gone"
+
+          kubectl delete rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=180s
+          BUS_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pod "${BUS}-server-0" -n "$NAMESPACE" -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${BUS_DEADLINE}" ]; then
+              echo "FAIL: ${BUS}-server-0 outlived its RabbitmqCluster by 180s; chainsaw's cleanup cannot wait it out"
+              kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the RabbitmqCluster and its broker pod are gone"
+    catch: *broker-dump

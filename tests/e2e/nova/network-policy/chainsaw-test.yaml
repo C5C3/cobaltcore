@@ -1,0 +1,245 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the NetworkPolicy sub-reconciler.
+#
+# SCOPE CAVEAT: the default CI CNI (kindnet) does NOT enforce NetworkPolicy, so
+# this suite validates the rendered policy objects and their lifecycle, not
+# actual traffic enforcement. That is the same scope as the
+# keystone/horizon/glance/placement/neutron/cinder network-policy suites.
+#
+# Nova renders two policies. The main one covers every pod of the CR, since its
+# selector carries no component key: the API, the metadata API, the scheduler,
+# the conductor, the console proxy and the Job pods read the same two schemas,
+# publish on the same broker and call the same siblings. The second one belongs
+# to the console proxy alone, which dials the VNC server of whichever
+# hypervisor an instance runs on. Policies are additive per pod, so putting
+# that display range on the main policy would open it to every Nova pod.
+#
+# The auto-derived egress order of the main policy is deterministic:
+#   - DNS           UDP+TCP 53
+#   - api-database  TCP 3306 (spec.apiDatabase default port)
+#   - database      TCP 3306 (spec.database default port)
+#   - cache         TCP 11211 (managed memcached)
+#   - Keystone      TCP 5000 (the port of spec.keystoneEndpoint)
+#   - siblings      TCP 8778, 9292, 9696 (Placement, Glance, Neutron)
+#   - messaging     TCP 5672 (the port of the transport URL in the broker
+#                   Secret)
+# The two schemas carry their own connection parameters and may sit on
+# different MariaDB instances, so each contributes a rule of its own even when
+# both resolve to 3306. The sibling ports arrive as one rule, sorted
+# numerically by the shared builder rather than in spec order. Neither the
+# siblings nor the broker nor the hypervisors are reachable by a label
+# selector, so those rules are port-only.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-network-policy
+spec:
+  namespace: openstack
+  timeouts:
+    # The two-schema migration, the cell mapping and the cold start of five
+    # workloads precede the parallel group that owns the policies, and that
+    # does not fit the 120s the shared config allows.
+    # The first CI run measured the bring-up: the eight MariaDB CRs take 3
+    # minutes at the operator's 30 s requeue and the six nova-manage invocations
+    # of the db-sync about 3 more, so Ready lands roughly 8 minutes after the
+    # apply. 10m keeps a margin for a leg that runs two suites at once.
+    assert: 10m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CR ────────────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../cinder/broker-vhost.sh. The step cleanup runs
+  # at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh create nova-netpol nova-netpol-messaging openstack
+    - apply:
+        file: 00-metadata-secret.yaml
+    - apply:
+        file: 01-nova-cr.yaml
+    catch: &nova-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-netpol
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== NetworkPolicies ==="
+          kubectl get networkpolicy -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-netpol -o yaml 2>&1 || true
+          echo "=== Deployments ==="
+          kubectl describe deploy -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-netpol 2>&1 | tail -200 || true
+          echo "=== Pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-netpol -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh delete nova-netpol || true
+  # ── Step 2: Assert both policies carry the expected rules ──────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyReady
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: nova-netpol
+            namespace: openstack
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: nova
+                app.kubernetes.io/instance: nova-netpol
+            policyTypes:
+            - Ingress
+            - Egress
+            # One rule for all three front ends: their peers are the same set.
+            ingress:
+            - ports:
+              - protocol: TCP
+                port: 8774
+              - protocol: TCP
+                port: 8775
+              - protocol: TCP
+                port: 6080
+            egress:
+            - ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+            - ports:
+              - protocol: TCP
+                port: 3306
+            - ports:
+              - protocol: TCP
+                port: 3306
+            - ports:
+              - protocol: TCP
+                port: 11211
+            - ports:
+              - protocol: TCP
+                port: 5000
+            - ports:
+              - protocol: TCP
+                port: 8778
+              - protocol: TCP
+                port: 9292
+              - protocol: TCP
+                port: 9696
+            - ports:
+              - protocol: TCP
+                port: 5672
+          # matchLabels is asserted as a subset above, so the absence of the
+          # component key needs its own check: one policy has to cover every
+          # component, and a selector narrowed to one of them would leave the
+          # other four workloads unisolated. `|| `{}`` is what keeps a missing
+          # matchLabels a readable diff: keys() on an absent field aborts the
+          # whole assert at its first poll with `invalid type for: <nil>`. The
+          # subset above is what still fails the step in that case.
+          (contains(keys(spec.podSelector.matchLabels || `{}`), 'app.kubernetes.io/component')): false
+    # The console proxy's own policy. libvirt hands every guest a display port
+    # out of remote_display_port_min..remote_display_port_max, whose defaults
+    # span the whole range, and the hypervisors are addressed by whatever the
+    # compute registered, so the rule is port-only.
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: nova-netpol-novncproxy
+            namespace: openstack
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: nova
+                app.kubernetes.io/instance: nova-netpol
+                app.kubernetes.io/component: novncproxy
+            policyTypes:
+            - Egress
+            egress:
+            - ports:
+              - protocol: TCP
+                port: 5900
+                endPort: 65535
+    catch: *nova-dump
+  # ── Step 3: Add a second ingress source and assert it lands ────────────
+  # Peer arithmetic: the operator appends one peer per declared ingress source
+  # plus one for its own Namespace (so the operator's health check reaches the
+  # API). One source therefore renders 2 peers and the patched two sources
+  # render 3, so `>= 3` is what distinguishes "the patch landed" from "the
+  # policy is unchanged". `|| `[]`` is what makes an empty peer list poll on
+  # and report "got 0, want >= 3" rather than aborting the assert at its first
+  # poll with `invalid type for: <nil>` — which is the regression this step
+  # exists to catch.
+  - try:
+    - patch:
+        file: 02-patch-update-ingress.yaml
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: nova-netpol
+            namespace: openstack
+          (length(spec.ingress[0].from || `[]`) >= `3`): true
+    catch: *nova-dump
+  # ── Step 4: Disable networkPolicy and assert both are deleted ──────────
+  - try:
+    - patch:
+        file: 03-patch-disable-networkpolicy.yaml
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+    - error:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: nova-netpol
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: nova-netpol-novncproxy
+            namespace: openstack
+    catch: *nova-dump

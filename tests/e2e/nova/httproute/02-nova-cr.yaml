@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Nova CR with all three gateway blocks, for the HTTPRoute lifecycle test.
+#
+# The light fixture tier: no Keystone, no Placement, no Neutron and no Glance
+# run beside it. A Nova reaches Ready with only Secrets and the broker, because
+# the API and metadata probes GET the API root and the scheduler and conductor
+# probes read the broker socket. spec.keystoneEndpoint is a convention URL
+# nothing serves, and spec.serviceUser reads the kind-only keystone-admin
+# Secret from deploy/kind/infrastructure. The routes are a function of the spec
+# rather than of a validated token, so the API's auth pipeline is not on the
+# path of anything asserted here.
+#
+# The two schemas nova_route_api and nova_route live on the openstack-db
+# MariaDB cluster (cell0 is derived as nova_route_cell0), the cache is
+# openstack-memcached, and the credentials are the ESO-synced nova-api-db and
+# nova-db Secrets. The bus is the per-suite vhost broker-vhost.sh writes into
+# nova-route-messaging.
+#
+# One API replica, because the routes do not depend on the replica count.
+#
+# Nova publishes three front ends, each with a gateway block of its own and a
+# hostname of its own. The console proxy carries no path: the console URL the
+# API hands a browser names the page at the root of the console hostname and
+# the noVNC client opens its WebSocket there too, so the webhook rejects any
+# path but "/" on that block.
+#
+# Every parentRef names a Gateway that does not exist, which is what the
+# sibling suites do: with a real Gateway as the parent, its controller writes
+# its own RouteParentStatus slot and races the status merge-patch the
+# acceptance step applies, so the suite would be asserting against whichever
+# write landed last. A parent nothing reconciles leaves the slot to the suite
+# alone.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-route
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  apiDatabase:
+    clusterRef:
+      name: openstack-db
+    database: nova_route_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: openstack-db
+    database: nova_route
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: nova-route-messaging
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-route-metadata-secret
+    gateway:
+      parentRef:
+        name: not-a-real-gateway
+      hostname: nova-route-metadata.example.test
+      path: /
+  consoleProxy:
+    gateway:
+      parentRef:
+        name: not-a-real-gateway
+      hostname: nova-route-console.example.test
+  gateway:
+    parentRef:
+      name: not-a-real-gateway
+    hostname: nova-route.example.test
+    path: /

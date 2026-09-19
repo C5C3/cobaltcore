@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Nova CR for the basic-deployment E2E test (2026.1 release).
+#
+# Managed mode throughout: the two schemas nova_basic_2026_1_api and nova_basic_2026_1 on the
+# openstack-db MariaDB cluster (cell0 is derived as nova_basic_2026_1_cell0), the
+# openstack-memcached cache, the ESO-synced nova-api-db and nova-db credentials
+# and the pre-seeded keystone-admin service-user password (all from
+# deploy/kind/infrastructure).
+#
+# The bus is the per-suite vhost broker-vhost.sh writes into
+# nova-basic-2026-1-messaging. Managed messaging is not usable here: the URL it renders
+# always names the root vhost, so two suites would share the scheduler and
+# conductor RPC topics.
+#
+# The API runs two replicas because that is what makes the PodDisruptionBudget
+# assertion meaningful: the shared builder renders minAvailable=1 only above one
+# replica and maxUnavailable=1 at exactly one. The scheduler, the conductor, the
+# metadata API and the console proxy take the webhook's defaults.
+#
+# allow_resize_to_same_host is the suite's only override. The resize step has
+# one compute to land on, and nova refuses to resize onto the source host
+# unless it is switched on. The option is not rendered by the operator (it is
+# listed in operators/nova/api/v1alpha1/catalogs/2026.1.json), so
+# ExtraConfigHealthy stays True on NoOwnedKeysOverridden.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-basic-2026-1
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 2
+  apiDatabase:
+    clusterRef:
+      name: openstack-db
+    database: nova_basic_2026_1_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: openstack-db
+    database: nova_basic_2026_1
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: nova-basic-2026-1-messaging
+  keystoneEndpoint: http://keystone-nova-basic-2026-1.openstack.svc.cluster.local:5000/v3
+  region: RegionOne
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-basic-2026-1-metadata-secret
+  extraConfig:
+    DEFAULT:
+      allow_resize_to_same_host: "true"

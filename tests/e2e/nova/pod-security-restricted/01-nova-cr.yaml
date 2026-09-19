@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Nova CR fixture for the PSS-restricted E2E test.
+#
+# Brownfield mode on both database blocks and on the cache (host / servers, no
+# `clusterRef`): the CR lives in the labelled `nova-pss` namespace, but
+# `Database.ClusterRef` / `Cache.ClusterRef` are namespace-local (the shared
+# provisioning flow looks up the MariaDB / Memcached CR in the Nova CR's
+# namespace). Brownfield wiring is the only path that reaches the existing
+# `openstack/openstack-db` and `openstack/openstack-memcached` from this
+# namespace without duplicating MariaDB / Memcached CRs.
+#
+# The nova_pss_api, nova_pss and nova_pss_cell0 schemas with their two users are
+# pre-created in the openstack namespace by 00-brownfield-db-setup.yaml. The
+# credentials are synced into this namespace by the two ExternalSecrets in
+# 00-namespace.yaml, and spec.secretStoreRef selects the same per-tenant store
+# they authenticate through: reconcileSecrets gates SecretsReady on the selected
+# store, resolved in the CR's own namespace.
+#
+# spec.keystoneEndpoint and spec.serviceUser are required on every Nova: an
+# instance boot needs a Placement allocation, a Neutron port and a Glance image,
+# and all three are authenticated calls, so the operator has no Keystone-free
+# arm. Nothing serves that endpoint here and no token is ever validated. The
+# subject is Pod admission, so the service-user Secret carries an arbitrary
+# password the chainsaw Step-1 script creates beside the CR.
+#
+# `replicas: 1` on the API keeps the test inside the suite's assert budget; the
+# regression net we want is "every Pod the operator creates admits under
+# PSS=restricted", which one replica per workload proves. The metadata,
+# scheduler, conductor and console-proxy blocks are absent, so the defaulting
+# webhook renders the single replica each of them resolves to anyway.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-pss
+  namespace: nova-pss
+spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  apiDatabase:
+    host: openstack-db.openstack.svc.cluster.local
+    port: 3306
+    database: nova_pss_api
+    secretRef:
+      name: nova-api-db
+  database:
+    host: openstack-db.openstack.svc.cluster.local
+    port: 3306
+    database: nova_pss
+    secretRef:
+      name: nova-db
+  cache:
+    servers:
+    - "openstack-memcached.openstack.svc:11211"
+  messaging:
+    secretRef:
+      name: nova-pss-messaging
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: nova-pss-service-user
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-pss-metadata-secret

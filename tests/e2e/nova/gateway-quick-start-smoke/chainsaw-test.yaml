@@ -1,0 +1,295 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E smoke test for the Nova Gateway quick-start path, the compute
+# counterpart to tests/e2e/keystone/gateway-quick-start-smoke,
+# tests/e2e/glance/gateway-quick-start-smoke,
+# tests/e2e/placement/gateway-quick-start-smoke and
+# tests/e2e/cinder/gateway-quick-start-smoke. Nova publishes three front ends,
+# so the suite exercises three URLs end to end:
+#   `curl -k https://nova.127-0-0-1.nip.io/`            → 200, "versions"
+#   `curl -k https://nova-metadata.127-0-0-1.nip.io/`   → 200, non-empty
+#   `curl -k https://nova-console.127-0-0-1.nip.io/vnc_lite.html` → 200, "noVNC"
+#
+# The full chain under test:
+#   kind host :443 → kindnode :31443 (NodePort) → Envoy Gateway proxy
+#   → one of the HTTPS listeners https-nova, https-nova-metadata and
+#   https-nova-console on `openstack/openstack-gw` → HTTPRoute managed by the
+#   Nova Operator → Service → the pod behind it.
+#
+# Suite location: lives under `tests/e2e/nova/` (not
+# `tests/e2e/infrastructure/`) so the operator-installed `e2e-operator` matrix
+# job runs it. That job is the only place where the Nova CRD is registered and
+# the operator can reconcile the smoke CR into three HTTPRoutes. The `e2e-infra`
+# job brings up no operator, so a smoke suite under `tests/e2e/infrastructure/`
+# could never apply a Nova CR.
+#
+# ── DECISION: curl from the chainsaw host (Option B) ─────────────────
+# curl runs directly from the chainsaw script step on the CI host, NOT from an
+# ephemeral in-cluster pod: the nip.io → 127.0.0.1 mapping is an external DNS
+# concern, `hack/kind-config.yaml` already bridges host 127.0.0.1:443 to the
+# proxy NodePort 31443, and the point of a quick-start smoke is to prove "the
+# external URL the docs tell the user to open WORKS". Mirrors the sibling
+# keystone, glance, placement and cinder smoke suites.
+#
+# ── DECISION: the three probe targets and their codes ────────────────
+# The compute API answers "/" with 200 and a JSON document whose top-level key
+# is "versions". That is where it differs from cinder, whose api-paste routes
+# "/" into an `apiversions` application answering 300 Multiple Choices, while
+# nova answers it with a plain 200. Accepting anything else would hide a
+# regression. The metadata API answers "/" with the EC2 version
+# list, a plain-text body with no stable token to match, so the assertion there
+# is 200 with a non-empty body. The console proxy serves the noVNC client page
+# at /vnc_lite.html, which is also its readiness probe target, and the page
+# carries the string noVNC. Matching a token of each body proves the Gateway
+# served the backend's response rather than a bare proxy response; a 404 would
+# only prove the data-plane is reachable.
+#
+# ── DECISION: gate on the three route conditions + NovaAPIReady ──────
+# The aggregate Ready also covers the schema migration and the bus processes,
+# which the external URLs do not depend on. The four sub-conditions the curls do
+# depend on are gated individually: HTTPRouteReady, MetadataHTTPRouteReady and
+# ConsoleHTTPRouteReady each flip True only after a Gateway controller published
+# Accepted on that route's parent, and NovaAPIReady means the operator's own
+# probe reached the API through the cluster-local Service. DatabaseReady is
+# waited on ahead of them: the eight MariaDB CRs and the db-sync Job are where
+# the bring-up spends its first six minutes, and on the first CI run a route
+# wait that had to absorb them timed out with no diagnosis. Waiting on the
+# five in that order keeps a slow migration from turning a Gateway regression
+# into a timeout with no diagnosis.
+#
+# ── Scope gating: runtime presence checks ───────────────────────────
+# The script probes for `GatewayClass/envoy`, `Gateway/openstack-gw`, the
+# `novas.nova.openstack.c5c3.io` CRD, and the three listeners the three
+# hostnames terminate on. If any is absent it exits 0 with a SKIP line, so
+# production overlays (no Envoy Gateway, operator suspended) and overlays that
+# predate the Nova listeners default-skip the test with no `--selector` needed.
+#
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-gateway-quick-start-smoke
+spec:
+  # spec.concurrent is false because nova-console.127-0-0-1.nip.io is a single
+  # listener on the one kind Gateway, and ../console-proxy handshakes a token
+  # its own novncproxy minted through that hostname. Two HTTPRoutes on one
+  # hostname are resolved by creation timestamp, so an older route of this
+  # suite would capture that handshake and its proxy would reject the token.
+  # Running this shorter suite alone costs about three minutes on the leg.
+  concurrent: false
+  # The two-schema migration, the cell mapping and five cold starts make the
+  # envelope 15m: the first CI run measured 3 minutes for the eight MariaDB CRs
+  # at the operator's 30 s requeue and about 3 more for the six nova-manage
+  # invocations of the db-sync, so DatabaseReady lands 6 to 7 minutes after
+  # the apply. The inner `kubectl wait` bounds (10m on DatabaseReady, 5m on
+  # each condition after it) stay under this outer cap so their failure mode
+  # surfaces as a targeted `condition X not reached` diagnostic rather than
+  # chainsaw's generic script-timeout kill.
+  timeouts:
+    assert: 15m
+    exec: 15m
+  steps:
+  # ── Step 1: Apply namespace ───────────────────────────────────────
+  # The CR is not applied here. Its CRD is registered by the nova-operator,
+  # which is suspended in some overlays. Applying it unconditionally would abort
+  # chainsaw with `no matches for kind "Nova"` on those clusters, so the apply
+  # lives in the Step 2 script body behind a CRD presence guard to keep this
+  # test default-safe.
+  - try:
+    - apply:
+        file: 00-namespace.yaml
+  # ── Step 2: Smoke-check the three Nova front ends ─────────────────
+  - try:
+    - script:
+        timeout: 15m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; all other
+        # infra/keystone e2e scripts pin bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Presence guard ──────────────────────────────
+          # The kind overlay alone applies
+          # `deploy/kind/base/openstack-gateway.yaml`, which materialises
+          # GatewayClass/envoy and Gateway/openstack-gw. Their absence
+          # unambiguously signals a non-kind cluster, so exit 0 with a SKIP line.
+          if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
+            echo "SKIP: GatewayClass/envoy not present (non-kind overlay)."
+            exit 0
+          fi
+          if ! kubectl get gateway openstack-gw -n openstack >/dev/null 2>&1; then
+            echo "SKIP: Gateway/openstack-gw not present in openstack namespace"
+            echo "      (non-kind overlay)."
+            exit 0
+          fi
+          # CRD gate: the `e2e-operator` matrix job installs the operator so the
+          # CRD is present and this guard passes; on infra-only or production
+          # clusters where the operator is suspended/absent, the guard exits 0
+          # and the suite skips cleanly.
+          if ! kubectl get crd novas.nova.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Nova CRD not present (operator not deployed)."
+            exit 0
+          fi
+          # Listener gate: the three hostnames this suite curls each terminate
+          # on a listener of their own, and an overlay that predates them would
+          # answer 404 for an SNI no listener claims. The names are matched
+          # space-delimited because https-nova is a prefix of the other two.
+          LISTENERS="$(kubectl get gateway openstack-gw -n openstack \
+            -o jsonpath='{.spec.listeners[*].name}')"
+          for want in https-nova https-nova-metadata https-nova-console; do
+            case " ${LISTENERS} " in
+              *" ${want} "*) ;;
+              *)
+                echo "SKIP: Gateway/openstack-gw has no listener ${want}"
+                echo "      (overlay predates the Nova listeners)."
+                exit 0
+                ;;
+            esac
+          done
+          echo "OK: Gateway, its three Nova listeners and the Nova CRD are present"
+
+          # ── Pre-flight: Gateway Programmed ────────────────────────
+          # Envoy Gateway sets `Programmed=True` once the listeners have usable
+          # TLS Secrets and the xDS data-plane is ready. Without this wait an
+          # early curl races kind startup (cert issuance + Envoy roll-out).
+          kubectl wait --for=condition=Programmed \
+            gateway/openstack-gw -n openstack --timeout=5m
+          echo "OK: Gateway/openstack-gw is Programmed"
+
+          # One vhost per suite: nova's RPC topics are named after the service
+          # rather than after the CR, so two suites on one vhost would share the
+          # scheduler and conductor queues. See ../../cinder/broker-vhost.sh. It
+          # runs behind the guards, because a cluster without the operator has
+          # no CR to serve. Chainsaw runs scripts with the test directory as
+          # CWD, so the relative paths below resolve.
+          ../../cinder/broker-vhost.sh create nova-smoke nova-smoke-messaging openstack
+
+          kubectl apply -f 01-metadata-secret.yaml
+          kubectl apply -f 02-smoke-nova-cr.yaml
+
+          # ── Pre-flight: the schemas are migrated ─────────────────
+          # DatabaseReady covers the eight MariaDB CRs and the db-sync Job, the
+          # two slow parts of the bring-up; the routes flip in the same pass
+          # that sets it and the API within a minute or two after. Waiting on
+          # it first keeps a slow migration from surfacing as a route
+          # condition that never came.
+          kubectl wait --for=condition=DatabaseReady \
+            nova/nova-smoke -n openstack --timeout=10m
+          echo "OK: Nova/nova-smoke reports DatabaseReady=True"
+
+          # ── Pre-flight: the three routes are attached ─────────────
+          # Each condition flips True only after a Gateway controller publishes
+          # Accepted=True in that route's parent status, so these are the
+          # operator reporting that Envoy took the routes rather than the
+          # operator reporting that it wrote them.
+          for cond in HTTPRouteReady MetadataHTTPRouteReady ConsoleHTTPRouteReady; do
+            kubectl wait --for=condition="${cond}" \
+              nova/nova-smoke -n openstack --timeout=5m
+            echo "OK: Nova/nova-smoke reports ${cond}=True"
+          done
+
+          # ── Pre-flight: the API backend is serving ────────────────
+          # NovaAPIReady is the operator's own GET against the cluster-local
+          # Service. With it True the curls below can only fail on the Gateway
+          # path, which is what this suite is about.
+          kubectl wait --for=condition=NovaAPIReady \
+            nova/nova-smoke -n openstack --timeout=5m
+          echo "OK: Nova/nova-smoke reports NovaAPIReady=True"
+
+          # ── The three URLs from the CI host ───────────────
+          # `-k` accepts the self-signed cert issued by
+          # selfsigned-cluster-issuer (expected for a kind cluster). Retry
+          # loop: Envoy's xDS push can race the condition flip by a few
+          # seconds, so each URL is retried up to 15 times, 2s apart, and a
+          # brief 503 from the proxy does not fail the whole run. An empty
+          # needle means "any non-empty body".
+          probe() {
+            url="$1"; body="$2"; needle="$3"
+            code=""
+            for attempt in $(seq 1 15); do
+              code="$(curl -sk -o "$body" -w '%{http_code}' "$url" || true)"
+              if [ "$code" = "200" ] && [ -s "$body" ] &&
+                 { [ -z "$needle" ] || grep -qF "$needle" "$body"; }; then
+                echo "OK: $url answered 200 with the expected body on attempt $attempt"
+                return 0
+              fi
+              echo "attempt $attempt: $url HTTP $code (retrying in 2s)"
+              sleep 2
+            done
+            echo "ERROR: $url returned HTTP $code without the expected body"
+            echo "--- response body (first 2KB) ---"
+            head -c 2048 "$body" 2>/dev/null || true
+            echo
+            return 1
+          }
+
+          probe "https://nova.127-0-0-1.nip.io/" /tmp/nova-smoke-api-body '"versions"'
+          probe "https://nova-metadata.127-0-0-1.nip.io/" /tmp/nova-smoke-metadata-body ""
+          probe "https://nova-console.127-0-0-1.nip.io/vnc_lite.html" /tmp/nova-smoke-console-body "noVNC"
+
+          echo "OK: all three Nova front ends answered through openstack-gw"
+    catch:
+    # On failure, dump post-mortem state to help CI triage. Each resource is
+    # individually scoped so a missing one does not short-circuit the dump.
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        name: openstack-gw
+        namespace: openstack
+    - describe:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-smoke
+        namespace: openstack
+    - script:
+        # The HTTPRoutes and the Certificates may not exist on an early failure
+        # (the Nova CR has not reconciled yet), so `|| true` so the dump always
+        # runs to completion. The operator-managed HTTPRoutes are listed
+        # generically rather than by guessed names.
+        shell: bash
+        content: |
+          echo "=== HTTPRoutes in openstack ==="
+          kubectl get httproute -n openstack -o wide 2>&1 || true
+          echo
+          echo "=== Certificates in openstack ==="
+          kubectl get certificate -n openstack -o wide 2>&1 || true
+          echo
+          echo "=== Nova pods ==="
+          kubectl get pods -n openstack -l app.kubernetes.io/instance=nova-smoke -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=nova-smoke -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n openstack "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo
+          echo "=== nova-operator logs ==="
+          kubectl logs -n nova-system -l app.kubernetes.io/name=nova-operator --all-containers --tail=60 2>&1 || true
+          echo
+          echo "=== events (last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    - podLogs:
+        namespace: envoy-gateway-system
+        selector: app.kubernetes.io/name=gateway-helm
+        tail: 200
+    finally:
+    # The CR, the Secrets and the vhost are created with `kubectl` and
+    # `broker-vhost.sh` from inside the Step 2 script (they sit behind the
+    # presence guards), so chainsaw's own `cleanup` never sees them and its
+    # namespace teardown does not apply: the suite shares the long-lived
+    # `openstack` namespace with every other nova suite. Without this block each
+    # run would permanently leak the five Deployments, the three HTTPRoutes
+    # holding the nip.io hostnames on the shared Gateway, and the eight MariaDB
+    # CRs plus the nova_smoke schemas the operator provisions. The Nova goes
+    # first: its finalizer drives the MariaDB teardown. Best-effort: a SKIP run
+    # created nothing, and a cleanup failure must not mask the assertion result.
+    - script:
+        shell: bash
+        content: |
+          kubectl delete nova nova-smoke -n openstack \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete secret nova-smoke-metadata-secret -n openstack \
+            --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete secret nova-smoke-messaging -n openstack \
+            --ignore-not-found --timeout=1m 2>&1 || true
+          ../../cinder/broker-vhost.sh delete nova-smoke 2>&1 || true

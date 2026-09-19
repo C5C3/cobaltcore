@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the database-outage chaos test (2025.2 release).
+#
+# Every request the suite makes against the compute API carries a token, so it
+# needs an identity service. It brings its own because the Service the operator
+# projects carries the CR name, which is what keeps the catalog rows and the
+# service users of parallel suites apart.
+#
+# The partition of 04-networkchaos.yaml does not reach this deployment. It
+# drops traffic between the MariaDB pods and the API pods of this suite's Nova
+# alone, so Keystone keeps its own database connection and keeps minting
+# tokens. That is what makes a failing compute request under the fault a
+# statement about the compute database rather than about the auth pipeline.
+#
+# One replica and the database keystone_nova_db_chaos. The bootstrap admin
+# password comes from the pre-seeded keystone-admin Secret
+# (deploy/kind/infrastructure), which is also the serviceUser password of the
+# Nova below, so the two are one identity.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-nova-db-chaos
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_nova_db_chaos
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

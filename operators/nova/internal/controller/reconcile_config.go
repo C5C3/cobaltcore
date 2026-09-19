@@ -124,8 +124,17 @@ const metadataOverlay = "[neutron]\nservice_metadata_proxy = true\n"
 // directory it serves and the address pair its Service routes to. The three
 // options belong to the proxy alone, so the API and the scheduler never read
 // them.
+//
+// The empty [api_database] connection blanks the placeholder the shared document
+// carries. The proxy gets no OS_API_DATABASE__CONNECTION override
+// (novaWorkloadEnv), and nova reads a non-empty value as "this process reaches
+// the API database": with [upgrade_levels] compute = auto the compute RPC client
+// the proxy builds for every token then looks the minimum compute version up
+// across all cells, on the host "placeholder", and no console ever connects.
+// Left empty, nova reads that version from the proxy's own cell schema.
 var novncproxyOverlay = fmt.Sprintf(
-	"[DEFAULT]\nweb = %s\n\n[vnc]\nnovncproxy_host = %s\nnovncproxy_port = %d\n",
+	"[DEFAULT]\nweb = %s\n\n[api_database]\nconnection =\n\n"+
+		"[vnc]\nnovncproxy_host = %s\nnovncproxy_port = %d\n",
 	novncWebPath, novncproxyListenAddress, novaConsolePort)
 
 // schedulerOverlay is the scheduler's role overlay. The worker count is a

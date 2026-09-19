@@ -1,0 +1,513 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the finalizer-driven cleanup on Nova CR deletion.
+#
+# A Nova on two managed schemas comes up, then:
+#   - the cleanup finalizer is asserted present beside Ready=True/AllReady
+#   - every owned child is asserted present: the five Deployments, the three
+#     Services, the PodDisruptionBudget, the four derived Secrets, the db-sync
+#     Job, the archive CronJob, the seven MariaDB objects and the
+#     content-hashed config ConfigMap
+#   - the Nova is deleted and all of them are asserted gone
+#
+# Asserting the children before the delete is what gives the absence checks
+# their meaning: an absence assertion on a resource that never existed passes
+# for the wrong reason.
+#
+# The seven MariaDB objects are the part worth spelling out. A Nova provisions
+# two blocks rather than one: the nova_cleanup_api schema under the instance
+# name nova-cleanup-api and the nova_cleanup schema under nova-cleanup, each
+# with a Database, a User and a Grant. cell0 is the seventh and eighth: it
+# travels as an additional schema on the cell block's user
+# (reconcileDatabase passes AdditionalDatabaseNames), so it gets a Database and
+# a Grant but no User, and its object name is derived by
+# database.AdditionalResourceName as "<instance>-<schema with _ swapped for ->",
+# which for the instance nova-cleanup and the schema nova_cleanup_cell0 reads
+# nova-cleanup-nova-cleanup-cell0.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-deletion-cleanup
+spec:
+  namespace: openstack
+  timeouts:
+    # The two-schema migration, the cell mapping and the cold start of five
+    # workloads all precede the first assertion, and that does not fit the 120s
+    # the shared config allows.
+    # The first CI run measured the bring-up: the eight MariaDB CRs take 3
+    # minutes at the operator's 30 s requeue and the six nova-manage invocations
+    # of the db-sync about 3 more, so Ready lands roughly 8 minutes after the
+    # apply. 10m keeps a margin for a leg that runs two suites at once.
+    assert: 10m
+    # The absence checks take the shared config's error timeout rather than the
+    # assert one above: 30s. The MariaDB Database, User and Grant CRs are what
+    # need more: the finalizer only issues their Delete, the mariadb-operator
+    # drops the schema and the user before it releases them, and
+    # tests/e2e/chainsaw-config.yaml records those deletions serializing past
+    # 60s under parallel suites. A Nova brings eight of them rather than three.
+    error: 3m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CR ────────────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../cinder/broker-vhost.sh. The step cleanup runs
+  # at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh create nova-cleanup nova-cleanup-messaging openstack
+    - apply:
+        file: 00-metadata-secret.yaml
+    - apply:
+        file: 01-nova-cr.yaml
+    catch: &nova-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-cleanup
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Nova children ==="
+          kubectl get deploy,svc,pdb,cronjob,job,cm,secret -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-cleanup -o wide 2>&1 || true
+          echo "=== MariaDB CRs ==="
+          kubectl get database,user,grant -n "$NAMESPACE" 2>&1 | grep nova-cleanup || true
+          echo "=== Deployments ==="
+          kubectl describe deploy -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-cleanup 2>&1 | tail -200 || true
+          echo "=== Pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-cleanup -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh delete nova-cleanup || true
+  # ── Step 2: Wait for Ready=True and assert the cleanup finalizer ────────
+  # The finalizer is added on the first reconcile so deletion can issue the
+  # MariaDB CR Deletes before the Nova leaves etcd.
+  - try:
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+            # Nil-safe: on the first poll after apply the controller may not
+            # have added the finalizer yet (`finalizers` is nil). The `|| `[]``
+            # fallback lets the assert retry rather than raising a
+            # non-retryable JMESPath type error.
+            (contains(finalizers || `[]`, 'nova.openstack.c5c3.io/finalizer')): true
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-dump
+  # ── Step 3: Assert every owned child exists before the deletion ─────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-cleanup-metadata
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-cleanup-scheduler
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-cleanup-conductor
+            namespace: openstack
+    # The console proxy Deployment and its Service carry the process name the
+    # image ships rather than the word console: the CR switches the proxy on by
+    # default, so both exist without the fixture naming them.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-cleanup-novncproxy
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nova-cleanup-metadata
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nova-cleanup-novncproxy
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    # The four derived Secrets: one assembled DSN per schema, the transport URL
+    # copied out of the broker Secret this suite's vhost carries, and the
+    # compute contract a nova-compute outside the cluster reads to join.
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nova-cleanup-api-db-connection
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nova-cleanup-db-connection
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nova-cleanup-transport-url
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nova-cleanup-compute-config
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-cleanup-db-sync
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: nova-cleanup-db-archive
+            namespace: openstack
+    # The nova_cleanup_api schema, provisioned under the instance name
+    # nova-cleanup-api so the two schemas of one Nova never collide on the
+    # shared MariaDB.
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: nova-cleanup-api
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: nova-cleanup-api
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: nova-cleanup-api
+            namespace: openstack
+    # The nova_cleanup cell schema, under the CR's own name.
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    # cell0, the holding pen for instances that never reached a cell. It is an
+    # additional schema on the cell block's user, so it has a Database and a
+    # Grant and no User of its own, and its object name is the one
+    # database.AdditionalResourceName derives from the instance name and the
+    # schema: nova-cleanup plus nova_cleanup_cell0 with the underscores swapped.
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: nova-cleanup-nova-cleanup-cell0
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: nova-cleanup-nova-cleanup-cell0
+            namespace: openstack
+    # The config ConfigMap carries a content-hash suffix, so it is matched by
+    # prefix rather than by name.
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl get cm -n "$NAMESPACE" -o name | grep -q '^configmap/nova-cleanup-config-'
+          echo "OK: the rendered config ConfigMap of nova-cleanup is present"
+    catch: *nova-dump
+  # ── Step 4: Delete the Nova CR ─────────────────────────────────────────
+  # Bounded timeout to keep deletion responsive; fails the test if the
+  # finalizer blocks removal for longer than this.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          name: nova-cleanup
+          namespace: openstack
+    catch: *nova-dump
+  # ── Step 5: Assert the owned children and the MariaDB CRs are gone ──────
+  # Owner references reap the workloads; the finalizer additionally issues an
+  # explicit Delete on the eight MariaDB CRs so the schema teardown is triggered
+  # before the owner-ref chain disappears.
+  - try:
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-cleanup-metadata
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-cleanup-scheduler
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-cleanup-conductor
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-cleanup-novncproxy
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nova-cleanup-metadata
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nova-cleanup-novncproxy
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nova-cleanup-api-db-connection
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nova-cleanup-db-connection
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nova-cleanup-transport-url
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nova-cleanup-compute-config
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-cleanup-db-sync
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: nova-cleanup-db-archive
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: nova-cleanup-api
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: nova-cleanup-api
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: nova-cleanup-api
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: nova-cleanup-nova-cleanup-cell0
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: nova-cleanup-nova-cleanup-cell0
+            namespace: openstack
+    catch: *nova-dump
+  # ── Step 6: Assert the content-hashed ConfigMap is gone ────────────────
+  # It carries a content-hash suffix, so it cannot use a static error
+  # assertion. A script step polls until nothing with its prefix is left.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+
+          # The garbage collector reaps the owned objects a moment after the CR
+          # leaves etcd, so this is polled rather than sampled once. 90 x 2s =
+          # 3m, inside the step timeout.
+          LEFT=""
+          for _ in $(seq 1 90); do
+            LEFT="$(kubectl get cm -n "$NAMESPACE" -o name 2>/dev/null \
+              | grep '^configmap/nova-cleanup-config-' || true)"
+            [ -z "${LEFT}" ] && break
+            sleep 2
+          done
+          if [ -n "${LEFT}" ]; then
+            echo "FAIL: config ConfigMaps of nova-cleanup remain:"
+            printf '%s\n' "${LEFT}"
+            exit 1
+          fi
+          echo "OK: no nova-cleanup config ConfigMap remains"
+    catch: *nova-dump

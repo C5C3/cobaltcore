@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos CR to partition nova-api <-> MariaDB traffic.
+#
+# The partition is enforced on the MariaDB (server) side on purpose. nova does
+# not connect to a MariaDB pod IP: it connects to the ClusterIP Service
+# openstack-db.openstack.svc:3306. chaos-mesh installs its drop rule inside the
+# *selector* pods' network namespace and matches the *target* pods by their pod
+# IPs. If the rule were installed on the nova (client) side, it would match
+# MariaDB pod IPs. At that point the packet still carries the Service
+# ClusterIP, because kube-proxy only DNATs ClusterIP -> pod IP later, in the
+# node's root namespace, after the packet has left the pod. The rule would
+# therefore never match and the partition would be a no-op for Service-routed
+# traffic.
+#
+# Installing the rule on the MariaDB pods and dropping traffic *from* the nova
+# pods works because, by the time the packet reaches the MariaDB namespace, it
+# has already been DNATed and carries the real nova pod source IP. It is the
+# same reason Kubernetes NetworkPolicies can match Service-routed traffic by
+# client pod IP. direction 'both' fully severs the link in either direction.
+#
+# The target is narrowed to the API component of this suite's Nova, and that
+# narrowing carries the second half of the claim. The API pods are the ones
+# serving the requests the probes make. The scheduler, the conductor, the
+# metadata API and the console proxy hold database connections of their own,
+# and leaving them outside the fault is what lets the suite assert they stay
+# Ready while the request path fails: a partition of all five would prove the
+# outage failed requests closed and say nothing about what survived it. The db
+# migration Job pods carry the same name and instance labels and would be
+# caught by a wider target too. The three labels are what
+# reconcile_deployment.go stamps on the API pod template
+# (naming.ComponentLabels("nova", <cr>, "api")).
+#
+# Duration is a safety net for auto-expiry if the test does not explicitly
+# delete the CR; the suite lifts the partition explicitly. It must *exceed* the
+# Chainsaw assert window, not equal it. An equal duration self-heals at the
+# exact deadline: connectivity returns in the same instant the fail-closed
+# probe is still waiting on its bounded GET, which can flip a failing read back
+# to success mid-assert and mask the fault. 600s sits above the 5m assert
+# window with margin.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-mariadb-nova
+  namespace: openstack
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: mariadb
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - openstack
+      labelSelectors:
+        app.kubernetes.io/name: nova
+        app.kubernetes.io/instance: nova-db-chaos
+        app.kubernetes.io/component: api
+  duration: "600s"

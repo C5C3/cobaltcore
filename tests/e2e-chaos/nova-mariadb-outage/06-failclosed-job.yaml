@@ -1,0 +1,126 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# What the compute API does while its databases are partitioned away: it keeps
+# serving, and the requests that need a table fail instead of answering.
+#
+# GET / is the version document the API renders without a token and without
+# touching a table, and it is the endpoint both nova-api probes read
+# (operators/nova/internal/controller/reconcile_deployment.go). Nova registers
+# no oslo healthcheck middleware, so / is the request that says the WSGI
+# application is loaded and serving with the database gone. It is checked
+# before the failing read parks a uWSGI worker, and again after it.
+#
+# The token comes from keystone-nova-db-chaos, which is outside the partition
+# (04-networkchaos.yaml targets the API pods of this Nova alone). An
+# obtainable token is what makes the failing read below a statement about the
+# database rather than about the auth pipeline.
+#
+# GET /v2.1/servers is the fail-closed contract. It reads the instance mappings
+# out of the API database, so it must not answer 2xx while that database is
+# unreachable: a listing nova cannot have read would be a wrong answer, which
+# is worse than none. A 5xx or a bounded timeout is the correct outcome. A 4xx
+# is not accepted either, for the reason the token is minted first: a
+# regression in the auth pipeline turns every request into a 401 that would
+# otherwise read as proof.
+#
+# One attempt, bounded at 90 seconds. A retry would blur which attempt the
+# verdict came from, and the bound keeps the probe inside the 600s the
+# NetworkChaos runs for.
+#
+# backoffLimit is 0 and restartPolicy Never: a Job retry would run a second
+# attempt under a partition that may already have been lifted, and the failed
+# pod is the one whose log carries the verdict.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-db-chaos-failclosed
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: failclosed
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # urllib rather than the openstack client: the claim is about the
+              # HTTP status of single requests, and the client would retry,
+              # re-resolve the catalog and report its own error text instead.
+              python3 -c '
+              import json, os, sys, time, urllib.request, urllib.error
+
+              KEYSTONE = "http://keystone-nova-db-chaos.openstack.svc.cluster.local:5000/v3"
+              NOVA = "http://nova-db-chaos.openstack.svc.cluster.local:8774"
+
+              def fail(msg):
+                  print("FAIL: " + msg)
+                  sys.exit(1)
+
+              def call(method, url, data=None, headers=None, timeout=30):
+                  req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+                  return urllib.request.urlopen(req, timeout=timeout)
+
+              def do(fn, what, tries=12):
+                  err = None
+                  for i in range(tries):
+                      try:
+                          return fn()
+                      except urllib.error.HTTPError as e:
+                          body = e.read().decode("utf-8", "replace")
+                          fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                      except (urllib.error.URLError, ConnectionError, OSError) as e:
+                          err = e
+                          print("retry %d for %s: %s" % (i, what, e))
+                          time.sleep(5)
+                  fail("%s -> gave up after retries: %s" % (what, err))
+
+              def version_document(what):
+                  resp = do(lambda: call("GET", NOVA + "/", timeout=15), what)
+                  if resp.status != 200:
+                      fail("%s -> %d during partition, want 200" % (what, resp.status))
+
+              version_document("GET /")
+              print("GET / answered 200 during partition (API up)")
+
+              body = json.dumps({"auth": {
+                  "identity": {"methods": ["password"], "password": {"user": {
+                      "name": "admin", "domain": {"id": "default"},
+                      "password": os.environ["OS_PASSWORD"]}}},
+                  "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+              tok = do(lambda: call("POST", KEYSTONE + "/auth/tokens", data=body,
+                                    headers={"Content-Type": "application/json"}),
+                       "keystone token").headers["X-Subject-Token"]
+              print("keystone token still obtainable during partition")
+
+              try:
+                  resp = call("GET", NOVA + "/v2.1/servers",
+                              headers={"X-Auth-Token": tok}, timeout=90)
+                  fail("GET /v2.1/servers answered %d during partition, the read did NOT fail closed"
+                       % resp.status)
+              except urllib.error.HTTPError as e:
+                  if e.code < 500:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("GET /v2.1/servers -> HTTP %d during partition: a client error does not prove the database failed closed: %s"
+                           % (e.code, body))
+                  print("GET /v2.1/servers -> HTTP %d during partition (fail-closed OK)" % e.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as e:
+                  print("GET /v2.1/servers -> %r during partition (fail-closed OK)" % e)
+
+              version_document("GET / after the failed read")
+              print("GET / answered 200 after the failed read (API still up)")
+              print("FAILCLOSED-OK")
+              '
