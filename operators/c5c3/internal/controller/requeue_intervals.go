@@ -57,6 +57,33 @@ const (
 	// missing K-ORC CRD keeps the sub-reconciler from making progress
 	korcRequeueAfter = 10 * time.Second
 
+	// korcTransportUnlatchBackoff is the minimum interval between two clears of
+	// the same child's latched transport error, measured against the
+	// korcTransportUnlatchedAtAnnotation the unlatcher stamps on that child. The
+	// first latch the operator sees is handed back straight away — K-ORC has
+	// already given up on it — and a Keystone that stays unreachable then costs
+	// one K-ORC retry per child per 30 s, not one per korcRequeueAfter pass.
+	//
+	// There is deliberately no attempt cap and no growth: a transport failure is
+	// retried for as long as it lasts, which is what K-ORC itself does — at a far
+	// higher rate — for a transport error it has not yet latched, and the
+	// condition keeps reporting the failure between retries.
+	korcTransportUnlatchBackoff = 30 * time.Second
+
+	// korcTransportUnlatchJitter is the fraction of korcTransportUnlatchBackoff
+	// spread over each child's due time by korcUnlatchOffset. The children of one
+	// plane latch inside the same window, so an unjittered backoff would hand all
+	// of them back to K-ORC in one synchronized burst every 30 s — against a
+	// Keystone that may be failing precisely because it is overloaded — and write
+	// their status patches in the same burst.
+	//
+	// The fraction is deliberately large enough that the span it opens
+	// (korcTransportUnlatchJitter × 30 s) covers several korcRequeueAfter passes.
+	// Due times are only ever evaluated on a reconcile pass, so a span shorter
+	// than that interval rounds every child into the same pass and spreads
+	// nothing: it would move the burst rather than break it.
+	korcTransportUnlatchJitter = 1.0
+
 	// credentialRotationWaitInterval is the short backoff the CredentialRotation
 	// reconciler uses while waiting for the ControlPlane reconciler to mint the
 	// admin ApplicationCredential CR (Bootstrap) or for a ControlPlane / admin

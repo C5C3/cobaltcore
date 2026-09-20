@@ -89,6 +89,24 @@ func terminalImportConditions(msg string) []metav1.Condition {
 	}}
 }
 
+// transportLatchedConditions stamps the latch this package unlatches: an
+// InvalidConfiguration Progressing=False whose message is the verbatim dial error
+// K-ORC recorded when Keystone was not listening. Its ObservedGeneration is left
+// at zero to match the generation the fake client assigns, which is what
+// korcTerminalReason compares against. The transition time is cosmetic: the
+// backoff reads korcTransportUnlatchedAtAnnotation, never this.
+func transportLatchedConditions() []metav1.Condition {
+	return []metav1.Condition{{
+		Type:   orcv1alpha1.ConditionProgressing,
+		Status: metav1.ConditionFalse,
+		Reason: orcv1alpha1.ConditionReasonInvalidConfiguration,
+		Message: `invalid configuration creating resource: Post ` +
+			`"http://keystone.brownfield-keystone.svc:5000/v3/projects": ` +
+			`dial tcp 10.96.227.194:5000: connect: connection refused`,
+		LastTransitionTime: metav1.NewTime(time.Now().Add(-time.Minute)),
+	}}
+}
+
 // unrecoverableImportConditions stamps K-ORC's OTHER terminal reason: not "the user
 // must fix the configuration" but "this can never succeed". The import branch keys
 // its optional-import tolerance on the reason, so the two are not interchangeable.
