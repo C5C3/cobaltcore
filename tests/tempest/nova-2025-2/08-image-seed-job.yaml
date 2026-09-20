@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Seeds the two images tempest.conf pins as image_ref and image_ref_alt.
+# tempest.api.compute needs a second image for the rebuild tests, which swap a
+# running server onto another one.
+#
+# The ids are fixed so tempest.conf needs no per-run substitution, and they are
+# unique to this leg: every Glance on the kind cluster writes into the one
+# glance-images bucket and keys its objects by image id, so two suites sharing
+# an id would share an object.
+#
+# Both images carry the same payload, 1 MiB of zeros in raw format. The fake
+# driver never reads the disk it is handed, so the only thing the size changes
+# is how long the download takes.
+#
+# It runs after the Glance CR is Ready and authenticates as the bootstrap admin
+# (keystone-admin Secret).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-tempest-image-seed
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-tempest-2025-2.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              SEED_ID="4e0a7e57-0000-4000-8000-000000000001"
+              SEED_ALT_ID="4e0a7e57-0000-4000-8000-000000000002"
+
+              # The guard returns instead of exiting, so the second image is
+              # still checked when the first one is already there. A pod the
+              # backoffLimit retries therefore reaches exit 0 with no create
+              # call at all.
+              seed_image() {
+                id="$1"
+                name="$2"
+                if openstack image show "${id}" >/dev/null 2>&1; then
+                  echo "OK: image ${name} (${id}) already present"
+                  return
+                fi
+                # --public so the dynamic-credential projects tempest creates
+                # can boot from it; the image is owned by admin.
+                openstack image create --id "${id}" \
+                  --disk-format raw --container-format bare \
+                  --public --file /tmp/seed.img "${name}"
+                echo "OK: image ${name} (${id}) registered"
+              }
+
+              dd if=/dev/zero of=/tmp/seed.img bs=1M count=1
+              seed_image "${SEED_ID}" seed
+              seed_image "${SEED_ALT_ID}" seed-alt
+
+              openstack image list --format value -c ID -c Name -c Status

@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Seeds the two flavors tempest.conf pins as flavor_ref and flavor_ref_alt.
+# tempest needs a second, larger flavor for the resize tests, which move a
+# server from the first onto it. m1.micro differs from m1.nano in RAM alone.
+#
+# Both stay tiny: the fake driver allocates nothing, and the scheduler still
+# checks the claim against the inventory the one compute published.
+#
+# The ids are fixed so tempest.conf needs no per-run substitution, and each
+# create is guarded by a `flavor show` on the id, so a pod the backoffLimit
+# retries creates nothing twice.
+#
+# It runs against the Nova API, so it comes after the Nova is Ready, and
+# authenticates as the bootstrap admin (keystone-admin Secret).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-tempest-flavor-seed
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-tempest-2026-1.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              FLAVOR_ID="4e0a7e57-0000-4000-8000-0000000000f1"
+              FLAVOR_ALT_ID="4e0a7e57-0000-4000-8000-0000000000f2"
+
+              # --public so the dynamic-credential projects tempest creates can
+              # boot from them; the flavors are owned by admin.
+              openstack flavor show "${FLAVOR_ID}" >/dev/null 2>&1 \
+                || openstack flavor create --id "${FLAVOR_ID}" \
+                  --vcpus 1 --ram 128 --disk 1 --public m1.nano
+              echo "OK: flavor m1.nano (${FLAVOR_ID})"
+
+              openstack flavor show "${FLAVOR_ALT_ID}" >/dev/null 2>&1 \
+                || openstack flavor create --id "${FLAVOR_ALT_ID}" \
+                  --vcpus 1 --ram 192 --disk 1 --public m1.micro
+              echo "OK: flavor m1.micro (${FLAVOR_ALT_ID})"
+
+              openstack flavor list --format value -c ID -c Name -c RAM

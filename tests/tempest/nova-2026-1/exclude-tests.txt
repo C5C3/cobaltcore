@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tempest exclude list for Nova compute API tests.
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+# Follows the same format as releases/2026.1/test-excludes/keystone.txt.
+#
+# Every group of patterns added here carries a tracked-by/re-evaluate-on pair
+# directly above it so an exclusion does not silently outlive its cause:
+#   tracked-by:      link to the issue that owns the exclusion
+#   re-evaluate-on:  the condition that retires it, e.g. a change to the driver
+#                    or to the network the leg brings up
+# Re-check every group whenever one of those conditions changes and drop the
+# patterns it retires.
+#
+# The Phase-0 lab of #1015 recorded the group below. Further groups land here
+# the same way.
+
+# tracked-by: https://github.com/C5C3/cobaltcore/issues/1014
+# re-evaluate-on: a compute driver other than nova's fake driver on this leg
+#                 retires test_get_hypervisor_uptime,
+#                 test_get_console_output_with_unlimited_size and test_novnc
+# re-evaluate-on: the leg creates a default external network and subnet pool
+#                 retires test_server_multi_create_auto_allocate
+#
+# 400 "Unable to automatically allocate a network for project". neutron loads
+# auto_allocate as a default service plugin, so tempest finds the
+# auto-allocated-topology extension and runs the test, but this leg has no
+# default external network and no subnet pool to allocate from.
+tempest\.api\.compute\.admin\.test_auto_allocate_network\.AutoAllocateNetworkTest\.test_server_multi_create_auto_allocate
+# The fake driver has no get_host_uptime and the base driver raises
+# NotImplementedError.
+tempest\.api\.compute\.admin\.test_hypervisor\.HypervisorAdminTestJSON\.test_get_hypervisor_uptime
+# "3 not greater than 3: Cannot get enough console log length" - the fake
+# console output is three fixed lines. The other console_output tests pass,
+# which is why the flag stays true in tempest.conf.
+tempest\.api\.compute\.servers\.test_server_actions\.ServerActionsTestOtherB\.test_get_console_output_with_unlimited_size
+# The console HTML and the websocket upgrade pass, then the proxy dials the fake
+# driver's console target fakevncconsole.com:6969, cannot resolve it and closes
+# the socket, so the RFB check fails. The trailing \[ keeps test_novnc_bad_token
+# in the run: that one passes, because the proxy rejects the bad token before it
+# dials anything.
+tempest\.api\.compute\.servers\.test_novnc\.NoVNCConsoleTestJSON\.test_novnc\[
