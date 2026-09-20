@@ -1427,9 +1427,11 @@ spec:
           # 4-vCPU CI node each call takes 15-25s: the run that added the network
           # round-trip was still on `network show` when a 5m wait expired. The four
           # block-storage round-trips add more than twenty calls of their own, most
-          # of them behind a poll on a volume reaching available. 15m sits inside
-          # the 50m step budget above.
-          kubectl wait --for=condition=complete job/cp-openstack-verify -n "${CP_NS}" --timeout=15m
+          # of them behind a poll on a volume reaching available. A 15m wait
+          # expired on three runs with every leg green and the Job inside its last
+          # one, the image-volume cache; the slowest needed about 16m. 20m sits
+          # inside the 50m step budget above.
+          kubectl wait --for=condition=complete job/cp-openstack-verify -n "${CP_NS}" --timeout=20m
           echo "=== openstack client output ==="
           # Fetch the Job log ONCE and assert on the captured text. `kubectl
           # logs | grep -q` fails under pipefail exactly when it MATCHES:
