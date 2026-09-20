@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Dedicated Nova CR for the Nova Tempest leg (2026.1 release).
+#
+# Managed mode throughout: the two schemas nova_tempest_2026_1_api and
+# nova_tempest_2026_1 on the openstack-db MariaDB cluster (cell0 is derived as
+# nova_tempest_2026_1_cell0), the openstack-memcached cache, the ESO-synced
+# nova-api-db and nova-db credentials and the pre-seeded keystone-admin
+# service-user password (all from deploy/kind/infrastructure). Separate schemas
+# keep stale state from prior Chainsaw E2E tests on the same kind cluster out of
+# this leg.
+#
+# allow_resize_to_same_host is the leg's only override. The resize tests have
+# one compute to land on, and nova refuses to resize onto the source host unless
+# it is switched on. The option is not rendered by the operator (it is listed in
+# operators/nova/api/v1alpha1/catalogs/2026.1.json), so ExtraConfigHealthy stays
+# True on NoOwnedKeysOverridden.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-tempest-2026-1
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2026.1"
+  api:
+    deployment:
+      # The second replica takes no tempest traffic, because the port-forward
+      # pins every stestr worker to one pod. It is kept to match the sibling
+      # tempest CRs: tests/tempest/cinder-2026-1/06-cinder-cr.yaml and
+      # tests/tempest/neutron-2026-1/04-neutron-cr.yaml both run two API
+      # replicas.
+      replicas: 2
+      # Mirror tests/tempest/cinder-2026-1/06-cinder-cr.yaml: with resources
+      # unset the webhook fills in the shared defaults (500m CPU, 512Mi memory,
+      # internal/common/types/workload.go), and the four uWSGI workers below do
+      # not fit. Each nova-api worker settles near 130 MiB RSS once it has
+      # initialized its cell worker thread pool, so the kernel OOM-kills the
+      # container and the CR never reports Ready.
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: "2"
+          memory: 1536Mi
+    # nova-api serves its API from uWSGI, so this pod's request capacity is
+    # replicas x processes. The webhook default (2) is at the stestr worker
+    # count ci-run-tempest.sh runs on this leg (TEMPEST_CONCURRENCY 2) with
+    # nothing left for the polling each worker does while it waits for a server
+    # to reach ACTIVE, and the port-forward pins every worker to a single pod,
+    # so raise the process count to 4.
+    uwsgi:
+      processes: 4
+  apiDatabase:
+    clusterRef:
+      name: openstack-db
+    database: nova_tempest_2026_1_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: openstack-db
+    database: nova_tempest_2026_1
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  # The kind-only broker deploy-infra.sh installs under WITH_MESSAGING. Managed
+  # mode lands on the default vhost, which is fine here: this leg is the only
+  # Nova on its cluster, so no other deployment consumes its scheduler and
+  # conductor RPC topics.
+  messaging:
+    clusterRef:
+      name: shared-rabbitmq
+  keystoneEndpoint: http://keystone-nova-tempest-2026-1.openstack.svc.cluster.local:5000/v3
+  region: RegionOne
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-tempest-2026-1-metadata-secret
+  extraConfig:
+    DEFAULT:
+      allow_resize_to_same_host: "true"

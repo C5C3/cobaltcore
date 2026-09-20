@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Placement CR for the Nova Tempest leg (2026.1 release).
+#
+# The scheduler picks a host by asking Placement for allocation candidates, and
+# nova-compute publishes the resource provider its inventory hangs off. Without
+# this service a server never leaves the scheduling step, so the leg runs one
+# Placement of its own on the schema placement_nova_tempest_2026_1.
+#
+# One replica. The Placement traffic comes from nova-scheduler, nova-conductor
+# and the one compute, plus the few compute tests that read an allocation back;
+# a second pod would only lengthen the bring-up on a node that already carries
+# the Keystone, the OVN control plane, the Neutron, the Glance and the five Nova
+# workloads.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-nova-tempest-2026-1
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement_nova_tempest_2026_1
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-nova-tempest-2026-1.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR for the Nova Tempest leg (2026.1 release).
+#
+# Every server tempest.api.compute boots comes from an image, so the leg needs
+# an image service the compute can resolve and download from. The schema is
+# glance_nova_tempest_2026_1 and the store is attached by
+# 07-glancebackend-cr.yaml: glance-api cannot start without a default store, so
+# the backend has to go Ready before this CR can.
+#
+# One replica for the same reason the Placement has one.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-nova-tempest-2026-1
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_nova_tempest_2026_1
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-nova-tempest-2026-1.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

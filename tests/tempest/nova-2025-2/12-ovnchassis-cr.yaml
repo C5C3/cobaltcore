@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNChassis for the Nova Tempest leg. Its pods program the local Open vSwitch
+# of every node the selector matches, which is the one kind node.
+#
+# Neutron binds a port only to a host that has a live chassis row in the
+# Southbound database, so without this CR every server tempest boots ends in
+# ERROR on a binding failure. The chassis registers under the node's name
+# (operators/ovn/internal/controller/reconcile_nodes.go:145), which is why the
+# fake compute of 11-fake-compute.yaml takes its [DEFAULT] host from the same
+# field.
+#
+# The selector matches openstack.c5c3.io/chassis, the label the job puts on the
+# kind node before it applies this CR.
+#
+# No bridge mappings and no gateway: there is no provider network on a kind node
+# to map, and tempest.conf has [network-feature-enabled] floating_ips = false.
+# spec.image is left unset so the operator resolves the same OVN image the
+# control plane runs.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: ovn-nova-tempest-2025-2-chassis
+  namespace: openstack
+spec:
+  centralRef:
+    name: ovn-nova-tempest-2025-2
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"

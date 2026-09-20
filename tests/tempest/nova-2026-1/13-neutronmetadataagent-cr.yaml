@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The OVN metadata agent of the Nova Tempest leg. It terminates the
+# 169.254.169.254 requests the servers tempest boots make and forwards them to
+# the Nova metadata API, signed with the secret both sides read from
+# nova-tempest-2026-1-metadata-secret. tempest.conf keeps
+# [compute-feature-enabled] metadata_service = true, so the metadata tests fail
+# without it.
+#
+# spec.messaging is unset. The agent opens no RPC and no notification connection
+# of its own: it reads what it needs out of the Southbound database the chassis
+# pods share with it over their runtime directory.
+#
+# novaMetadata.host is the Service the Nova operator puts in front of the
+# metadata Deployment, named after the Nova CR plus "-metadata"
+# (operators/nova/internal/controller/reconcile_metadata.go:37-39). Port 8775 is
+# nova-api-metadata's own default; it is written out so the value does not
+# depend on the defaulting webhook.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: neutron-nova-tempest-2026-1-agent
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2026.1"
+  chassisRef:
+    name: ovn-nova-tempest-2026-1-chassis
+  novaMetadata:
+    host: nova-tempest-2026-1-metadata.openstack.svc.cluster.local
+    port: 8775
+    sharedSecretRef:
+      name: nova-tempest-2026-1-metadata-secret
