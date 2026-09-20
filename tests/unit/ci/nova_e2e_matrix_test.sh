@@ -63,6 +63,10 @@ ALL_OPS="keystone c5c3 horizon glance placement barbican ovn neutron cinder nova
 
 CHART="$PROJECT_ROOT/operators/nova/helm/nova-operator"
 
+# The PATH a stubbed run prepends its stub directory to, captured before any of
+# those runs rewrites it.
+BASE_PATH="$PATH"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -149,6 +153,110 @@ run_discover_hosts() {
     export PATH STUB_HOST STUB_RC STUB_RC_ROUND STUB_ROUNDS
     bash "$PROJECT_ROOT/tests/e2e/nova/discover-hosts.sh" "$@"
   ) 2>"$dir/stderr"
+}
+
+# make_tempest_stubs <dir>
+# Writes the four stubs hack/ci-run-tempest.sh resolves off PATH, so the runner
+# can be exercised without a cluster, a network or a container runtime.
+#
+# kubectl answers the admin-secret lookup with a base64 password and records
+# every port-forward argv in $STUB_PF_LOG. A real forward outlives the suite it
+# serves, so the stub blocks on /bin/sleep once it has logged, which is what the
+# runner's post-run liveness check reads; a port listed in $STUB_PF_DEAD_PORTS
+# returns instead, which is the forward that dropped mid-run. curl records every
+# argv in $STUB_CURL_LOG and answers a URL only when $STUB_PF_LOG already holds
+# a forward for its port: a port nobody forwarded refuses the connection, which
+# curl -sf reports as exit 7. That coupling also takes the race out of the
+# assertions, because a poll that succeeded proves the backgrounded forward
+# reached the log. A port listed in $STUB_CURL_DEAD_PORTS is forwarded and
+# answers an HTTP error (exit 22) instead, which is the API that never becomes
+# ready. docker records the argv of the container run in $STUB_DOCKER_LOG and
+# starts nothing. sleep returns at once, so the ten one-second readiness polls
+# of a target that stays dead cost nothing.
+make_tempest_stubs() {
+  local dir="$1"
+
+  cat >"$dir/kubectl" <<'STUB'
+#!/bin/bash
+case "$1" in
+  port-forward)
+    printf '%s\n' "$*" >>"$STUB_PF_LOG"
+    mapping="${*: -1}"
+    port="${mapping%%:*}"
+    case " ${STUB_PF_DEAD_PORTS} " in
+      *" ${port} "*) exit 0 ;;
+    esac
+    # Absolute path: the stub `sleep` next to this file returns at once.
+    exec /bin/sleep 600
+    ;;
+  get)
+    printf 'c2VjcmV0'
+    ;;
+esac
+exit 0
+STUB
+  chmod +x "$dir/kubectl"
+
+  cat >"$dir/curl" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STUB_CURL_LOG"
+url="${*: -1}"
+port="${url#*localhost:}"
+port="${port%%/*}"
+case " ${STUB_CURL_DEAD_PORTS} " in
+  *" ${port} "*) exit 22 ;;
+esac
+grep -qF " ${port}:${port}" "$STUB_PF_LOG" || exit 7
+exit 0
+STUB
+  chmod +x "$dir/curl"
+
+  cat >"$dir/docker" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STUB_DOCKER_LOG"
+exit 0
+STUB
+  chmod +x "$dir/docker"
+
+  cat >"$dir/sleep" <<'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$dir/sleep"
+}
+
+# run_ci_tempest <dir> <nova-name> <console-name> <dead-ports> [placement-name] [dropped-ports]
+# Runs hack/ci-run-tempest.sh with the stubs in <dir> first on PATH, as the leg
+# named by <nova-name>, <console-name> and <placement-name> (any may be empty,
+# which is a leg that names no Nova and no Placement). <dead-ports> is the
+# space-separated list of ports the stubbed curl reports an HTTP error for,
+# <dropped-ports> the list whose forward exits as soon as it has logged. Echoes
+# the runner's combined output and returns its exit code. The output directory
+# and the workspace root stay inside <dir>, so a run writes nothing into the
+# repository tree. Each call starts from empty logs.
+run_ci_tempest() {
+  local dir="$1" nova="$2" console="$3" dead="$4" placement="${5:-}" dropped="${6:-}"
+  : >"$dir/pf.log"
+  : >"$dir/curl.log"
+  : >"$dir/docker.log"
+  (
+    PATH="$dir:$BASE_PATH"
+    OUTPUT_DIR="$dir/output"
+    GITHUB_WORKSPACE="$dir"
+    NOVA_K8S_NAME="$nova"
+    NOVA_CONSOLE_K8S_NAME="$console"
+    PLACEMENT_K8S_NAME="$placement"
+    STUB_PF_LOG="$dir/pf.log"
+    STUB_CURL_LOG="$dir/curl.log"
+    STUB_DOCKER_LOG="$dir/docker.log"
+    STUB_CURL_DEAD_PORTS="$dead"
+    STUB_PF_DEAD_PORTS="$dropped"
+    export PATH OUTPUT_DIR GITHUB_WORKSPACE NOVA_K8S_NAME NOVA_CONSOLE_K8S_NAME
+    export PLACEMENT_K8S_NAME
+    export STUB_PF_LOG STUB_CURL_LOG STUB_DOCKER_LOG STUB_CURL_DEAD_PORTS
+    export STUB_PF_DEAD_PORTS
+    bash "$PROJECT_ROOT/hack/ci-run-tempest.sh"
+  ) 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -978,6 +1086,187 @@ test_discover_hosts_takes_an_optional_host() {
   assert_not_contains "and reports no mapping" "$out" "OK:"
 }
 
+test_runner_forwards_the_nova_apis() {
+  echo "Test: ci-run-tempest.sh forwards the nova API and the console proxy"
+
+  # tempest.api.compute talks to the compute API, and test_novnc_bad_token
+  # dials the novncproxy_base_url the API hands it, which the operator renders
+  # as http://<nova>-novncproxy.<ns>.svc.cluster.local:6080/vnc_lite.html while
+  # no gateway is set (operators/nova/internal/controller/reconcile_config.go,
+  # consoleBaseURL). Both names resolve to nothing on the runner, so both need a
+  # forward and an add-host. Each is gated on its own env var: the cinder legs
+  # set the compute one alone, and a leg that sets neither runs the forwards it
+  # ran before nova existed.
+  local tmp out code pf
+
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_tempest_stubs "$tmp"
+
+  out=$(run_ci_tempest "$tmp" "" "" "")
+  code=$?
+  pf="$(cat "$tmp/pf.log")"
+  assert_eq "a leg that names no Nova reaches the container" "0" "$code"
+  assert_contains "keystone is forwarded on 5000" "$pf" "5000:5000"
+  assert_not_contains "and nothing is forwarded on 8774" "$pf" "8774:8774"
+  assert_not_contains "and nothing on 6080" "$pf" "6080:6080"
+  assert_not_contains "the container resolves no nova name" \
+    "$(cat "$tmp/docker.log")" "--add-host nova"
+
+  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 nova-tempest-2025-2-novncproxy "")
+  code=$?
+  pf="$(cat "$tmp/pf.log")"
+  assert_eq "the nova leg reaches the container" "0" "$code"
+  assert_contains "the compute API is forwarded on 8774" "$pf" \
+    "svc/nova-tempest-2025-2 -n openstack 8774:8774"
+  assert_contains "the console proxy on 6080" "$pf" \
+    "svc/nova-tempest-2025-2-novncproxy -n openstack 6080:6080"
+
+  # Nova registers no healthcheck middleware, so the compute API is polled on
+  # the path the operator probes. The console proxy answers /vnc_lite.html,
+  # which is the page test_novnc_bad_token asks for.
+  assert_contains "the compute API is polled on its root path" \
+    "$(cat "$tmp/curl.log")" "http://localhost:8774/"
+  assert_contains "the console proxy on the page the test dials" \
+    "$(cat "$tmp/curl.log")" "http://localhost:6080/vnc_lite.html"
+
+  # Both DNS forms, the way the runner add-hosts every other optional target.
+  local docker_argv
+  docker_argv="$(cat "$tmp/docker.log")"
+  assert_contains "the container resolves the compute FQDN to the forward" \
+    "$docker_argv" "nova-tempest-2025-2.openstack.svc.cluster.local:127.0.0.1"
+  assert_contains "and its short form" "$docker_argv" \
+    "nova-tempest-2025-2.openstack.svc:127.0.0.1"
+  assert_contains "the console proxy FQDN too" "$docker_argv" \
+    "nova-tempest-2025-2-novncproxy.openstack.svc.cluster.local:127.0.0.1"
+  assert_contains "and its short form" "$docker_argv" \
+    "nova-tempest-2025-2-novncproxy.openstack.svc:127.0.0.1"
+
+  # A compute API that never answers stops the run before the container starts,
+  # instead of handing tempest a catalog whose compute endpoint refuses.
+  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 nova-tempest-2025-2-novncproxy 8774)
+  code=$?
+  assert_eq "an unreachable compute API fails the leg" "1" "$code"
+  assert_contains "the error names the API and its port" "$out" \
+    "::error::Nova API at http://localhost:8774 did not become reachable after 10 attempts"
+  assert_eq "and no container is started" "" "$(cat "$tmp/docker.log")"
+
+  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 nova-tempest-2025-2-novncproxy 6080)
+  code=$?
+  assert_eq "an unreachable console proxy fails it too" "1" "$code"
+  assert_contains "under its own name" "$out" \
+    "::error::NovaConsole API at http://localhost:6080 did not become reachable after 10 attempts"
+
+  # The cinder legs attach volumes to a server and never open a console.
+  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 "" "")
+  code=$?
+  pf="$(cat "$tmp/pf.log")"
+  assert_eq "a cinder leg reaches the container" "0" "$code"
+  assert_contains "it forwards the compute API" "$pf" "8774:8774"
+  assert_not_contains "and no console proxy" "$pf" "6080:6080"
+}
+
+test_runner_forwards_placement() {
+  echo "Test: ci-run-tempest.sh forwards the placement API"
+
+  # Both compute-stack legs register a placement endpoint in the catalog on a
+  # cluster-internal name (tests/tempest/nova-2025-2/01-catalog-setup-job.yaml)
+  # and set `placement = true` under [service_available]. Tempest builds its
+  # clients lazily, so without the forward the break lands on the first call: a
+  # name-resolution error reported as a test error, not as a skip, and the
+  # serial retry pass repeats it through the same missing forward.
+  local tmp out code pf
+
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_tempest_stubs "$tmp"
+
+  out=$(run_ci_tempest "$tmp" "" "" "" "")
+  code=$?
+  pf="$(cat "$tmp/pf.log")"
+  assert_eq "a leg that names no Placement reaches the container" "0" "$code"
+  assert_not_contains "and nothing is forwarded on 8778" "$pf" "8778:8778"
+  assert_not_contains "the container resolves no placement name" \
+    "$(cat "$tmp/docker.log")" "--add-host placement"
+
+  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 "" "" placement-nova-tempest-2025-2)
+  code=$?
+  pf="$(cat "$tmp/pf.log")"
+  assert_eq "the compute-stack leg reaches the container" "0" "$code"
+  assert_contains "the placement API is forwarded on 8778" "$pf" \
+    "svc/placement-nova-tempest-2025-2 -n openstack 8778:8778"
+
+  # Placement registers no healthcheck middleware either, so the poll asks for
+  # the root path, which is what the operator probes
+  # (operators/placement/internal/controller/reconcile_deployment_pin_test.go).
+  assert_contains "the placement API is polled on its root path" \
+    "$(cat "$tmp/curl.log")" "http://localhost:8778/"
+
+  local docker_argv
+  docker_argv="$(cat "$tmp/docker.log")"
+  assert_contains "the container resolves the placement FQDN to the forward" \
+    "$docker_argv" \
+    "placement-nova-tempest-2025-2.openstack.svc.cluster.local:127.0.0.1"
+  assert_contains "and its short form" "$docker_argv" \
+    "placement-nova-tempest-2025-2.openstack.svc:127.0.0.1"
+
+  # A placement API that never answers stops the run before the container
+  # starts, the way every other optional target does.
+  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 "" 8778 placement-nova-tempest-2025-2)
+  code=$?
+  assert_eq "an unreachable placement API fails the leg" "1" "$code"
+  assert_contains "the error names the API and its port" "$out" \
+    "::error::Placement API at http://localhost:8778 did not become reachable after 10 attempts"
+}
+
+test_runner_reports_a_forward_that_dropped() {
+  echo "Test: ci-run-tempest.sh names a port-forward that died during the run"
+
+  # kubectl pins a forward to one pod and exits for good when that pod goes
+  # away. On a leg whose wall is 150 minutes that is a live risk, and with the
+  # forward's output discarded the job log showed hundreds of connection errors
+  # and no cause. Every forward now writes its own log into the results artifact,
+  # and a forward that is gone when the container returns is named — Keystone on
+  # 5000 included, which is the one every leg opens.
+  local tmp out code
+
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_tempest_stubs "$tmp"
+
+  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 "" "" "")
+  code=$?
+  assert_eq "a leg whose forwards held returns the container's code" "0" "$code"
+  assert_not_contains "and nothing is reported as dropped" "$out" \
+    "port-forward on 8774 died"
+  assert_eq "the compute forward keeps a log of its own" "yes" \
+    "$(test -f "$tmp/output/port-forward-Nova.log" && echo yes || echo no)"
+  assert_eq "the keystone forward keeps one too" "yes" \
+    "$(test -f "$tmp/output/port-forward-Keystone.log" && echo yes || echo no)"
+  assert_not_contains "and keystone is not reported as dropped either" "$out" \
+    "port-forward on 5000 died"
+
+  # 8774 is forwarded, answers its readiness poll out of $STUB_PF_LOG, and is
+  # gone by the time the container returns.
+  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 "" "" "" 8774)
+  code=$?
+  assert_eq "a dropped forward does not change the leg's exit code" "0" "$code"
+  assert_contains "the log names the API that went away" "$out" \
+    "::error::The Nova port-forward on 8774 died during the run"
+  assert_contains "and says the failures below are not service failures" "$out" \
+    "are not service failures"
+
+  # Every test issues a token through the 5000 forward first, so a keystone
+  # forward that dropped fails the rest of the suite in both stestr phases and
+  # the serial retry pass. This leg names no optional API at all, which is the
+  # keystone shape: there the 5000 forward is the only one there is to report.
+  out=$(run_ci_tempest "$tmp" "" "" "" "" 5000)
+  code=$?
+  assert_eq "a dropped keystone forward does not change the exit code" "0" "$code"
+  assert_contains "the log names keystone when the 5000 forward went away" "$out" \
+    "::error::The Keystone port-forward on 5000 died during the run"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -999,6 +1288,9 @@ test_nova_leg_dumps_the_siblings
 test_nova_leg_loads_the_tempest_image
 test_chaos_nova_leg_runs_the_nova_suites
 test_discover_hosts_takes_an_optional_host
+test_runner_forwards_the_nova_apis
+test_runner_forwards_placement
+test_runner_reports_a_forward_that_dropped
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

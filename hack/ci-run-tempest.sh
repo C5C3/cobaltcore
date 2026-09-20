@@ -64,10 +64,27 @@
 #                   (tempest.api.volume and cinder_tempest_plugin.api.volume
 #                   against a real Cinder). That leg also sets GLANCE_K8S_NAME,
 #                   for the Glance its volume tests create images from.
+#   NOVA_K8S_NAME   — K8s Service name of a Nova API to port-forward on
+#                   8774 (default: empty). The nova counterpart of
+#                   GLANCE_K8S_NAME: same forward, readiness poll and add-host
+#                   treatment, so the catalog's compute endpoint resolves to the
+#                   forwarded port. Nova registers no healthcheck middleware and
+#                   therefore serves no /healthcheck, so the poll asks for /,
+#                   the path the operator probes. Used by the nova legs
+#                   (tempest.api.compute against a real Nova with a fake
+#                   compute) and by the cinder legs, whose compute-tagged volume
+#                   tests attach a volume to a server.
+#   NOVA_CONSOLE_K8S_NAME — K8s Service name of the noVNC console proxy
+#                   (<nova>-novncproxy) to port-forward on 6080 (default:
+#                   empty). test_novnc_bad_token dials the novncproxy_base_url
+#                   nova hands out, and the operator renders that as the
+#                   cluster-local Service URL when no gateway is set, so the
+#                   name has to resolve to the forwarded port. Only the nova
+#                   legs set it.
 #   TEMPEST_CONCURRENCY — stestr worker count (default: 4). Must not exceed the
 #                   request capacity (replicas × uwsgi.processes) of ANY target
 #                   it drives — the Keystone target, and on the glance, barbican,
-#                   neutron and cinder legs their service target too. Every
+#                   neutron, cinder and nova legs their service target too. Every
 #                   port-forward pins to a single pod, so capacity is raised via
 #                   uwsgi.processes in the target CR, not via replicas.
 #
@@ -108,17 +125,30 @@ CATALOG_SVC="${SERVICE_K8S_NAME}.${NAMESPACE}.svc.cluster.local"
 # "<display name>:<env var>:<port>:<readiness path>". Each var is empty in the
 # keystone-only scenario, which skips that leg's forward, poll and add-host.
 # Neutron serves no /healthcheck; its root path returns the version document
-# unauthenticated, so that is its readiness signal. The cinder leg fills two
-# rows: its own API and the Glance its volume tests create images from.
+# unauthenticated, so that is its readiness signal. Nova serves none either, so
+# its row polls /, the path the operator probes, and so does Placement. A leg
+# fills one row per API it needs: the cinder legs take their own API, the Glance
+# their volume tests create images from and the compute API on 8774. The nova
+# legs take that same compute API and the noVNC console proxy on 6080. Both
+# compute-stack legs take Placement on 8778: their catalog carries a placement
+# endpoint on a cluster-internal name and their tempest.conf declares the
+# service available, so a test that builds the placement client would otherwise
+# fail on name resolution rather than skip.
 GLANCE_K8S_NAME="${GLANCE_K8S_NAME:-}"
 BARBICAN_K8S_NAME="${BARBICAN_K8S_NAME:-}"
 NEUTRON_K8S_NAME="${NEUTRON_K8S_NAME:-}"
 CINDER_K8S_NAME="${CINDER_K8S_NAME:-}"
+NOVA_K8S_NAME="${NOVA_K8S_NAME:-}"
+NOVA_CONSOLE_K8S_NAME="${NOVA_CONSOLE_K8S_NAME:-}"
+PLACEMENT_K8S_NAME="${PLACEMENT_K8S_NAME:-}"
 OPTIONAL_TARGETS=(
   "Glance:GLANCE_K8S_NAME:9292:/healthcheck"
   "Barbican:BARBICAN_K8S_NAME:9311:/healthcheck"
   "Neutron:NEUTRON_K8S_NAME:9696:/"
   "Cinder:CINDER_K8S_NAME:8776:/healthcheck"
+  "Nova:NOVA_K8S_NAME:8774:/"
+  "NovaConsole:NOVA_CONSOLE_K8S_NAME:6080:/vnc_lite.html"
+  "Placement:PLACEMENT_K8S_NAME:8778:/"
 )
 
 # ---------------------------------------------------------------------------
@@ -144,7 +174,13 @@ ADMIN_PASSWORD=$(echo "${ADMIN_PASSWORD_B64}" | base64 -d)
 # ---------------------------------------------------------------------------
 # 3. Set up port-forward and wait for readiness
 # ---------------------------------------------------------------------------
-kubectl port-forward "svc/${SERVICE_K8S_NAME}" -n "${NAMESPACE}" 5000:5000 >/dev/null 2>&1 &
+# kubectl pins a forward to one pod and exits for good when that pod goes away,
+# so every forward's output goes to a log the results artifact retains rather
+# than to /dev/null: a forward that dropped mid-run turns every later call into
+# a connection error, and the reason is only in that log. Keystone is the one
+# every leg opens and every test needs, since each one issues a token first.
+kubectl port-forward "svc/${SERVICE_K8S_NAME}" -n "${NAMESPACE}" 5000:5000 \
+  >"${OUTPUT_DIR}/port-forward-Keystone.log" 2>&1 &
 PF_PID=$!
 OPTIONAL_PF_PIDS=()
 cleanup() {
@@ -158,12 +194,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Forward every configured optional API alongside Keystone.
+# Forward every configured optional API alongside Keystone, each into a log of
+# its own for the reason above.
+OPTIONAL_PF_NAMES=()
 for target in "${OPTIONAL_TARGETS[@]}"; do
   IFS=: read -r name var port path <<<"${target}"
   [[ -n "${!var}" ]] || continue
-  kubectl port-forward "svc/${!var}" -n "${NAMESPACE}" "${port}:${port}" >/dev/null 2>&1 &
+  kubectl port-forward "svc/${!var}" -n "${NAMESPACE}" "${port}:${port}" \
+    >"${OUTPUT_DIR}/port-forward-${name}.log" 2>&1 &
   OPTIONAL_PF_PIDS+=("$!")
+  OPTIONAL_PF_NAMES+=("${name}:${port}")
 done
 
 ready=false
@@ -277,9 +317,12 @@ WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
 
 # Point the catalog's service DNS names at the forwarded ports inside the
 # container. The keystone names are always present; the glance, barbican,
-# neutron and cinder names are added only when the matching target is configured
-# so their image, key-manager, network and block-storage endpoints resolve to
-# the forwarded 9292, 9311, 9696 and 8776.
+# neutron, cinder, nova and placement names are added only when the matching
+# target is configured so their image, key-manager, network, block-storage,
+# compute and placement endpoints resolve to the forwarded 9292, 9311, 9696,
+# 8776, 8774 and 8778. The console proxy name is added the same way, for the
+# novncproxy_base_url the compute API hands out on 6080. That one is in no
+# catalog.
 ADD_HOST_ARGS=(
   --add-host "${CATALOG_SVC}:127.0.0.1"
   --add-host "${SERVICE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1"
@@ -291,6 +334,7 @@ for target in "${OPTIONAL_TARGETS[@]}"; do
   ADD_HOST_ARGS+=(--add-host "${!var}.${NAMESPACE}.svc:127.0.0.1")
 done
 
+TEMPEST_RC=0
 docker run --rm \
   --network host \
   "${ADD_HOST_ARGS[@]}" \
@@ -301,4 +345,28 @@ docker run --rm \
   -e "TEMPEST_GROUP_END=::endgroup::" \
   -e "TEMPEST_ERROR_PREFIX=::error::" \
   "${TEMPEST_IMAGE}" \
-  bash /etc/tempest/run-tests.sh
+  bash /etc/tempest/run-tests.sh || TEMPEST_RC=$?
+
+# ---------------------------------------------------------------------------
+# 7. Report any forward that did not survive the run
+# ---------------------------------------------------------------------------
+# A forward whose pod was restarted or evicted exits, and every call the suite
+# made through it afterwards failed with a connection error that looks like a
+# broken service. Name it here so the job log says which API went away instead
+# of leaving the reader to infer it from a wall of connection errors. Keystone
+# comes first: every test issues a token through it, so a 5000 that went away
+# fails the rest of the suite, and the keystone legs forward nothing else.
+if ! kill -0 "${PF_PID}" 2>/dev/null; then
+  echo "::error::The Keystone port-forward on 5000 died during the run; failures against localhost:5000 below are not service failures. See ${OUTPUT_DIR}/port-forward-Keystone.log"
+fi
+# The index guard is for bash 3.2, where ${!array[@]} on an empty array is an
+# unbound variable under `set -u` — the keystone legs forward nothing optional.
+if [[ ${#OPTIONAL_PF_PIDS[@]} -gt 0 ]]; then
+  for i in "${!OPTIONAL_PF_PIDS[@]}"; do
+    kill -0 "${OPTIONAL_PF_PIDS[$i]}" 2>/dev/null && continue
+    IFS=: read -r name port <<<"${OPTIONAL_PF_NAMES[$i]}"
+    echo "::error::The ${name} port-forward on ${port} died during the run; failures against localhost:${port} below are not service failures. See ${OUTPUT_DIR}/port-forward-${name}.log"
+  done
+fi
+
+exit "${TEMPEST_RC}"
