@@ -14,11 +14,16 @@
 # controller, and neither sees Keystone, OpenBao, ESO or cert-manager. No other
 # e2e asserts ServiceCollision or ServiceAccountCollision anywhere.
 #
-# ── Four legs ────────────────────────────────────────────────────────────────
+# ── Five legs ────────────────────────────────────────────────────────────────
 #   ROUND-TRIP  the registration registers a catalog entry and an account from
 #               the plane's own namespace, its seven K-ORC children come up
 #               owner-referenced to the CR, the consumer Secret materializes,
 #               and a Job authenticates with it and sees the catalog row.
+#   LATCH       a terminal K-ORC error injected on the Project child. A 409
+#               message holds AccountReady at ServiceAccountsFailed for 60s
+#               and the child keeps its condition, while a refused-connection
+#               message is cleared by the operator: the registration returns
+#               to Ready and reports the project id it had before.
 #   ROTATION    a CredentialRotation rotates the account password. The new
 #               password authenticates, the old one is rejected, and the
 #               superseded password Secret is pruned.
@@ -60,9 +65,9 @@ kind: Test
 metadata:
   name: keystone-service
 spec:
-  # The bring-up of a second full identity plane, four registration legs and a
+  # The bring-up of a second full identity plane, five registration legs and a
   # bounded teardown run well past the suite defaults: ten minutes above the
-  # foreign-namespace sibling, for the two legs it does not have. cleanup stays
+  # foreign-namespace sibling, for the legs it does not have. cleanup stays
   # generous for the same finalizer reasons: the ControlPlane's finalizer waits
   # on K-ORC to take the Keystone rows out before it releases, and on the failure
   # path the namespace converges through the operators' bounded stall breakers
@@ -584,7 +589,78 @@ spec:
           run_verify_job "${KS_NAME}" "${KS_NAME}" "${WORKFLOW_URL}"
           echo "OK: a service in the plane's namespace authenticates with what it was delivered."
 
-          # ══ LEG 2 — rotation through a CredentialRotation ═════════════════
+          # ══ LEG 2 — a latched K-ORC error, held and then cleared ══════════
+          # The pinned K-ORC retries a transport failure itself and writes no
+          # terminal Progressing condition for one, so the leg writes the latch
+          # on the registration's Project child. That is the latch an older
+          # K-ORC left behind on a cluster that has since been upgraded: the
+          # operator clears it once the message reads as a transport error, and
+          # a message that names a real misconfiguration keeps failing loud.
+          PROJECT_CHILD="$(kubectl get projects.openstack.k-orc.cloud -n "${CP_NS}" \
+            -l "${KS_SELECTOR}" -o jsonpath='{.items[0].metadata.name}')"
+          assert_nonempty "the registration has a managed Project child" "${PROJECT_CHILD}"
+          PROJECT_ID_BEFORE="$(ks_field "${KS_NAME}" '{.status.account.projectID}')"
+          assert_nonempty "the registration reports its project id" "${PROJECT_ID_BEFORE}"
+
+          # observedGeneration is read off the live child, so K-ORC and the
+          # operator both read the latch as current, and every other condition
+          # is carried over untouched. The capture is declared before it is
+          # assigned: `local conds="$(…)"` reports the exit status of `local`,
+          # which would hide a failed read from `set -e`.
+          inject_latch() { # <message> — stamp a terminal Progressing on the Project child
+            local conds
+            conds="$(kubectl get projects.openstack.k-orc.cloud "${PROJECT_CHILD}" -n "${CP_NS}" -o json \
+              | jq -c --arg msg "$1" '.metadata.generation as $gen
+                  | [.status.conditions[] | select(.type != "Progressing")]
+                    + [{type: "Progressing", status: "False",
+                        reason: "InvalidConfiguration", message: $msg,
+                        observedGeneration: $gen,
+                        lastTransitionTime: (now | todate)}]')"
+            kubectl patch projects.openstack.k-orc.cloud "${PROJECT_CHILD}" -n "${CP_NS}" \
+              --subresource=status --type=merge -p "{\"status\":{\"conditions\":${conds}}}"
+          }
+
+          # ── A misconfiguration keeps failing loud ─────────────────────────
+          inject_latch 'invalid configuration creating resource: Expected HTTP response code [201] when accessing [POST http://keystone:5000/v3/projects], but got 409 instead'
+          wait_reason keystoneservice "${KS_NAME}" "${CP_NS}" AccountReady ServiceAccountsFailed 120
+          # The hold spans six 10s requeue passes, so an operator that cleared a
+          # 409 would have had plenty of passes to do it in.
+          sleep 60
+          assert_eq "the Project child keeps its misconfiguration latch" "InvalidConfiguration" \
+            "$(child_field projects "${PROJECT_CHILD}" "{.status.conditions[?(@.type=='Progressing')].reason}")"
+          assert_eq "the registration keeps reporting the terminal error" "ServiceAccountsFailed" \
+            "$(condition_reason keystoneservice "${KS_NAME}" "${CP_NS}" AccountReady)"
+
+          # ── A transport failure is retried ────────────────────────────────
+          # This injection overwrites the 409 latch, so the half above leaves
+          # nothing to clean up.
+          inject_latch 'invalid configuration creating resource: Post "http://keystone:5000/v3/projects": dial tcp 10.96.227.194:5000: connect: connection refused'
+          # The first latch the operator sees on a child is handed back on the
+          # next 10s requeue pass — the 30s backoff paces the retries AFTER that
+          # one — so 180s is slack for a busy apiserver. An empty reason ends the
+          # poll as well: the operator removes the condition, and K-ORC stamps
+          # its own once it retries the child.
+          deadline=$(( $(date +%s) + 180 )); latch_reason=""
+          while true; do
+            latch_reason="$(child_field projects "${PROJECT_CHILD}" \
+              "{.status.conditions[?(@.type=='Progressing')].reason}")"
+            if [ "${latch_reason}" != "InvalidConfiguration" ]; then break; fi
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "ERROR: the transport latch on projects/${PROJECT_CHILD} was not cleared within 180s (last: '${latch_reason:-<none>}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the transport latch is gone (Progressing reports '${latch_reason:-<none>}')."
+
+          wait_ks_condition "${KS_NAME}" "${CP_NS}" Ready True 300
+          assert_eq "the account is provisioned again" "AccountProvisioned" \
+            "$(condition_reason keystoneservice "${KS_NAME}" "${CP_NS}" AccountReady)"
+          assert_eq "the project was retried, not re-created" "${PROJECT_ID_BEFORE}" \
+            "$(ks_field "${KS_NAME}" '{.status.account.projectID}')"
+          echo "OK: the misconfiguration held the registration and the transport error healed."
+
+          # ══ LEG 3 — rotation through a CredentialRotation ═════════════════
           OLD_PW="${CONSUMER_PW}"
           assert_secret_nonempty "the pre-rotation password was captured" "${OLD_PW}"
           assert_eq "K-ORC applied the first password Secret" "${PREFIX}password-v1" \
@@ -652,7 +728,7 @@ spec:
 
           kubectl delete credentialrotation rotate-workflow -n "${CP_NS}"
 
-          # ══ LEG 3 — the collision and the adopt-gated takeover (D6) ════════
+          # ══ LEG 4 — the collision and the adopt-gated takeover (D6) ════════
           # The admin Job seeds both rows first, then the registration collides on
           # each of them. The waits below gate on the REASONS rather than on
           # Ready=False: ProbingForCollision also reports Ready=False while the two
@@ -771,7 +847,7 @@ spec:
           assert_eq "the never-adopted user is untouched" "${SEED_USER_ID}" "$(admin_user_id)"
           echo "OK: deleting the CR removed only what it owned."
 
-          # ══ LEG 4 — the registration's deletion leaves nothing ════════════
+          # ══ LEG 5 — the registration's deletion leaves nothing ════════════
           kubectl delete keystoneservice "${KS_NAME}" -n "${CP_NS}" --wait=false
           # K-ORC holds its finalizer until the rows are out of the catalog and the
           # user is gone, so this is the slow delete.
