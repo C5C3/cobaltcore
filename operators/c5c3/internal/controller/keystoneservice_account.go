@@ -165,6 +165,14 @@ func (r *KeystoneServiceReconciler) ensureAccount(
 		}
 	}
 
+	// A latched transport error is handed back to K-ORC first, so it retries the
+	// create it gave up on; korc_unlatch.go states the policy. Every latch this
+	// leaves in place still fails loud below.
+	if err := unlatchKORCTransportErrors(ctx, r.Client, project, user); err != nil {
+		fail(conditionReasonTransportErrorRetryFailed, err.Error())
+		return ctrl.Result{}, err
+	}
+
 	// A terminal K-ORC error on either handle fails loud: K-ORC has stopped
 	// retrying, so a bounded wait would never resolve.
 	for _, obj := range []orcv1alpha1.ObjectWithConditions{project, user} {
@@ -189,7 +197,15 @@ func (r *KeystoneServiceReconciler) ensureAccount(
 	// provisioned before the roles it needs are bound.
 	rolesReady, err := r.ensureKeystoneServiceRoles(ctx, ks, cp, credRef, managedCredRef)
 	if err != nil {
-		fail(reasonServiceAccountError, fmt.Sprintf("ensuring role assignments: %v", err))
+		// A failed unlatch on a role child reports the same reason as one on the
+		// project or the user. applyAccountRole owns the role children but no
+		// condition, so without this the identical RBAC skew would surface under two
+		// different reasons and an operator filtering on one would miss the other.
+		if isKORCUnlatchError(err) {
+			fail(conditionReasonTransportErrorRetryFailed, err.Error())
+		} else {
+			fail(reasonServiceAccountError, fmt.Sprintf("ensuring role assignments: %v", err))
+		}
 		return ctrl.Result{}, err
 	}
 	if !rolesReady {
@@ -472,7 +488,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceRoles(
 	waitMessage := ""
 
 	for _, role := range ks.Spec.Account.Roles {
-		out, err := applyAccountRole(ctx,
+		out, err := applyAccountRole(ctx, r.Client,
 			keystoneServiceRoleImportRef(ks, role), keystoneServiceRoleAssignmentRef(ks, role),
 			keystoneServiceChildNamespace(cp), role,
 			credRef, managedCredRef, keystoneServiceUserRef(ks), keystoneServiceProjectRef(ks),

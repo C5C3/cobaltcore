@@ -81,6 +81,19 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 		status.Endpoints = append(status.Endpoints, row)
 	}
 
+	// A latched transport error is handed back to K-ORC first, so it retries the
+	// create it gave up on; korc_unlatch.go states the policy. Every latch this
+	// leaves in place still fails loud below.
+	objs := make([]orcv1alpha1.ObjectWithConditions, 0, 1+len(endpoints))
+	objs = append(objs, service)
+	for _, endpoint := range endpoints {
+		objs = append(objs, endpoint)
+	}
+	if err := unlatchKORCTransportErrors(ctx, r.Client, objs...); err != nil {
+		fail(conditionReasonTransportErrorRetryFailed, err.Error())
+		return ctrl.Result{}, err
+	}
+
 	// The Service's terminal error is reported before its Endpoints', so the ROOT
 	// stuck dependency surfaces rather than an Endpoint merely blocked on it.
 	if termErr := orcv1alpha1.GetTerminalError(service); termErr != nil {
