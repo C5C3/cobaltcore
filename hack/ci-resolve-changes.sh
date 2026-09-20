@@ -66,7 +66,7 @@ EVENT_NAME="${EVENT_NAME:-pull_request}"
 
 # Services that have a Tempest configuration directory under tests/tempest/.
 # Mirrors the service loop in hack/ci-generate-tempest-matrix.sh.
-TEMPEST_ALL_SERVICES="keystone glance barbican neutron cinder"
+TEMPEST_ALL_SERVICES="keystone glance barbican neutron cinder nova"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -236,6 +236,32 @@ or_force() {
 
 op_is_changed() { set_has "$op_changed" "$1"; }
 
+# True when a change touched an operator that the Tempest leg of $1 brings up
+# but that has no Tempest leg of its own. Without this the mapping from a
+# changed operator to a leg is 1:1, and ovn and placement — deployed only ever
+# as somebody else's dependency — select nothing: their pull request merges
+# green, and the next pull request to touch neutron, cinder or nova spends that
+# leg's wall on a bring-up that was already broken, with the failure attributed
+# to the wrong change. The lists mirror the `if:` conditions of the tempest
+# job's deploy steps in .github/workflows/ci.yaml.
+#
+# Only those two. keystone, glance, neutron and nova are also deployed as
+# dependencies here, but each has a leg of its own that a change to it already
+# selects, and adding them would widen `ci:tempest` from the service the pull
+# request touches to that service plus every leg that borrows it.
+leg_dep_is_changed() {
+  local deps dep
+  case "$1" in
+    neutron) deps="ovn" ;;
+    nova | cinder) deps="ovn placement" ;;
+    *) return 1 ;;
+  esac
+  for dep in $deps; do
+    if op_is_changed "$dep" || filter_on "image_${dep}"; then return 0; fi
+  done
+  return 1
+}
+
 cond=false
 if [[ -n "$op_changed" ]] || filter_on makefile; then cond=true; fi
 go=$(or_force "$cond")
@@ -376,7 +402,7 @@ if [[ "${EVENT_NAME}" == "push" && "$is_tag" != "true" ]]; then
 fi
 
 # Tempest legs, by service. A change to something every leg shares (the image,
-# the base images, the runner) exercises all three; a config edit under
+# the base images, the runner) exercises every leg; a config edit under
 # tests/tempest/<svc>-*/ narrows it to that service; the ci:tempest label
 # narrows it to the services the pull request touches, and falls back to
 # keystone when it touches none.
@@ -393,7 +419,8 @@ if [[ "$tempest" == "true" ]]; then
   else
     for svc in $TEMPEST_ALL_SERVICES; do
       if filter_on "tempest_${svc}" || op_is_changed "$svc" ||
-        filter_on "image_${svc}" || filter_on "tests_e2e_${svc}"; then
+        filter_on "image_${svc}" || filter_on "tests_e2e_${svc}" ||
+        leg_dep_is_changed "$svc"; then
         tempest_services=$(set_add "$tempest_services" "$svc")
       fi
     done

@@ -211,6 +211,8 @@ jobs:
               - 'tests/tempest/neutron-*/**'
             tempest_cinder:
               - 'tests/tempest/cinder-*/**'
+            tempest_nova:
+              - 'tests/tempest/nova-*/**'
             # ---------------------------------------------------------------
             # Per-operator e2e suites. Editing one operator's suite runs that
             # operator's leg, not the other nine.
@@ -396,6 +398,7 @@ jobs:
           FILTER_tempest_barbican: ${{ steps.filter.outputs.tempest_barbican }}
           FILTER_tempest_neutron: ${{ steps.filter.outputs.tempest_neutron }}
           FILTER_tempest_cinder: ${{ steps.filter.outputs.tempest_cinder }}
+          FILTER_tempest_nova: ${{ steps.filter.outputs.tempest_nova }}
           FILTER_tests_e2e_keystone: ${{ steps.filter.outputs.tests_e2e_keystone }}
           FILTER_tests_e2e_c5c3: ${{ steps.filter.outputs.tests_e2e_c5c3 }}
           FILTER_tests_e2e_horizon: ${{ steps.filter.outputs.tests_e2e_horizon }}
@@ -3156,8 +3159,8 @@ jobs:
 
   # Tempest API integration tests.
   # Deploys services into a kind cluster and runs the OpenStack Tempest test
-  # suite against them.  Currently tests Keystone; designed so additional
-  # services can be added to this single job without needing separate runs.
+  # suite against them.  One leg per service: keystone, glance, barbican,
+  # neutron, cinder and nova.
   # Matrix over OpenStack releases to validate each release independently.
   #
   # Runs only after every E2E job has finished without failure: a failed
@@ -3176,7 +3179,18 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 68
+    # Two walls above the 68 the other legs keep. Run 35083301017 measured the
+    # cinder 2025.2 leg at 56 minutes: 40 of bring-up (13 of image pulls for
+    # seven images, 14 inside `Setup E2E infrastructure`) and 15.5 of tempest.
+    # A nova leg pulls thirteen images and waits on eight CRs, of which the Nova
+    # alone takes about 8 minutes to reach Ready, and the Phase-0 lab of #1015
+    # ran the compute suite in 42 minutes at two workers: about 70 minutes of
+    # bring-up plus 42 of run, hence 150. A cinder leg carries four more
+    # operators, three more service images and four more CRs on top of those 56
+    # minutes, and its suite gains six compute-tagged test methods and
+    # test_incremental_backup, which lands near 90, hence 120. Both numbers are
+    # estimates; re-derive them from the first green run of each leg.
+    timeout-minutes: ${{ matrix.service == 'nova' && 150 || matrix.service == 'cinder' && 120 || 68 }}
     permissions:
       contents: read
       packages: read
@@ -3195,8 +3209,9 @@ jobs:
           config: hack/kind-config.yaml
           cluster-name: ${{ env.KIND_CLUSTER }}
       # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag out
-      # of this workflow. The step runs on every leg because only the neutron
-      # one reads OVN_VERSION, and a grep costs nothing on the others.
+      # of this workflow. The step runs on every leg because only the neutron,
+      # nova and cinder ones read OVN_VERSION, and a grep costs nothing on the
+      # others.
       - name: Resolve OVN version
         run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
       # -- Keystone --------------------------------------------------------
@@ -3222,6 +3237,17 @@ jobs:
             # to one, so the leg runs a Glance next to the Cinder.
             ${{ matrix.service == 'cinder' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.service == 'cinder' && format('{0}/cinder:{1}', env.IMAGE_PREFIX, matrix.release) || '' }}
+            # The compute stack the nova and cinder legs share: four operators,
+            # the three service images their CRs roll out, and the OVN daemon
+            # image the OVNCentral runs at the resolved pin.
+            ${{ (matrix.service == 'nova' || matrix.service == 'cinder') && format('{0}/ovn-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.service == 'nova' || matrix.service == 'cinder') && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.service == 'nova' || matrix.service == 'cinder') && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.service == 'nova' || matrix.service == 'cinder') && format('{0}/nova-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.service == 'nova' || matrix.service == 'cinder') && format('{0}/neutron:{1}', env.IMAGE_PREFIX, matrix.release) || '' }}
+            ${{ (matrix.service == 'nova' || matrix.service == 'cinder') && format('{0}/placement:{1}', env.IMAGE_PREFIX, matrix.release) || '' }}
+            ${{ (matrix.service == 'nova' || matrix.service == 'cinder') && format('{0}/nova:{1}', env.IMAGE_PREFIX, matrix.release) || '' }}
+            ${{ (matrix.service == 'nova' || matrix.service == 'cinder') && format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION) || '' }}
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
@@ -3230,22 +3256,24 @@ jobs:
       # The glance leg additionally pulls the glance-operator and the matching
       # glance service image; the keystone leg needs neither. The cinder leg
       # takes the same pair, for the Glance its volume suites create images
-      # from, and loads it into kind in its own step below.
+      # from, and loads it into kind in its own step below; the nova leg takes
+      # it for the Glance its servers boot from.
       - name: Load Glance E2E images
-        if: matrix.service == 'glance' || matrix.service == 'cinder'
+        if: matrix.service == 'glance' || matrix.service == 'cinder' || matrix.service == 'nova'
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/glance-operator:dev
             ${{ env.IMAGE_PREFIX }}/glance:${{ matrix.release }}
-      # The tempest image is kind-loaded only on the glance leg: the keystone leg
-      # runs it exclusively via `docker run` on the runner, but the glance leg
-      # also runs it in-cluster as the catalog-setup Job, which resolves the
-      # image on the kind node (imagePullPolicy: IfNotPresent) and would
-      # otherwise pull the published tag from GHCR instead of this PR's build.
+      # The tempest image is kind-loaded on the glance and nova legs: the
+      # keystone leg runs it exclusively via `docker run` on the runner, but
+      # both of these also run it in-cluster — the catalog-setup Job, and on the
+      # nova leg the image-seed and flavor-seed Jobs — which resolves the image
+      # on the kind node (imagePullPolicy: IfNotPresent) and would otherwise
+      # pull the published tag from GHCR instead of this PR's build.
       - name: Load Glance images into kind
-        if: matrix.service == 'glance'
+        if: matrix.service == 'glance' || matrix.service == 'nova'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
@@ -3299,6 +3327,31 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+      # -- Compute stack ---------------------------------------------------
+      # kubelet only skips the registry for a tag already on the node, so both
+      # compute-stack legs load the eight refs they share here. Each leg's
+      # glance pair and tempest image come from a step above: the cinder leg's
+      # from its own, the nova leg's from the glance one.
+      #
+      # One call for all eight. Each `kind load` is a `docker save` piped into
+      # the node's containerd, and the three service images end at the same
+      # `FROM python-base` (images/nova/Dockerfile) while the four operator
+      # images share their own base, so eight calls save and import those shared
+      # layers over and over. The nova e2e leg already loads its list this way
+      # ("Load images into kind" above).
+      - name: Load compute stack images into kind
+        if: matrix.service == 'nova' || matrix.service == 'cinder'
+        run: |
+          kind load docker-image \
+            ${{ env.IMAGE_PREFIX }}/ovn-operator:dev \
+            ${{ env.IMAGE_PREFIX }}/neutron-operator:dev \
+            ${{ env.IMAGE_PREFIX }}/placement-operator:dev \
+            ${{ env.IMAGE_PREFIX }}/nova-operator:dev \
+            ${{ env.IMAGE_PREFIX }}/neutron:${{ matrix.release }} \
+            ${{ env.IMAGE_PREFIX }}/placement:${{ matrix.release }} \
+            ${{ env.IMAGE_PREFIX }}/nova:${{ matrix.release }} \
+            ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} \
+            --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -3307,8 +3360,17 @@ jobs:
           # the operator mounts as inline CSI volumes, and its Cinder takes the
           # shared broker in managed mode. Empty on every other leg, where
           # deploy-infra.sh keeps its default of installing neither.
+          #
+          # The Nova of both compute-stack legs takes that same broker in
+          # managed mode, so the nova leg opts into it as well.
           WITH_NFS: ${{ matrix.service == 'cinder' && 'true' || '' }}
-          WITH_MESSAGING: ${{ matrix.service == 'cinder' && 'true' || '' }}
+          WITH_MESSAGING: ${{ (matrix.service == 'cinder' || matrix.service == 'nova') && 'true' || '' }}
+          # The nova leg runs a real OVN chassis, whose pods open a Geneve
+          # tunnel from the kind node and need the openvswitch and geneve
+          # modules on the runner host; deploy-infra.sh modprobes them under
+          # this switch. The cinder leg deploys no chassis, so it leaves the
+          # host's modules alone.
+          WITH_OVN_KERNEL_MODULES: ${{ matrix.service == 'nova' && 'true' || '' }}
       # Use shared operator deployment script.
       - name: Deploy operator (keystone)
         run: hack/ci-deploy-operator.sh
@@ -3316,10 +3378,11 @@ jobs:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
       # The glance leg also needs the glance-operator in its own glance-system
-      # namespace before its Glance CR reconciles, and so does the cinder leg
-      # for the Glance it deploys next to its Cinder.
+      # namespace before its Glance CR reconciles, and so do the cinder leg for
+      # the Glance it deploys next to its Cinder and the nova leg for the Glance
+      # its servers boot from.
       - name: Deploy glance operator
-        if: matrix.service == 'glance' || matrix.service == 'cinder'
+        if: matrix.service == 'glance' || matrix.service == 'cinder' || matrix.service == 'nova'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: glance
@@ -3342,16 +3405,17 @@ jobs:
       # A Neutron never reaches Ready without a live OVNCentral: its controller
       # reads the published Northbound and Southbound addresses off that CR
       # before it renders ml2_conf.ini. The neutron leg therefore deploys both
-      # operators, each into its own namespace.
+      # operators, each into its own namespace, and so do the two compute-stack
+      # legs, whose Nova binds every server's port on a Neutron of their own.
       - name: Deploy ovn operator
-        if: matrix.service == 'neutron'
+        if: matrix.service == 'neutron' || matrix.service == 'nova' || matrix.service == 'cinder'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: ovn
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
           NAMESPACE: ovn-system
       - name: Deploy neutron operator
-        if: matrix.service == 'neutron'
+        if: matrix.service == 'neutron' || matrix.service == 'nova' || matrix.service == 'cinder'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: neutron
@@ -3367,6 +3431,25 @@ jobs:
           OPERATOR: cinder
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
           NAMESPACE: cinder-system
+      # The rest of the compute stack of the nova and cinder legs; the
+      # glance-, ovn- and neutron-operator they also need are deployed by the
+      # steps above, whose conditions cover both legs. A Nova claims its
+      # inventory in a Placement, so both of these have to be watching before
+      # the CRs below are applied.
+      - name: Deploy placement operator
+        if: matrix.service == 'nova' || matrix.service == 'cinder'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: placement
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
+          NAMESPACE: placement-system
+      - name: Deploy nova operator
+        if: matrix.service == 'nova' || matrix.service == 'cinder'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: nova
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/nova-operator
+          NAMESPACE: nova-system
       # Every service deploys the Keystone CR from its own config-dir (the
       # glance and barbican legs run against their own
       # keystone-<service>-tempest identity CR).
@@ -3466,6 +3549,43 @@ jobs:
           kubectl apply -f ${{ matrix.config-dir }}/01-catalog-setup-job.yaml
           kubectl wait --for=condition=complete job/cinder-tempest-catalog-setup -n openstack \
             --timeout=300s
+      # The nova leg bootstraps the compute catalog (the compute, placement,
+      # image and network services plus their endpoints via a setup Job) before
+      # any of its CRs: the Nova resolves its siblings through that catalog on
+      # the internal interface, and the Neutron and Placement reconcilers
+      # authenticate against their own entries.
+      - name: Bootstrap compute catalog
+        if: matrix.service == 'nova'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/01-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/nova-tempest-catalog-setup -n openstack \
+            --timeout=300s
+      # The compute-stack steps from here on name their fixtures by suffix glob,
+      # unquoted so the shell expands it: the numeric prefixes differ between
+      # tests/tempest/nova-<slug>/ and tests/tempest/cinder-<slug>/, where the
+      # volume fixtures come first. Each pattern matches one file in either
+      # directory, and a pattern that matches nothing reaches kubectl as its own
+      # literal text, which fails the step instead of skipping it.
+      #
+      # Applied here, waited on below. Neither the OVNCentral nor the Placement
+      # has an upstream in this set — nothing in the fixtures references the
+      # Glance or the Cinder, and the catalog entries the Placement
+      # authenticates against are written by the setup Job above — so they
+      # reconcile while the cinder leg brings up its Glance, its Cinder and its
+      # seed image, and while the nova leg waits out its OVNCentral and its
+      # Neutron, instead of after them. The steps below re-apply the same
+      # manifests, which is a no-op, and then wait.
+      #
+      # The Neutron is deliberately not applied here: its controller
+      # error-requeues until the OVNCentral publishes its database addresses,
+      # and whether controller-runtime's backoff then costs more than the
+      # overlap saves has to be measured, not assumed.
+      - name: Apply the independent compute-stack CRs
+        if: matrix.service == 'nova' || matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/*-messaging-secret.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/*-ovncentral-cr.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/*-placement-cr.yaml
       # The Glance goes Ready before the Cinder is applied: the seed image the
       # volume tests boot from is uploaded to it, and a store-side failure here
       # would otherwise surface as an opaque Cinder timeout.
@@ -3496,6 +3616,110 @@ jobs:
           kubectl apply -f ${{ matrix.config-dir }}/07-image-seed-job.yaml
           kubectl wait --for=condition=complete job/cinder-tempest-image-seed -n openstack \
             --timeout=300s
+      # The OVNCentral goes Ready first: the Neutron renders no ml2_conf.ini
+      # without the published database addresses and the client identity, so an
+      # OVN-side failure surfaces here rather than as an opaque Neutron timeout.
+      - name: Deploy OVNCentral for the compute stack
+        if: matrix.service == 'nova' || matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/*-messaging-secret.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/*-ovncentral-cr.yaml
+          kubectl wait ovncentral/${{ matrix.ovn-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=300s
+      # 600s for the reason the neutron leg's own step gives above.
+      - name: Deploy Neutron CR for the compute stack
+        if: matrix.service == 'nova' || matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/*-neutron-cr.yaml
+          kubectl wait neutron/${{ matrix.neutron-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=600s
+      # The Placement holds the inventory the compute publishes and the
+      # scheduler reads, so it is Ready before the Nova is applied.
+      - name: Deploy Placement CR
+        if: matrix.service == 'nova' || matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/*-placement-cr.yaml
+          kubectl wait placement/${{ matrix.placement-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=300s
+      # The nova leg's own image service. It is Ready before the seed Job
+      # uploads to it; the cinder leg has its Glance from the step further up.
+      - name: Deploy Glance CR for the nova leg
+        if: matrix.service == 'nova'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/06-glance-cr.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/07-glancebackend-cr.yaml
+          kubectl wait glance/${{ matrix.glance-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=300s
+      # tempest.conf pins [compute] image_ref and image_ref_alt to the two UUIDs
+      # this Job creates, so every boot case has its image before the run
+      # starts.
+      - name: Seed the images the compute tests boot from
+        if: matrix.service == 'nova'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/08-image-seed-job.yaml
+          kubectl wait --for=condition=complete job/nova-tempest-image-seed -n openstack \
+            --timeout=300s
+      # 900s rather than the 600s the Neutron and the Cinder take: the first CI
+      # run of the nova e2e leg measured 3 minutes for the eight MariaDB CRs at
+      # the operator's 30s requeue and 3 more for the six nova-manage runs of
+      # the db-sync, which puts Ready about 8 minutes after the apply
+      # (tests/e2e/nova/basic-deployment/chainsaw-test.yaml:60-63).
+      - name: Deploy Nova CR
+        if: matrix.service == 'nova' || matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/*-metadata-secret.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/*-nova-cr.yaml
+          kubectl wait nova/${{ matrix.nova-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=900s
+      # nova-scheduler places a server only on a host that has a mapping in the
+      # API database, and it writes those mappings from a 300-second periodic,
+      # which is longer than the run can wait for its first boot. The step
+      # therefore runs the discovery by hand.
+      #
+      # The host differs by leg. The cinder leg's compute registers as fake-1,
+      # the nova leg's under the node's name, because the OVN chassis registers
+      # under that name and neutron binds a port only to a host with a live
+      # chassis (tests/tempest/nova-2025-2/11-fake-compute.yaml).
+      - name: Deploy the fake compute
+        if: matrix.service == 'nova' || matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/*-fake-compute.yaml
+          kubectl rollout status deploy/${{ matrix.nova-cr-name }}-fake-compute -n openstack --timeout=300s
+          host=fake-1
+          if [ "${{ matrix.service }}" = "nova" ]; then
+            host="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          fi
+          tests/e2e/nova/discover-hosts.sh ${{ matrix.nova-cr-name }} openstack "$host"
+      # The chassis programs the local Open vSwitch of every node its selector
+      # matches, and it selects on a label the cluster bring-up does not set, so
+      # the step writes that label first (the one
+      # tests/e2e/neutron/metadata-agent/chainsaw-test.yaml:48-54 writes too).
+      # Without a live chassis row in the Southbound database every server the
+      # suite boots ends in ERROR on a binding failure.
+      - name: Deploy the OVN chassis
+        if: matrix.service == 'nova'
+        run: |
+          kubectl label node "$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')" openstack.c5c3.io/chassis=true --overwrite
+          kubectl apply -f ${{ matrix.config-dir }}/12-ovnchassis-cr.yaml
+          kubectl wait ovnchassis/ovn-${{ matrix.nova-cr-name }}-chassis -n openstack \
+            --for=condition=Ready --timeout=300s
+      # The agent answers the 169.254.169.254 requests the servers on that
+      # chassis make, which is what the metadata_service tests read back.
+      - name: Deploy the metadata agent
+        if: matrix.service == 'nova'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/13-neutronmetadataagent-cr.yaml
+          kubectl wait neutronmetadataagent/neutron-${{ matrix.nova-cr-name }}-agent -n openstack \
+            --for=condition=Ready --timeout=300s
+      # tempest.conf pins [compute] flavor_ref and flavor_ref_alt to the two ids
+      # this Job creates. It talks to the Nova API, so it comes after the Nova
+      # is Ready.
+      - name: Seed the flavors
+        if: matrix.service == 'nova' || matrix.service == 'cinder'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/*-flavor-seed-job.yaml
+          kubectl wait --for=condition=complete job/${{ matrix.service }}-tempest-flavor-seed -n openstack \
+            --timeout=300s
       # Use shared Tempest wrapper script.
       - name: Run Tempest API tests
         run: hack/ci-run-tempest.sh
@@ -3504,16 +3728,20 @@ jobs:
           TEMPEST_IMAGE: ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }}
           SERVICE_K8S_NAME: ${{ matrix.service-k8s-name }}
           # The Glance Service carries the CR name. The matrix emits
-          # glance-cr-name for the glance legs and for the cinder legs, whose
-          # volume tests create volumes from an image. Empty elsewhere (matrix
-          # key absent → ""), which disables the 9292 port-forward in
-          # ci-run-tempest.sh.
+          # glance-cr-name for the glance legs, for the cinder legs, whose
+          # volume tests create volumes from an image, and for the nova legs,
+          # whose servers boot from one. Empty elsewhere (matrix key absent →
+          # ""), which disables the 9292 port-forward in ci-run-tempest.sh.
           GLANCE_K8S_NAME: ${{ matrix.glance-cr-name }}
           # The Barbican Service carries the CR name. Empty for the keystone and
           # glance legs (matrix key absent → ""), which disables the 9311
           # port-forward in ci-run-tempest.sh.
           BARBICAN_K8S_NAME: ${{ matrix.barbican-cr-name }}
-          # The Neutron Service carries the CR name. Empty for the keystone,
+          # The Neutron Service carries the CR name. The cinder and nova legs
+          # set it too: the nova legs' servers bind a port on that Neutron, and
+          # on both compute-stack legs tempest's dynamic credentials delete each
+          # project's default security group through the network API, which is
+          # the reason the cinder legs forward it. Empty for the keystone,
           # glance and barbican legs (matrix key absent → ""), which disables
           # the 9696 port-forward in ci-run-tempest.sh.
           NEUTRON_K8S_NAME: ${{ matrix.neutron-cr-name }}
@@ -3521,11 +3749,29 @@ jobs:
           # (matrix key absent → ""), which disables the 8776 port-forward in
           # ci-run-tempest.sh.
           CINDER_K8S_NAME: ${{ matrix.cinder-cr-name }}
+          # The Nova Service carries the CR name. Empty on every leg without a
+          # compute stack (matrix key absent → ""), which disables the 8774
+          # port-forward in ci-run-tempest.sh.
+          NOVA_K8S_NAME: ${{ matrix.nova-cr-name }}
+          # The noVNC console proxy Service is <nova>-novncproxy. Only the nova
+          # legs open a console, for test_novnc_bad_token; empty everywhere
+          # else, which disables the 6080 port-forward in ci-run-tempest.sh.
+          NOVA_CONSOLE_K8S_NAME: ${{ matrix.service == 'nova' && format('{0}-novncproxy', matrix.nova-cr-name) || '' }}
+          # The Placement Service carries the CR name. Both compute-stack legs
+          # register a placement endpoint in their catalog and declare the
+          # service available in tempest.conf, so the name has to resolve inside
+          # the container: without the 8778 forward a test that builds the
+          # placement client dies on name resolution and is reported as an
+          # error rather than a skip. Empty on every other leg (matrix key
+          # absent → ""), which disables that forward.
+          PLACEMENT_K8S_NAME: ${{ matrix.placement-cr-name }}
           # stestr worker count. Set by hack/ci-generate-tempest-matrix.sh for
-          # the neutron legs (2), whose node also hosts OVN and Neutron, and for
+          # the neutron legs (2), whose node also hosts OVN and Neutron, for
           # the cinder legs (2), whose node hosts the broker, the NFS server,
-          # four Cinder workloads and a Glance; empty for the other legs (matrix
-          # key absent → ""), which leaves ci-run-tempest.sh on its default of 4.
+          # four Cinder workloads, a Glance and a compute stack, and for the
+          # nova legs (2), whose node hosts the whole compute stack; empty for
+          # the other legs (matrix key absent → ""), which leaves
+          # ci-run-tempest.sh on its default of 4.
           TEMPEST_CONCURRENCY: ${{ matrix.tempest-concurrency }}
       - name: Upload Tempest results
         if: always()
@@ -3545,6 +3791,22 @@ jobs:
         run: hack/ci-dump-diagnostics.sh
         env:
           OPERATOR: keystone
+      # A compute-stack leg runs five or six more operators, each in a Namespace
+      # the dump above never looks at. One call per operator, since the
+      # script reads a single OPERATOR. OPERATOR_ONLY keeps each pass to the
+      # sections that differ: the infrastructure block and the openstack
+      # Namespace's Job and pod logs do not change with OPERATOR, and the dump
+      # above already emitted them.
+      - name: Dump diagnostic info (compute stack)
+        if: always() && (matrix.service == 'nova' || matrix.service == 'cinder')
+        run: |
+          ops="nova placement ovn neutron glance"
+          if [ "${{ matrix.service }}" = "cinder" ]; then
+            ops="${ops} cinder"
+          fi
+          for op in ${ops}; do
+            OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
+          done
       # Last step of the job, so the dump above still had a cluster to read;
       # `always()` covers the failed and timed-out runs.  Never fails the job
       # (see hack/ci-delete-kind-cluster.sh).

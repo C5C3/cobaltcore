@@ -454,7 +454,7 @@ test_tempest_cinder_leg_is_wired() {
 
   glance_load=$(job_step tempest "Load Glance E2E images")
   assert_contains "the glance pull covers the cinder leg" "$glance_load" \
-    "if: matrix.service == 'glance' || matrix.service == 'cinder'"
+    "if: matrix.service == 'glance' || matrix.service == 'cinder' || matrix.service == 'nova'"
 
   # The catalog Job and the image-seed Job run in-cluster, so the tempest image
   # has to be on the node, and so do the four workload images.
@@ -485,7 +485,7 @@ test_tempest_cinder_leg_is_wired() {
 
   glance_deploy=$(job_step tempest "Deploy glance operator")
   assert_contains "the glance deploy covers the cinder leg" "$glance_deploy" \
-    "if: matrix.service == 'glance' || matrix.service == 'cinder'"
+    "if: matrix.service == 'glance' || matrix.service == 'cinder' || matrix.service == 'nova'"
 
   # deploy-infra.sh installs neither the NFS stack nor the broker by default,
   # and setup-e2e-infra reads both flags from env, so the values have to sit in
@@ -496,7 +496,7 @@ test_tempest_cinder_leg_is_wired() {
   assert_contains "the cinder leg opts into the NFS stack" "$setup" \
     "WITH_NFS: \${{ matrix.service == 'cinder' && 'true' || '' }}"
   assert_contains "and into the shared broker" "$setup" \
-    "WITH_MESSAGING: \${{ matrix.service == 'cinder' && 'true' || '' }}"
+    "WITH_MESSAGING: \${{ (matrix.service == 'cinder' || matrix.service == 'nova') && 'true' || '' }}"
 
   local catalog glance_cr cinder_cr seed
   catalog=$(job_step tempest "Bootstrap block-storage catalog")
