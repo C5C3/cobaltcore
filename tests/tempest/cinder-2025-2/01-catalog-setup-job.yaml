@@ -2,15 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Registers the Cinder block-storage service and the Glance image service, each
-# with its public/internal endpoints, in the keystone-cinder-tempest-2025-2
-# catalog. keystone-manage bootstrap only creates the identity service, so both
-# must be added out-of-band.
+# Registers the five services this leg runs, each with its public and internal
+# endpoints, in the keystone-cinder-tempest-2025-2 catalog: cinder
+# (block-storage), glance (image), nova (compute), placement and neutron
+# (network). keystone-manage bootstrap only creates the identity service, so
+# the rest must be added out-of-band.
 #
 # The image service belongs here because the volume suites create volumes from
 # an image and upload volumes back to one: Cinder resolves Glance from this
 # catalog (the Cinder CR sets no glanceEndpoint), and Tempest's image client
 # looks it up the same way.
+#
+# Compute, placement and network belong here for the compute-tagged volume
+# tests. The leg's Nova resolves Placement, Neutron, Glance and Cinder through
+# the catalog, on the internal interface
+# (operators/nova/internal/controller/reconcile_config.go pins
+# valid_interfaces = internal and renders [cinder] catalog_info as
+# block-storage:cinder:internalURL). Tempest's compute client resolves nova to
+# boot the server a volume attaches to, and Tempest's dynamic credentials reach
+# the network API to delete each project's default security group.
 #
 # No role is created here. The volume suites run on dynamic credentials that
 # carry the admin, member and reader roles keystone-manage bootstrap already
@@ -58,33 +68,47 @@ spec:
               # Each step is idempotent so a Job retry re-converges instead of
               # failing on AlreadyExists.
               #
+              # Both guards read one listing taken up front, not one per
+              # resource. An `openstack` invocation costs about 12 s on the CI
+              # node, and a listing in front of every create puts five services
+              # at 31 invocations, about 370 s, past the 300 s the leg waits for
+              # this Job. Two listings up front hold a first run to 18.
+              existing_services="$(openstack service list --format value -c Name)"
+              existing_endpoints="$(openstack endpoint list --format value \
+                -c "Service Name" -c Interface -c URL)"
+
               # Service create is guarded by a name-list grep (mirroring the
               # external-keystone fixture): `openstack service show` of a missing
               # resource can exit 0 on this image, so a show-guard would skip the
-              # create; listing + an exact-match grep is unambiguous.
-              if ! openstack service list --format value -c Name | grep -qx cinder; then
-                openstack service create --name cinder \
-                  --description "OpenStack Block Storage" block-storage
-              fi
+              # create; an exact-match grep is unambiguous.
+              create_service() {
+                name="$1"
+                type="$2"
+                description="$3"
+                if ! grep -qx "${name}" <<<"${existing_services}"; then
+                  openstack service create --name "${name}" \
+                    --description "${description}" "${type}"
+                fi
+              }
 
-              if ! openstack service list --format value -c Name | grep -qx glance; then
-                openstack service create --name glance \
-                  --description "OpenStack Image Service" image
-              fi
-
-              # Endpoints are guarded by listing the service's existing endpoints
-              # for the interface and matching the exact URL (fixed string, so the
-              # dotted FQDN is not treated as a regex). `endpoint create` takes the
-              # service by name, which is what the guard lists by.
+              # Endpoints are guarded by matching the service name, the
+              # interface and the exact URL as one fixed string, so the dotted
+              # FQDN is not treated as a regex. `endpoint create` takes the
+              # service by name, which is what the listing carries.
               create_endpoint() {
                 service="$1"
                 interface="$2"
                 url="$3"
-                if ! openstack endpoint list --service "${service}" --interface "${interface}" \
-                     --format value -c URL | grep -qxF "${url}"; then
+                if ! grep -qxF "${service} ${interface} ${url}" <<<"${existing_endpoints}"; then
                   openstack endpoint create --region RegionOne "${service}" "${interface}" "${url}"
                 fi
               }
+
+              create_service cinder block-storage "OpenStack Block Storage"
+              create_service glance image "OpenStack Image Service"
+              create_service nova compute "OpenStack Compute"
+              create_service placement placement "OpenStack Placement"
+              create_service neutron network "OpenStack Networking"
 
               # The block-storage URL carries no project template: the Cinder v3
               # API serves the project-less form, and Tempest's volume client
@@ -97,5 +121,20 @@ spec:
               create_endpoint glance public "${GLANCE_URL}"
               create_endpoint glance internal "${GLANCE_URL}"
 
-              echo "OK: cinder and glance services and endpoints registered"
+              # The compute URL carries the version prefix the client appends
+              # its paths to; placement and network serve their resources off
+              # the bare Service address.
+              NOVA_URL="http://nova-cinder-tempest-2025-2.openstack.svc:8774/v2.1"
+              create_endpoint nova public "${NOVA_URL}"
+              create_endpoint nova internal "${NOVA_URL}"
+
+              PLACEMENT_URL="http://placement-cinder-tempest-2025-2.openstack.svc:8778"
+              create_endpoint placement public "${PLACEMENT_URL}"
+              create_endpoint placement internal "${PLACEMENT_URL}"
+
+              NEUTRON_URL="http://neutron-cinder-tempest-2025-2.openstack.svc:9696"
+              create_endpoint neutron public "${NEUTRON_URL}"
+              create_endpoint neutron internal "${NEUTRON_URL}"
+
+              echo "OK: cinder, glance, nova, placement and neutron endpoints registered"
               openstack endpoint list --format value -c "Service Name" -c Interface -c URL
