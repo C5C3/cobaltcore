@@ -362,7 +362,11 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // projection (registration_projection.go). Roles are imported and RoleAssignments
 // minted for the registrations' role projection. Regions are the bootstrap Region
 // reconcileCatalog adopts for the ControlPlane.
+// patch on the nine status subresources is what unlatchKORCTransportErrors
+// (korc_unlatch.go) uses to clear a latched transport error from a child's
+// Progressing condition. No other status verb is granted.
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects;roles;roleassignments;regions,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials/status;services/status;endpoints/status;users/status;domains/status;projects/status;roles/status;roleassignments/status;regions/status,verbs=patch
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // Required so the operator can observe the shared cluster store's Ready condition
 // and reflect upstream secret-backend outages. A ControlPlane that sets an

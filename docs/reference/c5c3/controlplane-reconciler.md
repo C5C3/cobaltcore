@@ -282,10 +282,15 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `rbac.authorization.k8s.io` | `roles`, `rolebindings`, `clusterrolebindings` | get, create, patch, delete |
 | `rbac.authorization.k8s.io` | `clusterroles` (`resourceNames: system:auth-delegator`) | bind |
 | `openstack.k-orc.cloud` | `applicationcredentials`, `services`, `endpoints`, `regions`, `users`, `domains`, `projects`, `roles`, `roleassignments` | get, list, watch, create, update, patch, delete |
+| `openstack.k-orc.cloud` | `applicationcredentials/status`, `services/status`, `endpoints/status`, `regions/status`, `users/status`, `domains/status`, `projects/status`, `roles/status`, `roleassignments/status` | patch |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
 | `core` | `secrets` | get, list, watch, create, update, patch, delete |
 | `core` | `events` | create, patch |
+
+The `patch` grant on the K-ORC status subresources lets the reconcilers clear a
+latched K-ORC transport error from a child's status
+(`unlatchKORCTransportErrors` in `korc_unlatch.go`).
 
 The `CredentialRotationReconciler` markers (in
 `reconcile_credentialrotation.go`) are scoped tighter — it never mints, so it

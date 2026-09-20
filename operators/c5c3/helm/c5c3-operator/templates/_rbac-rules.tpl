@@ -274,6 +274,20 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - update
   - watch
 - apiGroups:
+  - openstack.k-orc.cloud
+  resources:
+  - applicationcredentials/status
+  - domains/status
+  - endpoints/status
+  - projects/status
+  - regions/status
+  - roleassignments/status
+  - roles/status
+  - services/status
+  - users/status
+  verbs:
+  - patch
+- apiGroups:
   - ovn.openstack.c5c3.io
   resources:
   - ovncentrals
