@@ -26,7 +26,7 @@
 # host that never turns up in list_hosts means the compute has not registered
 # itself, so the helper reports the table it read last.
 #
-# Usage: discover-hosts.sh <nova-name> <namespace>
+# Usage: discover-hosts.sh <nova-name> <namespace> [host]
 #
 # Chainsaw runs script steps in the suite directory, so the calls read
 # "../discover-hosts.sh ...". Discovery is idempotent: a host that already has
@@ -41,9 +41,6 @@ set -euo pipefail
 CONTAINER="conductor"
 CONFIG_DIR="/etc/nova/nova.conf.d"
 
-# The fake-driver compute every suite that calls this helper deploys.
-HOST="fake-1"
-
 # Discovery and lookup repeat until the deadline, 5 seconds apart. A Deployment
 # is Available as soon as its container runs, which is some 20 seconds before
 # nova-compute writes its service and compute node records, and discover_hosts
@@ -56,7 +53,7 @@ DEADLINE=150
 INTERVAL=5
 
 usage() {
-  echo "usage: discover-hosts.sh <nova-name> <namespace>" >&2
+  echo "usage: discover-hosts.sh <nova-name> <namespace> [host]" >&2
   exit 2
 }
 
@@ -68,12 +65,17 @@ nova_manage() {
     nova-manage --config-dir "${CONFIG_DIR}" "$@"
 }
 
-if [ "$#" -ne 2 ]; then
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
   usage
 fi
 
 NOVA="$1"
 NS="$2"
+# The host to wait for. The fake-driver compute the suites deploy registers as
+# fake-1. The nova tempest legs pass the kind node's name instead: the OVN
+# chassis registers under that name, and neutron binds a port only to a host
+# that has a live chassis, so their compute has to run under it too.
+HOST="${3:-fake-1}"
 
 TABLE=""
 SECONDS=0
@@ -93,10 +95,12 @@ while :; do
   # Hostname. Splitting on the pipes puts Hostname in field 4, since field 1 is
   # the empty string in front of the first pipe, and the borders between the
   # rows carry no pipe at all. Failures are kept in the table so the error text
-  # reaches the report below.
+  # reaches the report below. The match is whole-line and fixed-string: the host
+  # comes from the caller and a node name carries dots, which grep would
+  # otherwise read as wildcards.
   TABLE="$(nova_manage cell_v2 list_hosts 2>&1 || true)"
   if printf '%s\n' "${TABLE}" |
-    awk -F'|' 'NF>=4 {gsub(/^ +| +$/, "", $4); print $4}' | grep -qx "${HOST}"; then
+    awk -F'|' 'NF>=4 {gsub(/^ +| +$/, "", $4); print $4}' | grep -qxF "${HOST}"; then
     echo "OK: host ${HOST} mapped into cell1"
     exit 0
   fi

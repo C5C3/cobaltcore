@@ -759,10 +759,13 @@ verdict and fails hard.
 
 ### Host mapping through the conductor (`script`)
 
-`../discover-hosts.sh <nova> <namespace>` runs `nova-manage cell_v2
+`../discover-hosts.sh <nova> <namespace> [host]` runs `nova-manage cell_v2
 discover_hosts --verbose` and then reads `cell_v2 list_hosts` in the conductor
 pod, the one workload that holds both database connections, and repeats the
-pair until the host shows up. `list_hosts` prints
+pair until the host shows up. The third argument names the host to wait for and
+defaults to `fake-1`, the compute the suites deploy. The nova tempest legs pass
+the kind node's name: the OVN chassis registers under that name, and neutron
+binds a port only to a host that has a live chassis. `list_hosts` prints
 a prettytable, so the hostname is taken out of field 4 with awk, and the column
 is captured before it is matched: a `... | grep -q` pipeline fails under
 `pipefail` when it matches, because grep closes the pipe first. The two failure

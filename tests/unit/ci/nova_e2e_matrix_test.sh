@@ -85,6 +85,72 @@ release_count() {
     grep -c . || true
 }
 
+# make_discover_stubs <dir>
+# Writes the two stubs tests/e2e/nova/discover-hosts.sh resolves off PATH.
+#
+# The kubectl stub answers the two nova-manage calls the helper makes and reads
+# its behaviour from the environment: cell_v2 discover_hosts counts the round in
+# $STUB_ROUNDS and exits $STUB_RC from round $STUB_RC_ROUND on (0 before it),
+# cell_v2 list_hosts prints a one-row prettytable naming $STUB_HOST. A run that
+# is meant to miss therefore ends on a failed discovery after one lookup,
+# instead of polling to the helper's 150-second deadline.
+#
+# The sleep stub returns at once, so the 5-second interval between the rounds
+# costs nothing here.
+make_discover_stubs() {
+  local dir="$1"
+
+  cat >"$dir/kubectl" <<'STUB'
+#!/bin/bash
+case "$*" in
+  *discover_hosts*)
+    round=$(($(cat "$STUB_ROUNDS") + 1))
+    printf '%s' "$round" >"$STUB_ROUNDS"
+    if [ "$round" -ge "$STUB_RC_ROUND" ]; then
+      exit "$STUB_RC"
+    fi
+    ;;
+  *list_hosts*)
+    cat <<TABLE
++-----------+--------------------------------------+----------+
+| Cell Name |              Cell UUID               | Hostname |
++-----------+--------------------------------------+----------+
+|   cell1   | 11111111-2222-3333-4444-555555555555 | $STUB_HOST |
++-----------+--------------------------------------+----------+
+TABLE
+    ;;
+esac
+exit 0
+STUB
+  chmod +x "$dir/kubectl"
+
+  cat >"$dir/sleep" <<'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$dir/sleep"
+}
+
+# run_discover_hosts <dir> <host> <rc> <rc_round> [args...]
+# Runs tests/e2e/nova/discover-hosts.sh with the stubs in <dir> first on PATH.
+# <host> is the hostname the stubbed list_hosts prints, <rc> the exit code the
+# stubbed discovery reports from round <rc_round> on. Echoes the helper's
+# stdout, writes its stderr to <dir>/stderr and returns its exit code.
+run_discover_hosts() {
+  local dir="$1" host="$2" rc="$3" rc_round="$4"
+  shift 4
+  printf '0' >"$dir/rounds"
+  (
+    PATH="$dir:$PATH"
+    STUB_HOST="$host"
+    STUB_RC="$rc"
+    STUB_RC_ROUND="$rc_round"
+    STUB_ROUNDS="$dir/rounds"
+    export PATH STUB_HOST STUB_RC STUB_RC_ROUND STUB_ROUNDS
+    bash "$PROJECT_ROOT/tests/e2e/nova/discover-hosts.sh" "$@"
+  ) 2>"$dir/stderr"
+}
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -850,6 +916,68 @@ test_chaos_nova_leg_runs_the_nova_suites() {
     "$(e2e_chaos_matrix_entry network)" "tests/e2e-chaos/nova-"
 }
 
+test_discover_hosts_takes_an_optional_host() {
+  echo "Test: discover-hosts.sh takes the compute host as a third argument"
+
+  # The tempest legs run their fake compute under the kind node's name, because
+  # the OVN chassis registers under that name
+  # (operators/ovn/internal/controller/reconcile_nodes.go) and neutron binds a
+  # port only to a host that has a live chassis. The suites that call the helper
+  # with two arguments still wait for fake-1, and a node name carries dots, so
+  # the lookup has to match the host as a fixed string.
+  local tmp out code
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_discover_stubs "$tmp"
+
+  out=$(run_discover_hosts "$tmp" fake-1 0 1 nova-basic openstack)
+  code=$?
+  assert_eq "two arguments are still a complete call" "0" "$code"
+  assert_contains "the host defaults to fake-1" "$out" \
+    "OK: host fake-1 mapped into cell1"
+
+  out=$(run_discover_hosts "$tmp" cobaltcore-control-plane 0 1 \
+    nova-tempest-2025-2 openstack cobaltcore-control-plane)
+  code=$?
+  assert_eq "a third argument is accepted" "0" "$code"
+  assert_contains "the helper waits for the host it was handed" "$out" \
+    "OK: host cobaltcore-control-plane mapped into cell1"
+
+  # nodeXa is what an unanchored regex match of node.a would accept. The stubbed
+  # discovery fails on the second round, so the run ends after one lookup
+  # instead of polling to the helper's 150-second deadline.
+  out=$(run_discover_hosts "$tmp" nodeXa 1 2 \
+    nova-tempest-2025-2 openstack node.a)
+  code=$?
+  assert_nonzero_exit "a dot in the host matches no other character" "$code"
+  assert_not_contains "nodeXa does not answer for node.a" "$out" \
+    "OK: host node.a"
+
+  out=$(run_discover_hosts "$tmp" fake-1 0 1 nova-basic)
+  code=$?
+  assert_eq "one argument is rejected" "2" "$code"
+  assert_contains "it prints the usage line" "$(cat "$tmp/stderr")" \
+    "usage: discover-hosts.sh <nova-name> <namespace> [host]"
+
+  out=$(run_discover_hosts "$tmp" fake-1 0 1 \
+    nova-basic openstack a-host one-too-many)
+  code=$?
+  assert_eq "four arguments are rejected" "2" "$code"
+  assert_contains "it prints the usage line there too" \
+    "$(cat "$tmp/stderr")" \
+    "usage: discover-hosts.sh <nova-name> <namespace> [host]"
+
+  # A discovery that never reached the databases is reported as itself and stops
+  # the run, so the 150 seconds are not spent waiting for a mapping nothing is
+  # writing.
+  out=$(run_discover_hosts "$tmp" fake-1 7 1 nova-basic openstack)
+  code=$?
+  assert_eq "a failed discovery exits 1" "1" "$code"
+  assert_contains "it names the exit code of nova-manage" \
+    "$(cat "$tmp/stderr")" "ERROR: discover_hosts exited 7"
+  assert_not_contains "and reports no mapping" "$out" "OK:"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -870,6 +998,7 @@ test_nova_leg_narrows_parallelism_and_budget
 test_nova_leg_dumps_the_siblings
 test_nova_leg_loads_the_tempest_image
 test_chaos_nova_leg_runs_the_nova_suites
+test_discover_hosts_takes_an_optional_host
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
