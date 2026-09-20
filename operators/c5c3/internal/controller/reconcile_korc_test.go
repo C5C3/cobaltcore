@@ -4188,3 +4188,237 @@ func TestReconcileKORC_UnresolvableTargetMintsNothing(t *testing.T) {
 		g.Expect(acs.Items).To(BeEmpty(), "no application credential may be minted on the %s cluster", name)
 	}
 }
+
+// --- the transport-error unlatch ---
+
+// latchedAdminAC returns an admin ApplicationCredential stamped with the CURRENT
+// password hash (so no re-mint fires) whose Progressing condition is the latch
+// K-ORC left behind when Keystone was not listening a minute ago.
+func latchedAdminAC(cp *c5c3v1alpha1.ControlPlane) *orcv1alpha1.ApplicationCredential {
+	return &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        adminAppCredentialName(cp),
+			Namespace:   childNamespace(cp),
+			Annotations: map[string]string{adminPasswordHashAnnotation: testPasswordHash()},
+		},
+		Status: orcv1alpha1.ApplicationCredentialStatus{Conditions: transportLatchedConditions()},
+	}
+}
+
+// runKORCUnlatch drives reconcileKORC against a client of its own, registering
+// every K-ORC kind the pass writes a status on: the fake client answers a status
+// write on an unregistered kind with NotFound, which the unlatch helper reads as
+// "the child vanished" and skips, so a test without the registration would pass
+// while clearing nothing.
+func runKORCUnlatch(
+	t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
+) (client.Client, *metav1.Condition) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	r, c := korcUnlatchReconciler(t, interceptor.Funcs{}, cp, objs...)
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	return c, conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+}
+
+// korcUnlatchReconciler builds the reconciler and client runKORCUnlatch drives,
+// with the interceptors a denial test needs.
+func korcUnlatchReconciler(
+	t *testing.T, funcs interceptor.Funcs, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
+) (*ControlPlaneReconciler, client.Client) {
+	t.Helper()
+	s := korcTestScheme(t)
+	seeded := append([]client.Object{cp, adminPasswordSecret()}, objs...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).
+		WithStatusSubresource(&orcv1alpha1.ApplicationCredential{},
+			&orcv1alpha1.Domain{}, &orcv1alpha1.User{}).
+		WithInterceptorFuncs(funcs).
+		Build()
+	return &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}, c
+}
+
+// denyKORCStatusPatch refuses every status write on a K-ORC child, the shape a
+// deployed chart whose RBAC predates the status-subresource grant produces.
+func denyKORCStatusPatch() interceptor.Funcs {
+	return interceptor.Funcs{
+		SubResourcePatch: func(ctx context.Context, cl client.Client, subResourceName string,
+			obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption,
+		) error {
+			switch obj.(type) {
+			case *orcv1alpha1.ApplicationCredential, *orcv1alpha1.Domain, *orcv1alpha1.User,
+				*orcv1alpha1.Service, *orcv1alpha1.Endpoint, *orcv1alpha1.Region:
+				if subResourceName == "status" {
+					return apierrors.NewForbidden(orcv1alpha1.Resource("applicationcredentials"),
+						obj.GetName(), errors.New("applicationcredentials/status is forbidden"))
+				}
+			}
+			return cl.SubResource(subResourceName).Patch(ctx, obj, patch, opts...)
+		},
+	}
+}
+
+// TestReconcileKORC_UnlatchForbiddenReportsRetryFailed is the ControlPlane side of
+// the RBAC skew: the operator image rolled forward against a ClusterRole that
+// predates the status-subresource grant, so no latch can ever be cleared. That
+// must be named on the condition rather than swallowed into an eternal wait.
+func TestReconcileKORC_UnlatchForbiddenReportsRetryFailed(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := korcControlPlane()
+	r, _ := korcUnlatchReconciler(t, denyKORCStatusPatch(), cp, latchedAdminAC(cp))
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+
+	g.Expect(apierrors.IsForbidden(err)).To(BeTrue(), "got %v", err)
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonTransportErrorRetryFailed))
+}
+
+// TestReconcileKORC_TransportLatchedApplicationCredentialIsRetried is the
+// incident in managed mode: K-ORC gave the admin credential up on a connection
+// refused and never revisits the latch, so the pass clears it and waits for the
+// retry instead of requeueing against a failure that cannot move.
+func TestReconcileKORC_TransportLatchedApplicationCredentialIsRetried(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := korcControlPlane()
+	c, cond := runKORCUnlatch(t, cp, latchedAdminAC(cp))
+
+	g.Expect(ksLiveProgressing(t, c, &orcv1alpha1.ApplicationCredential{},
+		adminAppCredentialName(cp), childNamespace(cp))).To(BeNil(),
+		"the latch must be gone from the live child so K-ORC reconciles it again")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForApplicationCredential"),
+		"a cleared child is waited on, not reported as a terminal failure")
+}
+
+// TestReconcileKORC_ExternalModeTransportLatchedApplicationCredentialIsRetried
+// pins the order the External branch depends on. The unlatch runs ahead of the
+// message classification, so the dial error in the latch is not relayed as
+// EndpointUnreachable on the very pass that clears it.
+func TestReconcileKORC_ExternalModeTransportLatchedApplicationCredentialIsRetried(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := korcExternalControlPlane()
+	c, cond := runKORCUnlatch(t, cp, latchedAdminAC(cp))
+
+	g.Expect(ksLiveProgressing(t, c, &orcv1alpha1.ApplicationCredential{},
+		adminAppCredentialName(cp), childNamespace(cp))).To(BeNil(),
+		"the latch must be gone from the live child so K-ORC reconciles it again")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForApplicationCredential"))
+	g.Expect(cond.Reason).NotTo(Equal(conditionReasonEndpointUnreachable),
+		"External mode must not classify a latch it is clearing")
+	g.Expect(cond.Reason).NotTo(Equal("ApplicationCredentialFailed"))
+}
+
+// TestReconcileKORC_TransportLatchedAdminUserImportIsRetried covers the admin
+// import site. The Domain resolved, so the import status fragment speaks about
+// the User: with the latch cleared it reports the bounded wait, and without the
+// unlatch it would report the User as terminally failed.
+func TestReconcileKORC_TransportLatchedAdminUserImportIsRetried(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := korcControlPlane()
+	domain := &orcv1alpha1.Domain{
+		ObjectMeta: metav1.ObjectMeta{Name: adminDomainRef(cp), Namespace: childNamespace(cp)},
+		Status:     orcv1alpha1.DomainStatus{Conditions: availableImportConditions()},
+	}
+	// K-ORC gave up on the User import a minute ago because Keystone was not
+	// listening, and stopped retrying.
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: adminUserRef(cp), Namespace: childNamespace(cp)},
+		Status:     orcv1alpha1.UserStatus{Conditions: transportLatchedConditions()},
+	}
+
+	c, cond := runKORCUnlatch(t, cp, domain, user)
+
+	g.Expect(ksLiveProgressing(t, c, &orcv1alpha1.User{}, adminUserRef(cp), childNamespace(cp))).To(BeNil(),
+		"the latch must be gone from the live child so K-ORC reconciles it again")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Message).NotTo(ContainSubstring("failed terminally"),
+		"without the unlatch the fragment reports the User import as terminally failed")
+	g.Expect(cond.Message).To(ContainSubstring(adminUserRef(cp)))
+	g.Expect(cond.Message).To(ContainSubstring("not yet Available"))
+}
+
+// TestReconcileCatalog_TransportLatchedRowIsRetried covers the two most numerous
+// children of the managed catalog: the identity Service and its Endpoint, both
+// latched on a connection refused. The Region is available here, so only the row
+// the loop feeds to the unlatch can clear these.
+func TestReconcileCatalog_TransportLatchedRowIsRetried(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setAdminCredentialReady(cp)
+
+	service := availableCatalogService(cp)
+	service.Status.Conditions = transportLatchedConditions()
+	endpoint := availableCatalogEndpoint(cp)
+	endpoint.Status.Conditions = transportLatchedConditions()
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, service, endpoint, availableCatalogRegion(cp)).
+		WithStatusSubresource(&orcv1alpha1.Service{}, &orcv1alpha1.Endpoint{}, &orcv1alpha1.Region{}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	g.Expect(ksLiveProgressing(t, c, &orcv1alpha1.Service{},
+		keystoneServiceName(cp), childNamespace(cp))).To(BeNil(),
+		"the Service latch must be gone from the live child so K-ORC reconciles it again")
+	g.Expect(ksLiveProgressing(t, c, &orcv1alpha1.Endpoint{},
+		keystoneEndpointName(cp), childNamespace(cp))).To(BeNil(),
+		"the Endpoint latch must be gone too")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog),
+		"a cleared child is waited on, not reported as a terminal failure")
+}
+
+// TestReconcileCatalog_TransportLatchedRegionIsRetried is the managed catalog
+// site. The Region adopting the bootstrap row carries the latch, and the pass
+// hands it back to K-ORC rather than reporting CatalogFailed forever.
+func TestReconcileCatalog_TransportLatchedRegionIsRetried(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setAdminCredentialReady(cp)
+	region := &orcv1alpha1.Region{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneRegionName(cp), Namespace: childNamespace(cp)},
+		Status:     orcv1alpha1.RegionStatus{Conditions: transportLatchedConditions()},
+	}
+	// Every K-ORC kind the catalog block writes a status on is registered: the fake
+	// client answers a status write on an unregistered kind with NotFound, which the
+	// unlatch helper reads as "the child vanished" and skips.
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, availableCatalogService(cp), availableCatalogEndpoint(cp), region).
+		WithStatusSubresource(&orcv1alpha1.Service{}, &orcv1alpha1.Endpoint{}, &orcv1alpha1.Region{}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	g.Expect(ksLiveProgressing(t, c, &orcv1alpha1.Region{},
+		keystoneRegionName(cp), childNamespace(cp))).To(BeNil(),
+		"the latch must be gone from the live child so K-ORC reconciles it again")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog),
+		"a cleared child is waited on, not reported as a terminal failure")
+	g.Expect(cond.Message).To(ContainSubstring(keystoneRegionName(cp)))
+}

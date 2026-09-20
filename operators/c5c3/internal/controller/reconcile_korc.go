@@ -225,6 +225,15 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		fail("AdminImportError", fmt.Sprintf("ensuring K-ORC admin User/Domain imports: %v", err))
 		return ctrl.Result{}, err
 	}
+
+	// A latched transport error is handed back to K-ORC first, so it retries the
+	// import it gave up on; korc_unlatch.go states the policy. Every latch this
+	// leaves in place still reaches the status fragment below.
+	if err := unlatchKORCTransportErrors(ctx, r.Client, imports.objects()...); err != nil {
+		fail(conditionReasonTransportErrorRetryFailed, err.Error())
+		return ctrl.Result{}, err
+	}
+
 	importMsg := imports.statusFragment()
 
 	// K-ORC's managed ApplicationCredential reads the DESIRED secret from
@@ -371,6 +380,16 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// inverse of the K-ORC-reported Unrestricted (falling back to the desired
 	// value while status is empty). LastRotation is stamped on a fresh mint/re-mint.
 	r.updateAdminApplicationCredentialStatus(cp, ac, restricted)
+
+	// A latched transport error is handed back to K-ORC first, so it retries the
+	// mint it gave up on; korc_unlatch.go states the policy. It sits ahead of the
+	// classification below because External mode must not report a latch that is
+	// about to be cleared as EndpointUnreachable. Every latch this leaves in place
+	// still fails loud below.
+	if err := unlatchKORCTransportErrors(ctx, r.Client, ac); err != nil {
+		fail(conditionReasonTransportErrorRetryFailed, err.Error())
+		return ctrl.Result{}, err
+	}
 
 	// EXTERNAL-MODE FAILURE CLASSIFICATION. K-ORC collapses every hard failure
 	// against a pre-existing Keystone — a wrong admin password (401), an
