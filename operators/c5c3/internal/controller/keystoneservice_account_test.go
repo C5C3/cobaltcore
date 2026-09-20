@@ -19,6 +19,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -42,7 +43,12 @@ func ksAccountReconciler(
 	c := fake.NewClientBuilder().
 		WithScheme(s).
 		WithObjects(all...).
-		WithStatusSubresource(&c5c3v1alpha1.KeystoneService{}).
+		// Every K-ORC kind the account block writes a status on is registered: the
+		// fake client answers a status write on an unregistered kind with NotFound,
+		// which the unlatch helper reads as "the child vanished" and skips.
+		WithStatusSubresource(&c5c3v1alpha1.KeystoneService{},
+			&orcv1alpha1.Project{}, &orcv1alpha1.User{},
+			&orcv1alpha1.Role{}, &orcv1alpha1.RoleAssignment{}).
 		Build()
 	recorder := record.NewFakeRecorder(20)
 	return &KeystoneServiceReconciler{Client: c, Scheme: s, Recorder: recorder}, c, recorder
@@ -988,6 +994,255 @@ func TestKSAccount_KubernetesErrorIsReportedAndReturned(t *testing.T) {
 	cond := ksAccountCondition(ks)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(reasonServiceAccountError))
+}
+
+// --- the transport-error unlatch ---
+
+// ksLiveProgressing reads name back into obj and returns the Progressing
+// condition of the live child, which is the latch the unlatch helper removes.
+// The assertion has to run against the live child: the fake client answers a
+// status write on a kind it does not carry as a subresource with NotFound, which
+// the helper skips, so a pass that cleared nothing would look identical on the
+// returned condition alone.
+func ksLiveProgressing(t *testing.T, c client.Client, obj probeChild, name, namespace string) *metav1.Condition {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: name, Namespace: namespace}, obj)).To(Succeed())
+	return apimeta.FindStatusCondition(obj.GetConditions(), orcv1alpha1.ConditionProgressing)
+}
+
+func TestKSAccount_TransportLatchedProjectIsRetried(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Adopt = true // reach the project handle in one pass
+
+	// K-ORC gave up on the project a minute ago because Keystone was not
+	// listening, and stopped retrying.
+	project := &orcv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceProjectRef(ks), Namespace: ks.Namespace},
+		Status:     orcv1alpha1.ProjectStatus{Conditions: transportLatchedConditions()},
+	}
+
+	cond, c := runKSAccount(t, ks, cp, project)
+
+	g.Expect(ksLiveProgressing(t, c, &orcv1alpha1.Project{}, keystoneServiceProjectRef(ks), ks.Namespace)).To(BeNil(),
+		"the latch must be gone from the live child so K-ORC reconciles it again")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts),
+		"a cleared child is waited on, not reported as a terminal failure")
+}
+
+func TestKSAccount_TransportLatchedProjectReachesProvisioned(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Roles = nil
+
+	seeded := ksConvergedAccount(ks, cp)
+	for _, obj := range seeded {
+		if project, ok := obj.(*orcv1alpha1.Project); ok {
+			project.Status.Conditions = transportLatchedConditions()
+		}
+	}
+
+	// Both passes share one reconciler and one client, so the second sees what the
+	// first wrote.
+	r, c, _ := ksAccountReconciler(t, ks, cp, seeded...)
+	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
+
+	_, err := r.ensureAccount(context.Background(), ks, cp, credRef, managedCredRef)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ksLiveProgressing(t, c, &orcv1alpha1.Project{}, keystoneServiceProjectRef(ks), ks.Namespace)).To(BeNil())
+	g.Expect(ksAccountCondition(ks).Reason).To(Equal(reasonWaitingForServiceAccounts))
+
+	// K-ORC picks the cleared child up again and the create succeeds.
+	live := &orcv1alpha1.Project{}
+	g.Expect(c.Get(context.Background(),
+		types.NamespacedName{Name: keystoneServiceProjectRef(ks), Namespace: ks.Namespace}, live)).To(Succeed())
+	live.Status.Conditions = availableImportConditions()
+	g.Expect(c.Status().Update(context.Background(), live)).To(Succeed())
+
+	_, err = r.ensureAccount(context.Background(), ks, cp, credRef, managedCredRef)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := ksAccountCondition(ks)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceAccountProvisioned))
+}
+
+func TestKSAccount_ConflictTerminalProjectFailsLoudly(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Adopt = true
+
+	// The same terminal shape, but Keystone answered: a 409 is a real conflict
+	// that no amount of retrying resolves.
+	conds := transportLatchedConditions()
+	conds[0].Message = "invalid configuration creating resource: Expected HTTP response code [201] when accessing " +
+		"[POST http://keystone:5000/v3/projects], but got 409 instead"
+	project := &orcv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceProjectRef(ks), Namespace: ks.Namespace},
+		Status:     orcv1alpha1.ProjectStatus{Conditions: conds},
+	}
+
+	cond, c := runKSAccount(t, ks, cp, project)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountsFailed))
+	g.Expect(cond.Message).To(ContainSubstring("409"))
+
+	latch := ksLiveProgressing(t, c, &orcv1alpha1.Project{}, keystoneServiceProjectRef(ks), ks.Namespace)
+	g.Expect(latch).NotTo(BeNil(), "only a transport failure is cleared; this one must survive")
+	g.Expect(latch.Reason).To(Equal(orcv1alpha1.ConditionReasonInvalidConfiguration))
+	g.Expect(latch.Message).To(ContainSubstring("409"))
+}
+
+func TestKSAccount_LatchInsideTheBackoffFailsLoud(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Adopt = true
+
+	// The operator cleared this child a moment ago and K-ORC latched it again, so
+	// this pass reports the latch and requeues rather than retrying inside the
+	// backoff.
+	project := &orcv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: keystoneServiceProjectRef(ks), Namespace: ks.Namespace,
+			Annotations: unlatchedAt(0),
+		},
+		Status: orcv1alpha1.ProjectStatus{Conditions: transportLatchedConditions()},
+	}
+
+	r, c, _ := ksAccountReconciler(t, ks, cp, project)
+	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
+
+	result, err := r.ensureAccount(context.Background(), ks, cp, credRef, managedCredRef)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := ksAccountCondition(ks)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountsFailed))
+	g.Expect(cond.Message).To(ContainSubstring("connection refused"))
+	g.Expect(ksLiveProgressing(t, c, &orcv1alpha1.Project{}, keystoneServiceProjectRef(ks), ks.Namespace)).NotTo(BeNil())
+}
+
+// ksUnlatchDeniedReconciler builds an account reconciler whose K-ORC status
+// writes are all refused, the shape a deployed chart whose RBAC predates the
+// status-subresource grant produces. The operator must report that rather than
+// swallow it: nothing else would ever name a latch it can never clear.
+func ksUnlatchDeniedReconciler(
+	t *testing.T, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
+) (*KeystoneServiceReconciler, client.Client) {
+	t.Helper()
+	s := korcTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(append([]client.Object{cp, ks, readyTenantStoreFor(cp)}, objs...)...).
+		WithStatusSubresource(&c5c3v1alpha1.KeystoneService{},
+			&orcv1alpha1.Project{}, &orcv1alpha1.User{},
+			&orcv1alpha1.Role{}, &orcv1alpha1.RoleAssignment{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(ctx context.Context, cl client.Client, subResourceName string,
+				obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption,
+			) error {
+				switch obj.(type) {
+				case *orcv1alpha1.Project, *orcv1alpha1.User, *orcv1alpha1.Role, *orcv1alpha1.RoleAssignment:
+					if subResourceName == "status" {
+						return apierrors.NewForbidden(orcv1alpha1.Resource("projects"), obj.GetName(),
+							errors.New("projects/status is forbidden"))
+					}
+				}
+				return cl.SubResource(subResourceName).Patch(ctx, obj, patch, opts...)
+			},
+		}).Build()
+	return &KeystoneServiceReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(20)}, c
+}
+
+func TestKSAccount_UnlatchForbiddenReportsRetryFailed(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Adopt = true
+
+	project := &orcv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceProjectRef(ks), Namespace: ks.Namespace},
+		Status:     orcv1alpha1.ProjectStatus{Conditions: transportLatchedConditions()},
+	}
+
+	r, _ := ksUnlatchDeniedReconciler(t, ks, cp, project)
+	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
+
+	_, err := r.ensureAccount(context.Background(), ks, cp, credRef, managedCredRef)
+
+	g.Expect(apierrors.IsForbidden(err)).To(BeTrue(), "got %v", err)
+	cond := ksAccountCondition(ks)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonTransportErrorRetryFailed))
+}
+
+// The same denial on a ROLE child reports the same reason. applyAccountRole owns
+// the role children but no condition and hands its error to ensureAccount through
+// ensureKeystoneServiceRoles, so this is the one path where the reason could
+// diverge and leave an operator filtering on it blind to half the fleet.
+func TestKSAccount_UnlatchForbiddenOnARoleReportsRetryFailed(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Roles = []string{"member"}
+
+	roleImport := &orcv1alpha1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceRoleImportRef(ks, "member"), Namespace: ks.Namespace},
+		Status:     orcv1alpha1.RoleStatus{Conditions: availableImportConditions()},
+	}
+	assignment := &orcv1alpha1.RoleAssignment{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceRoleAssignmentRef(ks, "member"), Namespace: ks.Namespace},
+		Status:     orcv1alpha1.RoleAssignmentStatus{Conditions: transportLatchedConditions()},
+	}
+
+	r, _ := ksUnlatchDeniedReconciler(t, ks, cp, append(ksConvergedAccount(ks, cp), roleImport, assignment)...)
+	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
+
+	_, err := r.ensureAccount(context.Background(), ks, cp, credRef, managedCredRef)
+
+	g.Expect(apierrors.IsForbidden(err)).To(BeTrue(), "got %v", err)
+	cond := ksAccountCondition(ks)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonTransportErrorRetryFailed))
+	g.Expect(cond.Message).To(ContainSubstring("RoleAssignment"))
+}
+
+func TestKSAccount_TransportLatchedRoleAssignmentIsRetried(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Roles = []string{"member"}
+
+	roleImport := &orcv1alpha1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceRoleImportRef(ks, "member"), Namespace: ks.Namespace},
+		Status:     orcv1alpha1.RoleStatus{Conditions: availableImportConditions()},
+	}
+	assignment := &orcv1alpha1.RoleAssignment{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceRoleAssignmentRef(ks, "member"), Namespace: ks.Namespace},
+		Status:     orcv1alpha1.RoleAssignmentStatus{Conditions: transportLatchedConditions()},
+	}
+
+	cond, c := runKSAccount(t, ks, cp, append(ksConvergedAccount(ks, cp), roleImport, assignment)...)
+
+	g.Expect(ksLiveProgressing(t, c, &orcv1alpha1.RoleAssignment{},
+		keystoneServiceRoleAssignmentRef(ks, "member"), ks.Namespace)).To(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+	g.Expect(cond.Message).To(ContainSubstring("RoleAssignment"))
 }
 
 // --- deferred scheduled rotation ---

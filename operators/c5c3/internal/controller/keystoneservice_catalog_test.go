@@ -14,6 +14,7 @@ import (
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -380,6 +381,55 @@ func TestKSCatalog_ExternalModeClassifiesTheKORCMessage(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonEndpointUnreachable),
 		"the classified cause must beat the generic wait reason")
 	g.Expect(cond.Message).To(ContainSubstring("https://keystone.example.com/v3"))
+}
+
+func TestKSCatalog_TransportLatchedEndpointIsRetried(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithCatalog()
+	ks.Spec.Catalog.Endpoints = []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+		{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://image.example/public"},
+	}
+
+	// K-ORC gave up on the endpoint row a minute ago because Keystone was not
+	// listening, and stopped retrying.
+	latched := &orcv1alpha1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypePublic),
+			Namespace:       ks.Namespace,
+			OwnerReferences: ownedByKS(ks),
+		},
+		Status: orcv1alpha1.EndpointStatus{Conditions: transportLatchedConditions()},
+	}
+
+	// Both K-ORC kinds carry a status subresource here: the fake client answers a
+	// status write on a kind it does not carry with NotFound, which the unlatch
+	// helper reads as "the child vanished" and skips.
+	s := korcTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(append(ksConvergedCatalog(ks), cp, ks, latched)...).
+		WithStatusSubresource(&c5c3v1alpha1.KeystoneService{}, &orcv1alpha1.Service{}, &orcv1alpha1.Endpoint{}).
+		Build()
+	r := &KeystoneServiceReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(20)}
+	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
+
+	_, err := r.ensureCatalog(context.Background(), ks, cp, credRef, managedCredRef)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	live := &orcv1alpha1.Endpoint{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name:      keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypePublic),
+		Namespace: ks.Namespace,
+	}, live)).To(Succeed())
+	g.Expect(apimeta.FindStatusCondition(live.Status.Conditions, orcv1alpha1.ConditionProgressing)).To(BeNil(),
+		"the latch must be gone from the live child so K-ORC reconciles it again")
+
+	cond := ksCatalogCondition(ks)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog),
+		"a cleared child is waited on, not reported as a terminal failure")
+	g.Expect(cond.Message).To(ContainSubstring("Endpoint"))
 }
 
 func TestKSCatalog_KubernetesErrorIsReportedAndReturned(t *testing.T) {

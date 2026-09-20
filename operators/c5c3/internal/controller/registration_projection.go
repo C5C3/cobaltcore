@@ -739,10 +739,11 @@ type accountRoleOutcome struct {
 // credential's revoke.
 //
 // Both names are deterministic per (account, role), so both applies are pure
-// projections. Only the object construction, the apply and the inspection live
-// here; the per-role loop, the precedence and every message stay in the caller.
+// projections. Only the object construction, the apply, the unlatch of a latched
+// transport error and the inspection live here; the per-role loop, the
+// precedence and every message stay in the caller.
 func applyAccountRole(
-	ctx context.Context,
+	ctx context.Context, c client.Client,
 	importName, assignmentName, namespace, role string,
 	credRef, managedCredRef orcv1alpha1.CloudCredentialsReference,
 	userRef, projectRef string, ensure registrationEnsure,
@@ -757,6 +758,13 @@ func applyAccountRole(
 	out.assignment = managedRoleAssignmentChild(assignmentName, namespace, importName, userRef, projectRef, managedCredRef)
 	if err := ensure(ctx, out.assignment); err != nil {
 		return out, fmt.Errorf("registration RoleAssignment %q: %w", assignmentName, err)
+	}
+
+	// A latched transport error is handed back to K-ORC first, so it retries the
+	// create it gave up on; korc_unlatch.go states the policy. Every latch this
+	// leaves in place still reaches the caller below.
+	if err := unlatchKORCTransportErrors(ctx, c, out.roleObj, out.assignment); err != nil {
+		return out, fmt.Errorf("registration role %q: %w", role, err)
 	}
 
 	for _, obj := range []orcv1alpha1.ObjectWithConditions{out.roleObj, out.assignment} {
