@@ -14,6 +14,7 @@ require (
 	github.com/c5c3/cobaltcore/operators/placement v0.0.0-00010101000000-000000000000
 	github.com/dc-tec/openbao-operator v0.0.0-20260915105336-31a34abe7c9e
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
+	github.com/go-logr/logr v1.4.4
 	github.com/k-orc/openstack-resource-controller/v2 v2.5.1-0.20260917133841-ae545905edc2
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.43.0
@@ -40,7 +41,6 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
-	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
 	github.com/go-openapi/jsonreference v1.0.0 // indirect
