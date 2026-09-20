@@ -34,16 +34,3 @@ cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeDependencyTest
 cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeDependencyTests\.test_delete_dep_chain
 cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeDependencyTests\.test_delete_dep_chain_2
 cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeImageDependencyTests\.test_image_volume_dependencies_3
-
-# tracked-by: https://github.com/C5C3/cobaltcore/issues/979
-# re-evaluate-on: cinder-tempest-plugin > 1.22.0
-# test_incremental_backup boots a Nova server between its full and its
-# incremental backup (create_server in
-# cinder_tempest_plugin/api/volume/test_volume_backup.py) and carries no
-# compute guard, in 1.22.0 and on master. This leg deploys no Nova
-# (tempest.conf sets [service_available] nova = false), so the test fails in
-# its validation-resources fixture with EndpointNotFound for the compute
-# catalog, on every run and on the serial retry. Core Tempest skips its own
-# server-backed volume tests on that flag. Retire the pattern once upstream
-# guards the test with services('compute') or the leg gains a Nova.
-cinder_tempest_plugin\.api\.volume\.test_volume_backup\.VolumesBackupsTest\.test_incremental_backup\[

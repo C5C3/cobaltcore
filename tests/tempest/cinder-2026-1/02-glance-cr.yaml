@@ -27,13 +27,21 @@ spec:
     # throttles the glance-api pod to half a core. The volume suites push the
     # seed image through this pod on every create-from-image, so give it the
     # same headroom the glance leg gives its own API.
+    #
+    # The memory limit is sized for test_volume_upload, which runs since the leg
+    # has a Neutron (VolumesActionsTest skips without one). Cinder uploads the
+    # 1 GiB volume with no size, and the S3 store sends an upload smaller than
+    # s3_store_large_object_size (unknown counts as 0) as one part, holding the
+    # whole body in memory (glance_store/_drivers/s3.py, _add_singlepart). At
+    # 1Gi the kernel killed glance-api at 945 MB RSS, and the restart took the
+    # runner's port-forward down with it.
     resources:
       requests:
         cpu: 100m
         memory: 256Mi
       limits:
         cpu: "2"
-        memory: 1Gi
+        memory: 3Gi
   image:
     repository: ghcr.io/c5c3/glance
     tag: "2026.1"

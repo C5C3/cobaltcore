@@ -383,15 +383,16 @@ test_tempest_neutron_leg_is_wired() {
   neutron_deploy=$(job_step tempest "Deploy neutron operator")
 
   assert_not_empty "the ovn-operator is deployed" "$ovn_deploy"
-  assert_contains "the ovn deploy runs on the neutron leg alone" "$ovn_deploy" \
-    "if: matrix.service == 'neutron'"
+  assert_contains "the ovn deploy covers the neutron leg" "$ovn_deploy" \
+    "if: matrix.service == 'neutron' || matrix.service == 'nova' || matrix.service == 'cinder'"
   assert_contains "it deploys the ovn operator" "$ovn_deploy" "OPERATOR: ovn"
   assert_contains "it lands in its own Namespace" "$ovn_deploy" \
     "NAMESPACE: ovn-system"
 
   assert_not_empty "the neutron-operator is deployed" "$neutron_deploy"
-  assert_contains "the neutron deploy runs on the neutron leg alone" \
-    "$neutron_deploy" "if: matrix.service == 'neutron'"
+  assert_contains "the neutron deploy covers the neutron leg" \
+    "$neutron_deploy" \
+    "if: matrix.service == 'neutron' || matrix.service == 'nova' || matrix.service == 'cinder'"
   assert_contains "it deploys the neutron operator" "$neutron_deploy" \
     "OPERATOR: neutron"
   assert_contains "it lands in its own Namespace" "$neutron_deploy" \

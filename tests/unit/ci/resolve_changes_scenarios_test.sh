@@ -243,10 +243,42 @@ test_tempest_config_narrows_to_its_service() {
   expect build-e2e-images true
 }
 
+test_tempest_legs_follow_the_operators_they_deploy() {
+  # ovn and placement are deployed by the neutron and the two compute-stack legs
+  # and have no Tempest leg of their own, so without this mapping they select
+  # nothing: the pull request that breaks a leg merges green and the next pull
+  # request to touch neutron, cinder or nova spends that leg's wall on a
+  # bring-up that was already broken.
+  scenario "a placement operator change" refs/heads/main \
+    FILTER_placement=true PR_LABELS='["ci:tempest"]'
+  expect tempest true
+  expect tempest-services '["cinder","nova"]'
+
+  scenario "an ovn operator change" refs/heads/main \
+    FILTER_ovn=true PR_LABELS='["ci:tempest"]'
+  expect tempest-services '["neutron","cinder","nova"]'
+
+  # A service image counts the same way: the legs run the image, not the source.
+  scenario "a placement service image change" refs/heads/main \
+    FILTER_image_placement=true PR_LABELS='["ci:tempest"]'
+  expect tempest-services '["cinder","nova"]'
+
+  # The mapping covers only the two operators without a leg. glance and nova are
+  # deployed on the compute-stack legs too, but each has a leg of its own that
+  # already selects it, so `ci:tempest` stays as narrow as it was.
+  scenario "a nova operator change" refs/heads/main \
+    FILTER_nova=true PR_LABELS='["ci:tempest"]'
+  expect tempest-services '["nova"]'
+
+  scenario "a barbican operator change" refs/heads/main \
+    FILTER_barbican=true PR_LABELS='["ci:tempest"]'
+  expect tempest-services '["barbican"]'
+}
+
 test_shared_tempest_change_covers_every_service() {
   scenario "a tempest runner change" refs/heads/main FILTER_tempest_src=true
   expect tempest true
-  expect tempest-services '["keystone","glance","barbican","neutron","cinder"]'
+  expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
 }
 
 # ---------------------------------------------------------------------------
@@ -265,7 +297,7 @@ test_ci_full_runs_everything() {
   expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
   expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]'
   expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder","nova"]'
-  expect tempest-services '["keystone","glance","barbican","neutron","cinder"]'
+  expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
 }
 
 test_ci_tempest_follows_the_touched_service() {
@@ -364,7 +396,7 @@ test_tag_push_forces_everything() {
   expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
   expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]'
   expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder","nova"]'
-  expect tempest-services '["keystone","glance","barbican","neutron","cinder"]'
+  expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
 }
 
 test_push_keeps_the_publish_matrix() {
@@ -480,6 +512,7 @@ test_workflow_plumbing_runs_the_canary_and_actionlint
 test_makefile_change
 test_docs_only_change
 test_tempest_config_narrows_to_its_service
+test_tempest_legs_follow_the_operators_they_deploy
 test_shared_tempest_change_covers_every_service
 test_ci_full_runs_everything
 test_ci_tempest_follows_the_touched_service

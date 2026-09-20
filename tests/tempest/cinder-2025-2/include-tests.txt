@@ -6,14 +6,16 @@
 #
 # One regex pattern per line. Lines starting with # are comments.
 # Blank lines are ignored. Patterns are matched against test IDs.
-# Only volume tests are included: apart from the Glance the volume suites create
-# images from, no other service is deployed on this leg.
+# Only volume tests are included. The leg also deploys a Glance the volume
+# suites create images from and a compute stack (a Neutron, a Placement and a
+# Nova with one fake compute) the compute-tagged cases boot a server on; no
+# suite of those services runs here.
 #
 # The two patterns take the whole volume tree of each scope. The tests the
 # environment cannot serve are switched off through [volume-feature-enabled] in
-# tempest.conf (no snapshots on the NFS driver, no attach without a Nova) rather
-# than listed here, so a driver that gains a capability needs one flag flipped
-# instead of a pattern set rewritten.
+# tempest.conf (no snapshots on the NFS driver) rather than listed here, so a
+# driver that gains a capability needs one flag flipped instead of a pattern set
+# rewritten.
 
 # Core Tempest volume API tests
 tempest.api.volume
