@@ -191,10 +191,57 @@ test_neutron_tempest_plugin_hold_for_2025_2() {
   fi
 }
 
+# neutron-tempest-plugin 3.3.0 ships scenario modules that import
+# neutron_lib.services.pvlan, and the 2026.1 upper-constraints.txt pins
+# neutron-lib===3.24.0, which has no such module. The image still builds
+# (the plugin only asks for neutron-lib>=3.23.0), but stestr imports every
+# plugin module during discovery, so every 2026.1 tempest leg exits 100 with
+# zero tests run. Without a hold Renovate proposes 3.3.0 again.
+test_neutron_tempest_plugin_hold_for_2026_1() {
+  echo "Test: neutron-tempest-plugin stays below 3.3.0 for 2026.1"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
+    return
+  fi
+
+  local hold_rule pin
+  hold_rule="$(jq -c '.packageRules[]
+    | select(
+        ((.matchFileNames // []) | index("releases/2026.1/test-refs.yaml")) != null
+        and (((.matchPackageNames // []) | index("neutron-tempest-plugin")) != null)
+      )' "$RENOVATE_FILE" | head -1)"
+
+  if [ -z "$hold_rule" ]; then
+    echo "  FAIL: no packageRule holds neutron-tempest-plugin for releases/2026.1/test-refs.yaml"
+    FAIL=$((FAIL + 3))
+    return
+  fi
+
+  assert_eq "the 2026.1 neutron-tempest-plugin rule allows only versions below 3.3.0" \
+    "<3.3.0" \
+    "$(jq -r '.allowedVersions' <<<"$hold_rule")"
+  assert_eq "the hold does not disable the pin" \
+    "null" \
+    "$(jq -r '.enabled // "null"' <<<"$hold_rule")"
+
+  pin="$(awk -F'"' '/^neutron-tempest-plugin:/ {print $2; exit}' \
+    "$PROJECT_ROOT/releases/2026.1/test-refs.yaml")"
+  if [[ "$pin" =~ ^3\.[0-2]\.[0-9]+$ ]]; then
+    echo "  PASS: releases/2026.1/test-refs.yaml pins neutron-tempest-plugin below 3.3.0 ($pin)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: releases/2026.1/test-refs.yaml pins neutron-tempest-plugin '$pin', outside the range the hold allows"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
 test_custom_manager_uses_pypi_datasource
 test_regex_captures_tempest_and_plugin
 test_package_rules_for_test_refs
 test_neutron_tempest_plugin_hold_for_2025_2
+test_neutron_tempest_plugin_hold_for_2026_1
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

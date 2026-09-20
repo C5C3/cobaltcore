@@ -519,6 +519,13 @@
       "allowedVersions": "<3.1.0"
     },
     {
+      "description": "neutron-tempest-plugin 3.3.0 imports neutron_lib.services.pvlan, and the 2026.1 upper-constraints.txt pins neutron-lib===3.24.0, which does not ship it, so stestr fails test discovery on every 2026.1 tempest leg",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["releases/2026.1/test-refs.yaml"],
+      "matchPackageNames": ["neutron-tempest-plugin"],
+      "allowedVersions": "<3.3.0"
+    },
+    {
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["overrides/**/constraints.txt"],
       "matchUpdateTypes": ["major"],

@@ -12,8 +12,10 @@ keystone-tempest-plugin: "0.21.0"
 # neutron-tempest-plugin is branchless like tempest and the keystone plugin.
 # 3.2.0 requires testtools>=2.8.4, which this release's upper-constraints.txt
 # satisfies (testtools===2.8.5); 2025.2 constrains testtools to 2.7.2 and stays
-# on 3.0.0.
-neutron-tempest-plugin: "3.3.0"
+# on 3.0.0. 3.3.0 imports neutron_lib.services.pvlan, which the neutron-lib
+# this release constrains (3.24.0) does not ship: stestr then fails discovery on
+# every 2026.1 leg, so renovate.json holds this pin below 3.3.0.
+neutron-tempest-plugin: "3.2.0"
 # cinder-tempest-plugin is branchless like the plugins above, and it needs only
 # pbr, oslo.config, oslo.serialization and tempest>=40.0.0, so nothing in a
 # release's upper-constraints.txt narrows it: both releases pin the same version.
