@@ -586,6 +586,44 @@ func TestReconcileCatalogExternal_TerminalErrorOnRequiredImportAlwaysFailsLoud(t
 	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogFailed))
 }
 
+// TestReconcileCatalogExternal_TransportLatchedRequiredImportIsRetried covers the
+// import site. K-ORC latched the required public Endpoint import on a connection
+// refused a minute ago and never revisits it, so the pass clears the latch and
+// falls through to the bounded wait instead of reporting a terminal failure or
+// relaying the dial error as EndpointUnreachable.
+func TestReconcileCatalogExternal_TransportLatchedRequiredImportIsRetried(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := externalCatalogControlPlane() // endpointType defaults to public
+	latched := importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypePublic,
+		transportLatchedConditions(), "")
+
+	// Both K-ORC kinds carry a status subresource here: the fake client answers a
+	// status write on a kind it does not carry with NotFound, which the unlatch
+	// helper reads as "the child vanished" and skips.
+	s := korcTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, importedIdentityService(cp, availableImportConditions(), "svc-id"), latched).
+		WithStatusSubresource(&orcv1alpha1.Service{}, &orcv1alpha1.Endpoint{}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	g.Expect(ksLiveProgressing(t, c, &orcv1alpha1.Endpoint{},
+		keystoneEndpointImportName(cp, c5c3v1alpha1.ExternalEndpointTypePublic), childNamespace(cp))).To(BeNil(),
+		"the latch must be gone from the live child so K-ORC reconciles it again")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog),
+		"a cleared import is waited on, not reported as a terminal failure")
+	g.Expect(cond.Reason).NotTo(Equal(conditionReasonEndpointUnreachable))
+}
+
 // TestReconcileCatalogExternal_TerminalServiceBeatsTerminalEndpoint pins the
 // dependency order: the ROOT failure is reported, not the Endpoint merely blocked
 // on the Service it references.

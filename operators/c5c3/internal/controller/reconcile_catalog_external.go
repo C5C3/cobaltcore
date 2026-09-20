@@ -163,6 +163,20 @@ func (r *ControlPlaneReconciler) reconcileCatalogExternal(
 		fail(conditionReasonImportError, fmt.Sprintf("reconciling the external catalog imports: %v", err))
 		return ctrl.Result{}, err
 	}
+
+	// A latched transport error is handed back to K-ORC first, so it retries the
+	// create it gave up on; korc_unlatch.go states the policy. It sits ahead of
+	// the classification below, so a latch that is being cleared is never reported
+	// as EndpointUnreachable. Every latch this leaves in place still fails loud.
+	objs := make([]orcv1alpha1.ObjectWithConditions, 0, len(imports))
+	for _, imp := range imports {
+		objs = append(objs, imp.obj)
+	}
+	if err := unlatchKORCTransportErrors(ctx, r.Client, objs...); err != nil {
+		fail(conditionReasonTransportErrorRetryFailed, err.Error())
+		return ctrl.Result{}, err
+	}
+
 	// Project the observed imports before any early return, so an operator can see
 	// which rows resolved even while the condition reports a failure.
 	cp.Status.Catalog = &c5c3v1alpha1.CatalogStatus{Imports: catalogImportStatus(imports)}

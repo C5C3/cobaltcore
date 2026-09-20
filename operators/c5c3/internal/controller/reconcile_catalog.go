@@ -181,6 +181,22 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		return ctrl.Result{}, err
 	}
 
+	// A latched transport error is handed back to K-ORC first, so it retries the
+	// create it gave up on; korc_unlatch.go states the policy. Every latch this
+	// leaves in place still fails loud below.
+	objs := make([]orcv1alpha1.ObjectWithConditions, 0, len(applied)+1)
+	for _, ar := range applied {
+		objs = append(objs, ar.service)
+		for _, endpoint := range ar.endpoints {
+			objs = append(objs, endpoint)
+		}
+	}
+	objs = append(objs, region)
+	if err := unlatchKORCTransportErrors(ctx, r.Client, objs...); err != nil {
+		fail(conditionReasonTransportErrorRetryFailed, err.Error())
+		return ctrl.Result{}, err
+	}
+
 	// Gate CatalogReady on EVERY child CR reporting Available, and surface a TERMINAL
 	// K-ORC failure distinctly: registering the Service/Endpoint CRs only instructs
 	// K-ORC to create the catalog entries — it does not mean the entries exist in
