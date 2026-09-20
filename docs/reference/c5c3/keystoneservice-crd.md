@@ -385,7 +385,8 @@ idea.
 | `CatalogReady` | False | `ServiceCollision` | A catalog entry of this type and name already exists and `catalog.adopt` is not set. Nothing was touched. |
 | `CatalogReady` | False | `ProbingForCollision` | The collision probe has not resolved yet. |
 | `CatalogReady` | False | `WaitingForCatalog` | The Service or an Endpoint child is registered but not yet Available. |
-| `CatalogReady` | False | `CatalogFailed` | K-ORC reported a terminal error on the Service or an Endpoint; it has stopped retrying. |
+| `CatalogReady` | False | `CatalogFailed` | K-ORC reported a terminal error on the Service or an Endpoint; it has stopped retrying. A latched transport error is cleared first, so K-ORC retries. |
+| `CatalogReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the Service or an Endpoint child failed, for example because the operator's RBAC lacks `patch` on the K-ORC status subresources. |
 | `CatalogReady` | False | `CatalogError` | A Kubernetes-level failure applying a catalog child (not a K-ORC or OpenStack failure). |
 | `AccountReady` | True | `AccountNotDeclared` | No account block is declared. |
 | `AccountReady` | True | `AccountProvisioned` | The account exists in Keystone with its roles bound, and its credentials are materialized in the consumer Secret. |
@@ -393,7 +394,8 @@ idea.
 | `AccountReady` | False | `ProbingForCollision` | The user or project collision probe has not resolved yet. |
 | `AccountReady` | False | `SecretStoreNotReady` | The ControlPlane's secret store is not ready in this CR's namespace; the upstream secret backend is unreachable. |
 | `AccountReady` | False | `WaitingForServiceAccounts` | A project, user, Role import, or RoleAssignment is registered but not yet Available; K-ORC has not applied the current password yet; or the OpenBao round-trip has not materialized the Secret yet. The message names the blocking dependency. |
-| `AccountReady` | False | `ServiceAccountsFailed` | K-ORC reported a terminal error on the account or one of its roles. |
+| `AccountReady` | False | `ServiceAccountsFailed` | K-ORC reported a terminal error on the account or one of its roles. A latched transport error is cleared first, so K-ORC retries. |
+| `AccountReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the Project, the User or a role child failed, for example because the operator's RBAC lacks `patch` on the K-ORC status subresources. |
 | `AccountReady` | False | `ServiceAccountError` | A Kubernetes-level failure projecting or delivering the account. |
 | both | False | `ControlPlaneNotFound` | `spec.controlPlaneRef` does not resolve. Deferred, not failed: GitOps may apply the registration first. |
 | both | False | `NamespaceNotAllowed` | The ControlPlane does not admit registrations from this namespace. Nothing is projected. See [Namespace consent](#namespace-consent). |
@@ -410,6 +412,15 @@ specific cause whenever K-ORC's failure can be classified:
 `AuthenticationFailed`, `CredentialDrift`, `EndpointUnreachable`,
 `TLSVerificationFailed`, or `CatalogEndpointMismatch`. A TLS or credential
 problem therefore does not read as "registered but not yet Available" forever.
+
+One class of terminal error is cleared: a terminal `InvalidConfiguration`
+whose message classifies as a transport failure (`no such host`,
+`connection refused`, `dial tcp`, `i/o timeout`) is removed from the child's
+status, so K-ORC retries and the block reports its bounded wait. The same child
+is handed back at most once every 30s. Every other terminal error gives `CatalogFailed` or
+`ServiceAccountsFailed`, and a clear that fails gives
+`TransportErrorRetryFailed`. See
+[Latched transport errors](./keystoneservice-reconciler.md#latched-transport-errors).
 
 ## Defaulting and Validation Summary
 

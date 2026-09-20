@@ -2568,7 +2568,8 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 | Re-mint stuck `Terminating` past `remintStallTimeout` (5m) | False | `ReMintStalled` | requeue 10s; finalizer cannot revoke the old credential |
 | AC create/update/delete/read fails otherwise | False | `ApplicationCredentialError` | returns the error |
 | `value` regeneration fails | False | `SecretError` | returns the error |
-| AC reports a terminal K-ORC error | False | `ApplicationCredentialFailed` | requeue 10s; gated on `orcv1alpha1.GetTerminalError(ac)` (an unrecoverable/invalid-config Progressing reason, e.g. K-ORC cannot authenticate with the clouds.yaml) so a credential that will never converge is not reported as an eternal wait |
+| clearing a latched transport error from an admin import or the AC fails | False | `TransportErrorRetryFailed` | returns the error; for example a Forbidden status patch when the chart's RBAC predates the `patch` grant on the K-ORC status subresources. What is latched and what is cleared: [Latched transport errors](./keystoneservice-reconciler.md#latched-transport-errors) |
+| AC reports a terminal K-ORC error | False | `ApplicationCredentialFailed` | requeue 10s; gated on `orcv1alpha1.GetTerminalError(ac)` (an unrecoverable/invalid-config Progressing reason, e.g. K-ORC cannot authenticate with the clouds.yaml) so a credential that will never converge is not reported as an eternal wait. A terminal `InvalidConfiguration` whose message classifies as a transport failure (`no such host`, `connection refused`, `dial tcp`, `i/o timeout`), on the AC or on an admin Domain/User import, is cleared from the child's status before this check — at most once every 30s per child, so K-ORC retries and the pass reports `WaitingForApplicationCredential`. Every other terminal error lands here |
 | AC not yet `Available` | False | `WaitingForApplicationCredential` | requeue 10s; gated on `orcv1alpha1.IsAvailable(ac)` (K-ORC uses `Available`, not `Ready`) |
 | AC minted and Available | True | `ApplicationCredentialMinted` | — |
 
@@ -2600,7 +2601,10 @@ It is gated on External mode — a managed ControlPlane's `KORCReady` reasons ar
 byte-identical to before — and never runs against an `Available` credential: K-ORC
 leaves the message of the last transient attempt on the `Progressing` condition,
 and re-classifying it would flip a converged ControlPlane back to
-`AuthenticationFailed` on a failure it has already recovered from.
+`AuthenticationFailed` on a failure it has already recovered from. A latched
+transport error on the ApplicationCredential is cleared ahead of the
+classification, so a latch that is being cleared is never reported as
+`EndpointUnreachable`.
 
 | Path (External mode only) | Status | Reason | Notes |
 | --- | --- | --- | --- |
@@ -2868,7 +2872,8 @@ Ready.
 | Service create/update fails | False | `ServiceError` | returns the error |
 | Endpoint create/update fails | False | `EndpointError` | returns the error |
 | Region read (other than NotFound) or apply fails | False | `RegionError` | returns the error |
-| a catalog entry's Service/Endpoint, or the adopted `Region`, reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s (Service before its Endpoints, so the root stuck dependency surfaces; the Region is checked after the rows and its message names `Region`) |
+| clearing a latched transport error from a Service, Endpoint or the Region fails | False | `TransportErrorRetryFailed` | returns the error |
+| a catalog entry's Service/Endpoint, or the adopted `Region`, reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s (Service before its Endpoints, so the root stuck dependency surfaces; the Region is checked after the rows and its message names `Region`). A latched transport error (the `InvalidConfiguration` rule in the [`KORCReady` table](#reconcilekorc)) is cleared before this check, so K-ORC retries and the pass reports `WaitingForCatalog`. Every other terminal error lands here |
 | a catalog entry's Service/Endpoint, or the adopted `Region`, registered but not yet Available | False | `WaitingForCatalog` | requeue 10s; the Region also fails this gate on the pass where the description apply bumped its generation |
 | the region adopted, every catalog entry registered and Available | True | `CatalogRegistered` | the message names the adopted region and counts the registered entries, which is the identity row alone today; the table is what a future ControlPlane-owned row would be added to |
 
@@ -2918,11 +2923,15 @@ endpoint merely blocked on the service it references:
 | --- | --- | --- | --- | --- |
 | — | `AdminCredentialReady` not True | False | `WaitingForAdminCredential` | requeue 10s; no import CR is reconciled |
 | — | import create/update fails | False | `ImportError` | returns the error |
+| — | clearing a latched transport error from an import fails | False | `TransportErrorRetryFailed` | returns the error |
 | 1 | an **unresolved** import carries a classifiable K-ORC message | False | `AuthenticationFailed` \| `EndpointUnreachable` \| `TLSVerificationFailed` \| `CatalogEndpointMismatch` \| `CredentialDrift` | requeue 10s; K-ORC's message is relayed verbatim. A resolved import is never re-classified — K-ORC leaves the last transient attempt's message on `Progressing`, and classifying it would flip a converged catalog to a failure it has recovered from |
-| 2 | an import reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s; gating or not — K-ORC has given up on it. On the **>1-match** message the hint names `external.catalog.identityServiceName` for the `Service` import, or the region limitation for an `Endpoint` import (K-ORC's `EndpointFilter` carries no region, so no spec field can select among per-region rows). **One exception:** an `InvalidConfiguration` on a **non-gating** import does not fail the condition. A non-gating import has no user-supplied configuration to fix — its filter is entirely operator-derived — so it has no remediation and nothing depends on it; it is tolerated exactly like the 0-match of row 3 and reported as `resolved: false`. The exception is keyed on K-ORC's machine-readable reason, never on the >1-match message text: keying it on the text would turn a K-ORC rewording into a permanent `CatalogReady=False`. An `UnrecoverableError` gates on every import, and so does any terminal error on a gating one |
+| 2 | an import reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s; gating or not — K-ORC has given up on it. A latched transport error (the `InvalidConfiguration` rule in the [`KORCReady` table](#reconcilekorc)) is cleared before this row, so K-ORC retries and the pass falls through to the waits below. On the **>1-match** message the hint names `external.catalog.identityServiceName` for the `Service` import, or the region limitation for an `Endpoint` import (K-ORC's `EndpointFilter` carries no region, so no spec field can select among per-region rows). **One exception:** an `InvalidConfiguration` on a **non-gating** import does not fail the condition. A non-gating import has no user-supplied configuration to fix — its filter is entirely operator-derived — so it has no remediation and nothing depends on it; it is tolerated exactly like the 0-match of row 3 and reported as `resolved: false`. The exception is keyed on K-ORC's machine-readable reason, never on the >1-match message text: keying it on the text would turn a K-ORC rewording into a permanent `CatalogReady=False`. An `UnrecoverableError` gates on every import, and so does any terminal error on a gating one |
 | 3 | a **gating** import stalled past `externalImportStallGrace` | False | `ImportStalled` | requeue 10s; the **0-match** case. The message names the stuck import, the `authURL`, and `external.endpointType` / `spec.region` — plus, for an `Endpoint` import, that the external catalog may publish no such interface |
 | 4 | a **gating** import is unresolved | False | `WaitingForCatalog` | requeue 10s; the bounded, legitimate wait |
 | 5 | every gating import resolved | True | `CatalogImported` | the message reports how many of the three endpoint interfaces resolved |
+
+A latched transport error is cleared ahead of row 1, so a latch that is being
+cleared is not classified as `EndpointUnreachable`.
 
 `publicEndpoint` is forbidden in External mode, so `keystoneCatalogURL` — the URL
 the Managed branch registers — is never consulted here: advertisement visibility
@@ -3909,6 +3918,7 @@ operators/c5c3/
     │   ├── korc_eso.go                         PushSecret + clouds.yaml ExternalSecret builders/ensure
     │   ├── korc_imports.go                     admin Domain/User import projection
     │   ├── korc_secrets.go                     app-credential Secret seeding, computeAdminPasswordHash
+    │   ├── korc_unlatch.go                     clears latched K-ORC transport errors from child status
     │   ├── reconcile_infrastructure.go         reconcileInfrastructure (MariaDB + Memcached),
     │   │                                        childNamespace, memcachedGVK
     │   ├── reconcile_namespaces.go             reconcileNamespaces (dedicated service namespaces),
@@ -3966,6 +3976,7 @@ operators/c5c3/
     │   ├── identity_backends_test.go           Identity-backend projection tests
     │   ├── instrumentation_test.go             Metrics instrumentation + drift guards
     │   ├── korc_cloudsyaml_test.go             clouds.yaml builder tests
+    │   ├── korc_unlatch_test.go                transport-error unlatch tests
     │   ├── reconcile_infrastructure_test.go    Infrastructure tests
     │   ├── reconcile_namespaces_test.go        Namespaces tests
     │   ├── reconcile_esotenant_test.go         ESO-tenant-store tests

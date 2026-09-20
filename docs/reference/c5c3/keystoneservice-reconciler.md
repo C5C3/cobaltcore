@@ -96,9 +96,10 @@ On its own kind the controller is narrow:
 
 It reads registrations and updates them only to install and release the
 teardown finalizer; it never creates or deletes a KeystoneService. Every other
-kind it touches (the K-ORC kinds, the ESO kinds, Secrets, events, ControlPlane
-reads) is already granted by the ControlPlane and CredentialRotation marker
-blocks, and the Helm chart mirrors the deduplicated union.
+kind it touches (the K-ORC kinds and their `status` subresources, the ESO
+kinds, Secrets, events, ControlPlane reads) is already granted by the
+ControlPlane and CredentialRotation marker blocks, and the Helm chart mirrors
+the deduplicated union.
 
 ## Reconciliation Flow
 
@@ -212,7 +213,10 @@ a Managed and an External Keystone alike.
 3. **Terminal errors.** The Service's terminal error is reported before the
    Endpoints', so the root stuck dependency surfaces instead of an Endpoint
    merely blocked behind it. Either gives `CatalogFailed`: K-ORC has stopped
-   retrying, so a bounded wait would never resolve.
+   retrying, so a bounded wait would never resolve. A latched transport failure
+   is cleared ahead of this check, so K-ORC retries and the block reports
+   `WaitingForCatalog`; a clear that fails gives `TransportErrorRetryFailed`.
+   See [Latched transport errors](#latched-transport-errors).
 4. **Availability.** Registering the CRs only instructs K-ORC to create the
    rows. The block reports ready only once every child is Available for its
    current generation, or a failing registration would read Ready while the
@@ -291,6 +295,15 @@ rotation instead of waiting for the refresh interval. The block reports ready
 only once the **materialized** password matches the current generation, so a
 rotated-away password never reads ready.
 
+A terminal K-ORC error on the Project, the User, a Role import or a
+RoleAssignment gives `ServiceAccountsFailed`, because K-ORC has stopped
+retrying. A latched transport failure is cleared first, and the block reports
+`WaitingForServiceAccounts` while K-ORC retries. A clear that fails gives
+`TransportErrorRetryFailed`, on a role child as much as on the Project or the
+User: `applyAccountRole` owns no condition, so `ensureAccount` recognises the
+error it relays rather than reporting it under a second reason. See
+[Latched transport errors](#latched-transport-errors).
+
 The bounded waits in steps 3 through 6 all report
 `WaitingForServiceAccounts`, with a message naming the stuck dependency in
 dependency order (project, then user, then the password application), so the
@@ -309,6 +322,67 @@ the generic wait reason** on every bounded wait in both blocks, surfacing
 `AuthenticationFailed`, `CredentialDrift`, `EndpointUnreachable`,
 `TLSVerificationFailed`, or `CatalogEndpointMismatch` with the external auth URL
 and K-ORC's own message.
+
+### Latched transport errors
+
+A K-ORC create that fails at the transport layer (`dial tcp …: connect:
+connection refused`) can land on the child as a terminal `Progressing=False`
+with reason `InvalidConfiguration`. K-ORC's `ShouldReconcile` then skips that
+child for as long as the condition stands at the current generation, across
+controller restarts and upgrades, and reconciles it again once the condition is
+absent. The K-ORC commit this repo pins retries transport errors itself, so a
+latch of this class was written by an earlier version or carries an error K-ORC
+does not classify as transport.
+
+`unlatchKORCTransportErrors` removes the condition when two things hold: the
+`Progressing` condition is terminal at the current generation with reason
+`InvalidConfiguration`, and the message carries `no such host`,
+`connection refused`, `dial tcp` or `i/o timeout`. Every other terminal error
+stays. A message that also names `x509`, `401` or `Unauthorized` classifies as
+TLS or authentication first. No retry repairs either one, so that latch keeps
+reporting what a human has to fix.
+
+The retries are paced by the operator's own clock, not by K-ORC's. Each clear
+stamps `c5c3.io/korc-transport-unlatched-at` on the child, and a child cleared
+less than `korcTransportUnlatchBackoff` (30s, plus that child's own offset of up
+to another 30s) ago is left alone. The first latch the operator sees is
+therefore handed back at once — K-ORC has already given up on it — and every
+retry after that is spaced. The condition's own `lastTransitionTime` is
+deliberately not read: it is written by whoever wrote the condition, so pacing
+on it would compare this pod's wall clock against K-ORC's. A stamp that does not
+parse counts as due, and so does one dated in the future — a clock this operator
+cannot have written from — so no reading of the annotation can hold a latch
+indefinitely. The stamp is written after the clear and records only a clear that
+happened, so a clear the apiserver denies keeps being reported on every pass
+instead of being paced away by its own failure. The stamp is retried inline and
+never reported: the repair it paces has already succeeded, so a stamp that still
+cannot be written is logged rather than raised as `TransportErrorRetryFailed`,
+and the children behind that one are cleared in the same pass. The clear itself
+is a status merge patch carrying the child's `resourceVersion`, so a child whose
+status K-ORC rewrote in between is skipped and re-evaluated on the next 10s pass.
+
+Nothing is deleted. K-ORC's delete path on a managed child with no `status.id`
+looks the resource up by name and deletes what it finds, which under
+`account.adopt: true` is the pre-existing Keystone user, and the User's
+deletion-guard finalizer on its Project can leave the Project `Terminating`.
+There is no attempt cap and no growth: an unreachable Keystone costs one K-ORC
+retry per child per 30s — far less than K-ORC's own retry rate for a transport
+error it has not latched — and the condition keeps reporting the failure between
+retries. The offset is derived from the child's UID, so it holds still across
+passes and spreads the children of one plane — which latch inside the same
+window and are cleared in the same pass — over several 10s passes instead of
+handing them back in one synchronized burst. One log line per cleared child is
+the record.
+
+A clear the operator cannot perform at all reports `TransportErrorRetryFailed`
+on the block's condition and returns the error; that is a Forbidden from RBAC
+predating the status-subresource grant, not a passing apiserver failure. A
+`429`, `503`, server timeout or etcd timeout is deferred to the next pass
+instead: the repair is opportunistic, and reporting it would overwrite the K-ORC
+failure the block relays. The patches need `patch` on the nine K-ORC
+`<kind>/status` resources, granted by the ControlPlane marker block, and the
+annotation is written with the `patch` the same block already grants on the
+resources themselves.
 
 ## Child Naming and Placement
 
@@ -448,6 +522,7 @@ roll-up, re-derived from both sub-conditions on every status persist by
 | Controller unit tests | `operators/c5c3/internal/controller/keystoneservice_controller_test.go` |
 | Catalog projection | `operators/c5c3/internal/controller/keystoneservice_catalog_test.go` |
 | Account projection | `operators/c5c3/internal/controller/keystoneservice_account_test.go` |
+| Transport-error unlatch | `operators/c5c3/internal/controller/korc_unlatch_test.go` |
 | CRD schema and webhook | `operators/c5c3/api/v1alpha1/keystoneservice_types_test.go`, `keystoneservice_webhook_test.go` |
 | Own-namespace e2e | `tests/e2e/c5c3/keystone-service/` |
 | Cross-namespace e2e | `tests/e2e/c5c3/keystone-service-foreign-namespace/` |
