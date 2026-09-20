@@ -39,12 +39,16 @@
 # hack/ci-resolve-changes.sh's TEMPEST_ALL_SERVICES.
 #
 # The two tempest legs are the last piece, and they are silent in the same way
-# the e2e leg is: the images the run tagged, the two operator deploys, the
-# catalog Job that registers the block-storage and image services, the Glance
-# the volume tests create their volumes from, the three CRs, the seed image the
-# suite boots from, and the two K8S_NAME variables that gate the port-forwards.
-# Any one of them missing leaves the leg burning its wait on a resource that
-# never comes up, or every volume test failing to reach an API.
+# the e2e leg is: the images the run tagged, the six operator deploys, the
+# catalog Job that registers the block-storage, image, compute, placement and
+# network services, the Glance the volume tests create their volumes from, the
+# three Cinder CRs, the seed image the suite boots from, and the K8S_NAME
+# variables that gate the port-forwards. On top of those the leg carries a
+# compute stack, for the compute-tagged tests that attach a volume to a server
+# and boot from one: an OVNCentral, a Neutron, a Placement and a Nova with one
+# fake compute, deployed by four more operators. Any one of them missing leaves
+# the leg burning its wait on a resource that never comes up, or every volume
+# test failing to reach an API.
 #
 # Usage: bash tests/unit/ci/cinder_e2e_matrix_test.sh
 
@@ -64,6 +68,8 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
+# shellcheck source=tests/lib/nova_api_budget.sh
+source "$PROJECT_ROOT/tests/lib/nova_api_budget.sh"
 
 # The real list from the ci.yaml resolve step env block. A shorter one would
 # make the two matrix scenarios below assert nothing.
@@ -83,6 +89,28 @@ helm_template_scenarios() {
   job_step helm-validate "Helm template" |
     grep -oE 'helm template test "\$chart".*' |
     sed -e 's/^helm template test "\$chart" *//' -e 's/ 2>&1).*$//'
+}
+
+# conf_section <tempest.conf> <section>
+# Echo the key = value lines of one tempest.conf section, comments and blank
+# lines dropped. The section ends at the next [header] or at end of file.
+# Reading the section rather than the whole file keeps a key that moved into
+# another group from answering for this one.
+conf_section() {
+  awk -v want="[$2]" '
+    $0 == want { in_s = 1; next }
+    in_s && /^\[/ { exit }
+    in_s && /^[[:space:]]*#/ { next }
+    in_s && /^[[:space:]]*$/ { next }
+    in_s { print }
+  ' "$1"
+}
+
+# conf_value <tempest.conf> <section> <key>
+# Echo the value of one key of one section, or nothing when the section does
+# not set it.
+conf_value() {
+  conf_section "$1" "$2" | sed -n "s/^$3 *= *//p" | head -1
 }
 
 # ---------------------------------------------------------------------------
@@ -598,11 +626,14 @@ test_matrix_cr_names_match_the_cinder_fixtures() {
   legs=$(printf '%s' "$matrix" | jq -r '.include[]
     | select(.service == "cinder")
     | [."config-dir", ."cinder-cr-name", ."glance-cr-name", ."cr-name",
-       ."tempest-concurrency"] | @tsv')
+       ."tempest-concurrency", ."nova-cr-name", ."ovn-cr-name",
+       ."neutron-cr-name", ."placement-cr-name"] | @tsv')
   assert_not_empty "the generator emits at least one cinder leg" "$legs"
 
   local config_dir cinder_emitted glance_emitted keystone_emitted concurrency fixture_name
-  while IFS=$'\t' read -r config_dir cinder_emitted glance_emitted keystone_emitted concurrency; do
+  local nova_emitted ovn_emitted neutron_emitted placement_emitted
+  while IFS=$'\t' read -r config_dir cinder_emitted glance_emitted keystone_emitted \
+    concurrency nova_emitted ovn_emitted neutron_emitted placement_emitted; do
     [ -n "$config_dir" ] || continue
     fixture_name=$(yq -r '.metadata.name' \
       "$PROJECT_ROOT/$config_dir/06-cinder-cr.yaml")
@@ -627,7 +658,264 @@ test_matrix_cr_names_match_the_cinder_fixtures() {
     # four workers and fail on node starvation rather than on the change under
     # test.
     assert_eq "$config_dir runs at two stestr workers" "2" "$concurrency"
+
+    # The compute stack the compute-tagged volume tests boot a server on. Its
+    # four names reach the workflow the same way the three above do, and fail
+    # the same way: a rename in any of these fixtures leaves the leg waiting out
+    # its 900s on a CR that does not exist.
+    assert_eq "$config_dir waits on the Nova its fixture creates" \
+      "$(yq -r '.metadata.name' "$PROJECT_ROOT/$config_dir/13-nova-cr.yaml")" \
+      "$nova_emitted"
+    assert_eq "$config_dir waits on the OVNCentral its fixture creates" \
+      "$(yq -r '.metadata.name' \
+        "$PROJECT_ROOT/$config_dir/09-ovncentral-cr.yaml")" "$ovn_emitted"
+    assert_eq "$config_dir waits on the Neutron its fixture creates" \
+      "$(yq -r '.metadata.name' \
+        "$PROJECT_ROOT/$config_dir/10-neutron-cr.yaml")" "$neutron_emitted"
+    assert_eq "$config_dir waits on the Placement its fixture creates" \
+      "$(yq -r '.metadata.name' \
+        "$PROJECT_ROOT/$config_dir/11-placement-cr.yaml")" "$placement_emitted"
+
+    # And the fixtures on each other: a Neutron pointed at another OVNCentral
+    # renders no ml2_conf.ini and never reaches Ready, and a messaging Secret
+    # under another name leaves the same CR waiting on a transport URL nothing
+    # wrote.
+    assert_eq "$config_dir points its Neutron at that OVNCentral" \
+      "$ovn_emitted" \
+      "$(yq -r '.spec.ovn.centralRef.name' \
+        "$PROJECT_ROOT/$config_dir/10-neutron-cr.yaml")"
+    assert_eq "$config_dir points its Neutron at the messaging Secret beside it" \
+      "$(yq -r '.metadata.name' \
+        "$PROJECT_ROOT/$config_dir/08-messaging-secret.yaml")" \
+      "$(yq -r '.spec.messaging.secretRef.name' \
+        "$PROJECT_ROOT/$config_dir/10-neutron-cr.yaml")"
+    assert_eq "$config_dir points its Nova at the metadata Secret beside it" \
+      "$(yq -r '.metadata.name' \
+        "$PROJECT_ROOT/$config_dir/12-metadata-secret.yaml")" \
+      "$(yq -r '.spec.metadata.sharedSecretRef.name' \
+        "$PROJECT_ROOT/$config_dir/13-nova-cr.yaml")"
+
+    assert_eq "$config_dir names the Deployment the workflow rolls out" \
+      "${nova_emitted}-fake-compute" \
+      "$(yq -r 'select(.kind == "Deployment") | .metadata.name' \
+        "$PROJECT_ROOT/$config_dir/14-fake-compute.yaml")"
+    # fake-1 as a literal, which is the host the workflow hands
+    # discover-hosts.sh on this leg. The nova legs take the node's name from a
+    # fieldRef instead, because their chassis registers under it; this leg
+    # deploys no chassis, so a fieldRef here would only make the two sides
+    # disagree.
+    assert_eq "$config_dir registers its compute as fake-1" "fake-1" \
+      "$(yq -r 'select(.kind == "Deployment")
+        | .spec.template.spec.containers[].env[]
+        | select(.name == "OS_DEFAULT__HOST") | .value // ""' \
+        "$PROJECT_ROOT/$config_dir/14-fake-compute.yaml")"
+    assert_eq "$config_dir reads that host from no field of the pod" "" \
+      "$(yq -r 'select(.kind == "Deployment")
+        | .spec.template.spec.containers[].env[]
+        | select(.name == "OS_DEFAULT__HOST") | .valueFrom.fieldRef.fieldPath // ""' \
+        "$PROJECT_ROOT/$config_dir/14-fake-compute.yaml")"
+
+    # The workflow waits on job/${{ matrix.service }}-tempest-flavor-seed, so
+    # this leg's Job carries the service name rather than nova's.
+    assert_eq "$config_dir names the flavor-seed Job the workflow waits on" \
+      "cinder-tempest-flavor-seed" \
+      "$(yq -r '.metadata.name' \
+        "$PROJECT_ROOT/$config_dir/15-flavor-seed-job.yaml")"
+
+    # No chassis and no metadata agent, by decision: this leg's servers carry no
+    # NIC, so nothing binds a port and nothing reads 169.254.169.254. A fixture
+    # for either would be applied by no step and reconciled by nobody.
+    assert_eq "$config_dir brings up no OVN chassis" "" \
+      "$(grep -rl '^kind: OVNChassis$' "$PROJECT_ROOT/$config_dir")"
+    assert_eq "$config_dir brings up no metadata agent" "" \
+      "$(grep -rl '^kind: NeutronMetadataAgent$' "$PROJECT_ROOT/$config_dir")"
   done <<< "$legs"
+}
+
+# Both cinder tempest.conf files are written around the compute stack the leg
+# deploys: the compute-tagged volume tests (attach, boot-from-volume) run rather
+# than skip, and so does test_incremental_backup, which boots a server of its
+# own. Each of those switches is a line in a file nothing else reads, and a flag
+# that flips turns the tests it gates into skips. A skipped test is reported as
+# a pass.
+test_cinder_tempest_conf_runs_against_a_nova() {
+  echo "Test: each cinder tempest.conf drives the compute stack the leg deploys"
+
+  local dir name conf flavor_id flavor_alt_id slug excl patterns
+  for dir in "$PROJECT_ROOT"/tests/tempest/cinder-*/; do
+    name=$(basename "$dir")
+    conf="${dir}tempest.conf"
+    slug="${name#cinder-}"
+
+    # The three services the compute-tagged cases reach. nova is what takes them
+    # out of skip, neutron is what lets tempest's dynamic credentials delete
+    # each project's default security group, and placement is where that Nova
+    # claims its inventory.
+    assert_eq "$name runs against a nova" "true" \
+      "$(conf_value "$conf" service_available nova)"
+    assert_eq "$name runs against a neutron" "true" \
+      "$(conf_value "$conf" service_available neutron)"
+    assert_eq "$name runs against a placement" "true" \
+      "$(conf_value "$conf" service_available placement)"
+
+    # A fake-driver server has no guest to ssh into, and
+    # test_incremental_backup asks create_server for SSHABLE: with validation
+    # off tempest waits for ACTIVE alone, which is how the Phase-0 lab of #1015
+    # ran that test.
+    assert_eq "$name does not validate a server over ssh" "false" \
+      "$(conf_value "$conf" validation run_validation)"
+
+    # Two flags that stay off. The volume suites bind no port, so tempest passes
+    # no network and nova boots the server without a NIC; switching the networks
+    # on would make every boot wait on a port this leg has no chassis to bind.
+    # Extending an attached volume is unproven against the NFS driver here.
+    assert_eq "$name boots its servers without a NIC" "false" \
+      "$(conf_value "$conf" auth create_isolated_networks)"
+    assert_eq "$name leaves extend-while-attached off" "false" \
+      "$(conf_value "$conf" volume-feature-enabled extend_attached_volume)"
+
+    # One fake compute, so the multi-node classes skip on this value.
+    assert_eq "$name runs one compute" "1" \
+      "$(conf_value "$conf" compute min_compute_nodes)"
+
+    # image_ref is held against 07-image-seed-job.yaml by
+    # test_cinder_fixtures_agree_on_the_seed_image above. The two flavors are
+    # the pair 15-flavor-seed-job.yaml creates, and they fail the same way: the
+    # Job ends on a listing, so `kubectl wait --for=condition=complete` goes
+    # green while every boot 404s on a flavor nobody registered.
+    flavor_id=$(sed -n 's/^ *FLAVOR_ID="\(.*\)"/\1/p' \
+      "${dir}15-flavor-seed-job.yaml" | head -1)
+    flavor_alt_id=$(sed -n 's/^ *FLAVOR_ALT_ID="\(.*\)"/\1/p' \
+      "${dir}15-flavor-seed-job.yaml" | head -1)
+    assert_not_empty "$name declares a FLAVOR_ID" "$flavor_id"
+    assert_eq "$name seeds the flavor its tempest.conf boots on" \
+      "$flavor_id" "$(conf_value "$conf" compute flavor_ref)"
+    assert_eq "$name seeds the larger flavor beside it" \
+      "$flavor_alt_id" "$(conf_value "$conf" compute flavor_ref_alt)"
+
+    # test_incremental_backup boots a server to write into its volume, and this
+    # leg has a compute for it. A line for it here would drop it into the skip
+    # column without anyone noticing.
+    excl="${dir}exclude-tests.txt"
+    assert_eq "$name runs test_incremental_backup" "0" \
+      "$(grep -c test_incremental_backup "$excl")"
+    patterns=$(grep -vE '^[[:space:]]*(#|$)' "$excl")
+    assert_eq "$name excludes six tests" "6" "$(grep -c . <<<"$patterns")"
+    assert_eq "$name excludes plugin snapshot tests and nothing else" "6" \
+      "$(grep -c '^cinder_tempest_plugin\\\.' <<<"$patterns")"
+
+    # The three catalog rows the compute stack is reached through. nova's own
+    # clients read the internal interface and tempest the public one, and the
+    # Job writes both off one URL per service.
+    assert_file_contains "$name registers the compute service" \
+      "${dir}01-catalog-setup-job.yaml" "create_service nova compute"
+    assert_file_contains "$name registers the placement service" \
+      "${dir}01-catalog-setup-job.yaml" "create_service placement placement"
+    assert_file_contains "$name registers the network service" \
+      "${dir}01-catalog-setup-job.yaml" "create_service neutron network"
+    assert_file_contains "$name points the compute entry at its own Nova" \
+      "${dir}01-catalog-setup-job.yaml" \
+      "http://nova-cinder-tempest-${slug}.openstack.svc:8774/v2.1"
+    assert_file_contains "$name points the placement entry at its own Placement" \
+      "${dir}01-catalog-setup-job.yaml" \
+      "http://placement-cinder-tempest-${slug}.openstack.svc:8778"
+    assert_file_contains "$name points the network entry at its own Neutron" \
+      "${dir}01-catalog-setup-job.yaml" \
+      "http://neutron-cinder-tempest-${slug}.openstack.svc:9696"
+  done
+}
+
+test_tempest_cinder_leg_brings_up_a_compute_stack() {
+  echo "Test: the tempest cinder leg brings up the compute stack, minus the chassis"
+
+  # The compute-stack steps are shared with the nova legs, and which of them run
+  # here is decided by their `if:` alone. Widen one of the nova-only ones and
+  # this leg deploys a chassis with no kernel modules loaded and an agent with
+  # no chassis to read from, each waiting out its own 300s; narrow one of the
+  # shared ones and the compute-tagged volume tests go back to skipping, which
+  # is reported as a pass.
+  local job
+  job=$(job_block tempest)
+  step_line() {
+    printf '%s\n' "$job" | grep -nF "name: $1" | head -1 | cut -d: -f1
+  }
+
+  local seed_at run_at name at step
+  seed_at=$(step_line "Seed the image the volume tests boot from")
+  run_at=$(step_line "Run Tempest API tests")
+  assert_not_empty "the leg still seeds its volume image" "$seed_at"
+  assert_not_empty "and still runs tempest" "$run_at"
+
+  for name in "Deploy OVNCentral for the compute stack" \
+    "Deploy Neutron CR for the compute stack" "Deploy Placement CR" \
+    "Deploy Nova CR" "Deploy the fake compute" "Seed the flavors"; do
+    step=$(job_step tempest "$name")
+    assert_eq "'${name}' runs on both compute-stack legs" \
+      "if: matrix.service == 'nova' || matrix.service == 'cinder'" \
+      "$(grep -E '^ *if:' <<<"$step" | sed 's/^ *//')"
+    at=$(step_line "$name")
+    assert_gte "'${name}' comes after the volume image is seeded" \
+      "$at" "$seed_at"
+    assert_gte "and before the suite starts" "$run_at" "$at"
+  done
+
+  # The OVNCentral and the Placement are applied before the leg's own chain and
+  # waited on after it, so they reconcile through the Glance's 300s, the
+  # Cinder's 600s and the seed Job's 300s instead of adding their own 300s each
+  # to a wall that is already 120 minutes. Put this step back below the seed and
+  # the leg pays for both serially again, with nothing failing to say so.
+  local pre_apply pre_apply_at glance_at
+  pre_apply=$(job_step tempest "Apply the independent compute-stack CRs")
+  assert_not_empty "the leg applies those CRs up front" "$pre_apply"
+  pre_apply_at=$(step_line "Apply the independent compute-stack CRs")
+  glance_at=$(step_line "Deploy Glance CR for the cinder leg")
+  assert_gte "the apply comes before the leg's own Glance" \
+    "$glance_at" "$pre_apply_at"
+  assert_gte "and after the catalog it authenticates against" \
+    "$pre_apply_at" "$(step_line "Bootstrap block-storage catalog")"
+
+  # The nova-only half. The chassis and the agent need a node with the OVS
+  # kernel modules loaded, which this leg does not ask for; the Glance, its seed
+  # images and the compute catalog are already covered by the leg's own steps.
+  for name in "Bootstrap compute catalog" "Deploy Glance CR for the nova leg" \
+    "Seed the images the compute tests boot from" "Deploy the OVN chassis" \
+    "Deploy the metadata agent"; do
+    assert_eq "'${name}' stays off the cinder leg" \
+      "if: matrix.service == 'nova'" \
+      "$(grep -E '^ *if:' <<<"$(job_step tempest "$name")" | sed 's/^ *//')"
+  done
+
+  # Without this the 8774 forward never opens and every compute-tagged volume
+  # test fails to reach the API it boots its server through.
+  assert_contains "the runner learns the Nova Service name" \
+    "$(job_step tempest "Run Tempest API tests")" \
+    "NOVA_K8S_NAME: \${{ matrix.nova-cr-name }}"
+
+  # deploy-infra.sh modprobes openvswitch and geneve on the runner host under
+  # this switch. This leg places no chassis, so the expression names nova alone
+  # and the host's modules are left where they were.
+  local modules
+  modules=$(grep WITH_OVN_KERNEL_MODULES <<<"$(job_step tempest "Setup E2E infrastructure")")
+  assert_not_empty "the kernel-module flag is readable" "$modules"
+  assert_not_contains "the chassis modules stay off the cinder leg" \
+    "$modules" "cinder"
+}
+
+test_cinder_tempest_crs_fit_their_uwsgi_workers() {
+  echo "Test: each cinder leg's Nova CR fits the uWSGI workers it asks for"
+
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local dir cr
+  for dir in "$PROJECT_ROOT"/tests/tempest/cinder-*/; do
+    for cr in "$dir"*-nova-cr.yaml; do
+      assert_nova_api_fits_its_workers "$cr"
+    done
+  done
 }
 
 test_controlplane_leg_deploys_cinder() {
@@ -732,8 +1020,11 @@ test_cleanup_matrices_cover_the_cinder_images
 test_a_keystone_only_change_produces_no_cinder_leg
 test_cinder_tempest_filter_is_wired
 test_tempest_cinder_leg_is_wired
+test_tempest_cinder_leg_brings_up_a_compute_stack
 test_matrix_cr_names_match_the_cinder_fixtures
 test_cinder_fixtures_agree_on_the_seed_image
+test_cinder_tempest_conf_runs_against_a_nova
+test_cinder_tempest_crs_fit_their_uwsgi_workers
 test_controlplane_leg_deploys_cinder
 
 echo ""
