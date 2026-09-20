@@ -90,7 +90,7 @@ Five labels add jobs. None of them ever removes one.
 | Label | Schedules |
 | --- | --- |
 | `ci:full` | everything, and builds every image |
-| `ci:tempest` | the Tempest legs of the services the pull request touches, or the keystone legs when it touches none |
+| `ci:tempest` | the Tempest legs of the services the pull request touches, plus the legs that deploy a changed `ovn` or `placement` operator (neither has a leg of its own), or the keystone legs when it touches none |
 | `ci:chaos` | both `e2e-chaos` legs. `run-chaos` is an alias |
 | `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone` |
 | `ci:multicluster` | `e2e-multicluster` |
@@ -1343,22 +1343,25 @@ GHCR (run-scoped tag) via the `load-e2e-images` composite action.
 
 **Matrix strategy:** the workflow holds no list of legs.
 `hack/ci-generate-tempest-matrix.sh` runs in the `changes` job and crosses
-`ALL_TEMPEST_SERVICES=(keystone glance barbican neutron cinder)` with every
+`ALL_TEMPEST_SERVICES=(keystone glance barbican neutron cinder nova)` with every
 `releases/<version>/` directory, writing the result to the `tempest-releases`
 output the job consumes as `matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}`.
-A service without a `tests/tempest/<service>-<slug>` configuration directory
-fails the generator. `TEMPEST_SERVICES`, set from the change resolver, narrows
-the emitted entries to the services a pull request touches; the directory check
-still covers all five.
+Two releases and six services make twelve legs. A service without a
+`tests/tempest/<service>-<slug>` configuration directory fails the generator.
+`TEMPEST_SERVICES`, set from the change resolver, narrows the emitted entries to
+the services a pull request touches; the directory check still covers all six.
 
 Every entry carries `service`, `release`, `config-dir`, `cr-name` and
 `service-k8s-name`, and `service-k8s-name` equals `cr-name` (the Keystone
 identity CR the job waits on and port-forwards). Non-keystone entries add
 `<service>-cr-name` for the service CR of the leg. The neutron entries also
-carry `ovn-cr-name` and `tempest-concurrency: "2"`; the cinder entries carry
-`glance-cr-name` and `tempest-concurrency: "2"`. Steps read them as
-`matrix.release`, `matrix.config-dir`, `matrix.cr-name` and so on. For the names
-each leg ends up with, see
+carry `ovn-cr-name` and `tempest-concurrency: "2"`. The cinder and nova entries
+name the compute stack their legs bring up. Both carry `ovn-cr-name`,
+`neutron-cr-name`, `placement-cr-name`, `glance-cr-name` and
+`tempest-concurrency: "2"`; the cinder entries add `nova-cr-name`, which on a
+nova entry is the leg's own service CR. Steps read them as `matrix.release`,
+`matrix.config-dir`, `matrix.cr-name` and so on. For the names each leg ends up
+with, see
 [Tempest Test Infrastructure](../testing/tempest-test-infrastructure.md).
 
 | Step | Action | Details |
@@ -1367,26 +1370,45 @@ each leg ends up with, see
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` writes `OVN_VERSION` to `$GITHUB_ENV`; `images/ovn/Dockerfile` holds the pin |
-| 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; the neutron leg also pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>` |
+| 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; the neutron leg also pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>`; the nova and cinder legs pull the four compute-stack operator images plus `neutron:<release>`, `placement:<release>`, `nova:<release>` and `ovn:<OVN_VERSION>` |
 | 6 | `kind load docker-image` | Loads keystone operator and service images into kind |
 | 7 | `kind load docker-image` *(neutron leg only)* | Loads the two operator images, the neutron and OVN service images, and the tempest image the catalog Job runs in-cluster |
-| 8 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
-| 9 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
-| 10 | `hack/ci-deploy-operator.sh` ×2 *(neutron leg only)* | Deploys the ovn-operator into `ovn-system` and the neutron-operator into `neutron-system`; a Neutron never reaches Ready without a live OVNCentral |
-| 11 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
-| 12 | Bootstrap network catalog *(neutron leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml` and waits 300 s for the `neutron-tempest-catalog-setup` Job to complete |
-| 13 | Deploy OVNCentral *(neutron leg only)* | Applies `02-messaging-secret.yaml` and `03-ovncentral-cr.yaml`, waits 300 s for `ovncentral/ovn-neutron-tempest-<slug>` Ready |
-| 14 | Deploy Neutron CR *(neutron leg only)* | Applies `04-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready |
-| 15 | Bootstrap block-storage catalog *(cinder leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml` and waits 300 s for the `cinder-tempest-catalog-setup` Job, which registers the block-storage and image services with their endpoints |
-| 16 | Deploy Glance CR *(cinder leg only)* | Applies `02-glance-cr.yaml` and `03-glancebackend-cr.yaml`, waits 300 s for `matrix.glance-cr-name` Ready; the volume tests create volumes from an image and upload volumes back to one |
-| 17 | Deploy Cinder CR *(cinder leg only)* | Applies `04-cinderbackend-cr.yaml`, `05-cinderbackupbackend-cr.yaml` and `06-cinder-cr.yaml`, waits 600 s for `matrix.cinder-cr-name` Ready. 600 s, because the Cinder brings up four Deployments and a db-sync Job, and the backends have to be attached before the volume and backup services are projected |
-| 18 | Seed the image the volume tests boot from *(cinder leg only)* | Applies `07-image-seed-job.yaml` and waits 300 s for the `cinder-tempest-image-seed` Job; `tempest.conf` pins `[compute] image_ref` to the UUID it creates |
-| 19 | `hack/ci-run-tempest.sh` | Runs Tempest API tests with `CONFIG_DIR=matrix.config-dir`, `SERVICE_K8S_NAME=matrix.service-k8s-name`, and on the neutron leg `NEUTRON_K8S_NAME=matrix.neutron-cr-name` (empty elsewhere, which disables the 9696 port-forward). The cinder leg adds `CINDER_K8S_NAME=matrix.cinder-cr-name`, `GLANCE_K8S_NAME=matrix.glance-cr-name` and `TEMPEST_CONCURRENCY=matrix.tempest-concurrency`; the script's optional-target row `Cinder:CINDER_K8S_NAME:8776:/healthcheck` turns the filled name into an 8776 port-forward polled on `/healthcheck` |
-| 20 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
-| 21 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
-| 22 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 8 | `kind load docker-image` *(nova and cinder legs)* | Loads the eight compute-stack refs both legs share in one call, so the layers the service images and the operator images each share are saved and imported once; each leg's glance pair and tempest image come from a step above, the cinder leg's from its own and the nova leg's from the glance one |
+| 9 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack. `WITH_MESSAGING` is set on the cinder and nova legs, `WITH_NFS` on the cinder leg and `WITH_OVN_KERNEL_MODULES` on the nova leg |
+| 10 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
+| 11 | `hack/ci-deploy-operator.sh` ×2 *(neutron, nova and cinder legs)* | Deploys the ovn-operator into `ovn-system` and the neutron-operator into `neutron-system`; a Neutron never reaches Ready without a live OVNCentral, and all three legs run one |
+| 12 | `hack/ci-deploy-operator.sh` ×2 *(nova and cinder legs)* | Deploys the placement- and nova-operator, each into its own `<op>-system` Namespace; the glance-, ovn- and neutron-operator both legs also need come from the steps above |
+| 13 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
+| 14 | Bootstrap network catalog *(neutron leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml` and waits 300 s for the `neutron-tempest-catalog-setup` Job to complete |
+| 15 | Deploy OVNCentral *(neutron leg only)* | Applies `02-messaging-secret.yaml` and `03-ovncentral-cr.yaml`, waits 300 s for `ovncentral/ovn-neutron-tempest-<slug>` Ready |
+| 16 | Deploy Neutron CR *(neutron leg only)* | Applies `04-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready |
+| 17 | Bootstrap block-storage catalog *(cinder leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml` and waits 300 s for the `cinder-tempest-catalog-setup` Job, which registers the block-storage, image, compute, placement and network services with their endpoints |
+| 18 | Bootstrap compute catalog *(nova leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml` and waits 300 s for the `nova-tempest-catalog-setup` Job, which registers the compute, placement, image and network services with their endpoints |
+| 19 | Apply the independent compute-stack CRs *(nova and cinder legs)* | Applies `*-messaging-secret.yaml`, `*-ovncentral-cr.yaml` and `*-placement-cr.yaml`, and waits on nothing. Neither CR has an upstream in this set, so both reconcile through the waits below instead of adding their own after them; the steps that wait on them re-apply the same manifests, which is a no-op. The Neutron is deliberately left out: its controller error-requeues until the OVNCentral publishes its database addresses |
+| 20 | Deploy Glance CR *(cinder leg only)* | Applies `02-glance-cr.yaml` and `03-glancebackend-cr.yaml`, waits 300 s for `matrix.glance-cr-name` Ready; the volume tests create volumes from an image and upload volumes back to one |
+| 21 | Deploy Cinder CR *(cinder leg only)* | Applies `04-cinderbackend-cr.yaml`, `05-cinderbackupbackend-cr.yaml` and `06-cinder-cr.yaml`, waits 600 s for `matrix.cinder-cr-name` Ready. 600 s, because the Cinder brings up four Deployments and a db-sync Job, and the backends have to be attached before the volume and backup services are projected |
+| 22 | Seed the image the volume tests boot from *(cinder leg only)* | Applies `07-image-seed-job.yaml` and waits 300 s for the `cinder-tempest-image-seed` Job; `tempest.conf` pins `[compute] image_ref` to the UUID it creates |
+| 23 | Deploy OVNCentral for the compute stack *(nova and cinder legs)* | Applies `*-messaging-secret.yaml` and `*-ovncentral-cr.yaml`, waits 300 s for `ovncentral/<matrix.ovn-cr-name>` Ready |
+| 24 | Deploy Neutron CR for the compute stack *(nova and cinder legs)* | Applies `*-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready |
+| 25 | Deploy Placement CR *(nova and cinder legs)* | Applies `*-placement-cr.yaml`, waits 300 s for `matrix.placement-cr-name` Ready; the Nova claims its inventory there |
+| 26 | Deploy Glance CR for the nova leg *(nova leg only)* | Applies `06-glance-cr.yaml` and `07-glancebackend-cr.yaml`, waits 300 s for `matrix.glance-cr-name` Ready |
+| 27 | Seed the images the compute tests boot from *(nova leg only)* | Applies `08-image-seed-job.yaml` and waits 300 s for the `nova-tempest-image-seed` Job; `tempest.conf` pins `[compute] image_ref` and `image_ref_alt` to the two UUIDs it creates |
+| 28 | Deploy Nova CR *(nova and cinder legs)* | Applies `*-metadata-secret.yaml` and `*-nova-cr.yaml`, waits 900 s for `matrix.nova-cr-name` Ready. 900 s, because the eight MariaDB CRs and the six `nova-manage` runs of the db-sync put Ready about 8 minutes after the apply |
+| 29 | Deploy the fake compute *(nova and cinder legs)* | Applies `*-fake-compute.yaml`, waits 300 s for the rollout and runs `tests/e2e/nova/discover-hosts.sh` for the leg's host: `fake-1` on the cinder legs, the kind node's name on the nova legs |
+| 30 | Deploy the OVN chassis *(nova leg only)* | Labels the node `openstack.c5c3.io/chassis=true`, applies `12-ovnchassis-cr.yaml`, waits 300 s for `ovnchassis/ovn-<matrix.nova-cr-name>-chassis` Ready; a port binds only to a host with a live chassis |
+| 31 | Deploy the metadata agent *(nova leg only)* | Applies `13-neutronmetadataagent-cr.yaml`, waits 300 s for `neutronmetadataagent/neutron-<matrix.nova-cr-name>-agent` Ready; it answers the 169.254.169.254 requests the `metadata_service` tests read back |
+| 32 | Seed the flavors *(nova and cinder legs)* | Applies `*-flavor-seed-job.yaml` and waits 300 s for the `<matrix.service>-tempest-flavor-seed` Job; `tempest.conf` pins `[compute] flavor_ref` and `flavor_ref_alt` to the two ids it creates |
+| 33 | `hack/ci-run-tempest.sh` | Runs Tempest API tests with `CONFIG_DIR=matrix.config-dir`, `SERVICE_K8S_NAME=matrix.service-k8s-name`, and on the neutron, cinder and nova legs `NEUTRON_K8S_NAME=matrix.neutron-cr-name` (empty elsewhere, which disables the 9696 port-forward). The cinder leg adds `CINDER_K8S_NAME=matrix.cinder-cr-name`, `GLANCE_K8S_NAME=matrix.glance-cr-name` and `TEMPEST_CONCURRENCY=matrix.tempest-concurrency`; the script's optional-target row `Cinder:CINDER_K8S_NAME:8776:/healthcheck` turns the filled name into an 8776 port-forward polled on `/healthcheck`. Both compute-stack legs add `NOVA_K8S_NAME=matrix.nova-cr-name`, whose row `Nova:NOVA_K8S_NAME:8774:/` forwards 8774 and polls `/`, since Nova serves no `/healthcheck`, and `PLACEMENT_K8S_NAME=matrix.placement-cr-name`, whose row forwards 8778 and polls `/` for the same reason — both legs register a placement endpoint in their catalog and declare the service available, so the name has to resolve inside the container; the nova leg also sets `NOVA_CONSOLE_K8S_NAME=<matrix.nova-cr-name>-novncproxy`, whose row forwards 6080 and polls `/vnc_lite.html` for `test_novnc_bad_token` |
+| 34 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
+| 35 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
+| 36 | `hack/ci-dump-diagnostics.sh` ×5 or ×6 (always) *(nova and cinder legs)* | One `OPERATOR_ONLY=1` pass per extra operator: `nova`, `placement`, `ovn`, `neutron`, `glance`, and `cinder` on the cinder legs |
+| 37 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
-Timeout: 68 minutes.
+The compute-stack steps name their fixtures by suffix glob, because the numeric
+prefixes differ between `tests/tempest/nova-<slug>/` and
+`tests/tempest/cinder-<slug>/`.
+
+Timeout: 68 minutes, 150 for the `nova` legs and 120 for the `cinder` legs.
 
 ### cleanup-e2e-tags
 
