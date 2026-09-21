@@ -28,6 +28,19 @@
 # depending on the chart-generated `name` (which varies with the
 # Gateway's listener name and chart version).
 #
+# DECISION: externalTrafficPolicy Cluster
+# EnvoyProxy defaults `envoyService.externalTrafficPolicy` to `Local`, unlike
+# a plain Service. With NodePort and `Local`, Envoy Gateway assigns the
+# Gateway only the addresses of nodes that carry a Ready endpoint of the proxy
+# Service, so a status pass that runs before the proxy pod's readiness reaches
+# the EndpointSlice leaves `Programmed=False` with reason
+# `AddressNotAssigned`, and when no later event recomputes it the Gateway
+# stays there: hack/deploy-infra.sh then times out after 600 s with both
+# Envoy pods Running. With `Cluster` every node address is assigned on the
+# first pass and `Programmed` follows the proxy Deployment alone. It is also
+# what hack/kind-config-multinode.yaml assumes: its host bridges sit on the
+# control-plane node and must reach the proxy pod on whichever node runs it.
+#
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
@@ -40,6 +53,7 @@ spec:
     kubernetes:
       envoyService:
         type: NodePort
+        externalTrafficPolicy: Cluster
         patch:
           type: StrategicMerge
           value:
