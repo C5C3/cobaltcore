@@ -3352,6 +3352,11 @@ authenticated per call with the bootstrap admin against `internalAPIURL`):
 `Manage` creates the domain and reconciles description/enabled drift on its
 own domain (recorded `status.domainID`), never seizing a same-named foreign
 domain (`DomainAlreadyExists`); `Adopt` resolves by name and never mutates.
+`status.domainID` is the only record that a domain is the backend's own, so
+`Manage` writes it with a merge patch directly after the create instead of with
+the end-of-pass status update: that update is optimistic, and one lost to a
+conflict left the backend at `DomainAlreadyExists` for the domain it had just
+created.
 
 For **OIDC** backends the flow continues (gated on `DomainReady=True`): the
 controller upserts the three keystone federation API objects with real drift
