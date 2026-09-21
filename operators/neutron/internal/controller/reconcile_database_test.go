@@ -101,16 +101,16 @@ func TestNeutronMaxUserConnections(t *testing.T) {
 	}{
 		{
 			name: "default topology",
-			want: 26,
-			because: "3 API pods plus one surge run 2 uWSGI processes each holding two connections, the two " +
-				"worker Deployments run 3 replicas plus a surge each, and two Jobs may overlap",
+			want: 82,
+			because: "3 API pods plus one surge run 2 uWSGI processes each pooling five connections, the two " +
+				"worker Deployments run 3 replicas plus a surge each pooling five, and two Jobs may overlap",
 		},
 		{
 			name: "autoscaling raises the pod ceiling",
 			mutate: func(n *neutronv1alpha1.Neutron) {
 				n.Spec.Autoscaling = &neutronv1alpha1.AutoscalingSpec{MaxReplicas: 5}
 			},
-			want:    34,
+			want:    102,
 			because: "an HPA owns the replica count, so the cap is sized for its ceiling rather than for spec.deployment.replicas",
 		},
 		{
@@ -120,13 +120,13 @@ func TestNeutronMaxUserConnections(t *testing.T) {
 					UWSGI: &commonv1.UWSGISpec{Processes: 4, Threads: 2},
 				}
 			},
-			want:    74,
-			because: "every worker thread holds its request session and the hash-ring maintenance session",
+			want:    138,
+			because: "every uWSGI thread beyond the first adds one connection to the five a process pools",
 		},
 		{
 			name:    "worker replicas count twice",
 			mutate:  func(n *neutronv1alpha1.Neutron) { n.Spec.Workers.Deployment.Replicas = 1 },
-			want:    22,
+			want:    62,
 			because: "the periodic workers and the ovn-maintenance worker each run the configured replica count",
 		},
 		{
@@ -140,8 +140,24 @@ func TestNeutronMaxUserConnections(t *testing.T) {
 				n.Spec.Deployment.Replicas = 5
 				n.Spec.Workers.Deployment.Replicas = 1
 			},
-			want:    30,
-			because: "the cap must cover every API process's two sessions across the whole fleet, plus the surge pod",
+			want:    82,
+			because: "the cap must cover every API process's pool across the whole fleet, plus the surge pod",
+		},
+		{
+			// The nova Tempest legs' Neutron. Sized with two connections per API process
+			// and one per worker the cap came out at 30, and the fleet ran into it under
+			// the compute suite: eight API processes pool up to five connections each,
+			// so Neutron answered 500 with MySQL error 1226 behind it.
+			name: "two API pods of four processes with one worker of each kind",
+			mutate: func(n *neutronv1alpha1.Neutron) {
+				n.Spec.Deployment.Replicas = 2
+				n.Spec.APIServer = &neutronv1alpha1.APIServerSpec{
+					UWSGI: &commonv1.UWSGISpec{Processes: 4},
+				}
+				n.Spec.Workers.Deployment.Replicas = 1
+			},
+			want:    82,
+			because: "eight API processes and two workers can hold 50 connections before a surge pod or a Job is counted",
 		},
 	}
 

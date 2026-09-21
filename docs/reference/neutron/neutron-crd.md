@@ -101,14 +101,16 @@ select. The RPC worker counts live in `[DEFAULT]` and are fixed at zero.
 | `uwsgi` | [`*commonv1.UWSGISpec`](../keystone/keystone-crd.md#uwsgispec) | no | `nil` | uWSGI application-server parameters: `processes` (default 2), `threads` (default 1), `httpKeepAlive` (default true), `harakiri` and `httpKeepAliveTimeout` (both omitted when nil). A CEL rule and the webhook agree that `httpKeepAliveTimeout` may only be set while `httpKeepAlive` is true |
 
 The concurrency this block declares also sizes the database. The SQL user's
-`max_user_connections` cap is `(pods + 1) x processes x threads x 2`, plus
-`2 x (worker replicas + 1)`, plus two transient Job connections; `pods` is the
-autoscaling ceiling when an HPA owns the replica count, and the `+ 1` on each
-term is the surge pod a rollout adds. Each API worker process holds two pooled
-connections: the request-serving session, and the one the ML2/OVN mechanism
-driver's `MaintenanceThread` opens to touch the process's hash-ring node.
-Below that cap the last processes to start fail their pool with MySQL error
-1226 and crash-loop their pod.
+`max_user_connections` cap is `(pods + 1) x processes x (5 + threads - 1)`, plus
+`2 x (worker replicas + 1) x 5`, plus two transient Job connections; `pods` is
+the autoscaling ceiling when an HPA owns the replica count, and the `+ 1` on
+each term is the surge pod a rollout adds. The 5 is oslo.db's `max_pool_size`
+default, which the rendered `[database]` section does not override: a neutron
+process keeps up to that many pooled connections once load has touched it. A
+single-threaded API process measured 4 to 5 under plain port CRUD, and every
+uWSGI thread beyond the first adds one. Below that cap the last processes to
+start fail their pool with MySQL error 1226 and crash-loop their pod, and under
+load the process that opens the connection past it answers HTTP 500.
 
 ### WorkersSpec
 
