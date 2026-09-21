@@ -293,7 +293,19 @@ func (r *KeystoneIdentityBackendReconciler) ensureDomain(ctx context.Context, ba
 				fmt.Sprintf("creating domain %q: %v", domainName, err))
 			return ctrl.Result{}, fmt.Errorf("creating domain %q: %w", domainName, err)
 		}
+		// Status.DomainID is the only record that this domain is the backend's
+		// own, so it is written now rather than with the rest of the status at
+		// the end of the pass. That write comes after the federation
+		// provisioning and the projection check and is an optimistic Update: a
+		// conflict there dropped the ID, and the next pass found the domain by
+		// name, took it for a foreign one and stayed at DomainAlreadyExists for
+		// good. A merge patch carries no resourceVersion precondition, so it
+		// cannot lose to a concurrent write.
+		base := backend.DeepCopy()
 		backend.Status.DomainID = created.ID
+		if err := r.Status().Patch(ctx, backend, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("recording domain %q (id %s) as owned: %w", domainName, created.ID, err)
+		}
 		r.Recorder.Eventf(backend, corev1.EventTypeNormal, "DomainCreated",
 			"Created domain %q (id %s)", domainName, created.ID)
 		r.setDomainReady(backend, metav1.ConditionTrue, conditionReasonDomainProvisioned,

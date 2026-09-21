@@ -6,19 +6,23 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	commonconditions "github.com/c5c3/cobaltcore/internal/common/conditions"
@@ -127,6 +131,52 @@ func TestBackendReconcile_ManageCreatesDomain(t *testing.T) {
 	g.Expect(updated.Status.DomainID).NotTo(BeEmpty())
 	g.Expect(srv.GetDomainByName("corp")).NotTo(BeNil())
 	expectBackendEvent(g, r, "Normal DomainCreated")
+}
+
+// TestBackendReconcile_ManageKeepsItsDomainWhenTheStatusWriteConflicts covers
+// the pass that creates the domain and then loses its end-of-pass status write
+// to a conflict. Status.DomainID is the only record that the domain is this
+// backend's own, and that write happens after the federation provisioning and
+// the projection check, seconds after the read at the top of the pass. With
+// the ID held only in memory until then, the next pass found the domain by
+// name, took it for a foreign one and stayed at DomainAlreadyExists for good.
+func TestBackendReconcile_ManageKeepsItsDomainWhenTheStatusWriteConflicts(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+
+	ks := testKeystoneWithReadyAPI()
+	backend := testIdentityBackend("corp-ldap", "corp")
+	backend.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
+
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+	conflicts := 1
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, subResource string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if _, ok := obj.(*keystonev1alpha1.KeystoneIdentityBackend); ok && conflicts > 0 {
+				conflicts--
+				return apierrors.NewConflict(
+					schema.GroupResource{Group: keystonev1alpha1.GroupVersion.Group, Resource: "keystoneidentitybackends"},
+					obj.GetName(), errors.New("the object has been modified"))
+			}
+			return c.SubResource(subResource).Update(ctx, obj, opts...)
+		},
+	})
+
+	_, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(apierrors.IsConflict(err)).To(BeTrue(), "the creating pass must surface the lost status write")
+	created := srv.GetDomainByName("corp")
+	g.Expect(created).NotTo(BeNil(), "the domain exists in Keystone although the status write failed")
+
+	_, err = r.Reconcile(context.Background(), backendRequest(backend))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	updated := getBackend(t, r.Client, "corp-ldap")
+	cond := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeDomainReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal(conditionReasonDomainProvisioned), "the backend must recognise the domain it created")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(updated.Status.DomainID).To(Equal(created.ID))
 }
 
 func TestBackendReconcile_ManageNeverSeizesForeignDomain(t *testing.T) {
