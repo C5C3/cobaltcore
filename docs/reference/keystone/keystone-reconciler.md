@@ -1571,8 +1571,18 @@ schema matches the expected Alembic migration head. See
 | Resource | Name | Key Spec Fields |
 | --- | --- | --- |
 | `Database` | `keystone` | CharacterSet: `utf8mb4`, Collate: `utf8mb4_general_ci`, MariaDBRef from `spec.database.clusterRef` |
-| `User` | `keystone` | Password from `spec.database.secretRef`, MariaDBRef from `spec.database.clusterRef` |
+| `User` | `keystone` | Password from `spec.database.secretRef`, MariaDBRef from `spec.database.clusterRef`, MaxUserConnections sized from the topology |
 | `Grant` | `keystone` | Privileges: `ALL PRIVILEGES`, Database: `keystone`, Table: `*`, Username: `keystone` |
+
+The `User`'s `max_user_connections` cap is
+`(pods + 1) x processes x (threads + 1) + 2`: `pods` is the autoscaling ceiling
+when an HPA owns the replica count, the `+ 1` on it is the surge pod a rollout
+adds, and the trailing 2 covers Jobs that overlap the fleet. A uWSGI process
+holds one pooled connection per thread and one more behind them. The default
+topology (3 replicas, 2 processes, 1 thread) sizes to 18. Left unsized, the
+mariadb-operator CRD default of 10 applied, which that topology can exceed with
+12 connections; the process past the cap gets MySQL error 1226 and token
+validation answers HTTP 500.
 
 **db_sync Job:**
 

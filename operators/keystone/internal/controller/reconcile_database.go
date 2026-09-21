@@ -17,6 +17,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
@@ -28,6 +29,38 @@ import (
 // changes here and propagates to every call site.
 func mariaDBResourceKey(keystone *keystonev1alpha1.Keystone) client.ObjectKey {
 	return client.ObjectKey{Name: keystone.Name, Namespace: keystone.Namespace}
+}
+
+// keystoneProcessExtraConnections is how many pooled connections one uWSGI
+// process holds beyond one per thread. Measured on the 2025.2 image under the
+// rendered uWSGI flags and a mixed issue/validate/list/write load: two
+// single-threaded processes settled at 2 and 1 connections, one process with 2
+// threads at 3, with 4 threads at 5. A single-threaded process only opens a
+// second connection while its first is checked out, and oslo.db's pool keeps it
+// afterwards, so counting one per thread undersizes such a fleet by half.
+const keystoneProcessExtraConnections int32 = 1
+
+// keystoneMaxUserConnections sizes the SQL user's max_user_connections cap for
+// the CR's own topology. The API floor is pods × processes × (threads +
+// keystoneProcessExtraConnections), with pods being the autoscaling ceiling when
+// an HPA owns the replica count. On top of it comes one surge pod, because the
+// rollout strategy (maxSurge=1, maxUnavailable=0) runs a full extra pod's workers
+// alongside the fleet during an update, and two transient job connections (a
+// db_sync variant and the trust-flush CronJob may overlap).
+//
+// A cap below the fleet's demand does not degrade gracefully: the process that
+// opens the connection past it gets MySQL error 1226, GET /v3/auth/tokens answers
+// 500, and every service validating tokens through keystonemiddleware turns that
+// into 401s and 503s of its own. Left unsized, the mariadb-operator CRD default of
+// 10 applies, which the default topology (3 replicas × 2 processes × 1 thread)
+// can exceed: its six processes hold up to 12 connections.
+func keystoneMaxUserConnections(keystone *keystonev1alpha1.Keystone) int32 {
+	pods := deployment.EffectiveReplicas(&keystone.Spec.Deployment)
+	if keystone.Spec.Autoscaling != nil {
+		pods = keystone.Spec.Autoscaling.MaxReplicas
+	}
+	processes, threads := deployment.EffectiveUWSGIConcurrency(keystone.Spec.UWSGI)
+	return (pods+1)*processes*(threads+keystoneProcessExtraConnections) + 2
 }
 
 // Condition and event reason constants for the expand-migrate-contract upgrade
@@ -62,16 +95,17 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children cli
 	// ensure, Dynamic-credentials skip of the User/Grant. A non-zero result means
 	// the flow set a not-ready condition and we must return it unchanged.
 	res, err := database.ReconcileProvision(ctx, database.ProvisionFlowParams{
-		Client:        children,
-		Scheme:        r.Scheme,
-		Owner:         keystone,
-		InstanceName:  keystone.Name,
-		Namespace:     keystone.Namespace,
-		Database:      &keystone.Spec.Database,
-		Conditions:    &keystone.Status.Conditions,
-		Generation:    keystone.Generation,
-		ConditionType: "DatabaseReady",
-		RequeueAfter:  RequeueDatabaseWait,
+		Client:             children,
+		Scheme:             r.Scheme,
+		Owner:              keystone,
+		InstanceName:       keystone.Name,
+		Namespace:          keystone.Namespace,
+		Database:           &keystone.Spec.Database,
+		Conditions:         &keystone.Status.Conditions,
+		Generation:         keystone.Generation,
+		ConditionType:      "DatabaseReady",
+		RequeueAfter:       RequeueDatabaseWait,
+		MaxUserConnections: keystoneMaxUserConnections(keystone),
 	})
 	if err != nil || !res.IsZero() {
 		return res, err

@@ -296,6 +296,80 @@ func TestReconcileDatabase_Managed_AllReady_DatabaseSynced(t *testing.T) {
 	expectEvent(g, r, "Normal DatabaseSynced")
 }
 
+// TestKeystoneMaxUserConnections pins the connection-cap arithmetic. The cap is
+// what the operator asks mariadb-operator for, and a value below the real
+// concurrency does not degrade: the process that opens the connection past it
+// gets MySQL error 1226 and token validation answers 500.
+func TestKeystoneMaxUserConnections(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*keystonev1alpha1.Keystone)
+		want    int32
+		because string
+	}{
+		{
+			name:    "default topology",
+			want:    18,
+			because: "3 API pods plus one surge run 2 uWSGI processes each holding two connections, and two Jobs may overlap",
+		},
+		{
+			name: "autoscaling raises the pod ceiling",
+			mutate: func(k *keystonev1alpha1.Keystone) {
+				k.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{MaxReplicas: 5}
+			},
+			want:    26,
+			because: "an HPA owns the replica count, so the cap is sized for its ceiling rather than for spec.deployment.replicas",
+		},
+		{
+			name: "uWSGI threads add one connection each, processes multiply",
+			mutate: func(k *keystonev1alpha1.Keystone) {
+				k.Spec.UWSGI = &keystonev1alpha1.UWSGISpec{Processes: 4, Threads: 2}
+			},
+			want:    50,
+			because: "a process holds one connection per thread and one more behind them",
+		},
+		{
+			name:    "single replica",
+			mutate:  func(k *keystonev1alpha1.Keystone) { k.Spec.Deployment.Replicas = 1 },
+			want:    10,
+			because: "the surge pod doubles a single-replica fleet during a rollout",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := managedKeystone()
+			if tc.mutate != nil {
+				tc.mutate(ks)
+			}
+			g.Expect(keystoneMaxUserConnections(ks)).To(Equal(tc.want), tc.because)
+		})
+	}
+}
+
+// TestReconcileDatabase_Managed_SizesUserConnectionCap verifies that the User CR
+// the provisioning flow creates carries a max_user_connections cap sized from the
+// CR's topology. Left unset, the mariadb-operator CRD default of 10 applies, which
+// three replicas of two uWSGI processes exceed under load: token validation then
+// fails with MySQL error 1226 and every service behind keystonemiddleware sees
+// 401s and 503s.
+func TestReconcileDatabase_Managed_SizesUserConnectionCap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := managedKeystone()
+
+	r := newDBTestReconciler(s, ks, readyMariaDBCluster(ks), readyDatabase(ks))
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	user := &mariadbv1alpha1.User{}
+	g.Expect(r.Get(context.Background(), mariaDBResourceKey(ks), user)).To(Succeed())
+	g.Expect(user.Spec.MaxUserConnections).To(Equal(int32(18)),
+		"3 API pods plus one surge run 2 uWSGI processes each holding two connections, and two Jobs may overlap")
+}
+
 // TestReconcileDatabase_DynamicManaged_CreatesDatabaseButNoUserGrant verifies
 // that in Dynamic credentials mode the operator still provisions the schema
 // (Database CR) but does NOT create MariaDB User/Grant CRs — the OpenBao engine
