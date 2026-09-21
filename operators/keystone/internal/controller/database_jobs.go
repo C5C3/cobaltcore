@@ -29,6 +29,7 @@ func keystoneProvisionParams(keystone *keystonev1alpha1.Keystone) database.Provi
 		ClusterRef:         keystone.Spec.Database.ClusterRef.Name,
 		DatabaseName:       keystone.Spec.Database.Database,
 		PasswordSecretName: keystone.Spec.Database.SecretRef.Name,
+		MaxUserConnections: keystoneMaxUserConnections(keystone),
 	}
 }
 
