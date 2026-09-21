@@ -402,9 +402,10 @@ the installed one, and run the migration Jobs against the rendered config. The
 shared provisioning flow runs first: the MariaDB cluster gate plus
 `Database`/`User`/`Grant` in managed mode, a no-op in brownfield, and no
 `User`/`Grant` under `credentialsMode: Dynamic`. The SQL user's
-`max_user_connections` cap is sized from the CR's own topology, because each API
-worker process holds two pooled connections and a cap below the fleet's steady
-state crash-loops the last pods to start.
+`max_user_connections` cap is sized from the CR's own topology, because every
+neutron process pools up to five connections (oslo.db's `max_pool_size` default)
+and a cap below the fleet's demand crash-loops the last pods to start or, under
+load, turns into HTTP 500 responses.
 
 **The `WaitingForConfig` gate.** An empty ConfigMap name means the OVN endpoints
 are still unresolved and nothing has been rendered. The migration Jobs mount that
