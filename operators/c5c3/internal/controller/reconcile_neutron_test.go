@@ -1830,6 +1830,367 @@ func TestReconcileNeutron_NilBlockProjectsNoRegistration(t *testing.T) {
 	g.Expect(list.Items).To(BeEmpty())
 }
 
+// --- the compute-notifier registration ---
+
+// neutronControlPlaneWithNova returns the network-service fixture with a compute
+// service declared beside it, which is the condition the notifier registration
+// and the child's spec.nova block are projected under.
+func neutronControlPlaneWithNova() *c5c3v1alpha1.ControlPlane {
+	cp := neutronControlPlane()
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{}
+	return cp
+}
+
+// getProjectedNeutronNovaNotifier reads the account-only KeystoneService the
+// notifier leg projects beside the network service's own registration.
+func getProjectedNeutronNovaNotifier(
+	t *testing.T, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) *c5c3v1alpha1.KeystoneService {
+	t.Helper()
+	ks := &c5c3v1alpha1.KeystoneService{}
+	key := types.NamespacedName{Name: neutronNovaNotifierName(cp), Namespace: cp.NeutronNamespace()}
+	if err := c.Get(context.Background(), key, ks); err != nil {
+		t.Fatalf("getting projected KeystoneService %s: %v", key, err)
+	}
+	return ks
+}
+
+// TestReconcileNeutron_ProjectsTheNovaNotifierWhenNovaIsDeclared pins both halves
+// of the notifier wire: the account-only registration (no catalog entry, the
+// network service's project referenced rather than owned, admin beside service)
+// and the spec.nova block on the child that reads the credentials it delivers.
+func TestReconcileNeutron_ProjectsTheNovaNotifierWhenNovaIsDeclared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := neutronControlPlaneWithNova()
+	r := newNeutronTestReconciler(t, cp,
+		readyNeutronRegistration(cp), readyNeutronNovaNotifierRegistration(cp))
+
+	_, err := r.reconcileNeutron(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks := getProjectedNeutronNovaNotifier(t, r.Client, cp)
+	g.Expect(ks.Name).To(Equal("cp-neutron-nova"))
+	g.Expect(ks.Spec.ControlPlaneRef.Name).To(Equal("cp"))
+	g.Expect(ks.Spec.Catalog).To(BeNil(),
+		"a user another service authenticates as answers no requests, so it advertises no endpoint")
+	g.Expect(ks.Spec.Account).NotTo(BeNil())
+	g.Expect(ks.Spec.Account.UserName).To(Equal("neutron-nova"))
+	g.Expect(ks.Spec.Account.Project.Name).To(Equal("service-neutron"))
+	g.Expect(ks.Spec.Account.Project.Create).To(BeFalse(),
+		"the neutron registration owns that project; a second owner would delete it under the first")
+	g.Expect(ks.Spec.Account.Roles).To(Equal([]string{"service", "admin"}))
+
+	nova := getProjectedNeutron(t, r.Client, cp).Spec.Nova
+	g.Expect(nova).NotTo(BeNil())
+	g.Expect(nova.Region).To(Equal("RegionOne"))
+	g.Expect(nova.ServiceUser.Username).To(Equal("neutron-nova"))
+	g.Expect(nova.ServiceUser.ProjectName).To(Equal("service-neutron"))
+	g.Expect(nova.ServiceUser.UserDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(nova.ServiceUser.ProjectDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(nova.ServiceUser.SecretRef.Name).To(Equal("cp-neutron-nova-credentials"),
+		"the password comes from the consumer Secret the notifier registration delivers")
+	g.Expect(nova.ServiceUser.SecretRef.Key).To(Equal("password"))
+}
+
+// TestReconcileNeutron_ParksOnTheNotifierAccountGate covers the second account
+// gate: a converged neutron registration is not enough while the notifier's
+// Keystone user is missing, because the child would be pointed at a password that
+// does not resolve. No Neutron is written at all.
+func TestReconcileNeutron_ParksOnTheNotifierAccountGate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := neutronControlPlaneWithNova()
+	notifier := desiredNeutronNovaNotifierRegistration(cp)
+	conditions.SetCondition(&notifier.Status.Conditions, metav1.Condition{
+		Type:    conditionTypeKeystoneServiceAccountReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  reasonServiceAccountCollision,
+		Message: `user "neutron-nova" already exists in Keystone`,
+	})
+	r := newNeutronTestReconciler(t, cp, readyNeutronRegistration(cp), notifier)
+
+	res, err := r.reconcileNeutron(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeNeutronReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+	g.Expect(cond.Message).To(ContainSubstring("cp-neutron-nova"))
+	g.Expect(cond.Message).To(ContainSubstring(`user "neutron-nova" already exists in Keystone`))
+
+	var list neutronv1alpha1.NeutronList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty(), "the notifier gate blocks the Neutron projection like the first one")
+}
+
+// TestReconcileNeutron_NotifierApplyErrorSurfaces proves a failed write of the
+// notifier registration is reported on NeutronReady and returned, rather than
+// swallowed into a projection that names a credential nothing provisions.
+func TestReconcileNeutron_NotifierApplyErrorSurfaces(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := neutronControlPlaneWithNova()
+	s := neutronTestScheme(t)
+	seeded := withNeutronBusSecret(withReadyNeutronDBCred([]client.Object{cp, readyNeutronRegistration(cp)}))
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &neutronv1alpha1.Neutron{},
+			&c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration,
+				opts ...client.ApplyOption,
+			) error {
+				if ac, ok := obj.(client.Object); ok && ac.GetName() == neutronNovaNotifierName(cp) {
+					return apierrors.NewInternalError(errors.New("etcd is unavailable"))
+				}
+				return cl.Apply(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileNeutron(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred())
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeNeutronReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+	g.Expect(cond.Message).To(ContainSubstring("Neutron notifier"))
+
+	var list neutronv1alpha1.NeutronList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
+// TestReconcileNeutron_PrunesTheNotifierWhenNovaIsCleared walks the revert: the
+// child's spec.nova goes back to nil, the owned registration survives until the
+// child has converged on that spec and is deleted then, a second pass over the
+// already-deleted one is not an error, and a same-named KeystoneService this
+// ControlPlane never projected survives.
+func TestReconcileNeutron_PrunesTheNotifierWhenNovaIsCleared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := neutronControlPlaneWithNova()
+	r := newNeutronTestReconciler(t, cp,
+		readyNeutronRegistration(cp), readyNeutronNovaNotifierRegistration(cp))
+
+	_, err := r.reconcileNeutron(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedNeutron(t, r.Client, cp).Spec.Nova).NotTo(BeNil())
+
+	// Pin the child one generation behind: Ready and converged on the spec that
+	// still carried spec.nova, the status the API server returns to the apply
+	// that drops it.
+	nn := getProjectedNeutron(t, r.Client, cp)
+	nn.Generation = 2
+	g.Expect(r.Client.Update(ctx, nn)).To(Succeed())
+	convergeNeutronChild(t, r, cp, 1)
+
+	cp.Spec.Services.Nova = nil
+	_, err = r.reconcileNeutron(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(getProjectedNeutron(t, r.Client, cp).Spec.Nova).To(BeNil(),
+		"clearing services.nova reverts the child instead of pinning the last projected block")
+	notifierKey := types.NamespacedName{Name: neutronNovaNotifierName(cp), Namespace: cp.NeutronNamespace()}
+	g.Expect(r.Get(ctx, notifierKey, &c5c3v1alpha1.KeystoneService{})).To(Succeed(),
+		"the live workloads still source OS_NOVA__PASSWORD from the Secret the registration owns")
+
+	// The neutron-operator catches up: the child reports the generation the apply
+	// produced, so no process reads the notifier password any more.
+	convergeNeutronChild(t, r, cp, 2)
+	_, err = r.reconcileNeutron(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, notifierKey, &c5c3v1alpha1.KeystoneService{}))).To(BeTrue(),
+		"the owned notifier registration comes down once the child has converged without the block")
+
+	// The registration is gone, and the next pass must not read that as a failure.
+	_, err = r.reconcileNeutron(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	foreignCP := neutronControlPlane()
+	foreign := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: neutronNovaNotifierName(foreignCP), Namespace: foreignCP.NeutronNamespace(),
+		},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "someone-else"},
+		},
+	}
+	rForeign := newNeutronTestReconciler(t, foreignCP, readyNeutronRegistration(foreignCP), foreign)
+	_, err = rForeign.reconcileNeutron(ctx, foreignCP)
+	g.Expect(err).NotTo(HaveOccurred())
+	convergeNeutronChild(t, rForeign, foreignCP, getProjectedNeutron(t, rForeign.Client, foreignCP).Generation)
+	_, err = rForeign.reconcileNeutron(ctx, foreignCP)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var live c5c3v1alpha1.KeystoneService
+	g.Expect(rForeign.Get(ctx, types.NamespacedName{
+		Name: neutronNovaNotifierName(foreignCP), Namespace: foreignCP.NeutronNamespace(),
+	}, &live)).To(Succeed())
+	g.Expect(live.Spec.ControlPlaneRef.Name).To(Equal("someone-else"),
+		"a KeystoneService we do not own must never be deleted")
+}
+
+// TestReconcileNeutron_KeepsTheNotifierWhileTheChildStillNamesIt covers the
+// window the convergence gate does not: a gate between the notifier leg and the
+// projection halts the pass with the child's spec.nova still naming the
+// registration's Secret. Here that gate is the Dynamic DB credential, which an
+// OpenBao outage holds on every pass. Pruning there would leave the live child
+// reading OS_NOVA__PASSWORD from a Secret that no longer exists for as long as
+// the outage lasts.
+func TestReconcileNeutron_KeepsTheNotifierWhileTheChildStillNamesIt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := neutronControlPlaneWithNova()
+	r := newNeutronTestReconciler(t, cp,
+		readyNeutronRegistration(cp), readyNeutronNovaNotifierRegistration(cp))
+
+	_, err := r.reconcileNeutron(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	convergeNeutronChild(t, r, cp, getProjectedNeutron(t, r.Client, cp).Generation)
+
+	// Clear the block, and halt this pass on the DB credential, the gate between
+	// the notifier leg and the apply: the child is never re-applied, so spec.nova
+	// stays live.
+	cp.Spec.Services.Nova = nil
+	dbCred := &esov1.ExternalSecret{}
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: neutronDBCredentialSecretName(cp), Namespace: cp.NeutronNamespace(),
+	}, dbCred)).To(Succeed())
+	dbCred.Status.Conditions = []esov1.ExternalSecretStatusCondition{
+		{Type: esov1.ExternalSecretReady, Status: corev1.ConditionFalse, Reason: "SecretSyncedError"},
+	}
+	g.Expect(r.Client.Update(ctx, dbCred)).To(Succeed())
+
+	res, err := r.reconcileNeutron(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).NotTo(BeZero(), "the pass has to halt on the DB credential gate")
+	g.Expect(conditions.GetCondition(cp.Status.Conditions, conditionTypeNeutronReady).Reason).
+		To(Equal("WaitingForNeutronDBCredential"))
+
+	g.Expect(getProjectedNeutron(t, r.Client, cp).Spec.Nova).NotTo(BeNil(),
+		"the halted pass left the child's spec.nova in place")
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: neutronNovaNotifierName(cp), Namespace: cp.NeutronNamespace(),
+	}, &c5c3v1alpha1.KeystoneService{})).To(Succeed(),
+		"the registration must not be deleted while the live child still reads its Secret")
+}
+
+// TestReconcileNeutron_NotifierPruneErrorSurfaces pins that a failure to delete
+// the stale notifier registration surfaces, on both paths that delete it: the
+// cleared services.nova, and the opt-in removal of the network service itself.
+// Swallowing it would leave the neutron-nova account, which holds admin, in
+// Keystone while NeutronReady reads True.
+func TestReconcileNeutron_NotifierPruneErrorSurfaces(t *testing.T) {
+	failingNotifierDelete := func(cp *c5c3v1alpha1.ControlPlane) interceptor.Funcs {
+		return interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if ks, ok := obj.(*c5c3v1alpha1.KeystoneService); ok && ks.Name == neutronNovaNotifierName(cp) {
+					return apierrors.NewInternalError(errors.New("etcd is unavailable"))
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}
+	}
+	newReconciler := func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) *ControlPlaneReconciler {
+		t.Helper()
+		s := neutronTestScheme(t)
+		seeded := withNeutronTenantStore(withReadyNeutronRegistration(withNeutronBusSecret(withReadyNeutronDBCred(
+			[]client.Object{cp, readyNeutronRegistration(cp), readyNeutronNovaNotifierRegistration(cp)}))))
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &neutronv1alpha1.Neutron{},
+				&c5c3v1alpha1.KeystoneService{}).
+			WithInterceptorFuncs(failingNotifierDelete(cp)).Build()
+		return &ControlPlaneReconciler{Client: c, Scheme: s}
+	}
+
+	t.Run("services.nova cleared", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		cp := neutronControlPlaneWithNova()
+		r := newReconciler(t, cp)
+		_, err := r.reconcileNeutron(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		cp.Spec.Services.Nova = nil
+		_, err = r.reconcileNeutron(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		convergeNeutronChild(t, r, cp, getProjectedNeutron(t, r.Client, cp).Generation)
+		_, err = r.reconcileNeutron(ctx, cp)
+
+		g.Expect(err).To(MatchError(ContainSubstring("etcd is unavailable")))
+		cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeNeutronReady)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+		g.Expect(cond.Message).To(ContainSubstring("deleting the stale Neutron notifier registration"))
+	})
+
+	t.Run("services.neutron removed with the deletion opt-in", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		cp := neutronControlPlaneWithNova()
+		r := newReconciler(t, cp)
+		_, err := r.reconcileNeutron(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		cp.Spec.Services.Neutron = nil
+		cp.Annotations = map[string]string{neutronDeletionAllowedAnnotation: "true"}
+		_, err = r.reconcileNeutron(ctx, cp)
+
+		g.Expect(err).To(MatchError(ContainSubstring("etcd is unavailable")))
+		g.Expect(r.Get(ctx, types.NamespacedName{
+			Name: neutronNovaNotifierName(cp), Namespace: cp.NeutronNamespace(),
+		}, &c5c3v1alpha1.KeystoneService{})).To(Succeed())
+	})
+}
+
+// TestReconcileNeutron_KeepsSpecNovaNilWithoutNova is the staged-adoption path: a
+// ControlPlane running a network service and no compute service projects neither
+// the notifier registration nor a spec.nova block.
+func TestReconcileNeutron_KeepsSpecNovaNilWithoutNova(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := neutronControlPlane()
+	r := newNeutronTestReconciler(t, cp)
+
+	_, err := r.reconcileNeutron(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(getProjectedNeutron(t, r.Client, cp).Spec.Nova).To(BeNil())
+
+	var list c5c3v1alpha1.KeystoneServiceList
+	g.Expect(r.Client.List(ctx, &list)).To(Succeed())
+	g.Expect(list.Items).To(HaveLen(1), "only the network service's own registration is projected")
+	g.Expect(list.Items[0].Name).To(Equal(neutronName(cp)))
+}
+
+// TestDeleteOrphanedNeutron_DeletesTheNotifierRegistration covers the teardown
+// sweep: dropping services.neutron with the deletion opt-in takes both
+// registrations down, and repeating the sweep on objects that are already gone is
+// not an error.
+func TestDeleteOrphanedNeutron_DeletesTheNotifierRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := neutronControlPlaneWithNova()
+	r := newNeutronTestReconciler(t, cp,
+		readyNeutronRegistration(cp), readyNeutronNovaNotifierRegistration(cp))
+
+	_, err := r.reconcileNeutron(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	getProjectedNeutronNovaNotifier(t, r.Client, cp)
+
+	cp.Spec.Services.Neutron = nil
+	cp.Annotations = map[string]string{neutronDeletionAllowedAnnotation: "true"}
+	_, err = r.reconcileNeutron(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var list c5c3v1alpha1.KeystoneServiceList
+	g.Expect(r.Client.List(ctx, &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty(), "both registrations come down with the network service")
+
+	g.Expect(r.deleteOrphanedNeutron(ctx, cp)).To(Succeed(),
+		"a sweep over objects that are already gone is idempotent")
+}
+
 // TestNeutronEndpointURL pins the in-cluster Neutron API endpoint convention the
 // catalog registers against: http://{name}.{ns}.svc:9696.
 func TestNeutronEndpointURL(t *testing.T) {
