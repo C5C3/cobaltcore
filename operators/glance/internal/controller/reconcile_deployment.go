@@ -684,6 +684,11 @@ func glanceUsesUWSGI(glance *glancev1alpha1.Glance) bool {
 	return rel.Year > 2026 || (rel.Year == 2026 && rel.Minor >= 1)
 }
 
+// glanceUWSGIChunkedInputLimit is the --chunked-input-limit the uWSGI launch
+// mode runs with, in bytes: 16 MiB, against a 1 MB default that rejects the
+// 1 MiB chunks glanceclient uploads in.
+const glanceUWSGIChunkedInputLimit = "16777216"
+
 // glanceUWSGICommand constructs the uWSGI container command for the Glance API
 // container from the given apiServer spec. Token emission and default
 // resolution are owned by deployment.BuildUWSGICommand; this function only
@@ -699,10 +704,24 @@ func glanceUWSGICommand(apiServer *glancev1alpha1.APIServerSpec) []string {
 		Bind:  fmt.Sprintf(":%d", glanceAPIPort),
 		// Glance streams image uploads and downloads with chunked transfer
 		// encoding, so uWSGI must accept chunked request bodies and re-chunk
-		// responses. These two flags are always on regardless of the tuning knobs.
-		ArgsAfterHTTP: []string{"--http-auto-chunked", "--http-chunked-input"},
-		WSGIFilePath:  glanceWSGIScriptPath,
-		TrailingArgs:  []string{"--pyargv", glanceUWSGIPyargv},
+		// responses. These flags are always on regardless of the tuning knobs.
+		//
+		// --chunked-input-limit bounds the buffer uWSGI parses one request
+		// chunk into (core/chunked.c) and defaults to 1 MB, which a 1 MiB
+		// chunk plus its framing does not fit. glanceclient streams a body
+		// of unknown size in exactly such chunks (glanceclient/common/http.py,
+		// CHUNKSIZE), so every cinder upload-to-image and every nova
+		// snapshot upload died in glance with "OSError: unable to receive
+		// chunked part" and a 500 under this launch mode, while the eventlet
+		// mode below 2026.1 has no such limit. 16 MiB leaves room for a
+		// client with a larger chunk; uWSGI grows the buffer only to the
+		// chunk it receives, so the limit costs nothing on its own.
+		ArgsAfterHTTP: []string{
+			"--http-auto-chunked", "--http-chunked-input",
+			"--chunked-input-limit", glanceUWSGIChunkedInputLimit,
+		},
+		WSGIFilePath: glanceWSGIScriptPath,
+		TrailingArgs: []string{"--pyargv", glanceUWSGIPyargv},
 	})
 }
 

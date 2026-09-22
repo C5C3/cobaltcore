@@ -89,8 +89,13 @@ falls back to the eventlet mode. Both modes load the **same two** oslo.config
 (`/etc/glance/backends.conf.d/`).
 
 - **uWSGI (`>= 2026.1`).** The command is `uwsgi --http :9292
-  --http-auto-chunked --http-chunked-input …` — the two chunked flags are always
-  on because Glance streams image bodies with chunked transfer encoding. Keep-alive
+  --http-auto-chunked --http-chunked-input --chunked-input-limit 16777216 …` —
+  the two chunked flags are always on because Glance streams image bodies with
+  chunked transfer encoding, and the limit raises uWSGI's 1 MB cap on one
+  request chunk to 16 MiB: glanceclient uploads a body of unknown size in 1 MiB
+  chunks, which the default rejects with `OSError: unable to receive chunked
+  part` and a 500, so cinder's upload-to-image and nova's snapshot upload fail
+  under the default while the eventlet mode has no such cap. Keep-alive
   (`--http-keepalive`, and `--http-keepalive-timeout` when set) and `--harakiri`
   are emitted from the `spec.apiServer.uwsgi` knobs. uWSGI loads the WSGI app
   through `--wsgi-file /var/lib/openstack/bin/glance-wsgi-api` (the image-shipped

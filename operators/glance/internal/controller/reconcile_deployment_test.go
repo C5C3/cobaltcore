@@ -102,6 +102,12 @@ func TestGlanceLaunchCommand_UWSGIFrom2026(t *testing.T) {
 	g.Expect(cmd).To(ContainElements("--wsgi-file", glanceWSGIScriptPath))
 	g.Expect(cmd).NotTo(ContainElement("--module"))
 	g.Expect(cmd).To(ContainElements("--http-auto-chunked", "--http-chunked-input"))
+	// glanceclient streams uploads in 1 MiB chunks and uWSGI's default
+	// chunked-input limit is 1 MB, so without a raised limit every cinder
+	// upload-to-image and nova snapshot upload fails with a 500.
+	limit, ok := argAfter(cmd, "--chunked-input-limit")
+	g.Expect(ok).To(BeTrue())
+	g.Expect(limit).To(Equal("16777216"))
 	httpBind, ok := argAfter(cmd, "--http")
 	g.Expect(ok).To(BeTrue())
 	g.Expect(httpBind).To(Equal(":9292"))
