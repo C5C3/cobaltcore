@@ -327,3 +327,28 @@ func TestPinOVNDBSyncCronJob(t *testing.T) {
 		})
 	}
 }
+
+// TestPinOVNDBSyncCronJob_NovaNotifierPasswordEnv covers the notifier password
+// on the sync CronJob. The utility loads the same neutron.conf the server does,
+// and oslo.config fails a [nova] section whose password is nowhere to be found,
+// so the variable travels with the config rather than with the process that
+// sends the notifications.
+func TestPinOVNDBSyncCronJob_NovaNotifierPasswordEnv(t *testing.T) {
+	g := NewWithT(t)
+
+	without := validNeutron()
+	without.Spec.OVNDBSync = &neutronv1alpha1.OVNDBSyncSpec{}
+	job := buildOVNDBSyncCronJob(without, pinDeploymentConfigMapName)
+	g.Expect(findEnvVar(job.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Env, "OS_NOVA__PASSWORD")).To(BeNil(),
+		"a Neutron without spec.nova must not carry the notifier password")
+
+	neutron := validNeutron()
+	neutron.Spec.OVNDBSync = &neutronv1alpha1.OVNDBSyncSpec{}
+	neutron.Spec.Nova = novaNotifierSpec()
+	with := buildOVNDBSyncCronJob(neutron, pinDeploymentConfigMapName)
+
+	env := findEnvVar(with.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Env, "OS_NOVA__PASSWORD")
+	g.Expect(env).NotTo(BeNil())
+	g.Expect(env.ValueFrom.SecretKeyRef.Name).To(Equal(testNovaNotifierSecretName))
+	g.Expect(env.ValueFrom.SecretKeyRef.Key).To(Equal("password"))
+}

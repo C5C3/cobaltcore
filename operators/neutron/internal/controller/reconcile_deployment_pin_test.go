@@ -881,13 +881,13 @@ const pinDeploymentConfigMapName = "neutron-config-abc"
 
 // TestPinNeutronDeployment pins the rendered Deployment across the variants that
 // change the pod template: the default, the autoscaling case (where
-// .spec.replicas must stay absent so the HPA owns it), all four digest
-// annotations stamped, and the two TLS projections.
+// .spec.replicas must stay absent so the HPA owns it), the four digest
+// annotations every Neutron carries stamped, and the two TLS projections.
 func TestPinNeutronDeployment(t *testing.T) {
 	cases := []struct {
 		name    string
 		neutron func() *neutronv1alpha1.Neutron
-		digests [4]string
+		digests [5]string
 		golden  string
 	}{
 		{
@@ -907,7 +907,7 @@ func TestPinNeutronDeployment(t *testing.T) {
 		{
 			name:    "hash-annotations",
 			neutron: validNeutron,
-			digests: [4]string{"dsn123", "auth456", "amqp789", "ovn012"},
+			digests: [5]string{"dsn123", "auth456", "amqp789", "ovn012"},
 			golden:  pinNeutronDeploymentDigestsGolden,
 		},
 		{
@@ -941,12 +941,42 @@ func TestPinNeutronDeployment(t *testing.T) {
 			g := NewWithT(t)
 
 			got, err := yaml.Marshal(buildNeutronDeployment(tc.neutron(), pinDeploymentConfigMapName,
-				tc.digests[0], tc.digests[1], tc.digests[2], tc.digests[3]))
+				tc.digests[0], tc.digests[1], tc.digests[2], tc.digests[3], tc.digests[4]))
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(string(got)).To(Equal(tc.golden),
 				"the rendered Neutron Deployment must stay byte-identical")
 		})
 	}
+}
+
+// TestPinNeutronDeployment_NovaNotifierPasswordEnv covers the one variable
+// spec.nova adds to the API container. It is asserted next to the golden rather
+// than inside it because the golden pins the block-less shape, and the two
+// cannot be the same document: the variable is present in one and absent in the
+// other. The Secret key follows spec.nova.serviceUser.secretRef.key, so a CR
+// that names its own key reaches the same password. The notifier digest rides an
+// annotation of its own, so a roll it triggers is not read as an authtoken
+// rotation.
+func TestPinNeutronDeployment_NovaNotifierPasswordEnv(t *testing.T) {
+	g := NewWithT(t)
+
+	without := buildNeutronDeployment(validNeutron(), pinDeploymentConfigMapName, "", "", "", "", "")
+	g.Expect(findEnvVar(without.Spec.Template.Spec.Containers[0].Env, "OS_NOVA__PASSWORD")).To(BeNil(),
+		"a Neutron without spec.nova must not carry the notifier password")
+
+	neutron := validNeutron()
+	neutron.Spec.Nova = novaNotifierSpec()
+	neutron.Spec.Nova.ServiceUser.SecretRef.Key = "notifier-password"
+	with := buildNeutronDeployment(neutron, pinDeploymentConfigMapName, "", "auth456", "", "", "nova345")
+
+	env := findEnvVar(with.Spec.Template.Spec.Containers[0].Env, "OS_NOVA__PASSWORD")
+	g.Expect(env).NotTo(BeNil())
+	g.Expect(env.ValueFrom.SecretKeyRef.Name).To(Equal(testNovaNotifierSecretName))
+	g.Expect(env.ValueFrom.SecretKeyRef.Key).To(Equal("notifier-password"))
+	g.Expect(with.Spec.Template.Annotations).To(Equal(map[string]string{
+		"neutron.c5c3.io/authtoken-hash":     "auth456",
+		"neutron.c5c3.io/nova-notifier-hash": "nova345",
+	}))
 }
 
 // TestPinNeutronService pins the rendered Service, which carries no variants:

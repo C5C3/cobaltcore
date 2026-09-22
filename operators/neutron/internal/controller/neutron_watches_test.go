@@ -52,6 +52,8 @@ func TestSecretToNeutronMapper_ReferencedSecretsEnqueueTheCR(t *testing.T) {
 	brownfield := validNeutron()
 	brownfield.Spec.Messaging.ClusterRef = nil
 	brownfield.Spec.Messaging.SecretRef = &commonv1.SecretRefSpec{Name: "neutron-transport", Key: "transport_url"}
+	notifying := validNeutron()
+	notifying.Spec.Nova = novaNotifierSpec()
 
 	tests := []struct {
 		name    string
@@ -61,6 +63,7 @@ func TestSecretToNeutronMapper_ReferencedSecretsEnqueueTheCR(t *testing.T) {
 		{name: "spec.database.secretRef.name", neutron: validNeutron(), secret: "neutron-db"},
 		{name: "spec.serviceUser.secretRef.name", neutron: validNeutron(), secret: "neutron-service-user"},
 		{name: "spec.messaging.secretRef.name", neutron: brownfield, secret: "neutron-transport"},
+		{name: "spec.nova.serviceUser.secretRef.name", neutron: notifying, secret: testNovaNotifierSecretName},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

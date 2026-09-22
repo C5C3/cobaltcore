@@ -17,6 +17,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
@@ -45,12 +46,23 @@ const (
 // neutronWorkloadEnv returns the environment every Neutron process is started
 // with: the two oslo.config overrides that deliver the database URL and the
 // transport URL from their derived Secrets, so neither credential is written to
-// the rendered config. The API container adds its own variables on top.
+// the rendered config, and, while spec.nova is set, the [nova] password the
+// port notifier authenticates with. The API container adds its own variables on
+// top.
+//
+// The notifier password reaches every neutron-server process rather than the
+// API pods alone: the ML2 plugin sends the notifications from whichever process
+// handles the port update, and the maintenance worker resyncs them too.
 func neutronWorkloadEnv(neutron *neutronv1alpha1.Neutron) []corev1.EnvVar {
-	return []corev1.EnvVar{
+	env := []corev1.EnvVar{
 		database.ConnectionEnvVar(neutron.Name),
 		messaging.TransportURLEnvVar(neutron.Name),
 	}
+	if nova := neutron.Spec.Nova; nova != nil {
+		env = append(env, keystoneauth.ClientPasswordEnvVar("nova",
+			nova.ServiceUser.SecretRef.Name, effectiveNovaNotifierKey(neutron)))
+	}
+	return env
 }
 
 // workerSelectorLabels returns the pod selector of one worker Deployment: the
@@ -77,12 +89,13 @@ func workerSelectorLabels(neutron *neutronv1alpha1.Neutron, component string) ma
 // dials them, they scale on the maintenance load rather than on request rate,
 // and an eviction costs a delayed maintenance pass rather than a failed request.
 //
-// The four digests are the API Deployment's, stamped for the same reason: both
-// worker processes read the database and the broker through env-injected
-// credentials and mount the OVN client identity, so a rotation has to roll them
-// too.
+// The five digests are the API Deployment's, stamped for the same reason: both
+// worker processes read the database, the broker and the notifier password
+// through env-injected credentials and mount the OVN client identity, so a
+// rotation has to roll them too.
 func (r *NeutronReconciler) reconcileWorkers(ctx context.Context, children client.Client,
-	neutron *neutronv1alpha1.Neutron, configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest string,
+	neutron *neutronv1alpha1.Neutron,
+	configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest string,
 ) (ctrl.Result, error) {
 	workers := []struct {
 		component string
@@ -95,7 +108,7 @@ func (r *NeutronReconciler) reconcileWorkers(ctx context.Context, children clien
 	allReady := true
 	for _, worker := range workers {
 		deploy := buildWorkerDeployment(neutron, worker.component, worker.command,
-			configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest)
+			configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest)
 		ready, err := deployment.EnsureDeployment(ctx, children, r.Scheme, neutron, deploy)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("ensuring %s Deployment: %w", deploy.Name, err)
@@ -132,7 +145,7 @@ func (r *NeutronReconciler) reconcileWorkers(ctx context.Context, children clien
 // would report nothing a client acts on, and an HPA has no request rate to scale
 // against.
 func buildWorkerDeployment(neutron *neutronv1alpha1.Neutron, component string, command []string,
-	configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest string,
+	configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest string,
 ) *appsv1.Deployment {
 	volumes, mounts := neutronWorkloadVolumes(neutron, configMapName)
 	return deployment.BuildWorkload(deployment.WorkloadParams{
@@ -140,7 +153,7 @@ func buildWorkerDeployment(neutron *neutronv1alpha1.Neutron, component string, c
 		Name:           neutron.Name + "-" + component,
 		Labels:         componentLabels(neutron, component),
 		SelectorLabels: workerSelectorLabels(neutron, component),
-		PodAnnotations: neutronPodAnnotations(dsnDigest, authtokenDigest, transportDigest, ovnClientDigest),
+		PodAnnotations: neutronPodAnnotations(dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest),
 		Deployment:     &neutron.Spec.Workers.Deployment,
 		// The worker replica count is spec.workers.deployment.replicas alone: no
 		// HorizontalPodAutoscaler targets these Deployments, so nothing else owns

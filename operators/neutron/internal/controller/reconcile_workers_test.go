@@ -34,7 +34,7 @@ const (
 // readyWorkerDeployment returns one worker Deployment with the status of a
 // completed rollout.
 func readyWorkerDeployment(neutron *neutronv1alpha1.Neutron, component string, command []string) *appsv1.Deployment {
-	deploy := buildWorkerDeployment(neutron, component, command, deploymentConfigMapName, "", "", "", "")
+	deploy := buildWorkerDeployment(neutron, component, command, deploymentConfigMapName, "", "", "", "", "")
 	markDeploymentRolledOut(deploy)
 	return deploy
 }
@@ -57,7 +57,7 @@ func TestReconcileWorkers_ProjectsBothWorkloads(t *testing.T) {
 	neutron := validNeutron()
 	r := newNeutronTestReconciler(neutron)
 
-	_, err := r.reconcileWorkers(ctx, r.Client, neutron, deploymentConfigMapName, "", "", "", "")
+	_, err := r.reconcileWorkers(ctx, r.Client, neutron, deploymentConfigMapName, "", "", "", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cases := []struct {
@@ -129,12 +129,12 @@ func TestReconcileWorkers_MountsTheSharedWorkloadVolumes(t *testing.T) {
 	neutron := validNeutron()
 
 	deploy := buildWorkerDeployment(neutron, componentPeriodicWorkers,
-		neutronCommand("neutron-periodic-workers"), deploymentConfigMapName, "dsn", "auth", "amqp", "ovn")
+		neutronCommand("neutron-periodic-workers"), deploymentConfigMapName, "dsn", "auth", "amqp", "ovn", "nova")
 
 	volumes, mounts := neutronWorkloadVolumes(neutron, deploymentConfigMapName)
 	g.Expect(deploy.Spec.Template.Spec.Volumes).To(Equal(volumes))
 	g.Expect(deploy.Spec.Template.Spec.Containers[0].VolumeMounts).To(Equal(mounts))
-	g.Expect(deploy.Spec.Template.Annotations).To(Equal(neutronPodAnnotations("dsn", "auth", "amqp", "ovn")),
+	g.Expect(deploy.Spec.Template.Annotations).To(Equal(neutronPodAnnotations("dsn", "auth", "amqp", "ovn", "nova")),
 		"a rotated credential has to roll the workers too")
 }
 
@@ -151,7 +151,7 @@ func TestReconcileWorkers_WaitsForBothDeployments(t *testing.T) {
 		ready := readyWorkerDeployment(neutron, componentPeriodicWorkers, neutronCommand("neutron-periodic-workers"))
 		r := newNeutronTestReconciler(neutron, ready)
 
-		res, err := r.reconcileWorkers(ctx, r.Client, neutron, deploymentConfigMapName, "", "", "", "")
+		res, err := r.reconcileWorkers(ctx, r.Client, neutron, deploymentConfigMapName, "", "", "", "", "")
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
@@ -166,7 +166,7 @@ func TestReconcileWorkers_WaitsForBothDeployments(t *testing.T) {
 		neutron := validNeutron()
 		r := newNeutronTestReconciler(append(readyWorkerDeployments(neutron), neutron)...)
 
-		res, err := r.reconcileWorkers(ctx, r.Client, neutron, deploymentConfigMapName, "", "", "", "")
+		res, err := r.reconcileWorkers(ctx, r.Client, neutron, deploymentConfigMapName, "", "", "", "", "")
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(res.IsZero()).To(BeTrue())
@@ -186,7 +186,7 @@ func TestReconcileWorkers_ApplyFailureNamesTheDeployment(t *testing.T) {
 	boom := errors.New("admission webhook rejected the Deployment")
 	r := failingApplyReconciler(boom, "Deployment", ovnMaintenanceName, neutron)
 
-	_, err := r.reconcileWorkers(context.Background(), r.Client, neutron, deploymentConfigMapName, "", "", "", "")
+	_, err := r.reconcileWorkers(context.Background(), r.Client, neutron, deploymentConfigMapName, "", "", "", "", "")
 
 	g.Expect(err).To(MatchError(boom))
 	g.Expect(err).To(MatchError(ContainSubstring("ensuring " + ovnMaintenanceName + " Deployment:")))

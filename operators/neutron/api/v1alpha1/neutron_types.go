@@ -187,6 +187,19 @@ type NeutronSpec struct {
 	// there is exactly one control plane per Neutron.
 	OVN OVNSpec `json:"ovn"`
 
+	// Nova names the compute service this Neutron notifies when a port changes
+	// state, and the Keystone account it notifies as. The presence of the block
+	// is the switch: while it is set the operator turns both
+	// notify_nova_on_port_* flags on and renders the [nova] credentials, and
+	// while it is absent the flags stay off and the section stays empty, so a
+	// port never waits for a vif-plugged event nothing sends. There is no
+	// enabled field, the way spec.ovnDBSync and the agent's spec.novaMetadata
+	// work, and no endpoint override: neutron's [nova] option group carries
+	// region_name and endpoint_type alone, so the compute endpoint is resolved
+	// from the Keystone catalog rather than configured.
+	// +optional
+	Nova *NovaSpec `json:"nova,omitempty"`
+
 	// OVNDBSync configures the recurring neutron-ovn-db-sync-util run that
 	// compares the Neutron database against the OVN Northbound database. When nil
 	// no CronJob is created.
@@ -307,6 +320,58 @@ type ServiceUserSpec struct {
 
 	// SecretRef references the Secret holding the service user's password. The
 	// key is webhook-defaulted to "password".
+	SecretRef commonv1.SecretRefSpec `json:"secretRef"`
+}
+
+// NovaSpec configures the Nova the Neutron server notifies about port state and
+// port data changes. The notifier is a REST client of the compute API's
+// os-server-external-events resource, so it needs a Keystone account of its own
+// and a region to resolve the endpoint in.
+type NovaSpec struct {
+	// Region is the Keystone region the compute endpoint is resolved in ([nova]
+	// region_name). Optional: when empty the option is omitted and the notifier
+	// uses the Keystone catalog's default region.
+	// +optional
+	Region string `json:"region,omitempty"`
+
+	// ServiceUser identifies the Keystone account the notifier authenticates as
+	// and the Secret holding its password. The defaulting webhook fills the
+	// name and domain fields inside a present block; the password Secret
+	// reference is required.
+	ServiceUser NovaNotifierUserSpec `json:"serviceUser"`
+}
+
+// NovaNotifierUserSpec identifies the Keystone account Neutron sends its Nova
+// notifications as, and references the Secret holding that account's password.
+// It carries the field set of ServiceUserSpec with defaults of its own: the
+// defaulting webhook materializes them (username neutron-nova, projectName
+// service, userDomainName and projectDomainName Default), so a minimal block
+// need only supply the password Secret reference. The account is separate from
+// spec.serviceUser because the notifier calls the compute API as a user with
+// the admin role, which the token-validation account does not need.
+type NovaNotifierUserSpec struct {
+	// Username is the Keystone username the notifier authenticates as ([nova]
+	// username). Webhook-defaulted to "neutron-nova".
+	// +optional
+	Username string `json:"username,omitempty"`
+
+	// ProjectName is the Keystone project the notifier account scopes to
+	// ([nova] project_name). Webhook-defaulted to "service".
+	// +optional
+	ProjectName string `json:"projectName,omitempty"`
+
+	// UserDomainName is the domain the notifier account lives in ([nova]
+	// user_domain_name). Webhook-defaulted to "Default".
+	// +optional
+	UserDomainName string `json:"userDomainName,omitempty"`
+
+	// ProjectDomainName is the domain the notifier project lives in ([nova]
+	// project_domain_name). Webhook-defaulted to "Default".
+	// +optional
+	ProjectDomainName string `json:"projectDomainName,omitempty"`
+
+	// SecretRef references the Secret holding the notifier account's password.
+	// The key is webhook-defaulted to "password".
 	SecretRef commonv1.SecretRefSpec `json:"secretRef"`
 }
 

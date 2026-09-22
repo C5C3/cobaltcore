@@ -66,6 +66,11 @@ const (
 	// #nosec G101 -- annotation key naming a digest, not a credential.
 	transportURLHashAnnotation = "neutron.c5c3.io/transport-url-hash"
 	ovnClientHashAnnotation    = "neutron.c5c3.io/ovn-client-hash"
+	// novaNotifierHashAnnotation carries the Nova notifier password's digest
+	// under a key of its own, so a roll it triggers names the notifier rather
+	// than the [keystone_authtoken] account.
+	// #nosec G101 -- annotation key naming a digest, not a credential.
+	novaNotifierHashAnnotation = "neutron.c5c3.io/nova-notifier-hash"
 )
 
 // Condition reason constants for DeploymentReady.
@@ -117,14 +122,17 @@ func internalNeutronURL(neutron *neutronv1alpha1.Neutron) string {
 // empty here: the config step returns a name or an error, and an error
 // short-circuits the pipeline ahead of this step.
 //
-// The four digests are stamped into pod-template annotations so a rotated
+// The five digests are stamped into pod-template annotations so a rotated
 // credential or a re-issued OVN client certificate rolls the pods. Each
 // annotation is omitted when its digest is empty, which is what the requeue and
-// error paths upstream return.
+// error paths upstream return, and what a Neutron without spec.nova carries for
+// the notifier.
 func (r *NeutronReconciler) reconcileDeployment(ctx context.Context, children client.Client,
-	neutron *neutronv1alpha1.Neutron, configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest string,
+	neutron *neutronv1alpha1.Neutron,
+	configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest string,
 ) (ctrl.Result, error) {
-	deploy := buildNeutronDeployment(neutron, configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest)
+	deploy := buildNeutronDeployment(neutron, configMapName,
+		dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest)
 	ready, err := deployment.EnsureDeployment(ctx, children, r.Scheme, neutron, deploy)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
@@ -233,7 +241,7 @@ func neutronDeploymentRolledOut(deploy *appsv1.Deployment) bool {
 // transport URL, and the service-user password are injected via env vars so no
 // credential material enters the config document.
 func buildNeutronDeployment(neutron *neutronv1alpha1.Neutron,
-	configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest string,
+	configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest string,
 ) *appsv1.Deployment {
 	volumes, mounts := neutronWorkloadVolumes(neutron, configMapName)
 	return deployment.BuildWorkload(deployment.WorkloadParams{
@@ -241,7 +249,7 @@ func buildNeutronDeployment(neutron *neutronv1alpha1.Neutron,
 		Name:           neutron.Name,
 		Labels:         componentLabels(neutron, naming.ComponentAPI),
 		SelectorLabels: apiSelectorLabels(neutron),
-		PodAnnotations: neutronPodAnnotations(dsnDigest, authtokenDigest, transportDigest, ovnClientDigest),
+		PodAnnotations: neutronPodAnnotations(dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest),
 		Deployment:     &neutron.Spec.Deployment,
 		Autoscaling:    neutron.Spec.Autoscaling,
 		Container: deployment.ContainerParams{
@@ -342,7 +350,9 @@ func neutronAPIProbeHandler() corev1.ProbeHandler {
 // return an empty digest) leave the annotation off and cause no spurious
 // rollout. Returns nil when every digest is empty so the pod template carries no
 // annotations.
-func neutronPodAnnotations(dsnDigest, authtokenDigest, transportDigest, ovnClientDigest string) map[string]string {
+func neutronPodAnnotations(
+	dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest string,
+) map[string]string {
 	annotations := map[string]string{}
 	if dsnDigest != "" {
 		annotations[dbConnectionHashAnnotation] = dsnDigest
@@ -355,6 +365,9 @@ func neutronPodAnnotations(dsnDigest, authtokenDigest, transportDigest, ovnClien
 	}
 	if ovnClientDigest != "" {
 		annotations[ovnClientHashAnnotation] = ovnClientDigest
+	}
+	if novaNotifierDigest != "" {
+		annotations[novaNotifierHashAnnotation] = novaNotifierDigest
 	}
 	if len(annotations) == 0 {
 		return nil

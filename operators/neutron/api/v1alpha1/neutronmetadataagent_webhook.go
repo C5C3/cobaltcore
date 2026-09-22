@@ -219,7 +219,7 @@ func (w *NeutronMetadataAgentWebhook) validate(a *NeutronMetadataAgent, extra fi
 	allErrs = append(allErrs, validateLogging(
 		specPath.Child("logging"), a.Spec.Logging, "neutron_ovn_metadata_agent.ini")...)
 	allErrs = append(allErrs, validateExtraConfigShape(
-		specPath, a.Spec.ExtraConfig, MetadataAgentOwnedConfigKeys)...)
+		specPath, a.Spec.ExtraConfig, nil, MetadataAgentOwnedConfigKeys)...)
 
 	allErrs = append(allErrs, extra...)
 

@@ -271,10 +271,42 @@ func TestPinWorkerDeployments(t *testing.T) {
 			g := NewWithT(t)
 
 			got, err := yaml.Marshal(buildWorkerDeployment(validNeutron(), tc.component,
-				neutronCommand(tc.binary), pinDeploymentConfigMapName, "", "", "", ""))
+				neutronCommand(tc.binary), pinDeploymentConfigMapName, "", "", "", "", ""))
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(string(got)).To(Equal(tc.golden),
 				"the rendered Neutron worker Deployment must stay byte-identical")
+		})
+	}
+}
+
+// TestPinWorkerDeployments_NovaNotifierPasswordEnv covers the notifier password
+// on both worker Deployments: the ML2 plugin sends a port notification from
+// whichever process handles the update, so the workers need the credential the
+// API pods use, and the digest that rolls them when it rotates. The second case
+// is the CR that bypassed the defaulting webhook and carries no Secret key: the
+// reconciler falls back to "password" rather than mounting an empty key the
+// container would fail on.
+func TestPinWorkerDeployments_NovaNotifierPasswordEnv(t *testing.T) {
+	for _, component := range []string{componentPeriodicWorkers, componentOVNMaintenanceWorker} {
+		t.Run(component, func(t *testing.T) {
+			g := NewWithT(t)
+
+			without := buildWorkerDeployment(validNeutron(), component,
+				neutronCommand("neutron-periodic-workers"), pinDeploymentConfigMapName, "", "", "", "", "")
+			g.Expect(findEnvVar(without.Spec.Template.Spec.Containers[0].Env, "OS_NOVA__PASSWORD")).To(BeNil(),
+				"a Neutron without spec.nova must not carry the notifier password")
+
+			neutron := validNeutron()
+			neutron.Spec.Nova = novaNotifierSpec()
+			neutron.Spec.Nova.ServiceUser.SecretRef.Key = ""
+			with := buildWorkerDeployment(neutron, component,
+				neutronCommand("neutron-periodic-workers"), pinDeploymentConfigMapName, "", "", "", "", "nova345")
+
+			env := findEnvVar(with.Spec.Template.Spec.Containers[0].Env, "OS_NOVA__PASSWORD")
+			g.Expect(env).NotTo(BeNil())
+			g.Expect(env.ValueFrom.SecretKeyRef.Name).To(Equal(testNovaNotifierSecretName))
+			g.Expect(env.ValueFrom.SecretKeyRef.Key).To(Equal("password"))
+			g.Expect(with.Spec.Template.Annotations).To(HaveKeyWithValue("neutron.c5c3.io/nova-notifier-hash", "nova345"))
 		})
 	}
 }

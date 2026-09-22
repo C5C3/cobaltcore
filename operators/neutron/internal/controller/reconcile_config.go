@@ -214,6 +214,7 @@ func splitML2Sections(merged map[string]map[string]string) (neutronConf, ml2Conf
 // their release render byte-identical files.
 func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints) map[string]map[string]string {
 	logging := effectiveLogging(neutron.Spec.Logging)
+	notifyNova := fmt.Sprintf("%t", neutron.Spec.Nova != nil)
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
 			"core_plugin": "ml2",
@@ -238,11 +239,12 @@ func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints
 			// spec.extraConfig; like every rendered key the override is honored and
 			// reported through ExtraConfigHealthy.
 			"dns_domain": "cobaltcore.local.",
-			// The two Nova notifications stay off until a Nova is deployed to
-			// receive them; a port that waits for a vif-plugged event nothing sends
-			// is worse than one that never announces itself.
-			"notify_nova_on_port_status_changes": "false",
-			"notify_nova_on_port_data_changes":   "false",
+			// The two Nova notifications follow spec.nova: they stay off until a
+			// Nova is named to receive them, because a port that waits for a
+			// vif-plugged event nothing sends is worse than one that never
+			// announces itself.
+			"notify_nova_on_port_status_changes": notifyNova,
+			"notify_nova_on_port_data_changes":   notifyNova,
 			// Route oslo.log records to stderr so kubectl logs surfaces them.
 			"use_stderr": "true",
 			// oslo.log gates several extra-verbose code paths on the debug flag
@@ -280,11 +282,9 @@ func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints
 		"oslo_concurrency": {
 			"lock_path": neutronStatePath + "/lock",
 		},
-		// The section is empty and still rendered: neutron reads [nova] for the
-		// notification credentials, and an absent section makes the first Nova
-		// option a user adds through spec.extraConfig look like a new file rather
-		// than a filled-in one.
-		"nova": {},
+		// The credentials the port notifier calls the compute API with, empty
+		// while spec.nova is unset.
+		"nova": novaSection(neutron),
 		"ml2": {
 			"mechanism_drivers":    "ovn",
 			"type_drivers":         "geneve,flat",
@@ -340,6 +340,34 @@ func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints
 	}
 
 	return defaults
+}
+
+// novaSection renders [nova], the Keystone credentials the Neutron server posts
+// its port notifications to the compute API with. A CR without spec.nova gets
+// the section empty and still rendered: neutron reads [nova] for those
+// credentials, and an absent section makes the first Nova option a user adds
+// through spec.extraConfig look like a new file rather than a filled-in one.
+//
+// The password stays out of the map: it arrives through the OS_NOVA__PASSWORD
+// override neutronWorkloadEnv injects, like the [keystone_authtoken] password.
+// endpoint_type pins the catalog lookup to the internal interface, the entry a
+// colocated control plane reaches without leaving the cluster; neutron's [nova]
+// group has no endpoint option, so this is the only lever over the address.
+func novaSection(neutron *neutronv1alpha1.Neutron) map[string]string {
+	nova := neutron.Spec.Nova
+	if nova == nil {
+		return map[string]string{}
+	}
+	section := keystoneauth.ClientSection(keystoneauth.SectionParams{
+		AuthURL:           neutron.Spec.KeystoneEndpoint,
+		Username:          nova.ServiceUser.Username,
+		ProjectName:       nova.ServiceUser.ProjectName,
+		UserDomainName:    nova.ServiceUser.UserDomainName,
+		ProjectDomainName: nova.ServiceUser.ProjectDomainName,
+		RegionName:        nova.Region,
+	})
+	section["endpoint_type"] = "internal"
+	return section
 }
 
 // effectiveLogging returns the LoggingSpec to use for config rendering,

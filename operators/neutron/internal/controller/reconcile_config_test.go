@@ -433,8 +433,10 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 	neutron := neutronForConfig()
 	// neutronForConfig already sets Region (emits region_name) and validNeutron
 	// sets Cache.Servers (emits memcached_servers). Add the broker TLS block so
-	// [oslo_messaging_rabbit] ssl and ssl_ca_file render, and json logging with
-	// per-logger levels so log_config_append and default_log_levels render too.
+	// [oslo_messaging_rabbit] ssl and ssl_ca_file render, json logging with
+	// per-logger levels so log_config_append and default_log_levels render too,
+	// and spec.nova so every [nova] key the registry carries is rendered.
+	neutron.Spec.Nova = novaNotifierSpec()
 	neutron.Spec.Messaging.TLS = &commonv1.MessagingTLSSpec{
 		CABundleSecretRef: commonv1.SecretRefSpec{Name: "rabbitmq-ca", Key: "ca.crt"},
 	}
@@ -463,14 +465,15 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 	}
 
 	// Reverse check: every registered key is rendered by operatorDefaults or on
-	// the extras list. Both extras are credential material the renderer never
-	// emits — [DEFAULT] transport_url and [keystone_authtoken] password arrive
-	// through their env overrides — and both are registered because a user
-	// putting them in spec.extraConfig would copy the credential into the
-	// rendered config.
+	// the extras list. All three extras are credential material the renderer
+	// never emits — [DEFAULT] transport_url, [keystone_authtoken] password and
+	// [nova] password arrive through their env overrides — and all three are
+	// registered because a user putting them in spec.extraConfig would copy the
+	// credential into the rendered config.
 	reverseExtras := map[[2]string]struct{}{
 		{"DEFAULT", "transport_url"}:       {},
 		{"keystone_authtoken", "password"}: {},
+		{"nova", "password"}:               {},
 	}
 	for _, o := range neutronv1alpha1.OwnedConfigKeys {
 		if _, ok := defaults[o.Section][o.Key]; ok {
@@ -482,6 +485,47 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 		t.Errorf("registry key [%s] %s is not rendered by operatorDefaults: remove it "+
 			"from neutronv1alpha1.OwnedConfigKeys or extend the drift-guard extras list", o.Section, o.Key)
 	}
+}
+
+// TestOperatorDefaults_NovaBlockNilRendersFlagsFalse covers the CR that names no
+// Nova: both notification flags render false and [nova] stays empty. The flags
+// are what a Neutron without a compute service needs — a port announcing itself
+// to nothing leaves the instance waiting for a vif-plugged event that never
+// arrives — and the empty section is still emitted so the file shape does not
+// change when a Nova arrives.
+func TestOperatorDefaults_NovaBlockNilRendersFlagsFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	neutron := neutronForConfig()
+	g.Expect(neutron.Spec.Nova).To(BeNil(), "the fixture must carry no spec.nova")
+
+	defaults := operatorDefaults(neutron, resolvedForConfig())
+
+	g.Expect(defaults["DEFAULT"]).To(HaveKeyWithValue("notify_nova_on_port_status_changes", "false"))
+	g.Expect(defaults["DEFAULT"]).To(HaveKeyWithValue("notify_nova_on_port_data_changes", "false"))
+	g.Expect(defaults).To(HaveKey("nova"))
+	g.Expect(defaults["nova"]).To(BeEmpty())
+}
+
+// TestOperatorDefaults_NovaBlockOmitsRegionWhenEmpty covers the block that names
+// no region: keystoneauth.ClientSection omits region_name rather than writing an
+// empty override, so the notifier falls back to the catalog's default region.
+// The rest of the section is rendered either way, and the password never is.
+func TestOperatorDefaults_NovaBlockOmitsRegionWhenEmpty(t *testing.T) {
+	g := NewGomegaWithT(t)
+	neutron := neutronForConfig()
+	neutron.Spec.Nova = novaNotifierSpec()
+	neutron.Spec.Nova.Region = ""
+
+	defaults := operatorDefaults(neutron, resolvedForConfig())
+
+	g.Expect(defaults["nova"]).NotTo(HaveKey("region_name"))
+	g.Expect(defaults["nova"]).NotTo(HaveKey("password"))
+	g.Expect(defaults["nova"]).To(HaveKeyWithValue("auth_type", "password"))
+	g.Expect(defaults["nova"]).To(HaveKeyWithValue("auth_url", neutron.Spec.KeystoneEndpoint))
+	g.Expect(defaults["nova"]).To(HaveKeyWithValue("username", "neutron-nova"))
+	g.Expect(defaults["nova"]).To(HaveKeyWithValue("endpoint_type", "internal"))
+	g.Expect(defaults["DEFAULT"]).To(HaveKeyWithValue("notify_nova_on_port_status_changes", "true"))
+	g.Expect(defaults["DEFAULT"]).To(HaveKeyWithValue("notify_nova_on_port_data_changes", "true"))
 }
 
 // TestEffectiveLogging pins the render-time resolution of spec.logging: a CR
