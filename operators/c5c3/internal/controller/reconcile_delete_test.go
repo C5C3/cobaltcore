@@ -21,6 +21,7 @@ import (
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -2206,6 +2207,9 @@ func namespaceTeardownScheme(t *testing.T) *runtime.Scheme {
 	if err := cinderv1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding cinder scheme: %v", err)
 	}
+	if err := novav1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding nova scheme: %v", err)
+	}
 	return s
 }
 
@@ -2351,6 +2355,41 @@ func TestCrossNamespaceServiceChildren_IncludesCinder(t *testing.T) {
 	cp.Spec.Services.Cinder = nil
 	g.Expect(hasCinder("block")).To(BeFalse(),
 		"a dedicated namespace must name no Cinder once the service is unmanaged")
+}
+
+// TestCrossNamespaceServiceChildren_IncludesNova is the same guard for the Nova
+// child: it is enumerated for the namespace it was assigned to and excluded from
+// any other, so a Nova placed in a namespace of its own is torn down by the
+// finalizer sweep (it carries no owner reference to garbage-collect it).
+func TestCrossNamespaceServiceChildren_IncludesNova(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcControlPlane()
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name: "compute", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+		},
+	}
+
+	hasNova := func(namespace string) bool {
+		for _, child := range crossNamespaceServiceChildren(cp, namespace) {
+			if _, ok := child.(*novav1alpha1.Nova); ok && child.GetName() == novaName(cp) {
+				return true
+			}
+		}
+		return false
+	}
+
+	g.Expect(hasNova("compute")).To(BeTrue(), "the Nova child is enumerated for its assigned namespace")
+	g.Expect(hasNova(cp.Namespace)).To(BeFalse(),
+		"a namespace Nova was not placed in must not name it")
+
+	// Dropping the services.nova block moves the resolved namespace back to the
+	// plane's own, exactly as every peer arm behaves: the dedicated namespace stops
+	// naming a Nova, and the name the own namespace still carries resolves to a
+	// NotFound the sweep tolerates as already-gone.
+	cp.Spec.Services.Nova = nil
+	g.Expect(hasNova("compute")).To(BeFalse(),
+		"a dedicated namespace must name no Nova once the service is unmanaged")
 }
 
 // TestDeleteServiceChildrenIn_SweepsOwnedGlanceBackends verifies the cross-namespace
@@ -3377,6 +3416,122 @@ func TestSweepExternalNamespaceResidue_RemovesTheCinderResidue(t *testing.T) {
 
 	r2.sweepExternalNamespaceResidue(ctx, c2, cp, ns)
 	expectPresent(t, c2, foreignBus)
+}
+
+// novaTeardownNamespace is the namespace the Nova fixture below places the
+// compute service in.
+const novaTeardownNamespace = "compute"
+
+// deletingNovaControlPlane returns a deleting ControlPlane whose compute service
+// lives in a namespace of its own, under the given lifecycle.
+func deletingNovaControlPlane(
+	deletionAge time.Duration, lifecycle c5c3v1alpha1.ServiceNamespaceLifecycle,
+) *c5c3v1alpha1.ControlPlane {
+	cp := deletingControlPlane(deletionAge)
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name: novaTeardownNamespace, Lifecycle: lifecycle,
+		},
+	}
+	return cp
+}
+
+// TestSweepExternalNamespaceResidue_RemovesTheNovaResidue covers the External
+// lifecycle for the compute service, where the namespace survives the
+// ControlPlane so nothing cascades and every object has to be named. The compute
+// arm is the only one that names each DB-credential shape twice, once for the
+// nova_api schema and once for the cell schema, and it carries two objects no
+// peer has: the metadata shared secret's ExternalSecret and the Password
+// generator behind it. The bus delivery beside the child goes with them. A
+// residue object that is already gone is tolerated, and a same-named Secret this
+// ControlPlane never wrote is left alone.
+func TestSweepExternalNamespaceResidue_RemovesTheNovaResidue(t *testing.T) {
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingNovaControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleExternal)
+	ns := novaTeardownNamespace
+
+	cert := func(name string) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(certificateGVK)
+		u.SetName(name)
+		u.SetNamespace(ns)
+		u.SetLabels(controlPlaneChildLabels(cp))
+		return u
+	}
+
+	apiES := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: novaAPIDBCredentialSecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	cellES := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: novaCellDBCredentialSecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	apiVDS := &esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: novaAPIDBCredentialSecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	cellVDS := &esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: novaCellDBCredentialSecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	apiSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name: novaAPIDBCredentialServiceAccountName, Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	cellSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name: novaCellDBCredentialServiceAccountName, Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	metadataES := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: novaMetadataSecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	metadataGen := &esgenv1alpha1.Password{ObjectMeta: metav1.ObjectMeta{
+		Name: novaMetadataSecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	bus := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: novaMessagingSecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	busCA := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: novaMessagingCASecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+
+	residue := []client.Object{
+		apiES, cellES, apiVDS, cellVDS,
+		cert(novaAPIDBCredentialClientCertName(cp)), cert(novaCellDBCredentialClientCertName(cp)),
+		apiSA, cellSA, metadataES, metadataGen, bus, busCA,
+	}
+	// A peer service's credential material in the same namespace carries our
+	// labels too, but the compute arm must not name it: only the label-selected
+	// sweep that runs after this one reaches it.
+	foreignService := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: glanceDBCredentialSecretName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(append([]client.Object{cp, foreignService}, residue...)...).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	r.sweepExternalNamespaceResidue(ctx, c, cp, ns)
+	expectSwept(t, c, residue...)
+	expectPresent(t, c, foreignService)
+
+	// An already-absent residue object is not an error: the metadata pair and both
+	// cell-schema objects are missing from the start, and the sweep still reaps
+	// everything that IS there.
+	partial := []client.Object{apiES, apiVDS, cert(novaAPIDBCredentialClientCertName(cp)), apiSA, bus}
+	c2 := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(append([]client.Object{cp}, partial...)...).Build()
+	r2 := &ControlPlaneReconciler{Client: c2, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	r2.sweepExternalNamespaceResidue(ctx, c2, cp, ns)
+	expectSwept(t, c2, partial...)
+
+	// A Secret at the derived transport-URL name that carries none of our labels
+	// belongs to somebody else in this shared namespace and survives.
+	foreignBus := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: novaMessagingSecretName(cp), Namespace: ns,
+	}}
+	c3 := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreignBus).Build()
+	r3 := &ControlPlaneReconciler{Client: c3, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	r3.sweepExternalNamespaceResidue(ctx, c3, cp, ns)
+	expectPresent(t, c3, foreignBus)
 }
 
 // --- placed-namespace teardown ---
