@@ -41,6 +41,10 @@ func TestTargetClusterRefForNamespace(t *testing.T) {
 						Namespace:        &c5c3v1alpha1.ServiceNamespaceSpec{Name: "block"},
 						TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-c"},
 					},
+					Nova: &c5c3v1alpha1.ServiceNovaSpec{
+						Namespace:        &c5c3v1alpha1.ServiceNamespaceSpec{Name: "compute"},
+						TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-d"},
+					},
 				},
 			},
 		}
@@ -63,6 +67,11 @@ func TestTargetClusterRefForNamespace(t *testing.T) {
 	bypassedCinder := placed()
 	bypassedCinder.Spec.Services.Cinder.Namespace = nil
 
+	// And on the compute service: a co-located Nova contributes the ControlPlane's
+	// own namespace to the table too.
+	bypassedNova := placed()
+	bypassedNova.Spec.Services.Nova.Namespace = nil
+
 	tests := []struct {
 		name      string
 		cp        *c5c3v1alpha1.ControlPlane
@@ -78,6 +87,8 @@ func TestTargetClusterRefForNamespace(t *testing.T) {
 		{name: "a co-located neutron leaves the own namespace local", cp: bypassedNeutron, namespace: "openstack"},
 		{name: "the block-storage service's namespace answers with its ref", cp: placed(), namespace: "block", want: "edge-c"},
 		{name: "a co-located cinder leaves the own namespace local", cp: bypassedCinder, namespace: "openstack"},
+		{name: "the compute service's namespace answers with its ref", cp: placed(), namespace: "compute", want: "edge-d"},
+		{name: "a co-located nova leaves the own namespace local", cp: bypassedNova, namespace: "openstack"},
 	}
 
 	for _, tc := range tests {
@@ -215,6 +226,8 @@ func TestEffectiveBackingServices(t *testing.T) {
 		wantNeutronCache  string
 		wantCinderDB      string
 		wantCinderCache   string
+		wantNovaDB        string
+		wantNovaCache     string
 	}{
 		{
 			name: "no dedicated blocks: every service shares the ControlPlane-wide instances",
@@ -234,6 +247,8 @@ func TestEffectiveBackingServices(t *testing.T) {
 			wantNeutronCache:  "openstack-memcached",
 			wantCinderDB:      "openstack-db",
 			wantCinderCache:   "openstack-memcached",
+			wantNovaDB:        "openstack-db",
+			wantNovaCache:     "openstack-memcached",
 		},
 		{
 			name: "keystone takes a dedicated database only: its cache stays shared",
@@ -259,6 +274,8 @@ func TestEffectiveBackingServices(t *testing.T) {
 			wantNeutronCache:  "openstack-memcached",
 			wantCinderDB:      "openstack-db",
 			wantCinderCache:   "openstack-memcached",
+			wantNovaDB:        "openstack-db",
+			wantNovaCache:     "openstack-memcached",
 		},
 		{
 			name: "each service takes its own dedicated cache",
@@ -291,6 +308,8 @@ func TestEffectiveBackingServices(t *testing.T) {
 			wantNeutronCache:  "openstack-memcached",
 			wantCinderDB:      "openstack-db",
 			wantCinderCache:   "openstack-memcached",
+			wantNovaDB:        "openstack-db",
+			wantNovaCache:     "openstack-memcached",
 		},
 		{
 			name: "neutron takes both instances dedicated: keystone keeps the shared ones",
@@ -320,6 +339,8 @@ func TestEffectiveBackingServices(t *testing.T) {
 			wantNeutronCache:  "cp-neutron-cache",
 			wantCinderDB:      "openstack-db",
 			wantCinderCache:   "openstack-memcached",
+			wantNovaDB:        "openstack-db",
+			wantNovaCache:     "openstack-memcached",
 		},
 		{
 			name: "cinder takes both instances dedicated: the other services keep the shared ones",
@@ -348,6 +369,38 @@ func TestEffectiveBackingServices(t *testing.T) {
 			wantNeutronCache:  "openstack-memcached",
 			wantCinderDB:      "cp-cinder-db",
 			wantCinderCache:   "cp-cinder-cache",
+			wantNovaDB:        "openstack-db",
+			wantNovaCache:     "openstack-memcached",
+		},
+		{
+			name: "nova takes both instances dedicated: one instance carries both of its schemas",
+			cp: &c5c3v1alpha1.ControlPlane{Spec: c5c3v1alpha1.ControlPlaneSpec{
+				Infrastructure: sharedInfra(),
+				Services: c5c3v1alpha1.ServicesSpec{
+					Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+					Nova: &c5c3v1alpha1.ServiceNovaSpec{
+						DedicatedBackingServices: &c5c3v1alpha1.NovaDedicatedBackingServicesSpec{
+							Database: &commonv1.DatabaseSpec{
+								ClusterRef: &corev1.LocalObjectReference{Name: "cp-nova-db"},
+								Database:   "nova",
+							},
+							Cache: &commonv1.CacheSpec{
+								ClusterRef: &corev1.LocalObjectReference{Name: "cp-nova-cache"},
+								Backend:    commonv1.DefaultCacheBackend,
+							},
+						},
+					},
+				},
+			}},
+			wantKeystoneDB:    "openstack-db",
+			wantKeystoneCache: "openstack-memcached",
+			wantHorizonCache:  "openstack-memcached",
+			wantNeutronDB:     "openstack-db",
+			wantNeutronCache:  "openstack-memcached",
+			wantCinderDB:      "openstack-db",
+			wantCinderCache:   "openstack-memcached",
+			wantNovaDB:        "cp-nova-db",
+			wantNovaCache:     "cp-nova-cache",
 		},
 		{
 			name: "no infrastructure block and no dedicated instances: nothing resolves",
@@ -423,6 +476,22 @@ func TestEffectiveBackingServices(t *testing.T) {
 			}
 			if gotCDCache != tc.wantCinderCache {
 				t.Errorf("effectiveCinderCache() = %q, want %q", gotCDCache, tc.wantCinderCache)
+			}
+
+			var gotNVDB string
+			if db := effectiveNovaDatabase(tc.cp); db != nil {
+				gotNVDB = clusterRefName(db.ClusterRef)
+			}
+			if gotNVDB != tc.wantNovaDB {
+				t.Errorf("effectiveNovaDatabase() = %q, want %q", gotNVDB, tc.wantNovaDB)
+			}
+
+			var gotNVCache string
+			if cache := effectiveNovaCache(tc.cp); cache != nil {
+				gotNVCache = clusterRefName(cache.ClusterRef)
+			}
+			if gotNVCache != tc.wantNovaCache {
+				t.Errorf("effectiveNovaCache() = %q, want %q", gotNVCache, tc.wantNovaCache)
 			}
 		})
 	}

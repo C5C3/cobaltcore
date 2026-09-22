@@ -469,6 +469,16 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 		addCache(effectiveCinderCache(cp), cinderNS, cinderCacheDeclaredAt(cp))
 	}
 
+	// Nova's database and cache are gated on the DECLARATION for the same
+	// no-consumer-no-instance reason as Cinder's above. One database instance
+	// covers both of the compute service's schemas: the nova_api and the cell
+	// schema are separate logical databases on it, not separate clusters.
+	if cp.Spec.Services.Nova != nil {
+		novaNS := cp.NovaNamespace()
+		addDatabase(effectiveNovaDatabase(cp), novaNS, novaDatabaseDeclaredAt(cp))
+		addCache(effectiveNovaCache(cp), novaNS, novaCacheDeclaredAt(cp))
+	}
+
 	// The shared message bus is the one class enumerated at the ControlPlane's
 	// own namespace regardless of consumers: see the doc comment above. The nil
 	// check on the block mirrors the effective-* resolvers, so a webhook-bypassed
@@ -571,6 +581,20 @@ func cinderDatabaseDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 func cinderCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 	if cp.DedicatedCinderCache() != nil {
 		return "spec.services.cinder.dedicatedBackingServices.cache"
+	}
+	return "spec.infrastructure.cache"
+}
+
+func novaDatabaseDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedNovaDatabase() != nil {
+		return "spec.services.nova.dedicatedBackingServices.database"
+	}
+	return "spec.infrastructure.database"
+}
+
+func novaCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedNovaCache() != nil {
+		return "spec.services.nova.dedicatedBackingServices.cache"
 	}
 	return "spec.infrastructure.cache"
 }
