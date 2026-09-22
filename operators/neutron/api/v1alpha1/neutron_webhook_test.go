@@ -53,6 +53,21 @@ func validNeutron() *Neutron {
 	}
 }
 
+// novaNotifier returns a spec.nova block that passes validation, for the tests
+// that mutate exactly one of its values.
+func novaNotifier() *NovaSpec {
+	return &NovaSpec{
+		Region: "RegionOne",
+		ServiceUser: NovaNotifierUserSpec{
+			Username:          "neutron-nova",
+			ProjectName:       "service",
+			UserDomainName:    "Default",
+			ProjectDomainName: "Default",
+			SecretRef:         commonv1.SecretRefSpec{Name: "neutron-nova-notifier", Key: "password"},
+		},
+	}
+}
+
 // newFakeClient builds a client.Reader for the cluster-scoped admission lookups
 // (PriorityClass existence), seeded with the given objects.
 func newFakeClient(objs ...runtime.Object) *fake.ClientBuilder {
@@ -98,6 +113,51 @@ func TestNeutronDefault_MaterializesServiceUserLoggingAndBothDeployments(t *test
 	g.Expect(obj.Spec.Logging).NotTo(gomega.BeNil())
 	g.Expect(obj.Spec.Logging.Format).To(gomega.Equal("text"))
 	g.Expect(obj.Spec.Logging.Level).To(gomega.Equal("INFO"))
+}
+
+// The Nova notifier identity is defaulted inside a present spec.nova alone. A
+// nil block is what keeps the port notifications off, so the defaulter must not
+// materialize one: a CR that named no Nova would otherwise start notifying a
+// compute service it has no credentials for.
+func TestNeutronDefault_NovaNotifierServiceUser(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &NeutronWebhook{}
+
+	obj := validNeutron()
+	obj.Spec.Nova = &NovaSpec{
+		ServiceUser: NovaNotifierUserSpec{
+			SecretRef: commonv1.SecretRefSpec{Name: "neutron-nova-notifier"},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), obj)).To(gomega.Succeed())
+
+	g.Expect(obj.Spec.Nova.ServiceUser.Username).To(gomega.Equal("neutron-nova"))
+	g.Expect(obj.Spec.Nova.ServiceUser.ProjectName).To(gomega.Equal("service"))
+	g.Expect(obj.Spec.Nova.ServiceUser.UserDomainName).To(gomega.Equal("Default"))
+	g.Expect(obj.Spec.Nova.ServiceUser.ProjectDomainName).To(gomega.Equal("Default"))
+	g.Expect(obj.Spec.Nova.ServiceUser.SecretRef.Key).To(gomega.Equal("password"))
+	// The region has no default: an empty one omits [nova] region_name so the
+	// notifier follows the Keystone catalog.
+	g.Expect(obj.Spec.Nova.Region).To(gomega.BeEmpty())
+
+	// An explicit identity survives the defaulter untouched.
+	explicit := validNeutron()
+	explicit.Spec.Nova = &NovaSpec{
+		Region: "RegionTwo",
+		ServiceUser: NovaNotifierUserSpec{
+			Username:  "compute-notifier",
+			SecretRef: commonv1.SecretRefSpec{Name: "neutron-nova-notifier", Key: "notifier-password"},
+		},
+	}
+	g.Expect(w.Default(context.Background(), explicit)).To(gomega.Succeed())
+	g.Expect(explicit.Spec.Nova.ServiceUser.Username).To(gomega.Equal("compute-notifier"))
+	g.Expect(explicit.Spec.Nova.ServiceUser.SecretRef.Key).To(gomega.Equal("notifier-password"))
+
+	// A CR that names no Nova keeps none.
+	absent := validNeutron()
+	g.Expect(w.Default(context.Background(), absent)).To(gomega.Succeed())
+	g.Expect(absent.Spec.Nova).To(gomega.BeNil())
 }
 
 // The OVN control plane is resolved by name and namespace. An omitted namespace
@@ -168,6 +228,13 @@ func TestNeutronValidateCreate_ValidSpecAccepted(t *testing.T) {
 	w := &NeutronWebhook{}
 
 	_, err := w.ValidateCreate(context.Background(), validNeutron())
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// A configured Nova notifier is accepted as well: the required-ref check
+	// fires on an unnamed Secret alone, not on the presence of the block.
+	withNova := validNeutron()
+	withNova.Spec.Nova = novaNotifier()
+	_, err = w.ValidateCreate(context.Background(), withNova)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
@@ -342,6 +409,69 @@ func TestNeutronValidateCreate_RejectionTable(t *testing.T) {
 				}
 			},
 			wantSub: "extraConfig key and value must not contain a newline or carriage return",
+		},
+		// A spec.nova block with an unnamed Secret has no password to notify with.
+		{
+			name: "nova serviceUser secretRef name empty rejected",
+			mutate: func(o *Neutron) {
+				o.Spec.Nova = &NovaSpec{ServiceUser: NovaNotifierUserSpec{}}
+			},
+			wantSub: "serviceUser.secretRef.name must be set when spec.nova is configured: " +
+				"it carries the password Neutron notifies Nova with",
+		},
+		// The region and the four identity fields reach [nova] verbatim, so a
+		// newline in any of them appends a line to the section the notifier reads.
+		{
+			name: "nova region with a newline rejected",
+			mutate: func(o *Neutron) {
+				o.Spec.Nova = novaNotifier()
+				o.Spec.Nova.Region = "RegionOne\npassword = hunter2"
+			},
+			wantSub: "must not contain a newline or carriage return",
+		},
+		{
+			name: "nova serviceUser username with a newline rejected",
+			mutate: func(o *Neutron) {
+				o.Spec.Nova = novaNotifier()
+				o.Spec.Nova.ServiceUser.Username = "neutron-nova\npassword = hunter2"
+			},
+			wantSub: "must not contain a newline or carriage return",
+		},
+		{
+			name: "nova serviceUser projectName with a newline rejected",
+			mutate: func(o *Neutron) {
+				o.Spec.Nova = novaNotifier()
+				o.Spec.Nova.ServiceUser.ProjectName = "service\npassword = hunter2"
+			},
+			wantSub: "must not contain a newline or carriage return",
+		},
+		{
+			name: "nova serviceUser userDomainName with a newline rejected",
+			mutate: func(o *Neutron) {
+				o.Spec.Nova = novaNotifier()
+				o.Spec.Nova.ServiceUser.UserDomainName = "Default\npassword = hunter2"
+			},
+			wantSub: "must not contain a newline or carriage return",
+		},
+		{
+			name: "nova serviceUser projectDomainName with a newline rejected",
+			mutate: func(o *Neutron) {
+				o.Spec.Nova = novaNotifier()
+				o.Spec.Nova.ServiceUser.ProjectDomainName = "Default\npassword = hunter2"
+			},
+			wantSub: "must not contain a newline or carriage return",
+		},
+		// The notifier password is env-injected via OS_NOVA__PASSWORD, so a file
+		// value is inert at runtime and only copies the credential into the
+		// rendered config Secret every pod mounts.
+		{
+			name: "extraConfig setting the nova notifier password rejected",
+			mutate: func(o *Neutron) {
+				o.Spec.ExtraConfig = map[string]map[string]string{
+					"nova": {"password": "hunter2"},
+				}
+			},
+			wantSub: "password is managed via spec.nova.serviceUser.secretRef",
 		},
 		{
 			name: "empty extraConfig section name rejected",
@@ -570,6 +700,54 @@ func TestNeutronValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
 	_, err = w.ValidateUpdate(context.Background(), stale, edited)
 	g.Expect(err).To(gomega.HaveOccurred())
 	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the neutron 2025.2 option catalog"))
+}
+
+// TestNeutronValidateUpdate_CarriedRejectedKeyStaysUpdatable covers a Rejected
+// key the stored CR was admitted with before the operator owned it: [nova]
+// password was the documented way to configure the notifier before spec.nova
+// existed. Refusing it on every update would refuse the finalizer removal too, so
+// a carried-over value is kept with a warning, while a new or changed one is
+// still refused.
+func TestNeutronValidateUpdate_CarriedRejectedKeyStaysUpdatable(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &NeutronWebhook{}
+
+	stored := validNeutron()
+	stored.Spec.ExtraConfig = map[string]map[string]string{
+		"nova": {"password": "hunter2"},
+	}
+
+	// An unrelated edit, and the finalizer removal on delete, carry it over.
+	scaled := stored.DeepCopy()
+	scaled.Spec.Deployment.Replicas = 5
+	warnings, err := w.ValidateUpdate(context.Background(), stored, scaled)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(warnings).To(gomega.ContainElement(gomega.And(
+		gomega.ContainSubstring("spec.extraConfig[nova][password]"),
+		gomega.ContainSubstring("managed via spec.nova.serviceUser.secretRef"),
+	)))
+
+	unfinalized := stored.DeepCopy()
+	unfinalized.Finalizers = nil
+	_, err = w.ValidateUpdate(context.Background(), stored, unfinalized)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// A changed value is a new override, and is refused like one.
+	changed := stored.DeepCopy()
+	changed.Spec.ExtraConfig["nova"]["password"] = "rotated"
+	_, err = w.ValidateUpdate(context.Background(), stored, changed)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("password is managed via spec.nova.serviceUser.secretRef"))
+
+	// So is one the stored object never carried.
+	added := validNeutron()
+	added.Spec.ExtraConfig = map[string]map[string]string{
+		"nova": {"password": "hunter2"},
+	}
+	warnings, err = w.ValidateUpdate(context.Background(), validNeutron(), added)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("password is managed via spec.nova.serviceUser.secretRef"))
+	g.Expect(warnings).To(gomega.BeEmpty())
 }
 
 // --- spec.targetClusterRef (multicluster routing) ---

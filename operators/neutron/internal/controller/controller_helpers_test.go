@@ -207,6 +207,50 @@ func neutronServiceUserSecret(password string) *corev1.Secret {
 	}
 }
 
+// testNovaNotifierSecretName is the Secret spec.nova.serviceUser.secretRef
+// names in the fixtures that configure the Nova notifier.
+const testNovaNotifierSecretName = "neutron-nova-notifier"
+
+// novaNotifierSpec returns the spec.nova block the Nova-notifier fixtures set:
+// the identity the defaulting webhook fills, a region, and the notifier's own
+// Secret. It is a separate account from spec.serviceUser, so its Secret is a
+// separate object too.
+func novaNotifierSpec() *neutronv1alpha1.NovaSpec {
+	return &neutronv1alpha1.NovaSpec{
+		Region: "RegionOne",
+		ServiceUser: neutronv1alpha1.NovaNotifierUserSpec{
+			Username:          "neutron-nova",
+			ProjectName:       "service",
+			UserDomainName:    "Default",
+			ProjectDomainName: "Default",
+			SecretRef:         commonv1.SecretRefSpec{Name: testNovaNotifierSecretName, Key: "password"},
+		},
+	}
+}
+
+// neutronNovaNotifierSecret returns the Nova notifier credentials Secret
+// novaNotifierSpec references, carrying the default "password" key with the
+// given value.
+func neutronNovaNotifierSecret(password string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: testNovaNotifierSecretName, Namespace: testNamespace},
+		Data:       map[string][]byte{"password": []byte(password)},
+	}
+}
+
+// findEnvVar returns the named variable from a container environment, or nil
+// when the container does not carry it. The pin tests use it for the variables
+// a spec block adds or leaves out, which a full-object golden cannot express in
+// both shapes at once.
+func findEnvVar(env []corev1.EnvVar, name string) *corev1.EnvVar {
+	for i := range env {
+		if env[i].Name == name {
+			return &env[i]
+		}
+	}
+	return nil
+}
+
 // readyOVNCentral returns an OVNCentral publishing the two internal database
 // addresses and the name of its client Secret, the status shape the endpoint
 // step resolves from.

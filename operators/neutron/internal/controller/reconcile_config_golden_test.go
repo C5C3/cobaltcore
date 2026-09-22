@@ -16,9 +16,10 @@ import (
 )
 
 // pinNeutronConfGolden is the neutron.conf rendered for the neutronForConfig
-// fixture. [nova] carries no key and is still emitted: neutron reads the section
-// for its Nova notification credentials, and an operator filling it in through
-// spec.extraConfig should find the section already there.
+// fixture, which sets no spec.nova: the two notify_nova_on_port_* flags are
+// false and [nova] carries no key. The section is still emitted because neutron
+// reads it for the notification credentials, and an operator filling it in
+// through spec.extraConfig should find the section already there.
 const pinNeutronConfGolden = `[DEFAULT]
 api_paste_config = /var/lib/openstack/etc/neutron/api-paste.ini
 auth_strategy = keystone
@@ -116,6 +117,95 @@ func TestPinNeutronConf_ReleasesRenderIdentically(t *testing.T) {
 			data := renderFor(t, release)
 			rendered[release] = data
 			g.Expect(data[neutronConfDataKey]).To(Equal(pinNeutronConfGolden))
+			g.Expect(data[ml2ConfDataKey]).To(Equal(pinML2ConfGolden))
+		})
+	}
+
+	t.Run("2025.2 and 2026.1 render identically", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		g.Expect(rendered["2026.1"]).To(Equal(rendered["2025.2"]))
+	})
+}
+
+// pinNeutronConfNovaGolden is the neutron.conf rendered for the same fixture
+// with spec.nova set: the two notify_nova_on_port_* flags are true and [nova]
+// carries the notifier's Keystone credentials. password is absent from the
+// section by construction — it reaches the processes through OS_NOVA__PASSWORD
+// — so this golden is also the assertion that the credential never lands in the
+// ConfigMap. Only the [DEFAULT] flags and [nova] differ from
+// pinNeutronConfGolden; ml2_conf.ini is untouched by the block.
+const pinNeutronConfNovaGolden = `[DEFAULT]
+api_paste_config = /var/lib/openstack/etc/neutron/api-paste.ini
+auth_strategy = keystone
+core_plugin = ml2
+debug = false
+dhcp_agent_notification = false
+dns_domain = cobaltcore.local.
+notify_nova_on_port_data_changes = true
+notify_nova_on_port_status_changes = true
+rpc_state_report_workers = 0
+rpc_workers = 0
+service_plugins = ovn-router
+state_path = /var/lib/neutron
+use_stderr = true
+
+[database]
+connection = mysql+pymysql://placeholder
+
+[keystone_authtoken]
+auth_type = password
+auth_url = http://keystone.openstack.svc:5000
+memcached_servers = mc:11211
+project_domain_name = Default
+project_name = service
+region_name = RegionOne
+user_domain_name = Default
+username = neutron
+www_authenticate_uri = http://keystone.openstack.svc:5000
+
+[nova]
+auth_type = password
+auth_url = http://keystone.openstack.svc:5000
+endpoint_type = internal
+project_domain_name = Default
+project_name = service
+region_name = RegionOne
+user_domain_name = Default
+username = neutron-nova
+
+[oslo_concurrency]
+lock_path = /var/lib/neutron/lock
+
+[oslo_messaging_notifications]
+driver = noop
+
+[oslo_messaging_rabbit]
+rabbit_quorum_queue = true
+rabbit_transient_quorum_queue = true
+use_queue_manager = true
+`
+
+// TestPinNeutronConf_WithNovaNotifierRendersIdentically is the pin above for a
+// Neutron that notifies a Nova. It asserts the same release independence: the
+// [nova] credentials come from the spec alone, so neither release renders an
+// option name the other does not.
+func TestPinNeutronConf_WithNovaNotifierRendersIdentically(t *testing.T) {
+	renderFor := func(t *testing.T, release string) map[string]string {
+		t.Helper()
+		neutron := neutronForConfig()
+		neutron.Spec.OpenStackRelease = release
+		neutron.Spec.Nova = novaNotifierSpec()
+		r, name := renderConfig(t, neutron)
+		return renderedConfigMap(t, r, name).Data
+	}
+
+	rendered := make(map[string]map[string]string, 2)
+	for _, release := range []string{"2025.2", "2026.1"} {
+		t.Run(release, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			data := renderFor(t, release)
+			rendered[release] = data
+			g.Expect(data[neutronConfDataKey]).To(Equal(pinNeutronConfNovaGolden))
 			g.Expect(data[ml2ConfDataKey]).To(Equal(pinML2ConfGolden))
 		})
 	}

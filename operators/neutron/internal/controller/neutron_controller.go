@@ -49,10 +49,11 @@ import (
 
 // NeutronSecretNameIndexKey is the field-indexer key under which Neutron CRs are
 // indexed by the union of their referenced Secret names
-// (spec.database.secretRef.name, spec.serviceUser.secretRef.name and
-// spec.messaging.secretRef.name). Used by setupWithOptions to register the
-// indexer and by the Secret watch mapper to perform an O(1) reverse lookup
-// instead of an unfiltered List of all Neutron CRs in the namespace.
+// (spec.database.secretRef.name, spec.serviceUser.secretRef.name,
+// spec.messaging.secretRef.name and spec.nova.serviceUser.secretRef.name). Used
+// by setupWithOptions to register the indexer and by the Secret watch mapper to
+// perform an O(1) reverse lookup instead of an unfiltered List of all Neutron
+// CRs in the namespace.
 // #nosec G101 -- field-indexer key (a JSONPath-like field selector), not a credential.
 const NeutronSecretNameIndexKey = "spec.secretRefs.name"
 
@@ -69,7 +70,10 @@ const NeutronOVNCentralRefIndexKey = "spec.ovn.centralRef"
 // of Secret names a Neutron CR references, so the field indexer can resolve a
 // Secret event to the referencing CR(s) without listing every Neutron in the
 // namespace. spec.messaging.secretRef is nil in managed mode, where the transport
-// URL is derived from a RabbitmqCluster instead of read from a Secret.
+// URL is derived from a RabbitmqCluster instead of read from a Secret, and
+// spec.nova is nil while the port notifications are off. The notifier Secret
+// carries no Neutron owner reference, so without its entry here a rotated
+// notifier password would reach neither the digest nor the pods.
 func neutronSecretNameExtractor(obj client.Object) []string {
 	neutron, ok := obj.(*neutronv1alpha1.Neutron)
 	if !ok {
@@ -84,6 +88,9 @@ func neutronSecretNameExtractor(obj client.Object) []string {
 	}
 	if neutron.Spec.Messaging.SecretRef != nil {
 		referenced = append(referenced, neutron.Spec.Messaging.SecretRef.Name)
+	}
+	if neutron.Spec.Nova != nil {
+		referenced = append(referenced, neutron.Spec.Nova.ServiceUser.SecretRef.Name)
 	}
 
 	names := make([]string, 0, len(referenced))
@@ -421,24 +428,26 @@ func (r *NeutronReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // enumerate the step names without running a reconcile.
 func (r *NeutronReconciler) pipelineSteps(children client.Client, neutron *neutronv1alpha1.Neutron) []commonreconcile.Step {
 	// The values one sub-reconciler hands to a later one within a single
-	// reconcile pass, captured by the step closures. The four digests are the
+	// reconcile pass, captured by the step closures. The five digests are the
 	// content digests of the service-user password, the assembled DSN, the
-	// transport URL and the OVN client identity; the deployment and worker steps
-	// stamp them into pod-template annotations so a rotated credential rolls the
-	// pods. egressPort is the broker's TCP port the networkpolicy step opens.
-	// ovn carries the two resolved OVN database addresses, and configMapName names
-	// the rendered config ConfigMap the db-sync Job, the API pods, the workers and
-	// the OVN sync CronJob mount.
+	// transport URL, the OVN client identity and (while spec.nova is set) the Nova
+	// notifier password; the deployment and worker steps stamp them into
+	// pod-template annotations so a rotated credential rolls the pods. egressPort
+	// is the broker's TCP port the networkpolicy step opens. ovn carries the two
+	// resolved OVN database addresses, and configMapName names the rendered config
+	// ConfigMap the db-sync Job, the API pods, the workers and the OVN sync
+	// CronJob mount.
 	var (
 		authtokenDigest, dsnDigest, transportDigest string
 		egressPort                                  int32
 		ovn                                         resolvedOVNEndpoints
 		ovnClientDigest, configMapName              string
+		novaNotifierDigest                          string
 	)
 
 	return []commonreconcile.Step{
 		{Name: "Secrets", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
-			res, authtokenDigest, err = r.reconcileSecrets(ctx, children, neutron)
+			res, authtokenDigest, novaNotifierDigest, err = r.reconcileSecrets(ctx, children, neutron)
 			return res, err
 		}},
 		// reconcileDBConnectionSecret materialises the DB URL into the derived
@@ -499,14 +508,14 @@ func (r *NeutronReconciler) pipelineSteps(children client.Client, neutron *neutr
 		// the schema they query exists.
 		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDeployment(ctx, children, neutron, configMapName,
-				dsnDigest, authtokenDigest, transportDigest, ovnClientDigest)
+				dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest)
 		}},
 		// reconcileWorkers projects the two Deployments running the neutron
 		// processes that serve no HTTP. They read the same database, broker and OVN
-		// client identity as the API pods, so they carry the same four digests.
+		// client identity as the API pods, so they carry the same five digests.
 		{Name: "Workers", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileWorkers(ctx, children, neutron, configMapName,
-				dsnDigest, authtokenDigest, transportDigest, ovnClientDigest)
+				dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest)
 		}},
 		// Once the Deployment/Service outputs are in place, HTTPRoute, HealthCheck,
 		// HPA, and NetworkPolicy have no inter-dependency and run concurrently.

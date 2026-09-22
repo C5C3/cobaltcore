@@ -41,7 +41,7 @@ func neutronKey(neutron *neutronv1alpha1.Neutron) client.ObjectKey {
 // status of a completed rollout: every replica updated, ready, counted, and the
 // Available condition set.
 func readyNeutronDeployment(neutron *neutronv1alpha1.Neutron) *appsv1.Deployment {
-	deploy := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "")
+	deploy := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "", "")
 	markDeploymentRolledOut(deploy)
 	return deploy
 }
@@ -86,7 +86,7 @@ func TestReconcileDeployment_CreatesWorkloadAndWaitsForRollout(t *testing.T) {
 	r := newNeutronTestReconciler(neutron)
 
 	res, err := r.reconcileDeployment(context.Background(), r.Client, neutron,
-		deploymentConfigMapName, "", "", "", "")
+		deploymentConfigMapName, "", "", "", "", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
@@ -112,7 +112,7 @@ func TestReconcileDeployment_ReadyStampsTheEndpoint(t *testing.T) {
 	r := newNeutronTestReconciler(neutron, readyNeutronDeployment(neutron))
 
 	res, err := r.reconcileDeployment(context.Background(), r.Client, neutron,
-		deploymentConfigMapName, "", "", "", "")
+		deploymentConfigMapName, "", "", "", "", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -133,7 +133,7 @@ func TestReconcileDeployment_ApplyFailureWrapsTheError(t *testing.T) {
 	r := failingApplyReconciler(boom, "Deployment", neutron.Name, neutron)
 
 	_, err := r.reconcileDeployment(context.Background(), r.Client, neutron,
-		deploymentConfigMapName, "", "", "", "")
+		deploymentConfigMapName, "", "", "", "", "")
 
 	g.Expect(err).To(MatchError(boom))
 	g.Expect(err).To(MatchError(ContainSubstring("ensuring Deployment:")))
@@ -146,7 +146,7 @@ func TestReconcileDeployment_ApplyFailureWrapsTheError(t *testing.T) {
 func TestBuildNeutronDeployment_UWSGICommand(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	command := buildNeutronDeployment(validNeutron(), deploymentConfigMapName, "", "", "", "").
+	command := buildNeutronDeployment(validNeutron(), deploymentConfigMapName, "", "", "", "", "").
 		Spec.Template.Spec.Containers[0].Command
 
 	g.Expect(command[:2]).To(Equal([]string{"uwsgi", "--http"}))
@@ -166,7 +166,7 @@ func TestBuildNeutronDeployment_EnvAndProbes(t *testing.T) {
 	g := NewGomegaWithT(t)
 	neutron := validNeutron()
 
-	container := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "").
+	container := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "", "").
 		Spec.Template.Spec.Containers[0]
 
 	var names []string
@@ -205,19 +205,27 @@ func TestBuildNeutronDeployment_EnvAndProbes(t *testing.T) {
 func TestNeutronPodAnnotations(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	g.Expect(neutronPodAnnotations("", "", "", "")).To(BeNil(),
+	g.Expect(neutronPodAnnotations("", "", "", "", "")).To(BeNil(),
 		"a pass that resolved no digest at all leaves the template annotation-free")
 
-	g.Expect(neutronPodAnnotations("dsn", "", "", "")).To(Equal(map[string]string{
+	g.Expect(neutronPodAnnotations("dsn", "", "", "", "")).To(Equal(map[string]string{
 		"neutron.c5c3.io/db-connection-hash": "dsn",
 	}), "a partially resolved pass stamps only what it resolved")
 
-	g.Expect(neutronPodAnnotations("dsn", "auth", "amqp", "ovn")).To(Equal(map[string]string{
+	g.Expect(neutronPodAnnotations("dsn", "auth", "amqp", "ovn", "")).To(Equal(map[string]string{
 		"neutron.c5c3.io/db-connection-hash": "dsn",
 		"neutron.c5c3.io/authtoken-hash":     "auth",
 		"neutron.c5c3.io/transport-url-hash": "amqp",
 		"neutron.c5c3.io/ovn-client-hash":    "ovn",
-	}))
+	}), "a Neutron without spec.nova carries no notifier digest")
+
+	g.Expect(neutronPodAnnotations("dsn", "auth", "amqp", "ovn", "nova")).To(Equal(map[string]string{
+		"neutron.c5c3.io/db-connection-hash": "dsn",
+		"neutron.c5c3.io/authtoken-hash":     "auth",
+		"neutron.c5c3.io/transport-url-hash": "amqp",
+		"neutron.c5c3.io/ovn-client-hash":    "ovn",
+		"neutron.c5c3.io/nova-notifier-hash": "nova",
+	}), "the notifier password rolls the pods under an annotation of its own")
 }
 
 // TestNeutronWorkloadVolumes covers the mount layout every workload shares: the
@@ -307,7 +315,7 @@ func TestBuildNeutronService_And_PDB_SelectTheAPIComponent(t *testing.T) {
 	g.Expect(pdb.Spec.Selector.MatchExpressions).To(Equal(naming.ExcludeJobPods()),
 		"Job pods carry no readiness probe, so counting them would raise disruptionsAllowed")
 
-	deploy := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "")
+	deploy := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "", "")
 	g.Expect(deploy.Spec.Selector.MatchLabels).To(Equal(want),
 		"the three Deployments of one CR must not select each other's pods")
 }
@@ -335,7 +343,7 @@ func TestReconcileDeployment_RollingUpdateHoldsUntilTheImageIsDrained(t *testing
 		surging.Status.Replicas++
 		r := newNeutronTestReconciler(neutron, surging)
 
-		res, err := r.reconcileDeployment(ctx, r.Client, neutron, deploymentConfigMapName, "", "", "", "")
+		res, err := r.reconcileDeployment(ctx, r.Client, neutron, deploymentConfigMapName, "", "", "", "", "")
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
@@ -351,7 +359,7 @@ func TestReconcileDeployment_RollingUpdateHoldsUntilTheImageIsDrained(t *testing
 		neutron := upgrading()
 		r := newNeutronTestReconciler(neutron, readyNeutronDeployment(neutron))
 
-		res, err := r.reconcileDeployment(ctx, r.Client, neutron, deploymentConfigMapName, "", "", "", "")
+		res, err := r.reconcileDeployment(ctx, r.Client, neutron, deploymentConfigMapName, "", "", "", "", "")
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueNextPass))

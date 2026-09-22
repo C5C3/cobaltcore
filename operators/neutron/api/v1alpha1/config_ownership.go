@@ -56,8 +56,8 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "DEFAULT", Key: "rpc_state_report_workers", OwnedBy: "operator-computed", Impact: "the count is fixed at zero for the same reason as rpc_workers, since without an RPC consumer there are no agent state reports to serve"},
 	{Section: "DEFAULT", Key: "dhcp_agent_notification", OwnedBy: "operator-computed", Impact: "OVN serves DHCP from the logical model and no DHCP agent is deployed, so enabling the notifications queues RPC casts nothing consumes"},
 	{Section: "DEFAULT", Key: "dns_domain", OwnedBy: "operator-computed", Impact: "the suffix is what arms the dns_domain_ports extension driver: neutron discards every dns_name a port is created or updated with while dns_domain is its built-in openstacklocal., so an override to that value turns the DNS attributes back into no-ops, while any other domain is honored as the deployment's DNS suffix"},
-	{Section: "DEFAULT", Key: "notify_nova_on_port_status_changes", OwnedBy: "operator-computed", Impact: "the notification is what tells Nova a port is wired; disabling it leaves instances waiting for a vif-plugged event that never arrives"},
-	{Section: "DEFAULT", Key: "notify_nova_on_port_data_changes", OwnedBy: "operator-computed", Impact: "the notification is what tells Nova a port is wired; disabling it leaves instances waiting for a vif-plugged event that never arrives"},
+	{Section: "DEFAULT", Key: "notify_nova_on_port_status_changes", OwnedBy: "spec.nova", Impact: "the notification is what tells Nova a port is wired; disabling it leaves instances waiting for a vif-plugged event that never arrives"},
+	{Section: "DEFAULT", Key: "notify_nova_on_port_data_changes", OwnedBy: "spec.nova", Impact: "the notification is what tells Nova a port is wired; disabling it leaves instances waiting for a vif-plugged event that never arrives"},
 	{Section: "DEFAULT", Key: "use_stderr", OwnedBy: "operator-computed"},
 	{Section: "DEFAULT", Key: "debug", OwnedBy: "spec.logging.debug"},
 	{Section: "DEFAULT", Key: "default_log_levels", OwnedBy: "operator-computed"},
@@ -98,8 +98,24 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// inert at runtime. It is Rejected for the same reason transport_url is.
 	{Section: "keystone_authtoken", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the middleware password is env-injected via OS_KEYSTONE_AUTHTOKEN__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
+	// [nova] — the account the port notifier posts os-server-external-events
+	// with, rendered by keystoneauth.ClientSection while spec.nova is set and
+	// registered unconditionally.
+	{Section: "nova", Key: "auth_type", OwnedBy: "operator-computed"},
+	{Section: "nova", Key: "auth_url", OwnedBy: "spec.keystoneEndpoint"},
+	{Section: "nova", Key: "username", OwnedBy: "spec.nova.serviceUser"},
+	{Section: "nova", Key: "project_name", OwnedBy: "spec.nova.serviceUser"},
+	{Section: "nova", Key: "user_domain_name", OwnedBy: "spec.nova.serviceUser"},
+	{Section: "nova", Key: "project_domain_name", OwnedBy: "spec.nova.serviceUser"},
+	{Section: "nova", Key: "region_name", OwnedBy: "spec.nova.region"},
+	{Section: "nova", Key: "endpoint_type", OwnedBy: "operator-computed", Impact: "the interface is pinned to the catalog entry a colocated control plane can reach; the public one routes the notifications out of the cluster and back"},
+	// password is never emitted by keystoneauth.ClientSection — the notifier
+	// reads it from the OS_NOVA__PASSWORD env override, so a file value is inert
+	// at runtime. It is Rejected for the same reason the two other passwords are.
+	{Section: "nova", Key: "password", Rejected: true, OwnedBy: "spec.nova.serviceUser.secretRef", Impact: "the notifier password is env-injected via OS_NOVA__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
+
 	// [oslo_messaging_notifications] / [oslo_messaging_rabbit]
-	{Section: "oslo_messaging_notifications", Key: "driver", OwnedBy: "operator-computed", Impact: "the driver decides whether the Nova port notifications are published at all"},
+	{Section: "oslo_messaging_notifications", Key: "driver", OwnedBy: "operator-computed", Impact: "the driver decides whether oslo notifications are published; the Nova port events are REST calls to os-server-external-events and are governed by the two notify_nova_on_port_* switches"},
 	{Section: "oslo_messaging_rabbit", Key: "rabbit_quorum_queue", OwnedBy: "operator-computed", Impact: "the queue type is fixed when the queue is declared, so a mismatch with the broker's existing queues fails the declaration"},
 	{Section: "oslo_messaging_rabbit", Key: "rabbit_transient_quorum_queue", OwnedBy: "operator-computed", Impact: "the queue type is fixed when the queue is declared, so a mismatch with the broker's existing queues fails the declaration"},
 	{Section: "oslo_messaging_rabbit", Key: "use_queue_manager", OwnedBy: "operator-computed"},

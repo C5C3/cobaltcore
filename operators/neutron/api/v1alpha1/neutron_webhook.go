@@ -102,6 +102,28 @@ func (w *NeutronWebhook) Default(_ context.Context, obj *Neutron) error {
 		su.SecretRef.Key = "password"
 	}
 
+	// The Nova notifier identity is defaulted the same way, but inside a present
+	// block alone: an absent spec.nova is what keeps the port notifications off,
+	// so materializing the block here would switch them on for every CR.
+	if nova := obj.Spec.Nova; nova != nil {
+		nu := &nova.ServiceUser
+		if nu.Username == "" {
+			nu.Username = "neutron-nova"
+		}
+		if nu.ProjectName == "" {
+			nu.ProjectName = "service"
+		}
+		if nu.UserDomainName == "" {
+			nu.UserDomainName = "Default"
+		}
+		if nu.ProjectDomainName == "" {
+			nu.ProjectDomainName = "Default"
+		}
+		if nu.SecretRef.Key == "" {
+			nu.SecretRef.Key = "password"
+		}
+	}
+
 	// The OVN control plane is resolved by name and namespace. An empty namespace
 	// is materialized rather than resolved at reconcile time so the CR records
 	// which namespace was meant when it was created, and a later move of the
@@ -141,7 +163,7 @@ func (w *NeutronWebhook) ValidateCreate(ctx context.Context, obj *Neutron) (admi
 	warnings, createErrs := validateExtraConfigOptions(
 		field.NewPath("spec"), obj.Spec.OpenStackRelease, obj.Spec.ExtraConfig, OwnedConfigKeys)
 	createErrs = append(createErrs, validateNeutronNameLength(obj.Name)...)
-	return warnings, w.validate(ctx, obj, createErrs)
+	return warnings, w.validate(ctx, obj, nil, createErrs)
 }
 
 // validateNeutronNameLength bounds metadata.name by the child object with the
@@ -170,6 +192,10 @@ func validateNeutronNameLength(name string) field.ErrorList {
 //
 // spec.targetClusterRef is compared across both revisions here, the webhook-layer
 // twin of the two transition CEL rules on NeutronSpec.
+//
+// A Rejected extraConfig key the update carries over unchanged is reported as a
+// warning rather than refused (see validateExtraConfigShape), so a CR admitted
+// before the operator started owning that key stays updatable.
 func (w *NeutronWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Neutron) (admission.Warnings, error) {
 	var warnings admission.Warnings
 	var updateErrs field.ErrorList
@@ -185,17 +211,22 @@ func (w *NeutronWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Neu
 		oldObj.Spec.TargetClusterRef,
 		newObj.Spec.TargetClusterRef,
 	)...)
-	return warnings, w.validate(ctx, newObj, updateErrs)
+	warnings = append(warnings, carriedRejectedKeyWarnings(
+		field.NewPath("spec"), newObj.Spec.ExtraConfig, oldObj.Spec.ExtraConfig, OwnedConfigKeys)...)
+	return warnings, w.validate(ctx, newObj, oldObj.Spec.ExtraConfig, updateErrs)
 }
 
 // validate runs all validation rules against the Neutron spec, accumulating
 // every violation so users see the full list in one admission response.
 // ctx is required for cluster-scoped lookups (PriorityClass validation).
-// extra carries the errors accumulated by the caller (the extraConfig
-// option-catalog check, on create the metadata.name bound, and on update the
-// targetClusterRef immutability check) so they aggregate into the single Invalid
-// error alongside the rest.
-func (w *NeutronWebhook) validate(ctx context.Context, n *Neutron, extra field.ErrorList) error {
+// oldExtraConfig is the stored object's spec.extraConfig on update and nil on
+// create (see validateExtraConfigShape). extra carries the errors accumulated by
+// the caller (the extraConfig option-catalog check, on create the metadata.name
+// bound, and on update the targetClusterRef immutability check) so they
+// aggregate into the single Invalid error alongside the rest.
+func (w *NeutronWebhook) validate(
+	ctx context.Context, n *Neutron, oldExtraConfig map[string]map[string]string, extra field.ErrorList,
+) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
@@ -251,6 +282,18 @@ func (w *NeutronWebhook) validate(ctx context.Context, n *Neutron, extra field.E
 		))
 	}
 
+	// A spec.nova block with an unnamed Secret has no password to notify with,
+	// and the notifier would fail every os-server-external-events call at
+	// runtime. The MinLength marker on the shared SecretRefSpec covers the same
+	// case at the schema layer; this is its webhook twin.
+	if n.Spec.Nova != nil && n.Spec.Nova.ServiceUser.SecretRef.Name == "" {
+		allErrs = append(allErrs, field.Required(
+			specPath.Child("nova", "serviceUser", "secretRef", "name"),
+			"serviceUser.secretRef.name must be set when spec.nova is configured: "+
+				"it carries the password Neutron notifies Nova with",
+		))
+	}
+
 	// keystoneEndpoint is required (rendered as [keystone_authtoken] auth_url):
 	// empty is Required, otherwise it must parse as an absolute http(s) URL.
 	// Neutron hands the value verbatim to keystonemiddleware, so an unparseable
@@ -281,11 +324,20 @@ func (w *NeutronWebhook) validate(ctx context.Context, n *Neutron, extra field.E
 	// CacheNoControlChars above.
 	//
 	// The two centralRef fields are on the list because the operator resolves them
-	// into the [ovn] connection strings. gateway.hostname is on it because it
-	// reaches the renderer as a [DEFAULT] option, and [DEFAULT] is rendered first
-	// — an injected line therefore lands in a section the operator never writes,
-	// so nothing overrides it. The HTTPRoute step would reject the hostname later,
-	// but it runs after the config Secret has been written and mounted.
+	// into the [ovn] connection strings, and the five spec.nova values because they
+	// reach [nova] the way spec.serviceUser reaches [keystone_authtoken].
+	// gateway.hostname is on it because it reaches the renderer as a [DEFAULT]
+	// option, and [DEFAULT] is rendered first — an injected line therefore lands in
+	// a section the operator never writes, so nothing overrides it. The HTTPRoute
+	// step would reject the hostname later, but it runs after the config Secret has
+	// been written and mounted.
+
+	// spec.nova is optional, so its five values are read through a zero-valued
+	// copy: an absent block carries empty strings, which pass.
+	var nova NovaSpec
+	if n.Spec.Nova != nil {
+		nova = *n.Spec.Nova
+	}
 	for _, f := range []struct {
 		path  *field.Path
 		value string
@@ -295,6 +347,11 @@ func (w *NeutronWebhook) validate(ctx context.Context, n *Neutron, extra field.E
 		{specPath.Child("serviceUser", "projectName"), n.Spec.ServiceUser.ProjectName},
 		{specPath.Child("serviceUser", "userDomainName"), n.Spec.ServiceUser.UserDomainName},
 		{specPath.Child("serviceUser", "projectDomainName"), n.Spec.ServiceUser.ProjectDomainName},
+		{specPath.Child("nova", "region"), nova.Region},
+		{specPath.Child("nova", "serviceUser", "username"), nova.ServiceUser.Username},
+		{specPath.Child("nova", "serviceUser", "projectName"), nova.ServiceUser.ProjectName},
+		{specPath.Child("nova", "serviceUser", "userDomainName"), nova.ServiceUser.UserDomainName},
+		{specPath.Child("nova", "serviceUser", "projectDomainName"), nova.ServiceUser.ProjectDomainName},
 		{specPath.Child("ovn", "centralRef", "name"), n.Spec.OVN.CentralRef.Name},
 		{specPath.Child("ovn", "centralRef", "namespace"), n.Spec.OVN.CentralRef.Namespace},
 		{specPath.Child("gateway", "hostname"), gatewayHostname(n)},
@@ -483,7 +540,7 @@ func (w *NeutronWebhook) validate(ctx context.Context, n *Neutron, extra field.E
 	}
 
 	allErrs = append(allErrs, validateOVNDBSync(specPath.Child("ovnDBSync"), n.Spec.OVNDBSync)...)
-	allErrs = append(allErrs, validateExtraConfigShape(specPath, n.Spec.ExtraConfig, OwnedConfigKeys)...)
+	allErrs = append(allErrs, validateExtraConfigShape(specPath, n.Spec.ExtraConfig, oldExtraConfig, OwnedConfigKeys)...)
 
 	// Validate that resource requests do not exceed limits.
 	if n.Spec.Deployment.Resources != nil && n.Spec.Deployment.Resources.Limits != nil {

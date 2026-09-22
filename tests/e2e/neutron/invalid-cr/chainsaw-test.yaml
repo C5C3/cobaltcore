@@ -181,3 +181,14 @@ spec:
             ($error != null): true
             (contains($error, 'targetClusterRef.name')): true
             (contains($error, 'should be at least 1 chars long')): true
+  # spec.nova.serviceUser.secretRef.name empty must be rejected by the
+  # MinLength=1 marker on the shared SecretRefSpec, which answers before the
+  # webhook twin. The Secret carries the password Neutron notifies Nova with.
+  - try:
+    - apply:
+        file: 14-nova-serviceuser-secretref-name-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'nova.serviceUser.secretRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true

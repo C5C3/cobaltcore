@@ -72,7 +72,7 @@ func TestReconcileHPA_EnabledCreatesHPA(t *testing.T) {
 
 	// The Deployment leaves replicas unset while the HPA owns the count, so the
 	// two controllers do not fight over it every reconcile.
-	g.Expect(buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "").Spec.Replicas).To(BeNil())
+	g.Expect(buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "", "").Spec.Replicas).To(BeNil())
 }
 
 // One Neutron owns three Deployments and only the API one is autoscaled, so the
@@ -84,10 +84,10 @@ func TestBuildNeutronHPA_TargetsTheAPIDeploymentAlone(t *testing.T) {
 
 	hpa := buildNeutronHPA(neutron)
 
-	api := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "")
+	api := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "", "")
 	g.Expect(hpa.Spec.ScaleTargetRef.Name).To(Equal(api.Name))
 	for _, component := range []string{componentPeriodicWorkers, componentOVNMaintenanceWorker} {
-		worker := buildWorkerDeployment(neutron, component, nil, deploymentConfigMapName, "", "", "", "")
+		worker := buildWorkerDeployment(neutron, component, nil, deploymentConfigMapName, "", "", "", "", "")
 		g.Expect(hpa.Spec.ScaleTargetRef.Name).NotTo(Equal(worker.Name))
 		g.Expect(worker.Spec.Replicas).NotTo(BeNil(),
 			"no HPA owns the worker replica count, so the Deployment has to set it")

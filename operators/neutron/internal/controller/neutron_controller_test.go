@@ -58,6 +58,15 @@ func TestNeutronSecretNameExtractor(t *testing.T) {
 			want: []string{"neutron-db", "neutron-service-user", "neutron-transport"},
 		},
 		{
+			name: "the Nova notifier Secret is indexed while spec.nova is set",
+			obj: func() client.Object {
+				neutron := validNeutron()
+				neutron.Spec.Nova = novaNotifierSpec()
+				return neutron
+			}(),
+			want: []string{"neutron-db", "neutron-service-user", testNovaNotifierSecretName},
+		},
+		{
 			name: "one Secret serving two references is indexed once",
 			obj:  withMessagingSecret("neutron-db"),
 			want: []string{"neutron-db", "neutron-service-user"},

@@ -297,11 +297,11 @@ func TestBuildNeutronNetworkPolicy_PodSelectorCoversEveryComponent(t *testing.T)
 	g.Expect(podSelector.MatchLabels).NotTo(HaveKey(naming.LabelKeyComponent))
 	selector := labels.SelectorFromSet(podSelector.MatchLabels)
 	covered := map[string]map[string]string{
-		"API": buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "").Spec.Template.Labels,
+		"API": buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "", "").Spec.Template.Labels,
 		"periodic workers": buildWorkerDeployment(neutron, componentPeriodicWorkers, nil,
-			deploymentConfigMapName, "", "", "", "").Spec.Template.Labels,
+			deploymentConfigMapName, "", "", "", "", "").Spec.Template.Labels,
 		"OVN maintenance worker": buildWorkerDeployment(neutron, componentOVNMaintenanceWorker, nil,
-			deploymentConfigMapName, "", "", "", "").Spec.Template.Labels,
+			deploymentConfigMapName, "", "", "", "", "").Spec.Template.Labels,
 		"ovn-db-sync": buildOVNDBSyncCronJob(neutron, deploymentConfigMapName).
 			Spec.JobTemplate.Spec.Template.Labels,
 	}

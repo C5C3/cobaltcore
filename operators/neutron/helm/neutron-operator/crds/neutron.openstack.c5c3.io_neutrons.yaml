@@ -1366,6 +1366,78 @@ spec:
                 x-kubernetes-validations:
                 - message: at least one ingress source must be specified
                   rule: size(self.ingress) > 0
+              nova:
+                description: |-
+                  Nova names the compute service this Neutron notifies when a port changes
+                  state, and the Keystone account it notifies as. The presence of the block
+                  is the switch: while it is set the operator turns both
+                  notify_nova_on_port_* flags on and renders the [nova] credentials, and
+                  while it is absent the flags stay off and the section stays empty, so a
+                  port never waits for a vif-plugged event nothing sends. There is no
+                  enabled field, the way spec.ovnDBSync and the agent's spec.novaMetadata
+                  work, and no endpoint override: neutron's [nova] option group carries
+                  region_name and endpoint_type alone, so the compute endpoint is resolved
+                  from the Keystone catalog rather than configured.
+                properties:
+                  region:
+                    description: |-
+                      Region is the Keystone region the compute endpoint is resolved in ([nova]
+                      region_name). Optional: when empty the option is omitted and the notifier
+                      uses the Keystone catalog's default region.
+                    type: string
+                  serviceUser:
+                    description: |-
+                      ServiceUser identifies the Keystone account the notifier authenticates as
+                      and the Secret holding its password. The defaulting webhook fills the
+                      name and domain fields inside a present block; the password Secret
+                      reference is required.
+                    properties:
+                      projectDomainName:
+                        description: |-
+                          ProjectDomainName is the domain the notifier project lives in ([nova]
+                          project_domain_name). Webhook-defaulted to "Default".
+                        type: string
+                      projectName:
+                        description: |-
+                          ProjectName is the Keystone project the notifier account scopes to
+                          ([nova] project_name). Webhook-defaulted to "service".
+                        type: string
+                      secretRef:
+                        description: |-
+                          SecretRef references the Secret holding the notifier account's password.
+                          The key is webhook-defaulted to "password".
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            description: |-
+                              Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                              subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                              fixes every consumer at once — a service operator adminPasswordSecretRef /
+                              database.secretRef / messaging / TLS cert refs and the c5c3
+                              passwordSecretRef — so an empty name no longer slips through "required".
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      userDomainName:
+                        description: |-
+                          UserDomainName is the domain the notifier account lives in ([nova]
+                          user_domain_name). Webhook-defaulted to "Default".
+                        type: string
+                      username:
+                        description: |-
+                          Username is the Keystone username the notifier authenticates as ([nova]
+                          username). Webhook-defaulted to "neutron-nova".
+                        type: string
+                    required:
+                    - secretRef
+                    type: object
+                required:
+                - serviceUser
+                type: object
               openStackRelease:
                 description: |-
                   OpenStackRelease names the OpenStack release this operator deploys and

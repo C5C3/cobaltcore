@@ -365,6 +365,23 @@ FIXTURES: tuple[Fixture, ...] = (
             '    name: ""\n'
         ),
     ),
+    Fixture(
+        filename="14-nova-serviceuser-secretref-name-empty.yaml",
+        comment=(
+            "spec.nova.serviceUser.secretRef.name empty violates the MinLength=1 marker\n"
+            "on the shared SecretRefSpec (internal/common/types/types.go), which the API\n"
+            "server answers before the webhook's field.Required twin runs. The Secret\n"
+            "carries the password Neutron notifies Nova with, so an unnamed one leaves\n"
+            "the notifier unable to call os-server-external-events at all."
+        ),
+        name="neutron-invalid-nova-secretref",
+        extra=(
+            "  nova:\n"
+            "    serviceUser:\n"
+            "      secretRef:\n"
+            '        name: ""\n'
+        ),
+    ),
 )
 
 
