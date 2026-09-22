@@ -1568,6 +1568,135 @@ func TestManagedInfraInstances_CinderDedicatedBackingServices(t *testing.T) {
 		"an undeclared dedicated cache keeps naming the shared block")
 }
 
+// infraInstanceKeys renders every enumerated instance as kind/namespace/name, so
+// an assertion tells a shared instance in the ControlPlane's namespace from its
+// copy in a service namespace of the same name.
+func infraInstanceKeys(instances []infraInstance) []string {
+	keys := make([]string, 0, len(instances))
+	for _, inst := range instances {
+		keys = append(keys, inst.kind+"/"+inst.namespace+"/"+inst.name)
+	}
+	return keys
+}
+
+// infraInstanceAt returns the enumerated instance under kind/namespace/name.
+func infraInstanceAt(instances []infraInstance, key string) (infraInstance, bool) {
+	for _, inst := range instances {
+		if inst.kind+"/"+inst.namespace+"/"+inst.name == key {
+			return inst, true
+		}
+	}
+	return infraInstance{}, false
+}
+
+// TestManagedInfraInstances_NovaEnumeratedOnlyWhenDeclared pins the
+// no-consumer-no-instance rule for Nova: an undeclared Nova enumerates nothing,
+// a co-located declared Nova resolves to the SAME shared database and cache as
+// Keystone, so the entries dedup away rather than provisioning a second set, and
+// a Nova in a namespace of its own takes both classes into that namespace. One
+// database instance covers both of the compute service's schemas.
+func TestManagedInfraInstances_NovaEnumeratedOnlyWhenDeclared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	shared := []string{"MariaDB/default/openstack-db", "Memcached/default/openstack-memcached"}
+
+	// Without services.nova: only Keystone's shared database and cache.
+	g.Expect(infraInstanceKeys(r.managedInfraInstances(cp))).To(ConsistOf(shared))
+
+	// With services.nova sharing the ControlPlane's namespace: Nova resolves to
+	// the same shared instances, so the (kind, namespace, name) dedup collapses
+	// them.
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{}
+	g.Expect(infraInstanceKeys(r.managedInfraInstances(cp))).To(ConsistOf(shared),
+		"a co-located Nova shares Keystone's instances, so nothing new is enumerated")
+
+	// In a namespace of its own, the shared instances are materialized a second
+	// time beside the compute service, one database for both schemas.
+	cp.Spec.Services.Nova.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{Name: "compute"}
+	instances := r.managedInfraInstances(cp)
+	g.Expect(infraInstanceKeys(instances)).To(ConsistOf(append(shared,
+		"MariaDB/compute/openstack-db", "Memcached/compute/openstack-memcached")))
+	db, _ := infraInstanceAt(instances, "MariaDB/compute/openstack-db")
+	g.Expect(db.declaredAt).To(Equal("spec.infrastructure.database"))
+	cache, _ := infraInstanceAt(instances, "Memcached/compute/openstack-memcached")
+	g.Expect(cache.declaredAt).To(Equal("spec.infrastructure.cache"))
+}
+
+// TestManagedInfraInstances_NovaDedicatedBackingServices verifies a Nova that
+// opts into a dedicated database or cache enumerates it as its own instance,
+// declared at the dedicated path, in the namespace the compute service occupies,
+// while the class it did not dedicate is the shared instance materialized a
+// second time in that namespace and keeps naming the shared block.
+func TestManagedInfraInstances_NovaDedicatedBackingServices(t *testing.T) {
+	novaPlane := func(dedicated *c5c3v1alpha1.NovaDedicatedBackingServicesSpec) *c5c3v1alpha1.ControlPlane {
+		cp := managedInfraControlPlane()
+		cp.Namespace = "openstack"
+		cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+			Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+			Nova: &c5c3v1alpha1.ServiceNovaSpec{
+				Namespace:                &c5c3v1alpha1.ServiceNamespaceSpec{Name: "compute"},
+				DedicatedBackingServices: dedicated,
+			},
+		}
+		return cp
+	}
+
+	t.Run("a dedicated database", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := novaPlane(&c5c3v1alpha1.NovaDedicatedBackingServicesSpec{
+			Database: &commonv1.DatabaseSpec{
+				ClusterRef:      &corev1.LocalObjectReference{Name: "cp-nova-db"},
+				Database:        "nova",
+				SecretRef:       commonv1.SecretRefSpec{Name: "nova-db"},
+				CredentialsMode: commonv1.CredentialsModeStatic,
+				Replicas:        1,
+			},
+		})
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		instances := r.managedInfraInstances(cp)
+		g.Expect(infraInstanceKeys(instances)).To(ConsistOf(
+			"MariaDB/openstack/openstack-db", "Memcached/openstack/openstack-memcached",
+			"MariaDB/compute/cp-nova-db", "Memcached/compute/openstack-memcached",
+		), "Keystone keeps the shared pair; Nova takes its dedicated database and a copy of the shared cache")
+		db, _ := infraInstanceAt(instances, "MariaDB/compute/cp-nova-db")
+		g.Expect(db.declaredAt).To(Equal("spec.services.nova.dedicatedBackingServices.database"))
+		cache, _ := infraInstanceAt(instances, "Memcached/compute/openstack-memcached")
+		g.Expect(cache.declaredAt).To(Equal("spec.infrastructure.cache"),
+			"an undeclared dedicated cache keeps naming the shared block")
+	})
+
+	t.Run("a dedicated cache", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := novaPlane(&c5c3v1alpha1.NovaDedicatedBackingServicesSpec{
+			Cache: &commonv1.CacheSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "cp-nova-cache"},
+				Backend:    "dogpile.cache.pymemcache",
+				Replicas:   1,
+			},
+		})
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		instances := r.managedInfraInstances(cp)
+		g.Expect(infraInstanceKeys(instances)).To(ConsistOf(
+			"MariaDB/openstack/openstack-db", "Memcached/openstack/openstack-memcached",
+			"MariaDB/compute/openstack-db", "Memcached/compute/cp-nova-cache",
+		))
+		cache, _ := infraInstanceAt(instances, "Memcached/compute/cp-nova-cache")
+		g.Expect(cache.declaredAt).To(Equal("spec.services.nova.dedicatedBackingServices.cache"))
+		db, _ := infraInstanceAt(instances, "MariaDB/compute/openstack-db")
+		g.Expect(db.declaredAt).To(Equal("spec.infrastructure.database"),
+			"an undeclared dedicated database keeps naming the shared block")
+	})
+}
+
 // --- per-service target clusters: the backing services follow the service ---
 
 // placedInfraControlPlane places Horizon — and with it the cache it resolves to —

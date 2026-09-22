@@ -192,6 +192,31 @@ func effectiveCinderCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
 	return nil
 }
 
+// effectiveNovaDatabase resolves the database instance the Nova service
+// connects to. Both of Nova's schemas live on it: the nova_api and the cell
+// schema are separate databases on one instance, so one resolver answers for
+// the pair.
+func effectiveNovaDatabase(cp *c5c3v1alpha1.ControlPlane) *commonv1.DatabaseSpec {
+	if db := cp.DedicatedNovaDatabase(); db != nil {
+		return db
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Database
+	}
+	return nil
+}
+
+// effectiveNovaCache resolves the cache instance the Nova service connects to.
+func effectiveNovaCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
+	if cache := cp.DedicatedNovaCache(); cache != nil {
+		return cache
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Cache
+	}
+	return nil
+}
+
 // targetClusterRefForNamespace resolves the target cluster the namespace named
 // namespace lives on: nil — the local cluster the operator runs on — for the
 // ControlPlane's own namespace, and otherwise the ref of a service that declares
@@ -223,6 +248,7 @@ func targetClusterRefForNamespace(cp *c5c3v1alpha1.ControlPlane, namespace strin
 		{cp.BarbicanNamespace(), cp.BarbicanTargetClusterRef()},
 		{cp.NeutronNamespace(), cp.NeutronTargetClusterRef()},
 		{cp.CinderNamespace(), cp.CinderTargetClusterRef()},
+		{cp.NovaNamespace(), cp.NovaTargetClusterRef()},
 	} {
 		if svc.namespace == namespace {
 			return svc.ref

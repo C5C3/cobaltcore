@@ -269,10 +269,11 @@ provision_service_tenant() {
 # the cinder-db-dynamic policy that grants exactly this creds path.
 #
 # MUST STAY IN SYNC (nova): the nova-api-<namespace> and nova-cell-<namespace>
-# role names below are the derivations the nova credential generators must
-# assert once #1019 adds them; #1019 replaces this sentence with the function
-# names. The rows' schema lists are the defaults fixed by #1014 D2: nova_api for
-# the API role, nova and its nova_cell0 for the cell role.
+# role names below are the derivations novaAPIDBDynamicRoleFor and
+# novaCellDBDynamicRoleFor assert in
+# operators/c5c3/internal/controller/reconcile_nova_dbcredentials.go. The rows'
+# schema lists are the defaults fixed by #1014 D2: nova_api for the API role,
+# nova and its nova_cell0 for the cell role.
 # The auth half is in setup-auth.sh, where the nova-api-db and nova-cell-db
 # roles bind the nova-api-db-dynamic / nova-cell-db-dynamic policies that grant
 # exactly these creds paths. The cell role is named nova-cell and not nova
