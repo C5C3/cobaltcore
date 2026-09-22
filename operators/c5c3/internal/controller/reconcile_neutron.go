@@ -132,6 +132,13 @@ func neutronEndpointURL(cp *c5c3v1alpha1.ControlPlane) string {
 // DeepCopied from the resolved backing services, the Keystone endpoint derived
 // top-down through neutronKeystoneEndpoint), and folds both children's readiness
 // into NeutronReady.
+//
+// While spec.services.nova is set the sub-reconciler takes a SECOND registration,
+// the account-only one for the user Neutron posts its port-status notifications
+// to Nova as, and projects spec.nova on the child from it. That registration is
+// gated on its own account, and clearing spec.services.nova reverts the child's
+// spec.nova and, once the child has converged on the spec.nova-free spec,
+// deletes the registration (pruneNeutronNovaNotifierRegistration).
 func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -236,6 +243,28 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 		"Neutron", conditionTypeNeutronReady)
 	if halt {
 		return regRes, err
+	}
+
+	// Register the second account the network service takes: the user it posts its
+	// port-status notifications to the compute service as. It is projected only
+	// while spec.services.nova is set, because without a compute service beside it
+	// the account is a Keystone user nothing ever authenticates as. Its account
+	// gate parks NeutronReady the same way the first one does, so the child is
+	// never pointed at a password that does not resolve yet.
+	//
+	// Clearing spec.services.nova takes the registration down instead of
+	// preserving it: the notifier is a wire between two services of this same
+	// ControlPlane, not a service of its own, and the account outliving the wire
+	// only leaves a credential in Keystone nothing uses. The take-down runs behind
+	// the child's convergence further down, not here.
+	var notifier *c5c3v1alpha1.KeystoneService
+	if cp.Spec.Services.Nova != nil {
+		var notifierRes ctrl.Result
+		notifier, notifierRes, halt, err = r.reconcileBuiltinRegistration(ctx, cp,
+			desiredNeutronNovaNotifierRegistration(cp), "Neutron notifier", conditionTypeNeutronReady)
+		if halt {
+			return notifierRes, err
+		}
 	}
 
 	// The EFFECTIVE credentials mode of the database Neutron connects to, resolved
@@ -396,6 +425,33 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 		},
 	}
 
+	// The compute service the Neutron server notifies about port state and port
+	// data changes, which is what releases an instance from BUILD once its port is
+	// wired. The account is the notifier registration's, read the same way the
+	// token-validation account above is: user and project as that child declares
+	// them, both domains the ControlPlane's effective admin domain, and the
+	// password from the consumer Secret the registration delivers.
+	//
+	// Assigned unconditionally, the revert-on-clear convention the blocks above
+	// follow: clearing spec.services.nova takes spec.nova off the child and turns
+	// the notifications back off, rather than pinning the last projected value.
+	nn.Spec.Nova = nil
+	if notifier != nil {
+		nn.Spec.Nova = &neutronv1alpha1.NovaSpec{
+			Region: cp.Spec.Region,
+			ServiceUser: neutronv1alpha1.NovaNotifierUserSpec{
+				Username:          c5c3v1alpha1.NeutronNovaNotifierAccountName,
+				ProjectName:       c5c3v1alpha1.NeutronServiceProjectName,
+				UserDomainName:    adminDomainName(cp),
+				ProjectDomainName: adminDomainName(cp),
+				SecretRef: commonv1.SecretRefSpec{
+					Name: keystoneServiceCredentialsSecretName(notifier),
+					Key:  "password",
+				},
+			},
+		}
+	}
+
 	// spec.apiServer, spec.ovnDBSync, spec.networkPolicy, spec.autoscaling and
 	// spec.logging are deliberately NOT set, the Placement posture: the child-side
 	// defaults stay authoritative, and tuning them stays a standalone-CR concern.
@@ -454,6 +510,22 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 		}
 	}
 
+	// The notifier registration waits for the same verdict once
+	// spec.services.nova is cleared. Deleting it cascades to the credentials
+	// Secret it delivers, and every neutron-server process sources
+	// OS_NOVA__PASSWORD from that Secret through a non-optional secretKeyRef until
+	// the neutron-operator has re-rendered the workloads without spec.nova. A
+	// prune ahead of that, or ahead of a gate that halts this pass before the
+	// apply, leaves every neutron-server restarted in the window on
+	// CreateContainerConfigError.
+	if cp.Spec.Services.Nova == nil && nn.Status.ObservedGeneration >= nn.Generation {
+		if perr := r.pruneNeutronNovaNotifierRegistration(ctx, cp); perr != nil {
+			conditionFailer(cp, conditionTypeNeutronReady)(reasonServiceRegistrationError,
+				fmt.Sprintf("deleting the stale Neutron notifier registration: %v", perr))
+			return ctrl.Result{}, perr
+		}
+	}
+
 	// The Neutron child is ready. NeutronReady still folds in the registration: a
 	// running Neutron whose catalog entry never landed is reachable by nothing that
 	// discovers it through the catalog, and the ControlPlane must not report the
@@ -465,19 +537,21 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 }
 
 // deleteOrphanedNeutron removes a previously-projected Neutron child, the
-// DB-credential ExternalSecret, the two messaging Secrets, and the KeystoneService
-// registration that follow it, when spec.services.neutron is unset AND the
-// ControlPlane has opted in to deletion via neutronDeletionAllowedAnnotation (the
-// caller gates this). Each object is only deleted when this ControlPlane still
-// owns it (by owner reference in its own namespace, by the ownership labels in a
-// service namespace); a foreign object colliding on a name is left alone.
+// DB-credential ExternalSecret, the two messaging Secrets, and the two
+// KeystoneService registrations that follow it, when spec.services.neutron is
+// unset AND the ControlPlane has opted in to deletion via
+// neutronDeletionAllowedAnnotation (the caller gates this). Each object is only
+// deleted when this ControlPlane still owns it (by owner reference in its own
+// namespace, by the ownership labels in a service namespace); a foreign object
+// colliding on a name is left alone.
 //
 // The referenced OVNCentral is never touched: it is deployed outside the plane
 // and only read (see reconcileOVN).
 //
-// Deleting the registration is what removes Neutron from the Keystone catalog and
-// from the identity plane: the KeystoneService controller's finalizer tears down
-// the catalog rows, the service user and its project behind it.
+// Deleting the registrations is what removes Neutron from the Keystone catalog
+// and from the identity plane: the KeystoneService controller's finalizer tears
+// down the catalog rows, the service user and its project behind it. The
+// compute-notifier account comes down with them.
 func (r *ControlPlaneReconciler) deleteOrphanedNeutron(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
 	neutronNS := cp.NeutronNamespace()
 
@@ -528,8 +602,42 @@ func (r *ControlPlaneReconciler) deleteOrphanedNeutron(ctx context.Context, cp *
 	// reaches co-located objects only. The mirror is reaped by the ControlPlane
 	// teardown, which sweeps a placed namespace's label-owned ExternalSecrets on the
 	// target cluster.
+	//
+	// The compute-notifier account is swept beside it, on the same terms: it lives
+	// in the same namespace, on the same cluster, and the wire it authenticates
+	// over is gone with the network service.
 	registration := &c5c3v1alpha1.KeystoneService{
 		ObjectMeta: metav1.ObjectMeta{Name: neutronName(cp), Namespace: neutronNS},
+	}
+	if err := commonreconcile.DeleteOrphanedChildFunc(ctx, r.Client, registration, func(live client.Object) bool {
+		return isControlPlaneChild(live, cp)
+	}); err != nil {
+		return err
+	}
+	return r.pruneNeutronNovaNotifierRegistration(ctx, cp)
+}
+
+// pruneNeutronNovaNotifierRegistration deletes the compute-notifier
+// registration the network service no longer needs, once spec.services.nova is
+// unset while spec.services.neutron stays. Deleting the child is what has its
+// controller remove the Keystone user behind it, which nothing authenticates as
+// any more.
+//
+// The preserve-by-default reserve a dropped services.<svc> block gets does not
+// apply here: the account is a wire between two services of this ControlPlane
+// rather than a service of its own, and reconcileNeutron calls this only once
+// the child has converged on the spec without the spec.nova block that used it.
+//
+// A same-named KeystoneService this ControlPlane never projected is left alone,
+// and one that is already gone is not an error.
+func (r *ControlPlaneReconciler) pruneNeutronNovaNotifierRegistration(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) error {
+	registration := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      neutronNovaNotifierName(cp),
+			Namespace: cp.NeutronNamespace(),
+		},
 	}
 	return commonreconcile.DeleteOrphanedChildFunc(ctx, r.Client, registration, func(live client.Object) bool {
 		return isControlPlaneChild(live, cp)
