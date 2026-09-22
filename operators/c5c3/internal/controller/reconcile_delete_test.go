@@ -4276,7 +4276,9 @@ func TestProjectedRegistrationKeys_IncludesCinder(t *testing.T) {
 		{Name: "cp-placement", Namespace: "openstack"},
 		{Name: "cp-barbican", Namespace: "openstack"},
 		{Name: "cp-neutron", Namespace: "openstack"},
+		{Name: "cp-neutron-nova", Namespace: "openstack"},
 		{Name: "cp-cinder", Namespace: "openstack"},
+		{Name: "cp-nova", Namespace: "openstack"},
 	}))
 
 	placed := cp.DeepCopy()
@@ -4287,4 +4289,37 @@ func TestProjectedRegistrationKeys_IncludesCinder(t *testing.T) {
 	g.Expect(projectedRegistrationKeys(placed)).To(ContainElement(
 		client.ObjectKey{Name: "cp-cinder", Namespace: "block"}),
 		"a placed block-storage registration is swept from the namespace it was assigned")
+}
+
+// TestProjectedRegistrationKeys_IncludesNovaAndTheNotifier pins the teardown
+// sweep on the compute registration and on the account-only notifier beside the
+// network one. Both keys are enumerated whether or not the spec still declares
+// the services: dropping a block preserves its registration, and a preserved
+// registration still has to come down with the plane. A placed service moves its
+// key to the namespace it was assigned, and the notifier follows the network
+// service rather than the compute one, because that is where it lives.
+func TestProjectedRegistrationKeys_IncludesNovaAndTheNotifier(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+	}
+
+	g.Expect(projectedRegistrationKeys(cp)).To(ContainElements(
+		client.ObjectKey{Name: "cp-neutron-nova", Namespace: "openstack"},
+		client.ObjectKey{Name: "cp-nova", Namespace: "openstack"}),
+		"an undeclared compute service still has its registrations swept")
+
+	placed := cp.DeepCopy()
+	placed.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "compute"},
+	}
+	placed.Spec.Services.Neutron = &c5c3v1alpha1.ServiceNeutronSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "network"},
+	}
+
+	g.Expect(projectedRegistrationKeys(placed)).To(ContainElements(
+		client.ObjectKey{Name: "cp-neutron-nova", Namespace: "network"},
+		client.ObjectKey{Name: "cp-nova", Namespace: "compute"}),
+		"the notifier is swept from the network namespace, the compute registration from its own")
 }

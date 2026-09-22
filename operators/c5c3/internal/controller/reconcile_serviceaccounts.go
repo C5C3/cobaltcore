@@ -64,8 +64,9 @@ type projectedBuiltinRegistration struct {
 }
 
 // projectedBuiltinRegistrations returns one entry per enabled built-in service (a
-// non-nil spec.services.glance / .placement / .barbican / .neutron / .cinder), in
-// that order.
+// non-nil spec.services.glance / .placement / .barbican / .neutron / .cinder /
+// .nova), in that order, plus the account-only notifier registration the network
+// service takes while a compute service is declared beside it.
 func projectedBuiltinRegistrations(cp *c5c3v1alpha1.ControlPlane) []projectedBuiltinRegistration {
 	var entries []projectedBuiltinRegistration
 	if cp.Spec.Services.Glance != nil {
@@ -87,18 +88,33 @@ func projectedBuiltinRegistrations(cp *c5c3v1alpha1.ControlPlane) []projectedBui
 		entries = append(entries, projectedBuiltinRegistration{
 			display: "neutron", desired: desiredNeutronRegistration(cp),
 		})
+		// The account the network service posts its port-status notifications to
+		// the compute service as. It is aggregated only while BOTH blocks are set:
+		// without a compute service there is nothing to notify, and the account
+		// would be a Keystone user nothing ever authenticates as.
+		if cp.Spec.Services.Nova != nil {
+			entries = append(entries, projectedBuiltinRegistration{
+				display: "neutron-nova", desired: desiredNeutronNovaNotifierRegistration(cp),
+			})
+		}
 	}
 	if cp.Spec.Services.Cinder != nil {
 		entries = append(entries, projectedBuiltinRegistration{
 			display: "cinder", desired: desiredCinderRegistration(cp),
 		})
 	}
+	if cp.Spec.Services.Nova != nil {
+		entries = append(entries, projectedBuiltinRegistration{
+			display: "nova", desired: desiredNovaRegistration(cp),
+		})
+	}
 	return entries
 }
 
 // reconcileServiceAccounts aggregates the readiness of the KeystoneService
-// children the Glance, Placement, Barbican, Neutron and Cinder legs applied
-// earlier in the same pass into the ServiceAccountsReady condition.
+// children the Glance, Placement, Barbican, Neutron, Cinder and Nova legs
+// applied earlier in the same pass into the ServiceAccountsReady condition. The
+// network service's compute-notifier account is aggregated with them.
 //
 // The double reporting is intended: a failing child already fails its own
 // service condition, and the aggregate names the same cause under the condition

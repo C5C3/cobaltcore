@@ -362,7 +362,7 @@ func (r *ControlPlaneReconciler) esoTenantStoreClusters(
 // service that has a namespace of its own.
 func hostsHomeRegistration(cp *c5c3v1alpha1.ControlPlane, ns string) bool {
 	if ns == cp.GlanceNamespace() || ns == cp.PlacementNamespace() || ns == cp.BarbicanNamespace() ||
-		ns == cp.NeutronNamespace() || ns == cp.CinderNamespace() {
+		ns == cp.NeutronNamespace() || ns == cp.CinderNamespace() || ns == cp.NovaNamespace() {
 		return true
 	}
 	sr := cp.Spec.KORC.ServiceRegistrations
