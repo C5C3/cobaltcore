@@ -303,6 +303,16 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
+                  protocol:
+                    description: |-
+                      Protocol is the scheme the agent forwards the instance's request with,
+                      rendered as [DEFAULT] nova_metadata_protocol. The defaulting webhook fills
+                      it with "http" when the block is set. A compute cluster reached through the
+                      gateway is addressed over TLS, so an agent proxying to one sets "https".
+                    enum:
+                    - http
+                    - https
+                    type: string
                   sharedSecretRef:
                     description: |-
                       SharedSecretRef references the Secret holding the secret the agent signs

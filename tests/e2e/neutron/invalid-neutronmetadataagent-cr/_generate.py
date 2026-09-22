@@ -261,6 +261,20 @@ FIXTURES: tuple[Fixture, ...] = (
             '    name: ""\n'
         ),
     ),
+    Fixture(
+        filename="10-novametadata-protocol-invalid.yaml",
+        comment=(
+            "spec.novaMetadata.protocol: ftp violates the Enum=http;https marker on\n"
+            "NovaMetadataSpec, which the API server answers before the webhook's\n"
+            "field.Invalid twin runs. The value is the scheme the agent forwards the\n"
+            "instance's request to the Nova metadata API with, rendered as [DEFAULT]\n"
+            "nova_metadata_protocol."
+        ),
+        extra=(
+            "  novaMetadata:\n"
+            "    protocol: ftp\n"
+        ),
+    ),
 )
 
 

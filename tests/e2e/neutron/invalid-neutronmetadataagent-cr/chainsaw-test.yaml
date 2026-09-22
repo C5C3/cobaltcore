@@ -142,3 +142,15 @@ spec:
             ($error != null): true
             (contains($error, 'targetClusterRef.name')): true
             (contains($error, 'should be at least 1 chars long')): true
+  # spec.novaMetadata.protocol outside the CRD enum must be rejected by the
+  # Enum=http;https marker, which answers before the webhook's field.Invalid
+  # twin ("protocol must be http or https"). http and https are the two schemes
+  # the agent reaches the Nova metadata API over.
+  - try:
+    - apply:
+        file: 10-novametadata-protocol-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'novaMetadata.protocol')): true
+            (contains($error, 'Unsupported value')): true

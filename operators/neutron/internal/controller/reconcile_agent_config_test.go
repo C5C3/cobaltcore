@@ -124,15 +124,16 @@ func TestReconcileAgentConfig_NeverRendersTheSecretOrTheRootHelpers(t *testing.T
 }
 
 // The Nova keys follow the block that names them: an agent proxying nowhere
-// renders neither, and an agent with a block renders exactly what it set.
+// renders none of them, and an agent with a block renders exactly what it set.
 func TestReconcileAgentConfig_NovaMetadataKeysFollowTheSpec(t *testing.T) {
-	t.Run("no block renders neither key", func(t *testing.T) {
+	t.Run("no block renders none of the keys", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		r, name := renderAgentConfig(t, validAgent())
 
 		conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
 		g.Expect(conf).NotTo(ContainSubstring("nova_metadata_host"))
 		g.Expect(conf).NotTo(ContainSubstring("nova_metadata_port"))
+		g.Expect(conf).NotTo(ContainSubstring("nova_metadata_protocol"))
 	})
 
 	t.Run("a block renders both keys", func(t *testing.T) {
@@ -152,6 +153,41 @@ func TestReconcileAgentConfig_NovaMetadataKeysFollowTheSpec(t *testing.T) {
 
 		conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
 		g.Expect(conf).NotTo(ContainSubstring("nova_metadata_host"))
+		g.Expect(conf).To(ContainSubstring("nova_metadata_port = 8775"))
+	})
+
+	t.Run("a set protocol renders", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := withNovaMetadata("shared_secret")
+		cr.Spec.NovaMetadata.Protocol = "https"
+		r, name := renderAgentConfig(t, cr)
+
+		conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
+		g.Expect(conf).To(ContainSubstring("nova_metadata_protocol = https"))
+	})
+
+	// http is oslo's own default, so rendering it would change nothing at runtime
+	// and only change the config's content. Its defaulting webhook reaches a
+	// stored agent at the first write of any kind after the upgrade, and a
+	// rendered key would roll the DaemonSet on every compute node right then.
+	t.Run("the default protocol keeps the key out", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := withNovaMetadata("shared_secret")
+		cr.Spec.NovaMetadata.Protocol = neutronv1alpha1.DefaultNovaMetadataProtocol
+		r, name := renderAgentConfig(t, cr)
+
+		conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
+		g.Expect(conf).NotTo(ContainSubstring("nova_metadata_protocol"))
+	})
+
+	t.Run("an empty protocol keeps the oslo default", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := withNovaMetadata("shared_secret")
+		cr.Spec.NovaMetadata.Protocol = ""
+		r, name := renderAgentConfig(t, cr)
+
+		conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
+		g.Expect(conf).NotTo(ContainSubstring("nova_metadata_protocol"))
 		g.Expect(conf).To(ContainSubstring("nova_metadata_port = 8775"))
 	})
 }
@@ -348,6 +384,7 @@ func TestReconcileAgentConfig_CreateFailureMarksSecretsReady(t *testing.T) {
 func TestAgentOperatorDefaults_RenderEveryOwnedKey(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cr := withNovaMetadata("shared_secret")
+	cr.Spec.NovaMetadata.Protocol = "https"
 	cr.Spec.Messaging = &commonv1.MessagingSpec{
 		ClusterRef: &corev1.LocalObjectReference{Name: testRabbitmqClusterName},
 		TLS:        &commonv1.MessagingTLSSpec{CABundleSecretRef: commonv1.SecretRefSpec{Name: "rabbitmq-ca"}},

@@ -160,6 +160,14 @@ type NovaMetadataSpec struct {
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port,omitempty"`
 
+	// Protocol is the scheme the agent forwards the instance's request with,
+	// rendered as [DEFAULT] nova_metadata_protocol. The defaulting webhook fills
+	// it with "http" when the block is set. A compute cluster reached through the
+	// gateway is addressed over TLS, so an agent proxying to one sets "https".
+	// +optional
+	// +kubebuilder:validation:Enum=http;https
+	Protocol string `json:"protocol,omitempty"`
+
 	// SharedSecretRef references the Secret holding the secret the agent signs
 	// forwarded requests with. Nova rejects an unsigned request when it is
 	// configured with a secret of its own, so the two values have to match. The
