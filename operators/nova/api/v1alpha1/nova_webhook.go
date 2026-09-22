@@ -109,6 +109,13 @@ const (
 
 // Process-level defaults the defaulting webhook materializes.
 const (
+	// DefaultComponentReplicas is the replica count the metadata API, the
+	// scheduler, the conductor and the console proxy resolve to when their block
+	// leaves it unset, rather than the shared default of three. All four are peers
+	// that hold nothing between requests, so one is enough to start from and
+	// raising it costs only the pods. The ControlPlane projects the same value
+	// explicitly, so the two stay one fact.
+	DefaultComponentReplicas int32 = 1
 	// DefaultWorkers is the nova-scheduler and nova-conductor worker count
 	// resolved when the block leaves it unset. Two keeps one request from
 	// blocking the next inside a pod without multiplying the database and bus
@@ -179,13 +186,13 @@ func (w *NovaWebhook) Default(_ context.Context, obj *Nova) error {
 	// and may be raised; the count is set before the shared Default() runs, which
 	// would otherwise fill the absent block with three.
 	if obj.Spec.Metadata.Deployment.Replicas == 0 {
-		obj.Spec.Metadata.Deployment.Replicas = 1
+		obj.Spec.Metadata.Deployment.Replicas = DefaultComponentReplicas
 	}
 	if obj.Spec.Scheduler.Deployment.Replicas == 0 {
-		obj.Spec.Scheduler.Deployment.Replicas = 1
+		obj.Spec.Scheduler.Deployment.Replicas = DefaultComponentReplicas
 	}
 	if obj.Spec.Conductor.Deployment.Replicas == 0 {
-		obj.Spec.Conductor.Deployment.Replicas = 1
+		obj.Spec.Conductor.Deployment.Replicas = DefaultComponentReplicas
 	}
 
 	// The console-proxy block is materialized only while the proxy is projected.
@@ -199,7 +206,7 @@ func (w *NovaWebhook) Default(_ context.Context, obj *Nova) error {
 	// nothing the operator reads is lost.
 	if obj.Spec.ConsoleProxyEnabled() {
 		if obj.Spec.ConsoleProxy.Deployment == nil {
-			obj.Spec.ConsoleProxy.Deployment = &DeploymentSpec{Replicas: 1}
+			obj.Spec.ConsoleProxy.Deployment = &DeploymentSpec{Replicas: DefaultComponentReplicas}
 		}
 		obj.Spec.ConsoleProxy.Deployment.Default()
 	} else {

@@ -12,10 +12,17 @@
 package controller
 
 import (
+	"context"
 	"testing"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
@@ -169,4 +176,202 @@ func TestNovaDBCredentialsDynamicEnabled_DedicatedIsStaticEvenWhenModeBypassed(t
 	shared := novaControlPlane()
 	g.Expect(novaDBCredentialsDynamicEnabled(shared)).To(BeTrue(),
 		"a managed shared database with no per-service override inherits the ControlPlane-wide Dynamic default")
+}
+
+// novaLeftoverClientCert builds one chain's mTLS client Certificate at its
+// derived name/namespace, as a prior Dynamic deployment left it.
+func novaLeftoverClientCert(target dbCredentialTarget) *unstructured.Unstructured {
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certificateGVK)
+	cert.SetName(target.certName)
+	cert.SetNamespace(target.namespace)
+	return cert
+}
+
+// TestReconcileNova_DynamicDefaultProjectsEngineObjects verifies a managed shared
+// nova database (default Dynamic) projects, for BOTH schemas, the
+// generator-backed ExternalSecret (no static Data), the VaultDynamicSecret with
+// its own role and per-tenant creds path, its own ServiceAccount, and its own
+// mTLS client Certificate.
+func TestReconcileNova_DynamicDefaultProjectsEngineObjects(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := novaControlPlane()
+	r := newNovaTestReconciler(t, cp)
+	ctx := context.Background()
+
+	g.Expect(novaDBCredentialsDynamicEnabled(cp)).To(BeTrue(),
+		"a managed shared nova database defaults to Dynamic")
+
+	_, err := r.reconcileNova(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for _, target := range novaDBCredentialTargets(cp) {
+		key := types.NamespacedName{Namespace: target.namespace, Name: target.secretName}
+
+		// ExternalSecret: generator-backed, no static KV Data, no SecretStoreRef.
+		es := &esov1.ExternalSecret{}
+		g.Expect(r.Get(ctx, key, es)).To(Succeed(),
+			"operator must create the %s DB-credential ExternalSecret", target.qualifier)
+		g.Expect(es.Spec.Data).To(BeEmpty(), "the Dynamic ExternalSecret must carry no static Data refs")
+		g.Expect(es.Spec.SecretStoreRef.Name).To(BeEmpty(),
+			"a generator-backed ExternalSecret must not reference a SecretStore")
+		g.Expect(es.Spec.DataFrom).To(HaveLen(1))
+		g.Expect(es.Spec.DataFrom[0].SourceRef.GeneratorRef.Kind).To(Equal("VaultDynamicSecret"))
+		g.Expect(es.Spec.DataFrom[0].SourceRef.GeneratorRef.Name).To(Equal(target.secretName))
+
+		// VaultDynamicSecret: its own role and per-tenant creds path.
+		vds := &esgenv1alpha1.VaultDynamicSecret{}
+		g.Expect(r.Get(ctx, key, vds)).To(Succeed(),
+			"operator must create the %s VaultDynamicSecret generator", target.qualifier)
+		g.Expect(vds.Spec.Path).To(Equal(target.credsPath))
+		g.Expect(vds.Spec.Method).To(Equal("GET"))
+		g.Expect(vds.Spec.Provider.Auth.Kubernetes.Role).To(Equal(target.vaultRole))
+		g.Expect(vds.Spec.Provider.Auth.Kubernetes.ServiceAccountRef.Name).To(Equal(target.saName))
+		g.Expect(vds.Spec.Provider.CAProvider.Name).To(Equal(target.certName))
+		g.Expect(vds.Spec.Provider.ClientTLS.CertSecretRef.Name).To(Equal(target.certName))
+
+		// The ServiceAccount the auth role binds, and the client Certificate.
+		g.Expect(r.Get(ctx, types.NamespacedName{
+			Namespace: target.namespace, Name: target.saName,
+		}, &corev1.ServiceAccount{})).To(Succeed())
+		cert := &unstructured.Unstructured{}
+		cert.SetGroupVersionKind(certificateGVK)
+		g.Expect(r.Get(ctx, types.NamespacedName{
+			Namespace: target.namespace, Name: target.certName,
+		}, cert)).To(Succeed())
+		issuer, _, _ := unstructured.NestedString(cert.Object, "spec", "issuerRef", "name")
+		g.Expect(issuer).To(Equal(openBaoCAIssuerName))
+	}
+
+	// The projected child carries Dynamic on both of its database blocks.
+	nv := getProjectedNova(t, r.Client, cp)
+	g.Expect(nv.Spec.APIDatabase.CredentialsMode).To(Equal(commonv1.CredentialsModeDynamic))
+	g.Expect(nv.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeDynamic))
+}
+
+// TestReconcileNova_StaticOptOutProjectsKVAndTearsDownDynamic verifies that both
+// opt-out routes, the shared credentialsMode: Static and the per-service
+// services.nova.databaseCredentialsMode: Static, project the KV-backed
+// ExternalSecrets, tear down the leftover generator objects of BOTH chains, and
+// stamp the child Static on both database blocks.
+func TestReconcileNova_StaticOptOutProjectsKVAndTearsDownDynamic(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		apply func(cp *c5c3v1alpha1.ControlPlane)
+	}{
+		{
+			name: "shared credentialsMode Static",
+			apply: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Infrastructure.Database.CredentialsMode = commonv1.CredentialsModeStatic
+			},
+		},
+		{
+			name: "per-service databaseCredentialsMode Static",
+			apply: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Nova.DatabaseCredentialsMode = commonv1.CredentialsModeStatic
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := novaControlPlane()
+			tt.apply(cp)
+			g.Expect(novaDBCredentialsDynamicEnabled(cp)).To(BeFalse())
+
+			// Pre-seed the leftover generators, SAs and mTLS client Certificates from a
+			// prior Dynamic deployment, each carrying the ownership a live projection
+			// stamps: the teardown is gated on it.
+			s := novaTestScheme(t)
+			var leftovers []client.Object
+			for _, target := range novaDBCredentialTargets(cp) {
+				leftovers = append(leftovers,
+					dbCredentialVaultDynamicSecret(target, openBaoDefaultServer, openBaoDefaultKubernetesMount),
+					dbCredentialServiceAccount(target),
+					novaLeftoverClientCert(target))
+			}
+			for _, obj := range leftovers {
+				g.Expect(claimChildOwnership(localWriter(), cp, obj, s)).To(Succeed())
+			}
+			r := newNovaTestReconciler(t, append([]client.Object{cp}, leftovers...)...)
+			ctx := context.Background()
+
+			_, err := r.reconcileNova(ctx, cp)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			for _, target := range novaDBCredentialTargets(cp) {
+				key := types.NamespacedName{Namespace: target.namespace, Name: target.secretName}
+
+				es := &esov1.ExternalSecret{}
+				g.Expect(r.Get(ctx, key, es)).To(Succeed())
+				g.Expect(es.Spec.DataFrom).To(BeEmpty(), "the Static opt-out must project the KV ExternalSecret")
+				g.Expect(es.Spec.Data).To(HaveLen(2))
+				g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal(target.kvPath))
+
+				g.Expect(apierrors.IsNotFound(r.Get(ctx, key, &esgenv1alpha1.VaultDynamicSecret{}))).To(BeTrue(),
+					"the Static opt-out must delete the leftover %s VaultDynamicSecret", target.qualifier)
+				g.Expect(apierrors.IsNotFound(r.Get(ctx, types.NamespacedName{
+					Namespace: target.namespace, Name: target.saName,
+				}, &corev1.ServiceAccount{}))).To(BeTrue(),
+					"the Static opt-out must delete the generator's ServiceAccount")
+				sweptCert := &unstructured.Unstructured{}
+				sweptCert.SetGroupVersionKind(certificateGVK)
+				g.Expect(apierrors.IsNotFound(r.Get(ctx, types.NamespacedName{
+					Namespace: target.namespace, Name: target.certName,
+				}, sweptCert))).To(BeTrue(),
+					"the Static opt-out must delete the leftover mTLS client Certificate")
+			}
+
+			nv := getProjectedNova(t, r.Client, cp)
+			g.Expect(nv.Spec.APIDatabase.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic))
+			g.Expect(nv.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic))
+		})
+	}
+}
+
+// TestReconcileNova_DynamicObjectsLandInTheNovaNamespace verifies every dynamic
+// object of both chains lands beside the Nova child in a namespace of its own,
+// carrying the ownership labels rather than an owner reference, and that nothing
+// is left in the ControlPlane's namespace.
+func TestReconcileNova_DynamicObjectsLandInTheNovaNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := novaControlPlane()
+	cp.Spec.Services.Nova.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "compute", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	r := newNovaTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileNova(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for _, target := range novaDBCredentialTargets(cp) {
+		g.Expect(target.namespace).To(Equal("compute"))
+		key := types.NamespacedName{Namespace: "compute", Name: target.secretName}
+
+		es := &esov1.ExternalSecret{}
+		g.Expect(r.Get(ctx, key, es)).To(Succeed())
+		g.Expect(es.OwnerReferences).To(BeEmpty(), "a cross-namespace object cannot carry an owner reference")
+		g.Expect(es.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+
+		vds := &esgenv1alpha1.VaultDynamicSecret{}
+		g.Expect(r.Get(ctx, key, vds)).To(Succeed())
+		g.Expect(vds.Spec.Path).To(Equal(target.credsPath),
+			"the generator's per-tenant path follows the nova namespace")
+
+		g.Expect(r.Get(ctx, types.NamespacedName{
+			Namespace: "compute", Name: target.saName,
+		}, &corev1.ServiceAccount{})).To(Succeed(),
+			"the generator's SA must authenticate from the namespace the policy grants")
+
+		cert := &unstructured.Unstructured{}
+		cert.SetGroupVersionKind(certificateGVK)
+		g.Expect(r.Get(ctx, types.NamespacedName{
+			Namespace: "compute", Name: target.certName,
+		}, cert)).To(Succeed())
+
+		// Nothing may be left in the ControlPlane's own namespace.
+		home := types.NamespacedName{Namespace: "default", Name: target.secretName}
+		g.Expect(r.Get(ctx, home, &esov1.ExternalSecret{})).NotTo(Succeed())
+		g.Expect(r.Get(ctx, home, &esgenv1alpha1.VaultDynamicSecret{})).NotTo(Succeed())
+	}
 }
