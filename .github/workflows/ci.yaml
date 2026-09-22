@@ -2369,6 +2369,7 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
             ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
             ${{ env.IMAGE_PREFIX }}/cinder-operator:dev
+            ${{ env.IMAGE_PREFIX }}/nova-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
             ${{ env.IMAGE_PREFIX }}/horizon:2025.2
             ${{ env.IMAGE_PREFIX }}/glance:2025.2
@@ -2376,6 +2377,7 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/barbican:2025.2
             ${{ env.IMAGE_PREFIX }}/neutron:2025.2
             ${{ env.IMAGE_PREFIX }}/cinder:2025.2
+            ${{ env.IMAGE_PREFIX }}/nova:2025.2
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
             ${{ env.IMAGE_PREFIX }}/tempest:2025.2
       - name: Load images into kind
@@ -2389,6 +2391,7 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2025.2 --name ${{ env.KIND_CLUSTER }}
@@ -2396,6 +2399,7 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Prepare the shared infra (TLS, OpenBao + per-CR seeding, ESO store) and
@@ -2415,6 +2419,11 @@ jobs:
           # deploy-infra.sh installs neither by default.
           WITH_NFS: "true"
           WITH_MESSAGING: "true"
+          # The suite applies an OVNChassis with a real ovn-controller, which
+          # binds the compute's port and opens a Geneve tunnel from the kind
+          # node; that tunnel needs the openvswitch and geneve modules on the
+          # runner host, which deploy-infra.sh modprobes under this switch.
+          WITH_OVN_KERNEL_MODULES: "true"
       # Deploy K-ORC (CRDs + controller) from the upstream installer at the tag
       # pinned in deploy/flux-system/sources/k-orc.yaml.
       - name: Deploy K-ORC
@@ -2501,6 +2510,15 @@ jobs:
           OPERATOR: cinder
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
           NAMESPACE: cinder-system
+      # nova-operator before c5c3-operator so the Nova CRD exists before
+      # c5c3-operator projects the Nova child, and so something drives that
+      # child to Ready once it lands.
+      - name: Deploy nova-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: nova
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/nova-operator
+          NAMESPACE: nova-system
       - name: Deploy c5c3-operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -2551,6 +2569,14 @@ jobs:
         run: hack/ci-dump-diagnostics.sh
         env:
           OPERATOR: cinder
+      # The nova half of the same dump: the script reads OPERATOR for the
+      # operator namespace (nova-system) and leaves NAMESPACE at openstack,
+      # where the projected Nova child and the suite's fake compute run.
+      - name: Dump nova diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: nova
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

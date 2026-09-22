@@ -25,10 +25,12 @@
 # fixture, a glob that matches two files, a flipped tempest.conf flag: each one
 # costs the leg its wall or its coverage without failing an assertion.
 #
-# The assertion this file does not carry yet is the one whose wiring is not in
-# ci.yaml yet: the ControlPlane leg (#1019). It belongs here once that wiring
-# exists. The e2e suites, the chaos leg and the two tempest legs are wired, and
-# asserted below.
+# The ControlPlane leg is silent in four places of one job: the two image lists,
+# the kernel-module switch the chassis needs, the nova-operator deploy ordered
+# before c5c3-operator, and the diagnostics dump. The suite declares
+# services.nova and hard-fails on a leg that carries the CRDs alone
+# (E2E_REQUIRE_CONTROLPLANE_STACK=true). The e2e suites, the chaos leg, the two
+# tempest legs and the ControlPlane leg are wired, and asserted below.
 #
 # Nova stays out of the two-cluster placed-services suite
 # (tests/e2e-multicluster/placed-services/), per the author on 2026-09-17. The
@@ -2105,6 +2107,70 @@ test_runner_reports_a_forward_that_dropped() {
     "::error::The Keystone port-forward on 5000 died during the run"
 }
 
+test_controlplane_leg_deploys_nova() {
+  echo "Test: the e2e-controlplane leg carries the compute service"
+
+  # The full-ControlPlane suite drives the compute service through the chain,
+  # and every piece of that is wired in this one job. kind pulls nothing the run
+  # did not load, the projected Nova child needs a nova-operator to drive it to
+  # Ready, and the suite's own gate hard-fails on a leg that carries the CRDs
+  # alone (E2E_REQUIRE_CONTROLPLANE_STACK=true).
+  local load
+  load=$(job_step e2e-controlplane "Load E2E images")
+  assert_contains "the leg pulls the nova-operator image" "$load" \
+    "nova-operator:dev"
+  assert_contains "the leg pulls the nova service image" "$load" \
+    "nova:2025.2"
+
+  # The fake compute Deployment the suite applies runs the service image, so the
+  # node needs it too.
+  local kind_load
+  kind_load=$(job_step e2e-controlplane "Load images into kind")
+  assert_contains "the operator image reaches the node" "$kind_load" \
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/nova-operator:dev"
+  assert_contains "the service image reaches the node" "$kind_load" \
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/nova:2025.2"
+
+  # The suite applies an OVNChassis whose ovn-controller binds the compute's
+  # port over a Geneve tunnel, and that tunnel needs the openvswitch and geneve
+  # modules on the runner host. deploy-infra.sh leaves them alone by default and
+  # setup-e2e-infra reads the switch from env, so it has to sit in this step's
+  # own env block.
+  local setup
+  setup=$(job_step e2e-controlplane "Setup E2E infrastructure")
+  assert_contains "the leg loads the OVN kernel modules" "$setup" \
+    "WITH_OVN_KERNEL_MODULES: \"true\""
+
+  local deploy
+  deploy=$(job_step e2e-controlplane "Deploy nova-operator")
+  assert_not_empty "the nova-operator is deployed" "$deploy"
+  assert_contains "it deploys the nova operator" "$deploy" "OPERATOR: nova"
+  assert_contains "it lands in its own Namespace" "$deploy" \
+    "NAMESPACE: nova-system"
+
+  # Order is the load-bearing part: c5c3-operator projects the Nova child, so
+  # the Nova CRD has to be served before it starts. A deploy step that drifted
+  # below c5c3-operator would leave the first projection passes failing on an
+  # unknown kind.
+  local body cinder_at nova_at c5c3_at
+  body=$(job_block e2e-controlplane)
+  cinder_at=$(grep -n "^      - name: Deploy cinder-operator$" <<< "$body" | cut -d: -f1)
+  nova_at=$(grep -n "^      - name: Deploy nova-operator$" <<< "$body" | cut -d: -f1)
+  c5c3_at=$(grep -n "^      - name: Deploy c5c3-operator$" <<< "$body" | cut -d: -f1)
+  assert_not_empty "the job deploys cinder-operator" "$cinder_at"
+  assert_not_empty "the job deploys c5c3-operator" "$c5c3_at"
+  assert_gte "nova-operator is deployed after cinder-operator" \
+    "$nova_at" "$cinder_at"
+  assert_gte "and before c5c3-operator" "$c5c3_at" "$nova_at"
+
+  # The c5c3 dump reads nova-system for nothing, so a failed run would carry no
+  # nova-operator log at all without a second dump of its own.
+  local dump
+  dump=$(job_step e2e-controlplane "Dump nova diagnostic info")
+  assert_contains "the failed run dumps the nova-operator" "$dump" \
+    "OPERATOR: nova"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -2137,6 +2203,7 @@ test_discover_hosts_takes_an_optional_host
 test_runner_forwards_the_nova_apis
 test_runner_forwards_placement
 test_runner_reports_a_forward_that_dropped
+test_controlplane_leg_deploys_nova
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
