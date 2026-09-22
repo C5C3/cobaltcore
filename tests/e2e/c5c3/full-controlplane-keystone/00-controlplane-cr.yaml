@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ControlPlane CR fixture for the full-controlplane-keystone E2E test. It drives
-# SEVEN services (keystone, horizon, glance, placement, barbican, neutron, and
-# cinder) through the full chain.
+# EIGHT services (keystone, horizon, glance, placement, barbican, neutron,
+# cinder, and nova) through the full chain.
 #
 # Managed mode: database and cache reference managed clusters by clusterRef, so
 # the c5c3-operator reconcileInfrastructure sub-reconciler projects an owned
@@ -173,6 +173,19 @@ spec:
         nfs:
           server: nfs-server.openstack.svc.cluster.local
           path: /backups
+    # The compute service: one replica of each of the four Deployments the
+    # projection sizes, so the API, the metadata API, the scheduler and the
+    # conductor fit on this single node beside the seven services already there.
+    # No gateway on any of the three listeners: the suite reaches the compute
+    # API, the metadata API and the console proxy in-cluster, the way its peers
+    # are reached. The metadata shared secret is left to the plane, which
+    # generates one and hands the same reference to the Nova child and to the
+    # metadata agent 05-neutronmetadataagent-cr.yaml applies.
+    nova:
+      replicas: 1
+      metadataReplicas: 1
+      schedulerReplicas: 1
+      conductorReplicas: 1
   globalPolicyOverrides:
     rules:
       "identity:list_users": "role:admin"
@@ -190,16 +203,24 @@ spec:
           mode: PasswordDriven
     # NOTE: Each declared service registers through a KeystoneService child the
     # c5c3-operator projects for it (controlplane-keystone-glance, -placement,
-    # -barbican, -neutron and -cinder, one per service, in that service's
+    # -barbican, -neutron, -cinder and -nova, one per service, in that service's
     # namespace), carrying both the service's catalog entry and its service
     # account. The account is the user glance / placement / barbican / neutron /
-    # cinder in a Keystone project of its own (service-glance,
+    # cinder / nova in a Keystone project of its own (service-glance,
     # service-placement, service-barbican, service-neutron, service-cinder,
-    # created by the registration) bound to the "service" role, which Keystone's
-    # SRBAC default for identity:validate_token requires. Cinder takes the
-    # "admin" role beside it, because it deletes the Barbican secret of an
-    # encrypted volume as a fallback when the volume's owner cannot, and
-    # Barbican's secure-RBAC defaults put that reach behind admin.
+    # service-nova, created by the registration) bound to the "service" role,
+    # which Keystone's SRBAC default for identity:validate_token requires.
+    # Cinder takes the "admin" role beside it, because it deletes the Barbican
+    # secret of an encrypted volume as a fallback when the volume's owner
+    # cannot, and Barbican's secure-RBAC defaults put that reach behind admin.
+    # Nova takes it for the matching reason on the other side of that wire: it
+    # calls the block-storage API as its own service user in admin contexts,
+    # where cinder refuses a caller holding service alone.
+    # The network service takes a SECOND registration beside its own,
+    # controlplane-keystone-neutron-nova. It carries an account alone (the user
+    # neutron-nova in the referenced project service-neutron, with "service" and
+    # "admin"), no catalog entry: it is the identity neutron posts its port
+    # notifications to nova as, and nova answers those unelevated.
     # The registration delivers the account's credentials as the Secret
     # <child>-credentials beside the service, and the service child reads its
     # service-user password from there. Exercising that projection on a live

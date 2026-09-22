@@ -98,6 +98,28 @@
 #                        internal/public Endpoints, resolved through its ownership
 #                        labels, both URLs the in-cluster Cinder API on the
 #                        project-less /v3 path (no gateway in this fixture).
+#   5m. Nova child     — owned Nova CR ("…-nova") on the Cinder child's terms
+#                        (cluster refs, the derived Keystone endpoint, the service
+#                        user its registration provisions, the bus Secret
+#                        "…-nova-messaging") plus what no peer carries: TWO
+#                        engine-issued DB credentials, one per schema (nova_api and
+#                        nova), the generated metadata shared secret behind an ESO
+#                        Password generator, the cinder and barbican client
+#                        sections its sibling services switch on, and the compute
+#                        contract the child publishes on
+#                        status.computeConfigSecretRef; NovaReady=True.
+#   5n. Compute cat.   — the compute registration's K-ORC Service +
+#                        internal/public Endpoints, resolved through its ownership
+#                        labels, both URLs the in-cluster Nova API on the /v2.1
+#                        path (no gateway in this fixture).
+#   5o. Notifier leg   — the account-only KeystoneService ("…-neutron-nova") the
+#                        network service posts its port notifications as, the
+#                        spec.nova block the ControlPlane writes onto the Neutron
+#                        child, and the OS_NOVA__PASSWORD env the neutron operator
+#                        sources from that account's Secret. The OVN chassis, the
+#                        metadata agent and the fake compute the suite applies
+#                        beside the plane then give the compute service a host to
+#                        place on and an agent to answer its instances.
 #   6. Aggregate       — ControlPlane Ready=True (reason AllReady).
 #   7. API reachable   — Keystone /v3 returns HTTP 200; `openstack token issue`,
 #                        `openstack catalog list` (identity, image, placement,
@@ -112,9 +134,12 @@
 #                        volume on the NFS backend, a backup created, restored and
 #                        deleted, an encrypted volume type whose key lands in
 #                        Barbican and leaves again, and a second create-from-image
-#                        served by the image-volume cache) all succeed using
-#                        the materialised admin clouds.yaml (proves the minted,
-#                        pushed, re-materialised application credential
+#                        served by the image-volume cache), and a compute
+#                        round-trip that boots one server on the fake compute,
+#                        checks its port bound on that host and signs a metadata
+#                        request with the generated shared secret, all succeed
+#                        using the materialised admin clouds.yaml (proves the
+#                        minted, pushed, re-materialised application credential
 #                        authenticates and the services work).
 #
 # ── DECISION: belt-and-braces presence guard + single consolidated script ────
@@ -177,6 +202,12 @@ metadata:
   name: full-controlplane-keystone
 spec:
   namespace: openstack
+  # Serialised, because the compute leg pins a node: the script labels a node
+  # openstack.c5c3.io/chassis and the OVNChassis pods that land on it program
+  # the local Open vSwitch over host paths they share with any other chassis or
+  # metadata agent. hack/kind-config.yaml declares a single node, so a suite
+  # rendering either one at the same time would contend with this one.
+  concurrent: false
   # The full chain (Galera bring-up + Keystone bootstrap + K-ORC mint + the
   # OpenBao round-trip + the dedicated OpenBao instance the Barbican store is
   # provisioned against) is long-running, so the consolidated script and its
@@ -188,7 +219,7 @@ spec:
   # ── Step 1: Presence-gate, apply the ControlPlane, assert the chain ────────
   - try:
     - script:
-        timeout: 50m
+        timeout: 65m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
         # infra/keystone e2e script pins bash for the same reason.
         shell: bash
@@ -211,7 +242,20 @@ spec:
           BARBICAN_BAO="${BARBICAN_CR}-bao"
           NEUTRON_CR="${CP_NAME}-neutron"
           CINDER_CR="${CP_NAME}-cinder"
+          NOVA_CR="${CP_NAME}-nova"
           CLOUDS_SECRET=k-orc-clouds-yaml
+
+          # The node the chassis programs and the compute registers under. The
+          # OVN chassis writes external_ids:hostname from the node's name and
+          # neutron binds a port only to a host that has a live chassis, so the
+          # fake compute takes its [DEFAULT] host from the same field and the
+          # verify Job's server has to land here. The label goes on BEFORE the
+          # ControlPlane is applied so the chassis finds a node the moment it is
+          # created; the third finally script takes it off again.
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          if [ -z "${NODE}" ]; then
+            echo "ERROR: the cluster lists no node to run the chassis on"; exit 1
+          fi
 
           # Each built-in service registers through a KeystoneService child of its
           # own, named like the service child it registers (both are the
@@ -221,6 +265,13 @@ spec:
           BARBICAN_KS="${BARBICAN_CR}"
           NEUTRON_KS="${NEUTRON_CR}"
           CINDER_KS="${CINDER_CR}"
+          NOVA_KS="${NOVA_CR}"
+          # The network service takes a SECOND registration beside its own: the
+          # account-only child carrying the user neutron posts its port
+          # notifications to nova as. It is named after the Neutron child, not
+          # after the compute one, so the two registrations one network service
+          # holds sort together.
+          NOTIFIER_KS="${NEUTRON_CR}-nova"
           # A registration's K-ORC children live in the ControlPlane's namespace and
           # carry a name-hash prefix, so nothing here can address them by name: they
           # are resolved through the ownership labels the registration stamps. The
@@ -233,6 +284,7 @@ spec:
           BARBICAN_SELECTOR="c5c3.io/keystoneservice-name=${BARBICAN_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
           NEUTRON_SELECTOR="c5c3.io/keystoneservice-name=${NEUTRON_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
           CINDER_SELECTOR="c5c3.io/keystoneservice-name=${CINDER_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
+          NOVA_SELECTOR="c5c3.io/keystoneservice-name=${NOVA_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
 
           # ── Presence guard ──────────────────────────────
           # Probe for every CRD the chain spans plus the OpenBao
@@ -277,7 +329,10 @@ spec:
             cinders.cinder.openstack.c5c3.io \
             cinderbackends.cinder.openstack.c5c3.io \
             cinderbackupbackends.cinder.openstack.c5c3.io \
+            novas.nova.openstack.c5c3.io \
             ovncentrals.ovn.openstack.c5c3.io \
+            ovnchassis.ovn.openstack.c5c3.io \
+            neutronmetadataagents.neutron.openstack.c5c3.io \
             rabbitmqclusters.rabbitmq.com \
             openbaoclusters.openbao.org \
             openbaotenants.openbao.org \
@@ -364,6 +419,12 @@ spec:
           if ! operator_running cinder-operator; then
             gate_absent "no cinder-operator is running; the projected Cinder child cannot reach Ready."
           fi
+          # The nova-operator drives the projected Nova child to Ready and
+          # publishes the compute contract the fake compute of
+          # 06-fake-compute.yaml mounts.
+          if ! operator_running nova-operator; then
+            gate_absent "no nova-operator is running; the projected Nova child cannot reach Ready."
+          fi
           # Two infrastructure stacks beyond the operators, both of them opt-in on
           # the CI job and neither installed by deploy-infra.sh by default. The
           # block-storage service casts real RPC over the bus and mounts both of
@@ -378,8 +439,8 @@ spec:
             gate_absent "no nfs-server Deployment in openstack; deploy the kind NFS stack (WITH_NFS=true) so the block-storage service has its shares."
           fi
 
-          echo "OK: c5c3 + K-ORC + keystone + glance + placement + barbican + openbao + neutron + ovn + cinder CRDs, OpenBao store, the shared-rabbitmq broker, the nfs-server export, and running"
-          echo "    keystone-operator, glance-operator, placement-operator, barbican-operator, openbao-operator, ovn-operator, neutron-operator, and cinder-operator present — running the full ControlPlane → Keystone chain."
+          echo "OK: c5c3 + K-ORC + keystone + glance + placement + barbican + openbao + neutron + ovn + cinder + nova CRDs, OpenBao store, the shared-rabbitmq broker, the nfs-server export, and running"
+          echo "    keystone-operator, glance-operator, placement-operator, barbican-operator, openbao-operator, ovn-operator, neutron-operator, cinder-operator, and nova-operator present — running the full ControlPlane → Keystone chain."
 
           # ── Helpers ────────────────────────────────────────────────────────
           # Poll a ControlPlane status condition to True. Implemented as an
@@ -463,6 +524,12 @@ spec:
           # Secret and copies the URL to the Neutron and Cinder children. The
           # finally block deletes the vhost again.
           ../../cinder/broker-vhost.sh create "${CP_NAME}" "${CP_NAME}-messaging" "${CP_NS}"
+          # The chassis role the OVNChassis of 04-ovnchassis-cr.yaml selects on.
+          # It is written before the ControlPlane so the label is already there
+          # when the OVN leg applies the chassis, and it is written with
+          # --overwrite so a node a previous run left labelled converges.
+          kubectl label node "${NODE}" openstack.c5c3.io/chassis=true --overwrite
+          echo "OK: labelled node ${NODE} with openstack.c5c3.io/chassis=true"
           kubectl apply -f 00-controlplane-cr.yaml
 
           # ── Link 1: Infrastructure (MariaDB + Memcached, owned) ────────────
@@ -1074,6 +1141,20 @@ spec:
           assert_eq "OVNReady reason is OVNCentralReady" "OVNCentralReady" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
               -o "jsonpath={.status.conditions[?(@.type=='OVNReady')].reason}")"
+
+          # The chassis attaches to the same central, and it is applied here
+          # rather than beside the compute leg because its pods need the OVN
+          # control plane to be serving before they can register. Neutron binds a
+          # port only to a host that has a live chassis row in the Southbound
+          # database, so the compute leg below would have every port of the
+          # booted server left unbound without it. Like the central, the chassis
+          # is applied inside the script and behind the gate: a separate apply
+          # step would hard-fail on a devstack that carries no OVN CRD.
+          kubectl apply -f 04-ovnchassis-cr.yaml
+          kubectl wait ovnchassis/"${CP_NAME}"-chassis -n "${CP_NS}" \
+            --for=condition=Ready --timeout=300s
+          echo "OK: OVNChassis ${CP_NAME}-chassis Ready on node ${NODE}"
+
           wait_cp_condition NeutronReady 900
 
           assert_eq "Neutron image tag derived from openStackRelease" "2025.2" \
@@ -1271,14 +1352,252 @@ spec:
           CINDER_URL="http://${CINDER_CR}.${CP_NS}.svc:8776/v3"
           assert_catalog_rows "${CINDER_KS}" "${CINDER_SELECTOR}" block-storage "${CINDER_URL}"
 
+          # ── Link 5m: Nova child + its two DB chains (the compute service) ───
+          # The widest projection of the chain. NovaReady needs the delivered bus
+          # Secret, the registration, TWO engine-issued DB credentials, the
+          # generated metadata shared secret, and the child's own Ready, which
+          # waits on the db-sync of both schemas and on five Deployments (API,
+          # metadata, scheduler, conductor, console proxy). That is more than any
+          # peer, so the window matches the widest one already in the suite.
+          wait_cp_condition NovaReady 900
+          assert_eq "NovaReady reason is NovaReady" "NovaReady" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='NovaReady')].reason}")"
+
+          assert_eq "Nova image tag derived from openStackRelease" "2025.2" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
+
+          # Nova is the only service whose state lives in two logical databases:
+          # the API schema holds the cell map, the flavors and the instance
+          # mappings, the cell schema holds the instances themselves. They are
+          # separate databases with separate credentials, so the projection wires
+          # two of everything and the assertions below cover both halves.
+          NOVA_API_DB_SECRET="${NOVA_CR}-api-db-credentials"
+          NOVA_CELL_DB_SECRET="${NOVA_CR}-db-credentials"
+          assert_eq "Nova API database clusterRef wired to infra" "openstack-db" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.apiDatabase.clusterRef.name}')"
+          assert_eq "Nova API logical database is nova_api" "nova_api" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.apiDatabase.database}')"
+          assert_eq "Nova API DB secretRef points at the projected API DB-credential Secret" "${NOVA_API_DB_SECRET}" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.apiDatabase.secretRef.name}')"
+          assert_eq "Nova API database projected with Dynamic credentialsMode" "Dynamic" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.apiDatabase.credentialsMode}')"
+          assert_eq "Nova cell database clusterRef wired to infra" "openstack-db" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
+          assert_eq "Nova cell logical database is nova" "nova" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.database}')"
+          assert_eq "Nova cell DB secretRef points at the projected cell DB-credential Secret" "${NOVA_CELL_DB_SECRET}" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.secretRef.name}')"
+          assert_eq "Nova cell database projected with Dynamic credentialsMode" "Dynamic" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.credentialsMode}')"
+
+          # ── Assert both Nova DB credentials are generator-backed ────────────
+          # Same shape and same ordering rationale as the peers above: the
+          # dynamic objects are ensured inside the Keystone-gated reconcileNova,
+          # and the child only reaches Dynamic once an engine-issued credential
+          # has materialised. The two chains differ in the engine role they draw
+          # from and the ServiceAccount whose token buys the lease, so one helper
+          # drives the pair.
+          assert_nova_db_credential() { # <name> <engine role> <serviceaccount> <static user>
+            local name="$1" role="$2" sa="$3" static="$4" username
+            assert_eq "Nova ${name} ExternalSecret uses a VaultDynamicSecret generator" "VaultDynamicSecret" \
+              "$(kubectl get externalsecret "${name}" -n "${CP_NS}" \
+                -o "jsonpath={.spec.dataFrom[0].sourceRef.generatorRef.kind}")"
+            assert_eq "Nova ${name} ExternalSecret carries no static Data refs" "" \
+              "$(kubectl get externalsecret "${name}" -n "${CP_NS}" -o 'jsonpath={.spec.data}')"
+            kubectl get vaultdynamicsecret "${name}" -n "${CP_NS}" >/dev/null
+            assert_eq "Nova ${name} VaultDynamicSecret reads the ${role} engine-role creds path" \
+              "database/mariadb/creds/${role}" \
+              "$(kubectl get vaultdynamicsecret "${name}" -n "${CP_NS}" -o 'jsonpath={.spec.path}')"
+            kubectl get serviceaccount "${sa}" -n "${CP_NS}" >/dev/null
+            # The materialised Secret must carry the engine-issued username (a
+            # transient v-kube-... login), not the static schema user.
+            username="$(kubectl get secret "${name}" -n "${CP_NS}" -o 'jsonpath={.data.username}' | base64 -d)"
+            if [ "${username}" = "${static}" ] || [ -z "${username}" ]; then
+              echo "ERROR: Nova ${name} Secret username '${username}' is not engine-issued"; exit 1
+            fi
+            echo "OK: Nova ${name} is engine-issued (username '${username}')"
+          }
+          # Nova shares the ControlPlane namespace in this suite, so the
+          # per-tenant engine roles are nova-api-<CP_NS> and nova-cell-<CP_NS>.
+          # The cell role reads "nova-cell-" rather than "nova-" because no role
+          # name may be a hyphen-prefix of another: the per-tenant name is
+          # <role>-<namespace>, which flattens a role "nova" in namespace "api-x"
+          # and a role "nova-api" in namespace "x" onto one name.
+          assert_nova_db_credential "${NOVA_API_DB_SECRET}" "nova-api-${CP_NS}" nova-api-db-creds nova_api
+          assert_nova_db_credential "${NOVA_CELL_DB_SECRET}" "nova-cell-${CP_NS}" nova-cell-db-creds nova
+
+          assert_eq "Nova cache clusterRef wired to infra" "openstack-memcached" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.cache.clusterRef.name}')"
+          assert_eq "Nova keystoneEndpoint derived from the naming convention" \
+            "http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keystoneEndpoint}')"
+          assert_eq "Nova service user derived from its registration (username)" "nova" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.username}')"
+          assert_eq "Nova service user project" "service-nova" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.projectName}')"
+          assert_eq "Nova service user secretRef" "${NOVA_KS}-credentials" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.secretRef.name}')"
+
+          # The bus reaches the child as its own delivered Secret, never the
+          # source the ControlPlane read, on the rule the Neutron link documents.
+          assert_eq "Nova messaging secretRef points at the delivered bus Secret" "${CP_NAME}-nova-messaging" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.messaging.secretRef.name}')"
+          kubectl get secret "${CP_NAME}-nova-messaging" -n "${CP_NS}" >/dev/null
+
+          # The two optional client sections follow the declared services: this
+          # plane runs block storage and a key manager, so nova may attach a
+          # volume and read an encrypted volume's key. Neither endpoint is
+          # overridden: the catalog's internal rows already carry the managed
+          # in-cluster URLs.
+          assert_eq "Nova cinder client section switched on by the declared block-storage service" "true" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.endpoints.cinder.enabled}')"
+          assert_eq "Nova barbican client section switched on by the declared key manager" "true" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.endpoints.barbican.enabled}')"
+
+          # ── The generated metadata shared secret ────────────────────────────
+          # The value the metadata agent signs a proxied instance request with
+          # and the compute service checks that signature against. The
+          # ControlPlane sees both sides, so it GENERATES the value through ESO
+          # rather than asking for one, and writes two references without ever
+          # reading it. The verify Job's 403 on a wrong signature is what proves
+          # the generated value reached the Nova side.
+          NOVA_METADATA_SECRET="${NOVA_CR}-metadata-secret"
+          assert_eq "Nova metadata sharedSecretRef names the generated Secret" "${NOVA_METADATA_SECRET}" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.metadata.sharedSecretRef.name}')"
+          assert_eq "the metadata shared secret is minted by a Password generator" "Password" \
+            "$(kubectl get externalsecret "${NOVA_METADATA_SECRET}" -n "${CP_NS}" \
+              -o "jsonpath={.spec.dataFrom[0].sourceRef.generatorRef.kind}")"
+          # Zero turns the periodic sync off. A Password generator mints a NEW
+          # value on every read, so a refreshing ExternalSecret would rotate the
+          # secret out from under the agent already signing with it.
+          assert_eq "the metadata shared-secret ExternalSecret does not refresh" "0s" \
+            "$(kubectl get externalsecret "${NOVA_METADATA_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.refreshInterval}')"
+          kubectl get passwords.generators.external-secrets.io "${NOVA_METADATA_SECRET}" -n "${CP_NS}" >/dev/null
+          # The ExternalSecret renames the generator's "password" key to
+          # shared_secret, the key both consumers default their reference to.
+          NOVA_METADATA_VALUE="$(kubectl get secret "${NOVA_METADATA_SECRET}" -n "${CP_NS}" \
+            -o 'jsonpath={.data.shared_secret}' | base64 -d)"
+          if [ -z "${NOVA_METADATA_VALUE}" ]; then
+            echo "ERROR: the metadata shared-secret Secret ${NOVA_METADATA_SECRET} carries no shared_secret key"; exit 1
+          fi
+          echo "OK: the metadata shared secret materialised (${#NOVA_METADATA_VALUE} characters)"
+
+          # The compute contract: the nova.conf fragment and the bus credentials
+          # a nova-compute needs to join this plane. 06-fake-compute.yaml mounts
+          # exactly this Secret, which is why the fixture is applied only after
+          # this assertion holds.
+          assert_eq "Nova publishes the compute contract Secret" "${NOVA_CR}-compute-config" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.status.computeConfigSecretRef.name}')"
+          kubectl get secret "${NOVA_CR}-compute-config" -n "${CP_NS}" >/dev/null
+
+          # The four replica counts the ControlPlane sizes. They are asserted
+          # together because three of them are written EXPLICITLY by the
+          # projection: their deployment blocks are struct values, so the API
+          # server materialises the shared default of three into each one before
+          # the nova defaulting webhook (which only reaches an ABSENT block) can
+          # say otherwise, and a projection that left them alone would run three
+          # metadata APIs, three schedulers and three conductors on one node.
+          assert_eq "Nova API replicas sized from services.nova.replicas" "1" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.api.deployment.replicas}')"
+          assert_eq "Nova metadata replicas sized from services.nova.metadataReplicas" "1" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.metadata.deployment.replicas}')"
+          assert_eq "Nova scheduler replicas sized from services.nova.schedulerReplicas" "1" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.scheduler.deployment.replicas}')"
+          assert_eq "Nova conductor replicas sized from services.nova.conductorReplicas" "1" \
+            "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.conductor.deployment.replicas}')"
+          assert_eq "Nova CR owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of novas.nova.openstack.c5c3.io "${NOVA_CR}")"
+
+          # ── Link 5n: compute catalog (the registration's rows) ──────────────
+          # The compute service registers an internal AND a public Endpoint at
+          # birth like its peers; with no gateway in this fixture both URLs
+          # advertise the in-cluster Nova API Service on the /v2.1 path the
+          # compute API is served under.
+          NOVA_URL="http://${NOVA_CR}.${CP_NS}.svc:8774/v2.1"
+          assert_catalog_rows "${NOVA_KS}" "${NOVA_SELECTOR}" compute "${NOVA_URL}"
+
+          # ── Link 5o: the Neutron → Nova notifier leg ───────────────────────
+          # The wire between the two services: neutron posts a port's status
+          # changes to the compute API, and it authenticates as an account of its
+          # own rather than as itself. The block below only exists because this
+          # plane declares both services, which is what makes it the one thing
+          # neither the Neutron nor the Nova link can assert alone.
+          assert_eq "Neutron notifier authenticates as the notifier account" "neutron-nova" \
+            "$(kubectl get neutrons.neutron.openstack.c5c3.io "${NEUTRON_CR}" -n "${CP_NS}" \
+              -o 'jsonpath={.spec.nova.serviceUser.username}')"
+          assert_eq "Neutron notifier password comes from the notifier registration's Secret" \
+            "${NOTIFIER_KS}-credentials" \
+            "$(kubectl get neutrons.neutron.openstack.c5c3.io "${NEUTRON_CR}" -n "${CP_NS}" \
+              -o 'jsonpath={.spec.nova.serviceUser.secretRef.name}')"
+          # The password never reaches the rendered configuration: the neutron
+          # operator injects it as an env override on the API Deployment and on
+          # the workers, so the Deployment is where the wiring is visible.
+          assert_eq "neutron-server sources OS_NOVA__PASSWORD from that Secret" "${NOTIFIER_KS}-credentials" \
+            "$(kubectl get deployment "${NEUTRON_CR}" -n "${CP_NS}" \
+              -o "jsonpath={.spec.template.spec.containers[0].env[?(@.name=='OS_NOVA__PASSWORD')].valueFrom.secretKeyRef.name}")"
+
+          # The registration behind that Secret carries an ACCOUNT ALONE: a user
+          # another service authenticates as answers no requests itself, so it
+          # has no endpoint to advertise.
+          wait_ready_condition keystoneservice "${NOTIFIER_KS}" "${CP_NS}" 900
+          assert_eq "notifier registration ${NOTIFIER_KS} carries no catalog entry" "" \
+            "$(kubectl get keystoneservice "${NOTIFIER_KS}" -n "${CP_NS}" -o 'jsonpath={.spec.catalog}')"
+          assert_eq "notifier registration provisions the neutron-nova user" "neutron-nova" \
+            "$(kubectl get keystoneservice "${NOTIFIER_KS}" -n "${CP_NS}" -o 'jsonpath={.spec.account.userName}')"
+          assert_eq "notifier registration names the network service's project" "service-neutron" \
+            "$(kubectl get keystoneservice "${NOTIFIER_KS}" -n "${CP_NS}" -o 'jsonpath={.spec.account.project.name}')"
+          # That project is REFERENCED, not created: the network service's own
+          # registration owns service-neutron, and a second creator would have
+          # the first teardown delete it underneath. The field is omitempty, so
+          # an unset value and an explicit false both mean "referenced".
+          NOTIFIER_CREATES_PROJECT="$(kubectl get keystoneservice "${NOTIFIER_KS}" -n "${CP_NS}" \
+            -o 'jsonpath={.spec.account.project.create}')"
+          if [ -n "${NOTIFIER_CREATES_PROJECT}" ] && [ "${NOTIFIER_CREATES_PROJECT}" != "false" ]; then
+            echo "ERROR: notifier registration ${NOTIFIER_KS} creates service-neutron (create='${NOTIFIER_CREATES_PROJECT}'); the network service's own registration owns it"
+            exit 1
+          fi
+          echo "OK: notifier registration ${NOTIFIER_KS} references rather than creates service-neutron"
+          # service alone is not enough here, and it is the one place in the
+          # chain where that is true of an account nobody serves requests as:
+          # nova resolves the instance behind a notified port with the caller's
+          # own context, unelevated, so a notifier holding service alone has
+          # every event answered 404 and leaves the port in BUILD.
+          assert_eq "notifier registration binds service and admin" "service admin" \
+            "$(kubectl get keystoneservice "${NOTIFIER_KS}" -n "${CP_NS}" -o 'jsonpath={.spec.account.roles[*]}')"
+
+          # ── The metadata agent, on the chassis the OVN leg brought up ───────
+          # Its SecretsReady gate resolves the shared secret the ControlPlane
+          # generated, so a Ready agent proves that value reaches a consumer
+          # OUTSIDE the plane through the same reference the Nova child carries.
+          kubectl apply -f 05-neutronmetadataagent-cr.yaml
+          kubectl wait neutronmetadataagent/"${CP_NAME}"-agent -n "${CP_NS}" \
+            --for=condition=Ready --timeout=300s
+          assert_eq "metadata agent resolved the ControlPlane's shared secret" "True" \
+            "$(kubectl get neutronmetadataagent "${CP_NAME}"-agent -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='SecretsReady')].status}")"
+
+          # ── The nova-compute the plane places on ───────────────────────────
+          # The ControlPlane projects no compute workload: a nova-compute belongs
+          # to a hypervisor. What it publishes for one is the contract Secret
+          # asserted above, and 06-fake-compute.yaml is what a compute cluster
+          # would build out of it. nova-scheduler places a server only on a host
+          # that also has a mapping in the API database, and nova-manage writes
+          # those from a 300-second periodic, which is longer than this step can
+          # wait, so the helper runs the discovery by hand.
+          kubectl apply -f 06-fake-compute.yaml
+          kubectl rollout status deploy/"${CP_NAME}"-fake-compute -n "${CP_NS}" --timeout=300s
+          ../../nova/discover-hosts.sh "${NOVA_CR}" "${CP_NS}" "${NODE}"
+
           # ── Link 6: aggregate Ready=True ───────────────────────────────────
           wait_cp_condition Ready 300
           assert_eq "Aggregate Ready reason" "AllReady" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
 
-          # ── Link 6a: status.services[] reports all seven services ready ────
+          # ── Link 6a: status.services[] reports all eight services ready ────
           # keystone [0], horizon [1], glance [2], placement [3], barbican [4],
-          # neutron [5], cinder [6] — the stable order setServicesStatus emits.
+          # neutron [5], cinder [6], nova [7] — the stable order
+          # setServicesStatus emits.
           assert_eq "status.services[0] is keystone" "keystone" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[0].name}')"
           assert_eq "status.services[0] keystone ready" "true" \
@@ -1307,6 +1626,14 @@ spec:
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[6].name}')"
           assert_eq "status.services[6] cinder ready" "true" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[6].ready}')"
+          assert_eq "status.services[7] is nova" "nova" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[7].name}')"
+          assert_eq "status.services[7] nova ready" "true" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[7].ready}')"
+          # The count, so a ninth row nobody asserted cannot ride along unseen.
+          assert_eq "status.services reports exactly eight services" "8" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o 'jsonpath={.status.services[*].name}' | wc -w | tr -d ' ')"
 
           # ── Link 6b: dynamic DB credential engine (no-static / revoke / iso) ─
           # Per-tenant role is keyed on the namespace alone (dbDynamicRoleFor /
@@ -1429,9 +1756,11 @@ spec:
           # block-storage round-trips add more than twenty calls of their own, most
           # of them behind a poll on a volume reaching available. A 15m wait
           # expired on three runs with every leg green and the Job inside its last
-          # one, the image-volume cache; the slowest needed about 16m. 20m sits
-          # inside the 50m step budget above.
-          kubectl wait --for=condition=complete job/cp-openstack-verify -n "${CP_NS}" --timeout=20m
+          # one, the image-volume cache; the slowest needed about 16m. The compute
+          # round-trip adds a boot polled to ACTIVE, a port lookup and two
+          # metadata requests on top of that, so the wait is 25m, which sits
+          # inside the 65m step budget above.
+          kubectl wait --for=condition=complete job/cp-openstack-verify -n "${CP_NS}" --timeout=25m
           echo "=== openstack client output ==="
           # Fetch the Job log ONCE and assert on the captured text. `kubectl
           # logs | grep -q` fails under pipefail exactly when it MATCHES:
@@ -1471,7 +1800,65 @@ spec:
             || { echo "ERROR: the encrypted volume did not put exactly one key into Barbican and take it back out"; exit 1; }
           grep -q "OK: image-volume cache" <<<"${VERIFY_LOGS}" \
             || { echo "ERROR: the second create-from-image did not reuse the cached image volume"; exit 1; }
-          echo "OK: token issued, identity + image + placement + key-manager + network + block-storage services catalogued, and the image, placement, secret, network, volume, backup, encryption and cache round-trips passed — full chain verified."
+          # The compute round-trip. The server and the port lines are matched
+          # WITH the node in them, so a server that landed anywhere else, or a
+          # port bound to another host, fails here instead of passing on a line
+          # that merely starts the same way.
+          grep -q "OK: compute service " <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: no nova-compute host reported up to the verify Job"; exit 1; }
+          # The host as the Job printed it, compared rather than only matched, so
+          # a mismatch names both sides instead of failing a silent grep. awk
+          # stops at the first hit without a pipe, which is the same reason the
+          # matches above use here-strings.
+          VERIFY_HOST="$(awk '/^OK: compute service .* up$/ { print $4; exit }' <<<"${VERIFY_LOGS}")"
+          assert_eq "the compute the verify Job saw is the labelled node" "${NODE}" "${VERIFY_HOST}"
+          grep -q "OK: server cp-server ACTIVE on ${NODE}" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: cp-server did not reach ACTIVE on node ${NODE}"; exit 1; }
+          grep -q "OK: port bound (ovs) on ${NODE}" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: the server's port was not bound with vif_type ovs on node ${NODE}"; exit 1; }
+          grep -q "OK: metadata signed round-trip" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: the signed metadata request did not answer 200 with the server's uuid, or a wrong signature was not refused"; exit 1; }
+          grep -q "OK: compute round-trip" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: the compute round-trip did not boot and remove a server"; exit 1; }
+
+          # ── Link 7c: the port events the boot travelled on ─────────────────
+          # Booting a server is the only thing in this suite that makes the two
+          # services call each other: neutron posts network-changed to the
+          # compute API as the notifier account, and nova answers it. The verify
+          # Job sees neither call, so the proof is in the two logs.
+          #
+          # Both are captured ONCE and matched with here-strings, the rule the
+          # verify-Job capture above documents: a `kubectl logs | grep -q`
+          # pipeline fails under pipefail exactly when it matches.
+          #
+          # The nova API's uWSGI access log prints the request path and the
+          # status on one line, so a 200 on os-server-external-events is the
+          # compute side of the exchange. The API Deployment carries the Nova
+          # CR's own name (the components take a suffix, the API does not).
+          NOVA_API_LOGS="$(kubectl logs -n "${CP_NS}" "deploy/${NOVA_CR}" --tail=2000)"
+          if ! grep -Eq 'os-server-external-events.*200' <<<"${NOVA_API_LOGS}"; then
+            echo "ERROR: the nova API logged no os-server-external-events call answered 200; the notifier never reached it"
+            printf '%s\n' "${NOVA_API_LOGS}"
+            exit 1
+          fi
+          echo "OK: the nova API answered an os-server-external-events call with 200"
+          # The neutron side of the same exchange. A notifier whose account is
+          # too narrow still posts the event and still logs it, but nova answers
+          # 404 and neutron records the event as returned with failed status, so
+          # the absence of that line is what proves the roles are right.
+          #
+          # network-vif-deleted is deliberately NOT asserted: nova answers 404
+          # for an instance it has already destroyed whatever role the caller
+          # holds, so the teardown leaves a failed-status line no wiring can
+          # remove.
+          NEUTRON_LOGS="$(kubectl logs -n "${CP_NS}" "deploy/${NEUTRON_CR}" --tail=2000)"
+          if grep -Eq 'network-changed.*returned with failed status' <<<"${NEUTRON_LOGS}"; then
+            echo "ERROR: neutron recorded a network-changed event nova refused; the notifier account is too narrow"
+            printf '%s\n' "${NEUTRON_LOGS}"
+            exit 1
+          fi
+          echo "OK: no network-changed event came back from nova with a failed status"
+          echo "OK: token issued, identity + image + placement + key-manager + network + block-storage + compute services catalogued, and the image, placement, secret, network, volume, backup, encryption, cache and compute round-trips passed — full chain verified."
     catch:
     - script:
         # Pinned, because chainsaw applies the test's exec budget to EVERY
@@ -1560,6 +1947,39 @@ spec:
             echo "--- ${pod} ---"
             kubectl logs -n openstack "${pod}" --all-containers --tail=200 2>&1 || true
           done
+          echo "=== Nova child + its two DB chains + the metadata shared secret ==="
+          kubectl get novas.nova.openstack.c5c3.io -n openstack 2>&1 || true
+          kubectl describe novas.nova.openstack.c5c3.io controlplane-keystone-nova -n openstack 2>&1 || true
+          kubectl get secret controlplane-keystone-nova-messaging -n openstack 2>&1 || true
+          kubectl describe externalsecret controlplane-keystone-nova-api-db-credentials -n openstack 2>&1 || true
+          kubectl describe vaultdynamicsecret controlplane-keystone-nova-api-db-credentials -n openstack 2>&1 || true
+          kubectl describe externalsecret controlplane-keystone-nova-db-credentials -n openstack 2>&1 || true
+          kubectl describe vaultdynamicsecret controlplane-keystone-nova-db-credentials -n openstack 2>&1 || true
+          kubectl get serviceaccount nova-api-db-creds nova-cell-db-creds -n openstack 2>&1 || true
+          kubectl describe externalsecret controlplane-keystone-nova-metadata-secret -n openstack 2>&1 || true
+          kubectl get secret controlplane-keystone-nova-compute-config -n openstack 2>&1 || true
+          echo "=== Nova Deployments (api, metadata, scheduler, conductor, console proxy) ==="
+          # The API Deployment carries the Nova CR's bare name; the four
+          # component ones take a suffix each.
+          kubectl get deployment controlplane-keystone-nova \
+            controlplane-keystone-nova-metadata \
+            controlplane-keystone-nova-scheduler \
+            controlplane-keystone-nova-conductor \
+            controlplane-keystone-nova-novncproxy -n openstack -o wide 2>&1 || true
+          echo "=== nova-operator logs (last 200 lines) ==="
+          kubectl logs -n nova-system -l app.kubernetes.io/name=nova-operator --tail=200 --all-containers 2>&1 || true
+          echo "=== nova API logs (last 400 lines) ==="
+          # Dumped here rather than left to the workflow's diagnostics, for the
+          # reason the cinder pod logs above document: the finally block deletes
+          # the vhost these services sit on.
+          kubectl logs -n openstack deploy/controlplane-keystone-nova --tail=400 2>&1 || true
+          echo "=== neutron-server logs (last 400 lines) ==="
+          kubectl logs -n openstack deploy/controlplane-keystone-neutron --tail=400 2>&1 || true
+          echo "=== Fake compute, OVN chassis and metadata agent ==="
+          kubectl get deployment controlplane-keystone-fake-compute -n openstack -o wide 2>&1 || true
+          kubectl logs -n openstack deploy/controlplane-keystone-fake-compute --tail=200 2>&1 || true
+          kubectl describe ovnchassis controlplane-keystone-chassis -n openstack 2>&1 || true
+          kubectl describe neutronmetadataagent controlplane-keystone-agent -n openstack 2>&1 || true
           echo "=== ovn-operator logs (last 200 lines) ==="
           kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --tail=200 --all-containers 2>&1 || true
           echo "=== openbao-operator logs (last 100 lines) ==="
@@ -1586,8 +2006,8 @@ spec:
     - script:
         # Pinned for the same reason as catch above; one delete needs nothing
         # like the test's exec budget. Keeps the suite's ceiling at
-        # exec + catch + finally + cleanup = 50 + 5 + 5 + 2 + 3 = 65m, which is the
-        # number .github/workflows/ci.yaml budgets against.
+        # exec + catch + finally + cleanup = 65 + 5 + 5 + 5 + 2 + 3 = 85m, which is
+        # the number .github/workflows/ci.yaml budgets against.
         timeout: 5m
         shell: bash
         content: |
@@ -1606,3 +2026,21 @@ spec:
         shell: bash
         content: |
           ../../cinder/broker-vhost.sh delete controlplane-keystone || true
+    - script:
+        # The compute leg's own footprint. None of it is owned by the
+        # ControlPlane, so chainsaw's namespace teardown reaches the fake compute
+        # and the two CRs only by namespace, and the node label not at all: a
+        # label left behind advertises a chassis role nothing serves, which the
+        # next suite rendering an OVNChassis would schedule against.
+        #
+        # Deletes run in reverse order of the apply (the compute first, then the
+        # agent, then the chassis that both sit on) and every one is best-effort:
+        # a run that gated out before it applied any of them must not redden
+        # here.
+        timeout: 5m
+        shell: bash
+        content: |
+          kubectl delete -f 06-fake-compute.yaml --ignore-not-found 2>&1 || true
+          kubectl delete neutronmetadataagent controlplane-keystone-agent -n openstack --ignore-not-found 2>&1 || true
+          kubectl delete ovnchassis controlplane-keystone-chassis -n openstack --ignore-not-found 2>&1 || true
+          kubectl label nodes --all openstack.c5c3.io/chassis- 2>&1 || true
