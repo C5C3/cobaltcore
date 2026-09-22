@@ -7,6 +7,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ import (
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
 // validControlPlane returns a ControlPlane with all required fields set to
@@ -9225,4 +9227,1098 @@ func TestValidateCreate_RejectsCinderBackupBackendUnionAndEnum(t *testing.T) {
 		_, err := w.ValidateCreate(context.Background(), cp)
 		g.Expect(err).NotTo(HaveOccurred())
 	})
+}
+
+// --- services.nova ---
+
+// novaControlPlane returns a managed ControlPlane carrying the minimal
+// admissible compute service: the brownfield bus the Nova CRD requires and the
+// three sibling services the compute service calls on every boot, which the
+// ControlPlane requires beside services.nova.
+func novaControlPlane() *ControlPlane {
+	cp := managedControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+		SecretRef: &commonv1.SecretRefSpec{Name: "bus-url"},
+	}
+	cp.Spec.Services.Glance = validGlanceSpec()
+	cp.Spec.Services.Placement = &ServicePlacementSpec{}
+	cp.Spec.Services.Neutron = &ServiceNeutronSpec{
+		OVN: NeutronOVNSpec{CentralRef: NeutronOVNCentralRef{Name: "ovn"}},
+	}
+	cp.Spec.Services.Nova = &ServiceNovaSpec{}
+	return cp
+}
+
+// novaGateway is the minimal API gateway the compute service is published
+// through, the block the publicEndpoint rules are measured against.
+func novaGateway() *commonv1.GatewaySpec {
+	return &commonv1.GatewaySpec{
+		Hostname:  "nova.example.com",
+		ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+	}
+}
+
+// TestDefault_NovaServiceNamespaceLifecycle verifies a declared nova namespace
+// assignment takes the Managed lifecycle default, exactly as the
+// keystone/horizon/glance/placement/barbican/neutron/cinder ones do, and that no
+// assignment is invented for a service that declared none.
+func TestDefault_NovaServiceNamespaceLifecycle(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := novaControlPlane()
+	cp.Spec.Services.Nova.Namespace = &ServiceNamespaceSpec{Name: "compute"}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services.Nova.Namespace.Lifecycle).To(Equal(ServiceNamespaceLifecycleManaged))
+
+	bare := novaControlPlane()
+	g.Expect(w.Default(context.Background(), bare)).To(Succeed())
+	g.Expect(bare.Spec.Services.Nova.Namespace).To(BeNil(),
+		"an absent assignment means the service stays in the ControlPlane's namespace")
+}
+
+// TestDefault_NovaDedicatedBackingServicesLeaves verifies a declared nova
+// dedicated block takes the same leaf defaults as the shared one, with a managed
+// clusterRef name DERIVED from the ControlPlane and credentialsMode materialized
+// to Static (a dedicated managed database cannot draw engine-issued
+// credentials). A service that declares no dedicated block gets nothing.
+func TestDefault_NovaDedicatedBackingServicesLeaves(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := novaControlPlane()
+	cp.Name = "prod"
+	cp.Spec.Services.Nova.DedicatedBackingServices = &NovaDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{},
+		Cache:    &commonv1.CacheSpec{},
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	db := cp.Spec.Services.Nova.DedicatedBackingServices.Database
+	g.Expect(db.ClusterRef).NotTo(BeNil())
+	g.Expect(db.ClusterRef.Name).To(Equal("prod" + DedicatedNovaDatabaseClusterRefSuffix))
+	g.Expect(db.Database).To(Equal(DefaultDatabaseName))
+	g.Expect(db.SecretRef.Name).To(Equal(DefaultDatabaseSecretName))
+	g.Expect(db.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic),
+		"a dedicated managed database is Static-only: no per-instance OpenBao engine role exists")
+
+	cache := cp.Spec.Services.Nova.DedicatedBackingServices.Cache
+	g.Expect(cache.ClusterRef).NotTo(BeNil())
+	g.Expect(cache.ClusterRef.Name).To(Equal("prod" + DedicatedNovaCacheClusterRefSuffix))
+	g.Expect(cache.Backend).To(Equal(DefaultCacheBackend))
+
+	// Idempotent on the dedicated leaves too.
+	before := cp.DeepCopy()
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services).To(Equal(before.Spec.Services))
+
+	shared := novaControlPlane()
+	g.Expect(w.Default(context.Background(), shared)).To(Succeed())
+	g.Expect(shared.Spec.Services.Nova.DedicatedBackingServices).To(BeNil(),
+		"an absent block means the service shares the ControlPlane-wide instances")
+}
+
+// TestValidateCreate_AcceptsNovaControlPlane pins the admissible baseline and
+// the longest ControlPlane name a plane carrying the compute service still fits
+// into. The bound is not Nova's own (41 characters of child name, so 36 of
+// ControlPlane name) but the network service's: services.nova requires
+// services.neutron, whose child name is capped at 40, leaving 32.
+func TestValidateCreate_AcceptsNovaControlPlane(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("the minimal block beside a brownfield bus", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, err := w.ValidateCreate(context.Background(), novaControlPlane())
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("a 32-character ControlPlane name", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Name = strings.Repeat("n", neutronv1alpha1.MaxNeutronNameLength-neutronChildNameOverhead)
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateCreate_RejectsNovaWithoutDependencies pins the first cross-service
+// dependency rules on the ControlPlane. The compute service reaches all three
+// siblings on the path of every instance it boots, and it is addressed at them
+// by the naming convention the ControlPlane projects them under, so a Nova
+// declared without one of them calls an endpoint no child serves.
+func TestValidateCreate_RejectsNovaWithoutDependencies(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for _, tc := range []struct {
+		name  string
+		drop  func(cp *ControlPlane)
+		field string
+		why   string
+	}{
+		{
+			name:  "placement",
+			drop:  func(cp *ControlPlane) { cp.Spec.Services.Placement = nil },
+			field: "spec.services.placement",
+			why:   "Nova claims every instance's resources in Placement before it boots",
+		},
+		{
+			name:  "neutron",
+			drop:  func(cp *ControlPlane) { cp.Spec.Services.Neutron = nil },
+			field: "spec.services.neutron",
+			why:   "Nova creates and binds a port for every instance",
+		},
+		{
+			name:  "glance",
+			drop:  func(cp *ControlPlane) { cp.Spec.Services.Glance = nil },
+			field: "spec.services.glance",
+			why:   "Nova reads the image of every instance it boots",
+		},
+	} {
+		t.Run("without services."+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := novaControlPlane()
+			tc.drop(cp)
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.field))
+			g.Expect(err.Error()).To(ContainSubstring("is required when services.nova is set: " + tc.why))
+		})
+	}
+
+	t.Run("all three missing yields three errors", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Placement = nil
+		cp.Spec.Services.Neutron = nil
+		cp.Spec.Services.Glance = nil
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(strings.Count(err.Error(), "is required when services.nova is set")).To(Equal(3),
+			"each missing sibling is named on its own field, so one edit fixes all three at once")
+	})
+
+	t.Run("no nova block, no requirement", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova = nil
+		cp.Spec.Services.Placement = nil
+		cp.Spec.Services.Neutron = nil
+		cp.Spec.Services.Glance = nil
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateCreate_RejectsNovaInExternalMode verifies the webhook cross-field
+// forbid, mirroring services.neutron and services.cinder: no Keystone workload
+// is deployed, so Nova has no identity to validate its tokens against.
+func TestValidateCreate_RejectsNovaInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Nova = &ServiceNovaSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	// The same plane also names services.nova in the three "is required when
+	// services.nova is set" errors, so the anchor is the forbid's own sentence.
+	g.Expect(err.Error()).To(ContainSubstring(
+		"forbidden when services.keystone.mode is External (Nova needs its own External-mode design)"))
+}
+
+// TestValidateCreate_RejectsNovaWithoutMessaging pins the bus prerequisite the
+// compute service shares with the network and block-storage ones. The Nova CRD
+// requires spec.messaging, and the ControlPlane derives the child's transport
+// URL from the shared bus, so a ControlPlane that declares the service without
+// one would project a child its own admission rejects on every pass.
+func TestValidateCreate_RejectsNovaWithoutMessaging(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := novaControlPlane()
+	cp.Spec.Infrastructure.Messaging = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure.messaging"))
+	g.Expect(err.Error()).To(ContainSubstring("is required when services.nova is set"))
+}
+
+// TestValidateNova_LeavesTheBusToMessagingConsumers pins where the bus rule
+// lives: validateNova leaves spec.infrastructure.messaging to
+// validateMessagingConsumers, which the caller runs after it. That validator in
+// turn stays silent on a nil spec.infrastructure, the case validateKeystoneMode
+// reports, so the missing block is never named twice.
+func TestValidateNova_LeavesTheBusToMessagingConsumers(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := novaControlPlane()
+	cp.Spec.Infrastructure.Messaging = nil
+
+	for _, err := range validateNova(cp) {
+		g.Expect(err.Field).NotTo(Equal("spec.infrastructure.messaging"))
+	}
+
+	cp.Spec.Infrastructure = nil
+	g.Expect(validateMessagingConsumers(cp)).To(BeEmpty())
+	g.Expect(validateKeystoneMode(cp)).To(ContainElement(HaveField("Field", "spec.infrastructure")))
+}
+
+// TestValidateCreate_NovaPublicEndpointMustBeABareOrigin pins the origin shape
+// the CRD Pattern marker cannot express: the ControlPlane appends /v2.1 to what
+// it registers, so anything past the origin lands in the middle of the catalog
+// URL.
+func TestValidateCreate_NovaPublicEndpointMustBeABareOrigin(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, endpoint := range map[string]string{
+		"query":        "https://nova.example.com?utm=1",
+		"fragment":     "https://nova.example.com#top",
+		"path":         "https://nova.example.com/v2.1",
+		"missing host": "https://",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := novaControlPlane()
+			cp.Spec.Services.Nova.PublicEndpoint = endpoint
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.nova.publicEndpoint"))
+		})
+	}
+
+	t.Run("trailing slash", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova.PublicEndpoint = "https://nova.example.com/"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(),
+			"clients normalize the catalog endpoint before appending the API path")
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova.PublicEndpoint = ""
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateCreate_NovaPublicEndpointMustAgreeWithGateway pins the two
+// cross-field rules. An http endpoint behind a TLS-terminating listener ships
+// the caller's scoped Keystone token in cleartext on every compute call; a
+// divergent host advertises a catalog URL the Gateway listener never routes,
+// which fails client-side with nothing on the ControlPlane recording why.
+func TestValidateCreate_NovaPublicEndpointMustAgreeWithGateway(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("divergent host", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova.Gateway = novaGateway()
+		cp.Spec.Services.Nova.PublicEndpoint = "https://compute.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.nova.publicEndpoint"))
+		g.Expect(err.Error()).To(ContainSubstring(
+			`must equal services.nova.gateway.hostname "nova.example.com"`,
+		))
+	})
+
+	t.Run("http scheme behind a TLS-terminating gateway", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova.Gateway = novaGateway()
+		cp.Spec.Services.Nova.PublicEndpoint = "http://nova.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("scheme must be https"))
+	})
+
+	t.Run("matching host with a non-default port", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova.Gateway = novaGateway()
+		cp.Spec.Services.Nova.PublicEndpoint = "https://nova.example.com:8443"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(),
+			"Gateway API hostnames carry no port, so the port is the reason the override exists")
+	})
+
+	t.Run("the metadata gateway is not the one the endpoint is measured against", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova.MetadataGateway = placedGateway("nova-metadata.example.com")
+		cp.Spec.Services.Nova.PublicEndpoint = "https://nova.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(),
+			"the metadata front end is dialed by the agents, not registered in the catalog")
+	})
+}
+
+// TestValidateCreate_WarnsOnCleartextNovaPublicEndpoint covers the gateway-less
+// compute service, where an http endpoint is a legal (if unwise) development
+// setup the CRD Pattern deliberately allows. Every compute call sends a scoped
+// Keystone token to that URL, so the downgrade must at least be surfaced.
+func TestValidateCreate_WarnsOnCleartextNovaPublicEndpoint(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("http warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova.PublicEndpoint = "http://nova.example.com"
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveLen(1))
+		g.Expect(warnings[0]).To(ContainSubstring("scoped Keystone token"))
+	})
+
+	t.Run("https is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova.PublicEndpoint = "https://nova.example.com"
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(BeEmpty())
+	})
+}
+
+// TestValidateCreate_RejectsNovaGatewayHostnames pins the hostname rule on each
+// of the three gateways the compute service publishes: the API, the metadata
+// front end the agents dial, and the console proxy the browser opens its session
+// against. A hostname the route cannot match leaves that endpoint unreachable
+// while the HTTPRoute itself reports Accepted.
+func TestValidateCreate_RejectsNovaGatewayHostnames(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	set := map[string]func(cp *ControlPlane, g *commonv1.GatewaySpec){
+		"gateway": func(cp *ControlPlane, g *commonv1.GatewaySpec) {
+			cp.Spec.Services.Nova.Gateway = g
+		},
+		"metadataGateway": func(cp *ControlPlane, g *commonv1.GatewaySpec) {
+			cp.Spec.Services.Nova.MetadataGateway = g
+		},
+		"consoleProxy.gateway": func(cp *ControlPlane, g *commonv1.GatewaySpec) {
+			cp.Spec.Services.Nova.ConsoleProxy = &ServiceNovaConsoleProxySpec{Gateway: g}
+		},
+	}
+	hostnames := map[string]struct {
+		hostname string
+		detail   string
+	}{
+		"empty":     {"", "must be set when a gateway is configured"},
+		"wildcard":  {"*.example.com", "must not be a wildcard hostname"},
+		"with port": {"nova.example.com:8443", "must not include a port"},
+	}
+
+	for block, apply := range set {
+		for name, tc := range hostnames {
+			t.Run(block+" "+name, func(t *testing.T) {
+				g := NewGomegaWithT(t)
+				cp := novaControlPlane()
+				apply(cp, &commonv1.GatewaySpec{
+					Hostname:  tc.hostname,
+					ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+				})
+
+				_, err := w.ValidateCreate(context.Background(), cp)
+				g.Expect(err).To(HaveOccurred())
+				g.Expect(err.Error()).To(ContainSubstring("spec.services.nova." + block + ".hostname"))
+				g.Expect(err.Error()).To(ContainSubstring(tc.detail))
+			})
+		}
+	}
+}
+
+// TestValidateCreate_RejectsNovaConsoleGatewayPath pins the root-only console
+// route. The console URL the API hands a browser names the page at the root of
+// the console hostname, and the noVNC client opens its WebSocket there as well,
+// so a prefix match routes neither while the HTTPRoute reports Accepted.
+func TestValidateCreate_RejectsNovaConsoleGatewayPath(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	consoleGateway := func(path string) *commonv1.GatewaySpec {
+		return &commonv1.GatewaySpec{
+			Hostname:  "nova-novnc.example.com",
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+			Path:      path,
+		}
+	}
+
+	t.Run("a prefix under the console hostname", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova.ConsoleProxy = &ServiceNovaConsoleProxySpec{Gateway: consoleGateway("/vnc")}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.consoleProxy.gateway.path"))
+		g.Expect(err.Error()).To(ContainSubstring(`consoleProxy.gateway.path must be empty or "/"`))
+	})
+
+	for _, path := range []string{"", "/"} {
+		t.Run("the root path "+strconv.Quote(path), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := novaControlPlane()
+			cp.Spec.Services.Nova.ConsoleProxy = &ServiceNovaConsoleProxySpec{Gateway: consoleGateway(path)}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+// TestValidateCreate_RejectsNovaMetadataGatewayPath pins the root-only metadata
+// route. The Neutron metadata agent addresses nova-api-metadata by scheme, host
+// and port alone and the route rewrites nothing, so every request it proxies
+// arrives on the root of the hostname and a prefix match routes none of them
+// while the HTTPRoute reports Accepted.
+func TestValidateCreate_RejectsNovaMetadataGatewayPath(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	metadataGateway := func(path string) *commonv1.GatewaySpec {
+		return &commonv1.GatewaySpec{
+			Hostname:  "nova-metadata.example.com",
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+			Path:      path,
+		}
+	}
+
+	t.Run("a prefix under the metadata hostname", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova.MetadataGateway = metadataGateway("/metadata")
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.metadataGateway.path"))
+		g.Expect(err.Error()).To(ContainSubstring(`metadataGateway.path must be empty or "/"`))
+	})
+
+	for _, path := range []string{"", "/"} {
+		t.Run("the root path "+strconv.Quote(path), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := novaControlPlane()
+			cp.Spec.Services.Nova.MetadataGateway = metadataGateway(path)
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+// TestValidateCreate_RejectsNovaGatewaysSharingAListener pins that the three
+// Nova listeners cannot share one route attachment. Every Nova route matches the
+// root of its hostname, so two of them on the same hostname, Gateway and
+// listener tie, and the Gateway hands every request to the older route while
+// both report Accepted.
+func TestValidateCreate_RejectsNovaGatewaysSharingAListener(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	gateway := func(hostname, gw, section string) *commonv1.GatewaySpec {
+		return &commonv1.GatewaySpec{
+			Hostname:  hostname,
+			ParentRef: commonv1.GatewayParentRefSpec{Name: gw, SectionName: section},
+		}
+	}
+
+	for _, tc := range []struct {
+		name      string
+		configure func(nv *ServiceNovaSpec)
+		field     string
+	}{
+		{
+			name: "API and metadata on one hostname",
+			configure: func(nv *ServiceNovaSpec) {
+				nv.Gateway = gateway("nova.example.com", "openstack-gw", "")
+				nv.MetadataGateway = gateway("nova.example.com", "openstack-gw", "")
+			},
+			field: "spec.services.nova.metadataGateway.hostname",
+		},
+		{
+			name: "API and console on one hostname",
+			configure: func(nv *ServiceNovaSpec) {
+				nv.Gateway = gateway("nova.example.com", "openstack-gw", "https")
+				nv.ConsoleProxy = &ServiceNovaConsoleProxySpec{Gateway: gateway("nova.example.com", "openstack-gw", "https")}
+			},
+			field: "spec.services.nova.consoleProxy.gateway.hostname",
+		},
+		{
+			name: "an unnamed section overlaps a named one",
+			configure: func(nv *ServiceNovaSpec) {
+				nv.MetadataGateway = gateway("nova.example.com", "openstack-gw", "https")
+				nv.ConsoleProxy = &ServiceNovaConsoleProxySpec{Gateway: gateway("nova.example.com", "openstack-gw", "")}
+			},
+			field: "spec.services.nova.consoleProxy.gateway.hostname",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := novaControlPlane()
+			tc.configure(cp.Spec.Services.Nova)
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.field))
+			g.Expect(err.Error()).To(ContainSubstring("on the same Gateway listener"))
+		})
+	}
+
+	for _, tc := range []struct {
+		name      string
+		configure func(nv *ServiceNovaSpec)
+	}{
+		{
+			name: "three hostnames",
+			configure: func(nv *ServiceNovaSpec) {
+				nv.Gateway = gateway("nova.example.com", "openstack-gw", "")
+				nv.MetadataGateway = gateway("nova-metadata.example.com", "openstack-gw", "")
+				nv.ConsoleProxy = &ServiceNovaConsoleProxySpec{Gateway: gateway("nova-novnc.example.com", "openstack-gw", "")}
+			},
+		},
+		{
+			name: "one hostname on two Gateways",
+			configure: func(nv *ServiceNovaSpec) {
+				nv.Gateway = gateway("nova.example.com", "public-gw", "")
+				nv.MetadataGateway = gateway("nova.example.com", "compute-gw", "")
+			},
+		},
+		{
+			name: "one hostname on two named listeners",
+			configure: func(nv *ServiceNovaSpec) {
+				nv.Gateway = gateway("nova.example.com", "openstack-gw", "public")
+				nv.MetadataGateway = gateway("nova.example.com", "openstack-gw", "compute")
+			},
+		},
+	} {
+		t.Run("accepts "+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := novaControlPlane()
+			tc.configure(cp.Spec.Services.Nova)
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+
+	// An empty parentRef.namespace names the namespace the routes are rendered
+	// in, the Nova namespace, so spelling that namespace out names the same
+	// Gateway and spelling out another one does not.
+	for _, tc := range []struct {
+		name       string
+		novaNS     string // services.nova.namespace; empty keeps Nova beside the ControlPlane
+		metadataNS string // metadataGateway.parentRef.namespace; the API gateway leaves it empty
+		rejected   bool
+	}{
+		{name: "rejects the ControlPlane namespace spelled out", metadataNS: "openstack", rejected: true},
+		{name: "rejects the dedicated Nova namespace spelled out", novaNS: "compute", metadataNS: "compute", rejected: true},
+		{name: "accepts the ControlPlane namespace beside a dedicated Nova namespace", novaNS: "compute", metadataNS: "openstack"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := novaControlPlane()
+			cp.Namespace = "openstack"
+			if tc.novaNS != "" {
+				cp.Spec.Services.Nova.Namespace = &ServiceNamespaceSpec{
+					Name: tc.novaNS, Lifecycle: ServiceNamespaceLifecycleManaged,
+				}
+			}
+			cp.Spec.Services.Nova.Gateway = gateway("nova.example.com", "openstack-gw", "")
+			cp.Spec.Services.Nova.MetadataGateway = gateway("nova.example.com", "openstack-gw", "")
+			cp.Spec.Services.Nova.MetadataGateway.ParentRef.Namespace = tc.metadataNS
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			if !tc.rejected {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.metadataGateway.hostname"))
+			g.Expect(err.Error()).To(ContainSubstring("on the same Gateway listener"))
+		})
+	}
+}
+
+// TestValidateCreate_NovaDBArchiveSchedule pins the cron check the CRD carries
+// no Pattern for: the accepted grammar includes descriptors such as @daily,
+// which no regex expresses without also rejecting valid expressions. An empty
+// schedule leaves the nova operator's own resolution in place.
+func TestValidateCreate_NovaDBArchiveSchedule(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("prose is not a cron expression", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Nova.DBArchive = &ServiceNovaDBArchiveSpec{Schedule: "every day"}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.dbArchive.schedule"))
+		g.Expect(err.Error()).To(ContainSubstring("invalid cron expression"))
+	})
+
+	for _, schedule := range []string{"@daily", "0 3 * * *", ""} {
+		t.Run("accepts "+strconv.Quote(schedule), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := novaControlPlane()
+			cp.Spec.Services.Nova.DBArchive = &ServiceNovaDBArchiveSpec{Schedule: schedule}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+// TestValidateCreate_RejectsNovaImageTagDigestXOR pins the defense-in-depth
+// mirror of the commonv1.ImageSpec XValidation rule for callers that bypass CRD
+// schema admission.
+func TestValidateCreate_RejectsNovaImageTagDigestXOR(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, img := range map[string]*commonv1.ImageSpec{
+		"neither tag nor digest": {Repository: "ghcr.io/c5c3/nova"},
+		"both tag and digest": {
+			Repository: "ghcr.io/c5c3/nova",
+			Tag:        "2025.2",
+			Digest:     "sha256:" + strings.Repeat("a", 64),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := novaControlPlane()
+			cp.Spec.Services.Nova.Image = img
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.nova.image"))
+			g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest must be set"))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsNovaCredentialsModeOverrideDynamicOnDedicated is the
+// nova mirror of the keystone dedicated-database rejection: the override
+// retargets the shared database the service does not use, and a dedicated
+// database is Static-only.
+func TestValidateCreate_RejectsNovaCredentialsModeOverrideDynamicOnDedicated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := novaControlPlane()
+	cp.Spec.Services.Nova.DatabaseCredentialsMode = commonv1.CredentialsModeDynamic
+	cp.Spec.Services.Nova.DedicatedBackingServices = &NovaDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef:      &corev1.LocalObjectReference{Name: "cp-nova-db"},
+			CredentialsMode: commonv1.CredentialsModeStatic,
+			Database:        "nova",
+			SecretRef:       commonv1.SecretRefSpec{Name: "nova-db"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.nova.databaseCredentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring(
+		"not supported as an override on a service with a dedicated database",
+	))
+}
+
+// TestValidateCreate_RejectsNovaCredentialsModeOverrideDynamicOnBrownfieldShared
+// pins the other half of the override rule: the dynamic engine issues per-tenant
+// DB users only against a cluster the operator provisions, so a Dynamic override
+// on a brownfield shared database is rejected.
+func TestValidateCreate_RejectsNovaCredentialsModeOverrideDynamicOnBrownfieldShared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := novaControlPlane()
+	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		Host:      "db.example.com",
+		Port:      3306,
+		Database:  "openstack",
+		SecretRef: commonv1.SecretRefSpec{Name: "db-creds"},
+	}
+	cp.Spec.Services.Nova.DatabaseCredentialsMode = commonv1.CredentialsModeDynamic
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.nova.databaseCredentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring(
+		"Dynamic requires the shared database to be managed (clusterRef)",
+	))
+}
+
+// TestValidateCreate_RejectsNovaNamespaceClaimedByOtherControlPlane mirrors the
+// tenant-key claim rule for the compute service namespace: two ControlPlanes in
+// one namespace would share its OpenBao paths and its SecretStore.
+func TestValidateCreate_RejectsNovaNamespaceClaimedByOtherControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	incumbent := validControlPlane()
+	incumbent.Name = "other"
+	incumbent.Namespace = "compute"
+	c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).WithObjects(incumbent).Build()
+	w := &ControlPlaneWebhook{Client: c}
+
+	cp := novaControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Nova.Namespace = &ServiceNamespaceSpec{
+		Name: "compute", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.nova.namespace.name"))
+	g.Expect(err.Error()).To(ContainSubstring(`already occupied by ControlPlane "other"`))
+}
+
+// TestValidateCreate_RejectsNovaNamespaceEqualToControlPlane pins the no-op guard
+// for the compute service: naming the ControlPlane's own namespace would have the
+// operator claim, and at teardown delete, the namespace the plane lives in.
+func TestValidateCreate_RejectsNovaNamespaceEqualToControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := novaControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Nova.Namespace = &ServiceNamespaceSpec{Name: "openstack"}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.nova.namespace.name"))
+	g.Expect(err.Error()).To(ContainSubstring("must differ from the ControlPlane's own namespace"))
+}
+
+// TestValidateCreate_RejectsNovaDedicatedDatabaseDynamic confirms the compute
+// service's dedicated database goes through the shared dedicated-backing
+// validation: no per-instance OpenBao engine role exists for it, so an admitted
+// Dynamic dedicated database would carry an ExternalSecret that never syncs.
+func TestValidateCreate_RejectsNovaDedicatedDatabaseDynamic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := novaControlPlane()
+	cp.Spec.Services.Nova.DedicatedBackingServices = &NovaDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef:      &corev1.LocalObjectReference{Name: "cp-nova-db"},
+			CredentialsMode: commonv1.CredentialsModeDynamic,
+			Database:        "nova",
+			SecretRef:       commonv1.SecretRefSpec{Name: "nova-db"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("credentialsMode Dynamic is not supported on a dedicated database"))
+	g.Expect(err.Error()).To(ContainSubstring("nova.dedicatedBackingServices.database"))
+}
+
+// TestValidateCreate_RejectsEmptyNovaDedicatedBackingServices rejects an opt-in
+// that requests nothing, the webhook twin of the at-least-one-class CEL rule on
+// NovaDedicatedBackingServicesSpec.
+func TestValidateCreate_RejectsEmptyNovaDedicatedBackingServices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := novaControlPlane()
+	cp.Spec.Services.Nova.DedicatedBackingServices = &NovaDedicatedBackingServicesSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("nova.dedicatedBackingServices"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one backing-service class"))
+}
+
+// TestValidateUpdate_RejectsNovaDedicatedDatabaseRename pins the create-only
+// leaves of a dedicated database that stays declared: renaming its clusterRef
+// would orphan the MariaDB the compute service's two schemas live in.
+func TestValidateUpdate_RejectsNovaDedicatedDatabaseRename(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := novaControlPlane()
+	oldCP.Spec.Services.Nova.DedicatedBackingServices = &NovaDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef:      &corev1.LocalObjectReference{Name: "cp-nova-db"},
+			CredentialsMode: commonv1.CredentialsModeStatic,
+			Database:        "nova",
+			SecretRef:       commonv1.SecretRefSpec{Name: "nova-db"},
+		},
+	}
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Nova.DedicatedBackingServices.Database.ClusterRef.Name = "cp-nova-db-2"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("nova.dedicatedBackingServices.database.clusterRef.name"))
+	g.Expect(err.Error()).To(ContainSubstring("managed database clusterRef.name is immutable"))
+}
+
+// placedNovaControlPlane returns a ControlPlane whose compute service is placed
+// on the "edge" cluster in a namespace of its own, advertising nothing. Keystone
+// is published because a service placed away from it validates its tokens over
+// that URL.
+func placedNovaControlPlane() *ControlPlane {
+	cp := novaControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Nova.Namespace = &ServiceNamespaceSpec{
+		Name: "compute", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Nova.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+	publishKeystone(cp)
+	return cp
+}
+
+// TestValidateCreate_RejectsPlacedNovaWithoutNamespace pins the
+// dedicated-namespace rule for the compute service: a namespace maps to exactly
+// one cluster, and the ControlPlane's own stays on the local one, so a Nova
+// placed elsewhere without a namespace of its own would have its databases, its
+// tenant store, and its credential material provisioned on a cluster its
+// workload does not run on.
+func TestValidateCreate_RejectsPlacedNovaWithoutNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := placedNovaControlPlane()
+	cp.Spec.Services.Nova.PublicEndpoint = "https://nova.example.com"
+	cp.Spec.Services.Nova.Namespace = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.namespace"))
+	g.Expect(err.Error()).To(ContainSubstring("a placed service needs a namespace of its own"))
+}
+
+// TestValidateCreate_RejectsPlacedNovaUnpublished pins the reachability rule for
+// the compute catalog entry: what the ControlPlane registers for an unpublished
+// service is its in-cluster Service DNS name, which resolves nowhere outside the
+// cluster the service runs on. Either publication satisfies it.
+func TestValidateCreate_RejectsPlacedNovaUnpublished(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("neither publicEndpoint nor gateway", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, err := w.ValidateCreate(context.Background(), placedNovaControlPlane())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.publicEndpoint"))
+		g.Expect(err.Error()).To(ContainSubstring(
+			"one of publicEndpoint or gateway is required when targetClusterRef is set"))
+	})
+
+	t.Run("a publicEndpoint satisfies it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placedNovaControlPlane()
+		cp.Spec.Services.Nova.PublicEndpoint = "https://nova.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("a gateway satisfies it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placedNovaControlPlane()
+		cp.Spec.Services.Nova.Gateway = placedGateway("nova.example.com")
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// The projected Nova child is bounded far below the 253-byte object-name cap:
+// the Nova CRD caps metadata.name at 41 characters, because the nova operator
+// appends "-db-archive" for the archive CronJob and Kubernetes caps CronJob
+// names at 52. Without this guard the ControlPlane admits and the projection
+// then fails to apply the child on every pass, with metadata.name immutable, so
+// recovery means recreating the whole control plane.
+//
+// The boundary is pinned on the rule itself: every nova plane also carries
+// services.neutron, whose own bound (32) is tighter, so ValidateCreate would
+// answer for the network service rather than for this rule.
+func TestValidateCreate_RejectsOverlongProjectedNovaChildName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	maxCPName := novav1alpha1.MaxNovaNameLength - novaChildNameOverhead
+	g.Expect(maxCPName).To(Equal(36))
+
+	atLimit := novaControlPlane()
+	atLimit.Name = strings.Repeat("n", maxCPName)
+	g.Expect(validateNovaChildName(atLimit)).To(BeEmpty(),
+		"a name whose projected Nova child still fits must be accepted")
+
+	tooLong := novaControlPlane()
+	tooLong.Name = strings.Repeat("n", maxCPName+1)
+	_, err := w.ValidateCreate(context.Background(), tooLong)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("metadata.name"))
+	g.Expect(err.Error()).To(ContainSubstring("projected Nova child CR name would be 42 characters"))
+	g.Expect(err.Error()).To(ContainSubstring("caps metadata.name at 41"))
+	g.Expect(err.Error()).To(ContainSubstring("-db-archive"))
+	g.Expect(err.Error()).To(ContainSubstring("must be at most 36 characters"))
+
+	// Without services.nova no Nova child is projected, so the bound does not
+	// apply.
+	noNova := novaControlPlane()
+	noNova.Name = strings.Repeat("n", maxCPName+1)
+	noNova.Spec.Services.Nova = nil
+	g.Expect(validateNovaChildName(noNova)).To(BeEmpty())
+}
+
+// Enabling Nova on an existing over-long ControlPlane is the one update that can
+// newly violate the bound, so it is rejected; every other update on a CR that
+// already carried Nova must still pass, the finalizer removal that completes its
+// deletion included, because metadata.name is immutable and a rejection would
+// wedge it in Terminating.
+func TestValidateUpdate_ProjectedNovaChildNameBoundIsNewlyEnabledOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	overlong := strings.Repeat("n", novav1alpha1.MaxNovaNameLength-novaChildNameOverhead+1)
+	planeAt := func(name string) *ControlPlane {
+		cp := novaControlPlane()
+		cp.Name = name
+		return cp
+	}
+
+	withoutNova := planeAt(overlong)
+	withoutNova.Spec.Services.Nova = nil
+	enabling := planeAt(overlong)
+
+	_, err := w.ValidateUpdate(context.Background(), withoutNova, enabling)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("projected Nova child CR name would be"))
+
+	grandfathered := planeAt(overlong)
+	grandfathered.Finalizers = []string{"c5c3.io/finalizer"}
+	deleting := grandfathered.DeepCopy()
+	deleting.Finalizers = nil
+
+	_, err = w.ValidateUpdate(context.Background(), grandfathered, deleting)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an over-long grandfathered ControlPlane must stay updatable, or its deletion never completes")
+}
+
+// TestValidateUpdate_RejectsNovaNamespaceChange pins the create-only freeze on
+// the nova namespace assignment.
+func TestValidateUpdate_RejectsNovaNamespaceChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := novaControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Nova.Namespace = &ServiceNamespaceSpec{
+		Name: "compute", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Nova.Namespace.Name = "compute-2"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.namespace.name"))
+	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+}
+
+// TestValidateUpdate_RejectsDroppingANovaNamespaceAssignment pins that the
+// declared-before carve-out does not weaken the move freeze: a live Nova still
+// cannot shed its namespace assignment, since everything scoped to that
+// namespace stays where it is.
+func TestValidateUpdate_RejectsDroppingANovaNamespaceAssignment(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := novaControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Nova.Namespace = &ServiceNamespaceSpec{
+		Name: "compute", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Nova.Namespace = nil
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+}
+
+// TestValidateUpdate_RejectsNovaDedicatedPresenceFlip pins the transition freeze
+// on the nova dedicated block: a live service cannot be moved between shared and
+// dedicated backing services.
+func TestValidateUpdate_RejectsNovaDedicatedPresenceFlip(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := novaControlPlane()
+	newCP := novaControlPlane()
+	newCP.Spec.Services.Nova.DedicatedBackingServices = &NovaDedicatedBackingServicesSpec{
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-nova-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+		},
+	}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
+	g.Expect(err.Error()).To(ContainSubstring("nova.dedicatedBackingServices"))
+}
+
+// TestValidateUpdate_RejectsNovaTargetClusterChange pins the create-only freeze
+// on the nova placement: re-pointing a live service strands its workload, its
+// databases, and the material in its tenant store on the cluster it came from.
+func TestValidateUpdate_RejectsNovaTargetClusterChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := placedNovaControlPlane()
+	oldCP.Spec.Services.Nova.PublicEndpoint = "https://nova.example.com"
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Nova.TargetClusterRef.Name = "core"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.targetClusterRef.name"))
+	g.Expect(err.Error()).To(ContainSubstring("targetClusterRef is immutable"))
+}
+
+// TestValidateUpdate_AcceptsAddingNovaInADedicatedNamespace pins the
+// declared-before carve-out for the compute service: assigning a namespace to a
+// service the ControlPlane did not declare before is that service's create, so
+// there is no live workload and no credential material stranded in an old
+// namespace for the move freeze to protect.
+func TestValidateUpdate_AcceptsAddingNovaInADedicatedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := novaControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Nova = nil
+
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Nova = &ServiceNovaSpec{
+		Namespace: &ServiceNamespaceSpec{Name: "compute", Lifecycle: ServiceNamespaceLifecycleManaged},
+	}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateUpdate_NovaDeclaredInStatusFreezesTheNamespace pins that the
+// carve-out keys on status.services too, not on the old spec alone: a Nova
+// dropped from spec keeps its projected child until the operator observes the
+// drop, so re-adding it in a namespace of its own inside that window is the move
+// the freeze forbids.
+func TestValidateUpdate_NovaDeclaredInStatusFreezesTheNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := novaControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Nova = nil
+	oldCP.Status.Services = []ServiceStatus{
+		{Name: "keystone", Ready: true},
+		{Name: "nova", Ready: true},
+	}
+
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Nova = &ServiceNovaSpec{
+		Namespace: &ServiceNamespaceSpec{Name: "compute", Lifecycle: ServiceNamespaceLifecycleManaged},
+	}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.namespace"))
+	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
 }
