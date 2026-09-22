@@ -111,6 +111,8 @@ func SetupC5c3EnvTestWithControllerAndCRDs(
 //   - the Cinder CRDs (Cinder, CinderBackend, CinderBackupBackend), the child
 //     and the two satellite kinds the reconciler projects and Owns for the
 //     block-storage service.
+//   - the Nova CRD, the child the reconciler projects and Owns for the compute
+//     service.
 //   - the OVNCentral CRD, which the reconciler only reads and watches: it
 //     mirrors the referenced central's readiness into OVNReady.
 //   - BaselineCRDDirectoryPaths(): the c5c3 CRDs plus every shared fake CRD dir
@@ -126,11 +128,12 @@ func CRDDirectoryPaths() []string {
 	barbicanCRDDir := filepath.Join(base, "..", "..", "..", "barbican", "config", "crd", "bases")
 	neutronCRDDir := filepath.Join(base, "..", "..", "..", "neutron", "config", "crd", "bases")
 	cinderCRDDir := filepath.Join(base, "..", "..", "..", "cinder", "config", "crd", "bases")
+	novaCRDDir := filepath.Join(base, "..", "..", "..", "nova", "config", "crd", "bases")
 	ovnCRDDir := filepath.Join(base, "..", "..", "..", "ovn", "config", "crd", "bases")
 
 	dirs := []string{
 		keystoneCRDDir, horizonCRDDir, glanceCRDDir, placementCRDDir, barbicanCRDDir,
-		neutronCRDDir, cinderCRDDir, ovnCRDDir,
+		neutronCRDDir, cinderCRDDir, novaCRDDir, ovnCRDDir,
 	}
 	return append(dirs, BaselineCRDDirectoryPaths()...)
 }

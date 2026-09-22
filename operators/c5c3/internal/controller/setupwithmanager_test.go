@@ -395,6 +395,9 @@ func TestNamespacedStoreToControlPlaneMapper_MatchesServiceNamespaces(t *testing
 	cp.Spec.Services.Cinder = &c5c3v1alpha1.ServiceCinderSpec{
 		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "block"},
 	}
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "compute"},
+	}
 	c := newControlPlaneMapperClient(t, cp)
 	mapper := namespacedStoreToControlPlaneMapper(c)
 
@@ -425,10 +428,22 @@ func TestNamespacedStoreToControlPlaneMapper_MatchesServiceNamespaces(t *testing
 	g.Expect(mapper(context.Background(), unrelated)).To(BeEmpty(),
 		"an identically-named store in a namespace the ControlPlane does not occupy must wake nobody")
 
+	// The compute namespace is reached the same way, so the eighth service is
+	// covered by the same watch as its seven peers.
+	inNovaNS := &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: "compute"},
+	}
+	g.Expect(mapper(context.Background(), inNovaNS)).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "openstack", Name: "cp"}},
+	), "a tenant store in the nova namespace must wake its ControlPlane")
+
 	cp.Spec.Services.Cinder = nil
-	g.Expect(namespacedStoreToControlPlaneMapper(newControlPlaneMapperClient(t, cp))(
-		context.Background(), inCinderNS,
-	)).To(BeEmpty(), "a plane that places no Cinder must not be woken by a store in \"block\"")
+	cp.Spec.Services.Nova = nil
+	clearedMapper := namespacedStoreToControlPlaneMapper(newControlPlaneMapperClient(t, cp))
+	g.Expect(clearedMapper(context.Background(), inCinderNS)).To(BeEmpty(),
+		"a plane that places no Cinder must not be woken by a store in \"block\"")
+	g.Expect(clearedMapper(context.Background(), inNovaNS)).To(BeEmpty(),
+		"a plane that places no Nova must not be woken by a store in \"compute\"")
 }
 
 // --- controlPlaneTargetClusters ---

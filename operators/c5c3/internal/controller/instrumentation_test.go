@@ -183,6 +183,31 @@ func TestInstrumenterInstrument_KeystoneServiceLabelPairs(t *testing.T) {
 	}
 }
 
+// TestInstrumenterInstrument_NovaLabelPair is the same guard for the Nova leg:
+// its error series must carry condition_type="NovaReady" resolved through
+// subReconcilerConditionTypes, not the UNKNOWN fallback an unmapped
+// sub_reconciler name produces.
+func TestInstrumenterInstrument_NovaLabelPair(t *testing.T) {
+	g := NewGomegaWithT(t)
+	reg := withTestInstrumenter(t)
+
+	const name = "Nova"
+	errLabels := map[string]string{"sub_reconciler": name, "condition_type": conditionTypeNovaReady}
+	unknownLabels := map[string]string{
+		"sub_reconciler": name,
+		"condition_type": instrumentation.ConditionTypeUnknown,
+	}
+
+	_, err := instrumenter.Instrument(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
+		return ctrl.Result{}, errors.New("boom")
+	})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(counterValueOn(t, reg, reconcileErrorsMetric, errLabels)).
+		To(Equal(1.0), "the Nova leg must attribute its errors to NovaReady")
+	g.Expect(counterValueOn(t, reg, reconcileErrorsMetric, unknownLabels)).
+		To(Equal(0.0), "the Nova leg must not fall back to the UNKNOWN condition_type")
+}
+
 // TestInstrumenterInstrument_CinderLabelPair is the same guard for the Cinder
 // leg: its error series must carry condition_type="CinderReady" resolved through
 // subReconcilerConditionTypes, not the UNKNOWN fallback an unmapped

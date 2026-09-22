@@ -387,6 +387,109 @@ func TestSetServicesStatus_CinderEntry(t *testing.T) {
 	g.Expect(cp.Status.Services[5].Name).To(Equal("neutron"))
 }
 
+// TestSetServicesStatus_NovaEntry extends the status projection to the eighth
+// service: services.nova produces a "nova" entry whose readiness tracks the
+// NovaReady sub-condition, and an unmanaged Nova is omitted. The entry is
+// appended LAST, so the seven established positions keep their meaning.
+func TestSetServicesStatus_NovaEntry(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2025.2",
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone:  &c5c3v1alpha1.ServiceKeystoneSpec{},
+				Horizon:   &c5c3v1alpha1.ServiceHorizonSpec{},
+				Glance:    &c5c3v1alpha1.ServiceGlanceSpec{},
+				Placement: &c5c3v1alpha1.ServicePlacementSpec{},
+				Barbican:  &c5c3v1alpha1.ServiceBarbicanSpec{},
+				Neutron: &c5c3v1alpha1.ServiceNeutronSpec{
+					OVN: c5c3v1alpha1.NeutronOVNSpec{
+						CentralRef: c5c3v1alpha1.NeutronOVNCentralRef{Name: "ovn"},
+					},
+				},
+				Cinder: &c5c3v1alpha1.ServiceCinderSpec{
+					Backends: []c5c3v1alpha1.CinderBackendEntry{{
+						Name: "nfs1",
+						Type: "NFS",
+						NFS: &c5c3v1alpha1.NFSShareSpec{
+							Server: "nfs-server.openstack.svc.cluster.local",
+							Path:   "/volumes",
+						},
+					}},
+				},
+				Nova: &c5c3v1alpha1.ServiceNovaSpec{},
+			},
+		},
+	}
+
+	setServicesStatus(cp)
+	g.Expect(cp.Status.Services).To(HaveLen(8))
+	// Stable order: keystone, horizon, glance, placement, barbican, neutron,
+	// cinder, nova.
+	g.Expect(cp.Status.Services[7].Name).To(Equal("nova"))
+	g.Expect(cp.Status.Services[7].Ready).To(BeFalse(),
+		"nova is not Ready while NovaReady is absent")
+	g.Expect(cp.Status.Services[7].Release).To(Equal("2025.2"))
+
+	// A False NovaReady keeps the entry not-ready; only True flips it, and only
+	// the nova entry.
+	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+		Type:    conditionTypeNovaReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  "WaitingForPlacement",
+		Message: "PlacementReady is not True; Nova projection deferred",
+	})
+	setServicesStatus(cp)
+	g.Expect(findServiceStatus(cp.Status.Services, "nova").Ready).To(BeFalse())
+
+	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeNovaReady))
+	setServicesStatus(cp)
+	nova := findServiceStatus(cp.Status.Services, "nova")
+	g.Expect(nova).NotTo(BeNil())
+	g.Expect(nova.Ready).To(BeTrue())
+	g.Expect(findServiceStatus(cp.Status.Services, "cinder").Ready).To(BeFalse(),
+		"NovaReady must not flip a peer service entry")
+
+	// An unmanaged nova is omitted rather than reported, and the remaining
+	// entries keep their positions.
+	cp.Spec.Services.Nova = nil
+	setServicesStatus(cp)
+	g.Expect(cp.Status.Services).To(HaveLen(7))
+	g.Expect(findServiceStatus(cp.Status.Services, "nova")).To(BeNil())
+	g.Expect(cp.Status.Services[6].Name).To(Equal("cinder"))
+}
+
+// TestAggregateReady_NovaBlocksIt pins the condition type the compute service
+// contributes to the aggregate vocabulary: with every sub-condition True the
+// plane reports Ready, and NovaReady turning False takes it back to
+// False/NotAllReady.
+func TestAggregateReady_NovaBlocksIt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+	}
+	for _, ct := range subConditionTypes {
+		conditions.SetCondition(&cp.Status.Conditions, trueCondition(ct))
+	}
+
+	blocking := trueCondition(conditionTypeNovaReady)
+	blocking.Status = metav1.ConditionFalse
+	blocking.Reason = "WaitingForPlacement"
+	conditions.SetCondition(&cp.Status.Conditions, blocking)
+	setReadyCondition(cp)
+
+	ready := conditions.GetCondition(cp.Status.Conditions, conditionTypeReady)
+	g.Expect(ready).NotTo(BeNil())
+	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(ready.Reason).To(Equal("NotAllReady"))
+
+	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeNovaReady))
+	setReadyCondition(cp)
+	ready = conditions.GetCondition(cp.Status.Conditions, conditionTypeReady)
+	g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+}
+
 // TestAggregateReady_CinderBlocksIt pins the condition type the block-storage
 // service contributes to the aggregate vocabulary: with every sub-condition True
 // the plane reports Ready, and CinderReady turning False takes it back to
