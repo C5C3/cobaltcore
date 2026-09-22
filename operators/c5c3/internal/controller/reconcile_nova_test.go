@@ -11,14 +11,19 @@ import (
 	"strings"
 	"testing"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
 // novaBusSecretName is the brownfield Secret the fixtures declare the shared bus
@@ -27,6 +32,30 @@ const (
 	novaBusSecretName = "bus-url"
 	novaBusURL        = "rabbit://u:p@bus:5672/"
 )
+
+// novaTestScheme registers c5c3, client-go, nova, and external-secrets types
+// (the projection ensures two DB-credential ExternalSecrets and the metadata
+// generator pair).
+func novaTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("adding client-go scheme: %v", err)
+	}
+	if err := c5c3v1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding c5c3 scheme: %v", err)
+	}
+	if err := novav1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding nova scheme: %v", err)
+	}
+	if err := esov1.AddToScheme(s); err != nil {
+		t.Fatalf("adding external-secrets scheme: %v", err)
+	}
+	if err := esgenv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding external-secrets generators scheme: %v", err)
+	}
+	return s
+}
 
 // novaControlPlane builds a ControlPlane running the compute service co-located
 // in the ControlPlane's own namespace, with the two gates reconcileNova reads off

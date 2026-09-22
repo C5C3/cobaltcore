@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -245,8 +246,9 @@ func (r *ControlPlaneReconciler) ensureProjectedSatellite(ctx context.Context, c
 //
 // For an unwatched kind this pre-check is the only read the kind ever gets, and a
 // cached read would have controller-runtime start an unfiltered cluster-wide
-// informer for it — every Role, RoleBinding and ServiceAccount in the cluster held
-// in memory to track a handful of objects per ControlPlane. For a WATCHED kind the
+// informer for it — every Role, RoleBinding, ServiceAccount and Password
+// generator in the cluster held in memory to track a handful of objects per
+// ControlPlane. For a WATCHED kind the
 // informer is already running and its cache is already populated, so a direct GET
 // on the HIT buys nothing and costs a round trip against the reconciler's shared
 // client-side rate limit — on the dedicated-service-namespace layout, one per
@@ -257,7 +259,8 @@ func adoptionPrecheckReader(r *ControlPlaneReconciler, c client.Client, obj clie
 		return commonmulticluster.LiveReader(c), false
 	}
 	switch obj.(type) {
-	case *rbacv1.Role, *rbacv1.RoleBinding, *rbacv1.ClusterRoleBinding, *corev1.ServiceAccount:
+	case *rbacv1.Role, *rbacv1.RoleBinding, *rbacv1.ClusterRoleBinding, *corev1.ServiceAccount,
+		*esgenv1alpha1.Password:
 		return r.apiReader(), false
 	}
 	return r.Client, true
