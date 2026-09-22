@@ -2641,7 +2641,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	// the option-catalog family (B). Both fold their errors into the single
 	// Invalid response alongside validate()'s, mirroring how the keystone child
 	// folds its catalog errors in.
-	ownershipWarnings, ownershipErrs := validateExtraConfigOwnership(obj)
+	ownershipWarnings, ownershipErrs := validateExtraConfigOwnership(obj, nil)
 	catalogWarnings, catalogErrs := validateExtraConfigCatalogs(obj)
 	warnings = append(warnings, ownershipWarnings...)
 	warnings = append(warnings, catalogWarnings...)
@@ -2696,7 +2696,9 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	// Family A (shape/ownership) always re-runs: it depends on nothing a
 	// regenerated catalog can invalidate, and a newly-derived Horizon endpoint
 	// can turn a previously-admitted trusted_dashboard override into a rejection.
-	ownershipWarnings, ownershipErrs := validateExtraConfigOwnership(newObj)
+	// It reads oldObj for one thing, the Rejected neutron keys the stored object
+	// already carried (see validateExtraConfigOwnership).
+	ownershipWarnings, ownershipErrs := validateExtraConfigOwnership(newObj, oldObj)
 	warnings = append(warnings, ownershipWarnings...)
 	allErrs = append(allErrs, ownershipErrs...)
 
