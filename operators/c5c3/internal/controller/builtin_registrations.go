@@ -30,10 +30,10 @@ import (
 //
 // Everything here is service-agnostic: the registration differs per service only
 // in the values desiredGlanceRegistration and its siblings hand to
-// builtinRegistration, the roles the account holds among them (cinder takes
-// admin beside service, the others service alone), so a further built-in service
-// adds those values and its wiring rather than another copy of the ensure, gate
-// and mirror legs.
+// builtinRegistration, the roles the account holds among them (cinder and nova
+// take admin beside service, the others service alone), so a further built-in
+// service adds those values and its wiring rather than another copy of the
+// ensure, gate and mirror legs.
 
 const (
 	// reasonWaitingForServiceRegistration is the bounded wait while the projected
@@ -160,6 +160,51 @@ func desiredNeutronRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.Key
 		[]string{"service"})
 }
 
+// neutronNovaNotifierName returns the name of the KeystoneService child carrying
+// the account the network service notifies the compute service as
+// ("{cp}-neutron-nova"). It is derived from the Neutron child's name, so the two
+// registrations one network service takes sort together and neither collides
+// with the compute service's own.
+func neutronNovaNotifierName(cp *c5c3v1alpha1.ControlPlane) string {
+	return neutronName(cp) + "-nova"
+}
+
+// desiredNeutronNovaNotifierRegistration builds the account-only registration
+// for the user neutron posts its port-status notifications to nova as. It lives
+// in the Neutron namespace, beside the service that authenticates as it. It
+// declares no catalog block, since the user answers no requests of its own, and
+// otherwise follows the rules builtinRegistration documents.
+//
+// The project is REFERENCED rather than created: desiredNeutronRegistration owns
+// service-neutron, and a second registration creating the same project would
+// have the first teardown delete it under the second.
+//
+// The account holds admin beside service, which desiredNeutronRegistration does
+// not. Nova looks the instance behind a notified port up with the caller's own
+// context, unelevated, so an account holding service alone has every
+// notification answered 404 and leaves the port in BUILD.
+func desiredNeutronNovaNotifierRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+	return &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      neutronNovaNotifierName(cp),
+			Namespace: cp.NeutronNamespace(),
+		},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{
+				Name:      cp.Name,
+				Namespace: cp.Namespace,
+			},
+			Account: &c5c3v1alpha1.KeystoneServiceAccountSpec{
+				UserName: c5c3v1alpha1.NeutronNovaNotifierAccountName,
+				Project: c5c3v1alpha1.ServiceAccountProjectSpec{
+					Name: c5c3v1alpha1.NeutronServiceProjectName,
+				},
+				Roles: []string{"service", "admin"},
+			},
+		},
+	}
+}
+
 // desiredCinderRegistration builds the registration child for Cinder: the
 // block-storage catalog entry and the "cinder" service account. Both catalog
 // endpoints carry the project-less /v3 path (decision D8 of #979). The account
@@ -171,6 +216,22 @@ func desiredCinderRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.Keys
 		internalCatalogURL(cp.CinderTargetClusterRef(), cinderEndpointURL(cp)+"/v3", cinderCatalogURL(cp)),
 		cinderCatalogURL(cp),
 		c5c3v1alpha1.CinderServiceAccountName, c5c3v1alpha1.CinderServiceProjectName,
+		[]string{"service", "admin"})
+}
+
+// desiredNovaRegistration builds the registration child for Nova: the compute
+// catalog entry and the "nova" service account. Both catalog endpoints carry the
+// "/v2.1" path the compute API is served under (see novaCatalogURL).
+//
+// The account holds the admin role beside service (decision D10 of #1019): nova
+// calls the block-storage API through its [cinder] service user in admin
+// contexts, where it carries no user token of its own, and cinder refuses a
+// caller holding service alone on a volume that belongs to a user.
+func desiredNovaRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+	return builtinRegistration(cp, novaName(cp), cp.NovaNamespace(), "compute", "nova",
+		internalCatalogURL(cp.NovaTargetClusterRef(), novaEndpointURL(cp)+"/v2.1", novaCatalogURL(cp)),
+		novaCatalogURL(cp),
+		c5c3v1alpha1.NovaServiceAccountName, c5c3v1alpha1.NovaServiceProjectName,
 		[]string{"service", "admin"})
 }
 

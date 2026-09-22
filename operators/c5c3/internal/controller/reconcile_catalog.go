@@ -565,14 +565,15 @@ func neutronCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
 // served under the microversioned v3 prefix. The path is project-less, because
 // cinder resolves the project from the token rather than from the URL.
 //
-// Cinder is the only built-in service that appends a path to a user-supplied
-// origin, so it is the only one that has to normalize that origin first: the
-// webhook admits a publicEndpoint carrying a single trailing slash (peer services
-// register the origin unchanged, and clients normalize before appending), which
-// joined naively would register "https://cinder.example.com//v3". keystoneauth
-// strips nothing from that, so every client would call a path cinder's routes do
-// not map and read the 404 with no condition on the plane naming the cause.
-// Trimming the slash keeps the version prefix joined exactly once.
+// Cinder and Nova are the built-in services that append a path to a
+// user-supplied origin, so they are the ones that have to normalize that origin
+// first: the webhook admits a publicEndpoint carrying a single trailing slash
+// (peer services register the origin unchanged, and clients normalize before
+// appending), which joined naively would register
+// "https://cinder.example.com//v3". keystoneauth strips nothing from that, so
+// every client would call a path cinder's routes do not map and read the 404
+// with no condition on the plane naming the cause. Trimming the slash keeps the
+// version prefix joined exactly once.
 func cinderCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
 	origin := cinderEndpointURL(cp)
 	if pe := cp.Spec.Services.Cinder.PublicEndpoint; pe != "" {
@@ -581,4 +582,26 @@ func cinderCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
 		origin = fmt.Sprintf("https://%s", gw.Hostname)
 	}
 	return strings.TrimSuffix(origin, "/") + "/v3"
+}
+
+// novaCatalogURL returns the URL registered for the K-ORC compute PUBLIC
+// Endpoint. Like its peers it prefers an explicit services.nova.publicEndpoint
+// (the only way to advertise a non-443 external port), then the externally
+// routable gateway hostname ("https://{gateway.hostname}"), and falls back to
+// the in-cluster Service URL (novaEndpointURL) when Nova is not exposed via a
+// Gateway. The gateway it reads is the API's: the metadata API and the console
+// proxy take listeners of their own, and neither is a catalog row.
+//
+// The path is "/v2.1", the compute API's version prefix, joined the way
+// cinderCatalogURL joins "/v3" and normalized the same way. A publicEndpoint
+// carrying the trailing slash the webhook admits would otherwise register
+// "https://nova.example.com//v2.1", a path nova's routes do not map.
+func novaCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
+	origin := novaEndpointURL(cp)
+	if pe := cp.Spec.Services.Nova.PublicEndpoint; pe != "" {
+		origin = pe
+	} else if gw := cp.Spec.Services.Nova.Gateway; gw != nil {
+		origin = fmt.Sprintf("https://%s", gw.Hostname)
+	}
+	return strings.TrimSuffix(origin, "/") + "/v2.1"
 }

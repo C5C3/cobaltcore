@@ -331,6 +331,91 @@ func TestReconcileServiceAccounts_CountsCinder(t *testing.T) {
 	g.Expect(cond.Message).To(Equal("5 built-in service registration(s) ready"))
 }
 
+// TestReconcileServiceAccounts_CountsNovaAndTheNotifier extends the aggregate to
+// the compute service and the account the network service notifies it through.
+// The notifier carries no catalog entry, and it is counted exactly like the
+// service registrations beside it: while either child is missing the aggregate
+// holds and names it, and only with both present does the count reach five.
+func TestReconcileServiceAccounts_CountsNovaAndTheNotifier(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcControlPlane()
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+	cp.Spec.Services.Neutron = &c5c3v1alpha1.ServiceNeutronSpec{
+		OVN: c5c3v1alpha1.NeutronOVNSpec{CentralRef: c5c3v1alpha1.NeutronOVNCentralRef{Name: "ovn"}},
+	}
+	cp.Spec.Services.Cinder = &c5c3v1alpha1.ServiceCinderSpec{
+		Backends: []c5c3v1alpha1.CinderBackendEntry{{
+			Name: "nfs1",
+			Type: "NFS",
+			NFS:  &c5c3v1alpha1.NFSShareSpec{Server: "nfs.example.com", Path: "/exports/cinder"},
+		}},
+	}
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{}
+
+	// Without the notifier child the aggregate holds on it, the network service's
+	// own registration being present notwithstanding.
+	res, err := runServiceAccounts(t, cp, readyGlanceRegistration(cp), readyNeutronRegistration(cp),
+		readyCinderRegistration(cp), readyNovaRegistration(cp))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := serviceAccountsCondition(t, cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+	g.Expect(cond.Message).To(ContainSubstring(neutronNovaNotifierName(cp)))
+
+	// And without the compute child on the same run.
+	res, err = runServiceAccounts(t, cp, readyGlanceRegistration(cp), readyNeutronRegistration(cp),
+		readyNeutronNovaNotifierRegistration(cp), readyCinderRegistration(cp))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond = serviceAccountsCondition(t, cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Message).To(ContainSubstring(novaName(cp)))
+
+	res, err = runServiceAccounts(t, cp, readyGlanceRegistration(cp), readyNeutronRegistration(cp),
+		readyNeutronNovaNotifierRegistration(cp), readyCinderRegistration(cp), readyNovaRegistration(cp))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	cond = serviceAccountsCondition(t, cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Message).To(Equal("5 built-in service registration(s) ready"))
+}
+
+// TestReconcileServiceAccounts_NotifierNeedsBothBlocks pins the one row that is
+// not keyed on a single service block: the notifier account exists for the
+// network service to reach the compute one, so a plane running only one of them
+// projects no account nothing would authenticate as.
+func TestReconcileServiceAccounts_NotifierNeedsBothBlocks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcControlPlane()
+	cp.Spec.Services.Neutron = &c5c3v1alpha1.ServiceNeutronSpec{
+		OVN: c5c3v1alpha1.NeutronOVNSpec{CentralRef: c5c3v1alpha1.NeutronOVNCentralRef{Name: "ovn"}},
+	}
+
+	names := func(cp *c5c3v1alpha1.ControlPlane) []string {
+		var out []string
+		for _, entry := range projectedBuiltinRegistrations(cp) {
+			out = append(out, entry.desired.Name)
+		}
+		return out
+	}
+
+	g.Expect(names(cp)).To(Equal([]string{neutronName(cp)}),
+		"a network service without a compute service beside it needs no notifier account")
+
+	novaOnly := korcControlPlane()
+	novaOnly.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{}
+	g.Expect(names(novaOnly)).To(Equal([]string{novaName(novaOnly)}),
+		"a compute service without a network service beside it has nothing notifying it")
+
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{}
+	g.Expect(names(cp)).To(Equal([]string{neutronName(cp), neutronNovaNotifierName(cp), novaName(cp)}),
+		"the notifier is projected beside the network registration it belongs to")
+}
+
 // TestServiceAccountRoleSlug covers the slug normalization and its case-sensitive
 // collision resistance. The slug names the Role import and RoleAssignment CRs a
 // KeystoneService registration projects per declared role

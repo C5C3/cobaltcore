@@ -690,6 +690,41 @@ func TestHostsHomeRegistration_Cinder(t *testing.T) {
 		"without a cinder block the block namespace belongs to no service of this plane")
 }
 
+// TestHostsHomeRegistration_Nova pins the compute service's arm of the
+// home-registration question: a placed Nova namespace hosts the KeystoneService
+// registration projected for it, so it needs the tenant store at home as well as
+// on its own cluster. A namespace the ControlPlane placed nothing in answers
+// false, and so does the Nova namespace of a ControlPlane that declares no
+// compute service, because an undeclared Nova resolves to the ControlPlane's own
+// namespace instead.
+func TestHostsHomeRegistration_Nova(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			Services: c5c3v1alpha1.ServicesSpec{
+				Nova: &c5c3v1alpha1.ServiceNovaSpec{
+					Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+						Name: "compute", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+					},
+					TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-a"},
+				},
+			},
+		},
+	}
+
+	g.Expect(hostsHomeRegistration(cp, "compute")).To(BeTrue(),
+		"the placed Nova namespace hosts the registration projected for the compute service")
+	g.Expect(hostsHomeRegistration(cp, "storage")).To(BeFalse(),
+		"a namespace this ControlPlane placed nothing in hosts no registration")
+
+	undeclared := cp.DeepCopy()
+	undeclared.Spec.Services.Nova = nil
+	g.Expect(hostsHomeRegistration(undeclared, "compute")).To(BeFalse(),
+		"without a nova block the compute namespace belongs to no service of this plane")
+}
+
 // TestReconcileESOTenantStore_ReadyGatesOnBothPlacedStores verifies the readiness
 // gate covers BOTH copies of a placed REGISTRATION-HOSTING namespace's store, each
 // read from the cluster it was written to. The two carry different delivery
