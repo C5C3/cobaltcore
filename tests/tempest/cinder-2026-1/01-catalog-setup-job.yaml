@@ -27,6 +27,18 @@
 # seeds, and Cinder's default policies grant project-member CRUD on volumes,
 # backups and volume types.
 #
+# One role is assigned: the service role, to the bootstrap admin that every CR
+# of this leg names as its service user. nova-compute detaches a volume on
+# server delete through cinder's attachment_delete, and cinder accepts that
+# call only from a service token whose roles intersect its
+# [keystone_authtoken] service_token_roles, "service" by default
+# (cinder/volume/api.py, attachment_deletion_allowed and is_service_request);
+# any other caller gets 409 ConflictNovaUsingAttachment and the volume stays
+# in-use. keystone-manage bootstrap creates the role but assigns it to nobody,
+# and the ControlPlane grants it to every service account it registers
+# (operators/c5c3/internal/controller/builtin_registrations.go), so the leg
+# mirrors that grant.
+#
 # It authenticates as the bootstrap admin (keystone-admin Secret) and is written
 # idempotently so a Job retry converges rather than duplicating or erroring.
 apiVersion: batch/v1
@@ -136,5 +148,10 @@ spec:
               create_endpoint neutron public "${NEUTRON_URL}"
               create_endpoint neutron internal "${NEUTRON_URL}"
 
-              echo "OK: cinder, glance, nova, placement and neutron endpoints registered"
+              # Unguarded: keystone's role-assignment PUT is idempotent (204 on
+              # a repeat), so a retry converges without a listing in front.
+              openstack role add --user admin --user-domain Default \
+                --project admin --project-domain Default service
+
+              echo "OK: cinder, glance, nova, placement and neutron endpoints registered, service role granted"
               openstack endpoint list --format value -c "Service Name" -c Interface -c URL

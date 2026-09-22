@@ -800,9 +800,15 @@ test_cinder_tempest_conf_runs_against_a_nova() {
     assert_eq "$name runs test_incremental_backup" "0" \
       "$(grep -c test_incremental_backup "$excl")"
     patterns=$(grep -vE '^[[:space:]]*(#|$)' "$excl")
-    assert_eq "$name excludes six tests" "6" "$(grep -c . <<<"$patterns")"
-    assert_eq "$name excludes plugin snapshot tests and nothing else" "6" \
+    assert_eq "$name excludes eight tests" "8" "$(grep -c . <<<"$patterns")"
+    assert_eq "$name excludes six plugin snapshot tests" "6" \
       "$(grep -c '^cinder_tempest_plugin\\\.' <<<"$patterns")"
+    # The other two back up a volume while it is attached, which the NFS
+    # backend serves from a clone that needs an online snapshot through Nova,
+    # and the fake driver has no volume_snapshot_create. Anchored on the
+    # opening bracket so the plugin's test_incremental_backup stays in.
+    assert_eq "$name excludes the two attached-volume backup tests" "2" \
+      "$(grep -c '^tempest\\\.api\\\.volume\\\.test_volumes_backup\\\.VolumesBackupsTest\\\.test_\(backup_create_attached_volume\|volume_backup_incremental\)\\\[$' <<<"$patterns")"
 
     # The three catalog rows the compute stack is reached through. nova's own
     # clients read the internal interface and tempest the public one, and the
@@ -822,6 +828,18 @@ test_cinder_tempest_conf_runs_against_a_nova() {
     assert_file_contains "$name points the network entry at its own Neutron" \
       "${dir}01-catalog-setup-job.yaml" \
       "http://neutron-cinder-tempest-${slug}.openstack.svc:9696"
+    # cinder accepts nova-compute's attachment_delete only from a service
+    # token carrying one of its service_token_roles ("service" by default).
+    # Every CR of the leg names the bootstrap admin as its service user, and
+    # bootstrap assigns that role to nobody, so the Job grants it; without it
+    # every server delete leaves its volume in-use (409
+    # ConflictNovaUsingAttachment in the nova-compute log).
+    assert_file_contains "$name grants the service role to the service user" \
+      "${dir}01-catalog-setup-job.yaml" \
+      "openstack role add --user admin --user-domain Default"
+    assert_file_contains "$name grants it on the admin project" \
+      "${dir}01-catalog-setup-job.yaml" \
+      "project admin --project-domain Default service"
   done
 }
 

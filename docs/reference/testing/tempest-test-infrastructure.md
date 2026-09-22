@@ -439,6 +439,21 @@ servers carry no NIC, which is what lets `test_incremental_backup` run there:
 that test boots a server between its full and its incremental backup and has no
 compute guard.
 
+Two compute-tagged volume tests are excluded on both cinder legs, as their own
+group under the same convention and tracked by
+[#1014](https://github.com/C5C3/cobaltcore/issues/1014):
+`test_volumes_backup.VolumesBackupsTest.test_backup_create_attached_volume` and
+`test_volumes_backup.VolumesBackupsTest.test_volume_backup_incremental`. Both
+back up a volume while it is attached to a server. On the NFS backend that
+backup is served from a temporary clone, and cloning an in-use volume takes an
+online snapshot through Nova's assisted-snapshot API; the fake driver has no
+`volume_snapshot_create`, so cinder-volume waits 600 s for a progress update
+that never comes, the backup stays `creating` past tempest's 300 s, and the
+test spends another 300 s failing to delete the still-attached volume. The
+group retires with a compute driver other than the fake one on this leg, or an
+NFS backend that supports snapshots (#979 D3 keeps `nfs_snapshot_support` at
+false).
+
 ### Adding a New Service
 
 Tempest coverage is keyed per **service × release**. `glance` is the worked
@@ -680,7 +695,7 @@ only legs that reach a console: the run step derives
 | Bootstrap network catalog *(neutron leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits 300 s for the `neutron-tempest-catalog-setup` Job to complete (registers the network service + endpoints in Keystone that the Neutron CR authenticates against) |
 | Deploy OVNCentral *(neutron leg only)* | Applies `matrix.config-dir/02-messaging-secret.yaml` and `03-ovncentral-cr.yaml`, waits 300 s for `ovncentral/<matrix.ovn-cr-name>` Ready. `ovn-cr-name` is emitted by the matrix generator, like every other CR name this job waits on |
 | Deploy Neutron CR *(neutron leg only)* | Applies `matrix.config-dir/04-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready. The longer timeout covers the db-sync Job on top of the api and rpc-worker Deployments |
-| Bootstrap block-storage catalog *(cinder leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits 300 s for the `cinder-tempest-catalog-setup` Job to complete. It registers the block-storage service and the image service with their endpoints: the Cinder authenticates against the first and resolves Glance from the second |
+| Bootstrap block-storage catalog *(cinder leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits 300 s for the `cinder-tempest-catalog-setup` Job to complete. It registers the block-storage, image, compute, placement and network services with their endpoints: the Cinder authenticates against the first and resolves Glance from the second, and the compute stack resolves its siblings from the rest. It also grants the `service` role to the bootstrap admin the leg's CRs use as their service user, because cinder accepts nova-compute's `attachment_delete` on server delete only from a service token carrying one of its `service_token_roles` (a caller without it gets `409 ConflictNovaUsingAttachment` and the volume stays `in-use`); the ControlPlane grants the same role to every service account it registers |
 | Bootstrap compute catalog *(nova leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits 300 s for the `nova-tempest-catalog-setup` Job to complete. It registers the compute, placement, image and network services with a public and an internal endpoint each: the Nova resolves its siblings on the internal interface, and tempest reads the public rows |
 | Apply the independent compute-stack CRs *(nova and cinder legs)* | Applies `*-messaging-secret.yaml`, `*-ovncentral-cr.yaml` and `*-placement-cr.yaml` and waits on nothing. Neither CR has an upstream in this set, so both reconcile while the cinder leg brings up its Glance, its Cinder and its seed image and while the nova leg waits out its OVNCentral and its Neutron, instead of after them. The steps below re-apply the same manifests, which is a no-op, and then wait. The Neutron is deliberately not applied here: its controller error-requeues until the OVNCentral publishes its database addresses |
 | Deploy Glance CR *(cinder leg only)* | Applies `matrix.config-dir/02-glance-cr.yaml` and `03-glancebackend-cr.yaml`, waits 300 s for `matrix.glance-cr-name` Ready. The seed image below is uploaded to it |
