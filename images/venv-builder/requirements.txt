@@ -18,6 +18,6 @@
 # renovate.json: minor/patch automerged after 3 days, majors gated for review).
 cryptography==48.0.1
 pymemcache==4.0.0
-pymysql==1.2.0
+pymysql==1.2.3
 python-memcached==1.62
 uwsgi==2.0.31
