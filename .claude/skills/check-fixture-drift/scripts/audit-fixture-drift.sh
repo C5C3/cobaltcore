@@ -7,7 +7,8 @@
 # Verifies that test fixtures still match the CRD they claim to instantiate:
 #   X1  every CobaltCore CR fixture names a known kind on a served apiVersion
 #   X2  every spec field in such a fixture exists in that CRD's schema
-#   X3  every <NN>-*.yaml next to a chainsaw-test.yaml is referenced from it
+#   X3  every <NN>- or <NNN>-*.yaml next to a chainsaw-test.yaml is referenced
+#       from it
 #   X4  every file referenced from a chainsaw-test.yaml exists
 #   X5  invalid-cr generator gate (make verify-invalid-cr-fixtures)
 #   X6  every invalid-cr generator is wired into that make target, and every
@@ -69,9 +70,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# X3 — every <NN>-*.yaml next to a chainsaw-test.yaml is referenced
+# X3 — every <NN>- or <NNN>-*.yaml next to a chainsaw-test.yaml is referenced
 # ---------------------------------------------------------------------------
-hdr "X3: every <NN>-*.yaml is referenced from its sibling chainsaw-test.yaml"
+hdr "X3: every <NN>-/<NNN>-*.yaml is referenced from its sibling chainsaw-test.yaml"
 CHAINSAW_DIRS_LIST=$(find tests -name 'chainsaw-test.yaml' -exec dirname {} \; 2>/dev/null | sort -u || true)
 while IFS= read -r d; do
   [[ -z "${d}" ]] && continue
@@ -79,7 +80,7 @@ while IFS= read -r d; do
   [[ -f "${ct}" ]] || continue
   ct_body=$(strip_yaml_comments "${ct}")
   shopt -s nullglob
-  for fx in "${d}"/[0-9][0-9]-*.yaml; do
+  for fx in "${d}"/[0-9][0-9]-*.yaml "${d}"/[0-9][0-9][0-9]-*.yaml; do
     base=$(basename "${fx}")
     if grep -qF "${base}" <<< "${ct_body}"; then
       pass "${d}/${base}: referenced from chainsaw-test.yaml"
@@ -93,7 +94,7 @@ done <<< "${CHAINSAW_DIRS_LIST}"
 # ---------------------------------------------------------------------------
 # X4 — every file referenced from a chainsaw-test.yaml exists
 # ---------------------------------------------------------------------------
-hdr "X4: every <NN>-*.yaml referenced from chainsaw-test.yaml exists on disk"
+hdr "X4: every <NN>-/<NNN>-*.yaml referenced from chainsaw-test.yaml exists on disk"
 while IFS= read -r d; do
   [[ -z "${d}" ]] && continue
   ct="${d}/chainsaw-test.yaml"
@@ -101,7 +102,10 @@ while IFS= read -r d; do
   # Reference style is typically: file: ./00-foo.yaml  OR  file: 00-foo.yaml.
   # Comments are stripped first: a step name discussed in prose (an
   # intentionally absent fixture, say) is not a reference that must resolve.
-  refs=$(strip_yaml_comments "${ct}" | grep -oE '[0-9]{2}-[A-Za-z0-9_-]+\.yaml' | sort -u || true)
+  # The ordinal prefix is two OR three digits: a corpus that has passed 99
+  # names its later fixtures 100-, and an anchored two-digit pattern would read
+  # "100-foo.yaml" as "00-foo.yaml" and report it as missing on disk.
+  refs=$(strip_yaml_comments "${ct}" | grep -oE '[0-9]{2,3}-[A-Za-z0-9_-]+\.yaml' | sort -u || true)
   for ref in ${refs}; do
     if [[ -f "${d}/${ref}" ]]; then
       pass "${d}: chainsaw step ${ref} exists"
@@ -172,7 +176,8 @@ fi
 hdr "Inventory — Chainsaw test directories (review aid)"
 while IFS= read -r d; do
   [[ -z "${d}" ]] && continue
-  fx_count=$(find "${d}" -maxdepth 1 -name '[0-9][0-9]-*.yaml' | wc -l | tr -d ' ')
+  fx_count=$(find "${d}" -maxdepth 1 \
+    \( -name '[0-9][0-9]-*.yaml' -o -name '[0-9][0-9][0-9]-*.yaml' \) | wc -l | tr -d ' ')
   info "${d}: ${fx_count} fixture(s)"
 done <<< "${CHAINSAW_DIRS_LIST}"
 
@@ -180,12 +185,13 @@ hdr "Inventory — invalid-cr corpora (review aid)"
 while IFS= read -r gen; do
   [[ -z "${gen}" ]] && continue
   d=$(dirname "${gen}")
-  fx_count=$(find "${d}" -maxdepth 1 -name '[0-9][0-9]-*.yaml' | wc -l | tr -d ' ')
-  # Every <NN>-*.yaml the generator names, whether in its FIXTURES list or in
-  # an exemption set (keystone/invalid-cr carries two pre-CC-0094 fixtures it
-  # deliberately does not regenerate). A file on disk that the generator never
-  # names is outside the --check gate.
-  named=$(grep -oE '[0-9]{2}-[A-Za-z0-9_-]+\.yaml' "${gen}" 2>/dev/null | sort -u | grep -c . || true)
+  fx_count=$(find "${d}" -maxdepth 1 \
+    \( -name '[0-9][0-9]-*.yaml' -o -name '[0-9][0-9][0-9]-*.yaml' \) | wc -l | tr -d ' ')
+  # Every <NN>-/<NNN>-*.yaml the generator names, whether in its FIXTURES list
+  # or in an exemption set (keystone/invalid-cr carries two pre-CC-0094 fixtures
+  # it deliberately does not regenerate). A file on disk that the generator
+  # never names is outside the --check gate.
+  named=$(grep -oE '[0-9]{2,3}-[A-Za-z0-9_-]+\.yaml' "${gen}" 2>/dev/null | sort -u | grep -c . || true)
   info "${d}: ${fx_count} fixture(s) on disk, ${named} named in $(basename "${gen}")"
 done <<< "${GENERATORS_LIST}"
 

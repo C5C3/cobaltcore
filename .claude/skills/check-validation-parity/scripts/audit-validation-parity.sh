@@ -120,7 +120,8 @@ for op in "${OPERATORS[@]}"; do
   # invalid-cr corpus size, if present.
   corpus="tests/e2e/${op}/invalid-cr"
   if [[ -d "${corpus}" ]]; then
-    n="$(find "${corpus}" -maxdepth 1 -name '[0-9][0-9]-*.yaml' | wc -l | tr -d ' ')"
+    n="$(find "${corpus}" -maxdepth 1 \
+      \( -name '[0-9][0-9]-*.yaml' -o -name '[0-9][0-9][0-9]-*.yaml' \) | wc -l | tr -d ' ')"
     info "corpus  ${corpus}: ${n} rejection fixture(s)"
   fi
 done
@@ -183,8 +184,12 @@ for op in "${OPERATORS[@]}"; do
       anchored=$((anchored + 1))
       continue
     fi
-    # (b) rejected value echoed from a fixture of the same suite
-    if grep -qF -- "${sub}" "tests/e2e/${op}/invalid-cr"/[0-9][0-9]-*.yaml 2>/dev/null; then
+    # (b) rejected value echoed from a fixture of the same suite. The ordinal
+    #     prefix is two OR three digits: a corpus that has passed 99 names its
+    #     later fixtures 100-, and a two-digit-only glob would leave every
+    #     assertion those fixtures anchor reported as stale.
+    if grep -qF -- "${sub}" "tests/e2e/${op}/invalid-cr"/[0-9][0-9]-*.yaml \
+      "tests/e2e/${op}/invalid-cr"/[0-9][0-9][0-9]-*.yaml 2>/dev/null; then
       anchored=$((anchored + 1))
       continue
     fi
@@ -250,9 +255,9 @@ for op in "${OPERATORS[@]}"; do
     fail "${op}: ${corpus}/ exists but has no chainsaw-test.yaml — fixtures are unreachable"
     continue
   fi
-  refs="$(grep -cE 'file: *[0-9][0-9]-' "${corpus}/chainsaw-test.yaml" || true)"
+  refs="$(grep -cE 'file: *[0-9][0-9][0-9]?-' "${corpus}/chainsaw-test.yaml" || true)"
   if [[ "${refs}" -eq 0 ]]; then
-    fail "${op}: ${corpus}/chainsaw-test.yaml references no [0-9][0-9]-*.yaml fixture"
+    fail "${op}: ${corpus}/chainsaw-test.yaml references no [0-9][0-9][0-9]?-*.yaml fixture"
   else
     pass "${op}: ${corpus}/chainsaw-test.yaml wires ${refs} fixture reference(s)"
   fi
