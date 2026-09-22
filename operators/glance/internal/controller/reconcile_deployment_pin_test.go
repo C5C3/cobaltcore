@@ -55,6 +55,8 @@ spec:
         - :9292
         - --http-auto-chunked
         - --http-chunked-input
+        - --chunked-input-limit
+        - "16777216"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -327,6 +329,8 @@ spec:
         - :9292
         - --http-auto-chunked
         - --http-chunked-input
+        - --chunked-input-limit
+        - "16777216"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -538,6 +542,8 @@ spec:
         - :9292
         - --http-auto-chunked
         - --http-chunked-input
+        - --chunked-input-limit
+        - "16777216"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -703,6 +709,8 @@ spec:
         - :9292
         - --http-auto-chunked
         - --http-chunked-input
+        - --chunked-input-limit
+        - "16777216"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -847,6 +855,8 @@ spec:
         - :9292
         - --http-auto-chunked
         - --http-chunked-input
+        - --chunked-input-limit
+        - "16777216"
         - --http-keepalive
         - --log-master
         - --log-format
