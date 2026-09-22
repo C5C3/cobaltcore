@@ -20,6 +20,7 @@ import (
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
@@ -107,7 +108,11 @@ func joinPaths(paths []*field.Path) string {
 // names, non-Python-identifier Horizon settings), forbids overrides of the
 // operator-owned keys the ControlPlane projects, and warns on honored-but-owned
 // overrides — attributing every finding to the concrete block(s) that carry it.
-func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.ErrorList) {
+//
+// old is the stored object on update and nil on create. It is read by the
+// Neutron arm alone, whose registry gained a Rejected key a stored ControlPlane
+// may already carry (see there).
+func validateExtraConfigOwnership(cp, old *ControlPlane) (admission.Warnings, field.ErrorList) {
 	var warnings admission.Warnings
 	var errs field.ErrorList
 
@@ -119,6 +124,7 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 	barbicanPath := specPath.Child("services", "barbican", "extraConfig")
 	neutronPath := specPath.Child("services", "neutron", "extraConfig")
 	cinderPath := specPath.Child("services", "cinder", "extraConfig")
+	novaPath := specPath.Child("services", "nova", "extraConfig")
 	horizonPath := specPath.Child("services", "horizon", "extraConfig")
 
 	// --- Shape checks -----------------------------------------------------
@@ -140,6 +146,9 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 	}
 	if cd := cp.Spec.Services.Cinder; cd != nil {
 		errs = append(errs, validateINIShape(cinderPath, cd.ExtraConfig)...)
+	}
+	if nv := cp.Spec.Services.Nova; nv != nil {
+		errs = append(errs, validateINIShape(novaPath, nv.ExtraConfig)...)
 	}
 	if hz := cp.Spec.Services.Horizon; hz != nil {
 		for name := range hz.ExtraConfig {
@@ -259,6 +268,10 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 	if nn := cp.Spec.Services.Neutron; nn != nil {
 		blocks := []iniBlock{{cp.Spec.GlobalExtraConfig, globalPath}, {nn.ExtraConfig, neutronPath}}
 		merged := MergedExtraConfig(cp.Spec.GlobalExtraConfig, nn.ExtraConfig)
+		var stored map[string]map[string]string
+		if old != nil && old.Spec.Services.Neutron != nil {
+			stored = MergedExtraConfig(old.Spec.GlobalExtraConfig, old.Spec.Services.Neutron.ExtraConfig)
+		}
 		for _, owned := range config.FindOwnedOverrides(merged, neutronv1alpha1.OwnedConfigKeys) {
 			paths := contributingKeyPaths(owned.Section, owned.Key, blocks...)
 			// Every Rejected neutron key is always forbidden. The [ovn] Northbound
@@ -277,7 +290,19 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 			// makes the mechanism driver write the ACLs a port's security groups
 			// describe, so disabling it leaves every instance port reachable from
 			// every other.
+			//
+			// A Rejected key an update carries over unchanged is reported rather than
+			// forbidden. [nova] password became Rejected when the neutron operator
+			// started owning the notifier account, and before that it was the
+			// documented way to configure the notifier; forbidding it on every update,
+			// the finalizer removal on delete included, would leave a ControlPlane
+			// admitted with it no update to remove it through. A new or changed value
+			// is still forbidden.
 			if owned.Rejected {
+				if value, ok := stored[owned.Section][owned.Key]; ok && value == merged[owned.Section][owned.Key] {
+					warnings = append(warnings, carriedRejectedINIWarning(owned, paths))
+					continue
+				}
 				for _, p := range paths {
 					errs = append(errs, field.Forbidden(p, rejectedOwnedKeyMessage(owned)))
 				}
@@ -325,6 +350,48 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 					errs = append(errs, field.Forbidden(p, fmt.Sprintf(
 						"is projected by the ControlPlane from services.barbican (%s); "+
 							"remove the override or unset services.barbican", owned.OwnedBy)))
+				}
+				continue
+			}
+			warnings = append(warnings, ownedINIWarning(owned, paths))
+		}
+	}
+
+	// --- Nova merged-result ownership -------------------------------------
+	if nv := cp.Spec.Services.Nova; nv != nil {
+		blocks := []iniBlock{{cp.Spec.GlobalExtraConfig, globalPath}, {nv.ExtraConfig, novaPath}}
+		merged := MergedExtraConfig(cp.Spec.GlobalExtraConfig, nv.ExtraConfig)
+		for _, owned := range config.FindOwnedOverrides(merged, novav1alpha1.OwnedConfigKeys) {
+			paths := contributingKeyPaths(owned.Section, owned.Key, blocks...)
+			// Every Rejected nova key is always forbidden. [DEFAULT] transport_url,
+			// the two [database] / [api_database] connection strings, the five
+			// client passwords and the metadata shared secret arrive through env
+			// overrides at runtime, so rendering one is inert and only copies
+			// credential material into the config Secret every pod mounts. The
+			// [oslo_messaging_rabbit] TLS pair decides whether the bus that carries
+			// every RPC call is encrypted and where the broker certificate is
+			// verified against. [DEFAULT] web and the two [vnc] listen keys address
+			// the console proxy: a directory the pod does not carry leaves the
+			// browser on a blank page, and a listen address the Service does not
+			// route to fails every console session while the Deployment stays Ready.
+			if owned.Rejected {
+				for _, p := range paths {
+					errs = append(errs, field.Forbidden(p, rejectedOwnedKeyMessage(owned)))
+				}
+				continue
+			}
+			// The [cinder], [key_manager] and [barbican] keys are Reported in the
+			// nova registry, because the child accepts a volume service and a key
+			// manager it did not provision. Beside the declared sibling block the
+			// ControlPlane projects both, so an override there addresses a service
+			// the plane does own; without the sibling the keys stay Reported, which
+			// is what lets an externally-run volume service or key manager be
+			// configured by hand.
+			if sibling, declared := novaSiblingSectionOwner(cp, owned.Section); declared {
+				for _, p := range paths {
+					errs = append(errs, field.Forbidden(p, fmt.Sprintf(
+						"is projected by the ControlPlane from %s (%s); remove the override or unset %s",
+						sibling, owned.OwnedBy, sibling)))
 				}
 				continue
 			}
@@ -435,6 +502,26 @@ func cinderKeyManagerKey(section, key string) bool {
 	return section == "barbican" && (key == "barbican_endpoint" || key == "auth_endpoint")
 }
 
+// novaSiblingSectionOwner names the ControlPlane block that owns a nova.conf
+// section as soon as it is declared, and reports whether cp declares it.
+//
+// Three sections are owned this way: [cinder] follows services.cinder and
+// [key_manager] / [barbican] follow services.barbican. The projection switches
+// each of them on from the sibling block, through the Nova child's
+// endpoints.cinder.enabled and endpoints.barbican.enabled, and then computes
+// every key behind that switch. The nova registry classifies those keys as
+// Reported, because a Nova child on its own cannot tell a projected volume
+// service or key manager from a hand-configured one; the ControlPlane can.
+func novaSiblingSectionOwner(cp *ControlPlane, section string) (string, bool) {
+	switch section {
+	case "cinder":
+		return "services.cinder", cp.Spec.Services.Cinder != nil
+	case "key_manager", "barbican":
+		return "services.barbican", cp.Spec.Services.Barbican != nil
+	}
+	return "", false
+}
+
 // rejectedHorizonMessage renders the Forbidden detail for a Rejected Horizon
 // setting: SECRET_KEY is managed via services.horizon.secretKeyRef, and the
 // websso / multi-domain settings are owned by the identity-backend projection.
@@ -445,6 +532,14 @@ func rejectedHorizonMessage(owned config.OwnedKey) string {
 	return fmt.Sprintf("%s is owned by the ControlPlane's identity-backend projection and must not be set in "+
 		"extraConfig (services.websso and services.multiDomain are projected dynamically from the attached "+
 		"identity backends, so the override cannot be reconciled)", owned.Key)
+}
+
+// carriedRejectedINIWarning renders the admission warning for a Rejected INI key
+// an update carried over unchanged from the stored object.
+func carriedRejectedINIWarning(owned config.OwnedKey, paths []*field.Path) string {
+	return fmt.Sprintf("[%s] %s is managed via %s and is no longer accepted in extraConfig; the value this "+
+		"ControlPlane was admitted with is kept so it stays updatable, but a new or changed value is rejected, "+
+		"so remove the override (set at %s)", owned.Section, owned.Key, owned.OwnedBy, joinPaths(paths))
 }
 
 // ownedINIWarning renders the admission warning for a honored-but-owned INI
@@ -471,7 +566,7 @@ func ownedSettingWarning(owned config.OwnedKey, path *field.Path) string {
 
 // validateExtraConfigCatalogs validates the MERGED INI config of each declared
 // INI service (Keystone unless External, Glance, Placement, Barbican, Neutron,
-// Cinder) against
+// Cinder, Nova) against
 // the option catalog embedded for the resolved release (Family B). It fails
 // open — exactly one warning, no error — when no catalog resolves for a
 // non-empty merged config, so a digest pin, an unparseable tag, or a release the
@@ -622,6 +717,28 @@ func validateExtraConfigCatalogs(cp *ControlPlane) (admission.Warnings, field.Er
 			w, e := attributeCatalogFindings("cinder", catalog, merged, ex,
 				iniBlock{cp.Spec.GlobalExtraConfig, globalPath},
 				iniBlock{cd.ExtraConfig, specPath.Child("services", "cinder", "extraConfig")})
+			warnings = append(warnings, w...)
+			errs = append(errs, e...)
+		}
+	}
+
+	// --- Nova -------------------------------------------------------------
+	if nv := cp.Spec.Services.Nova; nv != nil {
+		merged := MergedExtraConfig(cp.Spec.GlobalExtraConfig, nv.ExtraConfig)
+		catalog, ok := novav1alpha1.OptionCatalogForRelease(cp.Spec.OpenStackRelease)
+		if !ok {
+			if w := failOpenCatalogWarning("nova", "spec.openStackRelease", cp.Spec.OpenStackRelease, merged); w != "" {
+				warnings = append(warnings, w)
+			}
+		} else {
+			// No exempt sections: the nova catalog covers the namespaces nova's own
+			// generator config registers, so it already enumerates every section the
+			// child configures, which is why the exemptions are keys-only, as they
+			// are for keystone, placement, neutron and cinder.
+			ex := config.CatalogExemptions{Keys: config.KeyExemptionsFromRegistry(novav1alpha1.OwnedConfigKeys)}
+			w, e := attributeCatalogFindings("nova", catalog, merged, ex,
+				iniBlock{cp.Spec.GlobalExtraConfig, globalPath},
+				iniBlock{nv.ExtraConfig, specPath.Child("services", "nova", "extraConfig")})
 			warnings = append(warnings, w...)
 			errs = append(errs, e...)
 		}
@@ -791,6 +908,16 @@ func controlPlaneExtraConfigCatalogInputsChanged(oldObj, newObj *ControlPlane) b
 	}
 	if oldCd != nil && newCd != nil {
 		if !reflect.DeepEqual(oldCd.ExtraConfig, newCd.ExtraConfig) {
+			return true
+		}
+	}
+
+	oldNv, newNv := oldObj.Spec.Services.Nova, newObj.Spec.Services.Nova
+	if (oldNv == nil) != (newNv == nil) {
+		return true
+	}
+	if oldNv != nil && newNv != nil {
+		if !reflect.DeepEqual(oldNv.ExtraConfig, newNv.ExtraConfig) {
 			return true
 		}
 	}
