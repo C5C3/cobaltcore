@@ -31,6 +31,7 @@ import (
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
 // ControlPlane defaulting constants. These are the single source of
@@ -116,6 +117,12 @@ const (
 	// DedicatedCinderCacheClusterRefSuffix names the Memcached CR of a
 	// dedicated Cinder cache.
 	DedicatedCinderCacheClusterRefSuffix = "-cinder-cache"
+	// DedicatedNovaDatabaseClusterRefSuffix names the MariaDB CR of a
+	// dedicated Nova database.
+	DedicatedNovaDatabaseClusterRefSuffix = "-nova-db" //nolint:gosec // G101 false positive: CR name suffix, not a credential
+	// DedicatedNovaCacheClusterRefSuffix names the Memcached CR of a
+	// dedicated Nova cache.
+	DedicatedNovaCacheClusterRefSuffix = "-nova-cache"
 	// DefaultDatabaseStorageSize is the effective per-replica MariaDB volume size
 	// when spec.infrastructure.database.storageSize is empty. It aliases
 	// commonv1.DatabaseStorageSizeDefault (also the CRD +kubebuilder:default and
@@ -560,6 +567,35 @@ const CinderServiceProjectName = "service-cinder"
 // at 52 characters.
 const cinderChildNameOverhead = len("-cinder")
 
+// NovaServiceAccountName is the OpenStack user name of the Keystone account
+// Nova authenticates as, carried as spec.account.userName on the KeystoneService
+// child projected for Nova, following the per-service convention
+// GlanceServiceAccountName describes.
+const NovaServiceAccountName = "nova"
+
+// NovaServiceProjectName is the Keystone project the KeystoneService child
+// projected for Nova creates and owns its service user in, following the
+// per-service convention GlanceServiceProjectName describes.
+const NovaServiceProjectName = "service-nova"
+
+// NeutronNovaNotifierAccountName is the OpenStack user name of the account the
+// network service notifies the compute service with, carried on the
+// account-only KeystoneService "{cp}-neutron-nova" (no catalog entry: the
+// account addresses the compute catalog entry Nova's own registration
+// publishes). It lives in NeutronServiceProjectName, beside the network
+// service's own account, and holds the service and admin roles: a port-status
+// notification is sent on behalf of the instance's owner, and reaching that
+// instance across projects needs admin.
+const NeutronNovaNotifierAccountName = "neutron-nova"
+
+// novaChildNameOverhead is the fixed part of the projected Nova child CR name,
+// "{cp}-nova". Like its Glance, Barbican, Neutron and Cinder siblings the budget
+// it eats into is not the apiserver's 253-byte cap but the tighter one the Nova
+// CRD's own admission applies to metadata.name (novav1alpha1.MaxNovaNameLength,
+// 41): the nova operator appends "-db-archive" for the archive CronJob, and
+// Kubernetes caps CronJob names at 52 characters.
+const novaChildNameOverhead = len("-nova")
+
 // validateGlanceChildName enforces that the Glance child this ControlPlane would
 // project carries a name the Glance CRD's own validating webhook admits.
 // Without it a longer ControlPlane admits cleanly and reconcileGlance then fails
@@ -711,6 +747,36 @@ func validateCinderChildName(cp *ControlPlane) field.ErrorList {
 			"ControlPlane name must be at most %d characters when spec.services.cinder is set",
 		n, cinderv1alpha1.MaxCinderNameLength, cinderv1alpha1.MaxCronJobNameLength,
 		cinderv1alpha1.MaxCinderNameLength-cinderChildNameOverhead,
+	))}
+}
+
+// validateNovaChildName enforces that the Nova child this ControlPlane would
+// project carries a name the Nova CRD's own validating webhook admits. Without
+// it a longer ControlPlane admits cleanly and the Nova projection then fails to
+// apply the child on every pass: NovaReady never goes True, the ControlPlane
+// never reaches Ready, and metadata.name is immutable, so the only recovery is
+// deleting and recreating the whole control plane.
+//
+// It is a create-and-newly-enabled rule rather than part of validateNova, which
+// every update re-runs, for the same reason as its Glance, Placement, Barbican,
+// Neutron and Cinder siblings: the ControlPlane name is immutable, so on a
+// routine update the rule could only ever fire against a CR a pre-upgrade
+// operator already admitted, including the finalizer-removal update that
+// completes its deletion.
+func validateNovaChildName(cp *ControlPlane) field.ErrorList {
+	if cp.Spec.Services.Nova == nil {
+		return nil
+	}
+	n := len(cp.Name) + novaChildNameOverhead
+	if n <= novav1alpha1.MaxNovaNameLength {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(field.NewPath("metadata", "name"), cp.Name, fmt.Sprintf(
+		"the projected Nova child CR name would be %d characters; the Nova CRD caps metadata.name at %d "+
+			"(it appends \"-db-archive\" for the archive CronJob, and Kubernetes caps CronJob names at %d), so "+
+			"the ControlPlane name must be at most %d characters when spec.services.nova is set",
+		n, novav1alpha1.MaxNovaNameLength, novav1alpha1.MaxCronJobNameLength,
+		novav1alpha1.MaxNovaNameLength-novaChildNameOverhead,
 	))}
 }
 
@@ -896,7 +962,8 @@ func insecurePublicEndpointWarnings(cp *ControlPlane) admission.Warnings {
 	warnings = append(warnings, warnInsecurePlacementPublicEndpoint(cp)...)
 	warnings = append(warnings, warnInsecureBarbicanPublicEndpoint(cp)...)
 	warnings = append(warnings, warnInsecureNeutronPublicEndpoint(cp)...)
-	return append(warnings, warnInsecureCinderPublicEndpoint(cp)...)
+	warnings = append(warnings, warnInsecureCinderPublicEndpoint(cp)...)
+	return append(warnings, warnInsecureNovaPublicEndpoint(cp)...)
 }
 
 // glanceImportFilteringWarnings surfaces the two admissible-but-misleading
@@ -1576,12 +1643,201 @@ func validateNFSShare(nfsPath *field.Path, nfs *NFSShareSpec) field.ErrorList {
 	return allErrs
 }
 
+// validateNova enforces the rules on the services.nova block. It mirrors the
+// declarative constraints as defense-in-depth for callers that bypass CRD schema
+// admission (the hostname shape of the three gateways the compute service
+// publishes, and the image tag/digest XOR) and adds the rules the CRD schema
+// cannot express: the public endpoint's origin shape and its agreement with the
+// API gateway (validateNovaPublicEndpoint), the root-only console route, the
+// archive schedule, and the three sibling services the compute service cannot
+// run without (validateNovaDependencies).
+//
+// The shared message bus the projected child cannot come up without is checked
+// by validateMessagingConsumers, which the caller runs after this validator.
+//
+// The projected-child-name bound lives in validateNovaChildName, which does not
+// run on every update.
+//
+// The cross-field rule that services.nova is forbidden in External mode lives in
+// validateKeystoneMode with the rest of the External-mode matrix; the
+// extraConfig rules live in the two extraConfig admission families, which walk
+// every declared service block at once.
+func validateNova(cp *ControlPlane) field.ErrorList {
+	nv := cp.Spec.Services.Nova
+	if nv == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	nvPath := field.NewPath("spec", "services", "nova")
+
+	// Nova publishes up to three hostnames, and each of them must be usable as
+	// the host of the route derived from it: the API, the metadata front end the
+	// Neutron metadata agents dial, and the console proxy the browser opens its
+	// session against.
+	allErrs = append(allErrs, validateNovaGateway(nvPath.Child("gateway"), nv.Gateway)...)
+	allErrs = append(allErrs, validateNovaGateway(nvPath.Child("metadataGateway"), nv.MetadataGateway)...)
+	// The metadata route carries no path prefix either. The Neutron metadata agent
+	// addresses nova-api-metadata by scheme, host and port alone (neutron has no
+	// path option) and the route rewrites nothing, so every request an agent
+	// proxies arrives as /openstack/... or /latest/... on the root of the
+	// hostname, and a prefix match would route none of them while the HTTPRoute
+	// reports Accepted.
+	if g := nv.MetadataGateway; g != nil && g.Path != "" && g.Path != "/" {
+		allErrs = append(allErrs, field.Invalid(nvPath.Child("metadataGateway", "path"), g.Path,
+			"metadataGateway.path must be empty or \"/\": the Neutron metadata agent requests /openstack/... "+
+				"on the root of the hostname and has no path option"))
+	}
+	if proxy := nv.ConsoleProxy; proxy != nil {
+		proxyPath := nvPath.Child("consoleProxy", "gateway")
+		allErrs = append(allErrs, validateNovaGateway(proxyPath, proxy.Gateway)...)
+		// The console route carries no path prefix, the rule the Nova CRD's own
+		// webhook applies to the block this one is projected onto: the console URL
+		// the API hands a browser names the page at the root of the console
+		// hostname, and the noVNC client opens its WebSocket there as well, so a
+		// prefix match would route neither while the HTTPRoute reports Accepted.
+		if g := proxy.Gateway; g != nil && g.Path != "" && g.Path != "/" {
+			allErrs = append(allErrs, field.Invalid(proxyPath.Child("path"), g.Path,
+				"consoleProxy.gateway.path must be empty or \"/\": the console page and its websocket both "+
+					"open on the root of the hostname"))
+		}
+	}
+
+	// When the Nova image is overridden, mirror the ImageSpec tag/digest XOR
+	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
+	if img := nv.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+		allErrs = append(allErrs, field.Invalid(nvPath.Child("image"), img,
+			"exactly one of image.tag or image.digest must be set"))
+	}
+
+	allErrs = append(allErrs, validateNovaGatewayHostnames(nvPath, nv, cp.NovaNamespace())...)
+	allErrs = append(allErrs, validateNovaPublicEndpoint(nvPath, nv)...)
+
+	// The archive schedule is checked here rather than by a CRD Pattern marker:
+	// the accepted grammar includes descriptors such as @daily, which no regex
+	// expresses without also rejecting valid expressions. An empty schedule
+	// leaves the nova operator's own default in place.
+	if a := nv.DBArchive; a != nil && a.Schedule != "" {
+		allErrs = append(allErrs, validation.CronSchedule(nvPath.Child("dbArchive", "schedule"), a.Schedule)...)
+	}
+
+	allErrs = append(allErrs, validateNovaDependencies(cp)...)
+
+	return allErrs
+}
+
+// validateNovaGateway enforces the hostname rule on ONE of the three gateway
+// blocks the compute service carries, mirroring the MinLength=1 marker on
+// commonv1.GatewaySpec.Hostname and applying the shared hostname shape check. A
+// nil block configures no gateway, which is what keeps that endpoint in-cluster.
+//
+// Nova is the one service with more than one gateway, so the per-block body its
+// siblings inline lives in a helper here rather than three times over.
+func validateNovaGateway(gwPath *field.Path, g *commonv1.GatewaySpec) field.ErrorList {
+	if g == nil {
+		return nil
+	}
+	hostnamePath := gwPath.Child("hostname")
+	if g.Hostname == "" {
+		return field.ErrorList{field.Required(hostnamePath, "must be set when a gateway is configured")}
+	}
+	if err := validateGatewayHostname(hostnamePath, g.Hostname); err != nil {
+		return field.ErrorList{err}
+	}
+	return nil
+}
+
+// validateNovaGatewayHostnames rejects two of the compute service's listeners
+// sharing one route attachment: the same hostname on the same Gateway, on
+// listeners that overlap (an empty sectionName attaches to every listener). Every
+// Nova HTTPRoute is effectively a PathPrefix "/" match, because the console and
+// the metadata route must sit at the root and the catalog registers the API at
+// https://<hostname>/v2.1 whatever gateway.path says. Two such routes tie, the
+// Gateway hands every request to the older one, and the other listener serves
+// nothing while both routes report Accepted.
+//
+// routeNamespace is the namespace the routes are rendered in. An empty
+// parentRef.namespace names that namespace, so it is resolved before two
+// Gateways are compared: left raw, "" and the same namespace spelled out would
+// pass as two Gateways.
+func validateNovaGatewayHostnames(nvPath *field.Path, nv *ServiceNovaSpec, routeNamespace string) field.ErrorList {
+	type listener struct {
+		path *field.Path
+		spec *commonv1.GatewaySpec
+	}
+	gatewayNamespace := func(g *commonv1.GatewaySpec) string {
+		if g.ParentRef.Namespace == "" {
+			return routeNamespace
+		}
+		return g.ParentRef.Namespace
+	}
+	listeners := []listener{
+		{nvPath.Child("gateway"), nv.Gateway},
+		{nvPath.Child("metadataGateway"), nv.MetadataGateway},
+	}
+	if nv.ConsoleProxy != nil {
+		listeners = append(listeners, listener{nvPath.Child("consoleProxy", "gateway"), nv.ConsoleProxy.Gateway})
+	}
+	var errs field.ErrorList
+	for i := range listeners {
+		for j := i + 1; j < len(listeners); j++ {
+			a, b := listeners[i].spec, listeners[j].spec
+			if a == nil || b == nil || a.Hostname == "" || a.Hostname != b.Hostname ||
+				a.ParentRef.Name != b.ParentRef.Name || gatewayNamespace(a) != gatewayNamespace(b) {
+				continue
+			}
+			if a.ParentRef.SectionName != "" && b.ParentRef.SectionName != "" &&
+				a.ParentRef.SectionName != b.ParentRef.SectionName {
+				continue
+			}
+			errs = append(errs, field.Invalid(listeners[j].path.Child("hostname"), b.Hostname,
+				fmt.Sprintf("must differ from %s on the same Gateway listener: every Nova route matches the "+
+					"root of its hostname, so the Gateway would hand every request to one of the two",
+					listeners[i].path.Child("hostname"))))
+		}
+	}
+	return errs
+}
+
+// validateNovaDependencies requires the three services the compute service calls
+// on the path of every instance it boots. They are the first cross-service
+// dependency rules on the ControlPlane, and they are errors rather than warnings
+// because none of the three is substitutable from this CR: the projected Nova
+// child is addressed at its siblings by the naming convention the ControlPlane
+// projects them under, so a Nova declared without one of them reaches an
+// endpoint no child serves and fails every boot with nothing on the plane naming
+// the cause.
+//
+// The message names what the compute service does with each of them, since the
+// remedy is to declare that service rather than to change anything on
+// services.nova.
+func validateNovaDependencies(cp *ControlPlane) field.ErrorList {
+	if cp.Spec.Services.Nova == nil {
+		return nil
+	}
+	svcPath := field.NewPath("spec", "services")
+	var allErrs field.ErrorList
+	if cp.Spec.Services.Placement == nil {
+		allErrs = append(allErrs, field.Required(svcPath.Child("placement"),
+			"is required when services.nova is set: Nova claims every instance's resources in Placement "+
+				"before it boots"))
+	}
+	if cp.Spec.Services.Neutron == nil {
+		allErrs = append(allErrs, field.Required(svcPath.Child("neutron"),
+			"is required when services.nova is set: Nova creates and binds a port for every instance"))
+	}
+	if cp.Spec.Services.Glance == nil {
+		allErrs = append(allErrs, field.Required(svcPath.Child("glance"),
+			"is required when services.nova is set: Nova reads the image of every instance it boots"))
+	}
+	return allErrs
+}
+
 // validateMessagingConsumers requires spec.infrastructure.messaging once per
 // declared bus-consuming service. The bus is not optional for such a service:
 // its child CRD requires spec.messaging, and the ControlPlane derives the
 // child's transport URL from spec.infrastructure.messaging, so a ControlPlane
 // declaring the service without one would project a child its own admission
-// rejects on every pass. Neutron and Cinder are the two such services.
+// rejects on every pass. Neutron, Cinder and Nova are the three such services.
 //
 // A nil infrastructure block is reported by validateKeystoneMode already (it is
 // required outside External mode, and External mode forbids the service blocks
@@ -1600,6 +1856,11 @@ func validateMessagingConsumers(cp *ControlPlane) field.ErrorList {
 	if cp.Spec.Services.Cinder != nil {
 		allErrs = append(allErrs, field.Required(field.NewPath("spec", "infrastructure", "messaging"),
 			"is required when services.cinder is set: the Cinder CRD requires spec.messaging, and the "+
+				"ControlPlane derives the child's transport URL from the shared bus"))
+	}
+	if cp.Spec.Services.Nova != nil {
+		allErrs = append(allErrs, field.Required(field.NewPath("spec", "infrastructure", "messaging"),
+			"is required when services.nova is set: the Nova CRD requires spec.messaging, and the "+
 				"ControlPlane derives the child's transport URL from the shared bus"))
 	}
 	return allErrs
@@ -1901,6 +2162,98 @@ func warnRemovedCinderBackends(oldObj, newObj *ControlPlane) admission.Warnings 
 	return warnings
 }
 
+// validateNovaPublicEndpoint enforces the rules on
+// services.nova.publicEndpoint that the CRD markers cannot express. The value is
+// the origin the public compute catalog Endpoint is registered under: the URL
+// every client resolves to boot, list and delete its instances, and sends its
+// scoped Keystone token (X-Auth-Token) to. It is projected into no child CR, so
+// no downstream webhook re-checks it: whatever admission accepts here is what
+// lands in the Keystone catalog.
+//
+//   - Shape, as defense-in-depth alongside the ^https?:// Pattern marker:
+//     "https://" alone matches the pattern and stays under the 512-byte cap, yet
+//     registers a hostless URL no client can resolve.
+//   - A bare origin, with no path, query or fragment. The Pattern marker anchors
+//     only the prefix, so "https://nova.example.com?utm=1" is schema-legal; the
+//     ControlPlane appends the API version to what it registers, yielding
+//     "https://nova.example.com?utm=1/v2.1" and a 404 on every compute call. A
+//     single trailing slash is tolerated: OpenStack clients normalize the catalog
+//     endpoint before appending.
+//   - With a gateway configured the listener terminates TLS, so the externally
+//     observed scheme is https, the same rule the Cinder public endpoint applies.
+//     An http endpoint is also a token leak: the scoped Keystone token rides
+//     every compute call, and the compute API is the one an instance's whole
+//     lifecycle is driven through.
+//   - With a gateway configured the host must equal gateway.hostname. The Gateway
+//     listener is what routes that hostname to the Nova Service, so a divergent
+//     host advertises an endpoint that never reaches the API, failing client-side
+//     with no status condition and no admission error naming the cause. The port
+//     may still differ: Gateway API hostnames carry none, so an API published off
+//     443 has to spell the port out here.
+//
+// The rule reads services.nova.gateway alone. The metadata and console gateways
+// publish endpoints of their own, neither of which is registered in the catalog:
+// the metadata front end is dialed by the Neutron agents, and the console URL is
+// handed to a browser by the API.
+func validateNovaPublicEndpoint(nvPath *field.Path, nv *ServiceNovaSpec) field.ErrorList {
+	if nv.PublicEndpoint == "" {
+		return nil
+	}
+	pePath := nvPath.Child("publicEndpoint")
+	u, err := validateHTTPURL(pePath, nv.PublicEndpoint)
+	if err != nil {
+		return field.ErrorList{err}
+	}
+
+	var errs field.ErrorList
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		errs = append(errs, field.Invalid(pePath, nv.PublicEndpoint,
+			"must be a bare origin (scheme://host[:port]) with no path, query, or fragment: the ControlPlane "+
+				"appends /v2.1 when it registers the compute catalog endpoint"))
+	}
+
+	g := nv.Gateway
+	if g == nil || g.Hostname == "" {
+		return errs
+	}
+
+	if u.Scheme != "https" {
+		errs = append(errs, field.Invalid(pePath, nv.PublicEndpoint,
+			"scheme must be https when services.nova.gateway is configured (the Gateway listener terminates "+
+				"TLS): every compute call sends the caller's scoped Keystone token to this endpoint"))
+	}
+	if u.Hostname() != g.Hostname {
+		errs = append(errs, field.Invalid(pePath, nv.PublicEndpoint,
+			fmt.Sprintf("host %q must equal services.nova.gateway.hostname %q: the Gateway listener routes that "+
+				"hostname to the Nova API, so the catalog would direct clients to a host that never reaches it",
+				u.Hostname(), g.Hostname)))
+	}
+	return errs
+}
+
+// warnInsecureNovaPublicEndpoint surfaces a cleartext compute endpoint that
+// validateNovaPublicEndpoint cannot reject: without a gateway Nova is published
+// by some other means, and a plain-http endpoint is a legal, if unwise,
+// development setup that the ^https?:// CRD Pattern deliberately allows. The
+// downgrade must never be silent, though: every compute call carries the
+// caller's scoped Keystone token to this URL, and that bearer token grants the
+// caller's full API privileges, not just compute access.
+func warnInsecureNovaPublicEndpoint(cp *ControlPlane) admission.Warnings {
+	nv := cp.Spec.Services.Nova
+	if nv == nil || nv.PublicEndpoint == "" {
+		return nil
+	}
+	if u, err := url.Parse(nv.PublicEndpoint); err != nil || u.Scheme != "http" {
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"spec.services.nova.publicEndpoint %q uses http://: it is advertised as the public compute catalog "+
+			"endpoint, so every compute call would deliver the caller's scoped Keystone token in cleartext. "+
+			"Use https://.",
+		nv.PublicEndpoint,
+	)}
+}
+
 // externalAuthURLIsPlaintext reports whether raw is an http:// (non-TLS) endpoint.
 // A parse failure reads as false: validateHTTPURL already rejects those on the same
 // field, and a second error on it would only add noise.
@@ -2029,7 +2382,7 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	for _, ns := range []*ServiceNamespaceSpec{
 		keystoneNamespaceBlock(obj), horizonNamespaceBlock(obj), glanceNamespaceBlock(obj),
 		placementNamespaceBlock(obj), barbicanNamespaceBlock(obj), neutronNamespaceBlock(obj),
-		cinderNamespaceBlock(obj),
+		cinderNamespaceBlock(obj), novaNamespaceBlock(obj),
 	} {
 		if ns != nil && ns.Lifecycle == "" {
 			ns.Lifecycle = ServiceNamespaceLifecycleManaged
@@ -2191,6 +2544,20 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 				defaultCacheLeaves(cache, obj.Name+DedicatedCinderCacheClusterRefSuffix)
 			}
 		}
+		if nv := novaDedicatedBlock(obj); nv != nil {
+			if db := nv.Database; db != nil {
+				defaultDatabaseLeaves(db, obj.Name+DedicatedNovaDatabaseClusterRefSuffix)
+				// A dedicated MANAGED Nova database is Static-only for the same
+				// reason the Keystone one is (see above): no per-instance OpenBao
+				// engine role exists. Materialize the mode; validate() rejects Dynamic.
+				if db.ClusterRef != nil && db.CredentialsMode == "" {
+					db.CredentialsMode = commonv1.CredentialsModeStatic
+				}
+			}
+			if cache := nv.Cache; cache != nil {
+				defaultCacheLeaves(cache, obj.Name+DedicatedNovaCacheClusterRefSuffix)
+			}
+		}
 
 		// The OVNCentral the network service programs defaults to the
 		// ControlPlane's own namespace, so a CR that names a central without
@@ -2287,6 +2654,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	allErrs = append(allErrs, validateBarbicanChildName(obj)...)
 	allErrs = append(allErrs, validateNeutronChildName(obj)...)
 	allErrs = append(allErrs, validateCinderChildName(obj)...)
+	allErrs = append(allErrs, validateNovaChildName(obj)...)
 	allErrs = append(allErrs, ValidateNeutronOVNCentralNamespace(obj)...)
 	if err := newInvalidIfErrs(obj, allErrs); err != nil {
 		return warnings, err
@@ -2360,6 +2728,9 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	}
 	if oldObj.Spec.Services.Cinder == nil {
 		allErrs = append(allErrs, validateCinderChildName(newObj)...)
+	}
+	if oldObj.Spec.Services.Nova == nil {
+		allErrs = append(allErrs, validateNovaChildName(newObj)...)
 	}
 
 	// The OVNCentral reach check re-runs only when this update is what enables the
@@ -2597,6 +2968,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validateBarbican(cp)...)
 	allErrs = append(allErrs, validateNeutron(cp)...)
 	allErrs = append(allErrs, validateCinder(cp)...)
+	allErrs = append(allErrs, validateNova(cp)...)
 	allErrs = append(allErrs, validateMessagingConsumers(cp)...)
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
 	allErrs = append(allErrs, validateServiceRegistrations(cp)...)
@@ -2646,6 +3018,9 @@ func declaredServiceNamespaces(cp *ControlPlane) []serviceNamespaceAssignment {
 	}
 	if ns := cinderNamespaceBlock(cp); ns != nil {
 		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("cinder", "namespace"), ns: ns})
+	}
+	if ns := novaNamespaceBlock(cp); ns != nil {
+		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("nova", "namespace"), ns: ns})
 	}
 	return out
 }
@@ -2785,6 +3160,12 @@ func declaredServiceTargetClusters(cp *ControlPlane) []serviceTargetClusterAssig
 		out = append(out, serviceTargetClusterAssignment{
 			path: svcPath.Child("cinder"), ref: cd.TargetClusterRef, ns: cd.Namespace,
 			catalog: true, published: cd.PublicEndpoint != "" || cd.Gateway != nil,
+		})
+	}
+	if nv := cp.Spec.Services.Nova; nv != nil {
+		out = append(out, serviceTargetClusterAssignment{
+			path: svcPath.Child("nova"), ref: nv.TargetClusterRef, ns: nv.Namespace,
+			catalog: true, published: nv.PublicEndpoint != "" || nv.Gateway != nil,
 		})
 	}
 	return out
@@ -3137,6 +3518,13 @@ func declaredDedicatedBackingServices(cp *ControlPlane) []dedicatedBackingServic
 			cache: cd.Cache,
 		})
 	}
+	if nv := novaDedicatedBlock(cp); nv != nil {
+		out = append(out, dedicatedBackingServices{
+			path:  svcPath.Child("nova", "dedicatedBackingServices"),
+			db:    nv.Database,
+			cache: nv.Cache,
+		})
+	}
 	return out
 }
 
@@ -3293,6 +3681,9 @@ func validateServiceCredentialsModeOverrides(cp *ControlPlane) field.ErrorList {
 	}
 	if cd := cp.Spec.Services.Cinder; cd != nil {
 		check("cinder", cd.DatabaseCredentialsMode, cp.DedicatedCinderDatabase())
+	}
+	if nv := cp.Spec.Services.Nova; nv != nil {
+		check("nova", nv.DatabaseCredentialsMode, cp.DedicatedNovaDatabase())
 	}
 
 	return allErrs
@@ -3469,6 +3860,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 		if cp.Spec.Services.Cinder != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "cinder"),
 				"forbidden when services.keystone.mode is External (Cinder needs its own External-mode design)"))
+		}
+		if cp.Spec.Services.Nova != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "nova"),
+				"forbidden when services.keystone.mode is External (Nova needs its own External-mode design)"))
 		}
 
 		return allErrs
@@ -4021,6 +4416,18 @@ func validateDedicatedBackingServicesImmutable(oldObj, newObj *ControlPlane) fie
 		}
 	}
 
+	if serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Nova != nil, "nova") {
+		nvPath := svcPath.Child("nova", "dedicatedBackingServices")
+		oldNV := novaDedicatedBlock(oldObj)
+		newNV := novaDedicatedBlock(newObj)
+		if (oldNV == nil) != (newNV == nil) {
+			allErrs = append(allErrs, field.Invalid(nvPath, newNV, dedicatedTransitionMessage))
+		} else if oldNV != nil && newNV != nil {
+			allErrs = append(allErrs, validateDedicatedDatabase(nvPath.Child("database"), oldNV.Database, newNV.Database)...)
+			allErrs = append(allErrs, validateDedicatedCache(nvPath.Child("cache"), oldNV.Cache, newNV.Cache)...)
+		}
+	}
+
 	return allErrs
 }
 
@@ -4133,6 +4540,9 @@ func validateServiceNamespacesImmutable(oldObj, newObj *ControlPlane) field.Erro
 	freeze(svcPath.Child("cinder", "namespace"),
 		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Cinder != nil, "cinder"),
 		cinderNamespaceBlock(oldObj), cinderNamespaceBlock(newObj))
+	freeze(svcPath.Child("nova", "namespace"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Nova != nil, "nova"),
+		novaNamespaceBlock(oldObj), novaNamespaceBlock(newObj))
 
 	return allErrs
 }
@@ -4191,6 +4601,9 @@ func validateServiceTargetClustersImmutable(oldObj, newObj *ControlPlane) field.
 	freeze(svcPath.Child("cinder", "targetClusterRef"),
 		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Cinder != nil, "cinder"),
 		oldObj.CinderTargetClusterRef(), newObj.CinderTargetClusterRef())
+	freeze(svcPath.Child("nova", "targetClusterRef"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Nova != nil, "nova"),
+		oldObj.NovaTargetClusterRef(), newObj.NovaTargetClusterRef())
 
 	return allErrs
 }
