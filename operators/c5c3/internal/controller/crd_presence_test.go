@@ -21,6 +21,7 @@ import (
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
@@ -56,12 +57,13 @@ var (
 	rabbitmqGV  = schema.GroupVersion{Group: "rabbitmq.com", Version: "v1beta1"}
 	neutronGV   = schema.GroupVersion{Group: "neutron.openstack.c5c3.io", Version: "v1alpha1"}
 	cinderGV    = schema.GroupVersion{Group: "cinder.openstack.c5c3.io", Version: "v1alpha1"}
+	novaGV      = schema.GroupVersion{Group: "nova.openstack.c5c3.io", Version: "v1alpha1"}
 	ovnGV       = schema.GroupVersion{Group: "ovn.openstack.c5c3.io", Version: "v1alpha1"}
 )
 
 // optionalWatchTestScheme registers the API groups the presence probe resolves GVKs
-// against (keystone, horizon, glance, placement, barbican, neutron, cinder, ovn,
-// openbao) plus K-ORC, which TestOptionalWatchObjects_ExcludesKORC needs
+// against (keystone, horizon, glance, placement, barbican, neutron, cinder, nova,
+// ovn, openbao) plus K-ORC, which TestOptionalWatchObjects_ExcludesKORC needs
 // registered to prove no K-ORC kind is listed as an optional watch. controllerTestScheme registers only c5c3 + client-go,
 // so it cannot resolve any of those kinds; this helper adds them.
 func optionalWatchTestScheme(t *testing.T) *runtime.Scheme {
@@ -78,6 +80,7 @@ func optionalWatchTestScheme(t *testing.T) *runtime.Scheme {
 		{"barbican", barbicanv1alpha1.AddToScheme},
 		{"neutron", neutronv1alpha1.AddToScheme},
 		{"cinder", cinderv1alpha1.AddToScheme},
+		{"nova", novav1alpha1.AddToScheme},
 		{"ovn", ovnv1alpha1.AddToScheme},
 		{"openbao", openbaov1alpha1.AddToScheme},
 		{"orc", orcv1alpha1.AddToScheme},
@@ -231,8 +234,8 @@ func TestServedKindsForGroupVersion_UpstreamError(t *testing.T) {
 
 // --- probeOptionalWatches ---
 
-// serveAllOptionalKinds populates the stub with every optional kind across the ten
-// GroupVersions, matching optionalWatchObjects.
+// serveAllOptionalKinds populates the stub with every optional kind across the
+// eleven GroupVersions, matching optionalWatchObjects.
 func serveAllOptionalKinds(f *fakeServerResources) {
 	f.serve(keystoneGV, "Keystone", "KeystoneIdentityBackend")
 	f.serve(horizonGV, "Horizon")
@@ -243,6 +246,7 @@ func serveAllOptionalKinds(f *fakeServerResources) {
 	f.serve(rabbitmqGV, "RabbitmqCluster")
 	f.serve(neutronGV, "Neutron")
 	f.serve(cinderGV, "Cinder", "CinderBackend", "CinderBackupBackend")
+	f.serve(novaGV, "Nova")
 	f.serve(ovnGV, "OVNCentral")
 }
 
@@ -255,7 +259,7 @@ func TestProbeOptionalWatches_AllServed(t *testing.T) {
 	served, missing, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(missing).To(BeEmpty(), "no CRD is missing when every group is served")
-	g.Expect(served).To(HaveLen(16), "all 16 optional kinds must be recorded")
+	g.Expect(served).To(HaveLen(17), "all 17 optional kinds must be recorded")
 	for gvk, ok := range served {
 		g.Expect(ok).To(BeTrue(), "expected %s to be served", gvk)
 	}
@@ -265,7 +269,7 @@ func TestProbeOptionalWatches_SubsetServed(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	// keystone group served but without KeystoneIdentityBackend; horizon, glance,
-	// placement, barbican, openbao, rabbitmq, neutron, cinder and ovn groups
+	// placement, barbican, openbao, rabbitmq, neutron, cinder, nova and ovn groups
 	// entirely absent.
 	disco := newFakeServerResources()
 	disco.serve(keystoneGV, "Keystone")
@@ -288,10 +292,11 @@ func TestProbeOptionalWatches_SubsetServed(t *testing.T) {
 		cinderGV.WithKind("Cinder"),
 		cinderGV.WithKind("CinderBackend"),
 		cinderGV.WithKind("CinderBackupBackend"),
+		novaGV.WithKind("Nova"),
 		ovnGV.WithKind("OVNCentral"),
 	), "exactly the uninstalled kinds must be reported missing")
 
-	g.Expect(served).To(HaveLen(16))
+	g.Expect(served).To(HaveLen(17))
 	// The one served kind is marked true.
 	g.Expect(served[keystoneGV.WithKind("Keystone")]).To(BeTrue())
 	// The fifteen missing kinds are marked false.
@@ -330,6 +335,7 @@ func TestProbeOptionalWatches_BarbicanWithoutOpenBao(t *testing.T) {
 	disco.serve(rabbitmqGV, "RabbitmqCluster")
 	disco.serve(neutronGV, "Neutron")
 	disco.serve(cinderGV, "Cinder", "CinderBackend", "CinderBackupBackend")
+	disco.serve(novaGV, "Nova")
 	disco.serve(ovnGV, "OVNCentral")
 
 	served, missing, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
@@ -359,6 +365,7 @@ func TestProbeOptionalWatches_RabbitmqClusterMissing(t *testing.T) {
 	disco.serve(openbaoGV, "OpenBaoCluster", "OpenBaoTenant")
 	disco.serve(neutronGV, "Neutron")
 	disco.serve(cinderGV, "Cinder", "CinderBackend", "CinderBackupBackend")
+	disco.serve(novaGV, "Nova")
 	disco.serve(ovnGV, "OVNCentral")
 
 	served, missing, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
@@ -388,6 +395,7 @@ func TestProbeOptionalWatches_CinderMissing(t *testing.T) {
 	disco.serve(openbaoGV, "OpenBaoCluster", "OpenBaoTenant")
 	disco.serve(rabbitmqGV, "RabbitmqCluster")
 	disco.serve(neutronGV, "Neutron")
+	disco.serve(novaGV, "Nova")
 	disco.serve(ovnGV, "OVNCentral")
 
 	served, missing, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
@@ -403,6 +411,35 @@ func TestProbeOptionalWatches_CinderMissing(t *testing.T) {
 	g.Expect(served[cinderGV.WithKind("CinderBackupBackend")]).To(BeFalse())
 	g.Expect(served[neutronGV.WithKind("Neutron")]).To(BeTrue(),
 		"the peer service legs must still register when only the cinder CRDs are absent")
+}
+
+// TestProbeOptionalWatches_NovaMissing covers the plane that runs no compute
+// service: every other sibling CRD is served, but the nova-operator was never
+// installed, so its kind is unserved. Its leg must be skipped and reported for
+// the restart gate while the peer legs still register.
+func TestProbeOptionalWatches_NovaMissing(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	disco := newFakeServerResources()
+	disco.serve(keystoneGV, "Keystone", "KeystoneIdentityBackend")
+	disco.serve(horizonGV, "Horizon")
+	disco.serve(glanceGV, "Glance", "GlanceBackend")
+	disco.serve(placementGV, "Placement")
+	disco.serve(barbicanGV, "Barbican", "BarbicanSecretStore")
+	disco.serve(openbaoGV, "OpenBaoCluster", "OpenBaoTenant")
+	disco.serve(rabbitmqGV, "RabbitmqCluster")
+	disco.serve(neutronGV, "Neutron")
+	disco.serve(cinderGV, "Cinder", "CinderBackend", "CinderBackupBackend")
+	disco.serve(ovnGV, "OVNCentral")
+
+	served, missing, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an uninstalled nova-operator is a NotFound, not a probe failure")
+	g.Expect(missing).To(ConsistOf(novaGV.WithKind("Nova")),
+		"only the nova kind may be reported missing")
+	g.Expect(served[novaGV.WithKind("Nova")]).To(BeFalse())
+	g.Expect(served[cinderGV.WithKind("Cinder")]).To(BeTrue(),
+		"the peer service legs must still register when only the nova CRD is absent")
 }
 
 func TestProbeOptionalWatches_DiscoveryError(t *testing.T) {
@@ -438,7 +475,7 @@ func TestProbeOptionalWatches_TransientErrorRetries(t *testing.T) {
 	served, missing, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
 	g.Expect(err).NotTo(HaveOccurred(), "a single transient blip must not abort the startup probe")
 	g.Expect(missing).To(BeEmpty())
-	g.Expect(served).To(HaveLen(16))
+	g.Expect(served).To(HaveLen(17))
 	for gvk, ok := range served {
 		g.Expect(ok).To(BeTrue(), "expected %s to be served after the blip cleared", gvk)
 	}
@@ -447,15 +484,15 @@ func TestProbeOptionalWatches_TransientErrorRetries(t *testing.T) {
 func TestProbeOptionalWatches_FetchesEachGroupVersionOnce(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	// The 16 optional kinds span only ten GroupVersions, so the probe must query
-	// discovery ten times, not once per kind.
+	// The 17 optional kinds span only eleven GroupVersions, so the probe must query
+	// discovery eleven times, not once per kind.
 	disco := newFakeServerResources()
 	serveAllOptionalKinds(disco)
 
 	_, _, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(disco.calls()).To(Equal(10),
-		"each of the ten GroupVersions must be queried exactly once, not per kind")
+	g.Expect(disco.calls()).To(Equal(11),
+		"each of the eleven GroupVersions must be queried exactly once, not per kind")
 }
 
 // --- optionalWatchObjects ---

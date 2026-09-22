@@ -16,6 +16,7 @@ import (
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
@@ -93,7 +94,9 @@ type serverResourcesLister interface {
 //
 // The three Cinder kinds are listed for the same sibling reason: the
 // cinder-operator is installed only for a ControlPlane that runs the
-// block-storage service.
+// block-storage service. The Nova kind is listed for that reason once more: the
+// nova-operator is installed only for a ControlPlane that runs the compute
+// service.
 //
 // The RabbitmqCluster kind is listed for a reason of its own: messaging is opt-in,
 // so spec.infrastructure.messaging is never materialized by defaulting and a
@@ -124,6 +127,7 @@ func optionalWatchObjects() []client.Object {
 		&cinderv1alpha1.Cinder{},
 		&cinderv1alpha1.CinderBackend{},
 		&cinderv1alpha1.CinderBackupBackend{},
+		&novav1alpha1.Nova{},
 		&ovnv1alpha1.OVNCentral{},
 	}
 }

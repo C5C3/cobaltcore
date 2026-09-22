@@ -150,6 +150,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
 - apiGroups:
   - generators.external-secrets.io
   resources:
+  - passwords
   - vaultdynamicsecrets
   verbs:
   - create
@@ -232,6 +233,18 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - neutron.openstack.c5c3.io
   resources:
   - neutrons
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - nova.openstack.c5c3.io
+  resources:
+  - novas
   verbs:
   - create
   - delete

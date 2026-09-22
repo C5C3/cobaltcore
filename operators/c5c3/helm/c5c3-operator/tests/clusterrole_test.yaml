@@ -142,6 +142,49 @@ tests:
               - update
               - watch
 
+  # The Nova child is projected and Owned, so it takes full CRUD. Nova has no
+  # satellite kind, so novas is the single operator-written kind of its group.
+  - it: should grant full CRUD on novas
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - nova.openstack.c5c3.io
+            resources:
+              - novas
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch
+              - update
+              - watch
+
+  # The ESO generator kinds the reconciler authors share one rule: the
+  # VaultDynamicSecret behind every dynamic DB credential, and the Password that
+  # mints the Nova metadata shared secret. Both are created, updated and deleted
+  # with the service they belong to, so the rule carries full CRUD.
+  - it: should grant full CRUD on passwords and vaultdynamicsecrets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - generators.external-secrets.io
+            resources:
+              - passwords
+              - vaultdynamicsecrets
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch
+              - update
+              - watch
+
   # The dedicated OpenBao instance needs a Role/RoleBinding pair for the
   # barbican-operator's TokenRequest and a ClusterRoleBinding for the instance
   # pods' TokenReview, so the operator authors all three kinds. Both rules carry

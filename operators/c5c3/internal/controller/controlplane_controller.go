@@ -17,6 +17,7 @@ import (
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
@@ -679,9 +680,24 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				{Name: "Cinder", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileCinder(ctx, &cp)
 				}},
+				// Nova carries two condition gates: KeystoneReady, like
+				// every peer, and PlacementReady, which no peer takes. The
+				// conductor claims an instance's resources in Placement
+				// before it boots, so a compute service brought up ahead of
+				// its placement service accepts requests it cannot serve.
+				// Placement runs earlier in this same group, so the gate is
+				// satisfied within one pass. Past both gates it delivers the
+				// shared bus into the compute namespace, ensures the two
+				// DB-credential chains the nova_api and cell schemas take,
+				// generates the metadata shared secret, projects the
+				// KeystoneService registration and the Nova child, and folds
+				// the child's aggregate Ready into NovaReady.
+				{Name: "Nova", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileNova(ctx, &cp)
+				}},
 				// ServiceAccounts aggregates the readiness of the
 				// KeystoneService children the
-				// Glance/Placement/Barbican/Neutron/Cinder legs applied
+				// Glance/Placement/Barbican/Neutron/Cinder/Nova legs applied
 				// earlier in this same pass into ServiceAccountsReady. It
 				// reads only, so it carries no condition gate.
 				{Name: "ServiceAccounts", Fn: func(ctx context.Context) (ctrl.Result, error) {
@@ -829,6 +845,10 @@ const neutronServiceKey = "neutron"
 // block-storage service.
 const cinderServiceKey = "cinder"
 
+// novaServiceKey is the key under which status.services reports the Nova
+// compute service.
+const novaServiceKey = "nova"
+
 // setServicesStatus records status.services and status.updatePhase on every
 // status write (#476). Both fields were declared on ControlPlaneStatus but never
 // written. status.updatePhase is fixed at Idle until the release-update state
@@ -844,7 +864,7 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 	// manages no Keystone, so status.services stays empty rather than reporting a
 	// service that does not exist.
 	// One entry per configured service (keystone, horizon, glance, placement,
-	// barbican, neutron, cinder), in a stable order; unmanaged services are
+	// barbican, neutron, cinder, nova), in a stable order; unmanaged services are
 	// omitted rather than reported as a service that does not exist. The entry NAMES carry beyond
 	// status: the webhook's shared/dedicated transition freeze reads
 	// status.services[].name to tell a service's CREATE from a service dropped and
@@ -897,6 +917,13 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    cinderServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeCinderReady),
+			Release: cp.Spec.OpenStackRelease,
+		})
+	}
+	if cp.Spec.Services.Nova != nil {
+		services = append(services, c5c3v1alpha1.ServiceStatus{
+			Name:    novaServiceKey,
+			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeNovaReady),
 			Release: cp.Spec.OpenStackRelease,
 		})
 	}
@@ -1458,7 +1485,9 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 	// neutron-operator is installed only for a ControlPlane that runs the network
 	// service. The three Cinder kinds join them for the same reason: the
 	// cinder-operator is installed only for a ControlPlane that runs the
-	// block-storage service.
+	// block-storage service, and the Nova kind for the same reason again: the
+	// nova-operator is installed only for a ControlPlane that runs the compute
+	// service.
 	//
 	// The OVNCentral kind is guarded too, but not from this loop: it is referenced
 	// rather than projected, so it carries neither an Owns leg nor a
@@ -1476,6 +1505,7 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		&cinderv1alpha1.Cinder{},
 		&cinderv1alpha1.CinderBackend{},
 		&cinderv1alpha1.CinderBackupBackend{},
+		&novav1alpha1.Nova{},
 		&openbaov1alpha1.OpenBaoCluster{},
 		&openbaov1alpha1.OpenBaoTenant{},
 		rabbitmq,
