@@ -125,6 +125,21 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// is.
 	{Section: "service_user", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the service-user password is env-injected via OS_SERVICE_USER__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
+	// [nova] — rendered while spec.keystoneEndpoint is set, from the same
+	// service account: the credentials cinder-volume calls Nova with on its
+	// own behalf (the assisted snapshot behind an online snapshot of an
+	// attached volume).
+	{Section: "nova", Key: "auth_type", OwnedBy: "operator-computed", Impact: "auth_type is what makes cinder-volume call Nova as the service user; without it the online snapshot of an attached volume is attempted with a rebuilt user token that Keystone rejects"},
+	{Section: "nova", Key: "auth_url", OwnedBy: "operator-computed"},
+	{Section: "nova", Key: "username", OwnedBy: "operator-computed"},
+	{Section: "nova", Key: "project_name", OwnedBy: "operator-computed"},
+	{Section: "nova", Key: "user_domain_name", OwnedBy: "operator-computed"},
+	{Section: "nova", Key: "project_domain_name", OwnedBy: "operator-computed"},
+	{Section: "nova", Key: "region_name", OwnedBy: "operator-computed"},
+	{Section: "nova", Key: "interface", OwnedBy: "operator-computed", Impact: "the interface picks which catalog entry cinder-volume reaches Nova through; the public one may not resolve from inside the cluster"},
+	// password is env-injected via OS_NOVA__PASSWORD; rejected like its twins.
+	{Section: "nova", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the Nova client password is env-injected via OS_NOVA__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
+
 	// [key_manager] / [barbican] — rendered while spec.keyManager is set.
 	{Section: "key_manager", Key: "backend", OwnedBy: "spec.keyManager.type", Impact: "the backend is what castellan stores volume-encryption keys in; another one either has no keys the deployment wrote or is not configured at all, and every encrypted volume becomes unreadable"},
 	{Section: "barbican", Key: "barbican_endpoint", OwnedBy: "spec.keyManager.barbican.endpoint", Impact: "the address is where the volume-encryption keys live; another one holds none of the keys this deployment's encrypted volumes were written with"},

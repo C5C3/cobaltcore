@@ -52,6 +52,16 @@ user_domain_name = Default
 username = cinder
 www_authenticate_uri = http://keystone.openstack.svc:5000
 
+[nova]
+auth_type = password
+auth_url = http://keystone.openstack.svc:5000
+interface = internal
+project_domain_name = Default
+project_name = service
+region_name = RegionOne
+user_domain_name = Default
+username = cinder
+
 [oslo_concurrency]
 lock_path = /var/lib/cinder/tmp
 

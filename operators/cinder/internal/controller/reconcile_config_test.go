@@ -86,11 +86,49 @@ func TestReconcileConfig_KeystoneBackedRendersAuthSections(t *testing.T) {
 		"memcached_servers = mc:11211",
 		"[service_user]",
 		"send_service_user_token = true",
+		"[nova]",
+		"interface = internal",
 	} {
 		g.Expect(conf).To(ContainSubstring(line))
 	}
 	g.Expect(conf).NotTo(ContainSubstring("password = "),
-		"both passwords arrive through the oslo.config env overrides, never through the file")
+		"all three passwords arrive through the oslo.config env overrides, never through the file")
+
+	// [nova] is what lets cinder-volume call Nova as the service user for the
+	// assisted snapshot an online snapshot of an attached volume needs. Without
+	// auth_type there cinder rebuilds the request's user token from an RPC
+	// context that carries no project domain, and Keystone answers 400.
+	nova := iniSection(conf, "nova")
+	g.Expect(nova).To(HaveKeyWithValue("auth_type", "password"))
+	g.Expect(nova).To(HaveKeyWithValue("auth_url", "http://keystone.openstack.svc:5000"))
+	g.Expect(nova).To(HaveKeyWithValue("username", "cinder"))
+	g.Expect(nova).To(HaveKeyWithValue("project_name", "service"))
+	g.Expect(nova).To(HaveKeyWithValue("user_domain_name", "Default"))
+	g.Expect(nova).To(HaveKeyWithValue("project_domain_name", "Default"))
+	g.Expect(nova).To(HaveKeyWithValue("region_name", "RegionOne"))
+	g.Expect(nova).NotTo(HaveKey("send_service_user_token"),
+		"the client section carries no middleware or service-token key")
+}
+
+// iniSection returns the key/value pairs of one section of a rendered INI
+// document, so a test can assert on a section as a whole rather than on
+// substrings that another section could satisfy.
+func iniSection(conf, name string) map[string]string {
+	section := map[string]string{}
+	in := false
+	for _, line := range strings.Split(conf, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			in = line == "["+name+"]"
+			continue
+		}
+		if !in || line == "" {
+			continue
+		}
+		key, value, _ := strings.Cut(line, " = ")
+		section[key] = value
+	}
+	return section
 }
 
 // TestReconcileConfig_NoauthOmitsKeystoneSections covers the Cinder the storage
@@ -101,7 +139,7 @@ func TestReconcileConfig_NoauthOmitsKeystoneSections(t *testing.T) {
 	conf := renderCinderConf(t, keystoneFreeCinder())
 
 	g.Expect(conf).To(ContainSubstring("auth_strategy = noauth"))
-	for _, section := range []string{"[keystone_authtoken]", "[service_user]", "[key_manager]", "[barbican]"} {
+	for _, section := range []string{"[keystone_authtoken]", "[service_user]", "[nova]", "[key_manager]", "[barbican]"} {
 		g.Expect(conf).NotTo(ContainSubstring(section))
 	}
 }

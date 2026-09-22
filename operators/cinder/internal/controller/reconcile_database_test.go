@@ -234,6 +234,7 @@ func TestReconcileDatabase_SyncJobCommandAndEnv(t *testing.T) {
 		"OS_DEFAULT__TRANSPORT_URL",
 		"OS_KEYSTONE_AUTHTOKEN__PASSWORD",
 		"OS_SERVICE_USER__PASSWORD",
+		"OS_NOVA__PASSWORD",
 	))
 }
 

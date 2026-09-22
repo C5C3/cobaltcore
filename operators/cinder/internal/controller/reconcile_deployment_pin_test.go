@@ -90,6 +90,11 @@ spec:
             secretKeyRef:
               key: password
               name: cinder-service-user
+        - name: OS_NOVA__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: cinder-service-user
         image: ghcr.io/c5c3/cinder:2026.1
         lifecycle:
           preStop:
@@ -251,6 +256,11 @@ spec:
             secretKeyRef:
               key: password
               name: cinder-service-user
+        - name: OS_NOVA__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: cinder-service-user
         image: ghcr.io/c5c3/cinder:2026.1
         lifecycle:
           preStop:
@@ -405,6 +415,11 @@ spec:
               key: password
               name: cinder-service-user
         - name: OS_SERVICE_USER__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: cinder-service-user
+        - name: OS_NOVA__PASSWORD
           valueFrom:
             secretKeyRef:
               key: password

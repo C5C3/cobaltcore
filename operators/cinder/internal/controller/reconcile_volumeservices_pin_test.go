@@ -73,6 +73,11 @@ spec:
             secretKeyRef:
               key: password
               name: cinder-service-user
+        - name: OS_NOVA__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: cinder-service-user
         - name: CINDER_AMQP_PORT
           value: "5672"
         image: ghcr.io/c5c3/cinder:2026.1
@@ -226,6 +231,11 @@ spec:
               key: password
               name: cinder-service-user
         - name: OS_SERVICE_USER__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: cinder-service-user
+        - name: OS_NOVA__PASSWORD
           valueFrom:
             secretKeyRef:
               key: password
