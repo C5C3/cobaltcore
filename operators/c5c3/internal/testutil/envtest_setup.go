@@ -29,6 +29,7 @@ import (
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
@@ -216,6 +217,7 @@ func BuildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 		barbicanv1alpha1.AddToScheme,
 		neutronv1alpha1.AddToScheme,
 		cinderv1alpha1.AddToScheme,
+		novav1alpha1.AddToScheme,
 		ovnv1alpha1.AddToScheme,
 		openbaov1alpha1.AddToScheme,
 		esov1.AddToScheme,

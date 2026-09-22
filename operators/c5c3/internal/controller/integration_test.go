@@ -56,6 +56,7 @@ import (
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
@@ -393,6 +394,24 @@ func integrationCinderService() *c5c3v1alpha1.ServiceCinderSpec {
 	}
 }
 
+// integrationNovaService returns a valid services.nova block: the empty one.
+// Every ServiceNovaSpec field is optional and the projection derives the whole
+// child from the ControlPlane, so the empty block is the minimal valid one, the
+// way its Placement sibling is.
+//
+// All four replica counts and the console proxy are left unset, so the full-chain
+// test proves the projection's own defaults reach the child: three API pods, one
+// metadata API, one scheduler, one conductor, and the zero console-proxy block
+// the nova defaulting webhook resolves.
+//
+// The block never stands alone. The webhook requires services.placement,
+// services.neutron and services.glance beside it (the three services the compute
+// service calls on the path of every instance it boots), and the shared bus with
+// them, so every caller declares those four as well.
+func integrationNovaService() *c5c3v1alpha1.ServiceNovaSpec {
+	return &c5c3v1alpha1.ServiceNovaSpec{}
+}
+
 // ensureReadyClusterSecretStore creates the cluster-scoped OpenBao-backed
 // ClusterSecretStore the DB-credential, admin-password and admin-credential
 // sub-reconcilers gate on (#476) and marks it Ready. It is idempotent across the
@@ -648,6 +667,28 @@ func simulateCinderReadyWhenPresent(t testing.TB, ctx context.Context, c client.
 		Message: "simulated ready",
 	})
 	g.Expect(c.Status().Update(ctx, cn)).To(Succeed(), "set Cinder Ready=True")
+}
+
+// simulateNovaReadyWhenPresent waits for the projected Nova child, then sets its
+// aggregate Ready condition True so reconcileNova's mirror flips NovaReady (there
+// is no nova-operator running in envtest). Mirrors
+// simulateCinderReadyWhenPresent.
+func simulateNovaReadyWhenPresent(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	nv := &novav1alpha1.Nova{}
+	g.Eventually(func() error {
+		return c.Get(ctx, key, nv)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Nova child should be created")
+
+	meta.SetStatusCondition(&nv.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "AllReady",
+		Message: "simulated ready",
+	})
+	g.Expect(c.Status().Update(ctx, nv)).To(Succeed(), "set Nova Ready=True")
 }
 
 // simulateOVNCentralReadyWhenPresent waits for the OVNCentral
@@ -1366,6 +1407,70 @@ func simulateCinderDBCredentialSyncWhenPresent(
 		To(Succeed(), "simulate per-CP Cinder DB credential ExternalSecret sync")
 }
 
+// simulateNovaAPIDBCredentialSyncWhenPresent is the Nova twin of
+// simulateCinderDBCredentialSyncWhenPresent for the nova_api schema: it waits for
+// the operator-created Nova API DB-credential ExternalSecret, simulates the ESO
+// sync, and materialises the Secret behind it with an ENGINE-ISSUED username.
+// reconcileNova gates the Dynamic projection on both halves for the reason its
+// peers do: a Static->Dynamic flip updates the ExternalSecret in place, so its
+// Ready can still be the retired Static sync's. The engine-issued username here
+// is deliberately not the static seed's "nova_api".
+//
+// The compute service is the one built-in with TWO of these chains, one per
+// schema, each gated on its own; the cell twin is below.
+func simulateNovaAPIDBCredentialSyncWhenPresent(
+	t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	novaNS, name := cp.NovaNamespace(), novaAPIDBCredentialSecretName(cp)
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: novaNS, Name: name}, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"operator must create the per-CP Nova API DB-credential ExternalSecret")
+
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: novaNS},
+		Data: map[string][]byte{
+			"username": []byte(engineIssuedUsernamePrefix + "kubernetes-nova-api-abc123-1750000000"),
+			"password": []byte("engine-issued-password"),
+		},
+	})).To(Succeed(), "materialise the engine-issued Nova API DB credential ESO would have written")
+
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c, client.ObjectKey{Namespace: novaNS, Name: name})).
+		To(Succeed(), "simulate per-CP Nova API DB credential ExternalSecret sync")
+}
+
+// simulateNovaCellDBCredentialSyncWhenPresent is the same for the CELL schema,
+// the unqualified half of the pair. Its username is engine-issued too, and
+// distinct from the API chain's: the two logins are separate objects on separate
+// OpenBao roles, so a test that let them share one would prove nothing about
+// either.
+func simulateNovaCellDBCredentialSyncWhenPresent(
+	t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	novaNS, name := cp.NovaNamespace(), novaCellDBCredentialSecretName(cp)
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: novaNS, Name: name}, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"operator must create the per-CP Nova cell DB-credential ExternalSecret")
+
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: novaNS},
+		Data: map[string][]byte{
+			"username": []byte(engineIssuedUsernamePrefix + "kubernetes-nova-cell-abc123-1750000000"),
+			"password": []byte("engine-issued-password"),
+		},
+	})).To(Succeed(), "materialise the engine-issued Nova cell DB credential ESO would have written")
+
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c, client.ObjectKey{Namespace: novaNS, Name: name})).
+		To(Succeed(), "simulate per-CP Nova cell DB credential ExternalSecret sync")
+}
+
 // TestIntegration_FullReconcile_ManagedToReady drives a managed-mode ControlPlane
 // through every sub-reconciler to the aggregate Ready=True, simulating each
 // external dependency's readiness in dependency order. It is the single primary
@@ -1393,15 +1498,18 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
 
 	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
-	// Horizon, Glance, Placement, Barbican, Neutron and Cinder are enabled HERE (not
-	// in the shared fixture) so only this full-chain test — which simulates the
-	// Horizon child in Phase 2.5, the five built-in registrations in Phase 5.6, the
-	// Glance child (plus its GlanceBackend) in Phase 6, the Placement child in Phase
-	// 7, the Barbican child (plus the dedicated OpenBao ensemble behind its secret
-	// store) in Phase 8, the Neutron child (plus the OVN gate and the bus delivery
-	// ahead of it) in Phase 9, and the Cinder child (plus its two satellites) in
-	// Phase 10 — carries the extra services; the gate-focused tests reusing the
-	// fixture would otherwise wedge at the unsimulated steps.
+	// Horizon, Glance, Placement, Barbican, Neutron, Cinder and Nova are enabled
+	// HERE (not in the shared fixture) so only this full-chain test — which
+	// simulates the Horizon child in Phase 2.5, the five built-in registrations in
+	// Phase 5.6, the Glance child (plus its GlanceBackend) in Phase 6, the
+	// Placement child in Phase 7, the Barbican child (plus the dedicated OpenBao
+	// ensemble behind its secret store) in Phase 8, the Neutron child (plus the OVN
+	// gate, the bus delivery ahead of it, and the two registrations the compute
+	// service adds) in Phase 9, the Cinder child (plus its two satellites) in Phase
+	// 10, and the Nova child (plus its two DB-credential chains and its generated
+	// metadata shared secret) in Phase 11 — carries the extra services; the
+	// gate-focused tests reusing the fixture would otherwise wedge at the
+	// unsimulated steps.
 	cp := integrationManagedControlPlane("cp", ns.Name)
 	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{}
 	cp.Spec.Services.Glance = integrationGlanceService()
@@ -1409,11 +1517,12 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	cp.Spec.Services.Barbican = integrationBarbicanService()
 	cp.Spec.Services.Neutron = integrationNeutronService()
 	cp.Spec.Services.Cinder = integrationCinderService()
+	cp.Spec.Services.Nova = integrationNovaService()
 
-	// The shared message bus. The network and block-storage services are what need
-	// it: both projections derive their child's transport URL from this block, and
-	// the validating webhook requires the block beside services.neutron and
-	// services.cinder.
+	// The shared message bus. The network, block-storage and compute services are
+	// what need it: each projection derives its child's transport URL from this
+	// block, and the validating webhook requires the block beside services.neutron,
+	// services.cinder and services.nova.
 	cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
 		ClusterRef: &corev1.LocalObjectReference{Name: "cp-rabbitmq"},
 		Replicas:   1,
@@ -1596,7 +1705,12 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// ControlPlane reconciles them, so the same K-ORC and ESO round-trip is replayed
 	// once per child — and until each reports AccountReady, no service child is
 	// projected at all. The Neutron one appears only because OVNReady is already
-	// True and the bus was delivered: both gates sit ahead of the registration. ---
+	// True and the bus was delivered: both gates sit ahead of the registration.
+	//
+	// The compute service's two are not here. Its own registration sits behind the
+	// PlacementReady gate Phase 7 opens, and the notifier account the network
+	// service takes beside it is projected by reconcileNeutron, so Phase 9 drives
+	// the pair. ---
 	glanceReg := simulateBuiltinRegistrationConvergedWhenPresent(t, ctx, c, cp,
 		client.ObjectKey{Name: glanceName(cp), Namespace: cp.GlanceNamespace()})
 	placementReg := simulateBuiltinRegistrationConvergedWhenPresent(t, ctx, c, cp,
@@ -1608,17 +1722,12 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	cinderReg := simulateBuiltinRegistrationConvergedWhenPresent(t, ctx, c, cp,
 		client.ObjectKey{Name: cinderName(cp), Namespace: cp.CinderNamespace()})
 
-	// The ServiceAccounts member aggregates those five children into
-	// ServiceAccountsReady, which is the condition operators alert on: with every
-	// registration Ready it reports how many were counted.
-	serviceAccountsReady := waitForControlPlaneCondition(t, ctx, c, cpKey,
-		conditionTypeServiceAccountsReady, metav1.ConditionTrue, itEventuallyTimeout)
-	g.Expect(serviceAccountsReady.Reason).To(Equal(reasonServiceAccountsProvisioned))
-
 	// Each child declares the identity its service authenticates as: the service's
 	// user name, a service project of its own, and the roles that account holds.
-	// Cinder is the one built-in that holds admin beside service, because it deletes
-	// the Barbican secret of an encrypted volume on behalf of an owner that cannot.
+	// Cinder is the one of these five that holds admin beside service, because it
+	// deletes the Barbican secret of an encrypted volume on behalf of an owner that
+	// cannot. The two accounts the compute service adds hold admin as well; Phase 9
+	// asserts them over the same table.
 	for _, registration := range []struct {
 		child   *c5c3v1alpha1.KeystoneService
 		user    string
@@ -1873,6 +1982,21 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	placementDBCredCert.SetGroupVersionKind(certificateGVK)
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: placementDBCredentialClientCertName(cp)}, placementDBCredCert)).
 		To(Succeed(), "operator must create the Placement generator's mTLS client Certificate in the placement namespace")
+
+	// The compute service is gated on this one: every instance claims its resources
+	// in Placement before it boots, so a Nova brought up ahead of it would accept
+	// requests it cannot serve. The pipeline's sequential group runs every member
+	// whatever a previous one reported, so the parked condition is readable here,
+	// before the gate below opens.
+	g.Eventually(func(ig Gomega) {
+		live := &c5c3v1alpha1.ControlPlane{}
+		ig.Expect(c.Get(ctx, cpKey, live)).To(Succeed())
+		cond := meta.FindStatusCondition(live.Status.Conditions, conditionTypeNovaReady)
+		ig.Expect(cond).NotTo(BeNil())
+		ig.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		ig.Expect(cond.Reason).To(Equal("WaitingForPlacement"))
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the compute service defers its projection while the placement service is not ready")
 
 	simulatePlacementReadyWhenPresent(t, ctx, c, placementKey)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypePlacementReady, metav1.ConditionTrue, itEventuallyTimeout)
@@ -2166,6 +2290,56 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		conditionTypeOVNReady, metav1.ConditionTrue, itEventuallyTimeout)
 	g.Expect(ovnReady.Reason).To(Equal("OVNCentralReady"),
 		"the referenced central serves both databases and has published its client Secret")
+
+	// The two registrations the declared compute service adds. The compute service's
+	// own appeared once Phase 7 opened its placement gate; the notifier is the
+	// SECOND account the network service takes, the user it posts its port-status
+	// notifications to the compute service as, and reconcileNeutron halts on its
+	// account gate ahead of everything below, so both are driven here.
+	//
+	// The notifier carries no catalog block: it answers no request of its own, so it
+	// advertises no endpoint, and only its account is driven.
+	novaReg := simulateBuiltinRegistrationConvergedWhenPresent(t, ctx, c, cp,
+		client.ObjectKey{Name: novaName(cp), Namespace: cp.NovaNamespace()})
+	notifierReg := waitForBuiltinRegistration(t, ctx, c,
+		client.ObjectKey{Name: neutronNovaNotifierName(cp), Namespace: cp.NeutronNamespace()})
+	g.Expect(notifierReg.Spec.Catalog).To(BeNil(),
+		"the notifier registers an account and no catalog row")
+	simulateRegistrationAccountConvergedWhenPresent(t, ctx, c, cp, notifierReg)
+
+	// Both hold admin beside service, and for different reasons: nova calls the
+	// block-storage API through its own service user in admin contexts, and nova
+	// looks the instance behind a notified port up with the caller's unelevated
+	// context. The notifier REFERENCES the network service's project rather than
+	// creating it: desiredNeutronRegistration owns service-neutron, and a second
+	// creator would have the first teardown delete it under the second. The network
+	// service's own account keeps service alone.
+	for _, registration := range []struct {
+		child   *c5c3v1alpha1.KeystoneService
+		user    string
+		project string
+		create  bool
+		roles   []string
+	}{
+		{novaReg, "nova", "service-nova", true, []string{"service", "admin"}},
+		{notifierReg, "neutron-nova", "service-neutron", false, []string{"service", "admin"}},
+		{neutronReg, "neutron", "service-neutron", true, []string{"service"}},
+	} {
+		account := registration.child.Spec.Account
+		g.Expect(account).NotTo(BeNil(), "the %q registration must declare a service account", registration.user)
+		g.Expect(account.UserName).To(Equal(registration.user))
+		g.Expect(account.Project.Name).To(Equal(registration.project))
+		g.Expect(account.Project.Create).To(Equal(registration.create))
+		g.Expect(account.Roles).To(Equal(registration.roles))
+	}
+
+	// The ServiceAccounts member aggregates EVERY projected registration into
+	// ServiceAccountsReady, which is the condition operators alert on: with every
+	// registration Ready it reports how many were counted. It can only flip here,
+	// behind the last two: the five of Phase 5.6 are counted beside them.
+	serviceAccountsReady := waitForControlPlaneCondition(t, ctx, c, cpKey,
+		conditionTypeServiceAccountsReady, metav1.ConditionTrue, itEventuallyTimeout)
+	g.Expect(serviceAccountsReady.Reason).To(Equal(reasonServiceAccountsProvisioned))
 
 	simulateNeutronDBCredentialSyncWhenPresent(t, ctx, c, cp)
 
@@ -2525,6 +2699,270 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
 		"the reconciler must observe the generation the backend swap produced")
 
+	// --- Phase 11: Nova child (the compute service, the pipeline's last member).
+	// It is the one built-in that splits its state across TWO schemas, so it takes
+	// two DB-credential chains rather than one, and the one that needs a value both
+	// it and the network service hold: the metadata shared secret, which the
+	// ControlPlane generates through ESO rather than asking for. Its own
+	// registration and the notifier beside it were driven in Phase 9, so what is
+	// left is the credentials, the generated secret, and the child. ---
+	simulateNovaAPIDBCredentialSyncWhenPresent(t, ctx, c, cp)
+	simulateNovaCellDBCredentialSyncWhenPresent(t, ctx, c, cp)
+
+	// The bus delivery beside the Nova child, under a name of its own: the compute
+	// service is the third consumer of the one transport URL.
+	novaBusSecret := &corev1.Secret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: novaMessagingSecretName(cp), Namespace: ns.Name}, novaBusSecret)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the ControlPlane must deliver the shared bus into the compute service's namespace")
+	g.Expect(string(novaBusSecret.Data[commonv1.DefaultTransportURLSecretKey])).To(
+		Equal(fmt.Sprintf("rabbit://default-user:broker-password@cp-rabbitmq.%s.svc:5672/", ns.Name)),
+		"the transport URL is assembled from the four keys of the broker's default-user Secret")
+	// A plaintext bus declares no TLS, so no CA mirror is written beside it, for the
+	// reason the Neutron delivery documents.
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, client.ObjectKey{
+		Name: novaMessagingCASecretName(cp), Namespace: ns.Name,
+	}, &corev1.Secret{}))).To(BeTrue(), "a bus without tls leaves no CA mirror in the Nova namespace")
+
+	// The two Dynamic-mode DB-credential chains, one per schema. Every object of a
+	// chain is its own (Secret, generator, ServiceAccount, client certificate), so a
+	// rotation on one schema's login leaves the other's connection untouched, and
+	// each generator reads the creds path of the engine role that grants on its own
+	// schema.
+	for _, credential := range []struct {
+		secret    string
+		vaultRole string
+		credsPath string
+		saName    string
+		certName  string
+	}{
+		{
+			novaAPIDBCredentialSecretName(cp), novaAPIDBDynamicVaultRole, novaAPIDBDynamicCredsPathFor(cp),
+			novaAPIDBCredentialServiceAccountName, novaAPIDBCredentialClientCertName(cp),
+		},
+		{
+			novaCellDBCredentialSecretName(cp), novaCellDBDynamicVaultRole, novaCellDBDynamicCredsPathFor(cp),
+			novaCellDBCredentialServiceAccountName, novaCellDBCredentialClientCertName(cp),
+		},
+	} {
+		novaDBCredES := &esov1.ExternalSecret{}
+		g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: credential.secret}, novaDBCredES)).
+			To(Succeed(), "operator must create the %s ExternalSecret", credential.secret)
+		g.Expect(novaDBCredES.Spec.Data).To(BeEmpty(),
+			"a Dynamic Nova DB-credential ExternalSecret carries no static Data refs")
+		g.Expect(novaDBCredES.Spec.DataFrom).NotTo(BeEmpty(),
+			"a Dynamic Nova DB-credential ExternalSecret must declare a generatorRef")
+		g.Expect(novaDBCredES.Spec.DataFrom[0].SourceRef).NotTo(BeNil())
+		g.Expect(novaDBCredES.Spec.DataFrom[0].SourceRef.GeneratorRef).NotTo(BeNil())
+		g.Expect(novaDBCredES.Spec.DataFrom[0].SourceRef.GeneratorRef.Kind).To(Equal("VaultDynamicSecret"))
+		novaESOwner := metav1.GetControllerOf(novaDBCredES)
+		g.Expect(novaESOwner).NotTo(BeNil(),
+			"the %s ExternalSecret must be controller-owned by the ControlPlane", credential.secret)
+		g.Expect(novaESOwner.Name).To(Equal(cp.Name))
+
+		novaVDS := &esgenv1alpha1.VaultDynamicSecret{}
+		g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: credential.secret}, novaVDS)).
+			To(Succeed(), "operator must create the %s VaultDynamicSecret generator", credential.secret)
+		g.Expect(novaVDS.Spec.Path).To(Equal(credential.credsPath))
+		g.Expect(novaVDS.Spec.Provider.Auth.Kubernetes.Role).To(Equal(credential.vaultRole))
+		g.Expect(novaVDS.Spec.Provider.Auth.Kubernetes.ServiceAccountRef.Name).To(Equal(credential.saName),
+			"the generator authenticates as the account its OpenBao role binds")
+
+		g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: credential.saName}, &corev1.ServiceAccount{})).
+			To(Succeed(), "operator must create the generator's ServiceAccount in the nova namespace")
+
+		novaDBCredCert := &unstructured.Unstructured{}
+		novaDBCredCert.SetGroupVersionKind(certificateGVK)
+		g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: credential.certName}, novaDBCredCert)).
+			To(Succeed(), "operator must create the generator's mTLS client Certificate in the nova namespace")
+	}
+
+	// The metadata shared secret: a Password generator and an ExternalSecret that
+	// draws from it, so the value is minted inside ESO and the operator writes two
+	// references to a value it never reads. The refresh is OFF, because the
+	// generator mints a NEW value on every read: a re-minted secret would leave
+	// every instance's call to 169.254.169.254 rejected until each metadata agent
+	// had been reconfigured.
+	metadataES := &esov1.ExternalSecret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: novaMetadataSecretName(cp)}, metadataES)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"operator must create the Nova metadata shared-secret ExternalSecret")
+	g.Expect(metadataES.Spec.Data).To(BeEmpty(), "the generator is the sole source, so there is no static Data ref")
+	g.Expect(metadataES.Spec.DataFrom).NotTo(BeEmpty())
+	g.Expect(metadataES.Spec.DataFrom[0].SourceRef).NotTo(BeNil())
+	g.Expect(metadataES.Spec.DataFrom[0].SourceRef.GeneratorRef).NotTo(BeNil())
+	g.Expect(metadataES.Spec.DataFrom[0].SourceRef.GeneratorRef.Kind).To(Equal("Password"))
+	g.Expect(metadataES.Spec.DataFrom[0].Rewrite).To(Equal([]esov1.ExternalSecretRewrite{{
+		Regexp: &esov1.ExternalSecretRewriteRegexp{Source: "^password$", Target: "shared_secret"},
+	}}), "the generator's key is renamed to the one both consumers default to")
+	g.Expect(metadataES.Spec.RefreshInterval).NotTo(BeNil())
+	g.Expect(metadataES.Spec.RefreshInterval.Duration).To(BeZero(),
+		"the periodic sync is off: the value is generated once, and rotating it is a deliberate act")
+
+	metadataGenerator := &esgenv1alpha1.Password{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: novaMetadataSecretName(cp)}, metadataGenerator)).
+		To(Succeed(), "operator must create the Password generator the ExternalSecret draws from")
+	g.Expect(metadataGenerator.Spec.Length).To(Equal(32))
+	g.Expect(metadataGenerator.Spec.Symbols).NotTo(BeNil())
+	g.Expect(*metadataGenerator.Spec.Symbols).To(Equal(0),
+		"the value is rendered into two INI files, so it depends on neither renderer's quoting")
+
+	novaKey := client.ObjectKey{Name: novaName(cp), Namespace: ns.Name}
+	projectedNova := &novav1alpha1.Nova{}
+	g.Eventually(func() error {
+		return c.Get(ctx, novaKey, projectedNova)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"Nova child should be projected once PlacementReady, its registration and both DB credentials are ready")
+
+	// Release and image: the canonical repository with the release-derived tag.
+	g.Expect(projectedNova.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(projectedNova.Spec.Image.Repository).To(Equal(defaultNovaRepository))
+	g.Expect(projectedNova.Spec.Image.Tag).To(Equal("2025.2"), "Nova image tag must derive from openStackRelease")
+
+	// extraConfig: this fixture declares no services.nova.extraConfig, so the merge
+	// is the global section alone.
+	g.Expect(projectedNova.Spec.ExtraConfig).To(Equal(map[string]map[string]string{
+		"cors": {"allowed_origin": "https://dashboard.example.com"},
+	}), "globalExtraConfig reaches the compute service too")
+
+	// Two databases on ONE shared managed cluster: the global half in "nova_api"
+	// and the cell half in "nova", each on a credential of its own and both on the
+	// same mode, which is what the Nova CRD requires of the pair.
+	g.Expect(projectedNova.Spec.APIDatabase.ClusterRef).NotTo(BeNil(), "Nova API database clusterRef must be wired")
+	g.Expect(projectedNova.Spec.APIDatabase.ClusterRef.Name).To(Equal("openstack-db"))
+	g.Expect(projectedNova.Spec.APIDatabase.Database).To(Equal("nova_api"))
+	g.Expect(projectedNova.Spec.APIDatabase.SecretRef.Name).To(Equal(novaAPIDBCredentialSecretName(cp)),
+		"the API schema reads the operator-owned per-CP Nova API DB-credential Secret")
+	g.Expect(projectedNova.Spec.APIDatabase.SecretRef.Key).To(Equal("password"))
+	g.Expect(projectedNova.Spec.APIDatabase.CredentialsMode).To(Equal(commonv1.CredentialsModeDynamic),
+		"the projected Nova DB credentials default to Dynamic (engine-issued)")
+	g.Expect(projectedNova.Spec.Database.ClusterRef).NotTo(BeNil(), "Nova cell database clusterRef must be wired")
+	g.Expect(projectedNova.Spec.Database.ClusterRef.Name).To(Equal("openstack-db"))
+	g.Expect(projectedNova.Spec.Database.Database).To(Equal("nova"))
+	g.Expect(projectedNova.Spec.Database.SecretRef.Name).To(Equal(novaCellDBCredentialSecretName(cp)),
+		"the cell schema reads a credential Secret of its own")
+	g.Expect(projectedNova.Spec.Database.SecretRef.Key).To(Equal("password"))
+	g.Expect(projectedNova.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeDynamic))
+
+	// Cache: the shared managed Memcached.
+	g.Expect(projectedNova.Spec.Cache.ClusterRef).NotTo(BeNil(), "Nova cache clusterRef must be wired")
+	g.Expect(projectedNova.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
+
+	// Keystone endpoint: derived TOP-DOWN from the naming convention, because Nova
+	// validates every token against it from inside the cluster.
+	g.Expect(projectedNova.Spec.KeystoneEndpoint).To(
+		Equal(fmt.Sprintf("http://%s.%s.svc:5000/v3", keystoneName(cp), ns.Name)),
+		"keystoneEndpoint must be the cluster-local Keystone Service URL",
+	)
+	g.Expect(projectedNova.Spec.KeystonePublicEndpoint).To(BeEmpty(),
+		"this fixture exposes Keystone nowhere externally, so the child falls back to the internal endpoint")
+	g.Expect(projectedNova.Spec.Region).To(Equal(c5c3v1alpha1.DefaultRegion))
+
+	// Service user: the identity the Nova registration provisions (its own
+	// service-nova project) and the consumer Secret it delivers, in the admin
+	// domain the registration resolves the account in.
+	g.Expect(projectedNova.Spec.ServiceUser.Username).To(Equal("nova"))
+	g.Expect(projectedNova.Spec.ServiceUser.ProjectName).To(Equal("service-nova"))
+	g.Expect(projectedNova.Spec.ServiceUser.UserDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(projectedNova.Spec.ServiceUser.ProjectDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(projectedNova.Spec.ServiceUser.SecretRef.Name).
+		To(Equal(keystoneServiceCredentialsSecretName(novaReg)),
+			"Nova service-user password must read the registration's consumer Secret")
+	g.Expect(projectedNova.Spec.ServiceUser.SecretRef.Key).To(Equal("password"))
+
+	// The ControlPlane's RESOLVED store selection, so the child never falls back to
+	// its own shared-cluster-store default.
+	g.Expect(projectedNova.Spec.SecretStoreRef).NotTo(BeNil(), "the resolved store ref must be projected")
+	g.Expect(projectedNova.Spec.SecretStoreRef.Kind).To(Equal(commonv1.SecretStoreKindNamespaced))
+	g.Expect(projectedNova.Spec.SecretStoreRef.Name).To(Equal(esoTenantStoreName))
+
+	// The bus reaches the child as a brownfield secretRef naming the Secret asserted
+	// above, never as the managed clusterRef the ControlPlane resolved it from.
+	g.Expect(projectedNova.Spec.Messaging.ClusterRef).To(BeNil())
+	g.Expect(projectedNova.Spec.Messaging.SecretRef).NotTo(BeNil())
+	g.Expect(projectedNova.Spec.Messaging.SecretRef.Name).To(Equal(novaMessagingSecretName(cp)))
+	g.Expect(projectedNova.Spec.Messaging.SecretRef.Key).To(Equal(commonv1.DefaultTransportURLSecretKey))
+	g.Expect(projectedNova.Spec.Messaging.TLS).To(BeNil(),
+		"the bus declares no tls, so the child names no CA mirror")
+
+	// The two optional client sections follow their sibling blocks: both are
+	// declared on this fixture, so Nova attaches volumes and reads the key of an
+	// encrypted one. Every endpoint override stays empty on all five sections: the
+	// catalog's internal rows already carry the managed in-cluster URLs.
+	g.Expect(projectedNova.Spec.Endpoints).To(Equal(novav1alpha1.NovaEndpointsSpec{
+		Cinder:   novav1alpha1.NovaOptionalEndpointSpec{Enabled: true},
+		Barbican: novav1alpha1.NovaOptionalEndpointSpec{Enabled: true},
+	}), "a declared block-storage and key-manager sibling switch both client sections on")
+
+	// The metadata API, with the reference to the generated shared secret its
+	// callers sign requests with. The reference is resolved rather than
+	// materialised, so dropping a user-supplied one reverts the child to the
+	// generated value.
+	g.Expect(projectedNova.Spec.Metadata.SharedSecretRef).To(Equal(commonv1.SecretRefSpec{
+		Name: novaMetadataSecretName(cp),
+		Key:  "shared_secret",
+	}))
+	g.Expect(projectedNova.Spec.Metadata.Gateway).To(BeNil())
+
+	// Four replica counts, none of them overridden: the API pods take the shared
+	// operator default, and the three background Deployments are written EXPLICITLY
+	// at one, because the API server would otherwise materialise the shared default
+	// of three into every struct-valued deployment block on the wire.
+	g.Expect(projectedNova.Spec.API.Deployment.Replicas).To(Equal(commonv1.DefaultReplicas),
+		"replicas fall back to the shared operator default when services.nova sets none")
+	g.Expect(projectedNova.Spec.Metadata.Deployment.Replicas).To(Equal(int32(1)))
+	g.Expect(projectedNova.Spec.Scheduler.Deployment.Replicas).To(Equal(int32(1)))
+	g.Expect(projectedNova.Spec.Conductor.Deployment.Replicas).To(Equal(int32(1)))
+
+	// An absent services.nova.consoleProxy projects the ZERO block, which leaves
+	// both the switch and the deployment absent on the wire and lets the nova
+	// defaulting webhook enable the proxy at one replica.
+	g.Expect(projectedNova.Spec.ConsoleProxy).To(Equal(novav1alpha1.NovaConsoleProxySpec{}))
+
+	g.Expect(projectedNova.Spec.DBArchive).To(BeNil(),
+		"spec.dbArchive is unset: a nil block resolves exactly like an empty one on the child")
+	g.Expect(projectedNova.Spec.Gateway).To(BeNil(),
+		"this fixture exposes none of the three compute hostnames")
+
+	// The child is co-located with the ControlPlane, so ownership is a controller
+	// owner reference rather than the labels a cross-namespace child carries.
+	novaOwner := metav1.GetControllerOf(projectedNova)
+	g.Expect(novaOwner).NotTo(BeNil(), "Nova child must be controller-owned by the ControlPlane")
+	g.Expect(novaOwner.Kind).To(Equal("ControlPlane"))
+	g.Expect(novaOwner.Name).To(Equal(cp.Name))
+
+	// The network service's side of the same wire: reconcileNeutron projects
+	// spec.nova onto the Neutron child from the notifier registration, so the
+	// server posts its port-status notifications as that account, which is what
+	// releases an instance from BUILD once its port is wired.
+	g.Expect(c.Get(ctx, neutronKey, projectedNeutron)).To(Succeed(), "re-read the Neutron child")
+	g.Expect(projectedNeutron.Spec.Nova).NotTo(BeNil(), "a declared compute service turns the notifications on")
+	g.Expect(projectedNeutron.Spec.Nova.Region).To(Equal(c5c3v1alpha1.DefaultRegion))
+	g.Expect(projectedNeutron.Spec.Nova.ServiceUser.Username).To(Equal("neutron-nova"))
+	g.Expect(projectedNeutron.Spec.Nova.ServiceUser.ProjectName).To(Equal("service-neutron"))
+	g.Expect(projectedNeutron.Spec.Nova.ServiceUser.UserDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(projectedNeutron.Spec.Nova.ServiceUser.ProjectDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(projectedNeutron.Spec.Nova.ServiceUser.SecretRef.Name).
+		To(Equal(keystoneServiceCredentialsSecretName(notifierReg)),
+			"the notifier reads the consumer Secret its own registration delivers")
+	g.Expect(projectedNeutron.Spec.Nova.ServiceUser.SecretRef.Key).To(Equal("password"))
+
+	// The compute-config mirror seam writes nothing: novaComputeConfigMirrorTargets
+	// names no target until a compute cluster attaches to the plane, so the contract
+	// the nova operator publishes is carried into no second namespace.
+	computeConfigSecrets := &corev1.SecretList{}
+	g.Expect(c.List(ctx, computeConfigSecrets,
+		client.MatchingFields{"metadata.name": novaComputeConfigSecretName(cp)})).To(Succeed())
+	g.Expect(computeConfigSecrets.Items).To(BeEmpty(),
+		"no compute contract is mirrored while no compute cluster is attached")
+
+	simulateNovaReadyWhenPresent(t, ctx, c, novaKey)
+	novaReady := waitForControlPlaneCondition(t, ctx, c, cpKey,
+		conditionTypeNovaReady, metav1.ConditionTrue, itEventuallyTimeout)
+	g.Expect(novaReady.Reason).To(Equal("NovaReady"))
+
 	// --- Aggregate: Ready=True. ---
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeReady, metav1.ConditionTrue, itEventuallyTimeout)
 
@@ -2547,6 +2985,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		conditionTypeOVNReady,
 		conditionTypeNeutronReady,
 		conditionTypeCinderReady,
+		conditionTypeNovaReady,
 		conditionTypeReady,
 	} {
 		cond := meta.FindStatusCondition(final.Status.Conditions, condType)
@@ -2564,9 +3003,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 
 	// status.services reports one entry per configured service, all ready, in the
 	// stable order setServicesStatus produces (keystone, horizon, glance, placement,
-	// barbican, neutron, cinder).
-	g.Expect(final.Status.Services).To(HaveLen(7),
-		"seven services are configured (keystone, horizon, glance, placement, barbican, neutron, cinder)")
+	// barbican, neutron, cinder, nova).
+	g.Expect(final.Status.Services).To(HaveLen(8),
+		"eight services are configured (keystone, horizon, glance, placement, barbican, neutron, cinder, nova)")
 	g.Expect(final.Status.Services[0].Name).To(Equal("keystone"))
 	g.Expect(final.Status.Services[0].Ready).To(BeTrue())
 	g.Expect(final.Status.Services[1].Name).To(Equal("horizon"))
@@ -2585,6 +3024,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(final.Status.Services[6].Name).To(Equal("cinder"))
 	g.Expect(final.Status.Services[6].Ready).To(BeTrue())
 	g.Expect(final.Status.Services[6].Release).To(Equal("2025.2"))
+	g.Expect(final.Status.Services[7].Name).To(Equal("nova"))
+	g.Expect(final.Status.Services[7].Ready).To(BeTrue())
+	g.Expect(final.Status.Services[7].Release).To(Equal("2025.2"))
 
 	// Every condition records the generation it was observed against.
 	for _, cond := range final.Status.Conditions {
@@ -3851,6 +4293,24 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 		}
 	}
 
+	// Every services.nova case declares more still: the webhook requires the three
+	// services the compute service calls on the path of every instance it boots
+	// (placement, neutron, glance) beside the block, and the shared bus with them.
+	// Without all four the rejection cases below would be rejected for a reason
+	// other than the marker they pin.
+	withNova := func(nv *c5c3v1alpha1.ServiceNovaSpec) func(*c5c3v1alpha1.ControlPlane) {
+		return func(cp *c5c3v1alpha1.ControlPlane) {
+			cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "cp-rabbitmq"},
+				Replicas:   1,
+			}
+			cp.Spec.Services.Placement = integrationPlacementService()
+			cp.Spec.Services.Neutron = integrationNeutronService()
+			cp.Spec.Services.Glance = integrationGlanceService()
+			cp.Spec.Services.Nova = nv
+		}
+	}
+
 	cases := []struct {
 		name    string
 		mutate  func(*c5c3v1alpha1.ControlPlane)
@@ -3949,6 +4409,72 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			name:    "cinder one NFS backend",
 			wantErr: false,
 			mutate:  withCinder(integrationCinderService()),
+		},
+		{
+			// Minimum=1 on services.nova.replicas: a compute API scaled to zero
+			// answers nothing, and the field is a pointer, so the zero reaches the
+			// wire rather than being dropped as an empty value.
+			name:    "nova replicas zero",
+			wantErr: true,
+			mutate:  withNova(&c5c3v1alpha1.ServiceNovaSpec{Replicas: ptr.To(int32(0))}),
+		},
+		{
+			// The CEL rule on ServiceNovaConsoleProxySpec: sizing a proxy that is
+			// switched off is a contradiction, and the Nova CRD rejects the
+			// consoleProxy.deployment block the projection would derive from it.
+			name:    "nova consoleProxy replicas while disabled",
+			wantErr: true,
+			mutate: withNova(&c5c3v1alpha1.ServiceNovaSpec{
+				ConsoleProxy: &c5c3v1alpha1.ServiceNovaConsoleProxySpec{
+					Enabled:  ptr.To(false),
+					Replicas: ptr.To(int32(1)),
+				},
+			}),
+		},
+		{
+			// The same rule's gateway leg: a disabled proxy has no listener to publish.
+			name:    "nova consoleProxy gateway while disabled",
+			wantErr: true,
+			mutate: withNova(&c5c3v1alpha1.ServiceNovaSpec{
+				ConsoleProxy: &c5c3v1alpha1.ServiceNovaConsoleProxySpec{
+					Enabled: ptr.To(false),
+					Gateway: &commonv1.GatewaySpec{
+						Hostname:  "nova-novnc.example.com",
+						ParentRef: commonv1.GatewayParentRefSpec{Name: "public-gw"},
+					},
+				},
+			}),
+		},
+		{
+			// An unset switch means enabled, so sizing it is the documented way to
+			// scale the default proxy and must be admitted.
+			name:    "nova consoleProxy replicas with enabled unset",
+			wantErr: false,
+			mutate: withNova(&c5c3v1alpha1.ServiceNovaSpec{
+				ConsoleProxy: &c5c3v1alpha1.ServiceNovaConsoleProxySpec{Replicas: ptr.To(int32(2))},
+			}),
+		},
+		{
+			// The switch alone is how a proxy is turned off.
+			name:    "nova consoleProxy disabled alone",
+			wantErr: false,
+			mutate: withNova(&c5c3v1alpha1.ServiceNovaSpec{
+				ConsoleProxy: &c5c3v1alpha1.ServiceNovaConsoleProxySpec{Enabled: ptr.To(false)},
+			}),
+		},
+		{
+			// Minimum=1 on services.nova.dbArchive.maxRows: a batch that moves no
+			// row never drains the soft-delete backlog it was scheduled for.
+			name:    "nova dbArchive maxRows zero",
+			wantErr: true,
+			mutate: withNova(&c5c3v1alpha1.ServiceNovaSpec{
+				DBArchive: &c5c3v1alpha1.ServiceNovaDBArchiveSpec{MaxRows: ptr.To(int32(0))},
+			}),
+		},
+		{
+			name:    "nova one valid block",
+			wantErr: false,
+			mutate:  withNova(integrationNovaService()),
 		},
 		{
 			name:    "valid access rules, bootstrap resources, and public endpoint",
