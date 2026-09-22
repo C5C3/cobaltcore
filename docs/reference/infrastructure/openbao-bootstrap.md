@@ -496,10 +496,12 @@ isolation is enforced by each policy, which templates the readable path to the c
 `service_account_namespace` (an exact match — a token minted in one namespace
 cannot read another namespace's path).
 
-The two Nova roles stay dormant until a ControlPlane projects a Nova: their
-`VaultDynamicSecret` generators arrive with #1019, and without a
+The two Nova roles stay dormant until a ControlPlane projects a Nova: without a
 `nova-api-db-creds` or a `nova-cell-db-creds` ServiceAccount nothing
-authenticates against them. The cell role is called `nova-cell-db`; the shorter
+authenticates against them. Their `VaultDynamicSecret` generators are built in
+`operators/c5c3/internal/controller/reconcile_nova_dbcredentials.go`, which
+derives the two per-tenant engine role names with `novaAPIDBDynamicRoleFor` and
+`novaCellDBDynamicRoleFor`. The cell role is called `nova-cell-db`; the shorter
 name `nova-db` is unavailable because the per-tenant engine role name is
 `<role>-<namespace>` and no role name may be a hyphen-prefix of another (a role
 `nova` in namespace `api-x` and a role `nova-api` in namespace `x` would both

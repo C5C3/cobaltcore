@@ -8,8 +8,10 @@
 # kubernetes/management auth mount (see setup-auth.sh), which the c5c3 operator's
 # per-ControlPlane VaultDynamicSecret generator uses to issue short-lived Nova
 # cell DB users at database/mariadb/creds/nova-cell-<namespace>. That generator
-# arrives with #1019; until a ControlPlane projects a Nova the role is dormant,
-# because no nova-cell-db-creds ServiceAccount exists to authenticate with.
+# is built in operators/c5c3/internal/controller/reconcile_nova_dbcredentials.go,
+# where novaCellDBDynamicRoleFor derives the per-tenant role name this path ends
+# in. Until a ControlPlane projects a Nova the role is dormant, because no
+# nova-cell-db-creds ServiceAccount exists to authenticate with.
 #
 # TENANT ISOLATION: the read path is scoped by OpenBao ACL identity templating to
 # the caller's OWN service-account namespace. {{...service_account_namespace}}
