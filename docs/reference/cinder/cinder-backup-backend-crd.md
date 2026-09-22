@@ -153,7 +153,9 @@ volume comes back byte-identical to the source.
 The backup process holds one object and its compressed form in memory at a time,
 so its footprint follows `spec.fileSize`. The rendered default is `52428800`
 bytes, and the defaulting webhook sizes the backup Deployment's memory limit at
-`2Gi` to match (see [CinderBackupSpec](./cinder-crd.md#cinderbackupspec)).
+`2Gi` to match (see [CinderBackupSpec](./cinder-crd.md#cinderbackupspec)), with
+`MALLOC_ARENA_MAX=2` on the container so the buffers the thread pool frees are
+returned rather than kept in per-thread arenas.
 
 ## Deleting a backup backend
 

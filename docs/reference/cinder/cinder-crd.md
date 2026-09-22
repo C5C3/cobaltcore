@@ -98,6 +98,17 @@ in chunks of `spec.fileSize` bytes and compresses each chunk in memory: under
 the shared limit the process is killed mid-backup and the restarted service
 begins the volume again. An explicit `resources` block is left alone.
 
+The backup container also runs with `MALLOC_ARENA_MAX=2`. The chunked driver
+hands every chunk through eventlet's native thread pool (the read, the SHA pass,
+the object write and the MD5 each land on whichever pool thread is free), and
+glibc gives each allocating thread its own malloc arena, where the freed chunk
+buffers stay. With the default arena count the process grows by about the
+chunk size per operation: measured on the 2025.2 image against a 1 GiB volume
+with the default 50 MiB chunk, 176 MiB after one backup and 893 MiB after four
+backup-and-restore rounds, and in CI it reached the 2Gi limit over a suite of
+them and was killed mid-backup. With two arenas the same rounds hold at 206 to
+252 MiB.
+
 ### ServiceUserSpec
 
 The identity fields are webhook-defaulted, so a minimal block need only supply

@@ -77,6 +77,8 @@ spec:
               name: cinder-service-user
         - name: CINDER_AMQP_PORT
           value: "5672"
+        - name: MALLOC_ARENA_MAX
+          value: "2"
         image: ghcr.io/c5c3/cinder:2026.1
         lifecycle:
           preStop:
