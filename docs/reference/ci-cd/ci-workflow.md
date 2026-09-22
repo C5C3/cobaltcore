@@ -1235,7 +1235,7 @@ the way the cinder `e2e-operator` leg does.
 The suite runs with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"`, which flips its
 presence guard from a silent SKIP to a hard failure — so a broken operator/CRD
 deployment fails the build instead of going green. Like `e2e-prometheus`, the
-job runs with `continue-on-error: false`, and it uses a 220-minute timeout on the
+job runs with `continue-on-error: false`, and it uses a 240-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + ten operators +
 OpenBao + ESO + K-ORC on one node is resource-heavy, and its three chainsaw
 suites run in sequence on that one node, so their budgets add up rather than
@@ -1243,11 +1243,11 @@ overlap. A suite's ceiling is not its `exec` budget alone: chainsaw applies that
 budget to every script operation, so `try`, `catch` and `finally` each get one,
 and the `cleanup` budget runs after all three. Each of the three suites
 therefore pins its `catch` and `finally` timeouts explicitly, which puts the
-ceilings at 65, 80 and 90 minutes. The job wall has to outlast the bring-up plus
+ceilings at 85, 80 and 90 minutes. The job wall has to outlast the bring-up plus
 the suites that pass plus the full ceiling of the one that stalls, or a stalled
 suite is killed before its own timeout fires and reports as a cancelled job with
-no JUnit XML. The 220 minutes are the sum of roughly 40 minutes of bring-up, the
-65-minute ceiling of the full-chain suite, roughly 25 minutes for the
+no JUnit XML. The 240 minutes are the sum of roughly 40 minutes of bring-up, the
+85-minute ceiling of the full-chain suite, roughly 25 minutes for the
 foreign-namespace pass, and the 90-minute ceiling of the last suite; the
 bring-up and foreign-namespace terms are estimates, so confirm them against the
 first green run of the leg and re-derive the wall if either overruns.
