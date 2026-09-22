@@ -36,9 +36,9 @@ func validNeutronMetadataAgent() *NeutronMetadataAgent {
 
 // --- Defaulting webhook ---
 
-// The two Nova metadata leaves are filled only when the block that carries them
-// is present: a nil spec.novaMetadata stays nil, because the agent then renders
-// neither key and the oslo defaults apply.
+// The Nova metadata leaves are filled only when the block that carries them is
+// present: a nil spec.novaMetadata stays nil, because the agent then renders
+// none of the keys and the oslo defaults apply.
 func TestNeutronMetadataAgentDefault_NovaMetadata(t *testing.T) {
 	g := gomega.NewWithT(t)
 	w := &NeutronMetadataAgentWebhook{}
@@ -54,15 +54,18 @@ func TestNeutronMetadataAgentDefault_NovaMetadata(t *testing.T) {
 	}
 	g.Expect(w.Default(context.Background(), present)).To(gomega.Succeed())
 	g.Expect(present.Spec.NovaMetadata.Port).To(gomega.Equal(DefaultNovaMetadataPort))
+	g.Expect(present.Spec.NovaMetadata.Protocol).To(gomega.Equal(DefaultNovaMetadataProtocol))
 	g.Expect(present.Spec.NovaMetadata.SharedSecretRef.Key).To(gomega.Equal("shared_secret"))
 
 	explicit := validNeutronMetadataAgent()
 	explicit.Spec.NovaMetadata = &NovaMetadataSpec{
 		Port:            18775,
+		Protocol:        "https",
 		SharedSecretRef: &commonv1.SecretRefSpec{Name: "metadata-proxy-secret", Key: "proxy-secret"},
 	}
 	g.Expect(w.Default(context.Background(), explicit)).To(gomega.Succeed())
 	g.Expect(explicit.Spec.NovaMetadata.Port).To(gomega.Equal(int32(18775)))
+	g.Expect(explicit.Spec.NovaMetadata.Protocol).To(gomega.Equal("https"))
 	g.Expect(explicit.Spec.NovaMetadata.SharedSecretRef.Key).To(gomega.Equal("proxy-secret"))
 }
 
@@ -106,6 +109,7 @@ func TestNeutronMetadataAgentValidateCreate_AcceptedShapes(t *testing.T) {
 				o.Spec.NovaMetadata = &NovaMetadataSpec{
 					Host:            "nova-metadata.openstack.svc.cluster.local",
 					Port:            8775,
+					Protocol:        "https",
 					SharedSecretRef: &commonv1.SecretRefSpec{Name: "metadata-proxy-secret", Key: "shared_secret"},
 				}
 				o.Spec.Resources = corev1.ResourceRequirements{
@@ -202,6 +206,13 @@ func TestNeutronMetadataAgentValidateCreate_RejectionTable(t *testing.T) {
 			name:    "out-of-range novaMetadata port rejected",
 			mutate:  func(o *NeutronMetadataAgent) { o.Spec.NovaMetadata = &NovaMetadataSpec{Port: 70000} },
 			wantSub: "port must be between 1 and 65535",
+		},
+		{
+			name: "unsupported novaMetadata protocol rejected",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.NovaMetadata = &NovaMetadataSpec{Port: 8775, Protocol: "ftp"}
+			},
+			wantSub: "protocol must be http or https",
 		},
 		{
 			name: "sharedSecretRef without a name rejected",

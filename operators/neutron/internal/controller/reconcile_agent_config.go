@@ -129,6 +129,15 @@ func agentOperatorDefaults(cr *neutronv1alpha1.NeutronMetadataAgent, chassis res
 		if cr.Spec.NovaMetadata.Port != 0 {
 			defaults["DEFAULT"]["nova_metadata_port"] = fmt.Sprintf("%d", cr.Spec.NovaMetadata.Port)
 		}
+		// The protocol is rendered only when it departs from http, oslo's own
+		// default. The webhook fills http into the block, and it reaches an agent
+		// stored before the field existed at that agent's first write of any
+		// kind: rendering the default would change the config's content right
+		// then, and roll the DaemonSet on every compute node for a value that
+		// changes nothing. An empty protocol is a CR that bypassed admission.
+		if p := cr.Spec.NovaMetadata.Protocol; p != "" && p != neutronv1alpha1.DefaultNovaMetadataProtocol {
+			defaults["DEFAULT"]["nova_metadata_protocol"] = p
+		}
 	}
 
 	// The broker section is rendered only for an agent that names a bus. The

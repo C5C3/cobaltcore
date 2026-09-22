@@ -25,6 +25,9 @@ const (
 	// DefaultNovaMetadataPort is nova-api-metadata's own listen port, resolved
 	// when spec.novaMetadata is set without one.
 	DefaultNovaMetadataPort int32 = 8775
+	// DefaultNovaMetadataProtocol is the scheme spec.novaMetadata is resolved to
+	// when it is set without one. It is nova_metadata_protocol's own default.
+	DefaultNovaMetadataProtocol = "http"
 	// defaultSharedSecretKey is the Secret key spec.novaMetadata.sharedSecretRef
 	// is defaulted to.
 	defaultSharedSecretKey = "shared_secret"
@@ -61,9 +64,9 @@ func (w *NeutronMetadataAgentWebhook) SetupWebhookWithManager(mgr ctrl.Manager) 
 
 // Default implements admission.Defaulter[*NeutronMetadataAgent]. It materializes
 // spec.logging so downstream reconciler code never sees a nil pointer, and fills
-// the two Nova metadata leaves only when the block that carries them is present:
-// a nil spec.novaMetadata stays nil, because the agent then renders neither key
-// and the oslo defaults apply.
+// the Nova metadata leaves only when the block that carries them is present: a
+// nil spec.novaMetadata stays nil, because the agent then renders none of the
+// keys and the oslo defaults apply.
 func (w *NeutronMetadataAgentWebhook) Default(_ context.Context, obj *NeutronMetadataAgent) error {
 	if obj.Spec.Logging == nil {
 		obj.Spec.Logging = &LoggingSpec{}
@@ -73,6 +76,9 @@ func (w *NeutronMetadataAgentWebhook) Default(_ context.Context, obj *NeutronMet
 	if obj.Spec.NovaMetadata != nil {
 		if obj.Spec.NovaMetadata.Port == 0 {
 			obj.Spec.NovaMetadata.Port = DefaultNovaMetadataPort
+		}
+		if obj.Spec.NovaMetadata.Protocol == "" {
+			obj.Spec.NovaMetadata.Protocol = DefaultNovaMetadataProtocol
 		}
 		if obj.Spec.NovaMetadata.SharedSecretRef != nil && obj.Spec.NovaMetadata.SharedSecretRef.Key == "" {
 			obj.Spec.NovaMetadata.SharedSecretRef.Key = defaultSharedSecretKey
@@ -187,6 +193,15 @@ func (w *NeutronMetadataAgentWebhook) validate(a *NeutronMetadataAgent, extra fi
 			allErrs = append(allErrs, field.Invalid(
 				novaPath.Child("port"), a.Spec.NovaMetadata.Port,
 				"port must be between 1 and 65535",
+			))
+		}
+		// Defense-in-depth twin of the Enum=http;https marker. The empty string is
+		// left to the defaulting webhook, which fills it with
+		// DefaultNovaMetadataProtocol, and to the renderer, which omits the key.
+		if p := a.Spec.NovaMetadata.Protocol; p != "" && p != "http" && p != "https" {
+			allErrs = append(allErrs, field.Invalid(
+				novaPath.Child("protocol"), p,
+				"protocol must be http or https",
 			))
 		}
 		if a.Spec.NovaMetadata.SharedSecretRef != nil && a.Spec.NovaMetadata.SharedSecretRef.Name == "" {
