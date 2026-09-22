@@ -88,6 +88,7 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		mcGlanceNamespace   = "mc-cp-image"
 		mcNetworkNamespace  = "mc-cp-network"
 		mcBlockNamespace    = "mc-cp-block"
+		mcComputeNamespace  = "mc-cp-compute"
 		mcControlPlane      = "cp"
 
 		// The OVN control plane the network service programs. It is deployed
@@ -243,12 +244,13 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 	dbCredKey := client.ObjectKey{Namespace: mcKeystoneNamespace, Name: dbCredentialSecretName(cp)}
 	dbCredCertKey := client.ObjectKey{Namespace: mcKeystoneNamespace, Name: dbCredentialClientCertName(cp)}
 	adminPasswordKey := client.ObjectKey{Namespace: mcKeystoneNamespace, Name: adminPasswordSecretName(cp)}
-	// The object the two placed BUS CONSUMERS take with them that no other service
-	// has: the shared bus, delivered as a Secret on the cluster each of them runs
-	// on, under a name of its own. Each is asserted in its own subtest and swept in
-	// the deletion one.
+	// The object the three placed BUS CONSUMERS take with them that no other
+	// service has: the shared bus, delivered as a Secret on the cluster each of them
+	// runs on, under a name of its own. Each is asserted in its own subtest and
+	// swept in the deletion one.
 	neutronBusKey := client.ObjectKey{Namespace: mcNetworkNamespace, Name: neutronMessagingSecretName(cp)}
 	cinderBusKey := client.ObjectKey{Namespace: mcBlockNamespace, Name: cinderMessagingSecretName(cp)}
+	novaBusKey := client.ObjectKey{Namespace: mcComputeNamespace, Name: novaMessagingSecretName(cp)}
 
 	t.Run("register the target cluster", func(t *testing.T) {
 		g := NewGomegaWithT(t)
@@ -870,6 +872,158 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			"the block-storage service parks on the account its registration has not provisioned")
 	})
 
+	t.Run("a placed compute service takes its bus credentials with it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The compute service joins the plane on the same target cluster, in a
+		// namespace of its own, advertising an externally routable address for the
+		// reason its siblings do.
+		//
+		// The placement service comes with it, co-located. The webhook requires
+		// services.placement, services.neutron and services.glance beside
+		// services.nova (the three services the compute service calls on the path of
+		// every instance it boots), and placement is the one this plane does not
+		// declare yet.
+		g.Eventually(func() error {
+			live := &c5c3v1alpha1.ControlPlane{}
+			if err := mgmtClient.Get(ctx, cpKey, live); err != nil {
+				return err
+			}
+			live.Spec.Services.Placement = integrationPlacementService()
+			live.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{
+				Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+					Name:      mcComputeNamespace,
+					Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+				},
+				PublicEndpoint:   "https://nova.example.com",
+				TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: mcTargetCluster},
+			}
+			return mgmtClient.Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"place the compute service on the target cluster")
+
+		// --- The placement service is the first this plane keeps at home, so the
+		// shared backing services are provisioned in the ControlPlane's OWN namespace
+		// for the first time. Infrastructure sits in the blocking prefix, so the whole
+		// pipeline stops behind them until they report.
+		homeMariaDBKey := client.ObjectKey{
+			Namespace: mcNamespace,
+			Name:      cp.Spec.Infrastructure.Database.ClusterRef.Name,
+		}
+		homeMemcachedKey := client.ObjectKey{
+			Namespace: mcNamespace,
+			Name:      cp.Spec.Infrastructure.Cache.ClusterRef.Name,
+		}
+		simulateMariaDBReadyWhenPresent(t, ctx, mgmtClient, homeMariaDBKey)
+		simulateMemcachedReadyWhenPresent(t, ctx, mgmtClient, homeMemcachedKey)
+
+		// --- The namespace is created on both clusters, and the backing services
+		// follow the service onto the target. Infrastructure short-circuits the
+		// pipeline while either is converging, so nothing below runs until they
+		// report.
+		computeNSKey := client.ObjectKey{Name: mcComputeNamespace}
+		mcEventuallyExists(t, ctx, targetClient, computeNSKey, &corev1.Namespace{}, "compute service namespace")
+		mcEventuallyExists(t, ctx, mgmtClient, computeNSKey, &corev1.Namespace{}, "compute service namespace")
+
+		novaMariaDBKey := client.ObjectKey{
+			Namespace: mcComputeNamespace,
+			Name:      cp.Spec.Infrastructure.Database.ClusterRef.Name,
+		}
+		novaMemcachedKey := client.ObjectKey{
+			Namespace: mcComputeNamespace,
+			Name:      cp.Spec.Infrastructure.Cache.ClusterRef.Name,
+		}
+		mcEventuallyExists(t, ctx, targetClient, novaMariaDBKey, &mariadbv1alpha1.MariaDB{}, "compute-side MariaDB")
+		mcExpectAbsent(t, ctx, mgmtClient, novaMariaDBKey, &mariadbv1alpha1.MariaDB{}, "compute-side MariaDB")
+		mcEventuallyExists(t, ctx, targetClient, novaMemcachedKey, mcMemcached(), "compute-side Memcached")
+		mcExpectAbsent(t, ctx, mgmtClient, novaMemcachedKey, mcMemcached(), "compute-side Memcached")
+		simulateMariaDBReadyWhenPresent(t, ctx, targetClient, novaMariaDBKey)
+		simulateMemcachedReadyWhenPresent(t, ctx, targetClient, novaMemcachedKey)
+
+		// --- The tenant store of the placed namespace exists on both clusters, for
+		// the reason the image service's does, and the plane is gated on both.
+		computeStoreKey := client.ObjectKey{Namespace: mcComputeNamespace, Name: esoTenantStoreName}
+		mcEventuallyExists(t, ctx, mgmtClient, computeStoreKey, &esov1.SecretStore{}, "management-side tenant SecretStore")
+		mcEventuallyExists(t, ctx, targetClient, computeStoreKey, &esov1.SecretStore{}, "target-side tenant SecretStore")
+		ensureReadySecretStore(t, ctx, mgmtClient, esoTenantStoreName, mcComputeNamespace)
+		ensureReadySecretStore(t, ctx, targetClient, esoTenantStoreName, mcComputeNamespace)
+		waitForControlPlaneCondition(t, ctx, mgmtClient, cpKey,
+			conditionTypeESOTenantStoreReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+		// --- The compute leg writes nothing at all while the placement service it
+		// was declared with has not converged: every instance claims its resources in
+		// Placement before it boots, so the bus delivery, the registration and the
+		// credentials mirror all sit behind that gate.
+		g.Eventually(func(ig Gomega) {
+			live := &c5c3v1alpha1.ControlPlane{}
+			ig.Expect(mgmtClient.Get(ctx, cpKey, live)).To(Succeed())
+			cond := meta.FindStatusCondition(live.Status.Conditions, conditionTypeNovaReady)
+			ig.Expect(cond).NotTo(BeNil())
+			ig.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			ig.Expect(cond.Reason).To(Equal("WaitingForPlacement"))
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"the compute service defers everything while its placement sibling is not ready")
+		mcExpectAbsent(t, ctx, targetClient, novaBusKey, &corev1.Secret{}, "nova messaging Secret")
+
+		// --- Open that gate. The placement service is co-located, so every step of
+		// it runs against the management cluster: its registration reported
+		// converged by hand (no KeystoneService controller runs here), the
+		// engine-issued DB credential behind it, and the child itself.
+		mcMarkRegistrationConverged(t, ctx, mgmtClient,
+			client.ObjectKey{Namespace: mcNamespace, Name: placementName(cp)})
+		simulatePlacementDBCredentialSyncWhenPresent(t, ctx, mgmtClient, cp)
+		simulatePlacementReadyWhenPresent(t, ctx, mgmtClient,
+			client.ObjectKey{Namespace: mcNamespace, Name: placementName(cp)})
+		waitForControlPlaneCondition(t, ctx, mgmtClient, cpKey,
+			conditionTypePlacementReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+		// --- The bus follows the service, the way it follows the network and
+		// block-storage ones: read in the ControlPlane's own namespace on the
+		// management cluster, delivered as a Secret in the compute namespace on the
+		// cluster the service runs on, claimed by the ownership labels because no
+		// owner reference crosses a cluster.
+		busSecret := &corev1.Secret{}
+		mcEventuallyExists(t, ctx, targetClient, novaBusKey, busSecret, "nova messaging Secret")
+		g.Expect(string(busSecret.Data[commonv1.DefaultTransportURLSecretKey])).To(Equal(mcBusTransportURL),
+			"the placed service receives the URL the ControlPlane's own bus block declares")
+		mcExpectRemoteClaim(t, ctx, targetClient, novaBusKey, &corev1.Secret{}, "nova messaging Secret", cp)
+		mcExpectAbsent(t, ctx, mgmtClient, novaBusKey, &corev1.Secret{}, "nova messaging Secret")
+
+		// --- The registration is reconciled at home whatever cluster the service
+		// runs on, exactly as its siblings' are.
+		registrationKey := client.ObjectKey{Namespace: mcComputeNamespace, Name: mcControlPlane + "-nova"}
+		mcEventuallyExists(t, ctx, mgmtClient, registrationKey, &c5c3v1alpha1.KeystoneService{},
+			"Nova registration")
+		mcExpectAbsent(t, ctx, targetClient, registrationKey, &c5c3v1alpha1.KeystoneService{},
+			"Nova registration")
+
+		// --- Its credentials, though, follow the service: the ControlPlane
+		// materialises the registration's own OpenBao path a second time on the
+		// cluster the compute service runs on, under the name its pods read.
+		mirrorKey := client.ObjectKey{Namespace: mcComputeNamespace, Name: mcControlPlane + "-nova-credentials"}
+		mirror := &esov1.ExternalSecret{}
+		mcEventuallyExists(t, ctx, targetClient, mirrorKey, mirror, "registration credentials mirror")
+		g.Expect(mirror.Spec.Data).NotTo(BeEmpty())
+		g.Expect(mirror.Spec.Data[0].RemoteRef.Key).To(Equal(
+			"openstack/keystone/"+mcComputeNamespace+"/"+mcControlPlane+"-nova/service-accounts/credentials"),
+			"the mirror reads the registration's own per-CR OpenBao path")
+		mcExpectRemoteClaim(t, ctx, targetClient, mirrorKey, &esov1.ExternalSecret{},
+			"registration credentials mirror", cp)
+
+		// --- And that is as far as this plane goes: the compute registration is the
+		// one this subtest leaves standing, so NovaReady parks on it rather than
+		// projecting a Nova that would authenticate as a user nothing created.
+		g.Eventually(func(ig Gomega) {
+			live := &c5c3v1alpha1.ControlPlane{}
+			ig.Expect(mgmtClient.Get(ctx, cpKey, live)).To(Succeed())
+			cond := meta.FindStatusCondition(live.Status.Conditions, conditionTypeNovaReady)
+			ig.Expect(cond).NotTo(BeNil())
+			ig.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			ig.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"the compute service parks on the account its registration has not provisioned")
+	})
+
 	t.Run("a ControlPlane naming an unregistered cluster creates nothing", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 
@@ -943,6 +1097,7 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			{adminPasswordKey, &esov1.ExternalSecret{}, "admin-password ExternalSecret"},
 			{neutronBusKey, &corev1.Secret{}, "neutron messaging Secret"},
 			{cinderBusKey, &corev1.Secret{}, "cinder messaging Secret"},
+			{novaBusKey, &corev1.Secret{}, "nova messaging Secret"},
 		}
 		g.Eventually(func(ig Gomega) {
 			for _, child := range swept {
@@ -958,7 +1113,9 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		// Terminating forever. The DeletionTimestamp is what the operator is
 		// responsible for, on both clusters — it created the namespace on both.
 		for name, c := range map[string]client.Client{"target": targetClient, "management": mgmtClient} {
-			for _, namespace := range []string{mcKeystoneNamespace, mcNetworkNamespace, mcBlockNamespace} {
+			for _, namespace := range []string{
+				mcKeystoneNamespace, mcNetworkNamespace, mcBlockNamespace, mcComputeNamespace,
+			} {
 				g.Eventually(func() bool {
 					ns := &corev1.Namespace{}
 					if err := c.Get(ctx, client.ObjectKey{Name: namespace}, ns); err != nil {
@@ -983,6 +1140,36 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		g.Expect(targetClient.Get(ctx, adminPasswordKey, &corev1.Secret{})).To(Succeed(),
 			"the seeded admin-password Secret is an input, not a child, and must survive the sweep")
 	})
+}
+
+// mcMarkRegistrationConverged reports a projected KeystoneService child as fully
+// registered, by hand: the account is provisioned and the aggregate is Ready.
+//
+// No KeystoneService controller runs in this suite (see the header), so a service
+// whose own gates sit BEHIND its registration would otherwise never get far enough
+// to be asserted: the compute service is gated on PlacementReady, which the
+// placement service only reaches past its own registration. Every other subtest
+// here deliberately parks on the un-provisioned account instead.
+func mcMarkRegistrationConverged(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	ks := &c5c3v1alpha1.KeystoneService{}
+	g.Eventually(func() error {
+		return c.Get(ctx, key, ks)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the KeystoneService child %s should be projected", key)
+
+	for _, condType := range []string{conditionTypeKeystoneServiceAccountReady, conditionTypeReady} {
+		meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
+			Type:               condType,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: ks.Generation,
+			Reason:             "AllReady",
+			Message:            "simulated converged",
+		})
+	}
+	g.Expect(c.Status().Update(ctx, ks)).To(Succeed(), "report the registration as converged")
 }
 
 // mcMemcached returns an empty Memcached carrier: the memcached.c5c3.io CRD
