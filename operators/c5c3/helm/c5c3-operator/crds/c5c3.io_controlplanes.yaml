@@ -4681,6 +4681,769 @@ spec:
                     required:
                     - ovn
                     type: object
+                  nova:
+                    description: |-
+                      Nova configures the compute service projected by the reconciler. The
+                      ControlPlane projects one Nova CR named <cp>-nova, registers the compute
+                      catalog entry and the nova service account for it, and hands the child the
+                      shared bus from spec.infrastructure.messaging as a brownfield Secret, two
+                      database credentials (the compute service holds the nova_api schema and the
+                      cell schema side by side), and a generated shared secret the metadata API and
+                      the metadata agents sign proxied requests with. The projection is gated on
+                      KeystoneReady (the compute service authenticates against the ControlPlane's
+                      Keystone child), on PlacementReady (the conductor claims every instance's
+                      resources in Placement before it boots), and on the registration's
+                      AccountReady. spec.infrastructure.messaging is required while this block is
+                      set, and the block is forbidden in External mode.
+
+                      The block requires services.placement, services.neutron, and services.glance
+                      (webhook enforced): nova schedules against Placement's inventories, plugs
+                      every instance into a Neutron port, and boots it from a Glance image, so a
+                      compute service without those three siblings accepts a boot request and
+                      leaves it in error. Optional: a ControlPlane with services.nova unset manages
+                      no compute service. Flipping this from set to nil preserves the
+                      previously-projected Nova child unless the ControlPlane carries the
+                      annotation c5c3.io/allow-nova-deletion: "true".
+                    properties:
+                      conductorReplicas:
+                        description: |-
+                          ConductorReplicas overrides the replica count of the nova-conductor
+                          Deployment, the only process that reaches the cell database on behalf of a
+                          compute node. When nil the reconciler applies the nova operator's own
+                          default (1); conductors are peers that hold nothing between requests, so
+                          raising it costs only the pods.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      consoleProxy:
+                        description: |-
+                          ConsoleProxy configures the console proxy of the projected compute
+                          service. Omitting it (the default) leaves the proxy enabled at the nova
+                          operator's own defaults, which is what a plane whose users open instance
+                          consoles wants. See ServiceNovaConsoleProxySpec.
+                        properties:
+                          enabled:
+                            description: |-
+                              Enabled projects the console proxy. When nil the reconciler applies the
+                              nova operator's own default (true): a control plane whose consoles cannot
+                              be reached is a deliberate choice rather than the baseline. Setting it to
+                              false deletes the proxy Deployment, its Service, and its HTTPRoute.
+                            type: boolean
+                          gateway:
+                            description: |-
+                              Gateway optionally exposes the console proxy externally via a Gateway API
+                              HTTPRoute. It takes a hostname of its own rather than a path under the
+                              API's: the noVNC client opens a WebSocket against the host the console URL
+                              names, and the API hands that URL to the browser. When nil (the default)
+                              the reconciler projects no gateway and the proxy is reachable in-cluster
+                              only. Forbidden while the proxy is disabled (the rule above).
+                            properties:
+                              annotations:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  Annotations are passed through to the generated HTTPRoute metadata
+                                  verbatim, allowing implementation-specific configuration (rate limits,
+                                  CORS) without extending the CRD; the route timeout is operator-managed,
+                                  not annotation-driven.
+                                type: object
+                              hostname:
+                                description: |-
+                                  Hostname is the externally reachable host (SNI / Host header) that the
+                                  HTTPRoute matches. Required.
+                                minLength: 1
+                                type: string
+                              parentRef:
+                                description: |-
+                                  ParentRef identifies the pre-existing Gateway that the HTTPRoute attaches
+                                  to.
+                                properties:
+                                  name:
+                                    description: Name is the Gateway resource name.
+                                      Required.
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    description: |-
+                                      Namespace is the namespace of the referenced Gateway. When empty, the
+                                      Gateway is assumed to live in the referencing CR's namespace.
+                                    type: string
+                                  sectionName:
+                                    description: |-
+                                      SectionName targets a specific listener on the Gateway (e.g. "https") when
+                                      the Gateway defines multiple listeners. When empty, the HTTPRoute attaches
+                                      to all compatible listeners.
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              path:
+                                description: |-
+                                  Path is the URL path prefix matched by the HTTPRoute. Defaults to "/" when
+                                  empty.
+                                type: string
+                            required:
+                            - hostname
+                            - parentRef
+                            type: object
+                          replicas:
+                            description: |-
+                              Replicas overrides the replica count of the console-proxy Deployment. When
+                              nil the reconciler applies the nova operator's own default (1). Forbidden
+                              while the proxy is disabled (the rule above).
+                            format: int32
+                            minimum: 1
+                            type: integer
+                        type: object
+                        x-kubernetes-validations:
+                        - message: replicas and gateway must not be set when consoleProxy.enabled
+                            is false
+                          rule: '!has(self.enabled) || self.enabled || (!has(self.replicas)
+                            && !has(self.gateway))'
+                      databaseCredentialsMode:
+                        description: |-
+                          DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
+                          for THIS service on the managed SHARED database, so a staged migration can run
+                          Nova on one mode while another service stays on the other. It applies to BOTH
+                          database blocks the compute service holds, the nova_api schema and the nova
+                          cell schema: the Nova CRD rejects a child whose two blocks carry different
+                          modes, so one value covers both. Empty (the default) inherits the
+                          ControlPlane-wide mode; it is deliberately NOT materialized by the defaulting
+                          webhook, so "inherit" stays distinguishable from an explicit override. A
+                          dedicated per-service database is Static-only (its own credentialsMode lives
+                          in dedicatedBackingServices.database, where the webhook already rejects
+                          Dynamic), so a Dynamic override on a service that declares one is rejected;
+                          Dynamic also requires the shared database to be managed (clusterRef set),
+                          mirroring the commonv1.DatabaseSpec contract, so a Dynamic override on a
+                          brownfield shared database is rejected too. A Static override is always
+                          admitted.
+                        enum:
+                        - Static
+                        - Dynamic
+                        type: string
+                      dbArchive:
+                        description: |-
+                          DBArchive tunes the recurring archive of the compute service's
+                          soft-deleted rows, projected onto the Nova child's spec.dbArchive.
+                          Omitting it (the default) leaves every knob at the nova operator's own
+                          resolution, which still runs the archive. See ServiceNovaDBArchiveSpec.
+                        properties:
+                          maxRows:
+                            description: |-
+                              MaxRows bounds how many rows one batch moves per table, the --max_rows
+                              argument. When unset the nova operator resolves its own default (1000).
+                              The bound is what keeps a batch on a long-neglected database from holding
+                              table locks for the length of the backlog. A run repeats batches until
+                              nothing is left to move or its time budget is spent, and the next run
+                              picks up where it stopped.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          retentionDays:
+                            description: |-
+                              RetentionDays keeps the most recent deletions out of the archive: when
+                              set, the run passes --before with today's date minus this many days, so a
+                              row soft-deleted inside the window stays in the live table. When unset no
+                              --before is passed and every soft-deleted row is eligible.
+
+                              The window also gates the task_log table, the record of the instance usage
+                              audit periods. Its rows are never soft-deleted, so archiving it without a
+                              date moves the current audit period out from under the API that still
+                              reports on it: the run passes --task-log only together with --before.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          schedule:
+                            description: |-
+                              Schedule is the standard cron expression the archive CronJob runs on. When
+                              empty the nova operator resolves its own default, once a day. The value is
+                              checked by the validating webhook rather than by a CRD pattern: the
+                              accepted grammar includes descriptors such as @daily, which no regex
+                              expresses without also rejecting valid expressions.
+                            type: string
+                          sleep:
+                            description: |-
+                              Sleep is how many seconds the run waits between batches. When unset the
+                              nova operator resolves its own default (1). Zero runs the batches back to
+                              back, which finishes sooner at the cost of the database serving the API at
+                              the same time.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          suspend:
+                            description: |-
+                              Suspend pauses the archive CronJob without deleting it. It is the escape
+                              hatch for a brownfield deployment onboarding onto this operator: the first
+                              run works through a backlog that has never been archived, so an operator
+                              who wants to stage that can suspend the CronJob, pick a retention window
+                              covering the deployment's full history, and step it down.
+                            type: boolean
+                        type: object
+                      dedicatedBackingServices:
+                        description: |-
+                          DedicatedBackingServices opts the compute service out of the
+                          ControlPlane-wide shared instances declared in spec.infrastructure and gives
+                          it backing services of its own. Omitting it (the default) keeps Nova on the
+                          ControlPlane's shared database cluster and cache, isolated only logically
+                          (its own logical databases, its own credentials). See
+                          NovaDedicatedBackingServicesSpec.
+                        properties:
+                          cache:
+                            description: |-
+                              Cache gives Nova its own cache instead of the shared
+                              spec.infrastructure.cache. Managed (clusterRef) and brownfield (servers)
+                              modes are both supported.
+                            properties:
+                              backend:
+                                description: Backend is the cache backend (e.g. dogpile.cache.pymemcache).
+                                type: string
+                              clusterRef:
+                                description: ClusterRef references a Memcached CR
+                                  in the cluster (managed mode).
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              replicas:
+                                default: 3
+                                description: |-
+                                  Replicas is the number of Memcached pod replicas in the referenced cluster
+                                  (managed mode). Used to generate the correct number of StatefulSet pod
+                                  endpoints. Only used when ClusterRef is set.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              servers:
+                                description: Servers is the list of cache server endpoints
+                                  (brownfield mode).
+                                items:
+                                  pattern: ^[^\n\r]*$
+                                  type: string
+                                type: array
+                            required:
+                            - backend
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of clusterRef or servers must be
+                                set
+                              rule: has(self.clusterRef) != (has(self.servers) &&
+                                size(self.servers) > 0)
+                            - message: clusterRef.name must not contain a newline
+                                or carriage return
+                              rule: '!has(self.clusterRef) || !self.clusterRef.name.matches(''[\n\r]'')'
+                          database:
+                            description: |-
+                              Database gives Nova its own database cluster instead of the shared
+                              spec.infrastructure.database. Managed (clusterRef) and brownfield (host)
+                              modes are both supported. The compute service holds two schemas on it, the
+                              nova_api schema and the cell schema, so the instance declared here carries
+                              both.
+
+                              A dedicated managed database uses credentialsMode Static (the webhook
+                              materializes it and rejects Dynamic): the OpenBao database engine is
+                              bootstrapped once per namespace against the shared cluster, so no engine role
+                              exists that could issue credentials for a dedicated instance. Seed and rotate
+                              the credential at the OpenBao source.
+                            properties:
+                              clusterRef:
+                                description: ClusterRef references a MariaDB CR in
+                                  the cluster (managed mode).
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              credentialsMode:
+                                description: |-
+                                  CredentialsMode selects how the service DB credential in SecretRef is
+                                  provisioned. "Static" (the default when empty) has the operator manage
+                                  the MariaDB User/Grant CRs with a long-lived password from SecretRef.
+                                  "Dynamic" has an external secrets engine issue short-lived credentials on
+                                  demand: SecretRef then carries both a username and password, no User/Grant
+                                  CRs are managed, and no long-lived DB password remains at rest. Dynamic is
+                                  only valid in managed mode (ClusterRef set).
+                                enum:
+                                - Static
+                                - Dynamic
+                                type: string
+                              database:
+                                description: |-
+                                  Database is the database name within the cluster. Constrained to the MySQL
+                                  identifier character set and the 64-character identifier limit.
+                                maxLength: 64
+                                minLength: 1
+                                pattern: ^[A-Za-z0-9_]+$
+                                type: string
+                              host:
+                                description: |-
+                                  Host is the database hostname (brownfield mode). The pattern is a
+                                  permissive host matcher that accepts DNS names, IPv4, and IPv6 literals
+                                  while rejecting empty strings and shell/path metacharacters; it is not a
+                                  strict RFC-1123 validator, deliberately, so airgapped/mirror endpoints are
+                                  not rejected at admission.
+                                minLength: 1
+                                pattern: ^[a-zA-Z0-9._:-]+$
+                                type: string
+                              port:
+                                description: |-
+                                  Port is the database port (brownfield mode, default 3306). Omitted (managed
+                                  mode) leaves it unset; an explicit value must be a valid TCP port.
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              replicas:
+                                default: 3
+                                description: |-
+                                  Replicas is the number of managed MariaDB replicas provisioned in
+                                  fresh-create mode. It mirrors CacheSpec.Replicas: only the c5c3 operator's
+                                  managed-mode projection honours it (a single replica yields a
+                                  single-instance non-Galera MariaDB, three or more yield a Galera cluster),
+                                  so a constrained cluster such as a single-node kind can schedule the
+                                  fresh-create path. Operators that adopt an existing MariaDB (the c5c3 adopted-infra path,
+                                  and every service operator) ignore it. Only meaningful when ClusterRef is
+                                  set.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              secretRef:
+                                description: SecretRef references the K8s Secret with
+                                  credentials.
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    description: |-
+                                      Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                                      subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                                      fixes every consumer at once — a service operator adminPasswordSecretRef /
+                                      database.secretRef / messaging / TLS cert refs and the c5c3
+                                      passwordSecretRef — so an empty name no longer slips through "required".
+                                    minLength: 1
+                                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              storageSize:
+                                default: 100Gi
+                                description: |-
+                                  StorageSize is the persistent-volume size requested for each managed
+                                  MariaDB replica in fresh-create mode. Like Replicas, only the c5c3
+                                  operator's managed-mode projection honours it (it is written to the owned
+                                  MariaDB's spec.storage.size); operators that adopt an existing MariaDB
+                                  (the c5c3 adopted-infra path, and every service operator) ignore it. The default 100Gi
+                                  mirrors the production baseline (deploy/flux-system/infrastructure/
+                                  mariadb.yaml); a constrained cluster such as a single-node kind can pin a
+                                  far smaller value (e.g. 512Mi) so CI does not request a 100Gi volume it
+                                  never fills. Immutable after creation: the mariadb-operator rejects
+                                  changing spec.storage.size on a live CR, so the ControlPlane validating
+                                  webhook freezes it too. Only meaningful when ClusterRef is set. The pattern
+                                  admits binary IEC units (Mi/Gi/Ti) matching the Kubernetes quantity grammar
+                                  the operator parses with resource.ParseQuantity.
+                                pattern: ^[0-9]+(Mi|Gi|Ti)$
+                                type: string
+                              tls:
+                                description: |-
+                                  TLS optionally enables TLS/mTLS for the database connection. The pointer keeps the field opt-in and non-mutating: a nil
+                                  TLS means plaintext TCP, preserving the pre-existing behavior for all
+                                  existing DatabaseSpec consumers.
+                                properties:
+                                  caBundleSecretRef:
+                                    description: |-
+                                      CABundleSecretRef references the K8s Secret holding the server CA
+                                      bundle the client trusts when verifying the database endpoint.
+                                    properties:
+                                      key:
+                                        type: string
+                                      name:
+                                        description: |-
+                                          Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                                          subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                                          fixes every consumer at once — a service operator adminPasswordSecretRef /
+                                          database.secretRef / messaging / TLS cert refs and the c5c3
+                                          passwordSecretRef — so an empty name no longer slips through "required".
+                                        minLength: 1
+                                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                        type: string
+                                    required:
+                                    - name
+                                    type: object
+                                  clientCertSecretRef:
+                                    description: |-
+                                      ClientCertSecretRef references the K8s Secret holding the client
+                                      keypair presented to the database for mutual TLS.
+                                    properties:
+                                      key:
+                                        type: string
+                                      name:
+                                        description: |-
+                                          Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                                          subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                                          fixes every consumer at once — a service operator adminPasswordSecretRef /
+                                          database.secretRef / messaging / TLS cert refs and the c5c3
+                                          passwordSecretRef — so an empty name no longer slips through "required".
+                                        minLength: 1
+                                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                        type: string
+                                    required:
+                                    - name
+                                    type: object
+                                  mode:
+                                    description: |-
+                                      Mode selects the TLS verification strength applied to the connection:
+                                        - disabled:       TLS is off; certificate references are ignored.
+                                        - prefer/require: encrypt the connection only (no peer verification).
+                                        - verify-ca:      additionally verify the server certificate chain
+                                                           against the trusted CA bundle.
+                                        - verify-full:    additionally verify the server certificate chain
+                                                           and that the server hostname matches the
+                                                           certificate identity.
+                                    enum:
+                                    - disabled
+                                    - prefer
+                                    - require
+                                    - verify-ca
+                                    - verify-full
+                                    type: string
+                                required:
+                                - caBundleSecretRef
+                                - clientCertSecretRef
+                                type: object
+                            required:
+                            - database
+                            - secretRef
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of clusterRef or host must be set
+                              rule: has(self.clusterRef) != has(self.host)
+                            - message: credentialsMode Dynamic requires clusterRef
+                                (managed mode)
+                              rule: '!has(self.credentialsMode) || self.credentialsMode
+                                != ''Dynamic'' || has(self.clusterRef)'
+                        type: object
+                        x-kubernetes-validations:
+                        - message: dedicatedBackingServices must declare at least
+                            one backing-service class (database, cache)
+                          rule: has(self.database) || has(self.cache)
+                      extraConfig:
+                        additionalProperties:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        description: |-
+                          ExtraConfig is a free-form INI block for the compute service. It is merged
+                          key by key with spec.globalExtraConfig (sections unioned, this per-service
+                          value winning per key), and the merged result is projected onto the Nova
+                          child's spec.extraConfig, which carries the nova.conf sections.
+                        type: object
+                      gateway:
+                        description: |-
+                          Gateway optionally exposes the projected Nova API externally via a Gateway
+                          API HTTPRoute. When nil (the default) the reconciler does NOT project a
+                          gateway and the Nova API is reachable in-cluster only.
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Annotations are passed through to the generated HTTPRoute metadata
+                              verbatim, allowing implementation-specific configuration (rate limits,
+                              CORS) without extending the CRD; the route timeout is operator-managed,
+                              not annotation-driven.
+                            type: object
+                          hostname:
+                            description: |-
+                              Hostname is the externally reachable host (SNI / Host header) that the
+                              HTTPRoute matches. Required.
+                            minLength: 1
+                            type: string
+                          parentRef:
+                            description: |-
+                              ParentRef identifies the pre-existing Gateway that the HTTPRoute attaches
+                              to.
+                            properties:
+                              name:
+                                description: Name is the Gateway resource name. Required.
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: |-
+                                  Namespace is the namespace of the referenced Gateway. When empty, the
+                                  Gateway is assumed to live in the referencing CR's namespace.
+                                type: string
+                              sectionName:
+                                description: |-
+                                  SectionName targets a specific listener on the Gateway (e.g. "https") when
+                                  the Gateway defines multiple listeners. When empty, the HTTPRoute attaches
+                                  to all compatible listeners.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          path:
+                            description: |-
+                              Path is the URL path prefix matched by the HTTPRoute. Defaults to "/" when
+                              empty.
+                            type: string
+                        required:
+                        - hostname
+                        - parentRef
+                        type: object
+                      image:
+                        description: |-
+                          Image optionally overrides the Nova container image. When nil the
+                          reconciler derives the image from spec.openStackRelease.
+                        properties:
+                          digest:
+                            description: |-
+                              Digest pins the image by immutable content digest (e.g.
+                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              set. A pinned digest closes the supply-chain gap where a mutable tag can be
+                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                            pattern: ^sha256:[a-f0-9]{64}$
+                            type: string
+                          repository:
+                            description: |-
+                              Repository is the OCI image repository, optionally including the registry
+                              host (e.g. "ghcr.io/c5c3/<service>" or "c5c3/<service>"). The pattern is a
+                              permissive OCI reference — lowercase alphanumeric components separated by
+                              ".", "_", "-", "/", or ":" (registry port) — so mirror and host:port forms
+                              are accepted while an empty string (which "required" alone admits) and
+                              obvious garbage are rejected.
+                            minLength: 1
+                            pattern: ^[a-z0-9]+([._:/-][a-z0-9]+)*$
+                            type: string
+                          tag:
+                            description: |-
+                              Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
+                              up to 128 characters of word characters, dots, and dashes, and must not
+                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
+                              set. The pattern is enforced only when a tag is present.
+                            pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
+                            type: string
+                        required:
+                        - repository
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of image.tag or image.digest must be
+                            set
+                          rule: has(self.tag) != has(self.digest)
+                      metadataGateway:
+                        description: |-
+                          MetadataGateway optionally exposes the projected metadata API externally
+                          via a Gateway API HTTPRoute on a hostname of its own
+                          ("nova-metadata.<domain>"), the listener a Neutron metadata agent dials
+                          from the compute cluster it runs on. It is separate from Gateway because
+                          the two endpoints serve different callers: users reach the API, and only
+                          the metadata agents reach this one. When nil (the default) the reconciler
+                          projects no gateway and the metadata API is reachable in-cluster only,
+                          which is enough while the computes share the cluster the control plane
+                          runs on.
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Annotations are passed through to the generated HTTPRoute metadata
+                              verbatim, allowing implementation-specific configuration (rate limits,
+                              CORS) without extending the CRD; the route timeout is operator-managed,
+                              not annotation-driven.
+                            type: object
+                          hostname:
+                            description: |-
+                              Hostname is the externally reachable host (SNI / Host header) that the
+                              HTTPRoute matches. Required.
+                            minLength: 1
+                            type: string
+                          parentRef:
+                            description: |-
+                              ParentRef identifies the pre-existing Gateway that the HTTPRoute attaches
+                              to.
+                            properties:
+                              name:
+                                description: Name is the Gateway resource name. Required.
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: |-
+                                  Namespace is the namespace of the referenced Gateway. When empty, the
+                                  Gateway is assumed to live in the referencing CR's namespace.
+                                type: string
+                              sectionName:
+                                description: |-
+                                  SectionName targets a specific listener on the Gateway (e.g. "https") when
+                                  the Gateway defines multiple listeners. When empty, the HTTPRoute attaches
+                                  to all compatible listeners.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          path:
+                            description: |-
+                              Path is the URL path prefix matched by the HTTPRoute. Defaults to "/" when
+                              empty.
+                            type: string
+                        required:
+                        - hostname
+                        - parentRef
+                        type: object
+                      metadataReplicas:
+                        description: |-
+                          MetadataReplicas overrides the replica count of the nova-metadata-api
+                          Deployment, the process that answers an instance's calls to
+                          169.254.169.254. When nil the reconciler applies the nova operator's own
+                          default (1); the metadata API holds nothing between requests, so raising
+                          it costs only the pods.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      metadataSharedSecretRef:
+                        description: |-
+                          MetadataSharedSecretRef references a Secret holding the value the Neutron
+                          metadata agent signs proxied requests with, rendered as [neutron]
+                          metadata_proxy_shared_secret on the compute service and carried by every
+                          agent that proxies to it. When nil (the default) the ControlPlane
+                          generates the secret and hands it to the Nova child, the shape a plane
+                          whose agents it also manages wants. Supply one when the value has to be
+                          seeded from outside this ControlPlane's reach: a metadata request signed
+                          with a value only one side knows is rejected, so both sides have to
+                          resolve the same Secret. The shared type rejects an empty name, so the
+                          reference either names a Secret or is absent.
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            description: |-
+                              Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                              subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                              fixes every consumer at once — a service operator adminPasswordSecretRef /
+                              database.secretRef / messaging / TLS cert refs and the c5c3
+                              passwordSecretRef — so an empty name no longer slips through "required".
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      namespace:
+                        description: |-
+                          Namespace places the compute service, and the backing services, secret
+                          store, and credential material that follow it, in a namespace of its own
+                          instead of the ControlPlane's. Omitting it (the default) keeps Nova in the
+                          ControlPlane's namespace. The assignment is create-only: the validating
+                          webhook freezes the block after creation (see ServiceNamespaceSpec), because
+                          moving a live service across namespaces would strand its databases, its
+                          credential material, and its tenant store with no migration path.
+                        properties:
+                          lifecycle:
+                            default: Managed
+                            description: |-
+                              Lifecycle selects whether the operator owns the namespace (Managed: it is
+                              created, labelled, and deleted with the ControlPlane) or merely uses a
+                              pre-existing one (External: never created, never deleted). Defaults to
+                              Managed via both the CRD schema default and the defaulting webhook.
+                            enum:
+                            - Managed
+                            - External
+                            type: string
+                          name:
+                            description: |-
+                              Name is the namespace the service is placed in. It must differ from the
+                              ControlPlane's own namespace — omit the whole block to keep the service
+                              there — and be an RFC-1123 label, the shape Kubernetes requires of a
+                              namespace name.
+                            maxLength: 63
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      publicEndpoint:
+                        description: |-
+                          PublicEndpoint is the externally routable Nova endpoint URL
+                          (e.g. "https://nova.127-0-0-1.nip.io:8443/v2.1"). It is used ONLY for the
+                          K-ORC public compute catalog Endpoint; unlike the keystone override it is
+                          projected into no child CR (the Nova child's keystoneEndpoint is
+                          Keystone's endpoint, a separate concern). The compute catalog entry is
+                          registered WITH the "/v2.1" version prefix, the path every client appends
+                          its requests to, so the value carries that path rather than a bare origin.
+                          When empty and Gateway is set, the reconciler derives
+                          "https://{gateway.hostname}/v2.1" (the default-443 form); set it
+                          explicitly when the externally reachable port differs (e.g. a kind
+                          host-port mapping like :8443), since the port cannot be derived from the
+                          hostname alone. The pattern and the 512-character bound mirror
+                          ServiceKeystoneSpec.PublicEndpoint, whose value flows into the same K-ORC
+                          Endpoint URL field.
+
+                          The keystone override is re-validated on the projected Keystone child; this
+                          one is projected nowhere, so the validating webhook is the only gate on the
+                          URL every client resolves to boot, list, and delete its instances. It
+                          therefore enforces what the markers cannot: a parseable URL carrying the
+                          version prefix and nothing further (no query, no fragment), and, whenever a
+                          gateway is configured, an https scheme and a host equal to gateway.hostname.
+                          Without a gateway an http:// value stays legal for development but raises an
+                          admission warning.
+                        maxLength: 512
+                        pattern: ^https?://
+                        type: string
+                      replicas:
+                        description: |-
+                          Replicas overrides the number of Nova API replicas. When nil the
+                          reconciler applies the nova operator's own default (3). It sizes the API
+                          Deployment only; the metadata, scheduler, conductor, and console-proxy
+                          Deployments carry replica counts of their own.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      schedulerReplicas:
+                        description: |-
+                          SchedulerReplicas overrides the replica count of the nova-scheduler
+                          Deployment, the process that picks a host for every instance the conductor
+                          asks it about. When nil the reconciler applies the nova operator's own
+                          default (1); schedulers are peers that read the same host state out of
+                          Placement, so raising it costs only the pods.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      targetClusterRef:
+                        description: |-
+                          TargetClusterRef names the registered target cluster the compute service is
+                          placed on. The projected Nova CR and the per-namespace objects that support
+                          it (its databases, its cache, its credential material) are created there
+                          instead of on the local cluster; omitting it (the default) keeps everything
+                          on the local (management) cluster. A placed service needs a namespace of its
+                          own (webhook enforced), and the ref is frozen after creation by the
+                          validating webhook. See ServiceKeystoneSpec.TargetClusterRef.
+                        properties:
+                          name:
+                            description: |-
+                              Name is the registered target cluster's name. It must be a non-empty
+                              DNS-1123 subdomain (the Kubernetes object-name grammar), matching
+                              SecretStoreRefSpec.Name.
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
                   placement:
                     description: |-
                       Placement configures the Placement service projected by the reconciler.

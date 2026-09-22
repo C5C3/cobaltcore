@@ -459,9 +459,9 @@ func TestGlanceNamespace(t *testing.T) {
 }
 
 // TestDedicatedServiceNamespacesIncludesGlance asserts the Glance, Placement,
-// Barbican, Neutron, and Cinder assignments are enumerated alongside keystone
-// and horizon, in the stable
-// keystone→horizon→glance→placement→barbican→neutron→cinder order, and that
+// Barbican, Neutron, Cinder, and Nova assignments are enumerated alongside
+// keystone and horizon, in the stable
+// keystone→horizon→glance→placement→barbican→neutron→cinder→nova order, and that
 // co-located services collapse to a single entry (services sharing a namespace
 // share its backing services and tenant store).
 func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
@@ -484,7 +484,7 @@ func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
 			want: []string{"images"},
 		},
 		{
-			name: "each service in its own namespace enumerates in keystone→horizon→glance→placement→barbican→neutron→cinder order",
+			name: "each service in its own namespace enumerates in keystone→horizon→glance→placement→barbican→neutron→cinder→nova order",
 			cp: cpIn(ServicesSpec{
 				Keystone:  &ServiceKeystoneSpec{Namespace: &ServiceNamespaceSpec{Name: "identity"}},
 				Horizon:   &ServiceHorizonSpec{Namespace: &ServiceNamespaceSpec{Name: "dashboard"}},
@@ -493,8 +493,40 @@ func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
 				Barbican:  &ServiceBarbicanSpec{Namespace: &ServiceNamespaceSpec{Name: "barbican"}},
 				Neutron:   &ServiceNeutronSpec{Namespace: &ServiceNamespaceSpec{Name: "neutron"}},
 				Cinder:    &ServiceCinderSpec{Namespace: &ServiceNamespaceSpec{Name: "block-storage"}},
+				Nova:      &ServiceNovaSpec{Namespace: &ServiceNamespaceSpec{Name: "compute"}},
 			}),
-			want: []string{"identity", "dashboard", "images", "placement", "barbican", "neutron", "block-storage"},
+			want: []string{"identity", "dashboard", "images", "placement", "barbican", "neutron", "block-storage", "compute"},
+		},
+		{
+			name: "nova takes a namespace of its own",
+			cp: cpIn(ServicesSpec{
+				Nova: &ServiceNovaSpec{Namespace: &ServiceNamespaceSpec{Name: "compute"}},
+			}),
+			want: []string{"compute"},
+		},
+		{
+			name: "nova co-located with cinder yields one entry",
+			cp: cpIn(ServicesSpec{
+				Cinder: &ServiceCinderSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+				Nova:   &ServiceNovaSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+			}),
+			want: []string{"shared-ns"},
+		},
+		{
+			name: "a nova assignment naming the ControlPlane namespace contributes nothing",
+			cp: cpIn(ServicesSpec{
+				Nova: &ServiceNovaSpec{Namespace: &ServiceNamespaceSpec{Name: "openstack"}},
+			}),
+			want: nil,
+		},
+		{
+			// A nil nova block leaves the enumeration exactly as it was before
+			// the field existed.
+			name: "a nil nova block leaves the enumeration unchanged",
+			cp: cpIn(ServicesSpec{
+				Cinder: &ServiceCinderSpec{Namespace: &ServiceNamespaceSpec{Name: "block-storage"}},
+			}),
+			want: []string{"block-storage"},
 		},
 		{
 			name: "cinder takes a namespace of its own",
@@ -1235,6 +1267,36 @@ func TestCinderNamespace(t *testing.T) {
 	}
 }
 
+// TestNovaNamespace exercises the nil-safe namespace resolver for the compute
+// service across the states the accessor can be in: no service block and a block
+// without an assignment (both default to the ControlPlane's namespace), a
+// webhook-bypass empty name (also a fallback), and an explicit assignment.
+func TestNovaNamespace(t *testing.T) {
+	cpIn := func(nova *ServiceNovaSpec) *ControlPlane {
+		return &ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+			Spec:       ControlPlaneSpec{Services: ServicesSpec{Nova: nova}},
+		}
+	}
+	tests := []struct {
+		name string
+		cp   *ControlPlane
+		want string
+	}{
+		{"no nova block defaults to the ControlPlane namespace", cpIn(nil), "openstack"},
+		{"nova block without an assignment defaults to the ControlPlane namespace", cpIn(&ServiceNovaSpec{}), "openstack"},
+		{"an empty assignment name falls back to the ControlPlane namespace", cpIn(&ServiceNovaSpec{Namespace: &ServiceNamespaceSpec{}}), "openstack"},
+		{"nova takes a namespace of its own", cpIn(&ServiceNovaSpec{Namespace: &ServiceNamespaceSpec{Name: "compute"}}), "compute"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.NovaNamespace(); got != tc.want {
+				t.Errorf("NovaNamespace() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDedicatedCinderBackingServicesAccessors exercises the nil-safe reads for
 // the block-storage service across the states it can be in: no service block
 // (services.cinder nil), a block that shares the ControlPlane-wide instances
@@ -1300,6 +1362,76 @@ func TestDedicatedCinderBackingServicesAccessors(t *testing.T) {
 			}
 			if got := tc.cp.DedicatedCinderCache() != nil; got != tc.wantCache {
 				t.Errorf("DedicatedCinderCache() present = %v, want %v", got, tc.wantCache)
+			}
+		})
+	}
+}
+
+// TestDedicatedNovaBackingServicesAccessors exercises the nil-safe reads for the
+// compute service across the states it can be in: no service block
+// (services.nova nil), a block that shares the ControlPlane-wide instances
+// (dedicatedBackingServices nil), and one that opted into a dedicated database, a
+// dedicated cache, or both.
+func TestDedicatedNovaBackingServicesAccessors(t *testing.T) {
+	tests := []struct {
+		name         string
+		cp           *ControlPlane
+		wantDatabase bool
+		wantCache    bool
+	}{
+		{
+			name: "no nova block",
+			cp:   &ControlPlane{},
+		},
+		{
+			name: "nova shares the ControlPlane-wide instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Nova: &ServiceNovaSpec{},
+			}}},
+		},
+		{
+			name: "nova takes a dedicated database only",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Nova: &ServiceNovaSpec{
+					DedicatedBackingServices: &NovaDedicatedBackingServicesSpec{
+						Database: &commonv1.DatabaseSpec{Database: "nova"},
+					},
+				},
+			}}},
+			wantDatabase: true,
+		},
+		{
+			name: "nova takes a dedicated cache only",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Nova: &ServiceNovaSpec{
+					DedicatedBackingServices: &NovaDedicatedBackingServicesSpec{
+						Cache: &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+			}}},
+			wantCache: true,
+		},
+		{
+			name: "nova takes both dedicated instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Nova: &ServiceNovaSpec{
+					DedicatedBackingServices: &NovaDedicatedBackingServicesSpec{
+						Database: &commonv1.DatabaseSpec{Database: "nova"},
+						Cache:    &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+			}}},
+			wantDatabase: true,
+			wantCache:    true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.DedicatedNovaDatabase() != nil; got != tc.wantDatabase {
+				t.Errorf("DedicatedNovaDatabase() present = %v, want %v", got, tc.wantDatabase)
+			}
+			if got := tc.cp.DedicatedNovaCache() != nil; got != tc.wantCache {
+				t.Errorf("DedicatedNovaCache() present = %v, want %v", got, tc.wantCache)
 			}
 		})
 	}
@@ -1422,6 +1554,146 @@ func TestServiceCinderSpecDeepCopy(t *testing.T) {
 	}
 }
 
+// TestServiceNovaSpecDeepCopy verifies the curated Nova subset round-trips
+// through DeepCopy with independent storage, down to the leaves the other
+// services have no counterpart for: the three per-component replica counts, the
+// console-proxy block with its own gateway, the second gateway the metadata API
+// is exposed on, the shared-secret reference, and the archive block. The
+// reconciler DeepCopies the projected spec onto the Nova child, so an aliased
+// nested value here would let a child projection mutate the ControlPlane spec it
+// was derived from.
+func TestServiceNovaSpecDeepCopy(t *testing.T) {
+	replicas, metadataReplicas, schedulerReplicas := int32(2), int32(3), int32(4)
+	conductorReplicas, proxyReplicas := int32(5), int32(6)
+	maxRows, sleep, retentionDays := int32(1000), int32(1), int32(30)
+	enabled := true
+	spec := ServiceNovaSpec{
+		Replicas:          &replicas,
+		MetadataReplicas:  &metadataReplicas,
+		SchedulerReplicas: &schedulerReplicas,
+		ConductorReplicas: &conductorReplicas,
+		ConsoleProxy: &ServiceNovaConsoleProxySpec{
+			Enabled:  &enabled,
+			Replicas: &proxyReplicas,
+			Gateway:  &commonv1.GatewaySpec{Hostname: "nova-novnc.example.com"},
+		},
+		Image:                   &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/nova", Tag: "2026.1"},
+		Gateway:                 &commonv1.GatewaySpec{Hostname: "nova.example.com"},
+		PublicEndpoint:          "https://nova.example.com/v2.1",
+		MetadataGateway:         &commonv1.GatewaySpec{Hostname: "nova-metadata.example.com"},
+		MetadataSharedSecretRef: &commonv1.SecretRefSpec{Name: "nova-metadata-secret", Key: "shared_secret"},
+		DatabaseCredentialsMode: "Static",
+		DBArchive: &ServiceNovaDBArchiveSpec{
+			Schedule:      "@daily",
+			MaxRows:       &maxRows,
+			Sleep:         &sleep,
+			RetentionDays: &retentionDays,
+			Suspend:       true,
+		},
+		ExtraConfig: map[string]map[string]string{"DEFAULT": {"cpu_allocation_ratio": "4.0"}},
+		DedicatedBackingServices: &NovaDedicatedBackingServicesSpec{
+			Database: &commonv1.DatabaseSpec{Database: "nova"},
+			Cache:    &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+		},
+		Namespace:        &ServiceNamespaceSpec{Name: "compute"},
+		TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-compute"},
+	}
+
+	clone := spec.DeepCopy()
+	if !reflect.DeepEqual(*clone, spec) {
+		t.Fatalf("DeepCopy() = %+v, want %+v", *clone, spec)
+	}
+
+	// Every pointer-backed leaf must be freshly allocated: mutating the clone
+	// leaves the source at the values asserted below.
+	*clone.Replicas = 9
+	*clone.MetadataReplicas = 9
+	*clone.SchedulerReplicas = 9
+	*clone.ConductorReplicas = 9
+	*clone.ConsoleProxy.Enabled = false
+	*clone.ConsoleProxy.Replicas = 9
+	clone.ConsoleProxy.Gateway.Hostname = "other.example.com"
+	clone.Image.Tag = "2026.2"
+	clone.Gateway.Hostname = "other.example.com"
+	clone.MetadataGateway.Hostname = "other.example.com"
+	clone.MetadataSharedSecretRef.Name = "other-secret"
+	*clone.DBArchive.MaxRows = 1
+	*clone.DBArchive.RetentionDays = 1
+	clone.DedicatedBackingServices.Database.Database = "other"
+	clone.Namespace.Name = "elsewhere"
+	clone.ExtraConfig["DEFAULT"]["cpu_allocation_ratio"] = "99.0"
+	clone.TargetClusterRef.Name = "edge-other"
+
+	for _, tc := range []struct {
+		field string
+		got   int32
+		want  int32
+	}{
+		{"Replicas", *spec.Replicas, 2},
+		{"MetadataReplicas", *spec.MetadataReplicas, 3},
+		{"SchedulerReplicas", *spec.SchedulerReplicas, 4},
+		{"ConductorReplicas", *spec.ConductorReplicas, 5},
+		{"ConsoleProxy.Replicas", *spec.ConsoleProxy.Replicas, 6},
+		{"DBArchive.MaxRows", *spec.DBArchive.MaxRows, 1000},
+		{"DBArchive.RetentionDays", *spec.DBArchive.RetentionDays, 30},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("DeepCopy aliased %s: source = %d, want %d", tc.field, tc.got, tc.want)
+		}
+	}
+	if !*spec.ConsoleProxy.Enabled {
+		t.Error("DeepCopy aliased ConsoleProxy.Enabled: source = false, want true")
+	}
+	if spec.ConsoleProxy.Gateway.Hostname != "nova-novnc.example.com" {
+		t.Errorf("DeepCopy aliased the console-proxy gateway: source = %q", spec.ConsoleProxy.Gateway.Hostname)
+	}
+	if spec.Image.Tag != "2026.1" {
+		t.Errorf("DeepCopy aliased the image: source tag = %q, want %q", spec.Image.Tag, "2026.1")
+	}
+	if spec.Gateway.Hostname != "nova.example.com" {
+		t.Errorf("DeepCopy aliased the API gateway: source = %q", spec.Gateway.Hostname)
+	}
+	if spec.MetadataGateway.Hostname != "nova-metadata.example.com" {
+		t.Errorf("DeepCopy aliased the metadata gateway: source = %q", spec.MetadataGateway.Hostname)
+	}
+	if spec.MetadataSharedSecretRef.Name != "nova-metadata-secret" {
+		t.Errorf("DeepCopy aliased the shared-secret ref: source = %q", spec.MetadataSharedSecretRef.Name)
+	}
+	if spec.DedicatedBackingServices.Database.Database != "nova" {
+		t.Errorf("DeepCopy aliased the dedicated database: source = %q, want %q",
+			spec.DedicatedBackingServices.Database.Database, "nova")
+	}
+	if spec.Namespace.Name != "compute" {
+		t.Errorf("DeepCopy aliased the namespace assignment: source = %q", spec.Namespace.Name)
+	}
+	if spec.ExtraConfig["DEFAULT"]["cpu_allocation_ratio"] != "4.0" {
+		t.Errorf("DeepCopy aliased the nested extraConfig section: source value changed to %q",
+			spec.ExtraConfig["DEFAULT"]["cpu_allocation_ratio"])
+	}
+	if spec.TargetClusterRef.Name != "edge-compute" {
+		t.Errorf("DeepCopy aliased the target-cluster ref: source = %q", spec.TargetClusterRef.Name)
+	}
+
+	// The optional blocks stay nil rather than becoming empty structs, so a
+	// projection can tell "no console proxy declared" from "a console proxy with
+	// every knob at its zero value".
+	sparseClone := (&ServiceNovaSpec{}).DeepCopy()
+	if sparseClone.ConsoleProxy != nil {
+		t.Errorf("DeepCopy materialized ConsoleProxy = %+v, want nil", sparseClone.ConsoleProxy)
+	}
+	if sparseClone.DBArchive != nil {
+		t.Errorf("DeepCopy materialized DBArchive = %+v, want nil", sparseClone.DBArchive)
+	}
+	if sparseClone.MetadataSharedSecretRef != nil {
+		t.Errorf("DeepCopy materialized MetadataSharedSecretRef = %+v, want nil", sparseClone.MetadataSharedSecretRef)
+	}
+
+	var nilNovaSpec *ServiceNovaSpec
+	if got := nilNovaSpec.DeepCopy(); got != nil {
+		t.Errorf("(*ServiceNovaSpec)(nil).DeepCopy() = %v, want nil", got)
+	}
+}
+
 // TestServiceTargetClusterRefAccessors exercises the nil-safe target-cluster
 // accessors across the states each can be in: no service block at all and a
 // service block without a ref (both mean the service stays on the local cluster)
@@ -1459,6 +1731,7 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 				Barbican:  &ServiceBarbicanSpec{},
 				Neutron:   &ServiceNeutronSpec{},
 				Cinder:    &ServiceCinderSpec{},
+				Nova:      &ServiceNovaSpec{},
 			}),
 			want: map[string]string{},
 		},
@@ -1472,6 +1745,7 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 				Barbican:  &ServiceBarbicanSpec{TargetClusterRef: ref("edge-secrets")},
 				Neutron:   &ServiceNeutronSpec{TargetClusterRef: ref("edge-networking")},
 				Cinder:    &ServiceCinderSpec{TargetClusterRef: ref("edge-storage")},
+				Nova:      &ServiceNovaSpec{TargetClusterRef: ref("edge-compute")},
 			}),
 			want: map[string]string{
 				"KeystoneTargetClusterRef":  "edge-identity",
@@ -1481,6 +1755,7 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 				"BarbicanTargetClusterRef":  "edge-secrets",
 				"NeutronTargetClusterRef":   "edge-networking",
 				"CinderTargetClusterRef":    "edge-storage",
+				"NovaTargetClusterRef":      "edge-compute",
 			},
 		},
 		{
@@ -1513,6 +1788,16 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 			}),
 			want: map[string]string{"BarbicanTargetClusterRef": "edge-secrets"},
 		},
+		{
+			// A nova block with no ref beside a placed sibling: the accessor
+			// must not read through the missing ref.
+			name: "a nova block without a ref resolves to nil",
+			cp: cpIn(ServicesSpec{
+				Nova:   &ServiceNovaSpec{},
+				Cinder: &ServiceCinderSpec{TargetClusterRef: ref("edge-storage")},
+			}),
+			want: map[string]string{"CinderTargetClusterRef": "edge-storage"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1524,6 +1809,7 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 				"BarbicanTargetClusterRef":  tc.cp.BarbicanTargetClusterRef(),
 				"NeutronTargetClusterRef":   tc.cp.NeutronTargetClusterRef(),
 				"CinderTargetClusterRef":    tc.cp.CinderTargetClusterRef(),
+				"NovaTargetClusterRef":      tc.cp.NovaTargetClusterRef(),
 			}
 			for accessor, gotRef := range got {
 				want := tc.want[accessor]
@@ -1547,7 +1833,7 @@ func TestServiceTargetClusterRefAccessors(t *testing.T) {
 
 // TestTargetClusterNames pins the enumeration of the clusters a ControlPlane
 // places services on: deduplicated, in the stable keystone→horizon→glance→
-// placement→barbican→neutron→cinder order, and empty for a local-only
+// placement→barbican→neutron→cinder→nova order, and empty for a local-only
 // ControlPlane.
 func TestTargetClusterNames(t *testing.T) {
 	ref := func(name string) *commonv1.TargetClusterRefSpec {
@@ -1604,6 +1890,33 @@ func TestTargetClusterNames(t *testing.T) {
 				Cinder:   &ServiceCinderSpec{TargetClusterRef: ref("edge-one")},
 			}),
 			want: []string{"edge-one"},
+		},
+		{
+			// The nova ref is enumerated last: a sort by name would put
+			// "edge-compute" first.
+			name: "a placed nova is enumerated after cinder",
+			cp: cpIn(ServicesSpec{
+				Cinder: &ServiceCinderSpec{TargetClusterRef: ref("edge-storage")},
+				Nova:   &ServiceNovaSpec{TargetClusterRef: ref("edge-compute")},
+			}),
+			want: []string{"edge-storage", "edge-compute"},
+		},
+		{
+			name: "nova sharing a cluster with cinder yields one entry",
+			cp: cpIn(ServicesSpec{
+				Cinder: &ServiceCinderSpec{TargetClusterRef: ref("edge-one")},
+				Nova:   &ServiceNovaSpec{TargetClusterRef: ref("edge-one")},
+			}),
+			want: []string{"edge-one"},
+		},
+		{
+			// A nil nova block leaves the enumeration exactly as it was before
+			// the field existed.
+			name: "a nil nova block leaves the enumeration unchanged",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{TargetClusterRef: ref("edge-identity")},
+			}),
+			want: []string{"edge-identity"},
 		},
 		{
 			// The neutron ref is enumerated last, and a nil neutron block

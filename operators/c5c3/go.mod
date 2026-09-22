@@ -10,6 +10,7 @@ require (
 	github.com/c5c3/cobaltcore/operators/horizon v0.0.0-00010101000000-000000000000
 	github.com/c5c3/cobaltcore/operators/keystone v0.0.0-00010101000000-000000000000
 	github.com/c5c3/cobaltcore/operators/neutron v0.0.0-00010101000000-000000000000
+	github.com/c5c3/cobaltcore/operators/nova v0.0.0-00010101000000-000000000000
 	github.com/c5c3/cobaltcore/operators/ovn v0.0.0-00010101000000-000000000000
 	github.com/c5c3/cobaltcore/operators/placement v0.0.0-00010101000000-000000000000
 	github.com/dc-tec/openbao-operator v0.0.0-20260922111451-ef96ef2ddcaa
@@ -109,6 +110,8 @@ replace github.com/c5c3/cobaltcore/operators/horizon => ../horizon
 replace github.com/c5c3/cobaltcore/operators/keystone => ../keystone
 
 replace github.com/c5c3/cobaltcore/operators/neutron => ../neutron
+
+replace github.com/c5c3/cobaltcore/operators/nova => ../nova
 
 replace github.com/c5c3/cobaltcore/operators/ovn => ../ovn
 
