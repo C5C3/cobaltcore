@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.nova.publicEndpoint must name the same host as
+# services.nova.gateway.hostname (webhook-only). The Gateway listener is what
+# routes that hostname to the Nova API, so a divergent host advertises a catalog
+# endpoint that never reaches it. The value is projected into no child CR, so this
+# webhook is the only gate on the URL every client resolves to boot, list and
+# delete its instances. The endpoint is a bare origin on the https scheme the
+# gateway rule also demands, so the ONLY violation is the host and the step anchors
+# on `must equal services.nova.gateway.hostname`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-nova-endpoint-mismatch
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+    placement: {}
+    neutron:
+      ovn:
+        centralRef:
+          name: ovn
+    nova:
+      gateway:
+        hostname: nova.example.com
+        parentRef:
+          name: openstack-gw
+      publicEndpoint: https://other.example.com
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

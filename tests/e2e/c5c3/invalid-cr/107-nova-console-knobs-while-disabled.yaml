@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.nova.consoleProxy.replicas beside enabled: false violates the CEL rule
+# on ServiceNovaConsoleProxySpec. A disabled proxy has no Deployment to size, and
+# the Nova CRD rejects a spec.consoleProxy.deployment written on a disabled proxy,
+# so the value would have nowhere to land. The rule is intra-struct and has no
+# webhook twin, so CRD schema validation answers and the step anchors on the CEL
+# message, `replicas and gateway must not be set when consoleProxy.enabled is
+# false`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-nova-console-disabled
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+    placement: {}
+    neutron:
+      ovn:
+        centralRef:
+          name: ovn
+    nova:
+      consoleProxy:
+        enabled: false
+        replicas: 2
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

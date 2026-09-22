@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.nova.gateway and services.nova.metadataGateway name one hostname on one
+# Gateway with no sectionName, which the webhook refuses. Every Nova route matches
+# the root of its hostname (the catalog registers the API at
+# https://<hostname>/v2.1 whatever gateway.path says, and the metadata route must
+# sit at the root), so the two routes tie and the Gateway hands every request to
+# the older one while both report Accepted. Each block is valid on its own, so the
+# shared listener is the ONLY violation and the step anchors on `on the same
+# Gateway listener`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-nova-shared-listener
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+    placement: {}
+    neutron:
+      ovn:
+        centralRef:
+          name: ovn
+    nova:
+      gateway:
+        hostname: nova.example.com
+        parentRef:
+          name: openstack-gw
+      metadataGateway:
+        hostname: nova.example.com
+        parentRef:
+          name: openstack-gw
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

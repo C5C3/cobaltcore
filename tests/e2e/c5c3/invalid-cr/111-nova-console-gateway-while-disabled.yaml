@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.nova.consoleProxy.gateway beside enabled: false violates the gateway
+# leg of the CEL rule on ServiceNovaConsoleProxySpec, the leg fixture 107 leaves
+# unexercised: a disabled proxy has no listener to publish, and the projection
+# drops the block, so the route would never exist. The gateway itself is valid and
+# sits at the root, so the rule is the ONLY violation; it has no webhook twin, and
+# the step anchors on the CEL message, `replicas and gateway must not be set when
+# consoleProxy.enabled is false`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-nova-console-gw-disabled
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+    placement: {}
+    neutron:
+      ovn:
+        centralRef:
+          name: ovn
+    nova:
+      consoleProxy:
+        enabled: false
+        gateway:
+          hostname: console.example.com
+          parentRef:
+            name: openstack-gw
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

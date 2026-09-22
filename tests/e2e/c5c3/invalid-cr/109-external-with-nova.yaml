@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.nova set in External mode is forbidden by the webhook (cross-field,
+# mirroring its glance, placement, barbican, neutron and cinder siblings): Nova
+# needs its own External-mode design. External mode forbids the three services
+# Nova depends on as well, so the fixture declares none of them and the error also
+# names services.placement, services.neutron and services.glance as required. The
+# nova block is the minimal valid one, and the step anchors on the cross-field
+# forbid, `forbidden when services.keystone.mode is External`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-external-with-nova
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: https://keystone.example.com/v3
+    nova: {}
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

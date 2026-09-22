@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.placement is required as soon as services.nova is set (webhook-only):
+# Nova claims every instance's resources in Placement before it boots. The
+# projected Nova child addresses its sibling by the naming convention the
+# ControlPlane projects it under, so a compute service declared without a
+# placement reaches an endpoint no child serves and fails every boot with nothing
+# on the plane naming the cause. Every other block is the valid one, so the
+# missing placement is the only violation and the step anchors on `is required
+# when services.nova is set`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-nova-no-placement
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+    neutron:
+      ovn:
+        centralRef:
+          name: ovn
+    nova: {}
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

@@ -34,10 +34,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# Matches every two-digit-prefixed fixture in this directory. Used by the
+# Matches every numbered fixture in this directory. The prefix is two digits up
+# to 99 and three from 100 on, where the nova block continues. Used by the
 # orphan-detection sweep in main() so a fixture removed from FIXTURES but left
 # on disk is reported as drift (both directions are guarded).
-_FIXTURE_FILENAME_PATTERN = re.compile(r"^[0-9]{2}-.+\.yaml$")
+_FIXTURE_FILENAME_PATTERN = re.compile(r"^[0-9]{2,3}-.+\.yaml$")
 
 LICENSE_HEADER = """\
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
@@ -60,6 +61,7 @@ LICENSE_HEADER = """\
 #   {barbican}            the spec.services.barbican entry (indent 4) or ""
 #   {neutron}             the spec.services.neutron entry (indent 4) or ""
 #   {cinder}              the spec.services.cinder entry (indent 4) or ""
+#   {nova}                the spec.services.nova entry (indent 4) or ""
 #   {service_registrations}
 #                         the spec.korc.serviceRegistrations block (indent 4) or ""
 #
@@ -75,7 +77,7 @@ spec:
   openStackRelease: "2025.2"
 {region}{region_description}{global_extra_config}{infrastructure}  services:
     keystone:
-{keystone}{horizon}{glance}{placement}{barbican}{neutron}{cinder}  korc:
+{keystone}{horizon}{glance}{placement}{barbican}{neutron}{cinder}{nova}  korc:
     adminCredential:
       cloudCredentialsRef:
         cloudName: admin
@@ -176,6 +178,16 @@ VALID_CINDER = (
 )
 
 
+# A valid nova service body (indent 4): the empty block. Every ServiceNovaSpec
+# field is optional, because everything the compute child needs (its database,
+# its cache, its bus, its Keystone endpoint) is derived from the ControlPlane,
+# so the smallest valid block is the empty mapping. What services.nova does
+# require sits outside the block: services.placement, services.neutron,
+# services.glance and spec.infrastructure.messaging. The nova fixtures below
+# mutate exactly one aspect of that base.
+VALID_NOVA = "    nova: {}\n"
+
+
 # A valid, MANAGED dedicated backing-services block for the Keystone service
 # (indent 6, to be appended to a Managed keystone body). Every dedicated fixture
 # below mutates exactly one aspect of it.
@@ -209,6 +221,7 @@ class Fixture:
     barbican: str = ""
     neutron: str = ""
     cinder: str = ""
+    nova: str = ""
     # The spec.region line (indent 2, trailing newline) or "".
     region: str = ""
     # The spec.regionDescription line (indent 2, trailing newline) or "".
@@ -232,6 +245,7 @@ class Fixture:
             barbican=self.barbican,
             neutron=self.neutron,
             cinder=self.cinder,
+            nova=self.nova,
             service_registrations=self.service_registrations,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
@@ -2030,6 +2044,330 @@ FIXTURES: tuple[Fixture, ...] = (
         name="cp-transition-g",
         keystone="      mode: Managed\n",
         infrastructure=MANAGED_INFRA + "    messaging: null\n",
+    ),
+    # --- per-service Nova (still the create-rejection matrix). Every
+    #     ControlPlane name below stays at or under 32 characters, the budget the
+    #     projected "{cp}-neutron" child leaves, except the one fixture that pins
+    #     the Nova bound. The numbering continues at 100: the two-digit range the
+    #     filenames above sit in is full. ---
+    Fixture(
+        filename="100-nova-without-placement.yaml",
+        comment=(
+            "services.placement is required as soon as services.nova is set (webhook-only):\n"
+            "Nova claims every instance's resources in Placement before it boots. The\n"
+            "projected Nova child addresses its sibling by the naming convention the\n"
+            "ControlPlane projects it under, so a compute service declared without a\n"
+            "placement reaches an endpoint no child serves and fails every boot with nothing\n"
+            "on the plane naming the cause. Every other block is the valid one, so the\n"
+            "missing placement is the only violation and the step anchors on `is required\n"
+            "when services.nova is set`."
+        ),
+        name="cp-nova-no-placement",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        neutron=VALID_NEUTRON,
+        nova=VALID_NOVA,
+    ),
+    Fixture(
+        filename="101-nova-without-neutron.yaml",
+        comment=(
+            "services.neutron is required as soon as services.nova is set (webhook-only):\n"
+            "Nova creates and binds a port for every instance, so a compute service declared\n"
+            "without the network service reaches an endpoint no child serves. Every other\n"
+            "block is the valid one, so the missing neutron is the only violation and the\n"
+            "step anchors on `is required when services.nova is set`."
+        ),
+        name="cp-nova-no-neutron",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        nova=VALID_NOVA,
+    ),
+    Fixture(
+        filename="102-nova-without-glance.yaml",
+        comment=(
+            "services.glance is required as soon as services.nova is set (webhook-only):\n"
+            "Nova reads the image of every instance it boots, so a compute service declared\n"
+            "without the image service reaches an endpoint no child serves. Every other block\n"
+            "is the valid one, so the missing glance is the only violation and the step\n"
+            "anchors on `is required when services.nova is set`."
+        ),
+        name="cp-nova-no-glance",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        nova=VALID_NOVA,
+    ),
+    Fixture(
+        filename="103-nova-without-messaging.yaml",
+        comment=(
+            "spec.infrastructure.messaging is required as soon as services.nova is set, and\n"
+            "the webhook is the only layer that can say so: the Nova CRD requires\n"
+            "spec.messaging and the ControlPlane derives the child's transport URL from the\n"
+            "shared bus, so a ControlPlane declaring the compute service without a bus would\n"
+            "project a child its own admission rejects on every pass. The infrastructure\n"
+            "block is the brownfield one every Managed fixture carries, minus the messaging\n"
+            "entry. services.neutron requires the bus too and the base declares it, so the\n"
+            "error names spec.infrastructure.messaging twice; the step anchors on the nova\n"
+            "sentence, `is required when services.nova is set`."
+        ),
+        name="cp-nova-no-messaging",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        nova=VALID_NOVA,
+    ),
+    Fixture(
+        filename="104-nova-name-too-long.yaml",
+        comment=(
+            "metadata.name is 37 characters, so the projected \"{cp}-nova\" child would be 42,\n"
+            "one over the 41 the Nova CRD admits: the nova operator appends \"-db-archive\" for\n"
+            "the archive CronJob and Kubernetes caps CronJob names at 52. The ControlPlane\n"
+            "webhook rejects the name up front (create-only): metadata.name is immutable, so\n"
+            "an admitted CR would fail to apply its Nova child on every pass, NovaReady would\n"
+            "never go True, and the only recovery would be recreating the whole plane. The\n"
+            "same length also overruns the Neutron and the Glance child bound, so the error\n"
+            "carries three sentences. The step anchors on the one the nova rule renders:\n"
+            "`the projected Nova child CR name would be 42 characters`."
+        ),
+        name="cp-nova-name-bound-xxxxxxxxxxxxxxxxxx",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        nova=VALID_NOVA,
+    ),
+    Fixture(
+        filename="105-nova-public-endpoint-host-mismatch.yaml",
+        comment=(
+            "services.nova.publicEndpoint must name the same host as\n"
+            "services.nova.gateway.hostname (webhook-only). The Gateway listener is what\n"
+            "routes that hostname to the Nova API, so a divergent host advertises a catalog\n"
+            "endpoint that never reaches it. The value is projected into no child CR, so this\n"
+            "webhook is the only gate on the URL every client resolves to boot, list and\n"
+            "delete its instances. The endpoint is a bare origin on the https scheme the\n"
+            "gateway rule also demands, so the ONLY violation is the host and the step anchors\n"
+            "on `must equal services.nova.gateway.hostname`."
+        ),
+        name="cp-nova-endpoint-mismatch",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        nova=(
+            "    nova:\n"
+            "      gateway:\n"
+            "        hostname: nova.example.com\n"
+            "        parentRef:\n"
+            "          name: openstack-gw\n"
+            "      publicEndpoint: https://other.example.com\n"
+        ),
+    ),
+    Fixture(
+        filename="106-nova-console-gateway-path.yaml",
+        comment=(
+            "services.nova.consoleProxy.gateway.path carries a prefix, which the webhook\n"
+            "refuses: it must be empty or \"/\". The rule mirrors the one the Nova CRD applies\n"
+            "to the block this one is projected onto. The API hands a browser a console URL\n"
+            "at the root of the console hostname and the noVNC client opens its WebSocket\n"
+            "there as well, so a prefix match routes neither while the HTTPRoute still\n"
+            "reports Accepted. The proxy is enabled and the gateway is otherwise valid, so\n"
+            "the ONLY violation is the path."
+        ),
+        name="cp-nova-console-path",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        nova=(
+            "    nova:\n"
+            "      consoleProxy:\n"
+            "        enabled: true\n"
+            "        gateway:\n"
+            "          hostname: console.example.com\n"
+            "          parentRef:\n"
+            "            name: openstack-gw\n"
+            "          path: /console\n"
+        ),
+    ),
+    Fixture(
+        filename="107-nova-console-knobs-while-disabled.yaml",
+        comment=(
+            "services.nova.consoleProxy.replicas beside enabled: false violates the CEL rule\n"
+            "on ServiceNovaConsoleProxySpec. A disabled proxy has no Deployment to size, and\n"
+            "the Nova CRD rejects a spec.consoleProxy.deployment written on a disabled proxy,\n"
+            "so the value would have nowhere to land. The rule is intra-struct and has no\n"
+            "webhook twin, so CRD schema validation answers and the step anchors on the CEL\n"
+            "message, `replicas and gateway must not be set when consoleProxy.enabled is\n"
+            "false`."
+        ),
+        name="cp-nova-console-disabled",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        nova=(
+            "    nova:\n"
+            "      consoleProxy:\n"
+            "        enabled: false\n"
+            "        replicas: 2\n"
+        ),
+    ),
+    Fixture(
+        filename="108-nova-dbarchive-schedule-invalid.yaml",
+        comment=(
+            "services.nova.dbArchive.schedule is not a cron expression. The field is checked\n"
+            "by the webhook rather than by a CRD pattern: the accepted grammar includes\n"
+            "descriptors such as @daily, which no regex expresses without also rejecting\n"
+            "valid expressions. An unparseable schedule reaches the projected archive CronJob,\n"
+            "which the apiserver then refuses on every pass, so the webhook answers at\n"
+            "admission and the step anchors on `invalid cron expression`."
+        ),
+        name="cp-nova-bad-schedule",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        nova=(
+            "    nova:\n"
+            "      dbArchive:\n"
+            "        schedule: every day\n"
+        ),
+    ),
+    Fixture(
+        filename="109-external-with-nova.yaml",
+        comment=(
+            "services.nova set in External mode is forbidden by the webhook (cross-field,\n"
+            "mirroring its glance, placement, barbican, neutron and cinder siblings): Nova\n"
+            "needs its own External-mode design. External mode forbids the three services\n"
+            "Nova depends on as well, so the fixture declares none of them and the error also\n"
+            "names services.placement, services.neutron and services.glance as required. The\n"
+            "nova block is the minimal valid one, and the step anchors on the cross-field\n"
+            "forbid, `forbidden when services.keystone.mode is External`."
+        ),
+        name="cp-external-with-nova",
+        nova=VALID_NOVA,
+    ),
+    Fixture(
+        filename="110-nova-extraconfig-cinder-override.yaml",
+        comment=(
+            "[cinder] catalog_info in services.nova.extraConfig is forbidden by the ownership\n"
+            "family as soon as services.cinder is declared: the ControlPlane switches the Nova\n"
+            "child's volume service on from the sibling block, through endpoints.cinder, and\n"
+            "computes every key behind that switch. The override names a catalog tuple this\n"
+            "plane does not publish, so nova resolves the volume service from an entry that is\n"
+            "not there. The key is only Reported in the nova registry, because a Nova child on\n"
+            "its own cannot tell a projected volume service from a hand-configured one, which\n"
+            "is why the fixture carries the cinder block too. The step anchors on\n"
+            "`catalog_info` and on the sentence the ownership family composes,\n"
+            "`is projected by the ControlPlane from services.cinder`."
+        ),
+        name="cp-nova-cinder-override",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        cinder=VALID_CINDER,
+        nova=(
+            "    nova:\n"
+            "      extraConfig:\n"
+            "        cinder:\n"
+            "          catalog_info: volumev3:cinderv3:publicURL\n"
+        ),
+    ),
+    Fixture(
+        filename="111-nova-console-gateway-while-disabled.yaml",
+        comment=(
+            "services.nova.consoleProxy.gateway beside enabled: false violates the gateway\n"
+            "leg of the CEL rule on ServiceNovaConsoleProxySpec, the leg fixture 107 leaves\n"
+            "unexercised: a disabled proxy has no listener to publish, and the projection\n"
+            "drops the block, so the route would never exist. The gateway itself is valid and\n"
+            "sits at the root, so the rule is the ONLY violation; it has no webhook twin, and\n"
+            "the step anchors on the CEL message, `replicas and gateway must not be set when\n"
+            "consoleProxy.enabled is false`."
+        ),
+        name="cp-nova-console-gw-disabled",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        nova=(
+            "    nova:\n"
+            "      consoleProxy:\n"
+            "        enabled: false\n"
+            "        gateway:\n"
+            "          hostname: console.example.com\n"
+            "          parentRef:\n"
+            "            name: openstack-gw\n"
+        ),
+    ),
+    Fixture(
+        filename="112-nova-metadata-gateway-path.yaml",
+        comment=(
+            "services.nova.metadataGateway.path carries a prefix, which the webhook refuses:\n"
+            "it must be empty or \"/\". The Neutron metadata agent addresses nova-api-metadata\n"
+            "by scheme, host and port alone (neutron has no path option) and the route\n"
+            "rewrites nothing, so every request an agent proxies arrives on the root of the\n"
+            "hostname and a prefix match routes none of them while the HTTPRoute still\n"
+            "reports Accepted. The gateway is otherwise valid, so the ONLY violation is the\n"
+            "path."
+        ),
+        name="cp-nova-metadata-path",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        nova=(
+            "    nova:\n"
+            "      metadataGateway:\n"
+            "        hostname: nova-metadata.example.com\n"
+            "        parentRef:\n"
+            "          name: openstack-gw\n"
+            "        path: /metadata\n"
+        ),
+    ),
+    Fixture(
+        filename="113-nova-gateways-share-a-listener.yaml",
+        comment=(
+            "services.nova.gateway and services.nova.metadataGateway name one hostname on one\n"
+            "Gateway with no sectionName, which the webhook refuses. Every Nova route matches\n"
+            "the root of its hostname (the catalog registers the API at\n"
+            "https://<hostname>/v2.1 whatever gateway.path says, and the metadata route must\n"
+            "sit at the root), so the two routes tie and the Gateway hands every request to\n"
+            "the older one while both report Accepted. Each block is valid on its own, so the\n"
+            "shared listener is the ONLY violation and the step anchors on `on the same\n"
+            "Gateway listener`."
+        ),
+        name="cp-nova-shared-listener",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        nova=(
+            "    nova:\n"
+            "      gateway:\n"
+            "        hostname: nova.example.com\n"
+            "        parentRef:\n"
+            "          name: openstack-gw\n"
+            "      metadataGateway:\n"
+            "        hostname: nova.example.com\n"
+            "        parentRef:\n"
+            "          name: openstack-gw\n"
+        ),
     ),
 )
 
