@@ -56,6 +56,28 @@ tests:
           count: 21
         documentIndex: 1
 
+  - it: should grant full CRUD on the two ESO generators
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - generators.external-secrets.io
+            resources:
+              - vaultdynamicsecrets
+              - passwords
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
   - it: should grant full CRUD on the projected core children
     set:
       namespaces:

@@ -99,7 +99,13 @@ const (
 	// drives: the projected Cinder child, its CinderBackend and CinderBackupBackend
 	// satellites, and the material it consumes, the shared bus delivered into the
 	// Cinder namespace among it.
-	conditionTypeCinderReady          = "CinderReady"
+	conditionTypeCinderReady = "CinderReady"
+	// conditionTypeNovaReady covers the compute service the ControlPlane drives:
+	// the projected Nova child and the material it consumes, the two DB-credential
+	// chains its nova_api and cell schemas take, the shared bus delivered into the
+	// Nova namespace, and the metadata shared secret the network service's agents
+	// sign their proxied requests with.
+	conditionTypeNovaReady            = "NovaReady"
 	conditionTypeKORCReady            = "KORCReady"
 	conditionTypeAdminCredentialReady = "AdminCredentialReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeAdminPasswordReady   = "AdminPasswordReady"   //nolint:gosec // G101 false positive: condition type name, not a credential.
@@ -139,6 +145,7 @@ var subConditionTypes = []string{
 	conditionTypeOVNReady,
 	conditionTypeNeutronReady,
 	conditionTypeCinderReady,
+	conditionTypeNovaReady,
 	conditionTypeKORCReady,
 	conditionTypeAdminCredentialReady,
 	conditionTypeAdminPasswordReady,
@@ -250,6 +257,7 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 	esov1.SchemeGroupVersion.WithKind("ExternalSecret"),
 	esov1alpha1.SchemeGroupVersion.WithKind("PushSecret"),
 	esgenv1alpha1.SchemeGroupVersion.WithKind("VaultDynamicSecret"),
+	esgenv1alpha1.SchemeGroupVersion.WithKind("Password"),
 	openbaov1alpha1.GroupVersion.WithKind("OpenBaoTenant"),
 	openbaov1alpha1.GroupVersion.WithKind("OpenBaoCluster"),
 }
@@ -318,6 +326,7 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // for services.cinder.backupBackend. All three are operator-written children, so
 // all three get full verbs.
 // +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinders;cinderbackends;cinderbackupbackends,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novas,verbs=get;list;watch;create;update;patch;delete
 // The OVNCentral is deployed outside the plane and only REFERENCED by
 // services.neutron.ovn.centralRef, so the reconciler reads and watches it but
 // never writes it: read-only verbs.
@@ -378,8 +387,9 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=external-secrets.io,resources=secretstores,verbs=get;list;watch;create;update;patch;delete
 // Required so reconcileDBCredentials can project the per-ControlPlane
 // VaultDynamicSecret generator that issues short-lived DB credentials in
-// Dynamic credentials mode.
-// +kubebuilder:rbac:groups=generators.external-secrets.io,resources=vaultdynamicsecrets,verbs=get;list;watch;create;update;patch;delete
+// Dynamic credentials mode, and so reconcileNovaMetadataSecret can project the
+// Password generator that mints the metadata shared secret.
+// +kubebuilder:rbac:groups=generators.external-secrets.io,resources=vaultdynamicsecrets;passwords,verbs=get;list;watch;create;update;patch;delete
 // Required so reconcileDBCredentials can project the per-ControlPlane mTLS client
 // Certificate the VaultDynamicSecret generator presents to the OpenBao listener.
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete

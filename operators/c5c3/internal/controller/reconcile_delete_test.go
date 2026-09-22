@@ -3463,6 +3463,10 @@ func TestTeardownDedicatedNamespaces_SweepsThePlacedNamespaceOnItsTarget(t *test
 		onTarget(cp, &esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
 			Name: dbCredentialSecretName(cp), Namespace: ns,
 		}}),
+		// The Password generator behind a placed Nova's metadata shared secret.
+		onTarget(cp, &esgenv1alpha1.Password{ObjectMeta: metav1.ObjectMeta{
+			Name: novaMetadataSecretName(cp), Namespace: ns,
+		}}),
 		onTarget(cp, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 			Name: esoTenantServiceAccountName, Namespace: ns,
 		}}),

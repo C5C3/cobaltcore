@@ -219,12 +219,15 @@ rules:
       - update
       - patch
       - delete
-  # generators.external-secrets.io - vaultdynamicsecrets
-  # The generator that issues short-lived database credentials in Dynamic mode.
+  # generators.external-secrets.io - vaultdynamicsecrets, passwords
+  # The generator that issues short-lived database credentials in Dynamic mode,
+  # and the one that mints the Nova metadata shared secret beside a placed
+  # compute service.
   - apiGroups:
       - generators.external-secrets.io
     resources:
       - vaultdynamicsecrets
+      - passwords
     verbs:
       - get
       - list
