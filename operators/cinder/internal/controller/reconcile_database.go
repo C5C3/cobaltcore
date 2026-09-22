@@ -282,9 +282,10 @@ func checkImageReleaseMismatch(cinder *cinderv1alpha1.Cinder) (ctrl.Result, bool
 
 // cinderWorkloadEnv is the environment every Cinder process runs with: the
 // database URL, the message-bus transport URL, and — for a Cinder that
-// configures the Keystone integration — the two service-user passwords. All four
-// are oslo.config OS_<GROUP>__<OPTION> overrides sourced from Secrets, which is
-// what keeps the credentials out of the rendered config the pods mount.
+// configures the Keystone integration — the service-user password once per
+// section that reads it: [keystone_authtoken], [service_user] and [nova]. All
+// five are oslo.config OS_<GROUP>__<OPTION> overrides sourced from Secrets,
+// which is what keeps the credentials out of the rendered config the pods mount.
 //
 // The migration Jobs run it too: they read no bus and no Keystone, but the
 // overrides are inert without the sections that consume them, and one
@@ -300,7 +301,8 @@ func cinderWorkloadEnv(cinder *cinderv1alpha1.Cinder) []corev1.EnvVar {
 		key := effectiveServiceUserKey(cinder)
 		env = append(env,
 			keystoneauth.PasswordEnvVar(secretName, key),
-			keystoneauth.ServiceUserPasswordEnvVar(secretName, key))
+			keystoneauth.ServiceUserPasswordEnvVar(secretName, key),
+			keystoneauth.ClientPasswordEnvVar("nova", secretName, key))
 	}
 	return env
 }

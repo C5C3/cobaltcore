@@ -109,7 +109,7 @@ the password Secret reference.
 | `projectName` | `string` | no | `service` | The project the service user scopes to |
 | `userDomainName` | `string` | no | `Default` | The domain the service user lives in |
 | `projectDomainName` | `string` | no | `Default` | The domain the service project lives in |
-| `secretRef` | `SecretRefSpec` | yes | `key` to `password` | The Secret holding the service-user password. The value is injected as `OS_KEYSTONE_AUTHTOKEN__PASSWORD` and `OS_SERVICE_USER__PASSWORD`, never rendered into config |
+| `secretRef` | `SecretRefSpec` | yes | `key` to `password` | The Secret holding the service-user password. The value is injected as `OS_KEYSTONE_AUTHTOKEN__PASSWORD`, `OS_SERVICE_USER__PASSWORD` and `OS_NOVA__PASSWORD`, never rendered into config |
 
 ### KeyManagerSpec
 
@@ -163,6 +163,7 @@ because honoring them does the damage before any condition could report it.
 | `[database]` | `connection` | Env-injected via `OS_DATABASE__CONNECTION`, same reasoning |
 | `[keystone_authtoken]` | `password` | Env-injected via `OS_KEYSTONE_AUTHTOKEN__PASSWORD`, same reasoning |
 | `[service_user]` | `password` | Env-injected via `OS_SERVICE_USER__PASSWORD`, same reasoning |
+| `[nova]` | `password` | Env-injected via `OS_NOVA__PASSWORD`, same reasoning |
 | `[cinder_sys_admin]`, `[privsep_osbrick]` | `helper_command`, `capabilities` | The helper command is what the service runs as root, and the capability set bounds what that helper may do |
 
 Option names are validated at admission against a per-release option catalog
@@ -267,6 +268,16 @@ user_domain_name = Default
 username = cinder
 www_authenticate_uri = http://keystone.openstack.svc:5000
 
+[nova]
+auth_type = password
+auth_url = http://keystone.openstack.svc:5000
+interface = internal
+project_domain_name = Default
+project_name = service
+region_name = RegionOne
+user_domain_name = Default
+username = cinder
+
 [oslo_concurrency]
 lock_path = /var/lib/cinder/tmp
 
@@ -297,7 +308,7 @@ The two `capabilities` keys are rendered with an empty value, which oslo reads
 as the empty set. Rendering them rather than omitting them is what makes them
 the operator's to own, and a golden test pins both lines byte for byte. A Cinder
 without `spec.keystoneEndpoint` renders the same document minus
-`[keystone_authtoken]` and `[service_user]`, with `auth_strategy = noauth`. That
+`[keystone_authtoken]`, `[service_user]` and `[nova]`, with `auth_strategy = noauth`. That
 pipeline takes the project from the request URL and validates no token, which is
 why a CEL rule refuses to pair it with `spec.gateway`: it is a shape for
 in-cluster suites, not one to publish. The privsep sections stay: the volume and
@@ -396,8 +407,9 @@ ConfigMap the pods mount.
 | `OS_DEFAULT__TRANSPORT_URL` | `{name}-transport-url` | `[DEFAULT] transport_url` |
 | `OS_KEYSTONE_AUTHTOKEN__PASSWORD` | `spec.serviceUser.secretRef` | `[keystone_authtoken] password` |
 | `OS_SERVICE_USER__PASSWORD` | `spec.serviceUser.secretRef` | `[service_user] password` |
+| `OS_NOVA__PASSWORD` | `spec.serviceUser.secretRef` | `[nova] password` |
 
-The migration Jobs carry the same four. They read neither the bus nor Keystone,
+The migration Jobs carry the same five. They read neither the bus nor Keystone,
 but an override is inert without the section that consumes it, and one
 environment for every process is what keeps a Job from migrating a different
 database than the API serves. The three bus processes also carry

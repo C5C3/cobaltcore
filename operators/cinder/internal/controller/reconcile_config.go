@@ -320,6 +320,17 @@ func operatorDefaults(cinder *cinderv1alpha1.Cinder) map[string]map[string]strin
 		// The same account, sending a token of cinder's own alongside the user's,
 		// so a long-running call to Glance or Barbican outlives the user token.
 		defaults["service_user"] = keystoneauth.ServiceUserSection(params)
+		// The same account once more, for the calls cinder-volume makes to Nova
+		// on its own behalf rather than the user's: the assisted snapshot an
+		// online snapshot of an attached volume goes through (remotefs drivers),
+		// which cinder builds with privileged_user=True and therefore from this
+		// section's auth_type (cinder/compute/nova.py). Without it cinder falls
+		// back to the token of the request it is serving, rebuilt from an RPC
+		// context that no longer carries the project domain, and Keystone
+		// answers 400 "Expecting to find domain in project". The internal
+		// interface is the catalog entry a colocated control plane can reach,
+		// as the sibling operators pin for their own client sections.
+		defaults["nova"] = novaSection(params)
 	}
 
 	// castellan reaches Barbican with the Keystone credentials above, so the
@@ -339,6 +350,16 @@ func operatorDefaults(cinder *cinderv1alpha1.Cinder) map[string]map[string]strin
 	}
 
 	return defaults
+}
+
+// novaSection renders [nova], the credentials cinder-volume calls Nova with on
+// its own behalf, resolved from the Keystone catalog on the internal interface.
+// The password stays out of the map: it arrives through the OS_NOVA__PASSWORD
+// override cinderWorkloadEnv injects, like the two identity sections' passwords.
+func novaSection(params keystoneauth.SectionParams) map[string]string {
+	section := keystoneauth.ClientSection(params)
+	section["interface"] = "internal"
+	return section
 }
 
 // keystoneServiceUser returns the service account the Keystone sections render
