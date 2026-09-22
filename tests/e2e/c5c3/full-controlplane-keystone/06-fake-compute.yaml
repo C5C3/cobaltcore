@@ -1,0 +1,207 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The nova-compute this suite schedules onto, on nova's fake virt driver.
+#
+# The ControlPlane projects no compute workload: a nova-compute belongs to a
+# hypervisor, not to the control plane, and what the projected Nova publishes
+# for one is the contract Secret controlplane-keystone-nova-compute-config. This
+# Deployment is what a compute cluster would build out of that Secret, cut down
+# to what runs inside kind.
+#
+# The Secret is CONSUMED, never created here: the nova operator writes it and
+# reports it on status.computeConfigSecretRef, and a second writer under the same
+# name would hand the compute a transport URL and a password the control plane
+# never issued. The fixture is therefore applied only after NovaReady, which is
+# the point at which the contract exists.
+#
+# The labels are app.kubernetes.io/name: nova-fake-compute rather than "nova".
+# Every selector the nova operator writes (the three Services, the
+# PodDisruptionBudget, the NetworkPolicy pod selector) matches on
+# app.kubernetes.io/name: nova, so a pod under that name would join workloads it
+# is not part of. The instance label stays controlplane-keystone-nova so the
+# suite's diagnostic dumps still find it.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: controlplane-keystone-fake-compute-conf
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nova-fake-compute
+    app.kubernetes.io/instance: controlplane-keystone-nova
+data:
+  # The overlay the contract fragment says nothing about: what to drive, where
+  # to write and which console address to report. oslo.config reads every file
+  # in a --config-dir, so this lands beside the fragment rather than replacing
+  # it.
+  #
+  # FakeDriverWithoutFakeNodes reports one node named after [DEFAULT] host,
+  # which keeps the hypervisor, the compute service and the resource provider
+  # under one name.
+  #
+  # vif plugging is switched off and given a zero timeout. The server the verify
+  # Job boots does carry a port on an isolated network, but the chassis claims no
+  # port that no OVS interface backs, so network-vif-plugged never arrives and a
+  # compute that waited for it would time out on the boot.
+  #
+  # server_proxyclient_address is the loopback the fake driver would serve a
+  # console on. Nothing connects to it, but [vnc] enabled is true in the
+  # fragment, so the option has to resolve.
+  compute.conf: |
+    [DEFAULT]
+    compute_driver = fake.FakeDriverWithoutFakeNodes
+    vif_plugging_is_fatal = false
+    vif_plugging_timeout = 0
+    state_path = /var/lib/nova
+    [oslo_concurrency]
+    lock_path = /var/lib/nova/tmp
+    [vnc]
+    server_listen = 0.0.0.0
+    server_proxyclient_address = 127.0.0.1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controlplane-keystone-fake-compute
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nova-fake-compute
+    app.kubernetes.io/instance: controlplane-keystone-nova
+spec:
+  replicas: 1
+  # Recreate, because the two pods of a rolling update would register under the
+  # same [DEFAULT] host and hold the same compute node record open twice.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nova-fake-compute
+      app.kubernetes.io/instance: controlplane-keystone-nova
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nova-fake-compute
+        app.kubernetes.io/instance: controlplane-keystone-nova
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 42424
+        runAsGroup: 42424
+        fsGroup: 42424
+      initContainers:
+        # nova-compute writes a uuid to state_path/compute_id on its first start
+        # and refuses to start again if the file is gone while its service
+        # record is not. state_path is an emptyDir here, so the file dies with
+        # the pod: seeding a fixed uuid is what lets the pod restart.
+        - name: node-identity
+          image: ghcr.io/c5c3/nova:2025.2
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", 'printf %s "$COMPUTE_ID" > /var/lib/nova/compute_id']
+          env:
+            - name: COMPUTE_ID
+              value: d13d13d1-0000-4000-8000-000000000003
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/nova
+      containers:
+        - name: nova-compute
+          image: ghcr.io/c5c3/nova:2025.2
+          imagePullPolicy: IfNotPresent
+          # The fragment by absolute path, the overlay as a directory: the
+          # fragment is one key of a Secret whose other keys are values rather
+          # than config files, so a --config-dir over the mount would hand
+          # oslo.config the transport URL as if it were a document.
+          command:
+            - nova-compute
+            - --config-file
+            - /etc/nova/compute-config/nova-compute.conf
+            - --config-dir
+            - /etc/nova/compute.conf.d
+          env:
+            # The identity the compute registers under. It is the node's name
+            # because the OVN chassis registers under that name too
+            # (operators/ovn/internal/controller/reconcile_nodes.go:145 sets
+            # external_ids:hostname="${NODE_NAME}"), and neutron binds a port
+            # only to a host that has a live chassis. A compute under any other
+            # name would leave every port unbound.
+            - name: OS_DEFAULT__HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OS_DEFAULT__TRANSPORT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-compute-config
+                  key: transport_url
+            # The four client sections of the fragment and the token middleware
+            # all authenticate as the one service account the contract publishes
+            # under the password key, which is why every override reads it.
+            - name: OS_KEYSTONE_AUTHTOKEN__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-compute-config
+                  key: password
+            - name: OS_SERVICE_USER__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-compute-config
+                  key: password
+            - name: OS_PLACEMENT__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-compute-config
+                  key: password
+            - name: OS_NEUTRON__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-compute-config
+                  key: password
+            - name: OS_CINDER__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-compute-config
+                  key: password
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: compute-config
+              mountPath: /etc/nova/compute-config
+              readOnly: true
+            - name: compute-overlay
+              mountPath: /etc/nova/compute.conf.d
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/nova
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # The whole Secret, not one key: on a TLS bus the contract adds ca.crt
+        # beside the fragment, which is where its ssl_ca_file points.
+        - name: compute-config
+          secret:
+            secretName: controlplane-keystone-nova-compute-config
+        - name: compute-overlay
+          configMap:
+            name: controlplane-keystone-fake-compute-conf
+        - name: state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

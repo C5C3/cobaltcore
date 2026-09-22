@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The OVN metadata agent of the full-ControlPlane suite. It terminates the
+# 169.254.169.254 requests the booted server makes and forwards them to the Nova
+# metadata API, signed with the value both sides read from
+# controlplane-keystone-nova-metadata-secret.
+#
+# That Secret is the one the ControlPlane generates for its own compute service
+# (reconcile_nova_metadata_secret.go writes the Password generator, the
+# ExternalSecret and the reference on the Nova child), so this fixture proves
+# the generated value reaches a consumer outside the plane: the agent signs with
+# it, the metadata API checks against it, and the verify Job's signed round-trip
+# fails on a mismatch.
+#
+# spec.messaging is unset. The agent opens no RPC and no notification connection
+# of its own: it reads what it needs out of the Southbound database the chassis
+# pods share with it over their runtime directory.
+#
+# novaMetadata.host is the Service the nova operator puts in front of the
+# metadata Deployment, named after the Nova CR plus "-metadata"
+# (operators/nova/internal/controller/reconcile_metadata.go:37-39). Port 8775 is
+# nova-api-metadata's own default and protocol is the scheme the in-cluster
+# Service answers on; both are written out so the values do not depend on the
+# defaulting webhook.
+#
+# sharedSecretRef names the Secret alone, the way an agent written by hand for a
+# ControlPlane-generated secret does: the defaulting webhook fills the key with
+# shared_secret, which is the key the ControlPlane writes the value under.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: controlplane-keystone-agent
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  chassisRef:
+    name: controlplane-keystone-chassis
+  novaMetadata:
+    host: controlplane-keystone-nova-metadata.openstack.svc.cluster.local
+    port: 8775
+    protocol: http
+    sharedSecretRef:
+      name: controlplane-keystone-nova-metadata-secret

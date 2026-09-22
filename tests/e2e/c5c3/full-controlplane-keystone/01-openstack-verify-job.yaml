@@ -10,9 +10,10 @@
 # credential actually works end-to-end and that the identity, image, placement,
 # key-manager, network, and block-storage services are catalogued. It also lists
 # the role assignments of the INJECTED "glance", "placement", "barbican",
-# "neutron" and "cinder" service accounts and greps for the "service" role (and
-# for "admin" on cinder), proving the RoleAssignments landed in Keystone, uploads
-# a real image through the projected Glance endpoint
+# "neutron", "cinder", "nova" and "neutron-nova" service accounts and greps for
+# the "service" role (and for "admin" on cinder, nova and neutron-nova, while
+# "neutron" must hold service alone), proving the RoleAssignments landed in
+# Keystone. It uploads a real image through the projected Glance endpoint
 # into the Garage S3 backend, waits for it to reach "active", and deletes it
 # (proving the image service works end-to-end rather than only being
 # catalogued), lists the placement resource classes through the projected
@@ -23,7 +24,13 @@
 # four more round-trips: a volume on the NFS backend, a backup created, restored
 # into that volume and deleted, an encrypted volume type whose LUKS key is
 # counted into and back out of Barbican, and two creates from the same image
-# where the second one has to be served by the image-volume cache. It also reads
+# where the second one has to be served by the image-volume cache. Through the
+# projected Nova endpoint it then boots one server: it checks that the fake
+# compute reports up, creates a flavor, a 1 MiB image, a network and a subnet,
+# waits for the server to reach ACTIVE on that compute, checks the port it
+# carries is bound on the same host with vif_type ovs, signs a metadata request
+# with the ControlPlane-generated shared secret and compares the 200 it answers
+# against the 403 a wrong signature gets, and deletes what it made. It also reads
 # the RegionOne description back and compares it against the literal the
 # ControlPlane's `spec.regionDescription` sets.
 #
@@ -63,6 +70,17 @@ spec:
           env:
             - name: OS_CLIENT_CONFIG_FILE
               value: /etc/openstack/clouds.yaml
+            # The metadata shared secret the ControlPlane generated for its own
+            # compute service. The Job signs its metadata request with it, which
+            # is the only way to prove the generated value reached the Nova side:
+            # a metadata API that was configured with no secret at all answers
+            # the same 200 to an unsigned request, and one configured with a
+            # different value answers 403 to this signature.
+            - name: METADATA_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-metadata-secret
+                  key: shared_secret
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -97,14 +115,39 @@ spec:
               echo "== openstack --os-cloud admin role assignment list --names --user neutron =="
               openstack --os-cloud admin role assignment list --names --user neutron
               openstack --os-cloud admin role assignment list --user neutron --names -f value -c Role | grep -qx service
+              # The network service's OWN account holds service alone. The admin
+              # reach its port notifier needs belongs to the separate neutron-nova
+              # user below, so an admin row here would widen every neutron API
+              # call the service makes on its own behalf.
+              if openstack --os-cloud admin role assignment list --user neutron --names -f value -c Role | grep -qx admin; then
+                echo "ERROR: the neutron service account holds admin; only its neutron-nova notifier may"
+                exit 1
+              fi
               echo "== openstack --os-cloud admin role assignment list --names --user cinder =="
               openstack --os-cloud admin role assignment list --names --user cinder
-              # Cinder is the one service account with a second role: it deletes the
-              # Barbican secret of an encrypted volume as a fallback when the
-              # volume's owner cannot, which Barbican's secure-RBAC defaults put
-              # behind admin. Both rows are asserted, so dropping either one fails.
+              # Cinder takes a second role: it deletes the Barbican secret of an
+              # encrypted volume as a fallback when the volume's owner cannot,
+              # which Barbican's secure-RBAC defaults put behind admin. Both rows
+              # are asserted, so dropping either one fails.
               openstack --os-cloud admin role assignment list --user cinder --names -f value -c Role | grep -qx service
               openstack --os-cloud admin role assignment list --user cinder --names -f value -c Role | grep -qx admin
+              echo "== openstack --os-cloud admin role assignment list --names --user nova =="
+              openstack --os-cloud admin role assignment list --names --user nova
+              # Nova holds admin for the mirror of cinder's reason: it calls the
+              # block-storage API as its own service user in admin contexts,
+              # where it carries no user token, and cinder refuses a caller
+              # holding service alone on a volume that belongs to a user.
+              openstack --os-cloud admin role assignment list --user nova --names -f value -c Role | grep -qx service
+              openstack --os-cloud admin role assignment list --user nova --names -f value -c Role | grep -qx admin
+              echo "== openstack --os-cloud admin role assignment list --names --user neutron-nova =="
+              openstack --os-cloud admin role assignment list --names --user neutron-nova
+              # The port notifier's account, provisioned by the second
+              # registration the network service takes. Nova looks the instance
+              # behind a notified port up with the caller's own context,
+              # unelevated, so an account holding service alone has every
+              # network-changed event answered 404 and leaves the port in BUILD.
+              openstack --os-cloud admin role assignment list --user neutron-nova --names -f value -c Role | grep -qx service
+              openstack --os-cloud admin role assignment list --user neutron-nova --names -f value -c Role | grep -qx admin
               echo "== image upload round-trip =="
               # The projected K-ORC catalog rows carry no region — K-ORC's
               # EndpointResourceSpec has no region field — while the mounted
@@ -289,6 +332,173 @@ spec:
               wait_gone volume cp-vol 120
               osc image delete cp-cache-img
               echo "OK: image-volume cache"
+              echo "== compute round-trip =="
+              # The CRUD check for the compute service, driven through the
+              # ControlPlane's own admin credential like the network and
+              # block-storage ones and through the same region-stripped osc()
+              # wrapper: the compute rows carry no region either.
+              #
+              # The fake compute the suite deploys is the only nova-compute on
+              # this cluster, so exactly one host has to report up. The state
+              # travels over the bus on a periodic, and the report can lag the
+              # discovery the chainsaw script ran, so the listing is polled for
+              # a minute before it is counted.
+              COMPUTE_HOST=""
+              for _ in $(seq 1 12); do
+                COMPUTE_HOST="$(osc compute service list --service nova-compute \
+                  -f value -c Host -c State | awk '$2 == "up" { print $1 }')"
+                if [ -n "${COMPUTE_HOST}" ]; then
+                  break
+                fi
+                sleep 5
+              done
+              test "$(echo "${COMPUTE_HOST}" | wc -w)" -eq 1 || {
+                echo "ERROR: expected exactly one nova-compute host up, got '${COMPUTE_HOST}'"
+                osc compute service list --service nova-compute 2>&1 || true
+                exit 1
+              }
+              echo "OK: compute service ${COMPUTE_HOST} up"
+              # The smallest flavor the fake driver can be asked for. It is
+              # created only when absent, so a rerun against a cloud that
+              # already carries it does not fail on the duplicate name.
+              osc flavor show m1.nano >/dev/null 2>&1 \
+                || osc flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
+              # One mebibyte of nothing: the fake driver never reads the image,
+              # and a small file keeps the Glance upload inside the budget.
+              truncate -s 1M /tmp/cp-boot.raw
+              osc image create --disk-format raw --container-format bare --file /tmp/cp-boot.raw cp-boot
+              wait_status image cp-boot active 120
+              # A tenant network of the suite's own. The server needs a port on
+              # one for the chassis to bind and for the metadata request below
+              # to carry an address.
+              osc network create cp-compute-net
+              osc subnet create --network cp-compute-net --subnet-range 10.77.0.0/24 cp-compute-subnet
+              osc server create --image cp-boot --flavor m1.nano --network cp-compute-net cp-server
+              # Polled rather than --wait so a server that goes to ERROR fails
+              # here with the show that names the fault instead of spending the
+              # whole window on one that is already dead.
+              SRV_DEADLINE=$(( $(date +%s) + 300 ))
+              while true; do
+                SRV_STATUS="$(osc server show cp-server -f value -c status 2>/dev/null || true)"
+                if [ "${SRV_STATUS}" = "ACTIVE" ]; then
+                  break
+                fi
+                if [ "${SRV_STATUS}" = "ERROR" ] || [ "$(date +%s)" -ge "${SRV_DEADLINE}" ]; then
+                  echo "ERROR: server cp-server status '${SRV_STATUS:-<none>}' != ACTIVE within 300s"
+                  osc server show cp-server 2>&1 || true
+                  exit 1
+                fi
+                sleep 5
+              done
+              SRV_HOST="$(osc server show cp-server -f value -c OS-EXT-SRV-ATTR:host)"
+              test "${SRV_HOST}" = "${COMPUTE_HOST}" \
+                || { echo "ERROR: server cp-server landed on '${SRV_HOST}', want '${COMPUTE_HOST}'"; exit 1; }
+              echo "OK: server cp-server ACTIVE on ${SRV_HOST}"
+              # The port the network gave the server. A bound port is what tells
+              # a scheduled server from a networked one: vif_type ovs plus a
+              # host_id means the OVN chassis on that node claimed it, while a
+              # server whose port never bound still reads ACTIVE here.
+              PORT_ID="$(osc port list --server cp-server -f value -c ID)"
+              test -n "${PORT_ID}" || { echo "ERROR: server cp-server carries no port"; exit 1; }
+              PORT_JSON="$(osc port show "${PORT_ID}" -f json)"
+              export PORT_JSON
+              # openstackclient spells the binding attributes with a colon in
+              # some releases and with an underscore in others, so the document
+              # is read by key with both spellings accepted rather than by
+              # column name.
+              PORT_FACTS="$(python3 <<'PYEOF'
+              import json
+              import os
+              import re
+
+              port = json.loads(os.environ["PORT_JSON"])
+
+
+              def field(*names):
+                  for name in names:
+                      if name in port:
+                          return port[name]
+                  raise SystemExit("port document carries none of: %s" % ", ".join(names))
+
+
+              addresses = re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", json.dumps(field("fixed_ips")))
+              print(field("binding:vif_type", "binding_vif_type"))
+              print(field("binding:host_id", "binding_host_id"))
+              print(addresses[0] if addresses else "")
+              PYEOF
+              )"
+              VIF_TYPE="$(echo "${PORT_FACTS}" | sed -n 1p)"
+              BOUND_HOST="$(echo "${PORT_FACTS}" | sed -n 2p)"
+              FIXED_IP="$(echo "${PORT_FACTS}" | sed -n 3p)"
+              test "${VIF_TYPE}" = "ovs" \
+                || { echo "ERROR: port ${PORT_ID} vif_type '${VIF_TYPE}', want ovs"; exit 1; }
+              test "${BOUND_HOST}" = "${COMPUTE_HOST}" \
+                || { echo "ERROR: port ${PORT_ID} bound to '${BOUND_HOST}', want '${COMPUTE_HOST}'"; exit 1; }
+              test -n "${FIXED_IP}" || { echo "ERROR: port ${PORT_ID} carries no fixed IPv4 address"; exit 1; }
+              echo "OK: port bound (${VIF_TYPE}) on ${BOUND_HOST}"
+              # The signed metadata round-trip, made by hand rather than from
+              # inside the instance: the fake driver runs no guest, so nothing
+              # there can reach 169.254.169.254. The four headers are what the
+              # metadata agent on the chassis sends for a real instance.
+              #
+              # The wrong-signature 403 is the half that proves the generated
+              # secret reached the compute side. A metadata API configured with
+              # no secret at all skips the check and answers 200 to both
+              # requests, so the 200 alone would pass against a Nova that never
+              # read the ControlPlane's Secret.
+              SERVER_ID="$(osc server show cp-server -f value -c id)"
+              PROJECT_ID="$(osc server show cp-server -f value -c project_id)"
+              export SERVER_ID PROJECT_ID FIXED_IP
+              python3 <<'PYEOF'
+              import hashlib
+              import hmac
+              import json
+              import os
+              import urllib.error
+              import urllib.request
+
+              URL = ("http://controlplane-keystone-nova-metadata.openstack.svc:8775"
+                     "/openstack/latest/meta_data.json")
+              server_id = os.environ["SERVER_ID"]
+              secret = os.environ["METADATA_SHARED_SECRET"]
+
+
+              def get(signature):
+                  request = urllib.request.Request(URL, headers={
+                      "X-Instance-ID": server_id,
+                      "X-Tenant-ID": os.environ["PROJECT_ID"],
+                      "X-Instance-ID-Signature": signature,
+                      "X-Forwarded-For": os.environ["FIXED_IP"],
+                  })
+                  return urllib.request.urlopen(request, timeout=30)
+
+
+              def sign(key):
+                  return hmac.new(key.encode(), server_id.encode(), hashlib.sha256).hexdigest()
+
+
+              response = get(sign(secret))
+              if response.status != 200:
+                  raise SystemExit("signed metadata request returned HTTP %s" % response.status)
+              document = json.loads(response.read().decode())
+              if document.get("uuid") != server_id:
+                  raise SystemExit(
+                      "metadata uuid %r is not the server's %r" % (document.get("uuid"), server_id))
+
+              try:
+                  status = get(sign("not-the-shared-secret")).status
+              except urllib.error.HTTPError as err:
+                  status = err.code
+              if status != 403:
+                  raise SystemExit(
+                      "metadata request with a wrong signature returned HTTP %s, want 403" % status)
+              PYEOF
+              echo "OK: metadata signed round-trip"
+              osc server delete --wait cp-server
+              osc subnet delete cp-compute-subnet
+              osc network delete cp-compute-net
+              osc image delete cp-boot
+              echo "OK: compute round-trip"
           volumeMounts:
             - name: clouds
               mountPath: /etc/openstack
