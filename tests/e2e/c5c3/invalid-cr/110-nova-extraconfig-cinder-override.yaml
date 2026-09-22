@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# [cinder] catalog_info in services.nova.extraConfig is forbidden by the ownership
+# family as soon as services.cinder is declared: the ControlPlane switches the Nova
+# child's volume service on from the sibling block, through endpoints.cinder, and
+# computes every key behind that switch. The override names a catalog tuple this
+# plane does not publish, so nova resolves the volume service from an entry that is
+# not there. The key is only Reported in the nova registry, because a Nova child on
+# its own cannot tell a projected volume service from a hand-configured one, which
+# is why the fixture carries the cinder block too. The step anchors on
+# `catalog_info` and on the sentence the ownership family composes,
+# `is projected by the ControlPlane from services.cinder`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-nova-cinder-override
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+    placement: {}
+    neutron:
+      ovn:
+        centralRef:
+          name: ovn
+    cinder:
+      backends:
+      - name: nfs1
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /volumes
+    nova:
+      extraConfig:
+        cinder:
+          catalog_info: volumev3:cinderv3:publicURL
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

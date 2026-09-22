@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.nova.consoleProxy.gateway.path carries a prefix, which the webhook
+# refuses: it must be empty or "/". The rule mirrors the one the Nova CRD applies
+# to the block this one is projected onto. The API hands a browser a console URL
+# at the root of the console hostname and the noVNC client opens its WebSocket
+# there as well, so a prefix match routes neither while the HTTPRoute still
+# reports Accepted. The proxy is enabled and the gateway is otherwise valid, so
+# the ONLY violation is the path.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-nova-console-path
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+    placement: {}
+    neutron:
+      ovn:
+        centralRef:
+          name: ovn
+    nova:
+      consoleProxy:
+        enabled: true
+        gateway:
+          hostname: console.example.com
+          parentRef:
+            name: openstack-gw
+          path: /console
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

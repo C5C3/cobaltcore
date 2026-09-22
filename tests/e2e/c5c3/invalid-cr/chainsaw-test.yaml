@@ -706,6 +706,154 @@ spec:
             ($error != null): true
             (contains($error, 'services.cinder.extraConfig[barbican][barbican_endpoint]')): true
             (contains($error, 'is projected by the ControlPlane from services.barbican')): true
+    # services.placement is required as soon as services.nova is set (webhook-only):
+    # Nova claims every instance's resources in Placement before it boots, and the
+    # projected child addresses its sibling by the naming convention the
+    # ControlPlane projects it under, so a compute service without one reaches an
+    # endpoint no child serves.
+    - apply:
+        file: 100-nova-without-placement.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.placement')): true
+            (contains($error, 'is required when services.nova is set')): true
+    # services.neutron is required as soon as services.nova is set (webhook-only):
+    # Nova creates and binds a port for every instance.
+    - apply:
+        file: 101-nova-without-neutron.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.neutron')): true
+            (contains($error, 'is required when services.nova is set')): true
+    # services.glance is required as soon as services.nova is set (webhook-only):
+    # Nova reads the image of every instance it boots.
+    - apply:
+        file: 102-nova-without-glance.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.glance')): true
+            (contains($error, 'is required when services.nova is set')): true
+    # The shared message bus is not optional for the compute service
+    # (webhook-only): the Nova CRD requires spec.messaging, and the ControlPlane
+    # derives the child's transport URL from spec.infrastructure.messaging. The
+    # fixture also declares services.neutron, which requires the bus too, so the
+    # error names the field twice; the anchors pin the nova sentence.
+    - apply:
+        file: 103-nova-without-messaging.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'infrastructure.messaging')): true
+            (contains($error, 'is required when services.nova is set')): true
+    # A 37-character ControlPlane name would project a 42-character Nova child, one
+    # over the 41 the Nova CRD admits. The webhook rejects it up front (create-only):
+    # metadata.name is immutable, so an admitted CR never recovers. The same length
+    # overruns the Neutron and the Glance bound as well, so the anchors pin the nova
+    # sentence.
+    - apply:
+        file: 104-nova-name-too-long.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'the projected Nova child CR name would be 42 characters')): true
+            (contains($error, 'when spec.services.nova is set')): true
+    # services.nova.publicEndpoint must name the same host as the gateway
+    # (webhook-only): the listener routes that hostname to the Nova API, so a
+    # divergent host advertises a catalog endpoint that never reaches it.
+    - apply:
+        file: 105-nova-public-endpoint-host-mismatch.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.nova.publicEndpoint')): true
+            (contains($error, 'must equal services.nova.gateway.hostname')): true
+    # The console route carries no path prefix (webhook-only, mirroring the rule the
+    # Nova CRD applies to the projected block): the API hands the browser a console
+    # URL at the root of the console hostname and the noVNC client opens its
+    # WebSocket there as well, so a prefix match routes neither.
+    - apply:
+        file: 106-nova-console-gateway-path.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'consoleProxy.gateway.path')): true
+            (contains($error, 'must be empty or "/"')): true
+    # replicas beside consoleProxy.enabled false is refused by the CEL rule on
+    # ServiceNovaConsoleProxySpec, which has no webhook twin: a disabled proxy has no
+    # Deployment to size, so the value would have nowhere to land.
+    - apply:
+        file: 107-nova-console-knobs-while-disabled.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'consoleProxy')): true
+            (contains($error, 'replicas and gateway must not be set when consoleProxy.enabled is false')): true
+    # An unparseable services.nova.dbArchive.schedule is refused by the webhook
+    # rather than by a CRD pattern: the accepted grammar includes descriptors such
+    # as @daily, which no regex expresses without also rejecting valid expressions.
+    - apply:
+        file: 108-nova-dbarchive-schedule-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'dbArchive.schedule')): true
+            (contains($error, 'invalid cron expression')): true
+    # services.nova in External mode is forbidden by the webhook (cross-field,
+    # mirroring its glance, placement, barbican, neutron and cinder siblings). The
+    # three services Nova depends on are forbidden in External mode too, so the
+    # fixture declares none of them and the error names them as required as well,
+    # each naming services.nova; the anchor is the forbid's own sentence, which no
+    # other error on this fixture carries.
+    - apply:
+        file: 109-external-with-nova.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'Nova needs its own External-mode design')): true
+            (contains($error, 'forbidden when services.keystone.mode is External')): true
+    # [cinder] catalog_info in services.nova.extraConfig is forbidden beside a
+    # declared services.cinder (webhook-only): the ControlPlane switches the Nova
+    # child's volume service on from the sibling block and computes every key behind
+    # that switch, so the override names a catalog tuple this plane does not publish.
+    - apply:
+        file: 110-nova-extraconfig-cinder-override.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'catalog_info')): true
+            (contains($error, 'is projected by the ControlPlane from services.cinder')): true
+    # A gateway beside consoleProxy.enabled false is refused by the gateway leg of
+    # the same CEL rule 107 pins: a disabled proxy has no listener to publish.
+    - apply:
+        file: 111-nova-console-gateway-while-disabled.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'consoleProxy')): true
+            (contains($error, 'replicas and gateway must not be set when consoleProxy.enabled is false')): true
+    # The metadata route carries no path prefix (webhook-only): the Neutron metadata
+    # agent has no path option and requests /openstack/... on the root of the
+    # hostname, so a prefix match routes none of its requests.
+    - apply:
+        file: 112-nova-metadata-gateway-path.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'metadataGateway.path')): true
+            (contains($error, 'must be empty or "/"')): true
+    # Two Nova listeners on one hostname and one Gateway listener tie (webhook-only):
+    # every Nova route matches the root of its hostname, so the Gateway would hand
+    # every request to one of the two routes.
+    - apply:
+        file: 113-nova-gateways-share-a-listener.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.nova.metadataGateway.hostname')): true
+            (contains($error, 'on the same Gateway listener')): true
     # A 256-character spec.regionDescription is refused by the CRD's MaxLength 255
     # marker (K-ORC's bound on RegionResourceSpec.Description); there is no
     # webhook mirror, so the error is the API server's own.

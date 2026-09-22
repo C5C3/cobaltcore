@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# metadata.name is 37 characters, so the projected "{cp}-nova" child would be 42,
+# one over the 41 the Nova CRD admits: the nova operator appends "-db-archive" for
+# the archive CronJob and Kubernetes caps CronJob names at 52. The ControlPlane
+# webhook rejects the name up front (create-only): metadata.name is immutable, so
+# an admitted CR would fail to apply its Nova child on every pass, NovaReady would
+# never go True, and the only recovery would be recreating the whole plane. The
+# same length also overruns the Neutron and the Glance child bound, so the error
+# carries three sentences. The step anchors on the one the nova rule renders:
+# `the projected Nova child CR name would be 42 characters`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-nova-name-bound-xxxxxxxxxxxxxxxxxx
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+    placement: {}
+    neutron:
+      ovn:
+        centralRef:
+          name: ovn
+    nova: {}
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
