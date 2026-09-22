@@ -58,6 +58,7 @@ of the fields below the plane fills and which it leaves to this CR.
 | `workers` | [`WorkersSpec`](#workersspec) | no | `{}` | Pod-level knobs of the two worker Deployments. Both are sized by the one block |
 | `messaging` | [`commonv1.MessagingSpec`](../c5c3/controlplane-crd.md#messagingspec) | yes | `replicas: 3` | The RabbitMQ connection. One of `clusterRef` (managed) or `secretRef` (brownfield), never both, plus the optional `tls` block naming a CA bundle Secret. `replicas` is read by the ControlPlane's managed-mode projection alone. A placed Neutron whose bus runs on the management cluster has to use `secretRef`: the transport-URL helper reads and writes in the CR's own namespace through the CR's own children client, which for a placed CR is the target cluster's |
 | `ovn` | [`OVNSpec`](#ovnspec) | yes | none | The OVN control plane this Neutron programs |
+| `nova` | [`*NovaSpec`](#novaspec) | no | `nil` (notifications off) | The compute service this Neutron notifies when a port changes state, and the Keystone account it notifies as. The presence of the block is the switch: while it is set the operator turns both `notify_nova_on_port_*` flags on and renders the `[nova]` credentials, and while it is absent the flags stay off and the section stays empty, so a port never waits for a vif-plugged event nothing sends. There is no `enabled` field, and no endpoint override: neutron's `[nova]` option group carries `region_name` and `endpoint_type` alone, so the compute endpoint is resolved from the Keystone catalog |
 | `ovnDBSync` | [`*OVNDBSyncSpec`](#ovndbsyncspec) | no | `nil` (no CronJob) | The recurring `neutron-ovn-db-sync-util` run. A nil block means no CronJob at all. See [ovnDBSync](#ovndbsync) |
 | `gateway` | [`*commonv1.GatewaySpec`](../keystone/keystone-crd.md#gatewayspec) | no | `nil` | External exposure through a Gateway API HTTPRoute forwarding to the `{name}` Service on port 9696. Requires `hostname` and `parentRef.name`, and takes an optional `path` and `annotations` map. Removing the block deletes the HTTPRoute. It does not change `status.endpoint`, which stays the cluster-local Service URL |
 | `networkPolicy` | [`*commonv1.NetworkPolicySpec`](../keystone/keystone-crd.md#networkpolicyspec) | no | `nil` | Ingress restricted to TCP 9696 from the listed sources; egress derived for DNS, the database, the Keystone endpoint, the cache, the two OVN databases, and the broker port, with `additionalEgress` appended after it. At least one ingress source is required (fail-closed) |
@@ -65,7 +66,7 @@ of the fields below the plane fills and which it leaves to this CR.
 | `logging` | [`*commonv1.LoggingSpec`](../keystone/keystone-crd.md#loggingspec) | no | `text` / `INFO` / `debug: false` | oslo.log derivation: `format` (`text` or `json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook. The `json` format ships a `logging.conf` in the config ConfigMap and points `[DEFAULT] log_config_append` at it |
 | `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](../keystone/keystone-crd.md#secretstorerefspec) | no | `nil` (`openbao-cluster-store`) | Selects the External Secrets store the operator resolves `SecretsReady` against: `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required `name`. A namespaced store is resolved in this Neutron's own namespace. The ControlPlane projects this field onto the Neutron it owns |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | Names the registered target cluster that receives this Neutron's children: the three Deployments, the ConfigMaps, the Secrets, and the database CRs. The CR itself stays on the management cluster, and so do its status and its finalizers. Immutable, enforced by two CEL transition rules and by the webhook. See [Target Clusters](../target-clusters.md) |
-| `extraConfig` | `map[string]map[string]string` | no | `nil` | Free-form INI sections for options with no dedicated field. The render-time merge is `operator defaults < extraConfig`, so a user value wins, and each section is routed to the file its consumer reads. An override of an operator-owned key is honored and reported through the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event, except for the fourteen keys the webhook refuses outright. Option names are checked at admission against the per-release catalog embedded in the operator. See [Defaulting and validation](#defaulting-and-validation) |
+| `extraConfig` | `map[string]map[string]string` | no | `nil` | Free-form INI sections for options with no dedicated field. The render-time merge is `operator defaults < extraConfig`, so a user value wins, and each section is routed to the file its consumer reads. An override of an operator-owned key is honored and reported through the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event, except for the fifteen keys the webhook refuses outright. Option names are checked at admission against the per-release catalog embedded in the operator. See [Defaulting and validation](#defaulting-and-validation) |
 
 `DeploymentSpec`, `AutoscalingSpec`, `NetworkPolicySpec`,
 `NetworkPolicyIngressSource`, `LoggingSpec`, `GatewaySpec`,
@@ -89,6 +90,49 @@ Each of the four identity fields is written verbatim into
 `[keystone_authtoken]`, so the validating webhook rejects a newline or carriage
 return in any of them. `spec.region` reaches the same section through the same
 renderer and goes through the same check.
+
+### NovaSpec
+
+The notifier is a REST client of the compute API's `os-server-external-events`
+resource, so it needs a Keystone account of its own and a region to resolve the
+endpoint in.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `region` | `string` | no | `""` | The Keystone region the compute endpoint is resolved in (`[nova] region_name`). When empty the option is omitted and the notifier uses the catalog's default region |
+| `serviceUser` | [`NovaNotifierUserSpec`](#novanotifieruserspec) | yes | see below | The Keystone account the notifier authenticates as, and the Secret holding its password |
+
+### NovaNotifierUserSpec
+
+The field set of [`ServiceUserSpec`](#serviceuserspec) with defaults of its own.
+The account is separate from `spec.serviceUser` because the notifier calls the
+compute API as a user holding the `admin` role, which the token-validation
+account does not need: nova resolves the instance behind a notified port with the
+caller's own context, unelevated, so a notifier holding `service` alone has every
+event answered 404 and leaves the port in `BUILD`.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `username` | `string` | no | `neutron-nova` | Keystone username (`[nova] username`) |
+| `projectName` | `string` | no | `service` | The project the notifier account scopes to (`project_name`) |
+| `userDomainName` | `string` | no | `Default` | The domain the notifier account lives in (`user_domain_name`) |
+| `projectDomainName` | `string` | no | `Default` | The domain the notifier project lives in (`project_domain_name`) |
+| `secretRef` | [`commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | yes | `key` → `password` | The Secret holding the notifier password. It is injected as `OS_NOVA__PASSWORD` into the API Deployment, both worker Deployments and the ovn-db-sync CronJob, and never rendered into the config. The webhook requires a non-empty `name`: `serviceUser.secretRef.name must be set when spec.nova is configured: it carries the password Neutron notifies Nova with` |
+
+The region and the four identity fields are written verbatim into `[nova]`, so
+the validating webhook rejects a newline or carriage return in any of the five,
+the way it does for `spec.serviceUser`.
+
+A CR written before `spec.nova` existed configures the notifier through
+`spec.extraConfig`: the two `[DEFAULT] notify_nova_on_port_*` switches and the
+`[nova]` section. Those keys are now operator-owned, so after the upgrade such a
+CR reports `ExtraConfigHealthy=False` with an `ExtraConfigOwnedKeyOverride`
+Warning event, and its next write raises an admission warning, although nothing
+it renders changes: `spec.extraConfig` still wins the merge. A carried-over
+`[nova] password` is kept with a warning (see
+[Rejected owned keys](#rejected-owned-keys)). Move the account into `spec.nova`,
+with its password in the Secret `serviceUser.secretRef` names, and drop the
+entries from `spec.extraConfig`.
 
 ### APIServerSpec
 
@@ -186,8 +230,8 @@ What a CR that says nothing beyond the required fields gets in `neutron.conf`:
 | `[DEFAULT]` | `rpc_state_report_workers` | `0` |
 | `[DEFAULT]` | `dhcp_agent_notification` | `false` |
 | `[DEFAULT]` | `dns_domain` | `cobaltcore.local.` |
-| `[DEFAULT]` | `notify_nova_on_port_status_changes` | `false` |
-| `[DEFAULT]` | `notify_nova_on_port_data_changes` | `false` |
+| `[DEFAULT]` | `notify_nova_on_port_status_changes` | `true` while `spec.nova` is set, `false` otherwise |
+| `[DEFAULT]` | `notify_nova_on_port_data_changes` | `true` while `spec.nova` is set, `false` otherwise |
 | `[DEFAULT]` | `use_stderr` | `true` |
 | `[DEFAULT]` | `debug` | from `spec.logging.debug`, which oslo.log reads independently of the root logger level |
 | `[DEFAULT]` | `default_log_levels` | the sorted `spec.logging.perLoggerLevels` CSV; omitted when the map is empty |
@@ -200,7 +244,10 @@ What a CR that says nothing beyond the required fields gets in `neutron.conf`:
 | `[oslo_messaging_rabbit]` | `rabbit_quorum_queue`, `rabbit_transient_quorum_queue`, `use_queue_manager` | `true` |
 | `[oslo_messaging_rabbit]` | `ssl`, `ssl_ca_file` | `true` and `/etc/rabbitmq-ca/ca.crt`; written only while `spec.messaging.tls` is set |
 | `[oslo_concurrency]` | `lock_path` | `/var/lib/neutron/lock` |
-| `[nova]` | none | The section is rendered empty. Neutron reads `[nova]` for the notification credentials, and the empty header is what a Nova option added later through `spec.extraConfig` fills in |
+| `[nova]` | `auth_type`, `auth_url`, `username`, `project_name`, `user_domain_name`, `project_domain_name` | `password`, `spec.keystoneEndpoint`, and the four `spec.nova.serviceUser` identity fields; written only while `spec.nova` is set |
+| `[nova]` | `region_name` | from `spec.nova.region`; omitted when empty |
+| `[nova]` | `endpoint_type` | `internal`, the catalog entry a co-located control plane can reach. The public one routes the notifications out of the cluster and back |
+| `[nova]` | none | Without `spec.nova` the section is rendered empty. The header is what a Nova option added through `spec.extraConfig` fills in |
 
 And in `ml2_conf.ini`:
 
@@ -226,7 +273,9 @@ Five keys carry the bus posture. `rpc_workers` and
 no `neutron-rpc-server` is projected. `[oslo_messaging_notifications] driver` is
 `noop`, so versioned notifications are dropped at the source; nothing
 accumulates in a queue nobody drains. The two `notify_nova_on_port_*` options
-stay `false` until a Nova is deployed to receive the events. A valid
+follow `spec.nova`: the port events are REST calls to
+`os-server-external-events` rather than oslo notifications, so the `noop` driver
+does not reach them. A valid
 `transport_url` is still needed: `spec.messaging` is required, and the URL
 reaches every neutron process and every migration Job through the
 `OS_DEFAULT__TRANSPORT_URL` environment override sourced from the derived
@@ -238,10 +287,11 @@ property of the node, so they live on the
 local OVS as `ovn-bridge-mappings`. `enable_distributed_floating_ip` is absent
 from the defaults; the option catalog knows it, so `spec.extraConfig` can set it.
 
-Three values never enter either file: the database password, the broker
-password, and the service-user password. Each arrives as an oslo.config
-environment override (`OS_DATABASE__CONNECTION`, `OS_DEFAULT__TRANSPORT_URL`,
-`OS_KEYSTONE_AUTHTOKEN__PASSWORD`), which is why the `[database] connection`
+Four values never enter either file: the database password, the broker password,
+the service-user password, and, while `spec.nova` is set, the notifier password.
+Each arrives as an oslo.config environment override (`OS_DATABASE__CONNECTION`,
+`OS_DEFAULT__TRANSPORT_URL`, `OS_KEYSTONE_AUTHTOKEN__PASSWORD`,
+`OS_NOVA__PASSWORD`), which is why the `[database] connection`
 value in the rendered file is a placeholder URL: oslo.config parses the file
 before the override is applied, so the placeholder has to be syntactically
 valid.
@@ -254,7 +304,11 @@ The mutating webhook applies the shared `DeploymentSpec` defaults to both
 `dogpile.cache.pymemcache`, materializes `spec.logging` and its baseline
 (`text` / `INFO` / `debug: false`) so no reconciler dereferences a nil pointer,
 and fills the `ServiceUserSpec` identity defaults (`neutron` / `service` /
-`Default` / `Default`, `secretRef.key` → `password`). It fills an empty
+`Default` / `Default`, `secretRef.key` → `password`). Inside a **present**
+`spec.nova` it fills the notifier identity the same way (`neutron-nova` /
+`service` / `Default` / `Default`, `secretRef.key` → `password`); an absent block
+stays absent, because that is what keeps the port notifications off. It fills an
+empty
 `spec.ovn.centralRef.namespace` with the CR's own namespace. For the halves a CR
 carries it fills `spec.messaging.secretRef.key` with `transport_url` and
 `spec.messaging.tls.caBundleSecretRef.key` with `ca.crt`. When
@@ -317,6 +371,7 @@ Messaging and the OVN reference:
 | `exactly one of clusterRef or secretRef must be set` | `spec.messaging` names both modes or neither |
 | `caBundleSecretRef.name must be set when spec.messaging.tls is configured` | A TLS block with no CA bundle name has nothing to verify the broker against |
 | `centralRef.name must be set (the OVNCentral this Neutron programs)` | `spec.ovn.centralRef.name` is empty. A Neutron without a control plane has nothing to program |
+| `serviceUser.secretRef.name must be set when spec.nova is configured: it carries the password Neutron notifies Nova with` | `spec.nova` is present with an empty `serviceUser.secretRef.name`. A notifier with no password to authenticate with has every event refused |
 
 Keystone endpoints and URL shapes, applied to `keystoneEndpoint` when non-empty
 and to `keystonePublicEndpoint` only when set:
@@ -334,7 +389,7 @@ Control characters. Each of these values is written into the rendered INI as
 
 | Message | Applies to |
 | --- | --- |
-| `value must not contain a newline or carriage return: it is rendered verbatim into neutron.conf, so a newline injects arbitrary config lines` | `spec.region`, the four `spec.serviceUser` identity fields, `spec.ovn.centralRef.name`, `spec.ovn.centralRef.namespace`, and `spec.gateway.hostname` |
+| `value must not contain a newline or carriage return: it is rendered verbatim into neutron.conf, so a newline injects arbitrary config lines` | `spec.region`, the four `spec.serviceUser` identity fields, `spec.nova.region` and the four `spec.nova.serviceUser` identity fields (read through a zero-valued `NovaSpec` when the block is absent, so the check costs nothing there), `spec.ovn.centralRef.name`, `spec.ovn.centralRef.namespace`, and `spec.gateway.hostname` |
 | `value must not contain a newline or carriage return: it is rendered verbatim into the service configuration file, so a newline injects arbitrary config lines` | `spec.cache.clusterRef.name` and each entry of `spec.cache.servers`, through the shared cache validator |
 
 `spec.gateway.hostname` is on the first list although the config renderer never
@@ -455,7 +510,7 @@ would already have done the damage by the time `ExtraConfigHealthy` could
 surface it, which is the case for a credential the rendering copies into the
 config Secret every pod mounts, a path or connection string that points a
 process somewhere the operator did not provision, and a switch that selects a
-security control. Those fourteen are refused at admission for the `Neutron`
+security control. Those fifteen are refused at admission for the `Neutron`
 kind:
 
 | Key | Owned by | Why the override is refused |
@@ -465,6 +520,7 @@ kind:
 | `[DEFAULT] transport_url` | `spec.messaging` | The runtime value arrives through `OS_DEFAULT__TRANSPORT_URL`, so a file value is inert and only copies the broker credentials into the rendered config Secret |
 | `[database] connection` | `spec.database` | The runtime value arrives through `OS_DATABASE__CONNECTION`, so a file value is inert and only copies the database password into the rendered config Secret |
 | `[keystone_authtoken] password` | `spec.serviceUser.secretRef` | The middleware reads the password from `OS_KEYSTONE_AUTHTOKEN__PASSWORD`, so a file value is inert and only copies the service password into the rendered config Secret |
+| `[nova] password` | `spec.nova.serviceUser.secretRef` | The notifier reads the password from `OS_NOVA__PASSWORD`, so a file value is inert and only copies the notifier password into the rendered config Secret |
 | `[securitygroup] enable_security_group` | operator-computed | It is what makes the ML2/OVN mechanism driver program the ACLs a port's security groups describe. Disabling it leaves every instance port reachable from every other |
 | `[ovn] ovn_nb_connection` | `spec.ovn.centralRef` | The connection string is resolved from the referenced `OVNCentral`; another address points the mechanism driver at a logical model it does not own |
 | `[ovn] ovn_sb_connection` | `spec.ovn.centralRef` | The Southbound half of the same rule |
@@ -475,10 +531,20 @@ kind:
 | `[ovn] ovn_sb_certificate` | operator-computed | The Southbound certificate |
 | `[ovn] ovn_sb_ca_cert` | operator-computed | The Southbound CA bundle |
 
+An update that carries a refused key over from the stored object with the same
+value is admitted with a warning instead of refused. `[nova] password` joined the
+list when the operator started owning the notifier account, and before that
+`spec.extraConfig` was the documented way to configure the notifier, so refusing
+it on every update, the finalizer removal on delete included, would leave such a
+CR with no update to remove it through. A new or changed value is still refused.
+
 Every other entry in the registry is honored and reported: the remaining
-`[DEFAULT]` keys, the `[keystone_authtoken]` keys `keystoneauth.Section`
-renders, the `[oslo_messaging_notifications]`, `[oslo_messaging_rabbit]` and
-`[oslo_concurrency]` keys, the `[ml2]` and per-type-driver keys, and the two
+`[DEFAULT]` keys, including the two `notify_nova_on_port_*` switches
+`spec.nova` owns; the `[keystone_authtoken]` keys `keystoneauth.Section` renders
+and the eight `[nova]` keys it renders beside them, owned by `spec.nova`,
+`spec.keystoneEndpoint` and the operator; the
+`[oslo_messaging_notifications]`, `[oslo_messaging_rabbit]` and
+`[oslo_concurrency]` keys; the `[ml2]` and per-type-driver keys; and the two
 remaining `[ovn]` keys `ovn_l3_scheduler` and `ovn_metadata_enabled`. A
 conditionally rendered key is registered unconditionally: the registry records
 that a key is not the user's to set, not that it is currently rendered.

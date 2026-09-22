@@ -97,9 +97,13 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 
 ### full-controlplane-keystone
 
-Applies one `ControlPlane` CR carrying seven services (keystone, horizon,
-glance, placement, barbican, neutron, cinder) and asserts the whole chain link by
-link, gating each link on the previous one:
+Applies one `ControlPlane` CR carrying eight services (keystone, horizon,
+glance, placement, barbican, neutron, cinder, nova) and asserts the whole chain
+link by link, gating each link on the previous one. It runs with
+`spec.concurrent: false`, because the compute leg pins a node: the script labels
+one node `openstack.c5c3.io/chassis=true` before it applies the ControlPlane, and
+the `OVNChassis` pods that land there program the local Open vSwitch over host
+paths any other chassis or metadata agent would share.
 
 1. **Infrastructure** — owned MariaDB (`openstack-db`) and Memcached
    (`openstack-memcached`) created and owned by the ControlPlane;
@@ -175,7 +179,11 @@ link, gating each link on the previous one:
 5i. **OVN gate + Neutron child** — `OVNReady=True` with reason
    `OVNCentralReady`, mirroring the standalone `OVNCentral`
    (`controlplane-keystone-ovn`) the suite applies beside the ControlPlane and
-   never owns. Then the owned Neutron CR (`controlplane-keystone-neutron`) on
+   never owns. The `OVNChassis` on the labelled node follows, applied here rather
+   than beside the compute leg because its pods register only against a serving
+   OVN control plane, and Neutron binds a port only to a host carrying a live
+   chassis row in the Southbound database. Then the owned Neutron CR
+   (`controlplane-keystone-neutron`) on
    the Barbican child's terms: database/cache clusterRefs, an engine-issued
    (Dynamic) DB credential, the derived Keystone endpoint, and the registered
    `neutron` service user. On top of those it asserts the bus Secret
@@ -213,11 +221,58 @@ link, gating each link on the previous one:
    advertise the in-cluster Cinder API on the project-less `/v3` path
    (`http://controlplane-keystone-cinder.openstack.svc:8776/v3`).
 
+5m. **Nova child + its two DB chains** — `NovaReady=True` over the owned Nova CR
+   (`controlplane-keystone-nova`), the widest projection of the chain: it needs
+   the delivered bus Secret, the registration, two engine-issued DB credentials,
+   the generated metadata shared secret, and the child's own Ready, which waits
+   on the db-sync of both schemas and on five Deployments (API, metadata,
+   scheduler, conductor, console proxy). The two database halves are asserted
+   separately, each with its `clusterRef`, its logical name (`nova_api` and
+   `nova`), its own `secretRef`, and `credentialsMode: Dynamic`; each chain is
+   then checked the way its peers are, over the engine role and the ServiceAccount
+   that buys its lease. On top of those the suite asserts what no peer carries:
+   the metadata shared secret the ControlPlane generated (an ExternalSecret whose
+   `dataFrom` names a `Password` generator, a `refreshInterval` of `0s`, and a
+   value materialised under `shared_secret`), the compute contract Secret
+   `controlplane-keystone-nova-compute-config` the child publishes on
+   `status.computeConfigSecretRef`, and the four replica counts the ControlPlane
+   sizes.
+
+5n. **Compute catalog** — owned K-ORC compute Service plus an internal and a
+   public Endpoint. With no gateway in this fixture both advertise the in-cluster
+   Nova API on the `/v2.1` path the compute API is served under
+   (`http://controlplane-keystone-nova.openstack.svc:8774/v2.1`).
+
+5o. **The Neutron → Nova notifier leg** — the wire between the two services, and
+   the one thing neither the Neutron nor the Nova link can assert alone. The
+   Neutron child's `spec.nova.serviceUser` names `neutron-nova` and reads its
+   password from the notifier registration's consumer Secret, and the
+   `neutron-server` Deployment sources `OS_NOVA__PASSWORD` from that same Secret,
+   which is where the wiring is visible since the password never reaches the
+   rendered configuration. The registration behind it
+   (`controlplane-keystone-neutron-nova`) reaches Ready carrying an account and
+   no catalog entry, provisions the `neutron-nova` user, **references**
+   `service-neutron` rather than creating it, and binds `service` **and**
+   `admin`.
+
+   The suite then applies `05-neutronmetadataagent-cr.yaml` on the chassis the
+   OVN leg brought up and waits for it: the agent's `SecretsReady` gate resolves
+   the shared secret the ControlPlane generated, so a Ready agent proves that
+   value reaches a consumer outside the plane. The fixture names the Secret alone
+   and leaves the key to the agent's defaulting webhook, the way an agent written
+   by hand does, so a Ready agent also proves the generated key is the one both
+   consumers default to. `06-fake-compute.yaml` follows, the nova-compute a compute
+   cluster would build out of the contract Secret, and
+   `tests/e2e/nova/discover-hosts.sh` runs the host discovery by hand:
+   nova-scheduler places a server only on a host that also has a mapping in the
+   API database, and nova-manage writes those from a 300-second periodic that is
+   longer than the step can wait.
+
 6. **Aggregate** — `Ready=True` with reason `AllReady`.
 
-6a. **Service status** — `status.services[]` reports seven entries, ready, in the
+6a. **Service status** — `status.services[]` reports eight entries, ready, in the
    order `setServicesStatus` emits them: keystone, horizon, glance, placement,
-   barbican, neutron, cinder.
+   barbican, neutron, cinder, nova.
 
 6b. **Dynamic DB credential engine** — no static DB password remains at rest (the
    retired per-CR KV path is absent, AC 2/6); an engine-issued credential
@@ -256,6 +311,31 @@ link, gating each link on the previous one:
    listing that counts it needs `--all-projects`. The suite greps the Job's logs
    for each of those four lines.
 
+   The compute round-trip closes the Job. Exactly one nova-compute host has to
+   report up, polled for a minute because the state travels over the bus on a
+   periodic (`OK: compute service <node> up`). A server is then booted from a
+   1 MiB raw image on an `m1.nano` flavor and a tenant network of the Job's own,
+   and it has to reach `ACTIVE` on that same host
+   (`OK: server cp-server ACTIVE on <node>`). Its port has to carry
+   `vif_type: ovs` and a `host_id` naming the node, which is what tells a
+   scheduled server from a networked one: a server whose port never bound still
+   reads `ACTIVE` (`OK: port bound (ovs) on <node>`). The metadata request is
+   then made by hand with the four headers a metadata agent sends, because the
+   fake driver runs no guest: the correctly signed one has to return 200 with
+   the server's own uuid, and one signed with a wrong secret has to return 403.
+   That 403 is the half that proves the generated secret reached the compute
+   side, since a metadata API configured with no secret at all answers 200 to
+   both (`OK: metadata signed round-trip`). The server, the subnet, the network
+   and the image are deleted again (`OK: compute round-trip`). The suite greps
+   the Job's logs for each of those five lines, pinning the host to the node it
+   labelled.
+
+   Two log assertions follow the Job, on the two services the notifier wires
+   together. The nova API has to have logged an `os-server-external-events` call
+   answered `200`, which is the notifier reaching it; and the neutron-server log
+   must carry no `network-changed … returned with failed status`, which is what a
+   notifier account too narrow to resolve the instance would leave behind.
+
 The block-storage service widens this suite's presence guard. Beyond the CRDs
 and operators its peers need, it requires a running cinder-operator, a
 `shared-rabbitmq` broker reporting `AllReplicasReady`, and an `nfs-server`
@@ -265,7 +345,23 @@ up no Cinder at all. `hack/deploy-infra.sh` installs neither by default, so the
 cluster has to be brought up with `WITH_MESSAGING=true` and `WITH_NFS=true`,
 which is what the `e2e-controlplane` job sets. Probing for them turns a missing
 stack into one gated line instead of a `CinderReady` wait that burns the script
-budget.
+budget. The compute service widens the guard once more: it needs a running
+nova-operator, and the chassis its server's port binds on needs the
+`openvswitch` and `geneve` kernel modules on the runner host, which the
+`e2e-controlplane` job asks for with `WITH_OVN_KERNEL_MODULES: "true"`.
+
+The suite budgets 65 minutes for the consolidated script, 5 for its diagnostic
+`catch`, and one timeout per `finally` script: 5 minutes to delete the verify
+Job, 2 to release the broker vhost, and 5 for the compute leg's own footprint.
+That last one deletes the fake compute, the metadata agent and the chassis in
+reverse order of the apply and then takes the `openstack.c5c3.io/chassis` label
+off every node, because none of the three is owned by the ControlPlane and a
+label left standing advertises a chassis role nothing serves. With the shared
+3-minute cleanup budget the suite's ceiling is
+`65 + 5 + 5 + 2 + 5 + 3 = 85` minutes. Every one of those timeouts is pinned
+rather than inherited: chainsaw applies the suite's `exec` budget to each script
+operation, so an unpinned `catch` or `finally` would each carry 30 minutes of
+their own.
 
 ### external-keystone
 
@@ -732,7 +828,10 @@ tests/e2e/c5c3/
 │   ├── 00-controlplane-cr.yaml         ControlPlane CR (controlplane-keystone)
 │   ├── 01-openstack-verify-job.yaml    openstack CLI verify Job
 │   ├── 02-horizon-secret-key-externalsecret.yaml  Per-CP Horizon secret key
-│   └── 03-ovncentral-cr.yaml           Standalone OVNCentral the ControlPlane references
+│   ├── 03-ovncentral-cr.yaml           Standalone OVNCentral the ControlPlane references
+│   ├── 04-ovnchassis-cr.yaml           OVNChassis on the labelled node, which binds the server's port
+│   ├── 05-neutronmetadataagent-cr.yaml Metadata agent on that chassis, gated on the generated secret
+│   └── 06-fake-compute.yaml            nova-compute built out of the published compute contract
 ├── invalid-cr/
 │   ├── chainsaw-test.yaml              ControlPlane admission rejections
 │   ├── _generate.py                    Canonical scaffold + generator for the fixtures
