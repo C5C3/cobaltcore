@@ -187,7 +187,7 @@ type InfrastructureSpec struct {
 }
 
 // ServicesSpec declares the per-service configuration of the control plane.
-// Keystone, Horizon, Glance, Placement, Barbican, Neutron, and Cinder are
+// Keystone, Horizon, Glance, Placement, Barbican, Neutron, Cinder, and Nova are
 // modeled today; additional services are added as optional pointer fields as
 // the operator grows.
 type ServicesSpec struct {
@@ -269,6 +269,30 @@ type ServicesSpec struct {
 	// the ControlPlane carries the annotation c5c3.io/allow-cinder-deletion: "true".
 	// +optional
 	Cinder *ServiceCinderSpec `json:"cinder,omitempty"`
+
+	// Nova configures the compute service projected by the reconciler. The
+	// ControlPlane projects one Nova CR named <cp>-nova, registers the compute
+	// catalog entry and the nova service account for it, and hands the child the
+	// shared bus from spec.infrastructure.messaging as a brownfield Secret, two
+	// database credentials (the compute service holds the nova_api schema and the
+	// cell schema side by side), and a generated shared secret the metadata API and
+	// the metadata agents sign proxied requests with. The projection is gated on
+	// KeystoneReady (the compute service authenticates against the ControlPlane's
+	// Keystone child), on PlacementReady (the conductor claims every instance's
+	// resources in Placement before it boots), and on the registration's
+	// AccountReady. spec.infrastructure.messaging is required while this block is
+	// set, and the block is forbidden in External mode.
+	//
+	// The block requires services.placement, services.neutron, and services.glance
+	// (webhook enforced): nova schedules against Placement's inventories, plugs
+	// every instance into a Neutron port, and boots it from a Glance image, so a
+	// compute service without those three siblings accepts a boot request and
+	// leaves it in error. Optional: a ControlPlane with services.nova unset manages
+	// no compute service. Flipping this from set to nil preserves the
+	// previously-projected Nova child unless the ControlPlane carries the
+	// annotation c5c3.io/allow-nova-deletion: "true".
+	// +optional
+	Nova *ServiceNovaSpec `json:"nova,omitempty"`
 }
 
 // ServiceKeystoneSpec is a CURATED LOCAL subset of the knobs the ControlPlane
@@ -2117,6 +2141,323 @@ type CinderDedicatedBackingServicesSpec struct {
 	Cache *commonv1.CacheSpec `json:"cache,omitempty"`
 }
 
+// ServiceNovaSpec is a CURATED LOCAL subset of the knobs the ControlPlane
+// exposes for the compute service, mirroring the ServiceKeystoneSpec and
+// ServiceCinderSpec DECISION above: the reconciler (L2) PROJECTS this struct
+// into a Nova CR; the two databases, cache, message bus, Keystone endpoint,
+// service user, and the Placement, Neutron, Glance, Cinder, and Barbican
+// endpoints of that Nova CR are DERIVED from the ControlPlane
+// (infrastructure.*, the sibling children's naming convention, and operator
+// policy) rather than set by the user here, so this type stays a local copy of
+// the shapes it projects rather than an import of novav1alpha1.NovaSpec.
+//
+// Seven fields have no counterpart on the other services. Three are replica
+// counts, because the compute service runs a metadata API, a scheduler, and a
+// conductor in Deployments beside its API. Two are the metadata pair,
+// metadataGateway and metadataSharedSecretRef: the metadata API is the one
+// endpoint dialed from a compute cluster rather than from inside the control
+// plane, and the agent that dials it signs every request with a secret both
+// sides have to hold. consoleProxy sizes and publishes the noVNC console proxy,
+// a browser-facing bridge to the hypervisors no other service runs, and
+// dbArchive tunes the archive of the rows Nova soft-deletes instead of removing.
+type ServiceNovaSpec struct {
+	// Replicas overrides the number of Nova API replicas. When nil the
+	// reconciler applies the nova operator's own default (3). It sizes the API
+	// Deployment only; the metadata, scheduler, conductor, and console-proxy
+	// Deployments carry replica counts of their own.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// MetadataReplicas overrides the replica count of the nova-metadata-api
+	// Deployment, the process that answers an instance's calls to
+	// 169.254.169.254. When nil the reconciler applies the nova operator's own
+	// default (1); the metadata API holds nothing between requests, so raising
+	// it costs only the pods.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	MetadataReplicas *int32 `json:"metadataReplicas,omitempty"`
+
+	// SchedulerReplicas overrides the replica count of the nova-scheduler
+	// Deployment, the process that picks a host for every instance the conductor
+	// asks it about. When nil the reconciler applies the nova operator's own
+	// default (1); schedulers are peers that read the same host state out of
+	// Placement, so raising it costs only the pods.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	SchedulerReplicas *int32 `json:"schedulerReplicas,omitempty"`
+
+	// ConductorReplicas overrides the replica count of the nova-conductor
+	// Deployment, the only process that reaches the cell database on behalf of a
+	// compute node. When nil the reconciler applies the nova operator's own
+	// default (1); conductors are peers that hold nothing between requests, so
+	// raising it costs only the pods.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	ConductorReplicas *int32 `json:"conductorReplicas,omitempty"`
+
+	// ConsoleProxy configures the console proxy of the projected compute
+	// service. Omitting it (the default) leaves the proxy enabled at the nova
+	// operator's own defaults, which is what a plane whose users open instance
+	// consoles wants. See ServiceNovaConsoleProxySpec.
+	// +optional
+	ConsoleProxy *ServiceNovaConsoleProxySpec `json:"consoleProxy,omitempty"`
+
+	// Image optionally overrides the Nova container image. When nil the
+	// reconciler derives the image from spec.openStackRelease.
+	// +optional
+	Image *commonv1.ImageSpec `json:"image,omitempty"`
+
+	// Gateway optionally exposes the projected Nova API externally via a Gateway
+	// API HTTPRoute. When nil (the default) the reconciler does NOT project a
+	// gateway and the Nova API is reachable in-cluster only.
+	// +optional
+	Gateway *commonv1.GatewaySpec `json:"gateway,omitempty"`
+
+	// PublicEndpoint is the externally routable Nova endpoint URL
+	// (e.g. "https://nova.127-0-0-1.nip.io:8443/v2.1"). It is used ONLY for the
+	// K-ORC public compute catalog Endpoint; unlike the keystone override it is
+	// projected into no child CR (the Nova child's keystoneEndpoint is
+	// Keystone's endpoint, a separate concern). The compute catalog entry is
+	// registered WITH the "/v2.1" version prefix, the path every client appends
+	// its requests to, so the value carries that path rather than a bare origin.
+	// When empty and Gateway is set, the reconciler derives
+	// "https://{gateway.hostname}/v2.1" (the default-443 form); set it
+	// explicitly when the externally reachable port differs (e.g. a kind
+	// host-port mapping like :8443), since the port cannot be derived from the
+	// hostname alone. The pattern and the 512-character bound mirror
+	// ServiceKeystoneSpec.PublicEndpoint, whose value flows into the same K-ORC
+	// Endpoint URL field.
+	//
+	// The keystone override is re-validated on the projected Keystone child; this
+	// one is projected nowhere, so the validating webhook is the only gate on the
+	// URL every client resolves to boot, list, and delete its instances. It
+	// therefore enforces what the markers cannot: a parseable URL carrying the
+	// version prefix and nothing further (no query, no fragment), and, whenever a
+	// gateway is configured, an https scheme and a host equal to gateway.hostname.
+	// Without a gateway an http:// value stays legal for development but raises an
+	// admission warning.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^https?://`
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+
+	// MetadataGateway optionally exposes the projected metadata API externally
+	// via a Gateway API HTTPRoute on a hostname of its own
+	// ("nova-metadata.<domain>"), the listener a Neutron metadata agent dials
+	// from the compute cluster it runs on. It is separate from Gateway because
+	// the two endpoints serve different callers: users reach the API, and only
+	// the metadata agents reach this one. When nil (the default) the reconciler
+	// projects no gateway and the metadata API is reachable in-cluster only,
+	// which is enough while the computes share the cluster the control plane
+	// runs on.
+	// +optional
+	MetadataGateway *commonv1.GatewaySpec `json:"metadataGateway,omitempty"`
+
+	// MetadataSharedSecretRef references a Secret holding the value the Neutron
+	// metadata agent signs proxied requests with, rendered as [neutron]
+	// metadata_proxy_shared_secret on the compute service and carried by every
+	// agent that proxies to it. When nil (the default) the ControlPlane
+	// generates the secret and hands it to the Nova child, the shape a plane
+	// whose agents it also manages wants. Supply one when the value has to be
+	// seeded from outside this ControlPlane's reach: a metadata request signed
+	// with a value only one side knows is rejected, so both sides have to
+	// resolve the same Secret. The shared type rejects an empty name, so the
+	// reference either names a Secret or is absent.
+	// +optional
+	MetadataSharedSecretRef *commonv1.SecretRefSpec `json:"metadataSharedSecretRef,omitempty"`
+
+	// DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
+	// for THIS service on the managed SHARED database, so a staged migration can run
+	// Nova on one mode while another service stays on the other. It applies to BOTH
+	// database blocks the compute service holds, the nova_api schema and the nova
+	// cell schema: the Nova CRD rejects a child whose two blocks carry different
+	// modes, so one value covers both. Empty (the default) inherits the
+	// ControlPlane-wide mode; it is deliberately NOT materialized by the defaulting
+	// webhook, so "inherit" stays distinguishable from an explicit override. A
+	// dedicated per-service database is Static-only (its own credentialsMode lives
+	// in dedicatedBackingServices.database, where the webhook already rejects
+	// Dynamic), so a Dynamic override on a service that declares one is rejected;
+	// Dynamic also requires the shared database to be managed (clusterRef set),
+	// mirroring the commonv1.DatabaseSpec contract, so a Dynamic override on a
+	// brownfield shared database is rejected too. A Static override is always
+	// admitted.
+	// +optional
+	// +kubebuilder:validation:Enum=Static;Dynamic
+	DatabaseCredentialsMode string `json:"databaseCredentialsMode,omitempty"`
+
+	// DBArchive tunes the recurring archive of the compute service's
+	// soft-deleted rows, projected onto the Nova child's spec.dbArchive.
+	// Omitting it (the default) leaves every knob at the nova operator's own
+	// resolution, which still runs the archive. See ServiceNovaDBArchiveSpec.
+	// +optional
+	DBArchive *ServiceNovaDBArchiveSpec `json:"dbArchive,omitempty"`
+
+	// ExtraConfig is a free-form INI block for the compute service. It is merged
+	// key by key with spec.globalExtraConfig (sections unioned, this per-service
+	// value winning per key), and the merged result is projected onto the Nova
+	// child's spec.extraConfig, which carries the nova.conf sections.
+	// +optional
+	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
+
+	// DedicatedBackingServices opts the compute service out of the
+	// ControlPlane-wide shared instances declared in spec.infrastructure and gives
+	// it backing services of its own. Omitting it (the default) keeps Nova on the
+	// ControlPlane's shared database cluster and cache, isolated only logically
+	// (its own logical databases, its own credentials). See
+	// NovaDedicatedBackingServicesSpec.
+	// +optional
+	DedicatedBackingServices *NovaDedicatedBackingServicesSpec `json:"dedicatedBackingServices,omitempty"`
+
+	// Namespace places the compute service, and the backing services, secret
+	// store, and credential material that follow it, in a namespace of its own
+	// instead of the ControlPlane's. Omitting it (the default) keeps Nova in the
+	// ControlPlane's namespace. The assignment is create-only: the validating
+	// webhook freezes the block after creation (see ServiceNamespaceSpec), because
+	// moving a live service across namespaces would strand its databases, its
+	// credential material, and its tenant store with no migration path.
+	// +optional
+	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
+
+	// TargetClusterRef names the registered target cluster the compute service is
+	// placed on. The projected Nova CR and the per-namespace objects that support
+	// it (its databases, its cache, its credential material) are created there
+	// instead of on the local cluster; omitting it (the default) keeps everything
+	// on the local (management) cluster. A placed service needs a namespace of its
+	// own (webhook enforced), and the ref is frozen after creation by the
+	// validating webhook. See ServiceKeystoneSpec.TargetClusterRef.
+	// +optional
+	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
+}
+
+// ServiceNovaConsoleProxySpec is the ControlPlane's view of the console proxy,
+// the nova-novncproxy Deployment that bridges a browser's noVNC session to the
+// VNC server of the hypervisor an instance runs on.
+//
+// The rule pairs the sizing knobs with the switch that projects them. A disabled
+// proxy has no Deployment to size and no listener to expose, and the Nova CRD
+// rejects a spec.consoleProxy.deployment written on a disabled proxy, so a
+// replicas or gateway value set here beside enabled: false has nowhere to land.
+// Rejecting it at admission answers the user instead of parking the projected
+// child on a rule of its own.
+// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || self.enabled || (!has(self.replicas) && !has(self.gateway))",message="replicas and gateway must not be set when consoleProxy.enabled is false"
+type ServiceNovaConsoleProxySpec struct {
+	// Enabled projects the console proxy. When nil the reconciler applies the
+	// nova operator's own default (true): a control plane whose consoles cannot
+	// be reached is a deliberate choice rather than the baseline. Setting it to
+	// false deletes the proxy Deployment, its Service, and its HTTPRoute.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Replicas overrides the replica count of the console-proxy Deployment. When
+	// nil the reconciler applies the nova operator's own default (1). Forbidden
+	// while the proxy is disabled (the rule above).
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Gateway optionally exposes the console proxy externally via a Gateway API
+	// HTTPRoute. It takes a hostname of its own rather than a path under the
+	// API's: the noVNC client opens a WebSocket against the host the console URL
+	// names, and the API hands that URL to the browser. When nil (the default)
+	// the reconciler projects no gateway and the proxy is reachable in-cluster
+	// only. Forbidden while the proxy is disabled (the rule above).
+	// +optional
+	Gateway *commonv1.GatewaySpec `json:"gateway,omitempty"`
+}
+
+// ServiceNovaDBArchiveSpec tunes the recurring archive of the compute service's
+// soft-deleted rows, projected onto the Nova child's spec.dbArchive. Nova
+// soft-deletes: a deleted instance stays in the instances table with a
+// deleted_at stamp, so a long-lived cloud carries every instance it ever booted
+// in the table the API queries. The archive moves those rows into the shadow
+// tables, where they stay available for accounting.
+//
+// It is a LOCAL COPY of the Nova CRD's DBArchiveSpec for the reason
+// CinderBackendEntry is a local copy: the api package carries the shapes it
+// projects rather than importing them into its types. A nil block resolves
+// exactly like an empty struct, so the archive runs on every projected Nova.
+type ServiceNovaDBArchiveSpec struct {
+	// Schedule is the standard cron expression the archive CronJob runs on. When
+	// empty the nova operator resolves its own default, once a day. The value is
+	// checked by the validating webhook rather than by a CRD pattern: the
+	// accepted grammar includes descriptors such as @daily, which no regex
+	// expresses without also rejecting valid expressions.
+	// +optional
+	Schedule string `json:"schedule,omitempty"`
+
+	// MaxRows bounds how many rows one batch moves per table, the --max_rows
+	// argument. When unset the nova operator resolves its own default (1000).
+	// The bound is what keeps a batch on a long-neglected database from holding
+	// table locks for the length of the backlog. A run repeats batches until
+	// nothing is left to move or its time budget is spent, and the next run
+	// picks up where it stopped.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	MaxRows *int32 `json:"maxRows,omitempty"`
+
+	// Sleep is how many seconds the run waits between batches. When unset the
+	// nova operator resolves its own default (1). Zero runs the batches back to
+	// back, which finishes sooner at the cost of the database serving the API at
+	// the same time.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Sleep *int32 `json:"sleep,omitempty"`
+
+	// RetentionDays keeps the most recent deletions out of the archive: when
+	// set, the run passes --before with today's date minus this many days, so a
+	// row soft-deleted inside the window stays in the live table. When unset no
+	// --before is passed and every soft-deleted row is eligible.
+	//
+	// The window also gates the task_log table, the record of the instance usage
+	// audit periods. Its rows are never soft-deleted, so archiving it without a
+	// date moves the current audit period out from under the API that still
+	// reports on it: the run passes --task-log only together with --before.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	RetentionDays *int32 `json:"retentionDays,omitempty"`
+
+	// Suspend pauses the archive CronJob without deleting it. It is the escape
+	// hatch for a brownfield deployment onboarding onto this operator: the first
+	// run works through a backlog that has never been archived, so an operator
+	// who wants to stage that can suspend the CronJob, pick a retention window
+	// covering the deployment's full history, and step it down.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
+}
+
+// NovaDedicatedBackingServicesSpec declares the backing-service instances the
+// compute service gets for itself instead of the ControlPlane-wide shared ones.
+// Nova consumes both a database and a cache, so it can take either or both
+// dedicated; a class left unset resolves to the ControlPlane-wide instance in
+// spec.infrastructure. See KeystoneDedicatedBackingServicesSpec for the full
+// contract.
+//
+// The block is optional, but must declare at least one class when present.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.database) || has(self.cache)",message="dedicatedBackingServices must declare at least one backing-service class (database, cache)"
+type NovaDedicatedBackingServicesSpec struct {
+	// Database gives Nova its own database cluster instead of the shared
+	// spec.infrastructure.database. Managed (clusterRef) and brownfield (host)
+	// modes are both supported. The compute service holds two schemas on it, the
+	// nova_api schema and the cell schema, so the instance declared here carries
+	// both.
+	//
+	// A dedicated managed database uses credentialsMode Static (the webhook
+	// materializes it and rejects Dynamic): the OpenBao database engine is
+	// bootstrapped once per namespace against the shared cluster, so no engine role
+	// exists that could issue credentials for a dedicated instance. Seed and rotate
+	// the credential at the OpenBao source.
+	// +optional
+	Database *commonv1.DatabaseSpec `json:"database,omitempty"`
+
+	// Cache gives Nova its own cache instead of the shared
+	// spec.infrastructure.cache. Managed (clusterRef) and brownfield (servers)
+	// modes are both supported.
+	// +optional
+	Cache *commonv1.CacheSpec `json:"cache,omitempty"`
+}
+
 // KORCSpec configures the K-ORC (OpenStack Resource Controller) integration of
 // the control plane. It declares how the admin application credential
 // is bootstrapped and rotated and which bootstrap resources are reconciled.
@@ -2591,6 +2932,13 @@ func cinderDedicatedBlock(cp *ControlPlane) *CinderDedicatedBackingServicesSpec 
 	return nil
 }
 
+func novaDedicatedBlock(cp *ControlPlane) *NovaDedicatedBackingServicesSpec {
+	if nv := cp.Spec.Services.Nova; nv != nil {
+		return nv.DedicatedBackingServices
+	}
+	return nil
+}
+
 // DedicatedKeystoneDatabase returns the database instance declared FOR the
 // Keystone service alone, or nil when Keystone shares the ControlPlane-wide
 // instance (the default).
@@ -2715,6 +3063,26 @@ func (cp *ControlPlane) DedicatedCinderCache() *commonv1.CacheSpec {
 	return nil
 }
 
+// DedicatedNovaDatabase returns the database instance declared FOR the compute
+// service alone, or nil when Nova shares the ControlPlane-wide instance (the
+// default). The compute service holds two schemas on whichever instance it
+// resolves to, the nova_api schema and the cell schema.
+func (cp *ControlPlane) DedicatedNovaDatabase() *commonv1.DatabaseSpec {
+	if b := novaDedicatedBlock(cp); b != nil {
+		return b.Database
+	}
+	return nil
+}
+
+// DedicatedNovaCache returns the cache instance declared for the compute
+// service alone, or nil when Nova shares the ControlPlane-wide instance.
+func (cp *ControlPlane) DedicatedNovaCache() *commonv1.CacheSpec {
+	if b := novaDedicatedBlock(cp); b != nil {
+		return b.Cache
+	}
+	return nil
+}
+
 // keystoneNamespaceBlock / horizonNamespaceBlock are the single nil-safe walk of
 // the per-service namespace BLOCK, shared by the webhook (defaulting, claim and
 // immutability rules) and by the resolvers below. The webhook needs the block
@@ -2766,6 +3134,13 @@ func neutronNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
 func cinderNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
 	if cd := cp.Spec.Services.Cinder; cd != nil {
 		return cd.Namespace
+	}
+	return nil
+}
+
+func novaNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
+	if nv := cp.Spec.Services.Nova; nv != nil {
+		return nv.Namespace
 	}
 	return nil
 }
@@ -2842,11 +3217,22 @@ func (cp *ControlPlane) CinderNamespace() string {
 	return cp.Namespace
 }
 
+// NovaNamespace resolves the namespace the compute service, and the databases,
+// cache, tenant store, and credential material that follow it, is placed in. See
+// KeystoneNamespace.
+func (cp *ControlPlane) NovaNamespace() string {
+	if ns := novaNamespaceBlock(cp); ns != nil && ns.Name != "" {
+		return ns.Name
+	}
+	return cp.Namespace
+}
+
 // DedicatedServiceNamespaces returns the namespaces the ControlPlane places
 // services in OUTSIDE its own, deduplicated by name and in a stable order
-// (keystone, horizon, glance, placement, barbican, neutron, cinder). It is the enumeration every cross-namespace concern walks:
-// the namespace sub-reconciler creates/verifies them, the tenant-store
-// sub-reconciler provisions a store in each, and the teardown sweeps each.
+// (keystone, horizon, glance, placement, barbican, neutron, cinder, nova). It is
+// the enumeration every cross-namespace concern walks: the namespace
+// sub-reconciler creates/verifies them, the tenant-store sub-reconciler
+// provisions a store in each, and the teardown sweeps each.
 //
 // An assignment naming the ControlPlane's own namespace contributes nothing (the
 // webhook rejects it at admission; skipping it here keeps a webhook-bypassed CR
@@ -2859,7 +3245,7 @@ func (cp *ControlPlane) DedicatedServiceNamespaces() []ServiceNamespaceSpec {
 	for _, ns := range []*ServiceNamespaceSpec{
 		keystoneNamespaceBlock(cp), horizonNamespaceBlock(cp), glanceNamespaceBlock(cp),
 		placementNamespaceBlock(cp), barbicanNamespaceBlock(cp), neutronNamespaceBlock(cp),
-		cinderNamespaceBlock(cp),
+		cinderNamespaceBlock(cp), novaNamespaceBlock(cp),
 	} {
 		if ns == nil || ns.Name == "" || ns.Name == cp.Namespace {
 			continue
@@ -2945,6 +3331,16 @@ func (cp *ControlPlane) CinderTargetClusterRef() *commonv1.TargetClusterRefSpec 
 	return nil
 }
 
+// NovaTargetClusterRef resolves the target cluster the compute service, and the
+// databases, cache, and credential material that follow it, is placed on. See
+// KeystoneTargetClusterRef.
+func (cp *ControlPlane) NovaTargetClusterRef() *commonv1.TargetClusterRefSpec {
+	if nv := cp.Spec.Services.Nova; nv != nil {
+		return nv.TargetClusterRef
+	}
+	return nil
+}
+
 // NeutronOVNCentralNamespace resolves the namespace the OVNCentral named by
 // services.neutron.ovn.centralRef lives in: the namespace on the ref when it
 // carries one, and the ControlPlane's own namespace otherwise. That is the same
@@ -2960,7 +3356,7 @@ func (cp *ControlPlane) NeutronOVNCentralNamespace() string {
 
 // TargetClusterNames returns the names of the target clusters the ControlPlane
 // places services on, deduplicated and in a stable order (keystone, horizon,
-// glance, placement, barbican, neutron, cinder — first occurrence wins),
+// glance, placement, barbican, neutron, cinder, nova; first occurrence wins),
 // mirroring DedicatedServiceNamespaces one level up.
 //
 // Two services placed on one cluster yield ONE entry: the enumeration answers
@@ -2973,7 +3369,7 @@ func (cp *ControlPlane) TargetClusterNames() []string {
 	for _, ref := range []*commonv1.TargetClusterRefSpec{
 		cp.KeystoneTargetClusterRef(), cp.HorizonTargetClusterRef(), cp.GlanceTargetClusterRef(),
 		cp.PlacementTargetClusterRef(), cp.BarbicanTargetClusterRef(), cp.NeutronTargetClusterRef(),
-		cp.CinderTargetClusterRef(),
+		cp.CinderTargetClusterRef(), cp.NovaTargetClusterRef(),
 	} {
 		if ref == nil || ref.Name == "" {
 			continue
