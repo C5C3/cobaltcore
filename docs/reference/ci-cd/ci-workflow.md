@@ -1160,8 +1160,8 @@ the prometheus suite scrapes live operator metrics.
 ### e2e-controlplane
 
 Runs the full c5c3 `ControlPlane` → Keystone chain on kind. It deploys the
-`keystone`, `horizon`, `glance`, `placement`, `barbican`, `ovn`, `neutron`, and
-`cinder` operators plus K-ORC and `c5c3-operator` as local dev images (rather
+`keystone`, `horizon`, `glance`, `placement`, `barbican`, `ovn`, `neutron`,
+`cinder`, and `nova` operators plus K-ORC and `c5c3-operator` as local dev images (rather
 than the GHCR-published Flux chart) and runs the
 `tests/e2e/c5c3/full-controlplane-keystone/` Chainsaw suite, which asserts the
 whole orchestration link by link: managed MariaDB/Memcached provisioning, the
@@ -1179,6 +1179,19 @@ projects the child and its satellites, and something drives that child to Ready
 once it lands. A second `hack/ci-dump-diagnostics.sh` invocation runs with
 `OPERATOR: cinder`, which points the operator half of the dump at
 `cinder-system` while the workload half stays on `openstack`.
+
+The compute service closes it in turn: `nova-operator:dev` and `nova:2025.2`
+join both image lists, and the `Deploy nova-operator` step runs between
+`Deploy cinder-operator` and `Deploy c5c3-operator`, so the Nova CRD exists
+before c5c3-operator projects the child and something drives that child to Ready
+once it lands. `setup-e2e-infra` gains `WITH_OVN_KERNEL_MODULES: "true"`: the
+suite applies an `OVNChassis` with a real ovn-controller, which binds the booted
+server's port and opens a Geneve tunnel from the kind node, and that tunnel needs
+the `openvswitch` and `geneve` modules on the runner host, which
+`deploy-infra.sh` modprobes under that switch. A third
+`hack/ci-dump-diagnostics.sh` invocation runs with `OPERATOR: nova`, pointing the
+operator half at `nova-system` while the workload half stays on `openstack`,
+where the projected Nova child and the suite's fake compute run.
 
 A second chainsaw step on the same cluster runs
 `tests/e2e/c5c3/keystone-service-foreign-namespace/`, the cross-namespace
@@ -1223,7 +1236,7 @@ The suite runs with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"`, which flips its
 presence guard from a silent SKIP to a hard failure — so a broken operator/CRD
 deployment fails the build instead of going green. Like `e2e-prometheus`, the
 job runs with `continue-on-error: false`, and it uses a 220-minute timeout on the
-larger runner because a real MariaDB + Memcached + Keystone + nine operators +
+larger runner because a real MariaDB + Memcached + Keystone + ten operators +
 OpenBao + ESO + K-ORC on one node is resource-heavy, and its three chainsaw
 suites run in sequence on that one node, so their budgets add up rather than
 overlap. A suite's ceiling is not its `exec` budget alone: chainsaw applies that

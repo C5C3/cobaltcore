@@ -138,6 +138,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Cinder` | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the projected Cinder block-storage child status changes. The cinder-operator is installed only for a ControlPlane that runs the block-storage service, so both legs sit behind the discovery probe with the other sibling-operator kinds |
 | `CinderBackend` | `Owns()` + cross-namespace `Watches()` | Re-reconciles when a projected CinderBackend satellite status changes, under the same discovery guard as the `Cinder` kind |
 | `CinderBackupBackend` | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the projected CinderBackupBackend satellite status changes, under the same discovery guard as the `Cinder` kind |
+| `Nova` | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the projected Nova compute-service child status changes. The nova-operator is installed only for a ControlPlane that runs the compute service, so both legs sit behind the discovery probe with the other sibling-operator kinds |
 | `OpenBaoCluster`, `OpenBaoTenant` | `Owns()` | Re-reconciles when the OpenBao instance provisioned for a dedicated Barbican secret store, or the tenant admitting its namespace, changes. The openbao-operator is installed only for that mode, so a ControlPlane without one runs on a cluster that never serves these kinds; both legs sit behind the discovery probe with the other sibling-operator kinds (`probeOptionalWatches`, which skips the leg and registers a leader-gated re-check that restarts the operator once the CRD appears) |
 | `RabbitmqCluster` (unstructured `rabbitmqClusterGVK`) | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the managed message-bus child status changes, so `InfrastructureReady` follows `AllReplicasReady` instead of waiting for the periodic requeue. Watched as `*unstructured.Unstructured`, since the c5c3 operator takes no dependency on the RabbitMQ Cluster Operator's Go module. Messaging is opt-in, so both legs sit behind the discovery probe with the openbao kinds: a cluster that does not serve `rabbitmqclusters.rabbitmq.com` starts without them, and `crdWatchGate` restarts the operator once the CRD appears |
 | `OVNCentral` | `Watches()` | Per-CR fan-out via `ovnCentralToControlPlaneMapper`. The central is deployed outside the plane and only named by `spec.services.neutron.ovn.centralRef`, so it carries no owner reference an `Owns()` could match; the leg re-runs `reconcileOVN` when the central's status moves instead of waiting for the periodic requeue. The ovn-operator is installed only for a plane that runs a network service, so the leg sits behind the discovery probe with the other sibling-operator kinds |
@@ -155,7 +156,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
 | `ClusterSecretStore` | `Watches()` | Per-ref fan-out via `storeToControlPlaneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind): a status change on a cluster-scoped store enqueues only the ControlPlanes whose effective `spec.secretStoreRef` resolves to it |
 | `SecretStore` | `Watches()` | The namespaced twin, scoped to the store's own namespace, so a ControlPlane pinned to a per-tenant `SecretStore` reacts to its backend health (`storeToControlPlaneMapper` for the namespaced kind) |
-| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `Placement` / `Barbican` / `BarbicanSecretStore` / `Neutron` / `Cinder` / `CinderBackend` / `CinderBackupBackend` / `OpenBaoCluster` / `OpenBaoTenant` / `RabbitmqCluster` / `MariaDB` / `Memcached` / `ExternalSecret` / `KeystoneService` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
+| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `Placement` / `Barbican` / `BarbicanSecretStore` / `Neutron` / `Cinder` / `CinderBackend` / `CinderBackupBackend` / `Nova` / `OpenBaoCluster` / `OpenBaoTenant` / `RabbitmqCluster` / `MariaDB` / `Memcached` / `ExternalSecret` / `KeystoneService` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
 
 The `Secret` watch uses `Watches()` with a `MapFunc` rather than `Owns()`
 because the admin-password Secret
@@ -277,6 +278,7 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `barbican.openstack.c5c3.io` | `barbicans`, `barbicansecretstores` | get, list, watch, create, update, patch, delete |
 | `neutron.openstack.c5c3.io` | `neutrons` | get, list, watch, create, update, patch, delete |
 | `cinder.openstack.c5c3.io` | `cinders`, `cinderbackends`, `cinderbackupbackends` | get, list, watch, create, update, patch, delete |
+| `nova.openstack.c5c3.io` | `novas` | get, list, watch, create, update, patch, delete |
 | `ovn.openstack.c5c3.io` | `ovncentrals` | get, list, watch |
 | `openbao.org` | `openbaoclusters`, `openbaotenants` | get, list, watch, create, update, patch, delete |
 | `rbac.authorization.k8s.io` | `roles`, `rolebindings`, `clusterrolebindings` | get, create, patch, delete |
@@ -285,6 +287,7 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `openstack.k-orc.cloud` | `applicationcredentials/status`, `services/status`, `endpoints/status`, `regions/status`, `users/status`, `domains/status`, `projects/status`, `roles/status`, `roleassignments/status` | patch |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
+| `generators.external-secrets.io` | `vaultdynamicsecrets`, `passwords` | get, list, watch, create, update, patch, delete |
 | `core` | `secrets` | get, list, watch, create, update, patch, delete |
 | `core` | `events` | create, patch |
 
@@ -462,7 +465,14 @@ grants. The markers therefore add `core/namespaces` with
 │  ║           │                    Requeue: 5s gated / 15s child or bus / 10s reg. ║ │
 │  ║           ▼                                                                    ║ │
 │  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileServiceAccounts │  Fold the five registration children's           ║ │
+│  ║  │ reconcileNova            │  Deliver the shared bus, the two DB              ║ │
+│  ║  │ (gate: KS + Placement +  │  credentials and the metadata secret,            ║ │
+│  ║  │  its registration)       │  then project the Nova child CR                  ║ │
+│  ║  └────────┬─────────────────┘  Sets: NovaReady (not-managed when unset)        ║ │
+│  ║           │                    Requeue: 5s gated / 15s child or bus / 10s reg. ║ │
+│  ║           ▼                                                                    ║ │
+│  ║  ┌──────────────────────────┐                                                  ║ │
+│  ║  │ reconcileServiceAccounts │  Fold the seven registration children's          ║ │
 │  ║  │  (gate: none)            │  readiness. Sets: ServiceAccountsReady           ║ │
 │  ║  └────────┬─────────────────┘  Requeue: 10s while one is not Ready             ║ │
 │  ║           │                                                                    ║ │
@@ -857,7 +867,7 @@ transport-URL Secret, plus the CA mirror on a TLS bus. `serviceMessagingSpec`
 renders the child's brownfield `spec.messaging`, `messagingCAMirrorReleasable` is
 the reap gate for the mirror, `pruneServiceMessagingCA` performs the reap, and
 `serviceMessagingSecrets` returns the two Secret stubs both teardown paths delete.
-Two services name themselves as targets. `neutronMessagingTarget(cp)` names
+Three services name themselves as targets. `neutronMessagingTarget(cp)` names
 `Neutron`, the `{controlplane.Name}-neutron` child, `cp.NeutronNamespace()` and
 `NeutronReady`, so the delivery lands as `{controlplane.Name}-neutron-messaging`
 and `{controlplane.Name}-neutron-messaging-ca` (see
@@ -866,9 +876,15 @@ and `{controlplane.Name}-neutron-messaging-ca` (see
 child, `cp.CinderNamespace()` and `CinderReady`, so its delivery lands as
 `{controlplane.Name}-cinder-messaging` and
 `{controlplane.Name}-cinder-messaging-ca` (see
-[reconcileCinder](#reconcilecinder)). Each Secret carries the ControlPlane's own
-name rather than the one the service operator claims for the Secret it derives
-from `spec.messaging.secretRef`, so no two controllers rewrite one object.
+[reconcileCinder](#reconcilecinder)). `novaMessagingTarget(cp)` names `Nova`, the
+`{controlplane.Name}-nova` child, `cp.NovaNamespace()` and `NovaReady`, for
+`{controlplane.Name}-nova-messaging` and
+`{controlplane.Name}-nova-messaging-ca` (see [reconcileNova](#reconcilenova)).
+Each Secret carries the ControlPlane's own name rather than the one the service
+operator claims for the Secret it derives from `spec.messaging.secretRef`, so no
+two controllers rewrite one object. In the Nova namespace that rule is what keeps
+the ControlPlane's delivery apart from the `{controlplane.Name}-nova-transport-url`
+Secret the nova operator derives for itself.
 
 Admission carries the same two shapes. `projectedChildNameBound` bounds a child
 name composed as `{controlplane.Name}` + infix + entry name against the
@@ -876,7 +892,7 @@ apiserver's 253-byte `metadata.name` cap, and `validateGlanceBackends` calls it
 with the `-glance-` infix and the `backend` entry noun the remediation tells the
 operator to shorten. `validateMessagingConsumers` requires
 `spec.infrastructure.messaging` once per declared service whose child CRD
-requires `spec.messaging`; Neutron and Cinder are the two such services. The
+requires `spec.messaging`; Neutron, Cinder and Nova are the three such services. The
 `CinderBackend` name carries a composed bound of its own that
 `projectedChildNameBound` does not express: `validateCinderBackends` keeps
 `len(controlplane.Name) + 7 + len(entry name)` at or below 47, the budget the
@@ -1537,18 +1553,18 @@ an empty websso block, which would silently remove a working SSO button.
 
 ### Built-in service registrations
 
-Glance, Placement, Barbican, Neutron and Cinder each need a Keystone catalog row
-and a Keystone service user. None of the five registers either itself: every one
-of them projects a [`KeystoneService`](./keystoneservice-crd.md) child and lets
-that CR's controller do the work. `builtin_registrations.go` is the leg all five
-share, so it is described once here rather than five times below, and a sixth
-built-in service adds the values it registers with rather than another copy of
-the leg.
+Glance, Placement, Barbican, Neutron, Cinder and Nova each need a Keystone
+catalog row and a Keystone service user. None of the six registers either itself:
+every one of them projects a [`KeystoneService`](./keystoneservice-crd.md) child
+and lets that CR's controller do the work. `builtin_registrations.go` is the leg
+all six share, so it is described once here rather than six times below, and a
+seventh built-in service adds the values it registers with rather than another
+copy of the leg.
 
 | Aspect | Value |
 | --- | --- |
 | File | `builtin_registrations.go` |
-| Conditions | `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `CinderReady` — the leg writes the caller's condition, never one of its own |
+| Conditions | `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `CinderReady`, `NovaReady` — the leg writes the caller's condition, never one of its own |
 | Projects / Owns | one `KeystoneService` named `{controlplane.Name}-{service}` in the namespace that service is placed in, applied through the **local** client whatever cluster the service runs on |
 | Requeue | `korcRequeueAfter` = **10s** while the registration is not usable yet |
 
@@ -1559,17 +1575,20 @@ name with **two** endpoints, `internal` and `public`, from the start, so no late
 catalog migration is needed. `spec.account` carries the service's user with a
 project of its own and `create: true`, plus the roles the caller passes: every
 service needs `service`, the role the OpenStack policy files reserve for
-service-to-service calls, and Cinder names `admin` on top. Each service creates
-its own project (`service-placement`, `service-barbican`, `service-neutron`,
-`service-cinder`), because two registrations creating one project would each
-adopt the other's Keystone row.
+service-to-service calls, and Cinder and Nova name `admin` on top. Each service
+creates its own project (`service-placement`, `service-barbican`,
+`service-neutron`, `service-cinder`, `service-nova`), because two registrations
+creating one project would each adopt the other's Keystone row.
 
-Cinder is the one registration whose account reaches past `service` (decision D9
-of #979). It deletes the Barbican secret of an encrypted volume as a fallback
-when the volume's owner cannot, and under Barbican's secure-RBAC defaults the
-`secret:get` and `secret:delete` rules a bare `admin` holds are what carry that
-reach across projects. `builtinRegistration` therefore takes the role list as a
-parameter instead of pinning `service` as a constant.
+Two registrations reach past `service`. Cinder deletes the Barbican secret of an
+encrypted volume as a fallback when the volume's owner cannot (decision D9 of
+#979), and under Barbican's secure-RBAC defaults the `secret:get` and
+`secret:delete` rules a bare `admin` holds are what carry that reach across
+projects. Nova calls the block-storage API through its `[cinder]` service user in
+admin contexts, where it carries no user token of its own, and cinder refuses a
+caller holding `service` alone on a volume that belongs to a user (decision D10
+of #1019). `builtinRegistration` therefore takes the role list as a parameter
+instead of pinning `service` as a constant.
 
 **The URLs each row advertises.** The `internal` endpoint advertises the
 in-cluster API Service URL — `http://{controlplane.Name}-glance.<glance-namespace>.svc:9292`
@@ -1577,13 +1596,15 @@ in-cluster API Service URL — `http://{controlplane.Name}-glance.<glance-namesp
 (`placementEndpointURL`), `…-barbican.<barbican-namespace>.svc:9311`
 (`barbicanEndpointURL`), `…-neutron.<neutron-namespace>.svc:9696`
 (`neutronEndpointURL`), `…-cinder.<cinder-namespace>.svc:8776`
-(`cinderEndpointURL`). The first four carry no `/v3` path suffix; unlike
-identity, those APIs are served at the root. The two block-storage rows do carry
-one: the API is served under the microversioned `v3` prefix, and the path is
+(`cinderEndpointURL`), `…-nova.<nova-namespace>.svc:8774`
+(`novaEndpointURL`). The first four carry no path suffix; unlike identity, those
+APIs are served at the root. Block storage and compute do carry one. The two
+block-storage rows take `/v3`, the microversioned prefix the API is served under,
 project-less because cinder resolves the project from the token rather than from
-the URL (decision D8 of #979). `cinderCatalogURL` appends it exactly once
-whichever origin wins, since the validating webhook admits a `publicEndpoint`
-only as a bare origin. The `public` endpoint resolves
+the URL (decision D8 of #979); the two compute rows take `/v2.1`, the compute
+API's own version prefix. `cinderCatalogURL` and `novaCatalogURL` append theirs
+exactly once whichever origin wins, since the validating webhook admits a
+`publicEndpoint` only as a bare origin. The `public` endpoint resolves
 through one preference order (`glanceCatalogURL` and its siblings): an explicit
 `services.<svc>.publicEndpoint`, advertised verbatim, then the externally routable
 gateway hostname `https://{gateway.hostname}`, then the same in-cluster URL when
@@ -1627,12 +1648,30 @@ the `ServiceRegistrationFieldsReclaimed` condition record it: an event ages out 
 etcd on the cluster's TTL, and without the condition a tampering remediated at
 02:00 would leave the ControlPlane reporting `Ready=True` with no durable trace.
 
+**One registration carries no catalog entry at all.** Both spec blocks of a
+`KeystoneService` are optional, so a registration naming only the account
+provisions the Keystone user and touches the catalog not at all.
+`desiredNeutronNovaNotifierRegistration` builds the one such registration: the
+`{controlplane.Name}-neutron-nova` child carrying the user the network service
+posts its port-status notifications to the compute service as. A user another
+service authenticates as answers no requests itself, so it has no endpoint to
+advertise, and the `KeystoneService` controller reports `CatalogReady=True` with
+reason `CatalogNotDeclared` for it. Its project is **referenced** rather than
+created: `desiredNeutronRegistration` owns `service-neutron`, and a second
+registration creating the same project would have the first teardown delete it
+under the second. The account holds `admin` beside `service`, which the network
+service's own registration does not: nova resolves the instance behind a notified
+port with the caller's own context, unelevated, so an account holding `service`
+alone has every notification answered 404 and leaves the port in `BUILD`. Every
+other rule `builtinRegistration` documents holds here too, the explicit
+ControlPlane namespace and the unset `adopt` flags among them.
+
 **Credentials follow a placed service.** For a service on a target cluster the leg
 mirrors the registration's consumer credentials there
 (`ensureBuiltinRegistrationMirror`): it resolves that cluster, gates on the store
 being ready **on that cluster**, and writes an `ExternalSecret` drawing the same
 OpenBao path. A co-located service is a no-op. For the credentials' shape and the
-aggregate condition over all five registrations, see
+aggregate condition over every projected registration, see
 [reconcileServiceAccounts](#reconcileserviceaccounts).
 
 | Path | Status | Reason | Notes |
@@ -2155,7 +2194,7 @@ waits for the ovn-operator.
 | --- | --- |
 | File | `reconcile_neutron.go`, `reconcile_service_messaging.go`, `reconcile_neutron_dbcredentials.go` |
 | Condition | `NeutronReady` |
-| Gate | `KeystoneReady == True` (Neutron validates every token against the Keystone child), `OVNReady == True` (the ML2/OVN mechanism driver writes every network into the referenced central's Northbound database) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)) |
+| Gate | `KeystoneReady == True` (Neutron validates every token against the Keystone child), `OVNReady == True` (the ML2/OVN mechanism driver writes every network into the referenced central's Northbound database) **and** the `AccountReady` of the `KeystoneService` registration it projects (of **both** registrations while `spec.services.nova` is set; see [Built-in service registrations](#built-in-service-registrations)) |
 | Projects / Owns | one `Neutron` child named `{controlplane.Name}-neutron` (`neutronNameSuffix`) in `cp.NeutronNamespace()`; the bus delivery beside it, a `{controlplane.Name}-neutron-messaging` Secret (key `transport_url`) and, only while the shared bus declares `tls`, a `{controlplane.Name}-neutron-messaging-ca` Secret (key `ca.crt`), both written on the client that namespace resolves to and claimed by a controller owner reference at home or by the ownership labels in a service namespace or on a target cluster; and, on a managed database only, the per-ControlPlane DB-credential objects in the same namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `neutron-db-creds`, an mTLS client Certificate `{controlplane.Name}-neutron-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/neutron-{neutron-namespace}` (auth role `neutron-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-neutron-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/neutron/{neutron-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.neutron` is set |
 | Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on `KeystoneReady` or `OVNReady`; `infraRequeueAfter` = **15s** while the bus material has not landed, while the namespace's cluster does not resolve, and while the child is not Ready; `korcRequeueAfter` = **10s** while the `neutron` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed |
 
@@ -2169,6 +2208,29 @@ projects the registration that mints the Keystone user.
 The transport URL's digest is **not** projected onto the child: the neutron
 operator rolls its pods off the Secret it derives itself, so a second digest on
 the child would only add a redundant rollout trigger.
+
+While `spec.services.nova` is set the pass takes a **second** registration, the
+account-only `{controlplane.Name}-neutron-nova`, and projects `spec.nova` on the
+child from it: the region, the four identity names, and the password read from
+that registration's consumer Secret `{controlplane.Name}-neutron-nova-credentials`
+under the key `password`. The presence of the block is the switch on the child,
+so a Neutron that carries it turns both `notify_nova_on_port_*` flags on and
+renders the `[nova]` credentials. It is projected only while a compute service is
+declared, because without one the account is a Keystone user nothing ever
+authenticates as, and its account gate parks `NeutronReady` on
+`WaitingForServiceRegistration` exactly as the first registration's does.
+Clearing `services.nova` assigns `spec.nova = nil` and, once the child reports
+the generation that apply produced, deletes the registration
+(`pruneNeutronNovaNotifierRegistration`), which is what removes the Keystone user
+behind it. The wait matters because the deletion cascades to the credentials
+Secret, and every neutron-server process sources `OS_NOVA__PASSWORD` from it
+through a non-optional `secretKeyRef` until the neutron-operator has re-rendered
+the workloads without `spec.nova`; a prune ahead of that, or ahead of a gate that
+halts the pass before the apply, leaves every neutron-server that restarts in the
+window unable to start. The preserve-by-default reserve a dropped
+`services.<svc>` block gets does not apply: the account is a wire between two
+services of this ControlPlane rather than a service of its own, and an account
+outliving the wire only leaves a credential in Keystone nothing uses.
 
 It is optional: `spec.services.neutron` unset means this ControlPlane manages no
 network service, and the sub-reconciler reports `NeutronReady=True` /
@@ -2250,9 +2312,10 @@ Unsetting `spec.services.neutron` deletes nothing on its own. With
 `c5c3.io/allow-neutron-deletion: "true"`, `deleteOrphanedNeutron` releases, in
 order, the `Neutron` child, the DB-credential `ExternalSecret`, the Dynamic-mode
 `VaultDynamicSecret`, its client Certificate and the `neutron-db-creds`
-ServiceAccount, the two messaging Secrets, and finally the `KeystoneService`
-registration, whose finalizer is what tears the network catalog rows, the service
-user and its project down. Each object is only removed while this ControlPlane
+ServiceAccount, the two messaging Secrets, and finally **both** `KeystoneService`
+registrations, the network service's own and the compute-notifier account beside
+it. The first one's finalizer is what tears the network catalog rows, the service
+user and its project down; the second removes the notifier user alone. Each object is only removed while this ControlPlane
 still owns it, so a foreign object colliding on a name is left alone. The
 referenced `OVNCentral` is **never** deleted: it is deployed outside the plane and
 only read.
@@ -2436,6 +2499,204 @@ unowned, and the finalizer sweeps it by those labels.
 | projected Cinder spec rejected (HTTP 422 Invalid) | False | `CinderProjectionRejected` | returns the error; the projection violates a Cinder CRD/webhook rule, so reconcile the ControlPlane spec to a valid projection to recover |
 | Cinder create/update fails | False | `CinderError` | returns the error |
 | Cinder child Ready and its registration Ready | True | `CinderReady` | — |
+
+### reconcileNova
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_nova.go`, `reconcile_service_messaging.go`, `reconcile_nova_dbcredentials.go`, `reconcile_nova_metadata_secret.go` |
+| Condition | `NovaReady` |
+| Gate | `KeystoneReady == True` (Nova validates every token against the Keystone child), `PlacementReady == True` (the conductor claims every instance's resources in Placement before it boots) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)). Neutron and Glance are required at admission but gate nothing here, and Cinder and Barbican are optional siblings |
+| Projects / Owns | one `Nova` child named `{controlplane.Name}-nova` (`novaNameSuffix`) in `cp.NovaNamespace()`; the bus delivery beside it, a `{controlplane.Name}-nova-messaging` Secret (key `transport_url`) and, only while the shared bus declares `tls`, a `{controlplane.Name}-nova-messaging-ca` Secret (key `ca.crt`); the `{controlplane.Name}-nova` `KeystoneService` registration; the generated metadata shared secret, an ESO `Password` generator and an `ExternalSecret` both named `{controlplane.Name}-nova-metadata-secret`, unless `services.nova.metadataSharedSecretRef` names one instead; and, on a managed database only, **two** per-ControlPlane DB-credential chains in the same namespace. In **Dynamic** mode (the managed-shared default) each chain carries a ServiceAccount (`nova-api-db-creds` / `nova-cell-db-creds`), an mTLS client Certificate (`{controlplane.Name}-nova-api-db-openbao-client` / `{controlplane.Name}-nova-db-openbao-client`), a `VaultDynamicSecret` generator reading `database/mariadb/creds/nova-api-{nova-namespace}` (auth role `nova-api-db`) or `database/mariadb/creds/nova-cell-{nova-namespace}` (auth role `nova-cell-db`), and a generator-backed `ExternalSecret` (`{controlplane.Name}-nova-api-db-credentials` / `{controlplane.Name}-nova-db-credentials`); in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/nova/{nova-namespace}/{controlplane.Name}/api-db` or `…/db` (properties `username`, `password`). Only when `spec.services.nova` is set |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on `KeystoneReady` or `PlacementReady`; `infraRequeueAfter` = **15s** while the bus material has not landed, while the backing services or the bus do not resolve, while a compute-config mirror cannot be served, and while the child is not Ready; `korcRequeueAfter` = **10s** while the `nova` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while either Dynamic DB credential has not landed |
+
+`reconcileNova` runs in a fixed order: the not-managed branch first, then a
+nil-safety fail-safe on the resolved database, cache and shared bus (a
+webhook-bypassed CR requeues after 15s rather than dereferencing a nil), then the
+`KeystoneReady` gate, the `PlacementReady` gate, the bus delivery into the
+compute service's namespace, the `KeystoneService` registration whose account
+Nova authenticates as, the two DB credentials, the metadata shared secret, and
+finally the child itself through `ProjectChild`. Past the apply, and only once
+the child reports Ready for the generation the apply produced, it reaps a
+released messaging CA mirror and a generated metadata shared secret the child no
+longer names, delivers the compute contract to every mirror target, and folds the
+registration's readiness into `NovaReady`.
+
+The API chain is ensured before the cell chain. Its schema is the one the cell
+schema's mappings are registered in, so an operator watching a stalled onboarding
+reads the two waits in the order the db-sync will need them. The **mode** is
+resolved once (`novaDBCredentialsDynamicEnabled`) and drives both projections,
+both readiness gates, and the value stamped on both of the child's database
+blocks: the Nova CRD rejects a child whose two blocks carry different
+`credentialsMode`s, so one verdict has to cover both.
+
+The metadata secret does **not** wait for its value to materialise. The Nova
+child gates on that itself (`WaitingForMetadataSharedSecret`), which is the same
+wait one requeue later and keeps the two legs from both parking the plane on one
+Secret.
+
+The generated pair is written while the child reads it: `metadataSharedSecretRef`
+unset, or naming `{controlplane.Name}-nova-metadata-secret` itself. The
+ExternalSecret renames the generator's `password` key to `shared_secret`, the key
+both the Nova child and a `NeutronMetadataAgent` default their reference to.
+Once `metadataSharedSecretRef` names another Secret the pass writes nothing more,
+and `reapGeneratedNovaMetadataSecret` deletes the pair behind the child's
+convergence rather than ahead of the projection: the Secret goes with the
+ExternalSecret, and the live metadata Deployment sources its env from it until
+the nova operator has re-rendered it, which that operator does only once the new
+Secret exists. The `Password` is read through the uncached teardown reader,
+because nothing watches the kind and a cached read would start an informer over
+every `Password` on the cluster, one that never syncs on a target whose
+credentials cannot list the kind. A forbidden read counts as nothing to reap:
+the generator is only ever written through those same credentials, so a target
+whose access release predates the `passwords` grant holds none.
+
+It is optional: `spec.services.nova` unset means this ControlPlane manages no
+compute service, and the sub-reconciler reports `NovaReady=True` /
+`NovaNotManaged` so the aggregate is not blocked (staged adoption).
+
+When managed, the projection follows the same thin discipline as its Cinder
+sibling, reusing the ControlPlane's own specs so Nova points at the same backing
+services:
+
+- **Image:** repository defaults to `ghcr.io/c5c3/nova` with the tag derived from
+  `spec.openStackRelease`; `spec.services.nova.image` overrides the whole image
+  reference when set.
+- **Two databases:** both blocks are a DeepCopy of the **effective** database
+  (`effectiveNovaDatabase`: Nova's
+  [dedicated](./controlplane-crd.md#novadedicatedbackingservicesspec) database
+  when it opted into one, the shared `spec.infrastructure.database` otherwise),
+  each taking a copy of its own so the two never alias. `apiDatabase.database` is
+  forced to `nova_api` and `database.database` to `nova`, the two schemas the
+  pre-wired OpenBao engine roles grant on; the nova operator derives `nova_cell0`
+  from the second. In managed mode (`clusterRef` set) each `secretRef` is
+  repointed at its own operator-owned Secret (key `password`) and both blocks
+  carry the one effective `credentialsMode`: `Dynamic` by default on the managed
+  shared database, flipped to `Static` by the shared-block opt-out or the
+  per-service `services.nova.databaseCredentialsMode` override, and always
+  `Static` for a dedicated nova database. A brownfield database keeps the
+  user-supplied `secretRef` and `credentialsMode` on both.
+- **Cache:** a DeepCopy of the **effective** cache (`effectiveNovaCache`).
+- **Messaging:** what `serviceMessagingSpec` renders for the Nova target
+  (see [Projected satellites and the shared bus](#projected-satellites-and-the-shared-bus)):
+  a **brownfield** `secretRef` naming the `{controlplane.Name}-nova-messaging`
+  Secret the pass wrote beside the child, plus a `tls.caBundleSecretRef` naming
+  the `{controlplane.Name}-nova-messaging-ca` mirror, set only while
+  `spec.infrastructure.messaging.tls` is declared. Dropping the `tls` block
+  reverts both halves in the order the Neutron leg documents, and
+  `pruneServiceMessagingCA` runs on the far side of the child's readiness return
+  for the same reason. The transport URL's digest is **not** projected: the nova
+  operator rolls its pods off the Secret it derives itself.
+- **Keystone endpoint:** `keystoneEndpoint` is derived top-down via
+  `novaKeystoneEndpoint(cp)`, the cluster-local `{controlplane.Name}-keystone`
+  Service URL while Nova and Keystone resolve to the same cluster, and the public
+  URL when they are placed apart (see
+  [Reaching a placed service](#reaching-a-placed-service)). Nova validates every
+  token against it and calls Placement, Neutron, Glance, Cinder and Barbican
+  through it. `keystonePublicEndpoint` is a pass-through of the Keystone
+  service's own public endpoint.
+- **Service user:** derived from the `nova` account the projected
+  `KeystoneService` registration provisions, its `username`, the `service-nova`
+  project, and both domains from the ControlPlane's effective admin domain, with
+  the password read from the consumer Secret that registration delivers.
+- **Metadata:** `metadata.deployment.replicas` is written explicitly (`1`, or
+  `services.nova.metadataReplicas`), `metadata.gateway` is a DeepCopy of
+  `services.nova.metadataGateway`, and `metadata.sharedSecretRef` is **resolved**
+  rather than materialised: the Secret `services.nova.metadataSharedSecretRef`
+  names when the ControlPlane supplies one, and otherwise the generated
+  `{controlplane.Name}-nova-metadata-secret` under the key `shared_secret`. Removing a
+  user-supplied reference therefore reverts the child to the generated value
+  instead of pinning the last one.
+- **Console proxy:** three shapes, and the empty one is deliberate. An absent
+  `services.nova.consoleProxy` projects the **zero** block, which leaves both the
+  switch and the deployment absent on the wire and lets the nova defaulting
+  webhook enable the proxy at one replica. A disabled proxy projects the switch
+  and nothing else, because the Nova CRD rejects a `spec.consoleProxy.deployment`
+  written on a disabled proxy. An enabled one carries the sizing and the listener
+  it was given.
+- **Endpoints:** `endpoints.cinder.enabled` follows `services.cinder` and
+  `endpoints.barbican.enabled` follows `services.barbican`, so a plane that runs
+  block storage lets Nova attach volumes and one that runs a key manager lets it
+  read an encrypted volume's key. Every endpoint **override** stays empty on all
+  five sections, Placement, Neutron and Glance included (decision D10 of #1019):
+  the catalog's internal rows already carry the managed in-cluster URLs, so
+  resolving through the catalog reaches the addresses an override would have
+  pinned, and a placed service's rows follow it without a second projection
+  having to agree.
+- **DB archive:** `services.nova.dbArchive` is DeepCopied and converted onto
+  the child's `spec.dbArchive` (the two types share one field layout), so the
+  child never aliases `cp.Spec`. A nil block projects nil, which the nova
+  operator resolves exactly like an empty one.
+- **Gateway / Replicas / SecretStoreRef / Region:** `gateway` is a DeepCopy of
+  `spec.services.nova.gateway` (a nil source clears it, tearing the HTTPRoute
+  down); `api.deployment.replicas` defaults to `commonv1.DefaultReplicas` and is
+  overridden by `services.nova.replicas`, while the scheduler and conductor
+  counts are written explicitly as `1` unless overridden, for the reason the
+  metadata count is; the resolved store selection and `spec.region` are projected
+  through. `spec.networkPolicy`, `spec.autoscaling`, `spec.logging`,
+  `spec.api.uwsgi` and `spec.metadata.uwsgi` are **not** set, so the child-side
+  defaults stay authoritative.
+
+**The compute-config mirror.** The nova operator publishes the compute contract,
+the `nova.conf` fragment and bus credentials a nova-compute needs to join this
+plane, as `{controlplane.Name}-nova-compute-config` in the Nova namespace. A
+compute node does not read it there: it runs outside this cluster, and its agents
+are configured from the namespace its own attachment names. `mirrorNovaComputeConfig`
+copies the Secret into one target namespace on that target's cluster, stamped
+with this ControlPlane's ownership labels so the teardown reaps it with the rest.
+A target that cannot be served parks `NovaReady` rather than failing the pass:
+the control plane is up, but a compute cluster that never receives the contract
+registers no hypervisor. `novaComputeConfigMirrorTargets` returns **nil** today,
+so the loop is skipped and the mirror writes nothing; #1013 fills it from the
+compute-cluster attachment it introduces, one target per attached cluster, which
+is why that issue adds the enumeration rather than the delivery.
+
+Unsetting `spec.services.nova` deletes nothing on its own. With
+`c5c3.io/allow-nova-deletion: "true"`, `deleteOrphanedNova` releases the `Nova`
+child, both DB-credential chains (each `ExternalSecret`, its `VaultDynamicSecret`,
+its client Certificate and its ServiceAccount), the metadata `ExternalSecret` and
+the `Password` generator behind it, the two messaging Secrets, and finally the
+`KeystoneService` registration, whose finalizer is what tears the compute catalog
+rows, the service user and its project down. The materialised metadata Secret
+carries ESO's own owner reference, so it comes down with its ExternalSecret. Each
+object is only removed while this ControlPlane still owns it, so a foreign object
+colliding on a name is left alone.
+
+The credential minters come down either way. On the preserve branch both
+`VaultDynamicSecret`s, their client Certificates and the two ServiceAccounts are
+torn down before the condition is written: a live generator keeps issuing a fresh
+MySQL user with all privileges on a nova schema at every refresh interval, for a
+service this ControlPlane has been told it no longer manages, behind a
+`NovaReady=True` condition that surfaces none of it.
+
+A child placed outside the ControlPlane's namespace (`services.nova.namespace`)
+carries no owner reference: it is stamped with the ownership labels and applied
+unowned, and the finalizer sweeps it by those labels.
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| `spec.services.nova` unset | True | `NovaNotManaged` | staged adoption; a previously-projected child is preserved unless `c5c3.io/allow-nova-deletion: "true"` is set, but both dynamic DB-credential generators, their ServiceAccounts, and their client Certificates are torn down either way |
+| `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Nova CR is projected while Keystone is unready |
+| `PlacementReady` not True | False | `WaitingForPlacement` | requeue 5s; a compute service ahead of its placement service accepts boot requests it cannot serve. The gate reads the condition, so a plane that manages no placement service passes it on the not-managed reason |
+| the shared bus has not delivered its transport URL yet | False | `WaitingForMessagingCredentials` | requeue 15s; nothing is written, so the child never sees a partial URL |
+| the messaging CA bundle Secret is absent or carries no data under its key | False | `WaitingForMessagingCABundle` | requeue 15s |
+| resolving the URL, writing either messaging Secret, or reaping the stale CA mirror after the child stopped naming it fails | False | `NovaMessagingError` | returns the error |
+| the cluster the Nova namespace resolves to is unavailable | False | `TargetClusterUnavailable` | the resolver's own message; a wait, not a failed reconcile. Requeue 15s from the bus delivery, the metadata secret and the compute-config mirror, 10s from the registration mirror and the DB credentials |
+| the projected registration has not provisioned the account yet | False | `WaitingForServiceRegistration` | requeue 10s; no Nova child is written until the Keystone user and its password exist. See [Built-in service registrations](#built-in-service-registrations) |
+| projecting, reading or mirroring the registration child fails | False | `ServiceRegistrationError` | returns the error |
+| the registration child carries foreign spec fields | False | `ServiceRegistrationFieldsReclaimed` | they are reset and the pass halts; requeue 10s |
+| the store on a placed service's target cluster is not ready | False | `SecretStoreNotReady` | the registration's credentials cannot be materialised there; requeue 10s |
+| API-schema DB-credential ensure fails | False | `NovaAPIDBCredentialError` | returns the error (managed database only) |
+| the API-schema Dynamic credential has not materialised | False | `WaitingForNovaAPIDBCredential` | requeue 10s; the message names `database/mariadb/creds/nova-api-<namespace>`, or the non-engine-issued username it found in the target Secret |
+| cell-schema DB-credential ensure fails | False | `NovaCellDBCredentialError` | returns the error (managed database only) |
+| the cell-schema Dynamic credential has not materialised | False | `WaitingForNovaCellDBCredential` | requeue 10s; the twin of the row above over `database/mariadb/creds/nova-cell-<namespace>` |
+| ensuring the generated metadata shared secret, or reaping it once the converged child names another Secret, fails | False | `NovaMetadataSecretError` | returns the error |
+| Nova child not yet Ready | False | `WaitingForNova` | requeue 15s |
+| projected Nova spec rejected (HTTP 422 Invalid) | False | `NovaProjectionRejected` | returns the error; the projection violates a Nova CRD/webhook rule, so reconcile the ControlPlane spec to a valid projection to recover |
+| Nova create/update fails | False | `NovaError` | returns the error |
+| the compute contract has not been published yet | False | `WaitingForComputeConfig` | requeue 15s; only reachable once a mirror target is enumerated |
+| reading the compute contract or writing a mirror fails | False | `NovaComputeConfigError` | returns the error |
+| Nova child Ready, every mirror target served, and its registration Ready | True | `NovaReady` | — |
 
 ### reconcileKORC
 
@@ -2955,15 +3216,19 @@ is owned by the imports.
 `reconcileServiceAccounts` **aggregates**: it reads the `KeystoneService`
 registration child each enabled built-in service leg projects
 (`services.glance`, `services.placement`, `services.barbican`,
-`services.neutron`, in that order) and folds their readiness into the one
-condition operators alert on. It projects no OpenStack
+`services.neutron`, `services.cinder`, `services.nova`, in that order) and folds
+their readiness into the one condition operators alert on. The network service's
+account-only compute-notifier registration is aggregated beside its own, and only
+while both `services.neutron` and `services.nova` are set: without a compute
+service the account is a Keystone user nothing authenticates as. It projects no
+OpenStack
 resource itself; the registration CR owns the Keystone user, its project, its role
 assignments, the generation-scoped password, and the OpenBao round-trip that
 delivers the credentials.
 
 The double reporting is intended. A failing registration already fails its own
 service condition (`GlanceReady`, `PlacementReady`, `BarbicanReady`,
-`NeutronReady`); the
+`NeutronReady`, `CinderReady`, `NovaReady`); the
 aggregate names the same cause under the condition type that does not depend on
 knowing which service broke.
 
@@ -3496,10 +3761,11 @@ stays for the CR's life: a cluster that stops resolving later still holds
 children.
 
 What it holds the ControlPlane open for is the label-selected sweep in step 3.
-Per placed namespace, `controlPlaneRemoteChildKinds` names the thirteen kinds the
+Per placed namespace, `controlPlaneRemoteChildKinds` names the fourteen kinds the
 ControlPlane writes there: `MariaDB`, `Memcached`, `SecretStore`, `Certificate`,
 `ServiceAccount`, `Role`, `RoleBinding`, `Secret`, `ExternalSecret`,
-`PushSecret`, `VaultDynamicSecret`, `OpenBaoTenant`, `OpenBaoCluster`. Every
+`PushSecret`, `VaultDynamicSecret`, `Password`, `OpenBaoTenant`,
+`OpenBaoCluster`. Every
 object of them the ControlPlane owns is deleted through that cluster's client,
 listed through its uncached reader and paged so a shared namespace cannot arrive
 in one response. The list holds namespaced kinds only. The auth-delegator
@@ -3656,6 +3922,49 @@ dedicated namespace, and through `projectedRegistrationKeys` for the registratio
 Each object is ownership-checked against its live state, so a hand-created
 `CinderBackend` attached to the same `Cinder` is neither pruned nor swept.
 
+#### Nova teardown residue
+
+The compute service leaves the shapes its peers do, twice over for the
+credentials and with the generated metadata secret on top. `deleteOrphanedNova`
+runs when `spec.services.nova` is unset with
+`c5c3.io/allow-nova-deletion: "true"`; the ControlPlane teardown reaches the same
+set through `sweepExternalNamespaceResidue` for a namespace it does not own,
+through `crossNamespaceServiceChildren` for the `Nova` child in a dedicated
+namespace, and through `projectedRegistrationKeys` for both registration keys.
+
+- Two DB-credential chains rather than one, because the `nova_api` and cell
+  schemas each take a login of their own: the `{controlplane.Name}-nova-api-db-credentials`
+  and `{controlplane.Name}-nova-db-credentials` `ExternalSecret`s, the
+  `VaultDynamicSecret` generators of the same names, the
+  `{controlplane.Name}-nova-api-db-openbao-client` and
+  `{controlplane.Name}-nova-db-openbao-client` `Certificate`s, and the
+  `nova-api-db-creds` and `nova-cell-db-creds` `ServiceAccount`s.
+- The generated metadata shared secret: the
+  `{controlplane.Name}-nova-metadata-secret` `ExternalSecret` and the `Password`
+  generator behind it, the latter read uncached. The Secret they materialise
+  carries ESO's own owner reference, so it comes down with the ExternalSecret
+  rather than being deleted by name.
+- The bus delivery: the `{controlplane.Name}-nova-messaging` Secret and the
+  `{controlplane.Name}-nova-messaging-ca` mirror, both from
+  `serviceMessagingSecrets(novaMessagingTarget(cp))`.
+- The `Nova` child and the `{controlplane.Name}-nova` `KeystoneService`
+  registration, whose finalizer removes the compute catalog rows, the service
+  user, and its project.
+
+The compute-notifier registration `{controlplane.Name}-neutron-nova` is not in
+this set: it lives in the **Neutron** namespace beside the service that
+authenticates as it, so `deleteOrphanedNeutron` and the Neutron teardown sweep it
+(and `pruneNeutronNovaNotifierRegistration` takes it down once `services.nova`
+is cleared while the network service stays and the Neutron child has converged
+on the spec without `spec.nova`).
+
+The credential mirror a **placed** compute service carries is not swept by
+`deleteOrphanedNova` either. Like every object that function names it is resolved
+through `NovaNamespace()`, which without a `services.nova` block is the
+ControlPlane's own namespace, so that sweep reaches co-located objects only; the
+mirror is reaped by the ControlPlane teardown, which sweeps a placed namespace's
+label-owned `ExternalSecret`s on the target cluster.
+
 #### External-mode deletion resource set
 
 `orcChildObjects(cp)` derives the swept CR names from the ControlPlane spec, so
@@ -3785,6 +4094,7 @@ The `condition_type` label is resolved from the package-private
 | `Placement` | `PlacementReady` |
 | `Barbican` | `BarbicanReady` |
 | `Cinder` | `CinderReady` |
+| `Nova` | `NovaReady` |
 | `KORC` | `KORCReady` |
 | `AdminCredential` | `AdminCredentialReady` |
 | `AdminPassword` | `AdminPasswordReady` |
@@ -3880,6 +4190,9 @@ cross-namespace teardown assertions.
 | `reconcile_service_messaging_test.go` | Bus delivery on the Neutron target, a second target under its own names, `serviceMessagingSpec`, the CA-mirror reap gate, the teardown stubs |
 | `reconcile_cinder_test.go` | Cinder projection, the Keystone and registration gates, the satellite projection and prune, the derived Glance/Barbican/internal-tenant fields, the replica pins, the orphan teardown |
 | `reconcile_cinder_dbcredentials_test.go` | Cinder DB-credential names, OpenBao paths, and the effective mode |
+| `reconcile_nova_test.go` | Nova projection, the Keystone and Placement gates, the registration gate, the two database blocks and their shared mode, the console-proxy shapes, the replica pins, the compute-config mirror seam, the orphan teardown |
+| `reconcile_nova_dbcredentials_test.go` | The two Nova DB-credential targets: names, OpenBao roles and paths, and the one effective mode both carry |
+| `reconcile_nova_metadata_secret_test.go` | The generated metadata shared secret: the `Password` generator, the non-refreshing ExternalSecret and its `shared_secret` rewrite, the resolved reference, the pair a reference to the generated Secret keeps, and the reap once `metadataSharedSecretRef` names another Secret, on the target cluster as well as at home |
 | `builtin_registrations_test.go` | The shared registration leg: the projected child, the gate, the credential mirror, the reclaim of foreign spec fields, and the per-service roles |
 | `reconcile_credentialrotation_test.go` | Nudge model, one-per-namespace resolution, bootstrap, deferred scheduled fields, target enum |
 | `credential_invariant_test.go` | Security invariants (restricted mint, app-credential Secret not on any workload) |
@@ -3944,12 +4257,18 @@ operators/c5c3/
     │   │                                        teardown)
     │   ├── reconcile_cinder.go                 reconcileCinder projection (Cinder child, its two
     │   │                                        satellite kinds, orphan teardown)
+    │   ├── reconcile_nova.go                   reconcileNova projection (Nova child, the
+    │   │                                        compute-config mirror, orphan teardown)
     │   ├── reconcile_projected_children.go     Shared prune/sweep of a service's projected
     │   │                                        satellite children (ownership + name prefix)
     │   ├── reconcile_service_messaging.go      Shared-bus delivery on a service target
     │   │                                        (transport-URL Secret + CA mirror)
     │   ├── reconcile_neutron_dbcredentials.go  Neutron DB-credential names, OpenBao paths, mode
     │   ├── reconcile_cinder_dbcredentials.go   Cinder DB-credential names, OpenBao paths, mode
+    │   ├── reconcile_nova_dbcredentials.go     The two Nova DB-credential targets: names, OpenBao
+    │   │                                        roles and paths, the one shared mode
+    │   ├── reconcile_nova_metadata_secret.go   The generated metadata shared secret (Password
+    │   │                                        generator + ExternalSecret, resolve and prune)
     │   ├── reconcile_korc.go                   reconcileKORC (AC mint/re-mint, drift detection)
     │   ├── reconcile_admincredential.go        reconcileAdminCredential (assemble + push + re-push
     │   │                                        nudges, semantic clouds.yaml gate)
@@ -3959,9 +4278,10 @@ operators/c5c3/
     │   │                                        identity imports, opt-in entries, stall detection)
     │   ├── reconcile_serviceaccounts.go        reconcileServiceAccounts (folds the built-in
     │   │                                        registrations into ServiceAccountsReady)
-    │   ├── builtin_registrations.go            The leg Glance/Placement/Barbican/Neutron/Cinder
-    │   │                                        share: project the KeystoneService child, gate,
-    │   │                                        mirror, reclaim
+    │   ├── builtin_registrations.go            The leg Glance/Placement/Barbican/Neutron/Cinder/
+    │   │                                        Nova share: project the KeystoneService child,
+    │   │                                        gate, mirror, reclaim; plus the account-only
+    │   │                                        builder the Neutron-to-Nova notifier takes
     │   ├── registration_projection.go          K-ORC child + ESO builders shared with the
     │   │                                        KeystoneService controller
     │   ├── keystoneservice_controller.go       KeystoneServiceReconciler (see the KeystoneService pages)
@@ -3993,10 +4313,13 @@ operators/c5c3/
     │   ├── reconcile_ovn_test.go               OVNCentral mirroring tests
     │   ├── reconcile_neutron_test.go           Neutron projection tests
     │   ├── reconcile_cinder_test.go            Cinder projection tests
+    │   ├── reconcile_nova_test.go              Nova projection tests
     │   ├── reconcile_projected_children_test.go Projected-children prune/sweep tests
     │   ├── reconcile_service_messaging_test.go Bus-delivery tests
     │   ├── reconcile_neutron_dbcredentials_test.go Neutron DB-credential tests
     │   ├── reconcile_cinder_dbcredentials_test.go Cinder DB-credential tests
+    │   ├── reconcile_nova_dbcredentials_test.go Nova DB-credential tests
+    │   ├── reconcile_nova_metadata_secret_test.go Nova metadata shared-secret tests
     │   ├── reconcile_korc_test.go              K-ORC mint/re-mint tests
     │   ├── reconcile_admincredential_test.go   AdminCredential tests
     │   ├── reconcile_catalog_test.go           Catalog (managed-mode) tests

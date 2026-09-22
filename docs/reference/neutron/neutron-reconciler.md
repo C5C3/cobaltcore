@@ -47,7 +47,7 @@ Secrets ──► DBConnectionSecret ──► TransportURLSecret ──► OVNE
 
 | Step | What it does | Condition |
 | --- | --- | --- |
-| Secrets | Gates on the External Secrets store the CR selects, then the database and service-user credential Secrets, and digests the service-user password | `SecretsReady` |
+| Secrets | Gates on the External Secrets store the CR selects, then the database and service-user credential Secrets and, while `spec.nova` is set, the Nova notifier Secret, and digests the passwords the pods read from their environment | `SecretsReady` |
 | DBConnectionSecret | Materialises the pymysql DSN into the derived `{name}-db-connection` Secret and digests it. Reports through `SecretsReady` | `SecretsReady` |
 | TransportURLSecret | Materialises the `rabbit://` URL into `{name}-transport-url`, digests it, and returns the broker port the network policy opens. Reports through `SecretsReady` | `SecretsReady` |
 | OVNEndpoints | Resolves the Northbound and Southbound addresses off the `OVNCentral` named by `spec.ovn.centralRef` | `OVNEndpointsReady` |
@@ -65,7 +65,16 @@ Secrets ──► DBConnectionSecret ──► TransportURLSecret ──► OVNE
 The three Secret steps come first, because everything behind them mounts what
 they write: the derived DSN and transport URL are what the pods and the migration
 Jobs source their credentials from, and the rendered config carries a placeholder
-in their place. The two OVN steps follow, and the config step waits behind both:
+in their place. A CR carrying `spec.nova` takes a third credential gate in the
+first step, over the Secret the notifier password lives in
+(`WaitingForNovaNotifierCredentials`), and the step digests that password beside
+the service-user one. Both are consumed as oslo.config environment overrides
+rather than mounted, so they take effect only on a pod restart. Each digest rides
+a pod-template annotation of its own, `neutron.c5c3.io/authtoken-hash` and
+`neutron.c5c3.io/nova-notifier-hash`, so a rotation of either at the OpenBao
+source rolls the pods and the annotation that changed names the password that
+rotated. A CR without the block carries no notifier digest and no second
+annotation. The two OVN steps follow, and the config step waits behind both:
 the `[ovn]` section is parameterised by the two resolved addresses, and it names
 the three files of the mirrored client identity.
 
@@ -74,7 +83,7 @@ pipeline short-circuits at the Database step for as long as a migration Job runs
 so a step placed behind it would not be reached to report on the schedule during
 the one window that changes it. Its only input is the rendered config the CronJob
 mounts. Database itself comes before Deployment, so the API pods start once the
-schema they query exists, and Workers after Deployment, sharing its four digests.
+schema they query exists, and Workers after Deployment, sharing its five digests.
 
 Once the Deployment and the Service are in place, the last four steps read none
 of each other's output and run as a parallel group. Each member works on its own
@@ -115,7 +124,7 @@ aggregates ten, a `NeutronMetadataAgent` three.
 
 | Type | Kind | True reasons | False reasons |
 | --- | --- | --- | --- |
-| `SecretsReady` | `Neutron` | `SecretsAvailable` | `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForMessagingCredentials`, `ConfigError`, `TargetClusterUnavailable` |
+| `SecretsReady` | `Neutron` | `SecretsAvailable` | `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForNovaNotifierCredentials`, `WaitingForMessagingCredentials`, `ConfigError`, `TargetClusterUnavailable` |
 | `OVNEndpointsReady` | `Neutron` | `OVNEndpointsResolved` | `OVNCentralNotFound`, `OVNCentralReadError`, `OVNEndpointsPending`, `OVNClientSecretPending`, `OVNClientSecretIncomplete`, `OVNClientSecretReadError`, `OVNClientSecretMirrorFailed`, `TargetClusterUnavailable` |
 | `DatabaseReady` | `Neutron` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `WaitingForConfig`, `DBSyncInProgress`, `DBSyncFailed`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `ImageReleaseMismatch`, `UpgradeTargetChanged`, `ExpandInProgress`, `ExpandFailed`, `MigrateInProgress`, `MigrateFailed`, `ContractInProgress`, `ContractFailed`, `UpgradeRollingUpdate` |
 | `OVNDBSyncReady` | `Neutron` | `OVNDBSyncNotRequired`, `OVNDBSyncScheduled`, `OVNDBSyncSuspended` | `OVNDBSyncJobFailed` |
@@ -823,8 +832,11 @@ requeued, where the wrapper would swallow it as a successful reconcile.
 
 The `Neutron` controller registers two field indexes on the local field indexer.
 `spec.secretRefs.name` holds the deduplicated union of
-`spec.database.secretRef.name`, `spec.serviceUser.secretRef.name` and
-`spec.messaging.secretRef.name`. `spec.ovn.centralRef` holds
+`spec.database.secretRef.name`, `spec.serviceUser.secretRef.name`,
+`spec.messaging.secretRef.name` and, while the block is set,
+`spec.nova.serviceUser.secretRef.name`; the notifier Secret carries no Neutron
+owner reference, so without its entry a rotated notifier password would wake
+nothing. `spec.ovn.centralRef` holds
 `<namespace>/<name>`, because the ref carries a namespace and a bare name would
 collide across namespaces. Both indexes stay local: they are indexes on a CR
 kind, which no target cluster holds, and registering them on the fleet would fail

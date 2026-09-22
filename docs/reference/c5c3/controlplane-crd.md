@@ -424,9 +424,9 @@ connection, a nil block for a plaintext one.
 
 Declares the per-service configuration of the control plane. Today
 Keystone, the Horizon dashboard, the Glance image service, the Placement
-service, the Barbican key manager, the Neutron network service, and the Cinder
-block-storage service are modeled; additional services are added as fields as
-the operator grows.
+service, the Barbican key manager, the Neutron network service, the Cinder
+block-storage service, and the Nova compute service are modeled; additional
+services are added as fields as the operator grows.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -437,6 +437,7 @@ the operator grows.
 | `barbican` | [`*ServiceBarbicanSpec`](#servicebarbicanspec) | No | `nil` | Configuration for the Barbican key manager projected by the reconciler. Optional: when unset, this ControlPlane manages no key manager and `BarbicanReady` is reported as not-managed (`BarbicanNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Barbican validates every token against the ControlPlane's Keystone child) and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. **Forbidden in External mode**: Barbican needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Barbican child by default; set the `c5c3.io/allow-barbican-deletion: "true"` annotation to opt in to deleting the child (with its `BarbicanSecretStore`, its DB-credential ExternalSecret, and the key-manager catalog CRs) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. Destroying a **dedicated** OpenBao instance and the secrets in it takes a second annotation on top, `c5c3.io/allow-barbican-secret-store-data-deletion: "true"`; see [ServiceBarbicanSecretStoreSpec](#servicebarbicansecretstorespec). |
 | `neutron` | [`*ServiceNeutronSpec`](#serviceneutronspec) | No | `nil` | Configuration for the Neutron network service projected by the reconciler. Optional: when unset, this ControlPlane manages no network service and `NeutronReady` is reported as not-managed (`NeutronNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Neutron validates every token against the ControlPlane's Keystone child), on **`OVNReady`** (the ML2/OVN mechanism driver writes every network into the referenced central's Northbound database), and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. It also **requires `spec.infrastructure.messaging`**: the Neutron CRD requires `spec.messaging`, and the child's transport URL is derived from the shared bus, so the webhook rejects a `neutron` block declared without one. **Forbidden in External mode**: Neutron needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Neutron child by default; set the `c5c3.io/allow-neutron-deletion: "true"` annotation to opt in to deleting the child (with its DB-credential ExternalSecret, the two messaging Secrets, and the network catalog registration) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. The referenced `OVNCentral` is never deleted: the ControlPlane only reads it. |
 | `cinder` | [`*ServiceCinderSpec`](#servicecinderspec) | No | `nil` | Configuration for the Cinder block-storage service projected by the reconciler. Optional: when unset, this ControlPlane manages no block-storage service and `CinderReady` is reported as not-managed (`CinderNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Cinder validates every token against the ControlPlane's Keystone child) and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. It also **requires `spec.infrastructure.messaging`**: the Cinder CRD requires `spec.messaging`, and the child's transport URL is derived from the shared bus, so the webhook rejects a `cinder` block declared without one. **Forbidden in External mode**: Cinder needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Cinder child by default; set the `c5c3.io/allow-cinder-deletion: "true"` annotation to opt in to deleting the child (with its `CinderBackend` and `CinderBackupBackend` satellites, its DB-credential ExternalSecret, the two messaging Secrets, and the block-storage catalog registration) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. |
+| `nova` | [`*ServiceNovaSpec`](#servicenovaspec) | No | `nil` | Configuration for the Nova compute service projected by the reconciler. Optional: when unset, this ControlPlane manages no compute service and `NovaReady` is reported as not-managed (`NovaNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Nova validates every token against the ControlPlane's Keystone child), on **`PlacementReady`** (the conductor claims every instance's resources in Placement before it boots), and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. Three sibling blocks are **required** beside it, `services.placement`, `services.neutron` and `services.glance`, and so is **`spec.infrastructure.messaging`**: the Nova CRD requires `spec.messaging`, and the child's transport URL is derived from the shared bus. **Forbidden in External mode**: Nova needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Nova child by default; set the `c5c3.io/allow-nova-deletion: "true"` annotation to opt in to deleting the child (with its two DB-credential ExternalSecrets, the generated metadata shared secret, the two messaging Secrets, and the compute catalog registration) on unset. Both dynamic DB-credential generators are torn down on unset regardless of the annotation. |
 
 ---
 
@@ -823,7 +824,7 @@ carry per-field External-mode forbid-rules.
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Neutron API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Neutron API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty and a usable DNS name, enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Neutron endpoint URL (e.g. `https://neutron.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public network catalog Endpoint, the URL every client resolves to create its networks, subnets, and ports; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the Neutron API is served at the root and clients append the API path to the catalog URL), and be at most 512 characters; a single trailing slash is tolerated. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every network call carries the caller's scoped Keystone token to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 | `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Neutron on one mode while another service stays on the other. Empty (the default) **inherits** the shared mode, and is not materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Neutron declares a [dedicated](#neutrondedicatedbackingservicesspec) database (dedicated is `Static`-only; set `dedicatedBackingServices.database.credentialsMode` instead, see [Credential modes](#credential-modes)) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
-| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the network service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the Neutron child's `spec.extraConfig`, which carries the `neutron.conf` and `ml2_conf.ini` sections alike. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block; the always-rejected owned keys are the two `[ovn]` connection strings, the six `[ovn]` client-certificate and CA paths, `[DEFAULT] transport_url`, `auth_strategy` and `api_paste_config`, `[database] connection`, `[keystone_authtoken] password`, and `[securitygroup] enable_security_group`. See [ExtraConfig admission checks](#extraconfig-admission-checks). |
+| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the network service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the Neutron child's `spec.extraConfig`, which carries the `neutron.conf` and `ml2_conf.ini` sections alike. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block; the always-rejected owned keys are the two `[ovn]` connection strings, the six `[ovn]` client-certificate and CA paths, `[DEFAULT] transport_url`, `auth_strategy` and `api_paste_config`, `[database] connection`, `[keystone_authtoken] password`, `[nova] password`, and `[securitygroup] enable_security_group`. An update that carries `[nova] password` over unchanged is admitted with a warning. See [ExtraConfig admission checks](#extraconfig-admission-checks). |
 | `ovn` | [`NeutronOVNSpec`](#neutronovnspec) | Yes | — | Names the OVN control plane the projected Neutron programs. Required: the ML2/OVN mechanism driver has no logical network model to write to without one, so a Neutron with no central to address would park unready for as long as it exists. |
 | `dedicatedBackingServices` | [`*NeutronDedicatedBackingServicesSpec`](#neutrondedicatedbackingservicesspec) | No | `nil` (shares the ControlPlane-wide instances) | Opts Neutron **out** of the shared `spec.infrastructure` instances and gives it a `database` and/or `cache` of its own. Neutron consumes both classes, so it can take either or both dedicated; a declared block must name at least one. |
 | `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the Neutron service, and the database, cache, secret store, and credential material that follow it, in a namespace of its own. Create-only: the validating webhook freezes the block after creation. See [Service Namespaces](#service-namespaces). |
@@ -1137,6 +1138,244 @@ block, which would request nothing, with the message
 | --- | --- | --- | --- | --- |
 | `database` | [`*commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | `nil` (shares `spec.infrastructure.database`) | Gives Cinder its own database cluster. In managed mode `clusterRef.name` defaults to `{controlplane}-cinder-db`. A dedicated **managed** database is **`Static`-only**: the defaulting webhook materializes `credentialsMode: Static` and an explicit `Dynamic` is rejected, for the same reason as Keystone (see [Credential modes](#credential-modes)): the OpenBao database engine is bootstrapped once per namespace against the shared cluster, so no engine role can issue credentials for a dedicated instance. Seed and rotate the credential at the OpenBao source. |
 | `cache` | [`*commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | `nil` (shares `spec.infrastructure.cache`) | Gives Cinder its own cache. In managed mode `clusterRef.name` defaults to `{controlplane}-cinder-cache`. |
+
+---
+
+## ServiceNovaSpec
+
+A **curated local subset** of the knobs the ControlPlane exposes for the Nova
+compute service, mirroring `ServiceKeystoneSpec` and `ServiceCinderSpec`. The
+reconciler (L2) **projects** it into a `Nova` CR; the two databases, the cache,
+the message bus, the Keystone endpoint, the service user, and the Placement,
+Neutron, Glance, Cinder and Barbican endpoints of that child are **derived** from
+the ControlPlane (`infrastructure.*`, the sibling children's naming convention,
+and operator policy) rather than set here. `spec.networkPolicy`,
+`spec.autoscaling`, `spec.logging`, `spec.api.uwsgi` and `spec.metadata.uwsgi`
+are not projected, so the nova operator's own network policies, autoscaling,
+logging, and uWSGI parameters stay authoritative.
+
+Seven fields have no counterpart on the other services. Three are replica counts,
+because the compute service runs a metadata API, a scheduler, and a conductor in
+Deployments beside its API. Two are the metadata pair, `metadataGateway` and
+`metadataSharedSecretRef`: the metadata API is the one endpoint dialed from a
+compute cluster rather than from inside the control plane, and the agent that
+dials it signs every request with a secret both sides have to hold.
+`consoleProxy` sizes and publishes the noVNC console proxy, a browser-facing
+bridge to the hypervisors no other service runs, and `dbArchive` tunes the
+archive of the rows Nova soft-deletes instead of removing.
+
+Forbidden entirely when `services.keystone.mode` is `External` (Nova needs its
+own External-mode design), so, like `ServiceCinderSpec`, none of its fields carry
+per-field External-mode forbid-rules.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `replicas` | `*int32` | No | `nil` | Overrides the number of Nova API replicas. When `nil` the projection writes `commonv1.DefaultReplicas` (3). It sizes the API Deployment alone; the metadata, scheduler, conductor, and console-proxy Deployments carry counts of their own. Minimum 1. |
+| `metadataReplicas` | `*int32` | No | `nil` | Overrides the replica count of the `nova-metadata-api` Deployment, the process that answers an instance's calls to `169.254.169.254`. When `nil` the projection writes `1`. The metadata API holds nothing between requests, so raising it costs only the pods. Minimum 1. |
+| `schedulerReplicas` | `*int32` | No | `nil` | Overrides the replica count of the `nova-scheduler` Deployment, the process that picks a host for every instance the conductor asks it about. When `nil` the projection writes `1`. Schedulers are peers that read the same host state out of Placement. Minimum 1. |
+| `conductorReplicas` | `*int32` | No | `nil` | Overrides the replica count of the `nova-conductor` Deployment, the only process that reaches the cell database on behalf of a compute node. When `nil` the projection writes `1`. Minimum 1. |
+| `consoleProxy` | [`*ServiceNovaConsoleProxySpec`](#servicenovaconsoleproxyspec) | No | `nil` | The `nova-novncproxy` Deployment that bridges a browser's noVNC session to the VNC server of the hypervisor an instance runs on. Omitting the block leaves the proxy enabled at the nova operator's own defaults. |
+| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Nova container image. When `nil` the reconciler derives `ghcr.io/c5c3/nova:{spec.openStackRelease}`. When set, the validating webhook mirrors the `commonv1.ImageSpec` tag/digest XOR, so an override naming neither or both is rejected at admission. |
+| `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Nova API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the API is reachable in-cluster only. A configured gateway needs a non-empty `hostname` that is a usable DNS name (see [Validation Rules](#validation-rules)). |
+| `publicEndpoint` | `string` | No | `""` | Externally routable Nova endpoint URL (e.g. `https://nova.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public compute catalog Endpoint, the URL every client resolves to boot, list, and delete its instances; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the ControlPlane appends `/v2.1` when it registers the row), and be at most 512 characters; a single trailing slash is tolerated and `novaCatalogURL` trims it before appending `/v2.1`. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every compute call carries the caller's scoped Keystone token to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
+| `metadataGateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected metadata API on a hostname of its own (`nova-metadata.<domain>`), the listener a Neutron metadata agent dials from the compute cluster it runs on. It is separate from `gateway` because the two endpoints serve different callers: users reach the API, and only the metadata agents reach this one. When `nil` the metadata API is reachable in-cluster only, which is enough while the computes share the cluster the control plane runs on. It enters no catalog row. Its `path` must be empty or `/`, because the agent addresses the metadata API by scheme, host and port alone, and its `hostname` must not share a Gateway listener with `gateway` or `consoleProxy.gateway` (see [Three gateways, one catalog row](#three-gateways-one-catalog-row)). |
+| `metadataSharedSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` (the ControlPlane generates the value) | References a Secret holding the value the Neutron metadata agent signs proxied requests with, rendered as `[neutron] metadata_proxy_shared_secret` on the compute service and carried by every agent that proxies to it. Leaving it `nil` has the ControlPlane generate the secret and hand it to the child (see [The generated metadata shared secret](#the-generated-metadata-shared-secret)). Supply one when the value has to be seeded from outside this ControlPlane's reach: a metadata request signed with a value only one side knows is rejected, so both sides have to resolve the same Secret. Naming the generated Secret `{controlplane.Name}-nova-metadata-secret` itself keeps it generated. The shared type rejects an empty `name`. |
+| `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Nova on one mode while another service stays on the other. It applies to **both** database blocks the compute service holds: the Nova CRD rejects a child whose `apiDatabase` and `database` carry different modes, so one value covers both. Empty (the default) **inherits** the shared mode, and is not materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Nova declares a [dedicated](#novadedicatedbackingservicesspec) database (dedicated is `Static`-only) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
+| `dbArchive` | [`*ServiceNovaDBArchiveSpec`](#servicenovadbarchivespec) | No | `nil` | Tunes the recurring archive of the compute service's soft-deleted rows, projected onto the child's `spec.dbArchive`. A nil block resolves exactly like an empty one, so the archive runs on every projected Nova. |
+| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the compute service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the child's `spec.extraConfig`, which carries the `nova.conf` sections. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block. See [ExtraConfig admission checks](#extraconfig-admission-checks). |
+| `dedicatedBackingServices` | [`*NovaDedicatedBackingServicesSpec`](#novadedicatedbackingservicesspec) | No | `nil` (shares the ControlPlane-wide instances) | Opts Nova **out** of the shared `spec.infrastructure` instances and gives it a `database` and/or `cache` of its own. Nova consumes both classes, so it can take either or both dedicated; a declared block must name at least one. |
+| `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the compute service, and the databases, cache, secret store, and credential material that follow it, in a namespace of its own. Create-only: the validating webhook freezes the block after creation. See [Service Namespaces](#service-namespaces). |
+| `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | No | `nil` (the local cluster the operator runs on) | Places the compute service and the material that follows it on a registered target cluster. The projected `Nova` CR stays on the management cluster and carries the ref verbatim. Requires a `namespace` block of its own, plus a `publicEndpoint` or a `gateway` so the compute catalog advertises an address other clusters resolve (webhook). Create-only: the validating webhook freezes the ref after creation. See [ControlPlane placement](../target-clusters.md#controlplane-placement). |
+
+### ServiceNovaConsoleProxySpec
+
+The ControlPlane's view of the console proxy. A disabled proxy has no Deployment
+to size and no listener to expose, and the Nova CRD rejects a
+`spec.consoleProxy.deployment` written on a disabled proxy, so a `replicas` or
+`gateway` value set beside `enabled: false` has nowhere to land. A CEL rule on
+this type refuses that combination at admission
+(`replicas and gateway must not be set when consoleProxy.enabled is false`)
+rather than parking the projected child on a rule of its own.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `enabled` | `*bool` | No | `nil` (projected as `true`) | Projects the console proxy. An omitted `consoleProxy` block leaves the switch absent on the wire and the nova defaulting webhook enables the proxy; a block present with `enabled` unset is projected as `true` outright. Setting it to `false` deletes the proxy Deployment, its Service, and its HTTPRoute. |
+| `replicas` | `*int32` | No | `nil` (projected as `1` inside an enabled block) | Sizes the console-proxy Deployment. With the whole `consoleProxy` block omitted nothing is written and the nova defaulting webhook resolves its own default, also 1. Minimum 1. Forbidden while the proxy is disabled. |
+| `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the console proxy externally. It takes a hostname of its own rather than a path under the API's: the noVNC client opens a WebSocket against the host the console URL names, and the API hands that URL to the browser. The `path` must be empty or `/`, since the console page and its WebSocket both open on the root of the hostname. Forbidden while the proxy is disabled. |
+
+### ServiceNovaDBArchiveSpec
+
+Nova soft-deletes: a deleted instance stays in the `instances` table with a
+`deleted_at` stamp, so a long-lived cloud carries every instance it ever booted
+in the table the API queries. The archive moves those rows into the shadow
+tables, where they stay available for accounting. This block is a local copy of
+the Nova CRD's `DBArchiveSpec`, projected onto the child's `spec.dbArchive`.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `schedule` | `string` | No | `""` (the nova operator's own default, once a day) | The standard cron expression the archive CronJob runs on. Checked by the validating webhook rather than by a CRD pattern: the accepted grammar includes descriptors such as `@daily`, which no regex expresses without also rejecting valid expressions. |
+| `maxRows` | `*int32` | No | `nil` (the nova operator's own default, 1000) | Bounds how many rows one batch moves per table, the `--max_rows` argument. The bound is what keeps a batch on a long-neglected database from holding table locks for the length of the backlog. A run repeats batches until nothing is left to move or its time budget is spent, and the next run picks up where it stopped. Minimum 1. |
+| `sleep` | `*int32` | No | `nil` (the nova operator's own default, 1) | How many seconds the run waits between batches. Zero runs the batches back to back, which finishes sooner at the cost of the database serving the API at the same time. Minimum 0. |
+| `retentionDays` | `*int32` | No | `nil` (no `--before`, every soft-deleted row eligible) | Keeps the most recent deletions out of the archive: the run passes `--before` with today's date minus this many days, so a row soft-deleted inside the window stays in the live table. The window also gates the `task_log` table, whose rows are never soft-deleted, so `--task-log` is passed only together with `--before`. Minimum 1. |
+| `suspend` | `bool` | No | `false` | Pauses the archive CronJob without deleting it. It is the escape hatch for a brownfield deployment onboarding onto this operator: the first run works through a backlog that has never been archived, so an operator who wants to stage that can suspend the CronJob, pick a retention window covering the deployment's full history, and step it down. |
+
+### NovaDedicatedBackingServicesSpec
+
+Declares the backing-service instances the compute service gets for itself
+instead of the ControlPlane-wide shared ones. It follows the same contract as
+[`CinderDedicatedBackingServicesSpec`](#cinderdedicatedbackingservicesspec).
+Nova consumes both classes, so it can take either or both dedicated; a declared
+block must name at least one (CEL).
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `database` | [`*commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | `nil` (shares `spec.infrastructure.database`) | Gives Nova its own database cluster. In managed mode `clusterRef.name` defaults to `{controlplane}-nova-db`. The compute service holds two schemas on it, so the instance declared here carries both. A dedicated **managed** database is **`Static`-only**: the defaulting webhook materializes `credentialsMode: Static` and an explicit `Dynamic` is rejected, for the same reason as Keystone (see [Credential modes](#credential-modes)). Seed and rotate the credential at the OpenBao source. |
+| `cache` | [`*commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | `nil` (shares `spec.infrastructure.cache`) | Gives Nova its own cache. In managed mode `clusterRef.name` defaults to `{controlplane}-nova-cache`. |
+
+### The two databases
+
+The compute service splits its state across two logical databases on one
+instance, and neither name is exposed here. The projection forces `nova_api` on
+`spec.apiDatabase` (the cell map, the flavors, the instance mappings) and `nova`
+on `spec.database` (the instances themselves, with the derived `nova_cell0`
+granted to the same user). They are the schemas the pre-wired OpenBao engine
+roles grant on, so any other name would be issued a credential it cannot use.
+
+Each schema takes a credential chain of its own, with its own engine role and
+its own ServiceAccount, so rotating one leaves the other's login untouched. The
+**mode** is decided once for both: `databaseCredentialsMode` and the shared
+`spec.infrastructure.database.credentialsMode` reach `spec.apiDatabase` and
+`spec.database` as one value, because the Nova CRD rejects a child whose two
+blocks disagree.
+
+### Three gateways, one catalog row
+
+Nova publishes up to three hostnames, and each block is independent. `gateway`
+publishes the compute API, `metadataGateway` the metadata API the Neutron
+metadata agents dial, and `consoleProxy.gateway` the page a browser opens a
+console session on. Each hostname has to be usable as the host of the route
+derived from it, which the validating webhook checks for all three.
+
+Every Nova route matches the root of its hostname. The console page and the
+metadata requests sit there, so both `path`s must be empty or `/`, and the
+catalog registers the API at `https://{gateway.hostname}/v2.1` whatever
+`gateway.path` says. Two of the three blocks therefore may not share a hostname
+on the same Gateway listener: the routes would tie, the Gateway would hand every
+request to the older one, and the other endpoint would serve nothing while both
+routes report `Accepted`. The same hostname on two Gateways, or on two listeners
+both blocks name through `parentRef.sectionName`, is admitted.
+
+Only the first of them reaches the Keystone catalog. `publicEndpoint` and
+`gateway` decide the public compute Endpoint; the metadata front end is dialed by
+the agents and the console URL is handed to a browser by the API, so neither is a
+catalog row and neither is read by the public-endpoint rules.
+
+### The three sibling services
+
+Setting `services.nova` requires `services.placement`, `services.neutron`, and
+`services.glance` beside it. These are the first cross-service dependency rules
+on the ControlPlane, and they are errors rather than warnings because none of the
+three is substitutable from this CR: the projected Nova child is addressed at its
+siblings by the naming convention the ControlPlane projects them under, so a Nova
+declared without one of them reaches an endpoint no child serves and fails every
+boot with nothing on the plane naming the cause. The message names what the
+compute service does with each of them, since the remedy is to declare that
+service rather than to change anything on `services.nova`.
+
+`services.cinder` and `services.barbican` are siblings of a different kind. They
+gate nothing: the projection switches the child's `endpoints.cinder.enabled` and
+`endpoints.barbican.enabled` on as soon as the block is declared, and a Nova
+without either serves every request that does not touch a volume or an encrypted
+volume's key.
+
+Setting `services.nova` requires `spec.infrastructure.messaging` too. The Nova
+CRD requires `spec.messaging`, and the ControlPlane derives the child's transport
+URL from the shared bus, so a compute service declared without one would project
+a child its own admission rejects on every pass. The bus reaches the child as a
+brownfield `secretRef` naming `{controlplane.Name}-nova-messaging` in the Nova's
+own namespace on the Nova's own cluster, with
+`{controlplane.Name}-nova-messaging-ca` beside it while the shared bus declares
+`tls`.
+
+Setting `services.nova` makes the reconciler project a `KeystoneService`
+registration named `{controlplane.Name}-nova` into the namespace Nova is placed
+in: the `compute` catalog entry plus the `nova` service account, whose project
+`service-nova` is created with the roles `service` **and** `admin`. That account
+is the Keystone user the projected child authenticates as, so the Nova child is
+not projected until the registration reports it provisioned
+(`NovaReady=False/WaitingForServiceRegistration` until then). The `admin` role is
+what `service` alone does not carry here (decision D10 of #1019): nova calls the
+block-storage API through its `[cinder]` service user in admin contexts, where it
+holds no user token of its own, and cinder refuses a caller holding `service`
+alone on a volume that belongs to a user. Both catalog rows carry the `/v2.1`
+path the compute API is served under.
+
+The network service takes a **second** registration while `services.nova` is set,
+`{controlplane.Name}-neutron-nova`. It carries an account and no catalog entry at
+all: neutron posts its port-status notifications to the compute API as a user of
+its own, and a user another service authenticates as answers no requests itself.
+See [reconcileNeutron](./controlplane-reconciler.md#reconcileneutron).
+
+### The generated metadata shared secret
+
+The metadata shared secret is the value the Neutron metadata agent signs a
+proxied instance request with, and the value the compute service's metadata API
+checks that signature against. Both sides have to resolve the same Secret: a
+value only one of them knows leaves every call to `169.254.169.254` rejected.
+
+The ControlPlane sees both sides, so it generates the value rather than asking
+for one. An ESO `Password` generator mints 32 symbol-free characters, and an
+`ExternalSecret` named `{controlplane.Name}-nova-metadata-secret` materialises
+them under the key `shared_secret`; the operator writes two references and never
+reads the value. The generator writes its value under `password`, and one
+`rewrite` rule on the ExternalSecret renames it: `shared_secret` is the key both
+consumers default their reference to, the Nova child's
+`spec.metadata.sharedSecretRef` and the `NeutronMetadataAgent`'s
+`spec.novaMetadata.sharedSecretRef`. The ControlPlane creates no metadata agent,
+so an agent written by hand names the Secret alone:
+
+```yaml
+spec:
+  novaMetadata:
+    sharedSecretRef:
+      name: openstack-nova-metadata-secret   # {controlplane.Name}-nova-metadata-secret
+```
+
+The `refreshInterval` is `0`, which turns the periodic sync off: a `Password`
+generator mints a new value on every read, so a refreshing ExternalSecret would
+rewrite the shared secret while every metadata agent still carried the previous
+one. Rotating it is a deliberate act (delete the Secret) rather than a timer.
+
+Naming another Secret in `metadataSharedSecretRef` hands the child the named
+reference instead, and takes the generated pair down once the child has
+converged on that reference: the child reports `Ready` for the generation that
+re-pointed it. Until then the live metadata Deployment still reads the generated
+Secret, so reaping it earlier would leave every metadata pod that restarts in the
+meantime unable to start. Naming the generated Secret itself keeps the pair. The
+reference is resolved at projection time rather than materialized into the spec,
+so removing it reverts the child to the generated value instead of pinning the
+last one.
+
+### Name bound and replica pinning
+
+Setting `services.nova` bounds the ControlPlane's own name. The projected child
+is `{controlplane.Name}-nova`, and the Nova CRD caps `metadata.name` at **41**
+characters so the nova operator's archive CronJob name (`{name}-db-archive`)
+still fits the API server's 52-character CronJob bound. The ControlPlane name may
+therefore be at most **36** characters while `services.nova` is set. The rule
+runs on create and on the update that newly enables Nova.
+
+The projection writes the metadata, scheduler, and conductor replica counts
+explicitly, and writes `1` rather than the shared default of three. All three
+`deployment` blocks are struct values, so `deployment: {}` reaches the API server
+whatever the projection assigns and the shared `DeploymentSpec` default of three
+lands on the wire before the nova operator's own defaulting webhook runs. That
+webhook only reaches an absent block, so leaving these alone silently runs three
+metadata APIs, three schedulers, and three conductors where the nova operator's
+standalone default is one of each. The API count keeps the shared default of
+three, and the console proxy is projected as the zero block when
+`services.nova.consoleProxy` is absent, which is what lets the nova defaulting
+webhook enable it at one replica.
 
 ---
 
@@ -1710,7 +1949,7 @@ the kind/name and applies it.
 | `conditions` | `[]metav1.Condition` | Latest available observations of the control-plane state. Each condition carries an `observedGeneration`. See [Status Conditions](#status-conditions). |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from a current one. |
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
-| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with one entry per managed service in a stable order — `keystone`, `horizon`, `glance`, `placement`, `barbican`, `neutron`, then `cinder` — each present only when its `spec.services.<svc>` is set. Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` / `NeutronReady` / `CinderReady` condition and its `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported. See [ServiceStatus](#servicestatus). |
+| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with one entry per managed service in a stable order — `keystone`, `horizon`, `glance`, `placement`, `barbican`, `neutron`, `cinder`, then `nova` — each present only when its `spec.services.<svc>` is set. Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` / `NeutronReady` / `CinderReady` / `NovaReady` condition and its `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported. See [ServiceStatus](#servicestatus). |
 | `catalog` | [`*CatalogStatus`](#catalogstatus) | Observed state of the External-mode catalog imports. Nil in Managed mode, where the control plane creates the catalog entries rather than importing them. See [CatalogStatus](#catalogstatus). |
 
 > **`updatePhase` vs the Keystone CRD's `upgradePhase`.** These field names are
@@ -1938,7 +2177,7 @@ Keystone discipline:
 | `spec.services.keystone.external.caBundleSecretRef.name` | MinLength 1 (shared `SecretRefSpec` marker) |
 | `spec.services.keystone.caBundleSecretRef.name` | MinLength 1 (shared `SecretRefSpec` marker) |
 | `spec.services.keystone.databaseCredentialsMode` | Enum: `Static`, `Dynamic` |
-| `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.targetClusterRef.name` | MinLength 1; Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` — a DNS-1123 subdomain, from the shared `commonv1.TargetClusterRefSpec` markers, so a name no registration Secret could carry is refused before the resolver ever sees it |
+| `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder,nova}.targetClusterRef.name` | MinLength 1; Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` — a DNS-1123 subdomain, from the shared `commonv1.TargetClusterRefSpec` markers, so a name no registration Secret could carry is refused before the resolver ever sees it |
 | `spec.korc.adminCredential.applicationCredential.accessRules[].method` | Enum: `CONNECT`, `DELETE`, `GET`, `HEAD`, `OPTIONS`, `PATCH`, `POST`, `PUT`, `TRACE` |
 | `spec.korc.adminCredential.applicationCredential.accessRules[].path` | Pattern `^/` |
 | `spec.korc.adminCredential.bootstrapResources[].kind` | Enum: `Project`, `Role` |
@@ -1985,6 +2224,15 @@ Keystone discipline:
 | `spec.services.glance.importPlugins.conversion.outputFormat` | Enum: `qcow2`, `raw`, `vmdk` |
 | `spec.services.glance.importPlugins.injectMetadata.properties` | Required; MinProperties 1; MaxProperties 64; CEL: `self.all(k, size(k) <= 255 && size(self[k]) <= 255)` → "each injected property name and value must be at most 255 characters" (the CEL rule is the only marker that reaches the map's halves) |
 | `spec.services.glance.importPlugins.injectMetadata.ignoreUserRoles` | MaxItems 64; item MinLength 1; item MaxLength 255 |
+| `spec.services.nova.replicas`, `.metadataReplicas`, `.schedulerReplicas`, `.conductorReplicas` | Minimum: 1 |
+| `spec.services.nova.publicEndpoint` | Pattern `^https?://`; MaxLength 512 (mirrors `services.keystone.publicEndpoint`; the value feeds the K-ORC compute Endpoint URL) |
+| `spec.services.nova.databaseCredentialsMode` | Enum: `Static`, `Dynamic` |
+| `spec.services.nova.gateway.hostname`, `.metadataGateway.hostname`, `.consoleProxy.gateway.hostname` | MinLength 1 (shared `GatewaySpec` marker) |
+| `spec.services.nova.consoleProxy.replicas` | Minimum: 1 |
+| `spec.services.nova.consoleProxy` (CEL) | `!has(self.enabled) \|\| self.enabled \|\| (!has(self.replicas) && !has(self.gateway))` → "replicas and gateway must not be set when consoleProxy.enabled is false" |
+| `spec.services.nova.dbArchive.maxRows`, `.retentionDays` | Minimum: 1 |
+| `spec.services.nova.dbArchive.sleep` | Minimum: 0 |
+| `spec.services.nova.dedicatedBackingServices` (CEL) | `has(self.database) \|\| has(self.cache)` → "dedicatedBackingServices must declare at least one backing-service class (database, cache)" |
 | `spec.korc.serviceRegistrations.allowedNamespaces` | `listType=set` (the API server rejects duplicate entries); MaxItems 32; item MinLength 1; item MaxLength 63; item Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` |
 
 ### Validating-webhook rules
@@ -2013,8 +2261,8 @@ short-circuit on the first error.
 | External caBundle name required | `spec.services.keystone.external.caBundleSecretRef.name` | `field.Required` | `caBundleSecretRef` set with an empty `name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
 | Managed-only field forbidden in External mode | `spec.services.keystone.{replicas,image,policyOverrides,extraConfig,rotationInterval,gateway,publicEndpoint,federationProxyImage}` | `field.Forbidden` | The field is set while `mode: External`. Defense-in-depth mirror of the per-field CEL rules. |
 | Keystone credentials-mode override forbidden in External mode | `spec.services.keystone.databaseCredentialsMode` | `field.Forbidden` | The per-service override is set while `mode: External` — no managed database is provisioned, so there is no credentials mode to override. Defense-in-depth mirror of the per-field CEL rule. |
-| Dynamic credentials-mode override on a dedicated database | `spec.services.{keystone,glance,placement,barbican,neutron,cinder}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while that service declares a dedicated database: the override retargets the shared database the service does not use, and a dedicated database is `Static`-only (set `dedicatedBackingServices.database.credentialsMode` instead). `Static` stays admitted. **Cross-field, webhook-only.** |
-| Dynamic credentials-mode override on a brownfield shared database | `spec.services.{keystone,glance,placement,barbican,neutron,cinder}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while the shared database is brownfield (`clusterRef` unset): the dynamic engine issues per-tenant DB users only against a cluster the operator provisions. **Cross-field, webhook-only.** |
+| Dynamic credentials-mode override on a dedicated database | `spec.services.{keystone,glance,placement,barbican,neutron,cinder,nova}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while that service declares a dedicated database: the override retargets the shared database the service does not use, and a dedicated database is `Static`-only (set `dedicatedBackingServices.database.credentialsMode` instead). `Static` stays admitted. **Cross-field, webhook-only.** |
+| Dynamic credentials-mode override on a brownfield shared database | `spec.services.{keystone,glance,placement,barbican,neutron,cinder,nova}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while the shared database is brownfield (`clusterRef` unset): the dynamic engine issues per-tenant DB users only against a cluster the operator provisions. **Cross-field, webhook-only.** |
 | Federation proxy image resolvable | `spec.services.keystone.federationProxyImage` | `field.Required` / `field.Invalid` | Empty `repository`, or neither/both of `tag` and `digest`. Surfaces on the ControlPlane the operator edits rather than as an opaque `KeystoneProjectionRejected` condition on the child. |
 | Dashboard public endpoint is a URL | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Not an absolute HTTP(S) URL with a host. Keystone matches the derived WebSSO origin verbatim, so an unusable endpoint could never match any dashboard. |
 | Dashboard public endpoint is a bare origin | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Carries a path, query, or fragment (a single trailing `/` is trimmed and allowed). The `^https?://` pattern anchors only the prefix, so `https://horizon.example.com?utm=1` is schema-legal and would render the trusted origin `https://horizon.example.com?utm=1/auth/websso/` — accepted by Keystone, matched by nothing. **Webhook-only.** |
@@ -2051,7 +2299,7 @@ short-circuit on the first error.
 | Glance ignored-role bounds | `spec.services.glance.importPlugins.injectMetadata.ignoreUserRoles` | `field.TooMany` / `field.Invalid` | The list exceeds 64 items, or an item is empty, longer than 255 characters, or carries a comma, newline, or carriage return. The rendered `ignore_user_roles` is a plain comma join, so a comma would split one role into two. The item markers bound length; the content checks are **webhook-only**. |
 | Glance decompression needs a chosen staging bound | `spec.services.glance.staging.sizeLimit` | `field.Required` | `services.glance.importPlugins.decompression` is set while `services.glance.staging` leaves both `sizeLimit` and `unbounded` unset. The plugin expands the staged image by a ratio the caller picks and nothing caps the result, which makes that bound the only one in the path — and the operator default was sized against the largest download, not the largest unpacked image. Both blocks are projected onto the Glance child untouched, so the same exported validator enforces the pairing there. **Cross-field, webhook-only.** |
 | Glance forbidden in External mode | `spec.services.glance` | `field.Forbidden` | `services.glance` set while `mode: External` (Glance needs its own External-mode design). **Cross-field, webhook-only.** |
-| Neutron needs the shared bus | `spec.infrastructure.messaging` | `field.Required` | `services.neutron` is set while `spec.infrastructure` carries no `messaging` block: "is required when services.neutron is set: the Neutron CRD requires spec.messaging, and the ControlPlane derives the child's transport URL from the shared bus". Without it the ControlPlane would project a child its own admission rejects on every pass. A nil `spec.infrastructure` is left to the mode matrix, which already requires the block outside External mode and forbids `services.neutron` inside it. The rule lives in `validateMessagingConsumers`, which requires the bus once per declared service whose child CRD needs it; Neutron and Cinder are the two such services. **Cross-field, webhook-only.** |
+| Neutron needs the shared bus | `spec.infrastructure.messaging` | `field.Required` | `services.neutron` is set while `spec.infrastructure` carries no `messaging` block: "is required when services.neutron is set: the Neutron CRD requires spec.messaging, and the ControlPlane derives the child's transport URL from the shared bus". Without it the ControlPlane would project a child its own admission rejects on every pass. A nil `spec.infrastructure` is left to the mode matrix, which already requires the block outside External mode and forbids `services.neutron` inside it. The rule lives in `validateMessagingConsumers`, which requires the bus once per declared service whose child CRD needs it; Neutron, Cinder and Nova are the three such services. **Cross-field, webhook-only.** |
 | Neutron names its OVN control plane | `spec.services.neutron.ovn.centralRef.name` | `field.Required` | The name is empty: "must be set: it names the OVNCentral the projected Neutron programs". Defense-in-depth mirror of the `MinLength=1` marker; the ML2/OVN mechanism driver writes every network, subnet, and port into that central's Northbound database. |
 | OVN central namespace shape | `spec.services.neutron.ovn.centralRef.namespace` | `field.Invalid` | A non-empty namespace is not a lowercase alphanumeric RFC-1123 label; it names a Kubernetes namespace. Defense-in-depth mirror of the `Pattern` marker. |
 | OVN central stays inside the plane | `spec.services.neutron.ovn.centralRef.namespace` | `field.Forbidden` | The namespace is neither the ControlPlane's own nor one it claims through a `services.<service>.namespace` assignment, or it is such a claim with `lifecycle: Managed`. It is the one ControlPlane field that addresses another namespace: consuming a foreign central mirrors that central's client certificate — a full mTLS identity for its Northbound and Southbound databases — into this plane, and a `Managed` claim is deleted with the plane, taking the referenced central and its databases along. Runs on create and on the two updates that can newly violate it — the one that enables the network service and the one that moves the ref — so a grandfathered CR stays updatable and deletable; `reconcileOVN` re-runs the check as the controller-side backstop. **Cross-field, webhook-only.** |
@@ -2076,10 +2324,23 @@ short-circuit on the first error.
 | Cinder public endpoint agrees with the gateway | `spec.services.cinder.publicEndpoint` | `field.Invalid` | With `services.cinder.gateway` set: the scheme is not `https` (the listener terminates TLS, and every volume call sends the caller's scoped Keystone token to this endpoint), or its host differs from `gateway.hostname` (the listener is what routes that hostname to the Cinder API). The port may differ, since Gateway API hostnames carry none. **Cross-field, webhook-only.** |
 | Cinder image resolvable | `spec.services.cinder.image` | `field.Invalid` | The image override sets neither or both of `tag` and `digest` (mirrors the `commonv1.ImageSpec` tag/digest XOR). |
 | Projected Cinder name bound | `metadata.name` | `field.Invalid` | The projected child `{controlplane.Name}-cinder` would exceed the 43-character `metadata.name` cap the Cinder CRD enforces, which is itself the 52-character CronJob bound minus the `-db-purge` suffix of the purge CronJob. The ControlPlane name may therefore be at most 36 characters while `services.cinder` is set. Runs on create and on the update that newly declares `services.cinder`, for the reason the Neutron bound above is also gated. **Webhook-only.** |
-| Target-cluster ref shape | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.targetClusterRef.name` | `field.Required` | The ref is set with an empty `name`. Defense-in-depth mirror of the `MinLength=1` marker on the shared `commonv1.TargetClusterRefSpec`, applied through `validation.TargetClusterRef` for a caller that bypasses CRD schema admission. |
-| Placed service needs a namespace of its own | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.namespace` | `field.Required` | `targetClusterRef` is set while the service declares no `namespace` block. Every namespace maps to exactly one cluster and the ControlPlane's own stays on the local one, so the service's database, tenant store, and credential material would be provisioned in a namespace living on a different cluster than the ref names. **Cross-field, webhook-only.** |
-| Placed catalog service needs a public address | `spec.services.{keystone,glance,placement,barbican,neutron,cinder}.publicEndpoint` | `field.Required` | The service is placed with neither a `publicEndpoint` nor a `gateway`. The catalog would then advertise the in-cluster Service DNS name, which resolves nowhere outside the cluster that service runs on, so every client reading the catalog from elsewhere gets an address it cannot connect to. Horizon is exempt: the dashboard is reached by a browser rather than looked up in the catalog. **Cross-field, webhook-only.** |
-| Co-located services agree on the target cluster | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.targetClusterRef` | `field.Invalid` | Two services declare the same `namespace.name` but do not name the same cluster — an unplaced service counts as naming the local one. The namespace exists on exactly one cluster, together with the backing services, the tenant store, and the credential material scoped to it. The co-location rule of the `namespace` assignment, one level out. **Cross-item, webhook-only.** |
+| Nova needs Placement, Neutron and Glance | `spec.services.placement`, `spec.services.neutron`, `spec.services.glance` | `field.Required` | `services.nova` is set while one of the three siblings is not. Each message names what the compute service does with it: Placement, "Nova claims every instance's resources in Placement before it boots"; Neutron, "Nova creates and binds a port for every instance"; Glance, "Nova reads the image of every instance it boots". They are the first cross-service dependency rules on the ControlPlane, and errors rather than warnings because the child addresses its siblings by naming convention, so a missing one fails every boot with nothing on the plane naming the cause. **Cross-field, webhook-only.** |
+| Nova needs the shared bus | `spec.infrastructure.messaging` | `field.Required` | `services.nova` is set while `spec.infrastructure` carries no `messaging` block: "is required when services.nova is set: the Nova CRD requires spec.messaging, and the ControlPlane derives the child's transport URL from the shared bus". Reported by the same `validateMessagingConsumers` as the Neutron and Cinder rules above, once per declared consumer. **Cross-field, webhook-only.** |
+| Nova gateway hostname required | `spec.services.nova.gateway.hostname`, `.metadataGateway.hostname`, `.consoleProxy.gateway.hostname` | `field.Required` | A gateway block is configured but its `hostname` is empty. Mirrors the `MinLength=1` marker on `commonv1.GatewaySpec.Hostname`. Nova is the one service with more than one gateway, so all three run through one helper and each carries the usable-DNS-name check the Keystone and Horizon hostnames take. |
+| Nova console route is root-only | `spec.services.nova.consoleProxy.gateway.path` | `field.Invalid` | The path is neither empty nor `/`. The console page the API hands a browser sits at the root of the console hostname and the noVNC client opens its WebSocket there as well, so a prefix match would route neither while the HTTPRoute reports `Accepted`. Mirrors the rule the Nova CRD's own webhook applies to the block this one is projected onto. |
+| Nova metadata route is root-only | `spec.services.nova.metadataGateway.path` | `field.Invalid` | The path is neither empty nor `/`. The Neutron metadata agent addresses nova-api-metadata by scheme, host and port alone (neutron has no path option) and the route rewrites nothing, so every request it proxies arrives on the root of the hostname and a prefix match would route none of them while the HTTPRoute reports `Accepted`. **Webhook-only.** |
+| Nova listeners do not share a route attachment | `spec.services.nova.metadataGateway.hostname`, `.consoleProxy.gateway.hostname` | `field.Invalid` | Two of the three Nova gateway blocks name the same `hostname` on the same Gateway (`parentRef.name`, and `parentRef.namespace` with an empty one read as the Nova namespace the routes are rendered in) with overlapping listeners: equal `sectionName`s, or either one empty, which attaches to every listener. Every Nova route matches the root of its hostname, so the two routes tie and the Gateway hands every request to the older one while both report `Accepted`. The later block of the pair is named. **Cross-field, webhook-only.** |
+| Nova public endpoint is a URL | `spec.services.nova.publicEndpoint` | `field.Invalid` | Not an absolute HTTP(S) URL with a host. The value is advertised verbatim as the public compute catalog Endpoint and is projected into no child CR, so `https://` alone would register a hostless URL that no client can resolve and nothing downstream would catch. |
+| Nova public endpoint is a bare origin | `spec.services.nova.publicEndpoint` | `field.Invalid` | Carries a path, query, or fragment (a single trailing `/` is allowed, and `novaCatalogURL` trims it before joining `/v2.1`). The `^https?://` pattern anchors only the prefix, so `https://nova.example.com?utm=1` is schema-legal; the ControlPlane appends `/v2.1` when it registers the row, yielding `https://nova.example.com?utm=1/v2.1` and a 404 on every compute call. **Webhook-only.** |
+| Nova public endpoint agrees with the gateway | `spec.services.nova.publicEndpoint` | `field.Invalid` | With `services.nova.gateway` set: the scheme is not `https` (the listener terminates TLS, and the caller's scoped Keystone token rides every compute call to this endpoint), or its host differs from `gateway.hostname` (the listener is what routes that hostname to the Nova API). The port may differ, since Gateway API hostnames carry none. The metadata and console gateways are not read by this rule: neither publishes a catalog row. **Cross-field, webhook-only.** |
+| Nova archive schedule | `spec.services.nova.dbArchive.schedule` | `field.Invalid` | A non-empty schedule is not a standard cron expression. Checked here rather than by a CRD `Pattern` marker, because the accepted grammar includes descriptors such as `@daily` that no regex expresses without also rejecting valid expressions. An empty schedule leaves the nova operator's own default in place. **Webhook-only.** |
+| Nova image resolvable | `spec.services.nova.image` | `field.Invalid` | The image override sets neither or both of `tag` and `digest` (mirrors the `commonv1.ImageSpec` tag/digest XOR). |
+| Projected Nova name bound | `metadata.name` | `field.Invalid` | The projected child `{controlplane.Name}-nova` would exceed the 41-character `metadata.name` cap the Nova CRD enforces, which is itself the 52-character CronJob bound minus the `-db-archive` suffix of the archive CronJob. The ControlPlane name may therefore be at most 36 characters while `services.nova` is set. Runs on create and on the update that newly declares `services.nova`, for the reason the Neutron and Cinder bounds above are also gated. **Webhook-only.** |
+| Nova forbidden in External mode | `spec.services.nova` | `field.Forbidden` | `services.nova` set while `mode: External` (Nova needs its own External-mode design). **Cross-field, webhook-only.** |
+| Target-cluster ref shape | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder,nova}.targetClusterRef.name` | `field.Required` | The ref is set with an empty `name`. Defense-in-depth mirror of the `MinLength=1` marker on the shared `commonv1.TargetClusterRefSpec`, applied through `validation.TargetClusterRef` for a caller that bypasses CRD schema admission. |
+| Placed service needs a namespace of its own | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder,nova}.namespace` | `field.Required` | `targetClusterRef` is set while the service declares no `namespace` block. Every namespace maps to exactly one cluster and the ControlPlane's own stays on the local one, so the service's database, tenant store, and credential material would be provisioned in a namespace living on a different cluster than the ref names. **Cross-field, webhook-only.** |
+| Placed catalog service needs a public address | `spec.services.{keystone,glance,placement,barbican,neutron,cinder,nova}.publicEndpoint` | `field.Required` | The service is placed with neither a `publicEndpoint` nor a `gateway`. The catalog would then advertise the in-cluster Service DNS name, which resolves nowhere outside the cluster that service runs on, so every client reading the catalog from elsewhere gets an address it cannot connect to. Horizon is exempt: the dashboard is reached by a browser rather than looked up in the catalog. **Cross-field, webhook-only.** |
+| Co-located services agree on the target cluster | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder,nova}.targetClusterRef` | `field.Invalid` | Two services declare the same `namespace.name` but do not name the same cluster — an unplaced service counts as naming the local one. The namespace exists on exactly one cluster, together with the backing services, the tenant store, and the credential material scoped to it. The co-location rule of the `namespace` assignment, one level out. **Cross-item, webhook-only.** |
 | Target-cluster ref forbidden in External mode | `spec.services.keystone.targetClusterRef` | `field.Forbidden` | The ref is set while `mode: External` — no Keystone workload is deployed, so there is nothing to place. Defense-in-depth mirror of the per-field CEL rule. |
 | Placed service needs a published Keystone | `spec.services.keystone.publicEndpoint` | `field.Required` | Another service is placed on a target cluster while Keystone advertises neither a `publicEndpoint` nor a `gateway`. That service validates its tokens against Keystone and cannot resolve Keystone's in-cluster Service DNS name from another cluster, so the operator would project an empty `spec.keystoneEndpoint` onto the placed child — which the child's own CRD refuses (`MinLength=1`, `^https?://`) on every pass. The rule above only reaches a service carrying a ref of its own, so an unplaced Keystone falls outside it. **Cross-field, webhook-only.** |
 | Keystone endpoint must use https across a cluster boundary | `spec.services.keystone.publicEndpoint` | `field.Invalid` | The endpoint's scheme is `http` while Keystone carries a `targetClusterRef` **or** another service is placed away from an unplaced Keystone. Either way that URL is the `auth_url` the operator renders the admin password and every service-account password next to, and those credentials cross a cluster boundary to reach it — K-ORC dials it from the management cluster when Keystone moves, a placed service dials it from the target when the service moves. The `^https?://` pattern admits `http://` for the all-local case, where the URL feeds only the bootstrap and the catalog. **Cross-field, webhook-only.** |
@@ -2144,7 +2405,13 @@ Two families run, with different gating:
   warning, supporting an externally-run dashboard doing WebSSO against the managed
   Keystone. Every other operator-owned key is honored but produces an admission
   warning naming the key, its owner, its impact, and the contributing block
-  path(s).
+  path(s). One exception runs the other way: on update, a Rejected **Neutron**
+  key the merged block already carried with the same value is admitted with a
+  warning instead. `[nova] password` became Rejected when the neutron operator
+  started owning the notifier account (`spec.nova`), and before that it was the
+  documented way to configure the notifier, so refusing it on every update,
+  the finalizer removal on delete included, would leave such a ControlPlane with
+  no update to remove it through. A new or changed value is still rejected.
 - **Option catalog** — on every create, and on update **only when a catalog input
   changed**: either INI block, `spec.openStackRelease`, `services.keystone.image`,
   or a newly-declared service. So a stored CR whose `extraConfig` went
@@ -2208,6 +2475,36 @@ A backend name that collides with a `cinder.conf` catalog section other than
 cinder module, so the cinder webhook rejects the projected `CinderBackend` and
 the ControlPlane reports `CinderReady=False` with reason
 `CinderBackendProjectionRejected`.
+
+The compute service's catalog is resolved from `spec.openStackRelease` and
+exempts no sections either, so its exemptions are keys-only. Nova's fourteen
+always-rejected owned keys fall into four groups. Eight carry credential
+material that arrives through an env override at runtime, so rendering one is
+inert and only copies the value into the config Secret every pod mounts:
+`[DEFAULT] transport_url`, the two connection strings `[database] connection`
+and `[api_database] connection`, the five client passwords under
+`[keystone_authtoken]`, `[service_user]`, `[placement]`, `[neutron]` and
+`[cinder]`, and `[neutron] metadata_proxy_shared_secret`. The
+`[oslo_messaging_rabbit]` pair `ssl` and `ssl_ca_file` decides whether the bus
+that carries every RPC call is encrypted and where the broker certificate is
+verified against. The remaining three address the console proxy:
+`[DEFAULT] web` names the directory the noVNC client is served from, and
+`[vnc] novncproxy_host` / `novncproxy_port` are the address the proxy Service
+routes to, so an override leaves the browser on a blank page or fails every
+console session while the Deployment stays `Ready`.
+
+Three sections are rejected only beside the sibling block that owns them.
+`[cinder]` follows `services.cinder`, and `[key_manager]` and `[barbican]`
+follow `services.barbican`: the projection switches each on through the Nova
+child's `endpoints.cinder.enabled` and `endpoints.barbican.enabled` and computes
+every key behind that switch, so beside a declared sibling an override names a
+service the plane does own. The message reads `is projected by the ControlPlane
+from services.cinder (<owner>); remove the override or unset services.cinder`,
+and the same with `services.barbican`. Without the sibling those keys stay
+Reported, which is what lets an externally-run volume service or key manager be
+configured by hand. The nova registry classifies them that way because a `Nova`
+child on its own cannot tell a projected volume service or key manager from a
+hand-configured one; the ControlPlane can.
 
 The catalogs consulted here are the ones embedded in the **c5c3-operator** build.
 A deployed service operator of a different build may embed a different catalog;
@@ -2321,7 +2618,7 @@ migration feature can relax it.
 | Messaging clusterRef.name immutable | `spec.infrastructure.messaging.clusterRef.name` | Both managed, but the name changed: "managed messaging clusterRef.name is immutable" |
 | Cloud secretName immutable | `spec.korc.adminCredential.cloudCredentialsRef.secretName` | The value changed |
 | Region immutable | `spec.region` | The region changed |
-| Service target cluster immutable | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.targetClusterRef` | The ref was added, removed, or renamed on a service the old revision already declared; the message contains `targetClusterRef is immutable`, the same string the workload CRDs' CEL transition rules pin. Re-pointing a live service leaves its workload, its database, its tenant store, and its credential material on the cluster they were created on, and nothing in the following reconcile moves or reaps them. Webhook-only, with **no** CEL transition rule, so a migration between clusters can be gated later rather than being blocked forever — the same rationale as the `namespace` freeze. A service the old revision did **not** declare may appear placed: that is the service's creation, not a move. |
+| Service target cluster immutable | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder,nova}.targetClusterRef` | The ref was added, removed, or renamed on a service the old revision already declared; the message contains `targetClusterRef is immutable`, the same string the workload CRDs' CEL transition rules pin. Re-pointing a live service leaves its workload, its database, its tenant store, and its credential material on the cluster they were created on, and nothing in the following reconcile moves or reaps them. Webhook-only, with **no** CEL transition rule, so a migration between clusters can be gated later rather than being blocked forever — the same rationale as the `namespace` freeze. A service the old revision did **not** declare may appear placed: that is the service's creation, not a move. |
 | Release downgrade rejected | `spec.openStackRelease` | New release `(year, minor)` is lower than the old (upgrades and same-release updates allowed) |
 
 ---
@@ -2446,7 +2743,9 @@ markers' documented values where a marker also exists.
 | `spec.services.neutron.dedicatedBackingServices.cache.clusterRef.name` | managed dedicated cache declared, `len(servers) == 0` | `{controlplane}-neutron-cache` | Webhook-only, brownfield-guarded |
 | `spec.services.cinder.dedicatedBackingServices.database.clusterRef.name` | managed dedicated database declared, `== ""` | `{controlplane}-cinder-db` (and `credentialsMode` → `Static`) | Webhook-only, brownfield-guarded |
 | `spec.services.cinder.dedicatedBackingServices.cache.clusterRef.name` | managed dedicated cache declared, `len(servers) == 0` | `{controlplane}-cinder-cache` | Webhook-only, brownfield-guarded |
-| `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder}.namespace.lifecycle` | `== ""` (a `namespace` block is declared) | `Managed` | Marker + webhook |
+| `spec.services.nova.dedicatedBackingServices.database.clusterRef.name` | managed dedicated database declared, `== ""` | `{controlplane}-nova-db` (and `credentialsMode` → `Static`) | Webhook-only, brownfield-guarded |
+| `spec.services.nova.dedicatedBackingServices.cache.clusterRef.name` | managed dedicated cache declared, `len(servers) == 0` | `{controlplane}-nova-cache` | Webhook-only, brownfield-guarded |
+| `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder,nova}.namespace.lifecycle` | `== ""` (a `namespace` block is declared) | `Managed` | Marker + webhook |
 
 The `centralRef.namespace` default is a convenience only.
 `NeutronOVNCentralNamespace()` reads an empty value as the ControlPlane's
@@ -2733,6 +3032,10 @@ central it does not own.
 Set by `reconcileNeutron`. It is gated on `KeystoneReady` (Neutron validates
 every token against the Keystone child), on `OVNReady`, and on the projected
 `KeystoneService` registration having provisioned the `neutron` service account.
+While `spec.services.nova` is set it takes a second registration,
+`{controlplane.Name}-neutron-nova`, and gates on that account too: it is the user
+the network service posts its port-status notifications to the compute service
+as, and the child must not be pointed at a password that does not resolve yet.
 Once gated through, the pass delivers the shared message bus into the namespace
 the network service runs in and ensures the DB credential before it projects the
 child, so the Secrets the child references exist by the time the neutron operator
@@ -2749,7 +3052,7 @@ managed against a Managed-mode Keystone.
 | `False` | `WaitingForMessagingCABundle` | `spec.infrastructure.messaging.tls` names a CA bundle Secret that does not exist, or one that carries no data under the referenced key. Requeue 15s. |
 | `False` | `NeutronMessagingError` | Error resolving the shared transport URL, writing either messaging Secret into the Neutron namespace, or removing the stale CA mirror after the `tls` block was dropped. |
 | `False` | `TargetClusterUnavailable` | The cluster the Neutron namespace lives on did not resolve, so the messaging Secrets cannot be written there. The resolver's own message is relayed. Requeue 15s. |
-| `False` | `WaitingForServiceRegistration` | The projected `KeystoneService` registration has not provisioned the `neutron` account yet; projection deferred until its Keystone user and password exist. The message relays the registration's own failing sub-condition, so a collision on the `neutron` user or its catalog row reads here verbatim. |
+| `False` | `WaitingForServiceRegistration` | The projected `KeystoneService` registration has not provisioned the `neutron` account yet; projection deferred until its Keystone user and password exist. The message relays the registration's own failing sub-condition, so a collision on the `neutron` user or its catalog row reads here verbatim. While `services.nova` is set the same reason also covers the account-only `{controlplane.Name}-neutron-nova` registration, which carries no catalog entry and whose `CatalogReady` therefore reports `True` with reason `CatalogNotDeclared`. |
 | `False` | `ServiceRegistrationError` | Kubernetes-level error writing or reading the `KeystoneService` registration child; a refused adoption of a same-named foreign CR is among them. |
 | `False` | `ServiceRegistrationFieldsReclaimed` | The pass reset a spec field another field manager had written on the registration child (an `adopt` consent, a `rotation` block, or an extra catalog endpoint). The condition names the same fields as the `Warning` event and stands until a pass reads an untampered child. |
 | `False` | `NeutronDBCredentialError` | Error ensuring or reading the Neutron DB-credential objects (managed database only). |
@@ -2801,6 +3104,56 @@ Keystone.
 A registration that is provisioned but not yet fully `Ready` relays its own first
 failing sub-condition's reason onto `CinderReady`, the same way the network
 service's does.
+
+### NovaReady
+
+Set by `reconcileNova`. It is gated on `KeystoneReady` (Nova validates every
+token against the Keystone child), on `PlacementReady` (the conductor claims
+every instance's resources in Placement before it boots, so a compute service
+brought up ahead of its placement service accepts requests it cannot serve), and
+on the projected `KeystoneService` registration having provisioned the `nova`
+service account. Neutron and Glance are required beside the block at admission
+but gate nothing here; Cinder and Barbican are optional siblings that switch the
+child's `endpoints.cinder` and `endpoints.barbican` on. Once gated through, the
+pass delivers the shared message bus into the namespace the compute service runs
+in, ensures the two DB credentials the `nova_api` and cell schemas take, and
+generates the metadata shared secret before it projects the child, so everything
+the child references exists by the time the nova operator resolves it. Past the
+child's readiness it delivers the compute contract to every mirror target. Nova
+is **forbidden in External mode**, so it is only ever managed against a
+Managed-mode Keystone.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `NovaReady` | The projected Nova CR reports Ready, every compute-config mirror target is served, and its registration reports Ready. |
+| `True` | `NovaNotManaged` | `spec.services.nova` is unset: no compute service is managed, so the aggregate `Ready` is not blocked. Any previously-projected Nova child (with its two DB-credential chains, the generated metadata shared secret, the two messaging Secrets, and the registration) is **preserved** unless the `c5c3.io/allow-nova-deletion: "true"` annotation opts in to its deletion. Both dynamic DB-credential generators, their ServiceAccounts, and their client Certificates are torn down **either way**. |
+| `False` | `WaitingForKeystone` | `KeystoneReady` is not `True`; Nova projection deferred. Requeue 5s. |
+| `False` | `WaitingForPlacement` | `PlacementReady` is not `True`; Nova projection deferred. A ControlPlane that manages no placement service reports that condition `True` under its own not-managed reason, so this gate reads the condition rather than the block. Requeue 5s. |
+| `False` | `WaitingForMessagingCredentials` | The shared bus has not delivered its transport URL yet: the `RabbitmqCluster`, its default-user Secret, or the brownfield Secret is missing. Nothing is written, so the child never sees a partial URL. Requeue 15s. |
+| `False` | `WaitingForMessagingCABundle` | `spec.infrastructure.messaging.tls` names a CA bundle Secret that does not exist, or one that carries no data under the referenced key. Requeue 15s. |
+| `False` | `NovaMessagingError` | Error resolving the shared transport URL, writing either messaging Secret into the Nova namespace, or removing the stale CA mirror after the `tls` block was dropped. |
+| `False` | `TargetClusterUnavailable` | The cluster the Nova namespace lives on did not resolve, so the messaging Secrets, the registration's credential mirror, the DB-credential objects, the metadata generator pair, or a compute-config mirror cannot be written there. The resolver's own message is relayed. Requeue 15s from the bus delivery, the metadata secret and the compute-config mirror, 10s from the registration mirror and the DB credentials. |
+| `False` | `WaitingForServiceRegistration` | The projected `KeystoneService` registration has not provisioned the `nova` account yet; projection deferred until its Keystone user and password exist. The message relays the registration's own failing sub-condition, so a collision on the `nova` user or its catalog row reads here verbatim. |
+| `False` | `ServiceRegistrationError` | Kubernetes-level error writing, reading, or mirroring the `KeystoneService` registration child; a refused adoption of a same-named foreign CR is among them. |
+| `False` | `ServiceRegistrationFieldsReclaimed` | The pass reset a spec field another field manager had written on the registration child (an `adopt` consent, a `rotation` block, or an extra catalog endpoint). The condition names the same fields as the `Warning` event and stands until a pass reads an untampered child. |
+| `False` | `SecretStoreNotReady` | The compute service is placed on a target cluster whose secret store is not ready, so the registration's consumer credentials cannot be materialised there. Requeue 10s. |
+| `False` | `NovaAPIDBCredentialError` | Error ensuring or reading the `nova_api` DB-credential objects (managed database only). |
+| `False` | `WaitingForNovaAPIDBCredential` | `credentialsMode: Dynamic` is in effect but the `nova_api` chain has produced no engine-issued credential yet: either the generator-backed ExternalSecret has not synced, or the Secret it targets still carries a retired static username. The message names the `database/mariadb/creds/nova-api-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant. The API chain is checked first, because its schema is the one the cell schema's mappings are registered in. Requeue 10s. |
+| `False` | `NovaCellDBCredentialError` | Error ensuring or reading the cell DB-credential objects (managed database only). |
+| `False` | `WaitingForNovaCellDBCredential` | The cell chain's twin of the wait above, over `database/mariadb/creds/nova-cell-<namespace>`. Requeue 10s. |
+| `False` | `NovaMetadataSecretError` | Error ensuring the `Password` generator and the ExternalSecret that materialise the metadata shared secret, or taking a generated pair down once the child has converged on the Secret `metadataSharedSecretRef` names. The pass does not wait for the value: the Nova child gates on it itself. |
+| `False` | `WaitingForNova` | The Nova CR is ensured but not yet Ready. Requeue 15s. |
+| `False` | `NovaProjectionRejected` | The Nova API server rejected the projected Nova spec (HTTP 422): the projection violates a CRD/webhook rule. Reconcile the ControlPlane spec to a valid projection to recover. |
+| `False` | `NovaError` | Error create-or-updating the Nova CR. |
+| `False` | `WaitingForComputeConfig` | The child is Ready but the compute contract Secret `{controlplane.Name}-nova-compute-config` the nova operator publishes has not appeared yet, so a mirror target cannot be served. Requeue 15s. |
+| `False` | `NovaComputeConfigError` | Error reading the published compute contract or writing its mirror into a target namespace. |
+
+The compute-config reasons only appear once a compute cluster is attached to the
+ControlPlane: `novaComputeConfigMirrorTargets` enumerates no targets today, so
+the mirror writes nothing and the loop is skipped.
+
+A registration that is provisioned but not yet fully `Ready` relays its own first
+failing sub-condition's reason onto `NovaReady`, the same way its peers do.
 
 ### KORCReady
 
@@ -2952,7 +3305,7 @@ Set by `setReadyCondition`.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `AllReady` | All eighteen sub-conditions are `True`. |
+| `True` | `AllReady` | All nineteen sub-conditions are `True`. |
 | `False` | `NotAllReady` | One or more sub-conditions are not `True`. |
 
 ---
@@ -2963,8 +3316,8 @@ By default every service a ControlPlane projects lands in the **ControlPlane's
 own namespace**: namespace and ControlPlane are the same boundary, so no
 network-policy, RBAC, or quota line can be drawn between the services of one
 control plane. A `namespace` assignment on `services.keystone`,
-`services.horizon`, or `services.glance` makes the target namespace a
-**per-service choice** — a
+`services.horizon`, `services.glance`, or `services.nova` makes the target
+namespace a **per-service choice** — a
 service can be placed in a namespace of its own, and the backing services, secret
 store, and credential material that belong to it follow it there. A service
 without an assignment stays in the ControlPlane's namespace exactly as before.

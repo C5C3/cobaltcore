@@ -281,6 +281,18 @@ cascade can reach. Without the grant the API server answers forbidden rather
 than not-found, and the teardown retries the error instead of releasing, so a
 placed ControlPlane would never leave `Terminating`.
 
+The same holds for `passwords` in `generators.external-secrets.io`, which the
+chart gained with the compute service. Every placed ControlPlane needs it, not
+only one that places Nova: the teardown sweeps `Password` generators in every
+placed namespace, and a forbidden list fails the sweep and holds the ControlPlane
+in `Terminating`. Upgrade the release on every registered target cluster before
+the c5c3 operator:
+
+```bash
+helm upgrade --kube-context "$TARGET" --reuse-values \
+  target-cluster-access deploy/target-cluster/target-cluster-access -n c5c3-access
+```
+
 The OVN chassis layer (issue #903) needs a namespace it can run a node-level
 workload in, and `privilegedNamespaces` is the one value that provides it. Every
 entry is a namespace from `values.namespaces`; each gets its Namespace labelled
@@ -877,10 +889,11 @@ the owned PushSecrets, on each placed cluster as well as at home, while the
 tenant store their OpenBao purge authenticates through is still alive. Then, per
 placed namespace: the service CRs, deleted on the management cluster and waited
 for, which is also what waits out each service operator's own remote sweep; then
-thirteen kinds selected by ownership label and deleted through the target's own
+fourteen kinds selected by ownership label and deleted through the target's own
 credentials (`MariaDB`, `Memcached`, `SecretStore`, `Certificate`,
 `ServiceAccount`, `Role`, `RoleBinding`, `Secret`, `ExternalSecret`,
-`PushSecret`, `VaultDynamicSecret`, `OpenBaoTenant`, `OpenBaoCluster`); then,
+`PushSecret`, `VaultDynamicSecret`, `Password`, `OpenBaoTenant`,
+`OpenBaoCluster`); then,
 under the `Managed` lifecycle, the namespace itself, on the target as well as at
 home. An `External` namespace survives on both, its residue deleted by name ahead
 of the label sweep so that its tenant-store trio goes last. The Barbican
