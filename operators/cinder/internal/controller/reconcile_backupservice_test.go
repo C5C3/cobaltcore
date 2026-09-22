@@ -76,6 +76,9 @@ func TestBuildBackupDeployment(t *testing.T) {
 	g.Expect(container.LivenessProbe).To(BeNil())
 	g.Expect(container.ReadinessProbe.Exec.Command).To(Equal(
 		[]string{"/var/lib/openstack/bin/cinder-amqp-ready"}))
+	g.Expect(container.Env).To(ContainElement(corev1.EnvVar{Name: "MALLOC_ARENA_MAX", Value: "2"}),
+		"the chunk buffers the thread pool frees stay in per-thread arenas; uncapped, "+
+			"the process grows past the 2Gi limit over a run of backups and is killed mid-backup")
 	g.Expect(*pod.SecurityContext.FSGroupChangePolicy).To(Equal(corev1.FSGroupChangeOnRootMismatch))
 	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(installedReleaseAnnotation, "2026.1"))
 

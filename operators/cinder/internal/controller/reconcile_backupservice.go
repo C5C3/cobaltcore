@@ -194,7 +194,7 @@ func buildBackupDeployment(cinder *cinderv1alpha1.Cinder, backup *backupProjecti
 				"--config-dir", cinderConfigDir,
 				"--config-dir", cinderBackupConfigDir,
 			},
-			Env: append(cinderWorkloadEnv(cinder), amqpPortEnv(egressPort)),
+			Env: append(cinderWorkloadEnv(cinder), amqpPortEnv(egressPort), backupMallocArenaEnv()),
 			// Readiness alone, as on the scheduler and the volume services: a restart
 			// would abort the backup in flight without reaching the broker any sooner.
 			ReadinessProbe: amqpReadinessProbe(),
@@ -203,6 +203,30 @@ func buildBackupDeployment(cinder *cinderv1alpha1.Cinder, backup *backupProjecti
 		Volumes: volumes,
 	})
 	return withFSGroupChangePolicy(deploy)
+}
+
+// backupMallocArenaEnvName and backupMallocArenaMax cap the malloc arenas the
+// cinder-backup process grows.
+const (
+	backupMallocArenaEnvName = "MALLOC_ARENA_MAX"
+	backupMallocArenaMax     = "2"
+)
+
+// backupMallocArenaEnv returns the env var that holds cinder-backup's resident
+// memory to the chunk it is working on. The chunked backup driver hands every
+// chunk through eventlet's native thread pool: the read, the SHA pass, the
+// object write and the MD5 each run on whichever pool thread is free, and glibc
+// gives each thread that allocates its own malloc arena. The freed chunk
+// buffers stay in the arena that allocated them, so with the default arena
+// count (eight per core) the process grows by roughly the chunk size per
+// operation until it plateaus well above the volume it is copying. Measured on
+// the 2025.2 image against a 1 GiB volume with the default 50 MiB chunk: 176 MiB
+// after the first backup, 893 MiB after four backup-and-restore rounds, and
+// 2 GiB, the container's default memory limit, in CI after a suite of them,
+// where the kernel then killed the service mid-backup. With two arenas the same
+// rounds hold at 206 to 252 MiB.
+func backupMallocArenaEnv() corev1.EnvVar {
+	return corev1.EnvVar{Name: backupMallocArenaEnvName, Value: backupMallocArenaMax}
 }
 
 // sharedExportConflict names a projected volume backend whose mountOptions the
