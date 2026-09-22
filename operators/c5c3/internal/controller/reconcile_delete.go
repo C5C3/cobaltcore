@@ -42,6 +42,7 @@ import (
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
 // korcFinalizerPrefix is the common prefix of the finalizers K-ORC adds to the
@@ -855,7 +856,7 @@ const rabbitmqClusterDeletionFinalizer = "deletion.finalizers.rabbitmqclusters.r
 
 // crossNamespaceServiceChildren returns the service children the ControlPlane
 // placed in namespace: the Keystone child when the Keystone service is assigned
-// there, and the Horizon, Glance, Placement, Barbican, Neutron and Cinder
+// there, and the Horizon, Glance, Placement, Barbican, Neutron, Cinder and Nova
 // children likewise. Each is matched by its deterministic name; ownership is re-checked
 // against the live object before anything is deleted.
 //
@@ -913,6 +914,11 @@ func crossNamespaceServiceChildren(cp *c5c3v1alpha1.ControlPlane, namespace stri
 	if cp.CinderNamespace() == namespace {
 		children = append(children, &cinderv1alpha1.Cinder{
 			ObjectMeta: metav1.ObjectMeta{Name: cinderName(cp), Namespace: namespace},
+		})
+	}
+	if cp.NovaNamespace() == namespace {
+		children = append(children, &novav1alpha1.Nova{
+			ObjectMeta: metav1.ObjectMeta{Name: novaName(cp), Namespace: namespace},
 		})
 	}
 	return children
@@ -1189,9 +1195,10 @@ func (r *ControlPlaneReconciler) deleteManagedNamespace(
 // nothing cascades and every object has to be named. The set is deterministic
 // (every name is derived from the ControlPlane), so nothing has to be discovered:
 // the backing services, the admin-password and Keystone DB-credential material, the
-// Glance, Placement, Barbican, Neutron, and Cinder DB-credential material, the
-// Barbican secret store with the dedicated OpenBao ensemble behind it, the bus
-// delivery the network and block-storage services read, and the tenant-store trio.
+// Glance, Placement, Barbican, Neutron, Cinder, and Nova DB-credential material,
+// the Barbican secret store with the dedicated OpenBao ensemble behind it, the
+// Nova metadata shared secret, the bus delivery the network, block-storage and
+// compute services read, and the tenant-store trio.
 //
 // The tenant-store trio goes LAST: the service children deleted before this ran
 // their own ESO cleanup through that store, and an ESO PushSecret cannot purge its
@@ -1365,6 +1372,44 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 			}},
 		)
 		objs = append(objs, serviceMessagingSecrets(cinderMessagingTarget(cp))...)
+	}
+	// The Nova credential material, which follows the compute service. It is the
+	// only arm that names each shape TWICE: the nova_api and cell schemas take a
+	// DB-credential chain each, and the two share no object, so a rotation of one
+	// never touches the other's login. Beside them the metadata shared secret, the
+	// pair of ExternalSecret and Password generator that mints the value the
+	// network service's agents sign their proxied requests with, and last the bus
+	// delivery the ControlPlane wrote beside the child: the brownfield
+	// transport-URL Secret and the CA mirror.
+	if cp.NovaNamespace() == namespace {
+		for _, target := range []dbCredentialTarget{
+			novaAPIDBCredentialTarget(cp),
+			novaCellDBCredentialTarget(cp),
+		} {
+			objs = append(
+				objs,
+				&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+					Name: target.secretName, Namespace: namespace,
+				}},
+				&esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
+					Name: target.secretName, Namespace: namespace,
+				}},
+				unstructuredIn(certificateGVK, target.certName),
+				&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+					Name: target.saName, Namespace: namespace,
+				}},
+			)
+		}
+		objs = append(
+			objs,
+			&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: novaMetadataSecretName(cp), Namespace: namespace,
+			}},
+			&esgenv1alpha1.Password{ObjectMeta: metav1.ObjectMeta{
+				Name: novaMetadataSecretName(cp), Namespace: namespace,
+			}},
+		)
+		objs = append(objs, serviceMessagingSecrets(novaMessagingTarget(cp))...)
 	}
 	// The tenant store LAST: everything above authenticated through it.
 	objs = append(
