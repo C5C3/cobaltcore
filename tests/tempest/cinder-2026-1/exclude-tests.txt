@@ -34,3 +34,22 @@ cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeDependencyTest
 cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeDependencyTests\.test_delete_dep_chain
 cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeDependencyTests\.test_delete_dep_chain_2
 cinder_tempest_plugin\.api\.volume\.test_volume_dependency\.VolumeImageDependencyTests\.test_image_volume_dependencies_3
+
+# tracked-by: https://github.com/C5C3/cobaltcore/issues/1014
+# re-evaluate-on: a compute driver other than nova's fake driver on this leg,
+#                 or an NFS backend with nfs_snapshot_support = true
+# Backups of an attached volume. Both tests attach the volume to a server and
+# then create a backup with force=true. On the NFS backend cinder-volume
+# serves that backup from a temporary clone, and cloning an in-use volume
+# takes an online snapshot through Nova's assisted-snapshot API
+# (cinder/volume/drivers/remotefs.py, _create_snapshot_online; the clone path
+# calls _create_snapshot directly and so bypasses the nfs_snapshot_support
+# guard that #979 D3 keeps at false). nova's fake driver does not implement
+# volume_snapshot_create (nova/virt/fake.py has no such method, so the base
+# driver raises NotImplementedError), so the snapshot never reaches 90 %,
+# cinder-volume gives up after 600 s, and the backup sits in creating until
+# tempest gives up at 300 s. Each test then spends another 300 s failing to
+# delete the still-attached volume: 925 s per test, on the run and on the
+# serial retry.
+tempest\.api\.volume\.test_volumes_backup\.VolumesBackupsTest\.test_backup_create_attached_volume\[
+tempest\.api\.volume\.test_volumes_backup\.VolumesBackupsTest\.test_volume_backup_incremental\[
