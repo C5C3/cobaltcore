@@ -2215,15 +2215,12 @@ type ServiceNovaSpec struct {
 	Gateway *commonv1.GatewaySpec `json:"gateway,omitempty"`
 
 	// PublicEndpoint is the externally routable Nova endpoint URL
-	// (e.g. "https://nova.127-0-0-1.nip.io:8443/v2.1"). It is used ONLY for the
+	// (e.g. "https://nova.127-0-0-1.nip.io:8443"). It is used ONLY for the
 	// K-ORC public compute catalog Endpoint; unlike the keystone override it is
 	// projected into no child CR (the Nova child's keystoneEndpoint is
-	// Keystone's endpoint, a separate concern). The compute catalog entry is
-	// registered WITH the "/v2.1" version prefix, the path every client appends
-	// its requests to, so the value carries that path rather than a bare origin.
-	// When empty and Gateway is set, the reconciler derives
-	// "https://{gateway.hostname}/v2.1" (the default-443 form); set it
-	// explicitly when the externally reachable port differs (e.g. a kind
+	// Keystone's endpoint, a separate concern). When empty and Gateway is set, the
+	// reconciler derives "https://{gateway.hostname}" (the default-443 form); set
+	// it explicitly when the externally reachable port differs (e.g. a kind
 	// host-port mapping like :8443), since the port cannot be derived from the
 	// hostname alone. The pattern and the 512-character bound mirror
 	// ServiceKeystoneSpec.PublicEndpoint, whose value flows into the same K-ORC
@@ -2232,11 +2229,12 @@ type ServiceNovaSpec struct {
 	// The keystone override is re-validated on the projected Keystone child; this
 	// one is projected nowhere, so the validating webhook is the only gate on the
 	// URL every client resolves to boot, list, and delete its instances. It
-	// therefore enforces what the markers cannot: a parseable URL carrying the
-	// version prefix and nothing further (no query, no fragment), and, whenever a
-	// gateway is configured, an https scheme and a host equal to gateway.hostname.
-	// Without a gateway an http:// value stays legal for development but raises an
-	// admission warning.
+	// therefore enforces what the markers cannot: a parseable bare origin (no
+	// path, query, or fragment, since the ControlPlane appends "/v2.1" itself when
+	// it registers the compute catalog endpoint, the way it appends "/v3" for the
+	// block-storage entry), and, whenever a gateway is configured, an https scheme
+	// and a host equal to gateway.hostname. Without a gateway an http:// value
+	// stays legal for development but raises an admission warning.
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:Pattern=`^https?://`

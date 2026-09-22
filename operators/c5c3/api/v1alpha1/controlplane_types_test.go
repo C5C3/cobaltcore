@@ -1579,7 +1579,7 @@ func TestServiceNovaSpecDeepCopy(t *testing.T) {
 		},
 		Image:                   &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/nova", Tag: "2026.1"},
 		Gateway:                 &commonv1.GatewaySpec{Hostname: "nova.example.com"},
-		PublicEndpoint:          "https://nova.example.com/v2.1",
+		PublicEndpoint:          "https://nova.example.com",
 		MetadataGateway:         &commonv1.GatewaySpec{Hostname: "nova-metadata.example.com"},
 		MetadataSharedSecretRef: &commonv1.SecretRefSpec{Name: "nova-metadata-secret", Key: "shared_secret"},
 		DatabaseCredentialsMode: "Static",
