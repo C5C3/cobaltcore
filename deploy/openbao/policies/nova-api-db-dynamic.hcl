@@ -7,8 +7,10 @@
 # covers is nova_api. Bound to the "nova-api-db" role on the kubernetes/management
 # auth mount (see setup-auth.sh), which the c5c3 operator's per-ControlPlane
 # VaultDynamicSecret generator uses to issue short-lived Nova API DB users at
-# database/mariadb/creds/nova-api-<namespace>. That generator arrives with #1019;
-# until a ControlPlane projects a Nova the role is dormant, because no
+# database/mariadb/creds/nova-api-<namespace>. That generator is built in
+# operators/c5c3/internal/controller/reconcile_nova_dbcredentials.go, where
+# novaAPIDBDynamicRoleFor derives the per-tenant role name this path ends in.
+# Until a ControlPlane projects a Nova the role is dormant, because no
 # nova-api-db-creds ServiceAccount exists to authenticate with.
 #
 # TENANT ISOLATION: the read path is scoped by OpenBao ACL identity templating to

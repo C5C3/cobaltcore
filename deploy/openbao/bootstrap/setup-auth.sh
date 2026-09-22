@@ -326,9 +326,10 @@ main() {
   # nova-api-db role on the management cluster's Kubernetes auth mount. It covers
   # the Nova API database nova_api, the cell-independent half of Nova's schema
   # split. The c5c3 operator's per-ControlPlane VaultDynamicSecret generator
-  # arrives with #1019 and authenticates with the "nova-api-db-creds"
-  # ServiceAccount to read short-lived DB credentials at
-  # database/mariadb/creds/nova-api-<namespace>.
+  # (operators/c5c3/internal/controller/reconcile_nova_dbcredentials.go, whose
+  # novaAPIDBDynamicRoleFor derives the per-tenant engine role name)
+  # authenticates with the "nova-api-db-creds" ServiceAccount to read short-lived
+  # DB credentials at database/mariadb/creds/nova-api-<namespace>.
   # bound_service_account_namespaces="*" lets any ControlPlane namespace
   # authenticate; the fixed SA name is what tells this role apart from
   # keystone-db, glance-db, placement-db, barbican-db, neutron-db, cinder-db, and
@@ -365,10 +366,12 @@ main() {
   # half of the pair above: it covers the cell database nova together with its
   # nova_cell0 schema, on the same terms as nova-api-db (fixed SA name, "*"
   # namespaces, 72h token TTLs so the token outlives the lease, dormant until a
-  # ControlPlane projects a Nova). Its generator also arrives with #1019 and
-  # authenticates with the "nova-cell-db-creds" ServiceAccount to read
-  # database/mariadb/creds/nova-cell-<namespace>, which the nova-cell-db-dynamic
-  # policy templates to the caller's OWN service_account_namespace.
+  # ControlPlane projects a Nova). Its generator sits in the same
+  # reconcile_nova_dbcredentials.go, where novaCellDBDynamicRoleFor derives the
+  # engine role name, and authenticates with the "nova-cell-db-creds"
+  # ServiceAccount to read database/mariadb/creds/nova-cell-<namespace>, which the
+  # nova-cell-db-dynamic policy templates to the caller's OWN
+  # service_account_namespace.
   #
   # The role is named nova-cell and not nova because the per-tenant engine role
   # name is <role>-<namespace> and no role name may be a hyphen-prefix of
