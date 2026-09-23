@@ -271,6 +271,31 @@ spec:
                    % (sorted(want), listing))
           print("both cinder-volume hosts report state up")
 
+          # The registry is written by each service for itself and says nothing
+          # about the scheduler. It learns a backend from the capability report
+          # the volume service fans out once at start and then once per
+          # periodic_interval (60s), so a scheduler that binds its queue just
+          # after that first report holds no backend for up to two minutes, and
+          # a create in that window is answered with NoValidBackend (the race
+          # backup-nfs and nfs-backend wait out too). Both backends are waited
+          # for: the placement below proves the CapabilitiesFilter picks
+          # multi-nfs-b out of two, not the only one the scheduler knows.
+          pools = []
+          for _ in range(60):
+              pools = json.loads(
+                  call("GET", "/v3/scheduler-stats/get_pools").read()
+              ).get("pools", [])
+              held = {b for b in ("multi-nfs-a", "multi-nfs-b")
+                      if any("@" + b in p.get("name", "") for p in pools)}
+              if len(held) == 2:
+                  break
+              print("waiting for the scheduler to hold both backends: %s"
+                    % pools)
+              time.sleep(2)
+          else:
+              fail("the scheduler never held both backends: %s" % pools)
+          print("the scheduler holds both backends")
+
           # volume_backend_name is the key the CapabilitiesFilter matches a
           # request against, and the operator renders it as the backend's own
           # name into that backend's section.

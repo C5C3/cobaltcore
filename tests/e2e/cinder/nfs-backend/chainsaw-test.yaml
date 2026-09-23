@@ -205,6 +205,29 @@ spec:
                    % (volume_id, want, seconds, volume))
 
 
+          # Ready says nothing about the scheduler being able to place a volume.
+          # It learns the backend from the capability report the volume service
+          # fans out once at start and then once per periodic_interval (60s),
+          # so a scheduler that binds its queue just after that first report
+          # holds no backend for up to two minutes. A create in that window
+          # waits out the scheduler's 60s startup delay and is then answered
+          # with NoValidBackend, which is what CI run 35826523422 logged
+          # ("CapacityFilter: (start: 0, end: 0)"). backup-nfs waits the same
+          # way for the same reason.
+          pools = []
+          for _ in range(60):
+              pools = json.loads(
+                  call("GET", "/v3/scheduler-stats/get_pools").read()
+              ).get("pools", [])
+              if any("@nfsbe-nfs1" in p.get("name", "") for p in pools):
+                  break
+              print("waiting for the scheduler to hold the backend: %s" % pools)
+              time.sleep(2)
+          else:
+              fail("the scheduler never held the nfsbe-nfs1 backend: %s"
+                   % pools)
+          print("the scheduler holds the nfsbe-nfs1 backend")
+
           created = json.loads(
               call("POST", "/v3/volumes",
                    {"volume": {"name": "nfs-rt", "size": 1}}).read())["volume"]
