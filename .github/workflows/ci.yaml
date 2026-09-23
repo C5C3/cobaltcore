@@ -156,6 +156,7 @@ jobs:
               - 'patches/cinder/**'
             image_nova:
               - 'images/nova/**'
+              - 'images/nova-compute/**'
               - 'patches/nova/**'
             # ovn ships the OVS/OVN daemons the CRs project and the rclone
             # shifter the OVNCentral backup CronJob uploads with. Neither is a
@@ -1362,6 +1363,11 @@ jobs:
                 refs="${refs}"$'\n'"${IMAGE_PREFIX}/${sibling}:${release}"
               done
             done
+            # The compute-node-pool suite runs a NovaCompute, whose pods run
+            # the nova-compute image of each nova release.
+            for release in $(OPERATOR=nova hack/ci-service-image-releases.sh); do
+              refs="${refs}"$'\n'"${IMAGE_PREFIX}/nova-compute:${release}"
+            done
             refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
             # The catalog, seed and verify Jobs of the functional Nova suites
             # run the `openstack` client the tempest image bundles, at 2025.2
@@ -1425,12 +1431,13 @@ jobs:
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # The ovn and neutron chassis DaemonSets open a Geneve tunnel from the
       # kind node, which needs the openvswitch and geneve modules loaded on the
-      # host. Empty on every other leg, where deploy-infra.sh keeps its default
-      # of not touching the host's modules.
+      # host, and the nova leg's compute-node-pool suite runs a chassis on the
+      # node its nova-compute waits for. Empty on every other leg, where
+      # deploy-infra.sh keeps its default of not touching the host's modules.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
-          WITH_OVN_KERNEL_MODULES: ${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron') && 'true' || '' }}
+          WITH_OVN_KERNEL_MODULES: ${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron' || matrix.operator == 'nova') && 'true' || '' }}
           # The cinder suites mount their volumes as inline CSI volumes from
           # the kind NFS export, and each one takes its own vhost on the
           # shared broker. Every Nova process dials the bus, and the
@@ -1466,7 +1473,8 @@ jobs:
       # spec.serviceUser are required on the CRD, and a booted server needs a
       # Placement allocation, a Glance image and a Neutron port. The OVN
       # control plane comes with the neutron-operator's need for a live
-      # OVNCentral; no chassis runs here.
+      # OVNCentral, and the compute-node-pool suite runs a single-node
+      # OVNChassis beside it for the nova-compute of its NovaCompute.
       - name: Deploy keystone-operator
         if: matrix.operator == 'nova'
         run: hack/ci-deploy-operator.sh
