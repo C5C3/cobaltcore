@@ -2,10 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package main is the entrypoint for the Nova operator. One binary serves the
-// Nova kind: the compute API with its metadata API, its scheduler, its conductor
-// and its console proxy, together with the compute contract a compute cluster
-// joins on.
+// Package main is the entrypoint for the Nova operator. One binary serves two
+// kinds: Nova, the compute API with its metadata API, its scheduler, its
+// conductor and its console proxy, together with the compute contract a compute
+// cluster joins on; and NovaCompute, which runs nova-compute on a node pool of
+// such a cluster.
 //
 // Hand-crafted like the keystone operator's main (see its DEVIATION note):
 // the manager setup follows kubebuilder v4 / controller-runtime v0.23+ patterns
@@ -61,6 +62,19 @@ func main() {
 				Scheme:                  mgr.GetScheme(),
 				Recorder:                mgr.GetEventRecorderFor("nova-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 				OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
+				MaxConcurrentReconciles: maxConcurrentReconciles,
+				Resolver:                mcMgr,
+			}).SetupWithManager(mcMgr); err != nil {
+				return err
+			}
+			// The node-pool satellite. Nodes and pods are read uncached, through
+			// the API reader, so a namespace-scoped install never starts a
+			// cluster-wide Node informer it cannot sync.
+			if err := (&controller.NovaComputeReconciler{
+				Client:                  mgr.GetClient(),
+				Scheme:                  mgr.GetScheme(),
+				Recorder:                mgr.GetEventRecorderFor("novacompute-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				APIReader:               mgr.GetAPIReader(),
 				MaxConcurrentReconciles: maxConcurrentReconciles,
 				Resolver:                mcMgr,
 			}).SetupWithManager(mcMgr); err != nil {
