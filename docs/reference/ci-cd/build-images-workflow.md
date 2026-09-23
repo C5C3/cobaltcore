@@ -322,7 +322,8 @@ build-shifter=false
 ### hack/ci-generate-build-matrix.sh
 
 Scans `releases/*/` and writes the four matrices the build, test and verify jobs
-consume. `SERVICES` restricts the two service matrices to a subset:
+consume, plus the two nova-compute outputs. `SERVICES` restricts the two service
+matrices to a subset:
 
 | `SERVICES` | `matrix` and `build-matrix` | Exit |
 | --- | --- | --- |
@@ -335,9 +336,20 @@ consume. `SERVICES` restricts the two service matrices to a subset:
 per release, not per service. The empty case reaches only jobs that gate on
 `has-services`, so an empty `include` never reaches a job that runs.
 
+`nova-compute-releases` and `nova-compute-build-matrix` follow the nova pairs
+that survive `SERVICES`, because `images/nova-compute/` is built from nova's
+source pin. `nova-compute-releases` is a JSON array of release names, `[]` when
+no nova pair survives. `nova-compute-build-matrix` holds
+`{release, platform, runner}` legs on the same platforms as `build-matrix`, and
+is `{"include":[]}` when empty. The three
+[nova-compute jobs](#build-nova-compute-image-merge-nova-compute-image-verify-nova-compute-image)
+gate on the array, so an empty `include` never reaches one of them either. A
+tree without `releases/` writes both empty next to the other four, and an
+unknown service exits 1 before either is written.
+
 ## Jobs
 
-The workflow defines twenty jobs with a dependency graph:
+The workflow defines twenty-three jobs with a dependency graph:
 
 ```text
 changes ──────────┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
@@ -360,8 +372,11 @@ prepare ──────────┤
                          ├──> build-service-images (matrix: service × release × platform)
                          │       └──> merge-service-images ──┐
                          │                                   ├──> verify-service-images (push only)
-                         └──> test-service-images ───────────┘
-                                    └── hack/ci-run-unit-tests.sh (stestr run)
+                         ├──> test-service-images ───────────┘
+                         │          └── hack/ci-run-unit-tests.sh (stestr run)
+                         │
+                         └──> build-nova-compute-image (matrix: release × platform)
+                                 └──> merge-nova-compute-image (push only) ──> verify-nova-compute-image (push only)
 ```
 
 `changes` is also a dependency of `generate-matrix`, `build-service-images` and
@@ -654,7 +669,7 @@ locally for inline verification instead of being pushed to GHCR.
 | 1 | Checkout | `actions/checkout@v7` | Checks out this repository |
 | 2 | Checkout service source | `.github/actions/checkout-service-source` | Resolves source ref, clones upstream, applies patches and constraint overrides |
 | 3 | Resolve extra packages | Shell | Reads `releases/<release>/extra-packages.yaml` via `yq` to extract `pip_extras` (comma-joined), `pip_packages` (space-joined), and `apt_packages` (space-joined). All three fields tolerate empty values — the Dockerfile handles them via conditional guards. |
-| 4 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags (see [Tag Schema](#tag-schema)) |
+| 4 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags (see [Tag Schema](#tag-schema)). Passes no `image` input, so the image is named after the service |
 | 5 | Prepare platform pair | `.github/actions/platform-pair` | Converts `linux/amd64` → `linux-amd64` for artifact names and cache scopes |
 | 6 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login (cosign disabled) |
 | 7 | Generate metadata for service image | `docker/metadata-action@v6` | Produces OCI labels and overrides version to the upstream release ref via `type=raw` strategy |
@@ -694,7 +709,7 @@ were computed during the build.
 | 2 | Install yq | `mikefarah/yq@v4` | Required by the derive-service-tags composite action |
 | 3 | Normalize image owner | Shell script | Outputs lowercase `owner` value |
 | 4 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login + cosign |
-| 5 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags |
+| 5 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags; no `image` input |
 | 6 | Download service image digests | `actions/download-artifact@v4` | Downloads all `digests-service-<service>-<release>-*` artifacts |
 | 7 | Build service image tags | Shell | Assembles composite + SHA tags (all branches), version + release tags (main only) |
 | 8 | Create and push service image manifest | `hack/ci-merge-manifest.sh` | Assembles per-platform digests into multi-arch manifest; outputs merged manifest digest |
@@ -850,7 +865,7 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 | --- | --- | --- | --- |
 | 1 | Checkout | `actions/checkout@v7` | Checks out the repository (needed for test scripts, `source-refs.yaml`, and patch counting) |
 | 2 | Setup Docker registry | `.github/actions/setup-docker-registry` | GHCR login (cosign disabled); replaces inline login step |
-| 3 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Reconstructs tags using the same logic as `build-service-images` and `merge-service-images` |
+| 3 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Reconstructs tags using the same logic as `build-service-images` and `merge-service-images`; no `image` input |
 | 4 | Pull and verify | Shell | `docker pull <image-ref>` then runs `verify_${{ matrix.service }}.sh` with the pulled image ref |
 
 :::
@@ -864,6 +879,68 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 The job fails the workflow if the verify script exits non-zero. Tag derivation uses the
 `.github/actions/derive-service-tags` composite action, which is the single source of
 truth shared by `build-service-images`, `merge-service-images`, and `verify-service-images`.
+
+### build-nova-compute-image / merge-nova-compute-image / verify-nova-compute-image
+
+These jobs build the compute image of `images/nova-compute/` (see
+[nova-compute](./container-images.md#nova-compute)) from nova's source pin
+with nova's patches and constraint overrides. The image gets jobs of its own
+because a failed leg of `build-service-images` on a main push skips
+`merge-service-images` for every service. Extra steps in the nova leg would add
+a compiled binding and nine apt packages to that blast radius. A failed compute
+leg skips `merge-nova-compute-image` for both releases and leaves every other
+merge job alone.
+
+`build-nova-compute-image` gates on `nova-compute-releases != '[]'` from
+[generate-matrix](#hack-ci-generate-build-matrix-sh), and the merge and verify
+jobs follow its skip, so a pull request that leaves nova alone skips them. A
+compute-only change still reaches them:
+`images/nova-compute/**` and `tests/container-images/verify_nova_compute.sh`
+sit in the `svc_nova` paths filter, so the `changes` job resolves `nova`. Such
+a pull request also rebuilds the nova image and runs nova's unit tests. That
+cost is accepted, because the compute image has to rebuild whenever nova's
+pin, patches or constraints move, and one filter keeps that coupling in one
+place. `lint-dockerfiles` lints `images/nova-compute/Dockerfile`.
+
+`build-nova-compute-image` needs `merge-base-images`, `verify-base-images`,
+`generate-matrix` and `prepare`, and runs over `nova-compute-build-matrix`
+(`release × platform`, amd64 only on pull requests). Its steps mirror
+`build-service-images`:
+
+- `checkout-service-source` with `service: nova`, which applies nova's patches
+  and constraint overrides
+- `hack/ci-resolve-extra-packages.sh` with `MATRIX_SERVICE=nova-compute`, which
+  reads the `nova-compute` block: `libvirt-python` as `PIP_PACKAGES` and nine
+  apt packages as `EXTRA_APT_PACKAGES`
+- `derive-service-tags` with `service: nova` and `image: nova-compute`: nova's
+  version and patch count under the `nova-compute` name
+- `build-push-image` with context `images/nova-compute`, the named contexts
+  `nova=src/nova` and `upper-constraints=releases/<release>/`, cache scope
+  `nova-compute-<release>` and no secret, since the Dockerfile fetches nothing
+  from github.com
+
+On pull requests the image is loaded locally, scanned by Grype
+(`grype-nova-compute-<platform-pair>`) and checked by
+`tests/container-images/verify_nova_compute.sh`. On push it is pushed by
+digest and uploaded as `digests-nova-compute-<release>-<platform-pair>`.
+
+`merge-nova-compute-image` (push only) copies `merge-service-images` over a
+`release` matrix from `nova-compute-releases`. It merges
+`digests-nova-compute-<release>-*`, a pattern nova's own
+`digests-service-nova-<release>-*` cannot match, publishes the composite and
+SHA tags from every branch and the version and release tags from `main`, and
+writes `sbom-nova-compute-<release>.cyclonedx.json` with the Grype category
+`grype-nova-compute-<release>`. Like Tempest's, the category carries the
+release: both releases merge for the same commit, and under one category the
+later SARIF upload would replace the earlier one and close its alerts as fixed.
+
+`verify-nova-compute-image` (push only) pulls the composite tag and runs
+`verify_nova_compute.sh` on a `release × [ubuntu-latest, ubuntu-24.04-arm]`
+matrix. It and `build-nova-compute-image` pass the release to the script as
+`NOVA_COMPUTE_RELEASE`. Pull requests build amd64 only, so this job is the
+first place the arm64 build of the compiled binding runs. It holds
+`contents: read` and `packages: read` only. There is no option-catalog step:
+the compute image adds no oslo.config namespace to the nova catalog.
 
 ## Tag Schema
 
@@ -892,6 +969,11 @@ already encodes the branch, so `stable/**` builds remain uniquely identifiable.
 The composite tag uniquely identifies the exact build: upstream version, patch level,
 branch, and commit. The version and SHA tags provide convenient shortcuts for deployment
 systems.
+
+`nova-compute` carries nova's `<version>` and patch count under its own name:
+the compute jobs call `derive-service-tags` with `service: nova` and
+`image: nova-compute`, so `nova-compute:2025.2` and `nova:2025.2` are cut from
+the same nova (for example `nova-compute:32.0.0-p0-main-a1b2c3d`).
 
 ### Release-independent images
 
@@ -965,6 +1047,7 @@ The workflow behaves differently depending on the trigger event:
 | Service image verification | Inline step in `build-service-images` | Separate `verify-service-images` job |
 | Verification image source | Locally loaded image (same amd64 runner) | Pulled from GHCR |
 | ovn image verification | Inline step in `build-ovn` (`verify_ovn.sh` on `:pr-verify`) | Separate `verify-ovn-image` job (pulled by digest from GHCR) |
+| nova-compute image verification | Inline step in `build-nova-compute-image` (`verify_nova_compute.sh`, amd64) | Separate `verify-nova-compute-image` job on `ubuntu-latest` and `ubuntu-24.04-arm` |
 
 **Why base images are always pushed:** Service Dockerfiles reference base images via
 `docker-image://` URIs in build contexts. This Docker BuildKit feature requires the
@@ -1714,6 +1797,7 @@ The following table summarizes which test scripts run where:
 | `verify_venv_builder.sh` | — | verify-base-images | Yes |
 | `verify_<service>.sh` | — | build-service-images (PR) / verify-service-images (push) | Yes |
 | `verify_ovn.sh` | — | build-ovn (PR) / verify-ovn-image (push) | Yes |
+| `verify_nova_compute.sh` | — | build-nova-compute-image (PR) / verify-nova-compute-image (push) | Yes |
 | `verify_backup_shifter.sh` | — | build-backup-shifter (PR) | Yes |
 
 ## SPDX Header
