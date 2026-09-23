@@ -228,41 +228,13 @@ four phases. Nova splits the work differently from the phase names.
 | `Contracting` | `nova-manage db online_data_migrations --max-count 1000` in a loop, the backfill the new schema needs, which the completed rollout makes safe; first for the cell schema, then for cell0 | `{name}-db-contract` |
 
 Both phase scripts read an exit code as a severity rather than as a success
-flag. The expand phase writes `nova-status upgrade check exit <rc>` to the
-termination log first, then tolerates 0 and 1 and exits with anything above:
-warnings are what a deployment without Cinder keeps, because the
-volume-attachment checks report on an integration it does not run, while a
-failed check is typically a cell mapping that is not there yet and must stop the
-phase. The contract phase loops instead: `online_data_migrations` answers 1 for
-"there is more to do" and 0 for "nothing left", one bounded batch at a time, so
-the loop is what finishes the backfill and anything above 1 exits with its own
-code.
-
-The contract loop runs twice. `online_data_migrations` works on the one cell
-database `[database] connection` names and, unlike `db sync`, does not fan out
-to cell0. cell0 holds the instances that failed scheduling, which `nova-api`
-reads on every instance list, so a row written under an older release that
-never got its backfill breaks the listing once a later release drops the code
-that reads the old format. The second pass runs with `OS_DATABASE__CONNECTION`
-rewritten to the cell0 schema: the running connection with `_cell0` appended to
-the schema and the query, TLS parameters included, kept.
-
-The `RollingUpdate` to `Contracting` flip is gated on every rendered role, not
-on the API alone. The readiness the shared Deployment helper reports is
-surge-tolerant: under `MaxSurge=1`/`MaxUnavailable=0` it turns true as soon as
-the first new-image pod is Ready while old-image pods still serve. The contract
-phase then runs the data migrations those old pods have no code for, and nova
-spreads that code over five processes rather than one: the conductor writes the
-rows the API reads, so a lagging conductor is as dangerous as a lagging API. The
-API step therefore reads the conductor, scheduler and metadata Deployments back
-off the cluster, plus the console proxy while it is enabled, and requires each of
-them to have fully converged onto the image `spec.image` names before it flips
-the phase. A role whose Deployment does not exist yet counts as not rolled out.
-
-`installedRelease` is promoted only after the contract phase completes. That
-promotion changes the `nova.c5c3.io/installed-release` pod annotation, which
-rolls the four non-API roles once more. The API carries no such annotation: it
-rolled during `RollingUpdate` and came up holding the new minimum.
+flag, the contract loop runs a second time against cell0, and the flip from
+`RollingUpdate` to `Contracting` waits on every rendered role, not on the API
+alone. After the contract phase, promoting `installedRelease` rolls the four
+non-API roles once more through the `nova.c5c3.io/installed-release`
+annotation. The operator-facing walkthrough of the flow, with the exit codes,
+the cell0 pass, the flip gate, the second roll and the abort recipe, is
+[Nova Upgrade Flow](./nova-upgrade-flow.md).
 
 ## DBArchive
 

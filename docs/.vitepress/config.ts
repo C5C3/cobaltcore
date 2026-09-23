@@ -256,6 +256,7 @@ export default defineConfig({
               { text: 'CRD', link: '/reference/nova/nova-crd' },
               { text: 'Controller Events', link: '/reference/nova/nova-events' },
               { text: 'Reconciler Architecture', link: '/reference/nova/nova-reconciler' },
+              { text: 'Upgrade Flow', link: '/reference/nova/nova-upgrade-flow' },
               { text: 'Cells', link: '/reference/nova/nova-cells' },
             ],
           },

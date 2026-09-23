@@ -122,5 +122,7 @@ For a `Nova` named `{name}`:
   emits
 - [Reconciler Architecture](./nova-reconciler.md): the sub-reconciler pipeline,
   conditions, and requeue semantics
+- [Upgrade Flow](./nova-upgrade-flow.md): the expand-migrate-contract phases,
+  the pre-flight exit codes, the cell0 contract pass, and the abort recipe
 - [Cells](./nova-cells.md): cell0 and cell1, the template URLs, host discovery
   and unmapping, and why one CR maps a single real cell

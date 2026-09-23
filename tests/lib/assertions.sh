@@ -78,6 +78,21 @@ assert_file_contains() {
   fi
 }
 
+# assert_file_contains_fixed greps a FIXED (non-regex) pattern with `--`, so a
+# pattern beginning with a dash, such as "--nic none", is not parsed as a grep
+# option, and a literal such as "{name}-db-expand" or a dotted path is not read
+# as a regular expression. assert_file_contains expresses neither.
+assert_file_contains_fixed() {
+  local description="$1" file="$2" pattern="$3"
+  if grep -qF -- "$pattern" "$file"; then
+    echo "  PASS: $description"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $description (fixed pattern '$pattern' not found in $file)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
 assert_gte() {
   local description="$1" actual="$2" expected_min="$3"
   if [[ "$actual" -ge "$expected_min" ]]; then
