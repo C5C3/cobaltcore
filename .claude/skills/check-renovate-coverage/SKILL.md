@@ -45,7 +45,7 @@ which Renovate has to understand:
 | Dockerfile base images | `images/*/Dockerfile` and the single `operators/Dockerfile` (`FROM image:tag`) | native `dockerfile` manager; the `ARG OVN_VERSION` / `ARG NOVNC_VERSION` + `NOVNC_COMMIT` pins in `images/{ovn,nova}/Dockerfile` carry a customManager each |
 | Nix flake, venv-builder requirements | `flake.nix` + `flake.lock`, `images/venv-builder/requirements.txt` | native `nix` (enabled in `renovate.json`, weekly lockFileMaintenance) and `pip_requirements` |
 | e2e fixture images | the openldap, keycloak, aws-cli and nfs-server images pinned by tag + digest in `tests/e2e*/` fixtures | customManager per image |
-| Tool pins in Makefile + workflows | `GOFUMPT_VERSION` (customManager over `/Makefile$/` + workflows); `CONTROLLER_GEN_VERSION`, `GOLANGCI_LINT_VERSION`, `KIND_VERSION`, `YQ_VERSION`, `ACTIONLINT_VERSION` in workflow `env:` blocks; `RENOVATE_VALIDATOR_VERSION` in a `tests/unit/renovate/` test | customManager each. `ENVTEST_K8S_VERSION ?= 1.35` has **no manager** (bumped by hand) |
+| Tool pins in Makefile + workflows | `GOFUMPT_VERSION` (customManager over `/Makefile$/` + workflows); `CONTROLLER_GEN_VERSION`, `GOLANGCI_LINT_VERSION`, `KIND_VERSION`, `YQ_VERSION`, `ACTIONLINT_VERSION` in workflow `env:` blocks; `RENOVATE_VALIDATOR_VERSION` in a `tests/unit/renovate/` test; `ENVTEST_K8S_VERSION ?= <major>.<minor>` in the Makefile | customManager each. The envtest one reads the `envtest-vX.Y.Z` releases of `kubernetes-sigs/controller-tools` (the assets setup-envtest downloads) and joins the Go build tooling rules through its `packageName` |
 | Duplicated Makefile ↔ ci.yaml pins | `GOFUMPT_VERSION` lives in both `Makefile` and the `ci.yaml` `env:` block ("Must be kept in sync" comment); `ENVTEST_K8S_VERSION` is single-sourced (ci.yaml `awk`-reads the Makefile) | one customManager bumps both files; R7 enforces the lockstep mechanically |
 
 The authoritative gate is the shell unit tests under
@@ -149,8 +149,8 @@ confirm:
    the way the existing ones do (`select(.packageNameTemplate ==
    $pkg)`, `select(any(.managerFilePatterns[]; test("…")))`) and runs
    its `matchStrings` against the file on disk.
-4. For each inventory pin marked "bumped by hand"
-   (`ENVTEST_K8S_VERSION` today), decide whether to add a
+4. For each inventory pin marked "bumped by hand" (none today;
+   `ENVTEST_K8S_VERSION` was the last), decide whether to add a
    customManager. Some pins are intentionally not auto-bumped —
    document the decision in `renovate.json` (or in a comment beside
    the pin) either way.
@@ -229,9 +229,10 @@ These recurring shapes are worth grepping for first:
 5. **Tool pin in Makefile.** No native Renovate manager reads Makefile
    constants. `GOFUMPT_VERSION` got a customManager over `/Makefile$/`
    plus the workflows (`GOFUMPT_VERSION\s*[?=:]+\s*"?(?<currentValue>v…)`,
-   one regex for both the `?=` and the `env:` spelling);
-   `ENVTEST_K8S_VERSION ?= 1.35` still has none. A new `?=` pin needs
-   the same treatment or a comment saying why it is bumped by hand.
+   one regex for both the `?=` and the `env:` spelling).
+   `ENVTEST_K8S_VERSION` sat at `1.35` by hand for six months while
+   envtest `1.37` shipped, until it got its own manager. A new `?=` pin
+   needs the same treatment or a comment saying why it is bumped by hand.
 6. **Duplicated pin bumped on one side only.** A tool version lives in
    both the Makefile (for local dev) and the ci.yaml `env:` block (for
    the workflow), guarded only by a "Must be kept in sync" comment. A
