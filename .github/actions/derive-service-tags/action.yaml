@@ -5,8 +5,10 @@
 name: Derive service image tags
 description: >
   Compute the image name and all tags (composite, version, SHA) for a service
-  image. Used by both build-service-images and merge-service-images so that
-  tag derivation stays in a single, authoritative location.
+  image. Used by the build, merge and verify jobs of the service images and
+  of nova-compute, so that tag derivation stays in a single, authoritative
+  location. The image name defaults to the service name; the nova-compute
+  jobs name their image apart from the nova service it is built from.
 
 inputs:
   service:
@@ -18,6 +20,10 @@ inputs:
   repository-owner:
     description: GitHub repository owner (github.repository_owner)
     required: true
+  image:
+    description: Image name under the owner; empty means the service name. The version and the patch count still come from service.
+    required: false
+    default: ''
   install_yq:
     description: Install yq before running. Set to 'false' if the caller already provides yq.
     required: false
@@ -25,7 +31,7 @@ inputs:
 
 outputs:
   image:
-    description: Bare image name without tag (e.g. ghcr.io/owner/keystone)
+    description: Bare image name without tag (e.g. ghcr.io/owner/keystone, or ghcr.io/owner/nova-compute with service nova and image nova-compute)
     value: ${{ steps.run.outputs.image }}
   composite:
     description: Full composite tag reference (e.g. ghcr.io/owner/keystone:28.0.0-p0-main-abc1234)
@@ -57,6 +63,7 @@ runs:
         MATRIX_SERVICE: ${{ inputs.service }}
         MATRIX_RELEASE: ${{ inputs.release }}
         IMAGE_OWNER: ${{ inputs.repository-owner }}
+        IMAGE_NAME: ${{ inputs.image }}
       run: |
         VERSION=$(yq ".\"${MATRIX_SERVICE}\"" "releases/${MATRIX_RELEASE}/source-refs.yaml")
         if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
@@ -75,7 +82,7 @@ runs:
           PATCH_COUNT=0
         fi
 
-        IMAGE="ghcr.io/${IMAGE_OWNER}/${MATRIX_SERVICE}"
+        IMAGE="ghcr.io/${IMAGE_OWNER}/${IMAGE_NAME:-${MATRIX_SERVICE}}"
         COMPOSITE="${VERSION}-p${PATCH_COUNT}-${BRANCH}-${SHORT_SHA}"
 
         echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
