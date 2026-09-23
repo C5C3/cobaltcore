@@ -255,19 +255,20 @@ test_e2e_leg_loads_the_ovn_image() {
 }
 
 test_e2e_leg_opts_into_kernel_modules() {
-  echo "Test: the ovn and neutron e2e legs ask for the OVN kernel modules"
+  echo "Test: the ovn, neutron and nova e2e legs ask for the OVN kernel modules"
 
   # The chassis DaemonSet opens a Geneve tunnel from the kind node, which needs
-  # openvswitch and geneve on the host. deploy-infra.sh defaults the flag to
-  # false and setup-e2e-infra reads it from env, so the value has to sit in
-  # this step's own env block; anywhere else it never reaches modprobe.
+  # openvswitch and geneve on the host; the nova leg runs a chassis under its
+  # compute node pool. deploy-infra.sh defaults the flag to false and
+  # setup-e2e-infra reads it from env, so the value has to sit in this step's
+  # own env block; anywhere else it never reaches modprobe.
   local setup
   setup=$(job_step e2e-operator "Setup E2E infrastructure")
 
   assert_contains "the step still uses the shared composite action" "$setup" \
     "uses: ./.github/actions/setup-e2e-infra"
-  assert_contains "both OVN legs opt in, the others keep the default" "$setup" \
-    "WITH_OVN_KERNEL_MODULES: \${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron') && 'true' || '' }}"
+  assert_contains "the three chassis legs opt in, the others keep the default" "$setup" \
+    "WITH_OVN_KERNEL_MODULES: \${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron' || matrix.operator == 'nova') && 'true' || '' }}"
 }
 
 test_overlay_job_is_wired() {

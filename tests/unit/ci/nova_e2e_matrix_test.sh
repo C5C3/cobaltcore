@@ -515,6 +515,7 @@ test_nova_image_filter_is_wired() {
   local block
   block=$(filter_block image_nova)
   assert_contains "the image build context is covered" "$block" "images/nova/**"
+  assert_contains "the compute image build context is covered" "$block" "images/nova-compute/**"
   assert_contains "the source patches are covered" "$block" "patches/nova/**"
 
   assert_eq "an image change rebuilds nova and nothing else" \
@@ -575,8 +576,8 @@ test_nova_leg_opts_into_the_broker() {
   # report ready off their broker connection. deploy-infra.sh installs the
   # broker only when it is asked to, and setup-e2e-infra reads the flag from
   # this step's env, so a Nova on a leg without it waits out its readiness on
-  # an unreachable transport. The NFS export and the host kernel modules stay
-  # off: no Nova suite mounts a volume or places a chassis.
+  # an unreachable transport. The NFS export stays off: no Nova suite mounts a
+  # volume.
   local setup
   setup=$(job_step e2e-operator "Setup E2E infrastructure")
 
@@ -588,13 +589,14 @@ test_nova_leg_opts_into_the_broker() {
   assert_contains "the NFS export stays cinder-only" "$setup" \
     "WITH_NFS: \${{ matrix.operator == 'cinder' && 'true' || '' }}"
 
-  # The kernel modules are loaded on the runner host itself, so a nova arm on
-  # that line would touch the host for suites that place no chassis.
+  # The compute-node-pool suite places a single-node chassis for the
+  # nova-compute it runs, and the chassis needs the openvswitch and geneve
+  # modules on the runner host.
   local modules
   modules=$(grep WITH_OVN_KERNEL_MODULES <<<"$setup")
   assert_not_empty "the kernel-module flag is readable" "$modules"
-  assert_not_contains "the chassis modules stay off the nova leg" "$modules" \
-    "nova"
+  assert_contains "the chassis modules are loaded on the nova leg" "$modules" \
+    "matrix.operator == 'nova'"
 }
 
 test_nova_leg_deploys_the_sibling_operators() {
@@ -722,14 +724,14 @@ test_nova_leg_deploys_the_sibling_operators() {
     in_b { print }' "$output")
 
   # nova-operator:dev and one nova image per release, then each sibling's
-  # operator image and its service images, then ovn:<pin> and the tempest
-  # image.
+  # operator image and its service images, then one nova-compute image per
+  # nova release, ovn:<pin> and the tempest image.
   local expected sibling
   expected=$((1 + $(release_count nova)))
   for sibling in keystone placement glance ovn neutron; do
     expected=$((expected + 1 + $(release_count "$sibling")))
   done
-  expected=$((expected + 2))
+  expected=$((expected + $(release_count nova) + 2))
   assert_eq "the nova leg resolves its own images plus every sibling's" \
     "$expected" "$(printf '%s\n' "$refs" | wc -l | tr -d ' ')"
   assert_contains "its own operator image" "$refs" \
@@ -907,10 +909,13 @@ test_nova_leg_loads_the_tempest_image() {
 
   assert_eq "the tempest image is the last ref the nova leg resolves" \
     "ghcr.io/c5c3/tempest:2025.2" "$(printf '%s\n' "$refs" | tail -1)"
-  # Eighteen: the leg's own two, the five siblings' fifteen, the OVN daemon
-  # image and this one. A release added under releases/ moves the number.
-  assert_eq "it comes on top of the seventeen the leg already had" "18" \
+  # Twenty: the leg's own two, the five siblings' fifteen, the nova-compute
+  # image of both nova releases, the OVN daemon image and this one. A release
+  # added under releases/ moves the number.
+  assert_eq "it comes on top of the nineteen the leg already had" "20" \
     "$(printf '%s\n' "$refs" | wc -l | tr -d ' ')"
+  assert_contains "the 2025.2 compute image is resolved" "$refs" "ghcr.io/c5c3/nova-compute:2025.2"
+  assert_contains "the 2026.1 compute image is resolved" "$refs" "ghcr.io/c5c3/nova-compute:2026.1"
 
   # And the branch still gates: the cinder leg, whose suites run no client Job,
   # resolves no tempest ref and loads no gigabyte it never uses.
@@ -1090,7 +1095,7 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   assert_contains "each pass hands its operator to the dump script" "$dump" \
     'OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh'
 
-  # The wall. The leg loads eighteen images, runs eight operator deploys and
+  # The wall. The leg loads twenty images, runs eight operator deploys and
   # then three full-stack suites one after the other (parallel: 1), so 90
   # minutes — sized for the network leg, which runs ten lighter suites — would
   # arrive mid-suite: chainsaw is killed outright, no catch block runs and no
