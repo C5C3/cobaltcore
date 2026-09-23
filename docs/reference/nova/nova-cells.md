@@ -145,6 +145,13 @@ and takes the host out of every aggregate it belongs to. It is refused with a
 conflict while the host still carries instances, or while a migration involving
 it is in progress. Delete or migrate those first.
 
+A [NovaCompute](./novacompute-crd.md) node pool does this delete itself for a
+node that leaves the pool: once Nova counts no instance on the host and the
+node's `nova-compute` pod is gone, it calls `DELETE /os-services/{id}`, so the
+host mapping goes with the service (see
+[The drain](./novacompute-crd.md#the-drain)). A pool never maps a host either;
+the scheduler's periodic above does that for the nodes it registers.
+
 A service record removed any other way leaves the mapping behind, and a compute
 registering again under the same name then finds a stale row. Remove it with
 `delete_host`, which requires both the cell UUID and the host name:

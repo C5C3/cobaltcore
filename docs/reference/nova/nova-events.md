@@ -5,10 +5,10 @@ quadrant: operator
 
 # Nova Controller Events
 
-Reference documentation for the Kubernetes events the Nova controller emits.
-The events make the lifecycle transitions readable through
-`kubectl describe nova` and `kubectl get events`, without access to the
-controller logs.
+Reference documentation for the Kubernetes events the Nova and NovaCompute
+controllers emit. The events make the lifecycle transitions readable through
+`kubectl describe nova`, `kubectl describe novacompute` and `kubectl get
+events`, without access to the controller logs.
 
 Events complement the status conditions: a condition reflects current state for
 programmatic consumers, while an event is a timestamped record of a transition
@@ -31,8 +31,10 @@ All events follow these conventions:
 - No events are emitted for in-progress or polling states, such as a `db-sync`
   Job that is still running. This keeps repeated requeue cycles from producing
   event noise.
-- Every event lands on the Nova CR (`involvedObject.kind: Nova`). There is no
-  second kind in this API group, so there is nowhere else for one to go.
+- An event lands on the CR its controller reconciles: the Nova CR
+  (`involvedObject.kind: Nova`, reporting component `nova-controller`) or a
+  NovaCompute CR (`involvedObject.kind: NovaCompute`, reporting component
+  `novacompute-controller`).
 - The Kubernetes API server deduplicates events by (involvedObject, reason,
   message, source). Repeated identical events increment a counter rather than
   creating new event objects.
@@ -155,6 +157,36 @@ requeue polls produce no noise.
 raises `RemoteChildrenAbandoned` once more for the label-selected children when
 the sweep cannot reach the cluster
 
+### NovaCompute
+
+Emitted on a NovaCompute CR while it runs a node pool. For the pipeline see
+[NovaCompute](./nova-reconciler.md#novacompute).
+
+| Reason | Type | Trigger condition | Example message |
+| --- | --- | --- | --- |
+| `ComputeServiceDisabled` | Normal | A node left the pool and its compute service was enabled; the pool disabled it once | `Disabled the compute service of node node-1: it left the pool` |
+| `ComputeServiceDeleted` | Normal | A released node's pod is gone and Nova deleted its compute service | `Deleted the compute service of node node-1; Nova dropped its host mapping with it` |
+| `AggregateCreated` | Normal | The pool created a host aggregate it needs | `Created host aggregate az1 in availability zone az1` |
+| `AggregateDeleted` | Normal | A marked aggregate no pool of the Nova needs held no host and was deleted | `Deleted host aggregate az1: no NovaCompute of Nova nova needs it` |
+| `AggregateKept` | Warning | A marked aggregate no pool of the Nova needs held no host but carried metadata the operator did not set, so it was kept | `Kept empty host aggregate az1: it carries metadata the operator did not set (filter_tenant_id)` |
+| `ComputeConfigMirrorReaped` | Normal | The last pool of a Nova on a cluster deleted the ControlPlane's contract mirror there | `Deleted the compute-contract mirror nova-compute-config: no other NovaCompute of Nova nova uses it on this cluster` |
+| `NodeConflict` | Warning | A selected node is held by another NovaCompute of the same Nova; fires once per new conflict | `Node node-1 is held by NovaCompute pool-a; this pool runs no pod on it` |
+| `ExtraConfigOwnedKeyOverride` | Warning | `spec.extraConfig` overrides a reported `[libvirt]` key | `spec.extraConfig overrides operator-owned keys: [libvirt] virt_type` |
+
+**Source:** `reconcileNovaComputeServices` in
+`reconcile_novacompute_services.go` (`ComputeServiceDisabled`,
+`ComputeServiceDeleted`); `reconcileNovaComputeAggregates` in
+`reconcile_novacompute_aggregates.go` (`AggregateCreated`, `AggregateDeleted`,
+`AggregateKept`);
+`reapComputeConfigMirror` in `novacompute_controller.go`
+(`ComputeConfigMirrorReaped`); `reconcileNovaComputeNodes` in
+`reconcile_novacompute_nodes.go` (`NodeConflict`);
+`config.RecordExtraConfigHealth`, called from `reconcileNovaComputeConfig`
+(`ExtraConfigOwnedKeyOverride`)
+
+> **Note:** A NovaCompute on a deregistered target cluster raises
+> `RemoteChildrenAbandoned` from the shared sweep, as a Nova does.
+
 ---
 
 ## Alerting
@@ -253,4 +285,27 @@ NovaReconciler.Reconcile()
   └── reconcileDBArchive()
         ├─ newest run failed           → Warning DBArchiveJobFailed
         └─ Job-UID patch fails         → Warning DBArchiveMetricEmissionDeferred
+
+NovaComputeReconciler.Reconcile()
+  │
+  ├── reconcileDelete() (deletionTimestamp set)
+  │     ├─ last pool on the cluster    → Normal  ComputeConfigMirrorReaped
+  │     └─ target cluster gone         → Warning RemoteChildrenAbandoned
+  │
+  ├── reconcileNovaComputeNodes()
+  │     └─ new conflict                → Warning NodeConflict
+  │
+  ├── reconcileNovaComputeConfig()
+  │     └─ extraConfig overrides a [libvirt] key
+  │                                    → Warning ExtraConfigOwnedKeyOverride
+  │
+  ├── reconcileNovaComputeAggregates()
+  │     ├─ aggregate created           → Normal  AggregateCreated
+  │     ├─ unneeded aggregate deleted  → Normal  AggregateDeleted
+  │     └─ unneeded aggregate with foreign metadata
+  │                                    → Warning AggregateKept
+  │
+  └── reconcileNovaComputeServices()
+        ├─ leaving node disabled       → Normal  ComputeServiceDisabled
+        └─ released node deleted       → Normal  ComputeServiceDeleted
 ```
