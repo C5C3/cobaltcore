@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Boots the server s1 the drain in step 7 has to wait for, with the boot of
+# ../basic-deployment/12-verify-job.yaml. No --availability-zone: the
+# hypervisor operator does not run on kind, so the host never joins
+# nova-pool-az1 and sits in the default zone. The server has to land on the
+# pool's node, which the ConfigMap nova-pool-verify names.
+#
+# backoffLimit is 0 because the script is not idempotent: a second attempt would
+# find the server s1 the first one created and fail on the name.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-pool-boot-server
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: boot-server
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NODE
+              valueFrom:
+                configMapKeyRef:
+                  name: nova-pool-verify
+                  key: node
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-pool.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # The image seeded by 08-image-seed-job.yaml under an id this
+              # suite owns.
+              SEED=4e0a0000-0000-4000-8000-000000000005
+
+              # wait_status <kind> <name> <want> <timeoutSeconds>: poll one
+              # object's status every 5s; on the deadline print its show output,
+              # whose fault message explains a server that reached ERROR.
+              wait_status() {
+                ws_deadline=$(( $(date +%s) + $4 ))
+                while true; do
+                  ws_status="$(openstack "$1" show "$2" -f value -c status 2>/dev/null || true)"
+                  if [ "${ws_status}" = "$3" ]; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${ws_deadline}" ]; then
+                    echo "ERROR: $1 $2 status '${ws_status:-<none>}' != $3 within $4s"
+                    openstack "$1" show "$2" 2>&1 || true
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+
+              openstack flavor show m1.nano >/dev/null 2>&1 \
+                || openstack flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
+              echo "OK: flavor m1.nano"
+
+              # --nic none: no port is bound, so the boot needs neither an ML2
+              # agent nor a network of its own.
+              openstack server create --image "${SEED}" --flavor m1.nano --nic none s1
+              wait_status server s1 ACTIVE 300
+              echo "OK: server s1 is ACTIVE"
+
+              SERVER_HOST="$(openstack server show s1 -f value -c OS-EXT-SRV-ATTR:host)"
+              if [ "${SERVER_HOST}" != "${NODE}" ]; then
+                echo "ERROR: server s1 landed on '${SERVER_HOST}', want ${NODE}"
+                exit 1
+              fi
+              echo "OK: server s1 landed on ${NODE}"
+
+              echo NOVA-POOL-BOOT-OK

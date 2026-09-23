@@ -1,0 +1,479 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a NovaCompute node pool (2025.2 release). One pool runs
+# nova-compute on the kind node through the fake driver, and the suite walks the
+# pool's whole lifecycle against a real Nova:
+#   - the pool reaches Ready=True/AllReady, its node is Active with the compute
+#     service enabled and up, the pod passed its wait-for-chassis gate and runs
+#     ghcr.io/c5c3/nova-compute:2025.2 as uid 0, and Nova carries the zone
+#     aggregate nova-pool-az1 and tenant_filter_tests, both marked
+#   - a second pool selecting the same node reports the conflict and schedules
+#     no pod
+#   - a server boots onto the node; removing the pool label drains the node: the
+#     service is disabled, the pod stays while the server exists, and deleting
+#     the server releases the pod, deletes the compute service and removes the
+#     zone aggregate
+#   - deleting the last pool removes tenant_filter_tests and leaves the Nova's
+#     compute contract, which carries no mirror label, in place
+#
+# The stack is the full-stack tier of ../basic-deployment under the nova-pool
+# prefix, plus a single-node OVNChassis for the gate. The seed image has an id
+# of its own, since every Glance on the leg writes into the one glance-images
+# bucket keyed by image id.
+#
+# ── concurrent: false ────────────────────────────────────────────────
+# The chassis and nova-compute pods run with hostNetwork and own
+# /run/openvswitch and /var/lib/nova on the one kind node (tests/e2e/README.md),
+# so no other chassis suite may run beside this one.
+#
+# ── The teardown is step cleanups, not finally ───────────────────────
+# A per-step `finally:` runs as soon as its own step ends and would take the
+# pools or the stack down under the next step. A step `cleanup:` is deferred to
+# the end of the test, and the cleanups run in reverse step order: the pools go
+# before the Nova whose API their drain needs, and the node labels go last.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-compute-node-pool
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The stack takes about 8 minutes to Ready (see ../basic-deployment), and a
+    # pool's drain moves at its 30- and 60-second polls of Nova.
+    assert: 10m
+    exec: 12m
+  steps:
+  # ── Step 1: Label the node ─────────────────────────────────────────────
+  # The chassis label, the zone openstack-hypervisor-operator would read, and
+  # the pool label pool-a selects. The node's name goes into the ConfigMap the
+  # Jobs read it from.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          kubectl label node "$NODE" openstack.c5c3.io/chassis=true \
+            topology.kubernetes.io/zone=nova-pool-az1 \
+            openstack.c5c3.io/nova-compute-pool=a --overwrite
+          kubectl create configmap nova-pool-verify -n "$NAMESPACE" \
+            --from-literal=node="$NODE" --from-literal=expect=registered \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "OK: labelled node $NODE"
+    cleanup:
+    - script:
+        shell: bash
+        content: |
+          NODE="$(kubectl get configmap nova-pool-verify -n "$NAMESPACE" \
+            -o jsonpath='{.data.node}' 2>/dev/null || true)"
+          if [ -n "$NODE" ]; then
+            kubectl label node "$NODE" openstack.c5c3.io/chassis- \
+              topology.kubernetes.io/zone- openstack.c5c3.io/nova-compute-pool- || true
+            echo "OK: removed the suite's labels from node $NODE"
+          fi
+          kubectl delete configmap nova-pool-verify -n "$NAMESPACE" --ignore-not-found || true
+  # ── Step 2: Bring up the stack and the chassis ─────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 25m
+        content: |
+          set -euo pipefail
+
+          # run_job <name> <fixture> <timeout>: the Job is deleted first because
+          # a Job's pod template is immutable. On the deadline the log and the
+          # pod list of the run say why.
+          run_job() {
+            kubectl delete job "$1" -n "$NAMESPACE" --ignore-not-found
+            kubectl apply -f "$2"
+            kubectl wait --for=condition=complete "job/$1" -n "$NAMESPACE" --timeout="$3" || {
+              kubectl logs -n "$NAMESPACE" "job/$1" 2>&1 || true
+              kubectl get pods -n "$NAMESPACE" -l job-name="$1" -o wide
+              exit 1
+            }
+          }
+
+          # One vhost per suite: nova's RPC topics are named after the service
+          # rather than after the CR. See ../../cinder/broker-vhost.sh.
+          ../../cinder/broker-vhost.sh create nova-pool nova-pool-messaging openstack
+
+          kubectl apply -f 00-keystone-cr.yaml
+          kubectl wait --for=condition=Ready --timeout=8m \
+            keystone/keystone-nova-pool -n "$NAMESPACE"
+          echo "OK: Keystone/keystone-nova-pool is Ready"
+
+          run_job nova-pool-catalog-setup 01-catalog-setup-job.yaml 5m
+          echo "OK: the compute, placement, image and network rows are registered"
+
+          for fixture in 02-messaging-secret.yaml 03-ovncentral-cr.yaml \
+                         04-neutron-cr.yaml 05-placement-cr.yaml \
+                         06-glance-cr.yaml 07-glancebackend-cr.yaml; do
+            kubectl apply -f "$fixture"
+          done
+          for target in ovncentral/nova-pool-ovn neutron/neutron-nova-pool \
+                        placement/placement-nova-pool glance/glance-nova-pool \
+                        glancebackend/glance-nova-pool-s3; do
+            kubectl wait --for=condition=Ready --timeout=8m "$target" -n "$NAMESPACE"
+            echo "OK: $target is Ready"
+          done
+
+          run_job nova-pool-image-seed 08-image-seed-job.yaml 5m
+          echo "OK: the seed image is registered"
+
+          kubectl apply -f 09-metadata-secret.yaml
+          kubectl apply -f 10-nova-cr.yaml
+          kubectl wait --for=condition=Ready --timeout=10m nova/nova-pool -n "$NAMESPACE"
+          echo "OK: Nova/nova-pool is Ready"
+
+          # The chassis the nova-compute pod waits for.
+          kubectl apply -f 11-ovnchassis-cr.yaml
+          kubectl wait --for=condition=Ready --timeout=5m \
+            ovnchassis/nova-pool-chassis -n "$NAMESPACE"
+          echo "OK: OVNChassis/nova-pool-chassis is Ready"
+    catch: &pool-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: NovaCompute
+        namespace: openstack
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-pool
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNChassis
+        name: nova-pool-chassis
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== nova-compute DaemonSets and pods ==="
+          kubectl get ds,pods -n "$NAMESPACE" -l app.kubernetes.io/name=novacompute -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=novacompute -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n "$NAMESPACE" "$pod" 2>&1 | tail -40 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=100 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Nova workloads ==="
+          kubectl get deploy,pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-pool -o wide 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-pool-catalog-setup nova-pool-image-seed nova-pool-verify \
+                     nova-pool-boot-server nova-pool-delete-server; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 300
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 100
+    - events:
+        namespace: openstack
+    cleanup:
+    # Best-effort. The Nova goes first and is waited for, because its finalizer
+    # drives the MariaDB teardown and needs the credentials that come down with
+    # the rest. The pools are already gone: their own cleanup runs before this
+    # one.
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          kubectl delete nova nova-pool -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=300s || true
+          kubectl delete ovnchassis nova-pool-chassis -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=180s || true
+          kubectl delete job nova-pool-catalog-setup nova-pool-image-seed nova-pool-verify \
+            nova-pool-boot-server nova-pool-delete-server -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete glancebackend glance-nova-pool-s3 -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete glance glance-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete placement placement-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete neutron neutron-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete ovncentral nova-pool-ovn -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete secret nova-pool-messaging neutron-nova-pool-messaging \
+            nova-pool-metadata-secret -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete keystone keystone-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete memcached keystone-nova-pool-cache -n "$NAMESPACE" --ignore-not-found || true
+          ../../cinder/broker-vhost.sh delete nova-pool || true
+  # ── Step 3: Apply pool-a and assert the registration ───────────────────
+  - try:
+    - script:
+        content: |
+          set -eu
+          kubectl apply -f 12-novacompute-pool-a.yaml
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: NovaCompute
+          metadata:
+            name: pool-a
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            # The `|| `[]`` guard keeps the filter from aborting on the first
+            # poll, while status.nodes is still absent.
+            ((nodes || `[]`)[0]):
+              phase: Active
+              zone: nova-pool-az1
+              serviceStatus: enabled
+              serviceState: up
+            installedImage: ghcr.io/c5c3/nova-compute:2025.2
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: novacompute
+              app.kubernetes.io/instance: pool-a
+          spec:
+            containers:
+            - name: nova-compute
+              image: ghcr.io/c5c3/nova-compute:2025.2
+              securityContext:
+                runAsUser: 0
+                privileged: true
+          status:
+            phase: Running
+            (initContainerStatuses[?name == 'wait-for-chassis'] || `[]`):
+            - state:
+                terminated:
+                  exitCode: 0
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-pool-verify -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 14-verify-job.yaml
+          kubectl wait --for=condition=complete job/nova-pool-verify \
+            -n "$NAMESPACE" --timeout=4m || {
+            kubectl logs -n "$NAMESPACE" job/nova-pool-verify 2>&1 || true
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-pool-verify)"
+          echo "$LOGS"
+          grep -q 'NOVA-POOL-VERIFY-OK' <<<"$LOGS"
+    catch: *pool-dump
+    cleanup:
+    # Runs before the stack's cleanup. A pool that is still draining would hold
+    # its finalizer for as long as Nova reports an instance, so after a failed
+    # run the suite strips the finalizer, the documented escape, rather than
+    # wedging the shared namespace.
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          kubectl delete novacompute pool-a pool-b -n "$NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl wait --for=delete novacompute/pool-a novacompute/pool-b \
+            -n "$NAMESPACE" --timeout=180s 2>/dev/null || true
+          for pool in pool-a pool-b; do
+            if kubectl get novacompute "$pool" -n "$NAMESPACE" >/dev/null 2>&1; then
+              kubectl patch novacompute "$pool" -n "$NAMESPACE" --type=merge \
+                -p '{"metadata":{"finalizers":null}}' || true
+            fi
+          done
+  # ── Step 4: A second pool on the same node reports the conflict ────────
+  - try:
+    - script:
+        content: |
+          set -eu
+          kubectl apply -f 13-novacompute-pool-b.yaml
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: NovaCompute
+          metadata:
+            name: pool-b
+            namespace: openstack
+          status:
+            (conditions[?type == 'NodesReady']):
+            - status: "False"
+              reason: NodeConflict
+            ((nodes || `[]`)[0]):
+              phase: Conflict
+              conflictsWith: pool-a
+            # Zero is omitted from the status, so the absent field reads as 0.
+            ((desiredNumberScheduled || `0`) == `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: pool-b-nova-compute
+            namespace: openstack
+          # A DaemonSet serializes the zero, and JMESPath == never matches that
+          # integer against the float literal `0`, so this compares the value.
+          status:
+            desiredNumberScheduled: 0
+    # pool-a still holds the node.
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: NovaCompute
+          metadata:
+            name: pool-a
+            namespace: openstack
+          status:
+            ((nodes || `[]`)[0]):
+              phase: Active
+    # pool-b goes before the drain, so pool-a is the last pool of the Nova.
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+          kubectl delete novacompute pool-b -n "$NAMESPACE" --wait --timeout=3m
+          echo "OK: pool-b is gone"
+    catch: *pool-dump
+  # ── Step 5 and 6: Map the host and boot a server onto it ───────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          NODE="$(kubectl get configmap nova-pool-verify -n "$NAMESPACE" -o jsonpath='{.data.node}')"
+          # The host mapping by hand: the scheduler's periodic would take up to
+          # 300 seconds.
+          ../discover-hosts.sh nova-pool "$NAMESPACE" "$NODE"
+
+          kubectl delete job nova-pool-boot-server -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 15-boot-server-job.yaml
+          kubectl wait --for=condition=complete job/nova-pool-boot-server \
+            -n "$NAMESPACE" --timeout=8m || {
+            kubectl logs -n "$NAMESPACE" job/nova-pool-boot-server 2>&1 || true
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-pool-boot-server)"
+          echo "$LOGS"
+          grep -q 'NOVA-POOL-BOOT-OK' <<<"$LOGS"
+    catch: *pool-dump
+  # ── Step 7: Removing the pool label drains the node ────────────────────
+  # The node leaves the selector with s1 on it: the pool disables the service
+  # once, counts the server and keeps the pod on the node.
+  - try:
+    - script:
+        content: |
+          set -eu
+          NODE="$(kubectl get configmap nova-pool-verify -n "$NAMESPACE" -o jsonpath='{.data.node}')"
+          kubectl label node "$NODE" openstack.c5c3.io/nova-compute-pool-
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: NovaCompute
+          metadata:
+            name: pool-a
+            namespace: openstack
+          status:
+            ((nodes || `[]`)[0]):
+              phase: Draining
+              instances: 1
+              serviceStatus: disabled
+              disabledReason: "c5c3.io: leaving NovaCompute openstack/pool-a"
+            (conditions[?type == 'ServicesReady']):
+            - status: "True"
+              reason: Draining
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: novacompute
+              app.kubernetes.io/instance: pool-a
+          status:
+            phase: Running
+    catch: *pool-dump
+  # ── Step 8: Deleting the server releases the node ──────────────────────
+  # The delete stands in for openstack-hypervisor-operator's eviction. With no
+  # server left the pool releases the pod, deletes the compute service and
+  # removes the zone aggregate no pool needs any more.
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-pool-delete-server -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 16-delete-server-job.yaml
+          kubectl wait --for=condition=complete job/nova-pool-delete-server \
+            -n "$NAMESPACE" --timeout=4m || {
+            kubectl logs -n "$NAMESPACE" job/nova-pool-delete-server 2>&1 || true
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-pool-delete-server)"
+          echo "$LOGS"
+          grep -q 'NOVA-POOL-DELETE-OK' <<<"$LOGS"
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: NovaCompute
+          metadata:
+            name: pool-a
+            namespace: openstack
+          status:
+            ((length(nodes || `[]`)) == `0`): true
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          kubectl patch configmap nova-pool-verify -n "$NAMESPACE" --type=merge \
+            -p '{"data":{"expect":"released"}}'
+          # The aggregate goes on the pool's next poll after the node left, so
+          # the check is repeated for a while before it counts as failed.
+          for _ in $(seq 1 12); do
+            kubectl delete job nova-pool-verify -n "$NAMESPACE" --ignore-not-found
+            kubectl apply -f 14-verify-job.yaml
+            if kubectl wait --for=condition=complete job/nova-pool-verify \
+              -n "$NAMESPACE" --timeout=2m; then
+              kubectl logs -n "$NAMESPACE" job/nova-pool-verify
+              exit 0
+            fi
+            kubectl logs -n "$NAMESPACE" job/nova-pool-verify 2>&1 | tail -5 || true
+            sleep 10
+          done
+          echo "ERROR: the compute service or nova-pool-az1 outlived the release"
+          exit 1
+    catch: *pool-dump
+  # ── Step 9: Deleting the last pool tears its aggregates down ───────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          kubectl delete novacompute pool-a -n "$NAMESPACE" --wait --timeout=5m
+          echo "OK: pool-a is gone"
+          kubectl patch configmap nova-pool-verify -n "$NAMESPACE" --type=merge \
+            -p '{"data":{"expect":"torndown"}}'
+          kubectl delete job nova-pool-verify -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 14-verify-job.yaml
+          kubectl wait --for=condition=complete job/nova-pool-verify \
+            -n "$NAMESPACE" --timeout=2m || {
+            kubectl logs -n "$NAMESPACE" job/nova-pool-verify 2>&1 || true
+            exit 1
+          }
+          kubectl logs -n "$NAMESPACE" job/nova-pool-verify
+    # The Nova's own contract is not a ControlPlane mirror: it carries no
+    # mirror label, so the last pool's teardown leaves it alone.
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nova-pool-compute-config
+            namespace: openstack
+    catch: *pool-dump

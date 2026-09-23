@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A second pool of the same Nova whose selector matches the node pool-a already
+# holds (every chassis node carries openstack.c5c3.io/chassis=true). It is
+# applied after pool-a is Active, so pool-a holds the node and pool-b reports
+# the node in Conflict and schedules no pod: two nova-compute processes on one
+# node would share one libvirt.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: pool-b
+  namespace: openstack
+spec:
+  novaRef:
+    name: nova-pool
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
