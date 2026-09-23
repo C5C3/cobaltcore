@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.image with both a tag and a digest violates the CEL rule on the shared
+# ImageSpec: exactly one of the two pins the image.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: pool
+spec:
+  novaRef:
+    name: nova
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: a
+  image:
+    repository: ghcr.io/c5c3/nova-compute
+    tag: "2025.2"
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
