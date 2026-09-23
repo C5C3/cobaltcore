@@ -51,6 +51,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/nova/internal/computeapi/computeapitest"
 	"github.com/c5c3/cobaltcore/operators/nova/internal/testutil"
 )
 
@@ -153,6 +154,27 @@ func registerNovaController(mgr ctrl.Manager, mcMgr mcmanager.Manager,
 		Resolver:   resolver,
 	}
 	return nova.setupWithOptions(mcMgr, opts)
+}
+
+// registerNovaComputeController wires the NovaCompute reconciler onto mgr
+// through its production watch chain, with resolver as the target-cluster
+// resolver and api standing in for Keystone and the Nova API. Nodes and pods
+// are read through the manager's API reader, as in main.go.
+func registerNovaComputeController(mgr ctrl.Manager, mcMgr mcmanager.Manager,
+	resolver commonmulticluster.ClusterResolver, api *computeapitest.Fake,
+) error {
+	opts := bootstrap.TypedControllerOptions[mcreconcile.Request](1)
+	opts.SkipNameValidation = ptr.To(true)
+
+	pool := &NovaComputeReconciler{
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Recorder:   mgr.GetEventRecorderFor("novacompute-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+		APIReader:  mgr.GetAPIReader(),
+		Resolver:   resolver,
+		HTTPClient: api,
+	}
+	return pool.setupWithOptions(mcMgr, opts)
 }
 
 // setupEnvTestWithController wraps testutil.SetupNovaEnvTestWithController with
@@ -1106,4 +1128,101 @@ func TestIntegrationNova_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		ig.Expect(cur.Status.TargetRelease).To(BeEmpty(),
 			"targetRelease should be cleared once the upgrade completes")
 	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+}
+
+// TestIntegrationNovaCompute_ReachesReady drives one node pool to Ready against
+// a real API server. No Nova controller runs here: the Nova's status is written
+// by hand, the way the Nova reconciler would publish it, so the suite exercises
+// the pool alone. envtest runs no DaemonSet controller, so the rollout is
+// completed by the test, and the fake Nova already knows the node's service.
+func TestIntegrationNovaCompute_ReachesReady(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	api := computeapitest.New()
+	c, ctx, _ := testutil.SetupNovaEnvTestWithController(t,
+		novav1alpha1.AddToScheme,
+		registerNovaWebhooks,
+		func(mgr ctrl.Manager) error {
+			mcMgr, err := mcmanager.WithMultiCluster(mgr, nil)
+			if err != nil {
+				return err
+			}
+			return registerNovaComputeController(mgr, mcMgr, nil, api)
+		},
+	)
+	g := NewGomegaWithT(t)
+	ns := createTestNamespace(t, ctx, c)
+
+	// Nodes are cluster-scoped, so the node and its pool label carry the
+	// namespace to keep them apart from any other test's.
+	nodeName := "compute-" + ns
+	poolLabel := map[string]string{"openstack.c5c3.io/nova-compute-pool": ns}
+	api.AddService(nodeName, "enabled", "up")
+
+	nova := integrationNovaCR(integrationNovaName, ns, nil)
+	g.Expect(c.Create(ctx, nova)).To(Succeed())
+	nova.Status.InstalledRelease = integrationInitialRelease
+	nova.Status.ComputeConfigSecretRef = &corev1.LocalObjectReference{Name: computeConfigSecretName(nova)}
+	g.Expect(c.Status().Update(ctx, nova)).To(Succeed(), "publish the Nova's release and contract")
+
+	for _, secret := range []*corev1.Secret{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: integrationServiceUserSecretName, Namespace: ns},
+			Data:       map[string][]byte{"password": []byte("svc-pw")},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: computeConfigSecretName(nova), Namespace: ns},
+			Data: map[string][]byte{
+				computeConfigFragmentKey: []byte("[DEFAULT]\n"),
+				transportURLKey:          []byte("rabbit://nova:pw@rabbitmq:5672/"),
+				passwordKey:              []byte("svc-pw"),
+			},
+		},
+	} {
+		g.Expect(c.Create(ctx, secret)).To(Succeed(), "create Secret %s", secret.Name)
+	}
+
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+		Name:   nodeName,
+		Labels: map[string]string{"openstack.c5c3.io/nova-compute-pool": ns, zoneLabel: "az-it"},
+	}}
+	g.Expect(c.Create(ctx, node)).To(Succeed())
+
+	pool := &novav1alpha1.NovaCompute{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool-it", Namespace: ns},
+		Spec: novav1alpha1.NovaComputeSpec{
+			NovaRef:      novav1alpha1.NovaRef{Name: integrationNovaName},
+			NodeSelector: poolLabel,
+		},
+	}
+	g.Expect(c.Create(ctx, pool)).To(Succeed())
+
+	poolKey := client.ObjectKeyFromObject(pool)
+	dsKey := client.ObjectKey{Namespace: ns, Name: "pool-it-nova-compute"}
+	g.Eventually(func(ig Gomega) {
+		// Every template change bumps the generation, so the rollout is marked
+		// complete on every poll; a DaemonSet not created yet is simply retried.
+		_ = simulators.MarkDaemonSetReady(ctx, c, dsKey)
+
+		got := &novav1alpha1.NovaCompute{}
+		ig.Expect(c.Get(ctx, poolKey, got)).To(Succeed())
+		ready := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+		ig.Expect(ready).NotTo(BeNil())
+		ig.Expect(ready.Status).To(Equal(metav1.ConditionTrue), "conditions: %+v", got.Status.Conditions)
+		ig.Expect(ready.Reason).To(Equal("AllReady"))
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+
+	got := &novav1alpha1.NovaCompute{}
+	g.Expect(c.Get(ctx, poolKey, got)).To(Succeed())
+	g.Expect(got.Status.Nodes).To(ConsistOf(novav1alpha1.NovaComputeNodeStatus{
+		Name: nodeName, Phase: novav1alpha1.NovaComputeNodeActive, Zone: "az-it",
+		ServiceID: api.Services()[0].ID, ServiceStatus: "enabled", ServiceState: "up",
+	}))
+	g.Expect(got.Finalizers).To(Equal([]string{novaComputeDrainFinalizer}))
+
+	ds := &appsv1.DaemonSet{}
+	g.Expect(c.Get(ctx, dsKey, ds)).To(Succeed())
+	g.Expect(metav1.IsControlledBy(ds, got)).To(BeTrue(), "a local DaemonSet is owned by reference")
+	_, ok := api.Aggregate("az-it")
+	g.Expect(ok).To(BeTrue(), "the zone's aggregate is created")
 }
