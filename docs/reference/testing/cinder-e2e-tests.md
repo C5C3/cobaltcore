@@ -242,7 +242,7 @@ steps.
 | --- | --- | --- | --- |
 | 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` | `broker-vhost.sh create cinder-nfs …`, then `00-cinder-cr.yaml` (`cinder-nfs`) and `01-cinderbackend-cr.yaml` (`nfsbe-nfs1`) |
 | 2 | Assert Ready and the mounted export | `assert` (5m) | `Ready=True/AllReady`, and Deployment `cinder-nfs-volume-nfsbe-nfs1` mounting the export at `/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f` |
-| 3 | Create a volume and read the file it became | `script` (8m) | A 1 GiB create reaches `available`, and `kubectl exec` into the volume pod stats the file as `42424:42424` mode 660 at its full apparent size |
+| 3 | Create a volume and read the file it became | `script` (8m) | Once `GET /v3/scheduler-stats/get_pools` lists `nfsbe-nfs1`, a 1 GiB create reaches `available`, and `kubectl exec` into the volume pod stats the file as `42424:42424` mode 660 at its full apparent size |
 | 4 | Extend the volume and read the file back | `script` (8m) | `os-extend` grows the same file to 2 GiB in place |
 | 5 | Clone the volume and read both files | `script` (10m) | The clone lands beside its source, world-readable from `_set_rw_permissions_for_all`, with the source's `.info` snapshot file written alongside |
 | 6 | Delete both volumes and assert the share is clean | `script` (8m) | Both volumes leave the API and neither file is left on the export |
@@ -273,7 +273,7 @@ export alone.
 | 1 | Create the second export and the vhost, then apply the CRs | `script` (2m) + `apply` | Creates `/volumes-b` on the NFS server as `42424:42424` mode `0770`, takes the `cinder-multi` vhost, then applies `00-cinder-cr.yaml`, `01-cinderbackend-a-cr.yaml` (`multi-nfs-a`) and `02-cinderbackend-b-cr.yaml` (`multi-nfs-b`). The step cleanup removes the export and the vhost |
 | 2 | Assert Ready and one Deployment per backend | `assert` (5m) | `BackendsReady=True/AllBackendsProjected`, `Ready=True/AllReady`, and the two volume Deployments mounting `/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f` and `/var/lib/cinder/mnt/e0c7531cb098b3f9cdce2c2a14ed80fd` |
 | 3 | Assert each pod's overlay names its own backend alone | `script` | The `volume.conf.d` overlay of each pod lists one backend, so the two processes drive one backend each |
-| 4 | Place a volume on the second backend through a volume type | `script` (10m) | A volume type with a `volume_backend_name` extra spec places the volume on `multi-nfs-b`; the file is stat'ed under the second mount and the first export is listed to show it is not there |
+| 4 | Place a volume on the second backend through a volume type | `script` (10m) | Once `GET /v3/scheduler-stats/get_pools` lists both backends, a volume type with a `volume_backend_name` extra spec places the volume on `multi-nfs-b`; the file is stat'ed under the second mount and the first export is listed to show it is not there |
 
 **Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-a-cr.yaml`, `02-cinderbackend-b-cr.yaml`
 
