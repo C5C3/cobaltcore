@@ -9,9 +9,9 @@
 //go:generate controller-gen crd paths=. output:crd:artifacts:config=../../config/crd/bases
 //go:generate controller-gen webhook paths=. output:webhook:artifacts:config=../../config/webhook
 
-// Package v1alpha1 contains the Nova compute API types. Nova is the only kind
-// in the group: the compute control plane is one CR, and the compute nodes it
-// drives are registered from outside this operator.
+// Package v1alpha1 contains the Nova compute API types. The group has two
+// kinds: Nova is the compute control plane, and NovaCompute runs nova-compute
+// on one node pool of a compute cluster and joins it to a Nova.
 package v1alpha1
 
 import (
