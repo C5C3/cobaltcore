@@ -19,6 +19,13 @@ FAIL=0
 # extra-packages.yaml, each with a matching images/<service>/Dockerfile.
 SERVICES="keystone horizon glance placement barbican neutron cinder nova"
 
+# Images built from another service's source pin, each with its own
+# extra-packages.yaml block and images/<name>/Dockerfile but no
+# source-refs.yaml key. Tests 2 to 4 check them like a service; tests 1, 7
+# and 9, which read source-refs.yaml keys, do not. nova-compute is built from
+# the nova pin.
+DERIVED_IMAGES="nova-compute"
+
 # ovn is deliberately absent from this list. The image is release-independent:
 # it has no source-refs.yaml key, no extra-packages.yaml entry and no PIP_* or
 # EXTRA_APT_PACKAGES build args, so the checks below have nothing to read for
@@ -74,12 +81,12 @@ test_source_refs_valid_yaml_with_services() {
       fi
     done
 
-    # $SERVICES is what tests 2-4 iterate, and the build matrix derives from
-    # these keys instead. Assert the converse direction too: a service
-    # registered here but absent from the list would build and ship while its
-    # extra-packages entries go unvalidated and its Dockerfile never gets
-    # checked for hardcoded apt packages. Fail loudly rather than skip four
-    # tests silently.
+    # $SERVICES (plus $DERIVED_IMAGES) is what tests 2-4 iterate, and the
+    # build matrix derives from these keys instead. Assert the converse
+    # direction too: a service registered here but absent from the list would
+    # build and ship while its extra-packages entries go unvalidated and its
+    # Dockerfile never gets checked for hardcoded apt packages. Fail loudly
+    # rather than skip four tests silently.
     local unlisted
     unlisted=$(yq 'keys | .[]' "$source_refs" | tr -d '"' \
       | grep -vxF -f <(tr ' ' '\n' <<< "$SERVICES") || true)
@@ -121,7 +128,7 @@ test_extra_packages_valid_yaml_structure() {
     fi
 
     local service
-    for service in $SERVICES; do
+    for service in $SERVICES $DERIVED_IMAGES; do
       # Verify <service>.pip_extras exists and is an array (: allow empty lists per review #1)
       local pip_extras_tag
       pip_extras_tag=$(yq ".${service}.pip_extras | tag" "$extra_packages")
@@ -213,7 +220,7 @@ test_extra_packages_build_wiring() {
   fi
 
   local service
-  for service in $SERVICES; do
+  for service in $SERVICES $DERIVED_IMAGES; do
     local dockerfile="$PROJECT_ROOT/images/${service}/Dockerfile"
 
     if [ ! -f "$dockerfile" ]; then
@@ -265,7 +272,7 @@ test_no_hardcoded_apt_packages() {
   echo "Test: Dockerfiles do not hardcode apt package names"
 
   local service
-  for service in $SERVICES; do
+  for service in $SERVICES $DERIVED_IMAGES; do
     local dockerfile="$PROJECT_ROOT/images/${service}/Dockerfile"
 
     if [ ! -f "$dockerfile" ]; then
