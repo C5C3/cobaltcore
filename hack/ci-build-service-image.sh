@@ -14,6 +14,11 @@
 #   IMAGE_PREFIX  — Container image prefix (e.g. ghcr.io/c5c3)
 #
 # Optional env vars:
+#   IMAGE         — Image to build (default: OPERATOR). A derived image such
+#                   as nova-compute is built from its service's source:
+#                   OPERATOR names the service (source ref, clone, patches,
+#                   the --build-context name), IMAGE the image (its
+#                   extra-packages key, images/<IMAGE>/ and the tag)
 #   RELEASE       — Release directory name (default: 2025.2)
 #   GITHUB_TOKEN  — Authenticates the clone from github.com, and is mounted
 #                   as the github_token BuildKit secret for a Dockerfile that
@@ -37,6 +42,11 @@ if [[ ! "${OPERATOR}" =~ ^[a-z][a-z0-9-]*$ ]]; then
   echo "::error::OPERATOR must be lowercase alphanumeric (with hyphens), got '${OPERATOR}'"
   exit 1
 fi
+IMAGE="${IMAGE:-${OPERATOR}}"
+if [[ ! "${IMAGE}" =~ ^[a-z][a-z0-9-]*$ ]]; then
+  echo "::error::IMAGE must be lowercase alphanumeric (with hyphens), got '${IMAGE}'"
+  exit 1
+fi
 IMAGE_PREFIX="${IMAGE_PREFIX:?IMAGE_PREFIX is required (e.g. ghcr.io/c5c3)}"
 RELEASE="${RELEASE:-2025.2}"
 
@@ -50,12 +60,13 @@ if [ -z "${SERVICE_REF}" ] || [ "${SERVICE_REF}" = "null" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Read extra packages from release config
+# 2. Read extra packages from release config (keyed by the image: a derived
+#    image carries packages its service image does not)
 # ---------------------------------------------------------------------------
 EXTRA_PKG_FILE="${REPO_ROOT}/releases/${RELEASE}/extra-packages.yaml"
-PIP_EXTRAS=$(yq -r ".\"${OPERATOR}\".pip_extras // [] | join(\",\")" "${EXTRA_PKG_FILE}")
-PIP_PACKAGES=$(yq -r ".\"${OPERATOR}\".pip_packages // [] | join(\" \")" "${EXTRA_PKG_FILE}")
-APT_PACKAGES=$(yq -r ".\"${OPERATOR}\".apt_packages // [] | join(\" \")" "${EXTRA_PKG_FILE}")
+PIP_EXTRAS=$(yq -r ".\"${IMAGE}\".pip_extras // [] | join(\",\")" "${EXTRA_PKG_FILE}")
+PIP_PACKAGES=$(yq -r ".\"${IMAGE}\".pip_packages // [] | join(\" \")" "${EXTRA_PKG_FILE}")
+APT_PACKAGES=$(yq -r ".\"${IMAGE}\".apt_packages // [] | join(\" \")" "${EXTRA_PKG_FILE}")
 
 # ---------------------------------------------------------------------------
 # 3. Clone upstream at pinned ref
@@ -183,7 +194,7 @@ secret_args=()
 
 # ${secret_args[@]+"…"} guards the empty case: bash 3.2, which contributors
 # run `make test-shell` under on macOS, aborts on an empty array under set -u.
-docker build -t "${IMAGE_PREFIX}/${OPERATOR}:${RELEASE}" \
+docker build -t "${IMAGE_PREFIX}/${IMAGE}:${RELEASE}" \
   "${cache_args[@]}" \
   ${secret_args[@]+"${secret_args[@]}"} \
   --build-arg "PIP_EXTRAS=${PIP_EXTRAS}" \
@@ -191,4 +202,4 @@ docker build -t "${IMAGE_PREFIX}/${OPERATOR}:${RELEASE}" \
   --build-arg "EXTRA_APT_PACKAGES=${APT_PACKAGES}" \
   --build-context "${OPERATOR}=${SRC_DIR}" \
   --build-context "upper-constraints=${REPO_ROOT}/releases/${RELEASE}" \
-  "${REPO_ROOT}/images/${OPERATOR}/"
+  "${REPO_ROOT}/images/${IMAGE}/"

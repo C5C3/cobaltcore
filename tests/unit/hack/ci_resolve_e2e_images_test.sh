@@ -206,6 +206,11 @@ expected_keys() {
       echo "ghcr.io/c5c3/${op}:${release}"
     done < <(OPERATOR="$op" "$PROJECT_ROOT/hack/ci-service-image-releases.sh")
   done
+  # The derived nova-compute image, one per nova release.
+  while read -r release; do
+    [ -n "$release" ] || continue
+    echo "ghcr.io/c5c3/nova-compute:${release}"
+  done < <(OPERATOR=nova "$PROJECT_ROOT/hack/ci-service-image-releases.sh")
   for dir in "$PROJECT_ROOT"/releases/*/; do
     echo "ghcr.io/c5c3/tempest:$(basename "$dir")"
   done
@@ -252,10 +257,10 @@ test_the_key_set_covers_every_image_in_the_tree() {
   assert_eq "the map's keys are the tree's images" \
     "$(expected_keys | sort)" "$(jq -r 'keys[]' <<<"$MAP" | sort)"
 
-  # Ten operators, eight services across two releases, two Tempest images and
-  # the federation proxy. The number moves with the tree; the equality above is
-  # what keeps it honest.
-  assert_eq "the tree yields 29 images today" "29" "$(jq -r 'length' <<<"$MAP")"
+  # Ten operators, eight services across two releases, nova-compute for both
+  # nova releases, two Tempest images and the federation proxy. The number
+  # moves with the tree; the equality above is what keeps it honest.
+  assert_eq "the tree yields 31 images today" "31" "$(jq -r 'length' <<<"$MAP")"
 
   assert_eq "an operator image is keyed by its dev tag" "true" \
     "$(jq 'has("ghcr.io/c5c3/keystone-operator:dev")' <<<"$MAP")"
@@ -271,7 +276,7 @@ test_the_key_set_covers_every_image_in_the_tree() {
   assert_eq "an operator without a service image contributes no service key" "0" \
     "$(jq -r '[keys[] | select(startswith("ghcr.io/c5c3/c5c3:"))] | length' <<<"$MAP")"
 
-  # One lookup per image, and no image looked up twice: 29 round trips to the
+  # One lookup per image, and no image looked up twice: 31 round trips to the
   # registry is already the bulk of this step's runtime on a no-build run.
   assert_eq "every image is looked up" "$(jq -r 'length' <<<"$MAP")" \
     "$(grep -c . "$INSPECT_LOG")"
@@ -325,6 +330,47 @@ test_a_changed_service_builds_all_its_releases() {
   # Service images build FROM venv-builder and python-base.
   assert_eq "the base images are needed" "true" "$(env_value NEEDS_BASE_IMAGES)"
   assert_eq "the glance operator image is not built" "" "$(env_block BUILD_OPERATORS)"
+}
+
+# ---------------------------------------------------------------------------
+# Derived images: nova-compute follows nova
+# ---------------------------------------------------------------------------
+test_a_changed_nova_builds_the_compute_image() {
+  echo "Test: a changed nova builds nova-compute for every nova release"
+
+  run_resolve CHANGED_SERVICES='["nova"]'
+
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_eq "nova and nova-compute are built for both releases" \
+    "nova 2025.2 nova 2026.1 nova 2025.2 nova-compute nova 2026.1 nova-compute" \
+    "$(env_block BUILD_SERVICE_IMAGES)"
+  assert_eq "nova-compute 2025.2 carries the run-scoped tag" \
+    "ghcr.io/c5c3/nova-compute:e2e-test-2025.2" "$(map_value ghcr.io/c5c3/nova-compute:2025.2)"
+  assert_eq "nova-compute 2026.1 carries the run-scoped tag" \
+    "ghcr.io/c5c3/nova-compute:e2e-test-2026.1" "$(map_value ghcr.io/c5c3/nova-compute:2026.1)"
+}
+
+test_an_unchanged_nova_reuses_the_compute_image() {
+  echo "Test: an unchanged nova pulls the published nova-compute"
+
+  run_resolve CHANGED_SERVICES='["glance"]'
+
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_contains "nova-compute 2025.2 is pulled by digest" \
+    "$(map_value ghcr.io/c5c3/nova-compute:2025.2)" "ghcr.io/c5c3/nova-compute@sha256:"
+  assert_not_contains "no nova-compute is built" "$(env_block BUILD_SERVICE_IMAGES)" "nova-compute"
+}
+
+test_an_unpublished_nova_builds_the_compute_image_too() {
+  echo "Test: a nova release main never published builds its nova-compute as well"
+
+  run_resolve STUB_MISSING="ghcr.io/c5c3/nova:2025.2"
+
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_eq "nova 2025.2 and its nova-compute are built, 2026.1 is not" \
+    "nova 2025.2 nova 2025.2 nova-compute" "$(env_block BUILD_SERVICE_IMAGES)"
+  assert_contains "nova-compute 2026.1 is pulled by digest" \
+    "$(map_value ghcr.io/c5c3/nova-compute:2026.1)" "ghcr.io/c5c3/nova-compute@sha256:"
 }
 
 # ---------------------------------------------------------------------------
@@ -620,6 +666,9 @@ test_empty_inputs_reuse_every_image
 test_the_key_set_covers_every_image_in_the_tree
 test_a_changed_operator_builds_only_its_own_image
 test_a_changed_service_builds_all_its_releases
+test_a_changed_nova_builds_the_compute_image
+test_an_unchanged_nova_reuses_the_compute_image
+test_an_unpublished_nova_builds_the_compute_image_too
 test_changed_tempest_builds_every_release
 test_a_changed_proxy_builds_only_the_proxy
 test_an_unpublished_source_is_built_instead
