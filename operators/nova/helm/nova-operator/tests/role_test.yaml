@@ -43,7 +43,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should grant reconcile verbs (no create/delete) on novas
+  - it: should grant reconcile verbs (no create/delete) on novas and novacomputes
     set:
       rbac:
         namespaceScoped: true
@@ -56,6 +56,7 @@ tests:
             apiGroups:
               - nova.openstack.c5c3.io
             resources:
+              - novacomputes
               - novas
             verbs:
               - get

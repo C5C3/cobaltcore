@@ -29,6 +29,14 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
 - apiGroups:
   - ''
   resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ''
+  resources:
   - pods
   verbs:
   - get
@@ -36,6 +44,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
 - apiGroups:
   - apps
   resources:
+  - daemonsets
   - deployments
   verbs:
   - create
@@ -135,6 +144,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
 - apiGroups:
   - nova.openstack.c5c3.io
   resources:
+  - novacomputes
   - novas
   verbs:
   - get
@@ -145,12 +155,14 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
 - apiGroups:
   - nova.openstack.c5c3.io
   resources:
+  - novacomputes/finalizers
   - novas/finalizers
   verbs:
   - update
 - apiGroups:
   - nova.openstack.c5c3.io
   resources:
+  - novacomputes/status
   - novas/status
   verbs:
   - get

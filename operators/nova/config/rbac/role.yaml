@@ -28,6 +28,14 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - pods
   verbs:
   - get
@@ -35,6 +43,7 @@ rules:
 - apiGroups:
   - apps
   resources:
+  - daemonsets
   - deployments
   verbs:
   - create
@@ -134,6 +143,7 @@ rules:
 - apiGroups:
   - nova.openstack.c5c3.io
   resources:
+  - novacomputes
   - novas
   verbs:
   - get
@@ -144,12 +154,14 @@ rules:
 - apiGroups:
   - nova.openstack.c5c3.io
   resources:
+  - novacomputes/finalizers
   - novas/finalizers
   verbs:
   - update
 - apiGroups:
   - nova.openstack.c5c3.io
   resources:
+  - novacomputes/status
   - novas/status
   verbs:
   - get
