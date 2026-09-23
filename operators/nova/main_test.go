@@ -8,6 +8,7 @@
 package main
 
 import (
+	"slices"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -16,7 +17,7 @@ import (
 	"github.com/c5c3/cobaltcore/operators/nova/internal/controller"
 )
 
-// The remote child kinds drive two things at once: SetupWithManager builds a
+// The remote child kinds of both kinds drive two things at once: SetupWithManager builds a
 // watch object per entry from this scheme, and the teardown sweep lists through
 // the same list. A kind this binary's scheme does not know therefore fails
 // SetupWithManager and the operator exits at startup.
@@ -26,7 +27,8 @@ import (
 // AddToScheme in main.go passes every unit and integration test and only surfaces
 // on a real deploy.
 func TestRemoteChildKindsAreRegisteredInTheScheme(t *testing.T) {
-	for _, gvk := range controller.NovaRemoteChildKinds {
+	kinds := append(slices.Clone(controller.NovaRemoteChildKinds), controller.NovaComputeRemoteChildKinds...)
+	for _, gvk := range kinds {
 		t.Run(gvk.String(), func(t *testing.T) {
 			g := NewGomegaWithT(t)
 
