@@ -162,6 +162,10 @@ jobs:
               - 'patches/nova/**'
               - 'operators/nova/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_nova.sh'
+              # The compute image is built from nova's pin, patches and
+              # constraints and rides the nova service name.
+              - 'images/nova-compute/**'
+              - 'tests/container-images/verify_nova_compute.sh'
             # ---------------------------------------------------------------
             # Everything every service image is built from: the two base
             # images, the release pins, the build scripts, the constraint
@@ -253,6 +257,7 @@ jobs:
           - images/neutron/Dockerfile
           - images/cinder/Dockerfile
           - images/nova/Dockerfile
+          - images/nova-compute/Dockerfile
           - images/tempest/Dockerfile
           - images/keystone-federation-proxy/Dockerfile
           - images/ovn/Dockerfile
@@ -456,6 +461,8 @@ jobs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
       tempest-matrix: ${{ steps.matrix.outputs.tempest-matrix }}
       tempest-release-matrix: ${{ steps.matrix.outputs.tempest-release-matrix }}
+      nova-compute-releases: ${{ steps.matrix.outputs.nova-compute-releases }}
+      nova-compute-build-matrix: ${{ steps.matrix.outputs.nova-compute-build-matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -1227,3 +1234,199 @@ jobs:
           MATRIX_RELEASE: ${{ matrix.release }}
           IMAGE_REF: ${{ steps.tags.outputs.composite }}
         run: hack/gen-option-catalog.sh --check "$MATRIX_SERVICE" "$MATRIX_RELEASE" "$IMAGE_REF"
+
+  # The compute image of images/nova-compute/, built from nova's source pin
+  # with nova's patches and constraints. Jobs of its own rather than steps in
+  # the nova leg of build-service-images: a failed leg there skips
+  # merge-service-images for every service.
+  build-nova-compute-image:
+    needs: [merge-base-images, verify-base-images, generate-matrix, prepare]
+    if: needs.generate-matrix.outputs.nova-compute-releases != '[]'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write #: Sigstore OIDC signing
+      attestations: write #: GitHub Attestations API
+      artifact-metadata: write  # gh#108: actions/attest v4.1.0 storage record
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.nova-compute-build-matrix) }}
+    # The release verify_nova_compute.sh compares the binding's pin for; a
+    # branch or SHA pin leaves nova a version no source-refs.yaml carries. Set
+    # on the job because build-push-image runs the script with its environment.
+    env:
+      NOVA_COMPUTE_RELEASE: ${{ matrix.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Checkout service source
+        id: checkout-source
+        uses: ./.github/actions/checkout-service-source
+        with:
+          service: nova
+          release: ${{ matrix.release }}
+
+      - name: Resolve extra packages
+        id: extra-pkgs
+        env:
+          MATRIX_SERVICE: nova-compute
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: hack/ci-resolve-extra-packages.sh
+
+      - name: Derive tags
+        id: tags
+        uses: ./.github/actions/derive-service-tags
+        with:
+          service: nova
+          image: nova-compute
+          release: ${{ matrix.release }}
+          repository-owner: ${{ github.repository_owner }}
+
+      - name: Prepare platform pair
+        id: platform-pair
+        uses: ./.github/actions/platform-pair
+        with:
+          platform: ${{ matrix.platform }}
+
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          install-cosign: 'false'
+
+      - name: Build compute image
+        id: build-nova-compute
+        uses: ./.github/actions/build-push-image
+        with:
+          image-name: ${{ steps.tags.outputs.image }}
+          context: images/nova-compute
+          platform: ${{ matrix.platform }}
+          platform-pair: ${{ steps.platform-pair.outputs.value }}
+          build-args: |
+            PIP_EXTRAS=${{ steps.extra-pkgs.outputs.pip-extras }}
+            PIP_PACKAGES=${{ steps.extra-pkgs.outputs.pip-packages }}
+            EXTRA_APT_PACKAGES=${{ steps.extra-pkgs.outputs.apt-packages }}
+          build-contexts: |
+            python-base=docker-image://${{ needs.merge-base-images.outputs.python-base-image }}
+            venv-builder=docker-image://${{ needs.merge-base-images.outputs.venv-builder-image }}
+            nova=src/nova
+            upper-constraints=releases/${{ matrix.release }}/
+          labels-title: nova-compute
+          labels-description: OpenStack nova-compute with the libvirt driver and host storage tooling
+          metadata-tags: |
+            type=raw,value=${{ steps.checkout-source.outputs.source-ref }}
+          extra-labels: |
+            org.opencontainers.image.base.name=${{ needs.merge-base-images.outputs.python-base-name }}
+            org.opencontainers.image.base.digest=${{ needs.merge-base-images.outputs.python-base-digest }}
+          cache-scope: nova-compute-${{ matrix.release }}
+          push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
+          tags: ${{ github.event_name == 'pull_request' && steps.tags.outputs.composite || steps.tags.outputs.image }}
+          artifact-name: ${{ github.event_name != 'pull_request' && format('digests-nova-compute-{0}-{1}', matrix.release, steps.platform-pair.outputs.value) || '' }}
+          grype-category: ${{ github.event_name == 'pull_request' && format('grype-nova-compute-{0}', steps.platform-pair.outputs.value) || '' }}
+          image-ref-for-scan: ${{ steps.tags.outputs.composite }}
+          verify-script: ${{ github.event_name == 'pull_request' && 'tests/container-images/verify_nova_compute.sh' || '' }}
+          verify-image-ref: ${{ steps.tags.outputs.composite }}
+
+  # Assembles the per-platform compute digests into one multi-arch manifest
+  # per release. The artifact pattern cannot match nova's own digests, which
+  # are named digests-service-nova-<release>-*.
+  merge-nova-compute-image:
+    if: github.event_name != 'pull_request'
+    needs: [build-nova-compute-image, generate-matrix]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write #: Sigstore OIDC signing
+      attestations: write #: GitHub Attestations API
+      artifact-metadata: write  # gh#108: actions/attest v4.1.0 storage record
+      security-events: write #: GitHub Security tab SARIF upload
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJson(needs.generate-matrix.outputs.nova-compute-releases) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: tags
+        uses: ./.github/actions/derive-service-tags
+        with:
+          service: nova
+          image: nova-compute
+          release: ${{ matrix.release }}
+          repository-owner: ${{ github.repository_owner }}
+
+      - name: Build compute image tags
+        id: compute-tags
+        env:
+          COMPOSITE_TAG: ${{ steps.tags.outputs.composite }}
+          SHA_TAG: ${{ steps.tags.outputs.sha }}
+          VERSION_TAG: ${{ steps.tags.outputs.version }}
+          RELEASE_TAG: ${{ steps.tags.outputs.release }}
+        run: |
+          TAGS="${COMPOSITE_TAG} ${SHA_TAG}"
+          [[ "${GITHUB_REF_NAME}" == "main" ]] && TAGS="${TAGS} ${VERSION_TAG} ${RELEASE_TAG}"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Merge and attest compute image
+        id: merge-nova-compute
+        uses: ./.github/actions/merge-manifest-and-attest
+        with:
+          image: ${{ steps.tags.outputs.image }}
+          artifact-pattern: digests-nova-compute-${{ matrix.release }}-*
+          tags: ${{ steps.compute-tags.outputs.tags }}
+          inspect-tag: ${{ steps.tags.outputs.composite }}
+          sbom-output-file: sbom-nova-compute-${{ matrix.release }}.cyclonedx.json
+          grype-category: grype-nova-compute-${{ matrix.release }}
+
+  # Runs on both architectures, as verify-ovn-image does: pull requests build
+  # amd64 only (docker load takes a single platform), so the arm64 build of
+  # the compiled libvirt binding is first executed here. docker pull resolves
+  # the manifest to the runner's own architecture, so the runner is what
+  # selects the variant under test.
+  verify-nova-compute-image:
+    if: github.event_name != 'pull_request'
+    needs: [merge-nova-compute-image, generate-matrix]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJson(needs.generate-matrix.outputs.nova-compute-releases) }}
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          install-cosign: 'false'
+      - name: Derive tags
+        id: tags
+        uses: ./.github/actions/derive-service-tags
+        with:
+          service: nova
+          image: nova-compute
+          release: ${{ matrix.release }}
+          repository-owner: ${{ github.repository_owner }}
+
+      - name: Pull and verify compute image
+        env:
+          IMAGE_REF: ${{ steps.tags.outputs.composite }}
+          NOVA_COMPUTE_RELEASE: ${{ matrix.release }}
+        run: |
+          docker pull "$IMAGE_REF"
+          bash tests/container-images/verify_nova_compute.sh "$IMAGE_REF"

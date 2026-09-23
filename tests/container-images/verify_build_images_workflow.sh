@@ -150,6 +150,9 @@ test_all_jobs_defined() {
   assert_file_contains "build-ovn job defined" "$WORKFLOW" "build-ovn:"
   assert_file_contains "merge-ovn-image job defined" "$WORKFLOW" "merge-ovn-image:"
   assert_file_contains "verify-ovn-image job defined" "$WORKFLOW" "verify-ovn-image:"
+  assert_file_contains "build-nova-compute-image job defined" "$WORKFLOW" "build-nova-compute-image:"
+  assert_file_contains "merge-nova-compute-image job defined" "$WORKFLOW" "merge-nova-compute-image:"
+  assert_file_contains "verify-nova-compute-image job defined" "$WORKFLOW" "verify-nova-compute-image:"
 }
 
 # --- verify-base-images job depends on build-base-images ---
@@ -359,6 +362,119 @@ test_ovn_jobs() {
   verify_runners=$(yq_raw '.jobs["verify-ovn-image"]["strategy"]["matrix"]["runner"][]' "$WORKFLOW" || true)
   assert_contains "verify-ovn-image verifies on an amd64 runner" "$verify_runners" "ubuntu-latest"
   assert_contains "verify-ovn-image verifies on an arm64 runner" "$verify_runners" "ubuntu-24.04-arm"
+}
+
+# --- nova-compute build/merge/verify job structure ---
+test_nova_compute_jobs() {
+  echo "Test: nova-compute job structure"
+
+  local needs
+  needs=$(yq_raw '.jobs["build-nova-compute-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "build-nova-compute-image needs generate-matrix" "$needs" "generate-matrix"
+  assert_contains "build-nova-compute-image needs merge-base-images" "$needs" "merge-base-images"
+  assert_contains "build-nova-compute-image needs verify-base-images" "$needs" "verify-base-images"
+
+  # The legs are the nova pairs that survived SERVICES; an empty release list
+  # skips the job instead of failing it on an empty matrix.
+  local build_if build_matrix
+  build_if=$(yq_raw '.jobs["build-nova-compute-image"]["if"]' "$WORKFLOW" || echo "null")
+  assert_contains "build job skips on an empty release list" "$build_if" "nova-compute-releases != '[]'"
+  build_matrix=$(yq_raw '.jobs["build-nova-compute-image"]["strategy"]["matrix"]' "$WORKFLOW" || echo "null")
+  assert_contains "build job matrix is nova-compute-build-matrix" "$build_matrix" "nova-compute-build-matrix"
+
+  local step='.jobs["build-nova-compute-image"]["steps"][] | select(.id == "build-nova-compute")'
+  local context build_contexts verify_script
+  context=$(yq_raw "$step | .with[\"context\"]" "$WORKFLOW" || echo "null")
+  assert_eq "build step builds images/nova-compute" "images/nova-compute" "$context"
+  build_contexts=$(yq_raw "$step | .with[\"build-contexts\"]" "$WORKFLOW" || echo "null")
+  assert_contains "build step takes nova's source tree" "$build_contexts" "nova=src/nova"
+  verify_script=$(yq_raw "$step | .with[\"verify-script\"]" "$WORKFLOW" || echo "null")
+  assert_contains "build step wires the compute verify script" \
+    "$verify_script" "tests/container-images/verify_nova_compute.sh"
+  # The contract script's test 2 cannot find the release from a nova built
+  # from a branch or SHA pin, so both jobs name it. build-push-image runs the
+  # script with the job's environment.
+  local build_release verify_release
+  build_release=$(yq_raw '.jobs["build-nova-compute-image"]["env"]["NOVA_COMPUTE_RELEASE"]' "$WORKFLOW" || echo "null")
+  assert_eq "build job names the release for the contract script" '${{ matrix.release }}' "$build_release"
+  verify_release=$(yq_raw '.jobs["verify-nova-compute-image"]["steps"][] | select(.name == "Pull and verify compute image") | .env["NOVA_COMPUTE_RELEASE"]' "$WORKFLOW" || echo "null")
+  assert_eq "verify job names the release for the contract script" '${{ matrix.release }}' "$verify_release"
+
+  # nova's version and patch count under the nova-compute name.
+  local tags_service tags_image
+  tags_service=$(yq_raw '.jobs["build-nova-compute-image"]["steps"][] | select(.id == "tags") | .with["service"]' "$WORKFLOW" || echo "null")
+  tags_image=$(yq_raw '.jobs["build-nova-compute-image"]["steps"][] | select(.id == "tags") | .with["image"]' "$WORKFLOW" || echo "null")
+  assert_eq "tags derive from the nova service" "nova" "$tags_service"
+  assert_eq "tags name the nova-compute image" "nova-compute" "$tags_image"
+  # Without the image name the merge job would tag the compute manifest as
+  # ghcr.io/<owner>/nova, over the control-plane image's identical composite
+  # tag, so the merge and verify jobs have to name it as well.
+  local job
+  for job in merge-nova-compute-image verify-nova-compute-image; do
+    tags_image=$(yq_raw ".jobs[\"$job\"][\"steps\"][] | select(.id == \"tags\") | .with[\"image\"]" "$WORKFLOW" || echo "null")
+    assert_eq "$job names the nova-compute image" "nova-compute" "$tags_image"
+  done
+  # The input reaches the script only through this env line; without it
+  # IMAGE_NAME is empty and the fallback below names the image nova.
+  local env_image
+  env_image=$(yq_raw '.runs.steps[] | select(.id == "run") | .env["IMAGE_NAME"]' "$ACTION_DERIVE_TAGS" || echo "null")
+  assert_eq "derive-service-tags passes the image input to the script" '${{ inputs.image }}' "$env_image"
+  # Without the fallback every existing caller, which passes no image, would
+  # publish under an empty name.
+  assert_file_contains "derive-service-tags falls back to the service name" \
+    "$ACTION_DERIVE_TAGS" 'IMAGE_NAME:-${MATRIX_SERVICE}'
+
+  local lint_matrix
+  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
+  assert_contains "lint-dockerfiles covers the nova-compute Dockerfile" \
+    "$lint_matrix" "images/nova-compute/Dockerfile"
+
+  # Merge job: PR-skipped, needs the build, merges only compute digests.
+  local merge_if merge_needs merge_pattern merge_tags_run
+  merge_if=$(yq_raw '.jobs["merge-nova-compute-image"]["if"]' "$WORKFLOW" || echo "null")
+  assert_contains "merge job skipped on PRs" "$merge_if" "github.event_name != 'pull_request'"
+  merge_needs=$(yq_raw '.jobs["merge-nova-compute-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "merge job needs the build job" "$merge_needs" "build-nova-compute-image"
+  merge_pattern=$(yq_raw '.jobs["merge-nova-compute-image"]["steps"][] | select(.id == "merge-nova-compute") | .with["artifact-pattern"]' "$WORKFLOW" || echo "null")
+  assert_contains "merge step takes the compute digests" "$merge_pattern" "digests-nova-compute-"
+  merge_tags_run=$(yq_raw '.jobs["merge-nova-compute-image"]["steps"][] | select(.id == "compute-tags") | .run' "$WORKFLOW" || echo "null")
+  assert_contains "version and release tags are main-only" "$merge_tags_run" '"${GITHUB_REF_NAME}" == "main"'
+  # Both releases merge for the same commit. Under one category the later
+  # SARIF upload replaces the earlier one and closes its alerts as fixed.
+  local merge_category merge_sbom
+  merge_category=$(yq_raw '.jobs["merge-nova-compute-image"]["steps"][] | select(.id == "merge-nova-compute") | .with["grype-category"]' "$WORKFLOW" || echo "null")
+  assert_eq "merge step scans each release under its own category" \
+    'grype-nova-compute-${{ matrix.release }}' "$merge_category"
+  merge_sbom=$(yq_raw '.jobs["merge-nova-compute-image"]["steps"][] | select(.id == "merge-nova-compute") | .with["sbom-output-file"]' "$WORKFLOW" || echo "null")
+  assert_eq "merge step writes one SBOM per release" \
+    'sbom-nova-compute-${{ matrix.release }}.cyclonedx.json' "$merge_sbom"
+
+  # Post-merge verify job: read-only, on both architectures. Pull requests
+  # build amd64 only, so this is where the arm64 binding first runs.
+  local verify_needs verify_pkg_perms verify_contents_perms verify_runners
+  verify_needs=$(yq_raw '.jobs["verify-nova-compute-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "verify job needs the merge job" "$verify_needs" "merge-nova-compute-image"
+  verify_pkg_perms=$(yq_raw '.jobs["verify-nova-compute-image"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
+  assert_eq "verify job has packages: read" "read" "$verify_pkg_perms"
+  verify_contents_perms=$(yq_raw '.jobs["verify-nova-compute-image"]["permissions"]["contents"]' "$WORKFLOW" || echo "null")
+  assert_eq "verify job has contents: read (for checkout)" "read" "$verify_contents_perms"
+  verify_runners=$(yq_raw '.jobs["verify-nova-compute-image"]["strategy"]["matrix"]["runner"][]' "$WORKFLOW" || true)
+  assert_contains "verify job verifies on an amd64 runner" "$verify_runners" "ubuntu-latest"
+  assert_contains "verify job verifies on an arm64 runner" "$verify_runners" "ubuntu-24.04-arm"
+  # A fixed ubuntu-latest runner would pull the amd64 variant on both legs.
+  local verify_runs_on
+  verify_runs_on=$(yq_raw '.jobs["verify-nova-compute-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+  assert_contains "verify job runs on the matrix runner" "$verify_runs_on" "matrix.runner"
+
+  local outputs
+  outputs=$(yq_raw '.jobs["generate-matrix"]["outputs"] | keys | .[]' "$WORKFLOW" || true)
+  assert_contains "generate-matrix exports nova-compute-releases" "$outputs" "nova-compute-releases"
+  assert_contains "generate-matrix exports nova-compute-build-matrix" "$outputs" "nova-compute-build-matrix"
+
+  # A compute-only change resolves nova in the changes job.
+  assert_file_contains "svc_nova covers images/nova-compute/" "$WORKFLOW" "'images/nova-compute/\*\*'"
+  assert_file_contains "svc_nova covers the compute verify script" \
+    "$WORKFLOW" "'tests/container-images/verify_nova_compute.sh'"
 }
 
 # --- build-service-images depends on build-base-images and verify-base-images ---
@@ -1936,11 +2052,11 @@ test_security_events_permission_scoped_to_merge_jobs() {
   # SARIF (the composite skips the upload on pull requests), so they hold no
   # security-events permission. The merge jobs upload on push and keep it.
   local job perm
-  for job in build-tempest build-keystone-federation-proxy build-backup-shifter build-ovn build-service-images; do
+  for job in build-tempest build-keystone-federation-proxy build-backup-shifter build-ovn build-service-images build-nova-compute-image; do
     perm=$(yq_raw ".jobs[\"$job\"][\"permissions\"][\"security-events\"]" "$WORKFLOW" || echo "null")
     assert_eq "$job has no security-events permission" "null" "$perm"
   done
-  for job in merge-base-images merge-tempest-image merge-keystone-federation-proxy-image merge-backup-shifter-image merge-ovn-image merge-service-images; do
+  for job in merge-base-images merge-tempest-image merge-keystone-federation-proxy-image merge-backup-shifter-image merge-ovn-image merge-service-images merge-nova-compute-image; do
     perm=$(yq_raw ".jobs[\"$job\"][\"permissions\"][\"security-events\"]" "$WORKFLOW" || echo "null")
     assert_eq "$job has security-events: write" "write" "$perm"
   done
@@ -2005,6 +2121,10 @@ test_verify_jobs_no_security_events_permission() {
   local verify_ovn_perm
   verify_ovn_perm=$(yq_raw '.jobs["verify-ovn-image"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
   assert_eq "verify-ovn-image has no security-events permission" "null" "$verify_ovn_perm"
+
+  local verify_nova_compute_perm
+  verify_nova_compute_perm=$(yq_raw '.jobs["verify-nova-compute-image"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
+  assert_eq "verify-nova-compute-image has no security-events permission" "null" "$verify_nova_compute_perm"
 }
 
 # --- Grype scan output format is sarif ---
@@ -2060,6 +2180,8 @@ echo ""
 test_backup_shifter_jobs
 echo ""
 test_ovn_jobs
+echo ""
+test_nova_compute_jobs
 echo ""
 test_service_images_depend_on_base
 echo ""
