@@ -94,9 +94,9 @@ type serverResourcesLister interface {
 //
 // The three Cinder kinds are listed for the same sibling reason: the
 // cinder-operator is installed only for a ControlPlane that runs the
-// block-storage service. The Nova kind is listed for that reason once more: the
-// nova-operator is installed only for a ControlPlane that runs the compute
-// service.
+// block-storage service. The two Nova kinds are listed for that reason once
+// more: the nova-operator is installed only for a ControlPlane that runs the
+// compute service, and an older nova-operator serves Nova without NovaCompute.
 //
 // The RabbitmqCluster kind is listed for a reason of its own: messaging is opt-in,
 // so spec.infrastructure.messaging is never materialized by defaulting and a
@@ -128,6 +128,7 @@ func optionalWatchObjects() []client.Object {
 		&cinderv1alpha1.CinderBackend{},
 		&cinderv1alpha1.CinderBackupBackend{},
 		&novav1alpha1.Nova{},
+		&novav1alpha1.NovaCompute{},
 		&ovnv1alpha1.OVNCentral{},
 	}
 }
