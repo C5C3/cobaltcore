@@ -295,6 +295,33 @@ The image stays config-free: the glance-operator mounts `glance-api.conf`,
 | --- | --- |
 | `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
 
+**Source patch:**
+`patches/glance/2025.2/0001-normalize-scheme-prefixed-s3-host-in-location-repair.patch`
+and its byte-identical 2026.1 twin strip the `http://` or `https://` prefix of
+`s3_store_host` in `_construct_s3_url` (`glance/common/store_utils.py`).
+Upstream's S3 credential-rotation repair, `_update_s3_location_and_store_id`,
+compares every S3 image location against a URL that function builds from the
+raw option value. The location URLs the S3 driver stores carry only the bare
+authority, because `Store._set_url_prefix` and `StoreLocation` strip the prefix,
+so the two never match when the option has one. The glance-operator always
+renders a prefix: the GlanceBackend CRD requires `^https?://` on `spec.s3.host`,
+and boto3 needs the scheme in `endpoint_url` for a non-AWS endpoint such as
+Garage. Unpatched, every API request that touches an S3 image logs
+"S3 URL mismatch for image ..., updating URL" and rewrites the location row,
+and a genuine credential rotation cannot be told apart from the permanent false
+positive. The patch strips the prefix the same way the store does. The function
+is identical at 31.1.0 and 32.0.0 while the rest of the file is not, so the hunk
+applies to 32.0.0 at an offset. No upstream test pins the old behaviour:
+`S3CredentialUpdateTestCase` in `glance/tests/unit/common/test_utils.py` gives
+every mocked store the bare host `s3.amazonaws.com`, and the single-store S3
+tests in `glance/tests/unit/test_store_image.py` never reach
+`_construct_s3_url`. The patch therefore carries no test hunk.
+`tests/container-images/verify_glance.sh` Test 12 drives the real repair against
+the built image. A location the driver's `StoreLocation` wrote under an
+`http://` and an `https://` host has to stay unchanged while the credentials
+match, and still has to be rewritten once the access key rotates. Upstream
+status: not yet proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
@@ -308,6 +335,7 @@ runs its suite under stestr (the default path, as for keystone).
 **Image contract check:** `tests/container-images/verify_glance.sh` is the hard
 gate — it verifies the CLIs, importability, the uWSGI entry script, the S3 store
 driver's boto3 resolution, non-root execution, and the absence of build tools.
+Its Test 12 fails against an image built without the source patch above.
 
 ### placement
 

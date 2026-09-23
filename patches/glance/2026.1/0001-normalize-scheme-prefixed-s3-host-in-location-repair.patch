@@ -16,8 +16,25 @@ indistinguishable from the permanent false positive.
 Strip the scheme prefix exactly the way Store._url_prefix does before
 building the comparison URL.
 
+No upstream test pins the old behaviour. S3CredentialUpdateTestCase in
+glance/tests/unit/common/test_utils.py, test_construct_s3_url included,
+gives every mocked store the bare host s3.amazonaws.com, and the
+single-store S3 tests in glance/tests/unit/test_store_image.py go
+through glance/location.py, which never calls _construct_s3_url. The
+two branches the patch adds fire only on a scheme-prefixed host, so the
+whole class stays green on the patched tree (15 tests at 31.1.0, 18 at
+32.0.0). The patch therefore carries no test hunk.
+
+tests/container-images/verify_glance.sh drives
+_update_s3_location_and_store_id against the built image: a location
+the S3 driver's StoreLocation wrote under an http:// and an https://
+host is left alone while the credentials match, and is still rewritten
+once the access key rotates.
+
 Applies to glance 31.1.0 (2025.2) and 32.0.0 (2026.1); the function is
-identical in both.
+identical in both. store_utils.py is not (32.0.0 rewrote
+_update_s3_url), so the hunk, cut from 31.1.0, applies to 32.0.0 at an
+offset of 42 lines.
 
 Upstream status: not yet proposed.
 
