@@ -208,9 +208,7 @@ gets its own tenant there.
 
 The key-manager row is in the catalog once `BarbicanReady` is `True`, and the
 public endpoint is the gateway URL from step 1, so the round-trip runs from the
-host. Export the admin credentials the way the tutorial's Verify step does, and
-leave `OS_REGION_NAME` unset: the projected K-ORC catalog rows carry no region,
-so a region-scoped lookup finds no key-manager endpoint.
+host. Export the admin credentials the way the tutorial's Verify step does.
 
 ```bash
 export OS_AUTH_URL=https://keystone.127-0-0-1.nip.io:8443/v3

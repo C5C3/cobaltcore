@@ -1079,12 +1079,44 @@ func ksConvergedCatalog(ks *c5c3v1alpha1.KeystoneService) []client.Object {
 		},
 		Status: orcv1alpha1.ServiceStatus{Conditions: availableImportConditions(), ID: ptr.To("ks-service-id")},
 	}
-	return []client.Object{service}
+	region := &orcv1alpha1.Region{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            keystoneServiceCatalogRegionRef(ks),
+			Namespace:       ks.Namespace,
+			OwnerReferences: ownedByKS(ks),
+		},
+		Status: orcv1alpha1.RegionStatus{Conditions: availableImportConditions(), ID: ptr.To("RegionOne")},
+	}
+	return []client.Object{service, region}
 }
 
 // ksUnknownStoreRef selects a store kind IsStoreRefReady refuses to resolve,
 // which is how a store READ failure is provoked without an interceptor.
 var ksUnknownStoreRef = commonv1.SecretStoreRefSpec{Kind: "NotAStoreKind", Name: "openbao"}
+
+// The webhook admits a role-less metadata.name up to 253 - 43 bytes, charging
+// every CR the discriminator of its password Secret (keystoneServiceChildNameOverhead
+// in api/v1alpha1/keystoneservice_webhook.go). A catalog child with a longer
+// discriminator would be rejected by the apiserver on a CR admission accepted.
+func TestKeystoneService_CatalogChildNamesFitTheAdmittedNameBudget(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := keystoneServiceCR()
+	ks.Name = strings.Repeat("a", 253-43)
+
+	names := []string{keystoneServiceCatalogServiceRef(ks), keystoneServiceCatalogRegionRef(ks)}
+	for _, iface := range []c5c3v1alpha1.ExternalEndpointType{
+		c5c3v1alpha1.ExternalEndpointTypePublic,
+		c5c3v1alpha1.ExternalEndpointTypeInternal,
+		c5c3v1alpha1.ExternalEndpointTypeAdmin,
+	} {
+		names = append(names, keystoneServiceCatalogEndpointRef(ks, iface),
+			keystoneServiceLegacyCatalogEndpointRef(ks, iface))
+	}
+	for _, name := range names {
+		g.Expect(len(name)).To(BeNumerically("<=", 253), "child %q exceeds the object-name limit", name)
+	}
+}
 
 // --- manager wiring: extractor and watch mappers ---
 

@@ -21,8 +21,9 @@ controller-manager bootstrap both reconcilers reuse, see
 Two properties shape everything below.
 
 **K-ORC is the single writer of OpenStack state.** The reconciler adds no
-identity-API client of its own; it projects K-ORC CRs (Service, Endpoint, User,
-Project, Domain, Role, RoleAssignment) and reads their conditions back. That is
+identity-API client of its own; it projects K-ORC CRs (Service, Endpoint,
+Region, User, Project, Domain, Role, RoleAssignment) and reads their conditions
+back. That is
 why a registration works identically against a Managed and an External
 Keystone, and why every wait condition ultimately reports what K-ORC reported.
 
@@ -69,7 +70,7 @@ that bypassed admission) indexes nothing, not a dangling key.
 | Resource | Watch Type | Effect |
 | --- | --- | --- |
 | `KeystoneService` | `For()` | Filtered by `watch.CRUpdatePredicate()` so the controller's own status writes do not re-wake it |
-| K-ORC `Service`, `Endpoint`, `User`, `Domain`, `Project`, `Role`, `RoleAssignment` | `Watches()` | Mapped back to the owning CR by the ownership labels every child carries (`keystoneServiceChildToRequest`). These children live in the ControlPlane's namespace, so a registration from any other namespace can hold no owner reference to them and `Owns()` would miss it; one label mapper per kind covers both placements |
+| K-ORC `Service`, `Endpoint`, `Region`, `User`, `Domain`, `Project`, `Role`, `RoleAssignment` | `Watches()` | Mapped back to the owning CR by the ownership labels every child carries (`keystoneServiceChildToRequest`). These children live in the ControlPlane's namespace, so a registration from any other namespace can hold no owner reference to them and `Owns()` would miss it; one label mapper per kind covers both placements |
 | `Secret` | `Watches()` | Same label mapper: it reaches the generation-scoped password Secret beside the User and the assembled source Secret beside the consumer |
 | `ExternalSecret`, `PushSecret` | `Owns()` | The delivery objects stay in the CR's own namespace, where a controller reference is legal and the garbage collector reaps them |
 | `ControlPlane` | `Watches()` | Index-backed fan-out (`controlPlaneToKeystoneServicesMapper`) with **no** generation predicate: the `AdminCredentialReady` flip the shared gate waits on and the allowlist edits that admit or de-list a namespace both arrive as ControlPlane updates, and both must re-enqueue at watch latency rather than at the next poll |
@@ -171,9 +172,9 @@ label. See [Metrics Instrumentation](#metrics-instrumentation).
 `sweepChildren` removes every child this CR owns that the current spec no
 longer declares (a removed role, a removed endpoint interface, a whole removed
 block) and reports what it swept, split by the block that owns the kind. The
-split is by kind, which is exact here: Service and Endpoint are only ever
-catalog children, and User / Project / Domain / Role / RoleAssignment and the
-delivery objects only ever account children.
+split is by kind, which is exact here: Service, Endpoint and Region are only
+ever catalog children, and User / Project / Domain / Role / RoleAssignment and
+the delivery objects only ever account children.
 
 A swept name is reported on the pass that issued its Delete, not once the
 object is gone: a K-ORC child stays Terminating behind its finalizer while the
@@ -192,8 +193,9 @@ references.
 
 ## Catalog Projection
 
-`ensureCatalog` projects one managed K-ORC Service for the catalog row plus one
-managed Endpoint per declared interface.
+`ensureCatalog` projects one managed K-ORC Service for the catalog row, an
+unmanaged Region import, and one managed Endpoint per declared interface,
+registered in that region.
 
 It is mode-independent, and unlike the ControlPlane's own catalog
 reconciler. That one imports instead of creating in External mode, because the
@@ -208,11 +210,19 @@ a Managed and an External Keystone alike.
    adopt consent, or a managed Service the operator already owns, proceeds.
    The probe covers the **service row only**: an endpoint is scoped to its
    service, so once the row is ours the endpoints under it are ours too.
-2. **Projection.** The Service and the Endpoints are pure projections of the
-   spec, applied through Server-Side Apply.
-3. **Terminal errors.** The Service's terminal error is reported before the
-   Endpoints', so the root stuck dependency surfaces instead of an Endpoint
-   merely blocked behind it. Either gives `CatalogFailed`: K-ORC has stopped
+2. **Projection.** The Service, the Region import and the Endpoints are pure
+   projections of the spec, applied through Server-Side Apply. The import
+   resolves the ControlPlane's `spec.region` (the region K-ORC's `clouds.yaml`
+   names), and every Endpoint names it as its `regionRef`. A client that sets
+   `region_name`, as every nova client section and the neutron notifier do,
+   finds only a row registered in that region: keystoneauth skips a region-less
+   one and answers `EndpointNotFound`. The region is imported per registration
+   rather than referenced from the plane's own adopted `Region`, because K-ORC
+   holds a Region CR while an Endpoint names it, which would tie the plane's
+   teardown to every registration, and an External plane adopts no Region.
+3. **Terminal errors.** The Service's and the Region import's terminal errors
+   are reported before the Endpoints', so the root stuck dependency surfaces
+   instead of an Endpoint merely blocked behind it. Either gives `CatalogFailed`: K-ORC has stopped
    retrying, so a bounded wait would never resolve. A latched transport failure
    is cleared ahead of this check, so K-ORC retries and the block reports
    `WaitingForCatalog`; a clear that fails gives `TransportErrorRetryFailed`.
@@ -220,7 +230,17 @@ a Managed and an External Keystone alike.
 4. **Availability.** Registering the CRs only instructs K-ORC to create the
    rows. The block reports ready only once every child is Available for its
    current generation, or a failing registration would read Ready while the
-   catalog stayed empty.
+   catalog stayed empty. An unresolved Region import reports
+   `WaitingForCatalog` naming the region.
+5. **Retiring region-less rows.** Earlier versions registered each interface
+   without a region, under the discriminator `endpoint-<interface>`. K-ORC
+   neither updates an endpoint's region nor accepts a changed `regionRef`, so
+   the regioned row is a new CR, `region-ep-<interface>`. The region-less CR
+   stays until its replacement is Available, and only then does
+   `retireLegacyCatalogEndpoints` delete it, so the catalog never goes without
+   the interface. The block holds `WaitingForCatalog` until K-ORC has removed
+   the old row. The sweep keeps a declared interface's region-less CR for
+   exactly that hand-over and removes an undeclared one's at once.
 
 ## Account Projection
 
@@ -432,7 +452,9 @@ registration it belongs to.
 | Discriminator | Child |
 | --- | --- |
 | `service`, `service-probe` | Catalog Service and its collision probe |
-| `endpoint-<interface>` | One Endpoint per declared interface |
+| `region` | Import of the ControlPlane's Keystone region the endpoints are registered in |
+| `region-ep-<interface>` | One Endpoint per declared interface, in that region |
+| `endpoint-<interface>` | The region-less Endpoint an earlier version registered; retired once its `region-ep-<interface>` replacement is Available |
 | `user`, `user-probe` | Managed User and its collision probe |
 | `project`, `project-probe` | Project and its collision probe |
 | `domain` | Domain import, when the effective domain is not the plane's admin domain |
@@ -455,8 +477,8 @@ limit.
 `reconcileDelete` runs the `c5c3.io/keystoneservice-teardown` finalizer. It
 reuses the same `sweepChildren` the per-pass prune uses, passing an empty keep
 set so everything goes, and issues the deletes dependents-first: assignments
-before roles, endpoints before the service they reference, both before the user
-and project they bind. K-ORC enforces its own ordering through finalizers, but
+before roles, endpoints before the region import and the service they
+reference, all before the user and project they bind. K-ORC enforces its own ordering through finalizers, but
 issuing them in dependency order keeps the intent legible and avoids a
 guaranteed retry.
 

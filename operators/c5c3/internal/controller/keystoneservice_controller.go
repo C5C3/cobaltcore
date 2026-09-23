@@ -485,7 +485,27 @@ func keystoneServiceCatalogServiceProbeRef(ks *c5c3v1alpha1.KeystoneService) str
 	return keystoneServiceChildPrefix(ks) + "service-probe"
 }
 
+func keystoneServiceCatalogRegionRef(ks *c5c3v1alpha1.KeystoneService) string {
+	return keystoneServiceChildPrefix(ks) + "region"
+}
+
+// keystoneServiceCatalogEndpointRef names the Endpoint CR registering one
+// interface in the ControlPlane's region. The "region-ep-" discriminator is what
+// moves an upgraded registration onto a regioned row: the region-less rows
+// earlier versions registered sit under keystoneServiceLegacyCatalogEndpointRef,
+// and K-ORC neither updates an endpoint's region nor accepts a changed regionRef,
+// so the regioned row has to be a new CR (see retireLegacyCatalogEndpoints).
+//
+// It is abbreviated because the webhook's metadata.name bound charges every CR
+// 20 bytes of discriminator (the "password-v<N>" Secret), and
+// "region-ep-internal" is 18 of them.
 func keystoneServiceCatalogEndpointRef(ks *c5c3v1alpha1.KeystoneService, iface c5c3v1alpha1.ExternalEndpointType) string {
+	return keystoneServiceChildPrefix(ks) + "region-ep-" + string(iface)
+}
+
+// keystoneServiceLegacyCatalogEndpointRef names the region-less Endpoint CR an
+// earlier version registered for the interface.
+func keystoneServiceLegacyCatalogEndpointRef(ks *c5c3v1alpha1.KeystoneService, iface c5c3v1alpha1.ExternalEndpointType) string {
 	return keystoneServiceChildPrefix(ks) + "endpoint-" + string(iface)
 }
 
@@ -690,8 +710,13 @@ func keystoneServiceDeclaredChildNames(ks *c5c3v1alpha1.KeystoneService) map[str
 	if ks.Spec.Catalog != nil {
 		keep[keystoneServiceCatalogServiceRef(ks)] = true
 		keep[keystoneServiceCatalogServiceProbeRef(ks)] = true
+		keep[keystoneServiceCatalogRegionRef(ks)] = true
 		for _, ep := range ks.Spec.Catalog.Endpoints {
 			keep[keystoneServiceCatalogEndpointRef(ks, ep.Interface)] = true
+			// A declared interface's region-less row stays until its regioned
+			// replacement is Available; ensureCatalog retires it then, so the
+			// catalog never goes without the interface in between.
+			keep[keystoneServiceLegacyCatalogEndpointRef(ks, ep.Interface)] = true
 		}
 	}
 	if ks.Spec.Account != nil {
@@ -716,14 +741,14 @@ func keystoneServiceDeclaredChildNames(ks *c5c3v1alpha1.KeystoneService) map[str
 //
 // One sweep serves both callers: the per-pass prune passes the declared names,
 // and the teardown passes nothing so everything goes. The split is by KIND rather
-// than by name, which is exact here — Service and Endpoint are only ever catalog
-// children, and User / Project / Domain / Role / RoleAssignment and the delivery
-// objects are only ever account children — so a pending removal always holds the
-// condition of the block that actually owns it.
+// than by name, which is exact here — Service, Endpoint and Region are only ever
+// catalog children, and User / Project / Domain / Role / RoleAssignment and the
+// delivery objects are only ever account children — so a pending removal always
+// holds the condition of the block that actually owns it.
 //
 // Deletion runs dependents-first (assignments before roles, endpoints before the
-// service they reference, both before the user and project they bind). K-ORC
-// enforces its own ordering through finalizers, but issuing the deletes in
+// region and service they reference, all before the user and project they bind).
+// K-ORC enforces its own ordering through finalizers, but issuing the deletes in
 // dependency order keeps the intent legible and avoids a guaranteed retry.
 //
 // A swept name is reported on the pass that issued its Delete, not once the
@@ -790,6 +815,15 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 	}
 	for i := range endpoints.Items {
 		if err := sweep(&endpoints.Items[i], &catalogSwept); err != nil {
+			return nil, nil, err
+		}
+	}
+	var regions orcv1alpha1.RegionList
+	if err := r.List(ctx, &regions, client.InNamespace(childNS)); err != nil {
+		return nil, nil, fmt.Errorf("listing registration Regions: %w", err)
+	}
+	for i := range regions.Items {
+		if err := sweep(&regions.Items[i], &catalogSwept); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -1132,7 +1166,7 @@ func (r *KeystoneServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 //
 // The watch surface, beyond the CR itself:
 //   - Owns: every same-namespace child the projections create with a controller
-//     reference — the seven K-ORC kinds, the ESO delivery pair, and the
+//     reference — the eight K-ORC kinds, the ESO delivery pair, and the
 //     operator-written password/source Secrets.
 //   - ControlPlane, WITHOUT a predicate: the AdminCredentialReady flip the
 //     shared gate waits on and the allowlist edits that admit or de-list a
@@ -1159,6 +1193,7 @@ func (r *KeystoneServiceReconciler) setupWithOptions(mgr ctrl.Manager, opts crco
 		// its owner reference, so one leg per kind covers every registration.
 		Watches(&orcv1alpha1.Service{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
+		Watches(&orcv1alpha1.Region{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.User{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.Project{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).

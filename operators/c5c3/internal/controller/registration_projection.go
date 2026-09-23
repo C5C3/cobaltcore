@@ -391,22 +391,43 @@ func managedCatalogServiceChild(name, namespace, serviceType, serviceName string
 	}
 }
 
+// unmanagedRegionImport builds the Region import a registration's endpoints name
+// as their regionRef. Reading a region never mutates it, so the import rides the
+// spec's own clouds.yaml, like a role import.
+func unmanagedRegionImport(name, namespace, region string, credRef orcv1alpha1.CloudCredentialsReference) *orcv1alpha1.Region {
+	return &orcv1alpha1.Region{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.RegionSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			Import: &orcv1alpha1.RegionImport{
+				Filter: &orcv1alpha1.RegionFilter{Name: ptr.To(orcv1alpha1.OpenStackName(region))},
+			},
+		},
+	}
+}
+
 // managedCatalogEndpointChild builds the managed Endpoint CR for one interface of
-// a catalog row, pointing at that row's Service CR.
+// a catalog row, pointing at that row's Service CR and, when regionRef is not
+// empty, at the Region CR whose Keystone region the row is registered in.
 func managedCatalogEndpointChild(
-	name, namespace, iface, url, serviceRef string, credRef orcv1alpha1.CloudCredentialsReference,
+	name, namespace, iface, url, serviceRef, regionRef string, credRef orcv1alpha1.CloudCredentialsReference,
 ) *orcv1alpha1.Endpoint {
+	resource := &orcv1alpha1.EndpointResourceSpec{
+		Interface:  iface,
+		URL:        url,
+		ServiceRef: orcv1alpha1.KubernetesNameRef(serviceRef),
+		Enabled:    ptr.To(true),
+	}
+	if regionRef != "" {
+		resource.RegionRef = ptr.To(orcv1alpha1.KubernetesNameRef(regionRef))
+	}
 	return &orcv1alpha1.Endpoint{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: orcv1alpha1.EndpointSpec{
 			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
 			CloudCredentialsRef: credRef,
-			Resource: &orcv1alpha1.EndpointResourceSpec{
-				Interface:  iface,
-				URL:        url,
-				ServiceRef: orcv1alpha1.KubernetesNameRef(serviceRef),
-				Enabled:    ptr.To(true),
-			},
+			Resource:            resource,
 		},
 	}
 }

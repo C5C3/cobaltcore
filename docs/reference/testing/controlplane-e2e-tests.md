@@ -286,9 +286,10 @@ paths any other chassis or metadata agent would share.
    clouds.yaml, proving the minted, pushed, re-materialised application
    credential actually authenticates. The same Job greps the catalog for a
    placement row and calls `openstack resource class list` through the
-   projected placement endpoint. That call reads a copy of clouds.yaml with the
-   `region_name` line stripped, because the projected catalog rows carry no
-   region. It reads the region description back with `openstack --os-cloud
+   projected placement endpoint. That call and every round trip after it
+   resolve their endpoints with the `region_name` the clouds.yaml pins, the
+   lookup nova's client sections make, so each projected row has to sit in
+   `spec.region`. It reads the region description back with `openstack --os-cloud
    admin region show RegionOne`, and the suite pins the Job's `OK: region
    description round-trip` line, so the value `spec.regionDescription` carries
    has to have reached Keystone. It closes with the network round trip:

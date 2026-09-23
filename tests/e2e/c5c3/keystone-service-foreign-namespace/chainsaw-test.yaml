@@ -91,7 +91,7 @@ spec:
           CP_NS_LABEL=c5c3.io/controlplane-namespace
           KS_SELECTOR="c5c3.io/keystoneservice-name=${KS_NAME},c5c3.io/keystoneservice-namespace=${TENANT_NS}"
           OUTSIDER_SELECTOR="c5c3.io/keystoneservice-name=${OUTSIDER_KS},c5c3.io/keystoneservice-namespace=${OUTSIDER_NS}"
-          KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud
+          KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud
 
           REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
           skip_or_fail() { # <reason...>
@@ -364,7 +364,7 @@ spec:
           # K-ORC reads the admin clouds.yaml from the child's OWN namespace, so
           # the children belong to the plane's namespace and are marked by labels
           # rather than an owner reference, which cannot cross a namespace.
-          assert_eq "the K-ORC children sit in the plane's namespace" "7" \
+          assert_eq "the K-ORC children sit in the plane's namespace" "8" \
             "$(count_of "${KORC_KINDS}" "${CP_NS}" "${KS_SELECTOR}")"
           assert_eq "no K-ORC child is left where it could not authenticate" "0" \
             "$(count_of "${KORC_KINDS}" "${TENANT_NS}")"
@@ -643,7 +643,7 @@ spec:
           # per-tenant store, then wait the plane out. When this ordering loses
           # a race, the operators' bounded stall breakers still converge the
           # namespace — inside chainsaw's cleanup budget instead of past it.
-          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
           DRAIN_DEADLINE=$(( $(date +%s) + 240 ))
           while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do
             if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then

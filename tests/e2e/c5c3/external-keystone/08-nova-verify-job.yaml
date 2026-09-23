@@ -10,9 +10,9 @@
 # nova` fails unless the registered compute row reached the catalog the token
 # carries.
 #
-# K-ORC endpoints carry no region, so the registered rows land with an empty one.
-# The identity calls here resolve anyway, through the RegionOne identity endpoint
-# keystone-manage bootstrap created in the fixture.
+# The registered rows land in the plane's spec.region (RegionOne), which the
+# registration imports from the fixture: keystone-manage bootstrap created that
+# region together with the fixture's identity endpoints.
 #
 # `catalog show nova` matches the catalog service by name, and that name defaults
 # to the CR name. A catalog.serviceName set on the fixture later has to be

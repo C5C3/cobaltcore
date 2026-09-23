@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
@@ -223,6 +224,163 @@ func TestKSCatalog_EndpointsAreProjectedPerInterface(t *testing.T) {
 	g.Expect(ks.Status.Catalog.Endpoints).To(HaveLen(2))
 	g.Expect(ks.Status.Catalog.Endpoints[0].Interface).To(Equal(c5c3v1alpha1.ExternalEndpointTypePublic))
 	g.Expect(ks.Status.Catalog.Endpoints[0].ID).To(Equal("ep-public-id"))
+}
+
+// A client that sets region_name (every nova client section, the neutron
+// notifier) resolves only a row registered in that region: keystoneauth skips a
+// region-less row and answers EndpointNotFound.
+func TestKSCatalog_EndpointsAreRegisteredInTheControlPlaneRegion(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	cp.Spec.Region = "RegionTwo"
+	ks := ksWithCatalog()
+	ks.Spec.Catalog.Endpoints = []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+		{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://image.example/public"},
+		{Interface: c5c3v1alpha1.ExternalEndpointTypeInternal, URL: "http://glance.svc:9292"},
+	}
+
+	seeded := append(ksConvergedCatalog(ks),
+		ksAvailableEndpoint(ks, c5c3v1alpha1.ExternalEndpointTypePublic, "ep-public-id"),
+		ksAvailableEndpoint(ks, c5c3v1alpha1.ExternalEndpointTypeInternal, "ep-internal-id"))
+
+	cond, c := runKSCatalog(t, ks, cp, seeded...)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Message).To(ContainSubstring(`in region "RegionTwo"`))
+
+	region := &orcv1alpha1.Region{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: keystoneServiceCatalogRegionRef(ks), Namespace: ks.Namespace,
+	}, region)).To(Succeed())
+	g.Expect(region.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged),
+		"the region belongs to the keystone bootstrap; a registration only reads it")
+	g.Expect(region.Spec.Import).NotTo(BeNil())
+	g.Expect(region.Spec.Import.Filter).NotTo(BeNil())
+	g.Expect(region.Spec.Import.Filter.Name).To(Equal(ptr.To(orcv1alpha1.OpenStackName("RegionTwo"))))
+	credRef, _ := keystoneServiceCredentialRefs(cp)
+	g.Expect(region.Spec.CloudCredentialsRef).To(Equal(credRef))
+
+	for _, iface := range []c5c3v1alpha1.ExternalEndpointType{
+		c5c3v1alpha1.ExternalEndpointTypePublic, c5c3v1alpha1.ExternalEndpointTypeInternal,
+	} {
+		endpoint := &orcv1alpha1.Endpoint{}
+		g.Expect(c.Get(context.Background(), types.NamespacedName{
+			Name: keystoneServiceCatalogEndpointRef(ks, iface), Namespace: ks.Namespace,
+		}, endpoint)).To(Succeed())
+		g.Expect(endpoint.Spec.Resource.RegionRef).To(Equal(ptr.To(orcv1alpha1.KubernetesNameRef(region.Name))),
+			"the %s row must be registered in the plane's region", iface)
+	}
+}
+
+func TestKSCatalog_WaitsWhileTheRegionIsNotResolved(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithCatalog()
+	ks.Spec.Catalog.Endpoints = []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+		{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://image.example/public"},
+	}
+
+	seeded := ksConvergedCatalog(ks)
+	seeded[1].(*orcv1alpha1.Region).Status = orcv1alpha1.RegionStatus{Conditions: pendingImportConditions(time.Minute)}
+	seeded = append(seeded, ksAvailableEndpoint(ks, c5c3v1alpha1.ExternalEndpointTypePublic, "ep-public-id"))
+
+	cond, _ := runKSCatalog(t, ks, cp, seeded...)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+	g.Expect(cond.Message).To(ContainSubstring(`the Keystone region "RegionOne"`))
+}
+
+// ksLegacyEndpoint seeds the region-less row an earlier version registered,
+// holding K-ORC's finalizer the way a live one does.
+func ksLegacyEndpoint(ks *c5c3v1alpha1.KeystoneService, iface c5c3v1alpha1.ExternalEndpointType) *orcv1alpha1.Endpoint {
+	return &orcv1alpha1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            keystoneServiceLegacyCatalogEndpointRef(ks, iface),
+			Namespace:       ks.Namespace,
+			OwnerReferences: ownedByKS(ks),
+			Finalizers:      []string{"openstack.k-orc.cloud/endpoint"},
+		},
+		Status: orcv1alpha1.EndpointStatus{Conditions: availableImportConditions(), ID: ptr.To("legacy-id")},
+	}
+}
+
+// Until the regioned row is Available the region-less one is the only row a
+// client finds, so neither the catalog block nor the sweep may remove it.
+func TestKSCatalog_LegacyEndpointStaysUntilItsReplacementIsAvailable(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithCatalog()
+	ks.Spec.Catalog.Endpoints = []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+		{Interface: c5c3v1alpha1.ExternalEndpointTypeInternal, URL: "http://glance.svc:9292"},
+	}
+	legacyName := keystoneServiceLegacyCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypeInternal)
+
+	cond, c := runKSCatalog(t, ks, cp,
+		append(ksConvergedCatalog(ks), ksLegacyEndpoint(ks, c5c3v1alpha1.ExternalEndpointTypeInternal))...)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Message).To(ContainSubstring(keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypeInternal)))
+
+	legacy := &orcv1alpha1.Endpoint{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: legacyName, Namespace: ks.Namespace}, legacy)).To(Succeed())
+	g.Expect(legacy.DeletionTimestamp).To(BeNil())
+	g.Expect(keystoneServiceDeclaredChildNames(ks)).To(HaveKey(legacyName),
+		"the per-pass sweep must not remove the row the catalog still relies on")
+}
+
+func TestKSCatalog_LegacyEndpointIsRetiredOnceItsReplacementIsAvailable(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithCatalog()
+	ks.Spec.Catalog.Endpoints = []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+		{Interface: c5c3v1alpha1.ExternalEndpointTypeInternal, URL: "http://glance.svc:9292"},
+	}
+	legacyName := keystoneServiceLegacyCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypeInternal)
+
+	cond, c := runKSCatalog(t, ks, cp, append(ksConvergedCatalog(ks),
+		ksAvailableEndpoint(ks, c5c3v1alpha1.ExternalEndpointTypeInternal, "ep-internal-id"),
+		ksLegacyEndpoint(ks, c5c3v1alpha1.ExternalEndpointTypeInternal))...)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+		"the registration is not done while K-ORC is still removing the region-less row")
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+	g.Expect(cond.Message).To(ContainSubstring(legacyName))
+
+	legacy := &orcv1alpha1.Endpoint{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: legacyName, Namespace: ks.Namespace}, legacy)).To(Succeed())
+	g.Expect(legacy.DeletionTimestamp).NotTo(BeNil(), "the region-less row is deleted once its replacement is Available")
+
+	// K-ORC removes the Keystone row and releases its finalizer.
+	legacy.Finalizers = nil
+	g.Expect(c.Update(context.Background(), legacy)).To(Succeed())
+
+	r := &KeystoneServiceReconciler{Client: c, Scheme: c.Scheme(), Recorder: record.NewFakeRecorder(20)}
+	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
+	_, err := r.ensureCatalog(context.Background(), ks, cp, credRef, managedCredRef)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ksCatalogCondition(ks).Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(ks.Status.Catalog.Endpoints[0].ID).To(Equal("ep-internal-id"))
+}
+
+// An interface the spec stopped declaring has nothing to hand over to, so its
+// region-less row goes with the regioned one on the next sweep.
+func TestKSCatalog_LegacyEndpointOfAnUndeclaredInterfaceIsSwept(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := ksWithCatalog()
+	ks.Spec.Catalog.Endpoints = []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+		{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://image.example/public"},
+	}
+
+	keep := keystoneServiceDeclaredChildNames(ks)
+	g.Expect(keep).To(HaveKey(keystoneServiceCatalogRegionRef(ks)))
+	g.Expect(keep).NotTo(HaveKey(keystoneServiceLegacyCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypeInternal)))
+	g.Expect(keep).NotTo(HaveKey(keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypeInternal)))
 }
 
 func TestKSCatalog_ManagedChildrenUseThePasswordCloud(t *testing.T) {
