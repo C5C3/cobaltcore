@@ -588,3 +588,175 @@ func TestIntegration_WebhookRejectsOverlongName(t *testing.T) {
 	expectRejected(t, c.Create(ctx, integrationNova(name, ns)),
 		fmt.Sprintf("Kubernetes caps CronJob names at %d characters", MaxCronJobNameLength))
 }
+
+// --- NovaCompute ---
+
+// integrationNovaCompute returns a NovaCompute carrying every field the CRD
+// marks required: the Nova it joins and a one-label node selector.
+func integrationNovaCompute(name, namespace string) *NovaCompute {
+	return &NovaCompute{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: NovaComputeSpec{
+			NovaRef:      NovaRef{Name: "nova"},
+			NodeSelector: map[string]string{"openstack.c5c3.io/nova-compute-pool": "a"},
+		},
+	}
+}
+
+// TestIntegration_NovaCompute_CRD_CELOnly_Defaults pins the two schema defaults
+// the controller reads without a webhook to fill them: virtType kvm and the
+// RollingUpdate strategy.
+func TestIntegration_NovaCompute_CRD_CELOnly_Defaults(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+	g := NewGomegaWithT(t)
+	ns := newNamespace(t, ctx, c, "novacompute-defaults-")
+
+	g.Expect(c.Create(ctx, integrationNovaCompute("pool", ns))).To(Succeed())
+
+	got := &NovaCompute{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "pool", Namespace: ns}, got)).To(Succeed())
+	g.Expect(got.Spec.Libvirt.VirtType).To(Equal("kvm"))
+	g.Expect(got.Spec.UpdateStrategy.Type).To(Equal("RollingUpdate"))
+	g.Expect(got.Spec.UpdateStrategy.MaxUnavailable).To(BeNil())
+}
+
+// TestIntegration_NovaCompute_CRD_CELOnly_RejectsInvalidSpecs pins the create-time
+// schema rules: the one-label selector minimum, the two enums, and the
+// cpuMode/cpuModels pairing in both directions.
+func TestIntegration_NovaCompute_CRD_CELOnly_RejectsInvalidSpecs(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name string
+		edit func(*NovaCompute)
+		want string
+	}{
+		{
+			name: "empty node selector",
+			edit: func(nc *NovaCompute) { nc.Spec.NodeSelector = map[string]string{} },
+			want: "spec.nodeSelector",
+		},
+		{
+			name: "empty novaRef name",
+			edit: func(nc *NovaCompute) { nc.Spec.NovaRef.Name = "" },
+			want: "spec.novaRef.name",
+		},
+		{
+			name: "virtType xen",
+			edit: func(nc *NovaCompute) { nc.Spec.Libvirt.VirtType = "xen" },
+			want: "Unsupported value",
+		},
+		{
+			name: "imagesType rbd",
+			edit: func(nc *NovaCompute) { nc.Spec.Libvirt.ImagesType = "rbd" },
+			want: "Unsupported value",
+		},
+		{
+			name: "cpuModels without custom",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.Libvirt.CPUMode = "host-model"
+				nc.Spec.Libvirt.CPUModels = []string{"Haswell"}
+			},
+			want: "cpuModels is required when cpuMode is custom and must be empty otherwise",
+		},
+		{
+			name: "custom without cpuModels",
+			edit: func(nc *NovaCompute) { nc.Spec.Libvirt.CPUMode = "custom" },
+			want: "cpuModels is required when cpuMode is custom and must be empty otherwise",
+		},
+		{
+			name: "cpu model with a space",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.Libvirt.CPUMode = "custom"
+				nc.Spec.Libvirt.CPUModels = []string{"Haswell noTSX"}
+			},
+			want: "spec.libvirt.cpuModels[0]",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns := newNamespace(t, ctx, c, "novacompute-invalid-")
+			nc := integrationNovaCompute("pool", ns)
+			tc.edit(nc)
+			expectRejected(t, c.Create(ctx, nc), tc.want)
+		})
+	}
+
+	t.Run("custom with cpuModels is admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "novacompute-custom-")
+		nc := integrationNovaCompute("pool", ns)
+		nc.Spec.Libvirt.CPUMode = "custom"
+		nc.Spec.Libvirt.CPUModels = []string{"Haswell-noTSX", "Skylake-Client"}
+		g.Expect(c.Create(ctx, nc)).To(Succeed())
+	})
+}
+
+// TestIntegration_NovaCompute_CRD_CELOnly_Transitions pins the three transition
+// rules: novaRef and targetClusterRef are frozen, while the node selector, the
+// drain trigger, stays mutable.
+func TestIntegration_NovaCompute_CRD_CELOnly_Transitions(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name    string
+		initial *commonv1.TargetClusterRefSpec
+		edit    func(*NovaCompute)
+		want    string
+	}{
+		{
+			name: "novaRef renamed",
+			edit: func(nc *NovaCompute) { nc.Spec.NovaRef.Name = "other" },
+			want: "novaRef is immutable",
+		},
+		{
+			name: "targetClusterRef added",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "compute-a"}
+			},
+			want: "targetClusterRef is immutable",
+		},
+		{
+			name:    "targetClusterRef removed",
+			initial: &commonv1.TargetClusterRefSpec{Name: "compute-a"},
+			edit:    func(nc *NovaCompute) { nc.Spec.TargetClusterRef = nil },
+			want:    "targetClusterRef is immutable",
+		},
+		{
+			name:    "targetClusterRef renamed",
+			initial: &commonv1.TargetClusterRefSpec{Name: "compute-a"},
+			edit:    func(nc *NovaCompute) { nc.Spec.TargetClusterRef.Name = "compute-b" },
+			want:    "targetClusterRef is immutable",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := newNamespace(t, ctx, c, "novacompute-transition-")
+
+			nc := integrationNovaCompute("pool", ns)
+			nc.Spec.TargetClusterRef = tc.initial
+			g.Expect(c.Create(ctx, nc)).To(Succeed())
+
+			got := &NovaCompute{}
+			g.Expect(c.Get(ctx, types.NamespacedName{Name: "pool", Namespace: ns}, got)).To(Succeed())
+			tc.edit(got)
+			expectRejected(t, c.Update(ctx, got), tc.want)
+		})
+	}
+
+	t.Run("nodeSelector change is admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "novacompute-selector-")
+		g.Expect(c.Create(ctx, integrationNovaCompute("pool", ns))).To(Succeed())
+
+		got := &NovaCompute{}
+		g.Expect(c.Get(ctx, types.NamespacedName{Name: "pool", Namespace: ns}, got)).To(Succeed())
+		got.Spec.NodeSelector = map[string]string{"openstack.c5c3.io/nova-compute-pool": "b"}
+		g.Expect(c.Update(ctx, got)).To(Succeed())
+	})
+}
