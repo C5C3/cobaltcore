@@ -27,7 +27,8 @@ ubuntu:noble
 │   │   ├── neutron      Stage 1 (build): install Neutron into virtualenv
 │   │   ├── cinder       Stage 1 (build): install Cinder into virtualenv
 │   │   ├── nova         Stage 0 (novnc): fetch the pinned noVNC tree
-│   │   └── nova         Stage 1 (build): install Nova into virtualenv
+│   │   ├── nova         Stage 1 (build): install Nova into virtualenv
+│   │   └── nova-compute Stage 1 (build): install Nova + libvirt-python (built against libvirt-dev)
 │   ├── keystone         Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── horizon          Stage 2 (runtime): copy virtualenv + static assets
 │   ├── glance           Stage 2 (runtime): copy virtualenv, add runtime apt packages
@@ -35,7 +36,8 @@ ubuntu:noble
 │   ├── barbican         Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── neutron          Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── cinder           Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   └── nova             Stage 2 (runtime): copy virtualenv and noVNC, add runtime apt packages
+│   ├── nova             Stage 2 (runtime): copy virtualenv and noVNC, add runtime apt packages
+│   └── nova-compute     Stage 2 (runtime): copy virtualenv, add host tools, rootwrap posture
 ```
 
 The `venv-builder` image is used only as a build stage — it never runs in production.
@@ -984,6 +986,212 @@ test but the non-root and build-tool ones fails, while the wrong image still
 satisfies the uwsgi and sudo halves of the apt test and the libvirt-absence
 half of the import test.
 
+### nova-compute
+
+**Location:** `images/nova-compute/Dockerfile`, `images/nova-compute/sudoers`
+
+nova-compute runs from this image on a compute cluster's hypervisor nodes. It
+is built from nova's own source pin (32.0.0 for 2025.2, 33.0.0 for 2026.1) with
+nova's patches and constraint overrides, and it is published under the same
+four tags as `ghcr.io/c5c3/nova` (see
+[Tag Schema](./build-images-workflow.md#tag-schema)). `nova-compute:2025.2`
+and `nova:2025.2` therefore carry the same nova. On top of nova the image
+carries the libvirt binding and client libraries, `qemu-img`, the host tools
+for iSCSI, multipath and NVMe that os-brick (the library nova attaches volumes
+with) runs, `cryptsetup` and `genisoimage`, and a rootwrap and sudo posture
+that lets the unprivileged `openstack` user start nova's privileged helpers.
+The [nova](#nova) control-plane image carries none of it (decision D14 of
+issue #1014). The node-pool satellite of issue #1061 is the first consumer.
+
+The image has a directory of its own instead of a second stage in
+`images/nova/Dockerfile`. `hack/ci-generate-cleanup-matrix.sh` turns every
+`images/<name>/` directory into a package the nightly GHCR cleanup prunes, and
+knows no other packages. Every nova build takes the last stage as its default
+target, so a second stage would make the order of stages matter. And
+`verify_nova.sh` would share a Dockerfile with an image it must not describe.
+The price is one repeated install step.
+
+**Stage 1 (`build`)** extends `venv-builder`:
+
+- Declares `ARG PIP_EXTRAS` (empty) and `ARG PIP_PACKAGES`, which CI fills
+  with `libvirt-python` from the `nova-compute` block of
+  `extra-packages.yaml`. `upper-constraints.txt` fixes its version: 11.6.0 at
+  2025.2, 12.0.0 at 2026.1
+- Installs `libvirt-dev` and `pkg-config`. PyPI ships libvirt-python as an
+  sdist only, so the install compiles it against the libvirt API description
+  and the pkg-config file of noble's libvirt 10.0.0. Both packages stay in
+  this stage, together with the compilers
+- Installs Nova and the binding with the same named build contexts (`nova`
+  and `upper-constraints`) and the same `uv pip install --constraint` step as
+  the nova image
+
+**Stage 2 (runtime)** extends `python-base`:
+
+- Declares `ARG EXTRA_APT_PACKAGES` and copies `/var/lib/openstack` from the
+  build stage using `COPY --from=build --link`
+- Installs the runtime packages, then removes the node identities they bake
+  (see below). The removal sits outside the build-arg guard, so a build
+  without `--build-arg EXTRA_APT_PACKAGES` stays a clean no-op
+- Creates the two state directories under `/var/lib/nova`, empty and owned by
+  UID/GID 42424, as the nova image does
+- Generates `/etc/nova/rootwrap.conf`, copies the sudoers file and checks it
+  with `visudo`
+- Sets `USER openstack` for non-root execution
+
+There is no noVNC stage and no `nova-amqp-ready`: the compute pod's probes
+belong to issue #1061.
+
+**Runtime packages** (`nova-compute.apt_packages`, the same list in both
+releases):
+
+| Package | What runs it |
+| --- | --- |
+| `libvirt0` | `libvirt.so.0`, `libvirt-qemu.so.0` and `libvirt-lxc.so.0`, linked by the binding's `libvirtmod*` extensions; `nova/virt/libvirt/host.py` imports `libvirt` |
+| `qemu-utils` | `qemu-img create` (`nova/virt/libvirt/utils.py`), `qemu-img info` and `convert` (`nova/privsep/qemu.py`) |
+| `open-iscsi` | `iscsiadm` (`os_brick/initiator/connectors/iscsi.py`) |
+| `multipath-tools` | `multipath`, `multipathd` (`os_brick/initiator/linuxscsi.py`) |
+| `nvme-cli` | `nvme` (`os_brick/initiator/connectors/nvmeof.py`, `os_brick/privileged/nvmeof.py`) |
+| `lsscsi` | `lsscsi` (`os_brick/initiator/linuxscsi.py`) |
+| `udev` | `/lib/udev/scsi_id` (`get_scsi_wwn` in `os_brick/initiator/linuxscsi.py`) |
+| `cryptsetup-bin` | `cryptsetup` (`os_brick/encryptors/luks.py`) for encrypted volumes; the compute contract renders `[key_manager] backend = barbican` when Barbican is enabled |
+| `genisoimage` | The default of `[DEFAULT] mkisofs_cmd` (`nova/conf/configdrive.py`), which builds config drives |
+
+`open-iscsi` and `multipath-tools` pull `systemd`, `initramfs-tools` and
+`sg3-utils` as hard dependencies. The 2025.2 image is about 170 MB larger than
+the nova image. There is no `libpython3.12t64`, because nothing in this image
+runs uWSGI, and `sudo` comes from `python-base`.
+
+**Node identities:** the postinst scripts of `open-iscsi` and `nvme-cli`
+write `/etc/iscsi/initiatorname.iscsi`, `/etc/nvme/hostnqn` and
+`/etc/nvme/hostid` at build time, and `multipath-tools` ships
+`/etc/multipath.conf` with `user_friendly_names yes`. os-brick reports the
+initiator name and the host NQN to Cinder as the node's identity, so baked
+files would give every compute node the same IQN and NQN. A baked multipath
+configuration can also disagree with the host's `multipathd`. The image removes
+all four files, and `iscsiadm --version` and `nvme version` still run without
+them.
+
+**Rootwrap and sudo posture:** nova's root helper is
+`sudo nova-rootwrap <[DEFAULT] rootwrap_config>`, and `rootwrap_config`
+defaults to `/etc/nova/rootwrap.conf`. nova-compute hands that helper to every
+privsep context it starts: os-brick's, nova's `sys_admin_pctxt` and os-vif's.
+A privsep context is a root daemon oslo.privsep starts through
+`privsep-helper`, and the helper is how it gets root.
+The compute contract renders no `[privsep*]`, `[workarounds]` or
+`rootwrap_config` key, so nova's default helper is the one that runs. Two gaps
+would stop it in an image built like the nova image. The installed
+`rootwrap.conf` points `filters_path` and `exec_dirs` at system directories,
+where neither `compute.filters` nor `privsep-helper` lives. And noble's
+`secure_path` does not contain `/var/lib/openstack/bin`, so
+`sudo nova-rootwrap` finds no command. The image closes both:
+
+- `/etc/nova/rootwrap.conf` is generated from the installed file with
+  `filters_path=/var/lib/openstack/etc/nova/rootwrap.d` and with
+  `/var/lib/openstack/bin` first in `exec_dirs`. Two `grep`s fail the build
+  when an upstream release reshapes the file and the `sed` matches nothing.
+  The file is root-owned with mode 0644. It records where this image keeps its
+  binaries, which is image plumbing, so the config-free rule of the nova image
+  does not cover it
+- `/etc/sudoers.d/nova-compute`, mode 0440, sets a global `secure_path` that
+  starts with `/var/lib/openstack/bin` and holds one rule:
+  `openstack ALL = (root) NOPASSWD: /var/lib/openstack/bin/nova-rootwrap /etc/nova/rootwrap.conf *`.
+  `visudo -csf` checks it at build time. The strict flag makes a reference to
+  an undefined alias fatal, such as a `NOPASSWD` that lost its colon and reads
+  as an alias name; plain `visudo -c` only warns about it
+
+oslo.rootwrap always admits `privsep-helper` run as root, whatever the filters
+say, so one rule covers every privsep daemon nova-compute starts, and
+`sudo -n true` stays refused. Through `privsep-helper` the rule is
+root-equivalent, which is what nova's own design grants its service user. The
+pod that runs this image is privileged on a hypervisor node anyway. Because
+`secure_path` is global, a consumer that runs nova-compute as root resolves the
+same helper. The neutron metadata agent runs as root in the same way.
+
+**Open vSwitch client:** os-vif plugs OVS ports through
+`[os_vif_ovs] ovsdb_interface`, whose default `native` is the ovsdbapp IDL.
+ovsdbapp is a Python library already in the virtualenv (2.13.0 at 2025.2,
+2.16.1 at 2026.1), and nova runs no `ovs-*` binary itself. The image therefore
+installs no OVS package. `openvswitch-common` carries `ovsdb-client`,
+`ovs-appctl` and `ovs-ofctl`, which neither project runs. Pointing
+`[os_vif_ovs] ovsdb_connection` at the host's OVSDB socket is the consumer's
+configuration.
+
+**What the image expects from its pod** (issue #1061 owns the pod spec):
+
+- Configuration mounted below `/etc/nova`, such as `/etc/nova/compute.conf.d`,
+  and never a volume at `/etc/nova` itself, which would hide `rootwrap.conf`
+- Privilege escalation allowed (`allowPrivilegeEscalation` not `false`), since
+  `sudo` is a setuid binary
+- The host's `/etc/iscsi`, `/etc/nvme` and `/etc/multipath*` mounted, so
+  os-brick reports the node's own identity and agrees with the host's
+  `multipathd`
+- `/var/lib/nova` mounted from the host (a `hostPath`, never an `emptyDir`):
+  it holds `compute_id`, the node identity nova-compute writes on first start
+  and must find again after every pod recreation, and `instances` below it.
+  Without it the next start writes a new node UUID, which collides with the
+  existing `ComputeNode` record of the host
+- `/var/lib/nova`, `/var/lib/nova/instances` and `/var/lib/nova/tmp` on the
+  host owned by 42424:42424 before nova-compute starts. The mount hides the
+  image's own directories, the kubelet creates a missing `hostPath` directory
+  as `root:root` 0755, and `fsGroup` does not apply to a `hostPath`. On a
+  directory nova-compute cannot write, the first start fails to write
+  `compute_id` and exits with `InvalidNodeConfiguration`. An init container
+  running as root sets the owner with
+  `install -d -o 42424 -g 42424 /var/lib/nova /var/lib/nova/instances /var/lib/nova/tmp`,
+  which leaves everything below the three directories alone. Never
+  `chown -R`: the instance disks below `instances` belong to libvirt and QEMU
+- `[DEFAULT] state_path = /var/lib/nova` in the compute configuration, so
+  `compute_id` lands on that mount rather than in nova's default `$pybasedir`
+
+**Final image properties:**
+
+- Runs as `openstack` user (UID 42424, GID 42424)
+- Contains no build tools (`gcc`, `pkg-config`, `uv`, `python3-dev` and
+  `libvirt-dev` are absent)
+- Virtualenv at `/var/lib/openstack` with Nova, its dependencies and
+  `libvirt-python`
+- `sudo` present with the one `nova-rootwrap` rule
+
+**Image contract check:** `tests/container-images/verify_nova_compute.sh` runs
+inline on pull requests and in `verify-nova-compute-image` on push. Its nine
+tests:
+
+1. `nova-compute`, `nova-manage`, `nova-rootwrap` and `privsep-helper` are
+   executable, and `nova-compute --help` exits 0.
+2. `import libvirt` succeeds, `libvirt.getVersion()` is at least `10000000`,
+   and the installed `libvirt-python` equals the effective pin of the image's
+   release. The release is `NOVA_COMPUTE_RELEASE`, which both CI jobs set
+   from `matrix.release`; unset, it is the one whose `source-refs.yaml` names
+   the image's nova, which needs a tag pin. The pin comes from
+   `overrides/<release>/constraints.txt` when that file carries one and from
+   `upper-constraints.txt` otherwise, because `checkout-service-source`
+   rewrites `upper-constraints.txt` on pull requests. A nova version that no
+   release or two releases carry, a `-libvirt-python` override and a missing
+   pin each fail with a message naming the value.
+3. `nova.virt.libvirt.driver`, the os-brick iSCSI and NVMe connectors, the
+   LUKS encryptor and `vif_plug_ovs.ovsdb.impl_idl` import.
+4. The eight host tools run, one assertion per tool, so a missing package
+   names itself.
+5. The four identity files are absent.
+6. The posture holds: the two `rootwrap.conf` lines, `compute.filters`, six
+   trusted paths that the service user cannot write, one `NOPASSWD` entry in
+   `sudo -n -l` and a refused `sudo -n true`.
+   `sudo -n nova-rootwrap /etc/nova/rootwrap.conf id` exits 99 with
+   `Unauthorized command: id`, as the service user and as root.
+   `privsep-helper` run through rootwrap exits 1 with
+   `ConfigFilesNotFoundError`, which proves rootwrap found it through
+   `exec_dirs` (without that entry rootwrap exits 96 with
+   `Executable not found`).
+7. The container runs as `openstack`.
+8. `gcc`, `pkg-config`, `uv`, `python3-dev` and `libvirt-dev` are absent.
+9. The state directories match `verify_nova.sh` test 13.
+
+Both release images pass all 47 assertions. Pointed at the nova control-plane
+image, the script exits 1: test 2 reports
+`ModuleNotFoundError: No module named 'libvirt'` and test 4 fails once per
+tool. A build without any `--build-arg` succeeds and fails the same two tests,
+which is how a missing `nova-compute` block in `extra-packages.yaml` shows up.
+
 ## Release-independent images
 
 These images ship software from outside the OpenStack release matrix. They have
@@ -1272,6 +1480,11 @@ keystone:
 To add packages for a new service, add a new top-level key matching the service name
 with both `pip_extras` and `apt_packages` lists.
 
+`nova-compute` is the one key that is not a service. It configures the image of
+`images/nova-compute/`, which is built from the `nova` pin and has no
+`source-refs.yaml` key of its own; `verify_release_config.sh` checks its block
+through its `DERIVED_IMAGES` list.
+
 ## Constraint Overrides
 
 The constraint override system allows selective modification of individual package
@@ -1416,6 +1629,38 @@ docker build images/horizon \
 bash tests/container-images/verify_horizon.sh c5c3/horizon:25.5.1
 ```
 
+### Building nova-compute locally
+
+The compute image builds from the nova source at the release's pin, with the
+two build args read from the `nova-compute` block by mikefarah `yq` v4 (the
+version CI pins). After Step 1:
+
+```bash
+git clone --branch 32.0.0 --depth 1 \
+  https://opendev.org/openstack/nova.git src/nova
+
+docker build images/nova-compute \
+  -t c5c3/nova-compute:32.0.0 \
+  --build-context nova=src/nova \
+  --build-context upper-constraints=releases/2025.2/ \
+  --build-arg "PIP_PACKAGES=$(yq -r '."nova-compute".pip_packages | join(" ")' releases/2025.2/extra-packages.yaml)" \
+  --build-arg "EXTRA_APT_PACKAGES=$(yq -r '."nova-compute".apt_packages | join(" ")' releases/2025.2/extra-packages.yaml)"
+
+# Run the full image contract check
+bash tests/container-images/verify_nova_compute.sh c5c3/nova-compute:32.0.0
+```
+
+For 2026.1, clone `33.0.0` and read `releases/2026.1/`. The contract script
+finds the release from the nova version inside the image, so a local run
+needs no release argument. `NOVA_COMPUTE_RELEASE=<release>` names it instead,
+as CI does.
+
+The install step compiles libvirt-python. When it stops with
+``Failed to build `libvirt-python==<pin>` ``, the build stage could not find the
+libvirt headers or their pkg-config file, which `libvirt-dev` and `pkg-config`
+provide. A build without the two build args succeeds but ships neither the
+binding nor the host tools, and the contract script then fails tests 2 and 4.
+
 ### Building ovn locally
 
 The ovn build needs no source checkout and no build args: the Dockerfile clones
@@ -1460,7 +1705,8 @@ user is created) and in every service Dockerfile that uses it instead of a
 per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`,
 `images/glance/Dockerfile`, `images/placement/Dockerfile`,
 `images/barbican/Dockerfile`, `images/neutron/Dockerfile`,
-`images/cinder/Dockerfile`, `images/nova/Dockerfile`).
+`images/cinder/Dockerfile`, `images/nova/Dockerfile`,
+`images/nova-compute/Dockerfile`).
 
 `images/ovn/Dockerfile` and `images/backup-shifter/Dockerfile` carry the comment
 for the other half of the same decision. Neither derives from `python-base`, so
