@@ -107,7 +107,7 @@ into the `cinder-volume` pod that holds the mount.
 | Message broker | `shared-rabbitmq` RabbitmqCluster in `openstack` (`WITH_MESSAGING=true`) |
 | NFS export | `nfs-server` Deployment and csi-driver-nfs in `openstack` (`WITH_NFS=true`) |
 | Service images | `ghcr.io/c5c3/cinder:2025.2` for every suite, plus `ghcr.io/c5c3/cinder:2026.1` for `basic-deployment-2026-1` and the target half of `release-upgrade` |
-| Chainsaw | v0.2.14 |
+| Chainsaw | the `CHAINSAW_VERSION` pinned in `hack/install-test-deps.sh` |
 
 ## Running the Tests
 

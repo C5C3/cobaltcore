@@ -138,7 +138,7 @@ the catalog, seed and verify Jobs get their `openstack` client. See
 | Message broker | `shared-rabbitmq` RabbitmqCluster in `openstack` (`WITH_MESSAGING=true`) |
 | Gateway | `GatewayClass/envoy` and `Gateway/openstack-gw` with the `https-nova`, `https-nova-metadata` and `https-nova-console` listeners, for the two suites that curl them |
 | Service images | `ghcr.io/c5c3/nova:2025.2` for every suite, `ghcr.io/c5c3/nova:2026.1` for `basic-deployment-2026-1` and the target half of `release-upgrade`, and `ghcr.io/c5c3/tempest:2025.2` for the catalog, seed and verify Jobs |
-| Chainsaw | v0.2.15 |
+| Chainsaw | the `CHAINSAW_VERSION` pinned in `hack/install-test-deps.sh` |
 
 ## Running the Tests
 

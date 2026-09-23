@@ -129,7 +129,7 @@ in three ways: (1) it installs from PyPI instead of mounting a git source tree,
 | Package | Purpose |
 | --- | --- |
 | `tempest` | OpenStack Tempest testing framework |
-| `barbican-tempest-plugin` | Barbican-specific Tempest test plugins; pinned per release (`4.4.0` for 2025.2, `4.5.0` for 2026.1) |
+| `barbican-tempest-plugin` | Barbican-specific Tempest test plugins; pinned per release in `test-refs.yaml` (both releases pin `4.5.0`) |
 | `keystone-tempest-plugin` | Keystone-specific Tempest test plugins |
 | `neutron-tempest-plugin` | Neutron-specific Tempest test plugins; pinned per release (`3.0.0` for 2025.2, `3.2.0` for 2026.1). Version 3.1.0 and later need `testtools>=2.8.4`, and 2025.2's `upper-constraints.txt` pins `testtools===2.7.2`, so `3.0.0` is the newest version that resolves there |
 | `cinder-tempest-plugin` | Cinder-specific Tempest test plugins; both releases pin `1.22.0`, since the plugin needs only `pbr`, `oslo.config`, `oslo.serialization` and `tempest>=40.0.0` and no release's `upper-constraints.txt` narrows those |
