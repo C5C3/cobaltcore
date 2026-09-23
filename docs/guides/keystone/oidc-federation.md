@@ -253,7 +253,7 @@ The Deployment now runs two containers (`keystone`, `federation-proxy`) and
 the Service's targetPort points at the proxy — the API endpoint itself is
 unchanged.
 
-## Step 6 — Log in as a federated user
+## Step 6 — Log in as a federated user {#step-6-log-in-as-a-federated-user}
 
 ### CLI (bearer token) — reproducible on the kind devstack
 

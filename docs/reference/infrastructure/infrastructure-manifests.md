@@ -443,7 +443,7 @@ The production ESO kustomization renders the shared cluster-scoped
 `SecretStore`s are **not** created here — they are provisioned per ControlPlane
 by `deploy/openbao/bootstrap/setup-eso-tenant.sh` when a tenant opts in via
 `spec.secretStoreRef` (see the
-[OpenBao bootstrap reference](./openbao-bootstrap.md#setup-eso-tenantsh) and the
+[OpenBao bootstrap reference](./openbao-bootstrap.md#setup-eso-tenant-sh) and the
 [multi-tenant deployment guide](../../guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities)).
 
 ### Memcached Operator
@@ -1087,7 +1087,7 @@ namespace gets its own ExternalSecret on the same OpenBao path.
 1. `write-bootstrap-secrets.sh` seeds an admin token at
    `bootstrap/openstack/garage/admin-token` and a `GK`-prefixed S3 access/secret pair at
    `bootstrap/openstack/garage/s3-credentials` (see the
-   [OpenBao bootstrap reference](./openbao-bootstrap.md#write-bootstrap-secretssh)). The
+   [OpenBao bootstrap reference](./openbao-bootstrap.md#write-bootstrap-secrets-sh)). The
    `openstack` segment names the consuming tenant, not the namespace Garage runs in.
 2. Kind-only ExternalSecrets
    (`deploy/kind/infrastructure/garage-{admin-token,s3-credentials}-externalsecret.yaml`)
@@ -1263,7 +1263,7 @@ itself sets `automountServiceAccountToken: false`, since every consumer mints ex
 shared management OpenBao (`enable_barbican_kv` in `setup-secret-engines.sh`,
 `deploy/openbao/policies/barbican-secretstore.hcl`, and the `barbican` AppRole role in
 `setup-auth.sh`; see the
-[OpenBao bootstrap reference](./openbao-bootstrap.md#setup-secret-enginessh)). A
+[OpenBao bootstrap reference](./openbao-bootstrap.md#setup-secret-engines-sh)). A
 deployment that attaches Barbican to the shared instance instead of a dedicated one
 therefore differs only in which instance it points at.
 

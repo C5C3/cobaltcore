@@ -694,7 +694,7 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
   namespace, so `spec.namespace: ""` **opts out** of Chainsaw's plumbing
   entirely — Chainsaw creates no namespace, and the test applies the labelled
   namespace from `00-namespace.yaml`. This is a **different mechanism** from
-  [`namespace-scoped-rbac`](#namespace-scoped-rbac), which sets
+  [`namespace-scoped-rbac`](#test-suite-inventory), which sets
   `spec.namespace: openstack` to **pin** to a pre-existing namespace (Chainsaw
   uses, but does not create, that namespace). Both tests avoid a `chainsaw-*`
   per-test namespace, but the underlying mechanism differs (opt-out vs.
@@ -771,7 +771,7 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
   [`brownfield-database`](#brownfield-database) (brownfield-mode invariant),
   [`fernet-rotation`](#fernet-rotation) (manual rotation + catch shape).
   Related but **not** reused (different mechanism, see design note above):
-  [`namespace-scoped-rbac`](#namespace-scoped-rbac) pins to a pre-existing
+  [`namespace-scoped-rbac`](#test-suite-inventory) pins to a pre-existing
   namespace via `spec.namespace: openstack`; this test opts out via
   `spec.namespace: ""`.
 

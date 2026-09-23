@@ -1869,11 +1869,11 @@ Declares the K-ORC admin application-credential policy.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `restricted` | `*bool` | No | `true` | Controls whether the application credential is restricted (least-privilege, unable to create further application credentials). Defaulted to `true` by **both** the `+kubebuilder:default` marker and the defaulting webhook. The pointer distinguishes "unset" (→ default `true`) from an explicit `false`, which is preserved. See the [restricted → unrestricted inversion](#restricted--unrestricted-inversion) note. |
+| `restricted` | `*bool` | No | `true` | Controls whether the application credential is restricted (least-privilege, unable to create further application credentials). Defaulted to `true` by **both** the `+kubebuilder:default` marker and the defaulting webhook. The pointer distinguishes "unset" (→ default `true`) from an explicit `false`, which is preserved. See the [restricted → unrestricted inversion](#restricted-unrestricted-inversion) note. |
 | `accessRules` | [`[]AccessRule`](#accessrule) | No | `nil` | Optionally narrows the application credential to a specific set of service/method/path rules. When empty, the credential is not constrained by access rules. |
 | `rotation` | [`RotationSpec`](#rotationspec) | Yes | — | How the application credential is rotated. |
 
-### restricted → unrestricted inversion
+### restricted → unrestricted inversion {#restricted-unrestricted-inversion}
 
 The ControlPlane spec exposes a **`restricted`** flag (the safe, least-privilege
 posture). K-ORC's `ApplicationCredentialResourceSpec` exposes the inverse field,
@@ -2891,7 +2891,7 @@ Set by `reconcileInfrastructure`.
 | `False` | `MemcachedError` | Error create-or-updating the Memcached child. |
 | `False` | `WaitingForMessaging` | The managed `RabbitmqCluster` is ensured but does not report `AllReplicasReady` yet. Message: `RabbitmqCluster "<name>" in namespace "<ns>" (spec.infrastructure.messaging) is not ready`. |
 | `False` | `RabbitMQError` | Error create-or-updating the `RabbitmqCluster` child. Message: `ensuring RabbitmqCluster "<name>" in namespace "<ns>" (spec.infrastructure.messaging): <error>`. A cluster that does not serve the `rabbitmq.com` CRD fails closed here, with a `no matches for kind` error from the `Get`. An unauthorised scale-down lands here too: the declared `replicas` is below the owned cluster's and `c5c3.io/allow-messaging-recreate` is not set, so the destructive recreate is refused and the error names the annotation. |
-| `False` | `FinalizingMessaging` | On deletion, the managed `RabbitmqCluster` has been deleted by the teardown (foreground propagation) and the ControlPlane finalizer waits for the RabbitMQ Cluster Operator to release its own finalizer on it before releasing; see [Owner-ref / GC model](./controlplane-reconciler.md#owner-ref--gc-model). Message: `waiting for the managed RabbitmqCluster "<name>" to be deleted before releasing the ControlPlane`. |
+| `False` | `FinalizingMessaging` | On deletion, the managed `RabbitmqCluster` has been deleted by the teardown (foreground propagation) and the ControlPlane finalizer waits for the RabbitMQ Cluster Operator to release its own finalizer on it before releasing; see [Owner-ref / GC model](./controlplane-reconciler.md#owner-ref-gc-model). Message: `waiting for the managed RabbitmqCluster "<name>" to be deleted before releasing the ControlPlane`. |
 | `True` | `ExternallyManaged` | `services.keystone.mode` is `External`: identity is managed against `services.keystone.external.authURL`, so no MariaDB/Memcached is provisioned. |
 | `False` | `InfrastructureNotConfigured` | `spec.infrastructure` is unset on a **non**-External ControlPlane. The validating webhook requires the block outside External mode, so this only fires for a webhook-bypassed CR; it fails closed rather than dereferencing the nil block. |
 
@@ -3361,7 +3361,7 @@ the ControlPlane places in a service namespace therefore carries no owner
 reference; it is stamped with two **ownership labels** instead —
 `c5c3.io/controlplane-name` and `c5c3.io/controlplane-namespace`, which together
 name the owning ControlPlane — and the [ORC-teardown
-finalizer](./controlplane-reconciler.md#owner-ref--gc-model) deletes it
+finalizer](./controlplane-reconciler.md#owner-ref-gc-model) deletes it
 explicitly, because nothing else collects it. The finalizer deletes
 the service children first and waits for them (their own operators run a
 sequenced ESO cleanup through the tenant store in the same namespace), then takes

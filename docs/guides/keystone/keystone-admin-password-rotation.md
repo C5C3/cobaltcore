@@ -228,7 +228,7 @@ LAST SEEN   TYPE     REASON             OBJECT            MESSAGE
 
 If instead you see a **Warning** with reason `AdminSecretInvalid`, the admin
 Secret is missing, unreadable, or its `password` key is empty — see
-[Recover from `AdminSecretInvalid`](#6-recover-from-adminsecretinvalid).
+[Recover from `AdminSecretInvalid`](#_6-recover-from-adminsecretinvalid).
 
 ```bash
 kubectl -n openstack describe keystone controlplane-keystone | grep -A1 -E 'AdminSecretInvalid|BootstrapComplete'

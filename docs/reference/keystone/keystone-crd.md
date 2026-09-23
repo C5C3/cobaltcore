@@ -1163,7 +1163,7 @@ verification off, without deleting the block.
 | `caBundleSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes (when enabled) | — | Secret holding the server CA bundle the client trusts when verifying the database endpoint. Required by both the CRD CEL rule and the validating webhook when TLS is enabled (`mode` is neither empty nor `"disabled"`). |
 | `clientCertSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes (when enabled) | — | Secret holding the client keypair presented to the database for mutual TLS. In managed mode (`database.clusterRef` set) the operator provisions a cert-manager `Certificate` into a Secret named `<name>-db-client`; in brownfield mode (`database.host` set) the keypair must be supplied out-of-band. Required by both the CRD CEL rule and the validating webhook when TLS is enabled. |
 
-#### Mode → connect-args mapping
+#### Mode → connect-args mapping {#mode-connect-args-mapping}
 
 The reconciler's `reconcile_dbconnection_secret.go` appends `ssl_*` query parameters
 to the database DSN according to `mode`. The mapping is implemented by

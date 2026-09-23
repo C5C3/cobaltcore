@@ -314,7 +314,7 @@ The PushSecret mirrors the push-source Secret into OpenBao at
 back into the admin Secret `keystone-admin`. Use the manual guide's
 force-sync + fingerprint technique to confirm the admin Secret carries the new
 value: see
-[step 2 of the manual guide](keystone-admin-password-rotation.md#2-optional-force-eso-to-sync-the-new-value).
+[step 2 of the manual guide](keystone-admin-password-rotation.md#_2-optional-force-eso-to-sync-the-new-value).
 
 The short version:
 
@@ -339,15 +339,15 @@ authoritative walkthrough.
 > `controlplane-keystone-bootstrap` → `keystone-bootstrap`, and
 > `controlplane-keystone-admin-credentials` → `keystone-admin` throughout.
 
-- [Step 3 — Observe the recreated bootstrap Job](keystone-admin-password-rotation.md#3-observe-the-recreated-bootstrap-job)
+- [Step 3 — Observe the recreated bootstrap Job](keystone-admin-password-rotation.md#_3-observe-the-recreated-bootstrap-job)
   (the `keystone-bootstrap` Job is delete+recreated with a fresh UID and the new
   `cobaltcore.c5c3.io/admin-password-hash`).
-- [Step 4 — Watch the `BootstrapReady` transitions](keystone-admin-password-rotation.md#4-watch-the-bootstrapready-transitions)
+- [Step 4 — Watch the `BootstrapReady` transitions](keystone-admin-password-rotation.md#_4-watch-the-bootstrapready-transitions)
   (`False`/`BootstrapInProgress` → `True`/`BootstrapComplete`).
-- [Step 5 — Observe the event stream](keystone-admin-password-rotation.md#5-observe-the-event-stream).
-- [Step 6 — Recover from `AdminSecretInvalid`](keystone-admin-password-rotation.md#6-recover-from-adminsecretinvalid)
+- [Step 5 — Observe the event stream](keystone-admin-password-rotation.md#_5-observe-the-event-stream).
+- [Step 6 — Recover from `AdminSecretInvalid`](keystone-admin-password-rotation.md#_6-recover-from-adminsecretinvalid)
   if the synced value is empty.
-- [Step 7 — Post-rotation smoke check](keystone-admin-password-rotation.md#7-post-rotation-smoke-check)
+- [Step 7 — Post-rotation smoke check](keystone-admin-password-rotation.md#_7-post-rotation-smoke-check)
   (the new password authenticates `201`; the old one is rejected `401`).
 
 ### 4.6 Note the separation from the live credential

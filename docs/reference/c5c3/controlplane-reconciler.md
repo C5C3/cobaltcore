@@ -33,7 +33,7 @@ is a blocking prefix plus a sequential, non-short-circuiting tail group
 groups (`RunParallelGroup`) — and it keeps no per-CR metric cardinality. It does
 install a single finalizer to sequence K-ORC teardown ahead of
 Keystone/infrastructure teardown on deletion — see
-[Owner-ref / GC model](#owner-ref--gc-model).
+[Owner-ref / GC model](#owner-ref-gc-model).
 
 ## Controller Registration
 
@@ -934,7 +934,7 @@ A **missing** mark refuses adoption too, since nothing on the object separates a
 stripped mark from labels somebody else wrote; that message names both remedies,
 restoring the annotation or picking a free name. The read behind the verdict goes
 through the target cluster's live reader, as the
-[teardown](#owner-ref--gc-model) side does — which draws the missing-mark line one
+[teardown](#owner-ref-gc-model) side does — which draws the missing-mark line one
 notch lower, because it is the last pass anything makes over that namespace. Under
 **`External`** the operator only verifies the namespace exists; a missing one parks
 the condition and requeues.
@@ -956,8 +956,8 @@ creates nothing on either side.
 | `False` | `NamespaceNotFound` | An `External` namespace does not exist; requeue. |
 | `False` | `NamespaceNotOwned` | A `Managed` namespace exists but does not carry the operator's ownership labels, or — on a target cluster — its `c5c3.io/controlplane-uid` annotation is missing or names a different ControlPlane, so it is never adopted. The message distinguishes the three, because the remedies differ. |
 | `False` | `NamespaceTerminating` | The namespace is being deleted; wait and requeue. |
-| `False` | `TargetClusterUnavailable` | A service placed the namespace on a target cluster that does not resolve; the resolver's own message, `cluster not found` for a name that was never registered. On deletion the same reason marks a placed namespace whose cluster has not answered yet: the teardown waits for it, and gives up on its children only past the abandon window (see [Owner-ref / GC model](#owner-ref--gc-model)). |
-| `False` | `FinalizingNamespaces` | On deletion, waiting for cross-namespace children to be torn down (see [Owner-ref / GC model](#owner-ref--gc-model)). |
+| `False` | `TargetClusterUnavailable` | A service placed the namespace on a target cluster that does not resolve; the resolver's own message, `cluster not found` for a name that was never registered. On deletion the same reason marks a placed namespace whose cluster has not answered yet: the teardown waits for it, and gives up on its children only past the abandon window (see [Owner-ref / GC model](#owner-ref-gc-model)). |
+| `False` | `FinalizingNamespaces` | On deletion, waiting for cross-namespace children to be torn down (see [Owner-ref / GC model](#owner-ref-gc-model)). |
 | `False` | `NamespaceError` | A create/get against the namespace failed. |
 
 ### reconcileInfrastructure
@@ -1062,7 +1062,7 @@ the operator offers for a declared count the running cluster exceeds.
 On ControlPlane deletion the bus is not left to the owner-reference cascade:
 the finalizer deletes it with foreground propagation and waits for it to go, for
 the cluster-operator race described under
-[Owner-ref / GC model](#owner-ref--gc-model).
+[Owner-ref / GC model](#owner-ref-gc-model).
 
 A child that is mid-teardown is never reported ready. The RabbitMQ Cluster
 Operator holds a finalizer on its CRs, so a deleted `RabbitmqCluster` lingers in
@@ -3522,7 +3522,7 @@ cluster without sharing OpenBao state.
   in its own namespace, and an independent rotation lifecycle — no two control
   planes can clobber one another's credentials.
 
-See [Migration: legacy flat paths → per-ControlPlane paths](#migration-legacy-flat-paths--per-controlplane-paths)
+See [Migration: legacy flat paths → per-ControlPlane paths](#migration-legacy-flat-paths-per-controlplane-paths)
 for moving an existing single-instance cluster onto the per-CR layout.
 
 ---
@@ -3654,7 +3654,7 @@ projected. On deletion it:
    object ownership-checked so a same-named object belonging to somebody else in
    that shared namespace is left alone. On a placed namespace both of those run
    against that cluster's client, and the
-   [label-selected sweep](#the-placed-namespaces--openstackc5c3ioremote-children)
+   [label-selected sweep](#placed-namespaces-remote-children)
    follows them. While children remain the condition
    reports `NamespacesReady=False/FinalizingNamespaces`; past the
    `orcTeardownDeadline` the sweep stops waiting, emits a **Warning**
@@ -3750,7 +3750,7 @@ then OpenBao cleanup); see
 The `{name}-admin-app-credential-backup` PushSecret is the one child kept on
 `DeletionPolicy: None` so its OpenBao path is not purged on teardown.
 
-#### The placed namespaces — `openstack.c5c3.io/remote-children`
+#### The placed namespaces — `openstack.c5c3.io/remote-children` {#placed-namespaces-remote-children}
 
 A ControlPlane that places a service on a [target
 cluster](../target-clusters.md) carries a second finalizer, the shared
@@ -4344,7 +4344,7 @@ The `c5c3_operator_*` duration/error metric vectors are registered by the shared
 `internal/metrics` package was folded into it); `instrumentation.go` supplies
 only the `c5c3_operator` prefix and the name → `condition_type` map.
 
-## Migration: legacy flat paths → per-ControlPlane paths
+## Migration: legacy flat paths → per-ControlPlane paths {#migration-legacy-flat-paths-per-controlplane-paths}
 
 Earlier releases wrote the admin / K-ORC credentials to cluster-global,
 flat OpenBao paths that assumed a single control plane per cluster. The operator
