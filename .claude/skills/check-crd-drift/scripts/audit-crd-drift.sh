@@ -126,7 +126,7 @@ for op in "${OPERATORS[@]}"; do
   api_dir="operators/${op}/api/v1alpha1"
   deepcopy="${api_dir}/zz_generated.deepcopy.go"
   if [[ ! -f "${deepcopy}" ]]; then
-    fail "${op}: missing ${deepcopy} — run: make generate-common"
+    fail "${op}: missing ${deepcopy} — run: make generate OPERATOR=${op}"
     continue
   fi
   # Find every Go struct preceded by +kubebuilder:object:root=true.
@@ -147,7 +147,7 @@ for op in "${OPERATORS[@]}"; do
     if grep -q "^func (in \*${kind}) DeepCopyInto" "${deepcopy}"; then
       pass "${op}: ${kind} has DeepCopy block"
     else
-      fail "${op}: ${kind} marked as CRD root but no DeepCopy in ${deepcopy} — run: make generate-common"
+      fail "${op}: ${kind} marked as CRD root but no DeepCopy in ${deepcopy} — run: make generate OPERATOR=${op}"
     fi
   done < <(grep -rn '+kubebuilder:object:root=true' "${api_dir}" || true)
 done

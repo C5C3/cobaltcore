@@ -3,48 +3,50 @@ name: check-go-workspace-deps
 description: >-
   Audit the CobaltCore Go workspace for dependency-version drift between
   the operators/<op>/go.mod files and internal/common/go.mod —
-  controller-runtime, k8s.io/api, k8s.io/apimachinery, k8s.io/client-go,
-  the Go directive, and the toolchain pin must stay in lockstep so
-  the workspace builds the same versions everywhere. Use when asked to
-  check workspace deps, after running `go get` in one module, or after
-  Renovate bumps controller-runtime in only one of the modules.
+  controller-runtime, multicluster-runtime, the k8s.io family, every other
+  direct requirement two modules share, the Go directive, and any toolchain
+  directive must stay in lockstep so the workspace builds the same versions
+  everywhere. Use when asked to check workspace deps, after running
+  `go get` in one module, after Renovate bumps a dependency in only some of
+  the modules, or when PR CI shows a go.work.sum diff in verify-codegen or
+  sum.golang.org errors that do not reproduce on the branch.
 ---
 
 # Check Go workspace consistency
 
 This skill verifies that the CobaltCore **Go workspace's shared dependencies
-stay in lockstep** across all modules. The repo uses a Go workspace
-(`go.work` lists `internal/common`, `operators/c5c3`, `operators/keystone`),
-which means the *build* picks one version per dep — but each module's
-`go.mod` declares its own pin. If those pins drift, `go mod tidy` per
-module rewrites them, and the next CI matrix leg sees a different
-build than the laptop.
+stay in lockstep** across all modules. `go.work` lists `internal/common`
+and every operator module under `operators/` (eleven members at the time
+of writing; the audit reads the list, it does not assume it). In
+workspace mode the *build* picks one version per dependency by minimum
+version selection, but each module's `go.mod` declares its own pin. If
+those pins drift, `go mod tidy` per module rewrites them, and a CI leg
+that builds one module sees a different graph than the laptop that built
+the workspace.
 
 It is repeatable — run it any time, especially after a `go get` in one
-module, or after a Renovate PR that touched only one `go.mod`.
+module, or after a Renovate PR that touched only some `go.mod` files.
 
 ## What workspace consistency means here
-
-The repo declares three things that have to agree:
 
 | Layer | Where it lives | Source of truth |
 |---|---|---|
 | Workspace member set | `go.work` (`use (…)` block) | the directories listed are exactly the modules participating in workspace mode |
-| Go directive | `go.work` `go <ver>` and each `operators/<op>/go.mod` / `internal/common/go.mod` `go <ver>` | a single version string (e.g. `1.25.10`) shared across all modules |
-| Shared dependency versions | each `go.mod` `require ( … )` block — specifically the k8s.io/*, sigs.k8s.io/controller-runtime, sigs.k8s.io/multicluster-runtime, and github.com/dc-tec/openbao-operator entries | identical version per module (controller-runtime, multicluster-runtime, k8s.io/api, k8s.io/apimachinery, k8s.io/client-go, k8s.io/apiextensions-apiserver, openbao-operator) |
-| Workspace sum file | `go.work.sum` | a *tracked* file per CC-0001 REQ-009 (gitignore intentionally does *not* exclude it) |
+| Go directive | `go.work` `go <ver>` and every member `go.mod` | one version string shared by all modules (`setup-go` in CI reads `go-version-file: go.work`) |
+| Toolchain directive | `toolchain <ver>` in `go.work` / any `go.mod` | none is declared today; if one appears, it must be identical everywhere |
+| Shared dependency versions | each `go.mod` `require` block | identical version per module for the fixed k8s/controller-runtime/openbao list (direct or `// indirect`) and for every module two or more members require directly |
+| Workspace sum file | `go.work.sum` | tracked on purpose, so CI and laptops verify the same checksums for modules only the workspace pulls in |
 
-The authoritative gate is `go build ./...` from each module root, which
-fails if a workspace member references a missing or incompatible
-dependency. This skill defers to that as the source of truth and adds
-the per-module version-pin diff the build does not surface (a divergent
-`go.mod` is still valid Go — the workspace just silently picks one of
-the pins to build against).
+The authoritative gates are `make verify-go-tidy` (every member's
+`go.mod`/`go.sum` equals what `go mod tidy -diff` would write; the first
+step of the CI `verify-codegen` job) and a workspace build. This skill
+adds the cross-module pin diff neither expresses: a divergent `go.mod` is
+still valid Go and still tidy — the workspace silently picks the higher
+pin.
 
 A drift finding is any place two `go.mod` files pin different versions
-of the same dep, the `go.work` `go` directive disagrees with any
-member's `go` directive, or the workspace member set diverges from the
-directories on disk.
+of the same shared dependency, a `go`/`toolchain` directive disagrees,
+or the workspace member set diverges from the modules on disk.
 
 ## Procedure
 
@@ -56,126 +58,114 @@ Work through these steps in order and report findings at the end.
 bash .claude/skills/check-go-workspace-deps/scripts/audit-go-workspace-deps.sh
 ```
 
-The script catches the mechanically-checkable gaps and prints an
-inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
+Exit code `1` means at least one `[FAIL]`. Interpret:
 
-- **W1** — every directory listed in `go.work`'s `use (…)` block
-  exists on disk and contains a `go.mod`. A stale entry breaks
-  `go build` from the workspace root.
-- **W2** — every directory containing a `go.mod` under `operators/`
-  or `internal/` is listed in `go.work`. An unlisted module silently
-  builds with its own resolution path — workspace replace directives
-  do not apply.
-- **W3** — the `go` directive in `go.work` matches the `go` directive
-  in every member's `go.mod` (exact string match, e.g. `1.25.10`).
-  A delta is a real toolchain hazard: the workspace uses one Go
-  version, the per-module CI legs use another.
-- **W4** — for each shared dep (controller-runtime,
-  sigs.k8s.io/multicluster-runtime — every module builds on the
-  multicluster manager and builder since the target-cluster work —,
-  k8s.io/api, k8s.io/apimachinery, k8s.io/client-go,
-  k8s.io/apiextensions-apiserver,
-  github.com/dc-tec/openbao-operator — required by both `operators/c5c3`
-  and `operators/barbican`, which register its CR types in one scheme),
-  every module that requires it (direct or indirect) pins the same
-  version. A divergent pin is the most common workspace drift: one
-  module bumped, the others did not.
-- **W5** — `go.work.sum` is present (CC-0001 REQ-009).
-- The **inventory** lists, per shared dep, the pin in each module
-  side-by-side.
+- **W1** — every directory in `go.work`'s `use (…)` block exists and
+  contains a `go.mod`. A stale entry breaks every workspace build.
+- **W2** — every `go.mod` under `operators/` or `internal/` is listed in
+  `go.work`. An unlisted module builds with its own resolution and is
+  invisible to workspace-wide `go test`/`golangci-lint` runs.
+- **W3** — the `go` directive in `go.work` matches every member's
+  `go.mod` exactly.
+- **W3b** — a `toolchain` directive, where any file declares one, is the
+  same everywhere. With none declared the check passes.
+- **W4** — (a) each dependency in the script's `SHARED_DEPS` list
+  (controller-runtime, multicluster-runtime, `k8s.io/api`,
+  `apimachinery`, `client-go`, `apiextensions-apiserver`,
+  `github.com/dc-tec/openbao-operator`) carries one version across
+  every module that requires it, direct or `// indirect`; (b) every
+  other module that two or more members require **directly** (gateway-api,
+  mariadb-operator, external-secrets, prometheus, gomega, …) carries one
+  version too. Indirect pins outside the fixed list are ignored on
+  purpose: `go mod tidy` computes them per module graph and they differ
+  legitimately.
+- **W5** — `go.work.sum` exists and is tracked by git.
+- The **inventory** table lists the fixed shared deps side by side per
+  module.
 
 ### 2. Cross-reference the inventory
 
-The script does not run `go mod tidy`. Using the printed inventory,
-confirm:
+The script does not run the Go toolchain. For each finding:
 
-1. For each `[FAIL]` from W4, decide which version is canonical
-   (usually the newer one) and propagate to every module:
+1. For a W4 divergence, decide which version is canonical (usually the
+   newer one, the one `main` already carries) and propagate it:
    ```bash
    cd operators/<lagging-op>
    go get <module>@<version>
    go mod tidy
    ```
-2. For W3 deltas, bump the lagging module's `go` directive (or the
-   `go.work` directive) so they match. The Go compiler's behaviour
-   under workspace mode does *not* mix toolchain versions per-module
-   at build time — only the workspace-root `go.work` toolchain wins.
-3. After any change, run `go build ./...` from the repo root to
-   confirm the workspace still resolves cleanly.
+   Indirect k8s pins such as `k8s.io/apiextensions-apiserver` flow from
+   `internal/common`'s version: `go get` them explicitly, a plain tidy
+   keeps the old indirect version.
+2. For W3/W3b deltas, bump the lagging directive so all files match.
+3. After any change, run the gates in step 3.
 
-### 3. Run the authoritative gate
-
-The script does not invoke the Go toolchain. Run the real gates and
-report the exact outcomes:
+### 3. Run the authoritative gates
 
 ```bash
-go build ./...            # workspace-root build
-make test                 # per-module tests via the workspace
-go mod tidy && git diff   # in each module — any diff is W4 drift
+make verify-go-tidy       # every member is tidy (CI: verify-codegen, first step)
+go build ./...            # workspace build from the repo root
+make test                 # per-module unit tests through the workspace
 ```
 
-`go build ./...` is the authoritative gate for workspace resolution.
-`go mod tidy && git diff` per module is the authoritative gate for
-per-module pin consistency; an empty diff means the `go.mod` already
-reflects what tidy would compute.
+`make tidy` rewrites every module when `verify-go-tidy` fails.
+`controller-gen` and `setup-envtest` live in `$(go env GOPATH)/bin`;
+export it onto `PATH` before codegen targets.
 
 ### 4. Report
 
-Produce a concise summary grouped by severity:
+Group findings by severity:
 
-- **HIGH** — `go build ./...` fails; the `go` directive disagrees
-  between `go.work` and any member; a workspace member directory does
-  not exist.
+- **HIGH** — a workspace build fails; the `go` directive disagrees
+  between `go.work` and a member; a workspace member directory does not
+  exist; `make verify-go-tidy` fails.
 - **MEDIUM** — two modules pin different versions of the same shared
-  dep; a module under `operators/` or `internal/` is missing from
-  the workspace; `go.work.sum` is absent.
-- **LOW** — a workspace member that has no `require` entry for a
-  shared dep that all siblings need (likely OK, but worth a check —
-  the module may legitimately not depend on it).
+  dependency; a module on disk is missing from `go.work`; `go.work.sum`
+  is absent or untracked.
+- **LOW** — a member without a `require` entry for a dependency all its
+  siblings need (usually fine; the module may not import it).
 
-For each finding give one line with the dep, the per-module versions,
-and the suggested fix. End with a per-shared-dep verdict.
+One line per finding with the dependency, the per-module versions, and
+the suggested fix. End with a per-dependency verdict.
 
 ## Drift patterns
 
-These recurring shapes are worth grepping for first:
-
-1. **Single-module Renovate bump.** Renovate created a PR bumping
-   `sigs.k8s.io/controller-runtime` in only one module's `go.mod`.
-   The workspace silently still resolves to the older version (or
-   the newer, depending on which module wins the workspace minimum-version
-   selection). CI passes; the build's actual dependency does not
-   match what humans think they pinned.
-2. **`go get` ran in one module only.** A developer ran `go get …`
-   in `operators/keystone` to add a feature, but the same package is
-   needed in `internal/common` for tests. `go mod tidy` in
-   `internal/common` would add it; without the tidy, the indirect
-   resolution differs.
-3. **Toolchain drift.** A `go.work` edit bumped the `go` directive
-   to `1.26.x` but one of the `operators/<op>/go.mod` still says
-   `1.25.x`. `go build` from the workspace root uses `1.26.x`;
-   running tests from inside the module without the workspace uses
-   `1.25.x`.
-4. **Workspace member missing.** A new `operators/<new>/` was added
-   with its own `go.mod` but the developer forgot to add it to
-   `go.work`'s `use (…)` block. The new module compiles in isolation
-   but the workspace ignores it.
-5. **Stale workspace member.** An old `operators/<dead>/` was deleted
-   but `go.work` still references it. `go build ./...` fails with a
-   missing-directory error.
+1. **Partial Renovate bump.** Renovate bumped a dependency in some
+   modules only (a new module added on a branch after the grouping rule
+   ran is the usual cause). The workspace resolves to the higher pin; the
+   lagging module's own CI leg builds the lower one.
+2. **PR CI tests the merge with `main`.** `pull_request` CI checks out
+   the merge of the head with current `main`. A branch that keeps (or
+   adds) a module at a version `main` has since bumped yields a mixed
+   workspace: `verify-codegen` fails with a large `go.work.sum` diff and
+   `test (<op>)` legs fail `[setup failed]` with
+   `verifying go.mod: reading https://sum.golang.org/…`. Nothing
+   reproduces on the branch. Reproduce in a worktree merged with
+   `origin/main`, bump the lagging module, and run `go mod tidy` **in the
+   merged tree**. A module that is new on the branch is never covered by
+   a tidy commit on `main`, so rebasing alone does not fix it; its tidy
+   has to land on the branch.
+3. **`go get` in one module only.** A dependency was added to one
+   operator while `internal/common` (or a sibling) needs the same package
+   for tests; without a tidy there the indirect resolution differs.
+4. **Directive drift.** A `go.work` edit bumped the `go` directive but a
+   member `go.mod` still names the old version; a module-local build then
+   uses a different toolchain than the workspace.
+5. **Workspace member missing or stale.** A new `operators/<new>/` was
+   added without a `use` entry (W2), or a deleted module is still listed
+   (W1). A new operator also needs the `operators/Dockerfile` COPY lines
+   and the Makefile `OPERATORS` default; [[check-service-parity]] P2
+   checks those.
 
 ## Notes
 
-- This skill is read-only; the deterministic script edits nothing.
-  Apply fixes (`go get`, `go mod tidy`, edit `go.work`) as a separate,
-  explicitly-scoped task.
-- The shared-dep list at the top of the script is opinionated —
-  controller-runtime, the k8s.io/* family, and the openbao-operator
-  API module. If CobaltCore later adds another cross-cutting dep (e.g. a
-  metrics library, a tracing client), extend that list so the W4
-  check covers it.
-- `go.work.sum` is intentionally tracked per CC-0001 REQ-009. Do not
-  add it to `.gitignore`.
+- This skill is read-only; the script edits nothing. Apply fixes
+  (`go get`, `go mod tidy`, `go.work` edits) as a separate, explicitly
+  scoped task.
+- To align another cross-cutting dependency even where modules only
+  require it indirectly, add it to `SHARED_DEPS` at the top of the
+  script. Direct requirements shared by two modules need no entry.
+- `go.work.sum` stays tracked; do not add it to `.gitignore`.
 - Pair this with [[check-renovate-coverage]] — that skill ensures
-  Renovate has a manager for these deps in the first place; this
-  skill ensures Renovate's bumps land consistently.
+  Renovate has a manager for these deps; this skill ensures Renovate's
+  bumps land in every module.

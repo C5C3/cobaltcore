@@ -32,10 +32,14 @@ in any one of them:
 | Go +kubebuilder source | `operators/<op>/api/v1alpha1/*_types.go` | the `// +kubebuilder:*` markers, struct fields, JSON tags |
 | Generated CRD YAML | `operators/<op>/config/crd/bases/*.yaml` | `make manifests` output (controller-gen) |
 | Helm chart copy | `operators/<op>/helm/<op>-operator/crds/*.yaml` | `make sync-crds` output — a comment-prefixed mirror of the base |
-| DeepCopy stubs | `operators/<op>/api/v1alpha1/zz_generated.deepcopy.go` | `make generate-common` output (controller-gen object) |
+| DeepCopy stubs | `operators/<op>/api/v1alpha1/zz_generated.deepcopy.go` (and `internal/common/types/zz_generated.deepcopy.go`) | `make generate` output (controller-gen object; `generate-common` is the `internal/common/types` half) |
+| RBAC ClusterRole | `operators/<op>/config/rbac/role.yaml` → the chart's `templates/_rbac-rules.tpl` | `make manifests` (from `+kubebuilder:rbac` markers) → `make sync-helm-rbac`, gated by `make verify-helm-rbac` |
 
-The authoritative drift gate is `make verify-crd-sync` (and, behind it,
-`make sync-crds` ⇢ `make manifests`). It strips the cross-reference
+The authoritative drift gate is the CI `verify-codegen` job: it runs
+`make manifests` and `make generate`, then `make verify-crd-sync` and
+`make verify-helm-rbac`, and fails on any `git diff`. Locally,
+`make verify-crd-sync` (and, behind it, `make sync-crds` ⇢ `make manifests`)
+is the CRD part of it. It strips the cross-reference
 comment header (`^#` lines) from each `helm/.../crds/*.yaml` and diffs
 the result against the corresponding `config/crd/bases/` file; any
 non-comment delta fails the build. This skill defers to that gate as
@@ -73,7 +77,7 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   register a CRD with no controller behind it.
 - **C4** — every `*_types.go` with a `+kubebuilder:object:root=true`
   marker has a corresponding generated DeepCopy block in
-  `zz_generated.deepcopy.go`. A missing block means `make generate-common`
+  `zz_generated.deepcopy.go`. A missing block means `make generate`
   was skipped — the operator will fail to build.
 - The **inventory** lists, per operator, every CRD with its
   `spec.versions[].name`, its kubebuilder printer columns, and the size
@@ -102,9 +106,14 @@ The script does no regeneration. Run the real gates and report the
 exact outcomes:
 
 ```bash
-make manifests          # regenerate CRD bases from kubebuilder markers
+export PATH="$(go env GOPATH)/bin:$PATH"   # controller-gen lives there, off PATH
+make manifests          # regenerate CRD bases, webhook config, RBAC role from markers
+make generate           # regenerate every zz_generated.deepcopy.go
 make sync-crds          # copy bases into the Helm chart crds/ dir
-make verify-crd-sync    # authoritative diff gate (also runs in CI)
+make sync-helm-rbac     # regenerate the chart RBAC rules from config/rbac/role.yaml
+make verify-crd-sync    # CRD diff gate (CI: verify-codegen)
+make verify-helm-rbac   # RBAC diff gate (CI: verify-codegen)
+git diff --exit-code    # what verify-codegen finally asserts
 ```
 
 `make verify-crd-sync` is the authoritative gate — trust it over the
@@ -150,7 +159,7 @@ These recurring shapes are worth grepping for first:
    removed. `helm install` registers the dead CRD, and the cluster
    has a kind no controller reconciles.
 4. **DeepCopy drift.** A new struct field landed in `*_types.go`
-   without `make generate-common` — the build fails before the CRD
+   without `make generate` — the build fails before the CRD
    gate ever runs.
 5. **Cross-operator CRD ownership.** A CRD `kind` ended up under the
    wrong operator's `config/crd/bases/` (e.g. duplicated during a
@@ -162,12 +171,15 @@ These recurring shapes are worth grepping for first:
 When a marker or struct field changes, the checklist is:
 
 1. **Edit the Go source.** Pick `operators/<op>/api/v1alpha1/*_types.go`.
-2. **Regenerate.** `make manifests` rebuilds `config/crd/bases/*.yaml`;
-   `make generate-common` rebuilds `zz_generated.deepcopy.go`;
-   `make sync-crds` mirrors the bases into the Helm chart crds/ dir
-   (and prepends the cross-reference comment header).
-3. **Verify drift gate clean.** `make verify-crd-sync` must exit `0` —
-   it is the same check CI runs.
+2. **Regenerate.** `make manifests` rebuilds `config/crd/bases/*.yaml`,
+   the webhook configuration, and the RBAC role; `make generate`
+   rebuilds `zz_generated.deepcopy.go`; `make sync-crds` mirrors the
+   bases into the Helm chart crds/ dir (and prepends the cross-reference
+   comment header); `make sync-helm-rbac` regenerates the chart RBAC
+   rules when a `+kubebuilder:rbac` marker changed.
+3. **Verify drift gate clean.** `make verify-crd-sync` and
+   `make verify-helm-rbac` must exit `0` and `git diff` must show only
+   the intended change — that is what the CI `verify-codegen` job asserts.
 4. **Commit all sides together.** The source change, the regenerated
    bases, the regenerated deepcopy, and the Helm copies go in the same
    commit so a future `git bisect` always sees a self-consistent tree.

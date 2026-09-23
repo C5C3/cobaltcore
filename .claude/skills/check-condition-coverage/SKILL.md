@@ -138,13 +138,15 @@ The script does not run Go tests. Run the drift-guard test for every
 instrumented operator directly:
 
 ```bash
-go test ./operators/keystone/internal/controller/... ./operators/c5c3/internal/controller/... \
+go test $(ls -d operators/*/internal/controller/instrumentation.go \
+  | sed 's|/instrumentation.go$|/...|; s|^|./|') \
   -run TestSubReconcilerConditionTypesCoversAllNames -count=1
 ```
 
-Extend the package list when a new operator lands (any module with an
-`internal/controller/instrumentation.go`). This test is the
-authoritative gate for the map ⊆ `subConditionTypes` invariant.
+The glob picks up every operator with an `instrumentation.go`, so a new
+operator is included without editing the command. This test is the
+authoritative gate for the map ⊆ `subConditionTypes` invariant; it also
+runs as part of `make test-operator OPERATOR=<op>`.
 
 ### 4. Report
 
@@ -192,6 +194,16 @@ These recurring shapes are worth grepping for first:
 6. **Doc-only condition.** The docs list a condition type that no
    sub-reconciler actually sets. Operators monitoring for it see it
    as perpetually `Unknown` and assume the controller is broken.
+7. **Status field written inside a parallel group.** `RunParallelGroup`
+   (`internal/common/reconcile/parallel.go`) hands each member a
+   `cr.DeepCopy()` and merges back only that member's condition and the
+   metadata it persisted. Any other `status.*` field a parallel member
+   writes is discarded without an error or a log line. Unit tests that
+   call the sub-reconciler on the primary CR hide it; only a test that
+   drives the member through the step's `Fn` on a `DeepCopy()` (or an
+   envtest) catches it. When a parallel member reports more than its
+   condition, confirm the step's `Fn` carries the field onto the primary
+   CR (the OVN `parallelSteps(children, primary)` shape).
 
 ## Notes
 
