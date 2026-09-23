@@ -5,11 +5,12 @@ quadrant: operator
 
 # Target Clusters
 
-Ten workload CRDs carry an optional `spec.targetClusterRef`:
+Eleven workload CRDs carry an optional `spec.targetClusterRef`:
 [Keystone](./keystone/keystone-crd.md), [Barbican](./barbican/barbican-crd.md),
 [Horizon](./horizon/horizon-crd.md), [Glance](./glance/glance-crd.md),
 [Placement](./placement/placement-crd.md), [Cinder](./cinder/cinder-crd.md),
-`OVNCentral`, `OVNChassis`, `Neutron`, and `NeutronMetadataAgent`. The field
+[Nova](./nova/nova-crd.md), `OVNCentral`, `OVNChassis`, `Neutron`, and
+`NeutronMetadataAgent`. The field
 names a registered target cluster that receives every child the CR projects:
 Deployments, ConfigMaps, Secrets, and, for the services that have one, the
 database CRs. The CR itself does not move. It is created, reconciled, and
@@ -107,7 +108,7 @@ Two grants therefore need locking down on the management cluster:
 | Grant | Why |
 | --- | --- |
 | `create`/`update` on Secrets in `c5c3-clusters` | A labelled Secret here registers a cluster. Whoever can write one decides which clusters the operator holds credentials for |
-| `create` on `keystones`, `barbicans`, `glances`, `horizons`, `placements`, `cinders`, `controlplanes` | A CR author picks the cluster its children land on, from every name registered. A ControlPlane picks one per service |
+| `create` on `keystones`, `barbicans`, `glances`, `horizons`, `placements`, `cinders`, `novas`, `controlplanes` | A CR author picks the cluster its children land on, from every name registered. A ControlPlane picks one per service |
 
 An install that needs no target clusters carries neither exposure: a
 namespace-scoped install clears `--clusters-namespace` (see below), the operator
@@ -184,7 +185,7 @@ it, surfaces on the CR's first gate condition:
 
 | CR | Condition | Status | Reason | Message |
 | --- | --- | --- | --- | --- |
-| Keystone, Barbican, Horizon, Glance, Placement, Neutron, Cinder | `SecretsReady` | `False` | `TargetClusterUnavailable` | The resolver's error, `cluster not found` for a name that was never registered |
+| Keystone, Barbican, Horizon, Glance, Placement, Neutron, Cinder, Nova | `SecretsReady` | `False` | `TargetClusterUnavailable` | The resolver's error, `cluster not found` for a name that was never registered |
 | BarbicanSecretStore, GlanceBackend, CinderBackend, CinderBackupBackend | `CredentialsReady` | `False` | `TargetClusterUnavailable` | Same |
 | ControlPlane | `NamespacesReady` usually, since it runs first; otherwise whichever sub-reconciler reaches the cluster first, out of `InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`, `AdminPasswordReady`, `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `CinderReady`, `ServiceAccountsReady`, and `KORCReady` | `False` | `TargetClusterUnavailable` | Same |
 
@@ -236,7 +237,7 @@ cluster.
 
 ## Prerequisites on the target cluster
 
-For the ten workload CRDs, the CR's namespace must already exist on the target.
+For the eleven workload CRDs, the CR's namespace must already exist on the target.
 Their operators do not create it, and a child write into a missing namespace
 fails. A ControlPlane is the exception: it ensures the namespaces it places
 services in, on both clusters (see
@@ -363,6 +364,14 @@ names the bus with `spec.messaging.secretRef` unless a broker runs in its own
 namespace on the target, because the managed mode reads the `RabbitmqCluster`
 through the target's client, in the CR's namespace. No e2e suite runs that
 crossing; Cinder placement is covered by envtest alone.
+
+A placed `Nova` meets the same constraint. All five control-plane workloads and
+the migration Jobs read the transport URL, and the managed mode reads the
+`RabbitmqCluster` through the target's client in the CR's namespace, so a `Nova`
+whose broker runs on the management cluster names the bus with
+`spec.messaging.secretRef`. The compute-config Secret that
+`status.computeConfigSecretRef` names is written on the target, next to the
+workloads. Nova placement, too, is covered by envtest alone.
 
 The verdict of the migrate Job's `cinder-status upgrade check` comes from the
 pod's termination message. The operator lists the Job's pods through the
@@ -526,8 +535,8 @@ A CR whose namespace is outside a declared set fails differently, on a cluster
 that engaged perfectly well. Its first cached read on the target returns
 controller-runtime's `unknown namespace for the cache`, which the credential
 gate records on the CR's first gate condition, carrying that message. That is
-`SecretsReady` on a Keystone, Barbican, Horizon, Glance, Placement, Neutron or
-Cinder. The other three start their pipeline on a different condition:
+`SecretsReady` on a Keystone, Barbican, Horizon, Glance, Placement, Neutron,
+Cinder or Nova. The other three start their pipeline on a different condition:
 `TLSReady` on an
 OVNCentral, `CentralReady` on an OVNChassis, `ChassisReady` on a
 NeutronMetadataAgent. Nothing is created on the target: the reconciler writes
@@ -602,9 +611,9 @@ is recorded in three labels the operator stamps on every remote child:
 
 | Label | Value |
 | --- | --- |
-| `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, `Placement`, `Cinder`, `OVNCentral`, `OVNChassis`, `Neutron`, `NeutronMetadataAgent`, or `ControlPlane` |
+| `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, `Placement`, `Cinder`, `Nova`, `OVNCentral`, `OVNChassis`, `Neutron`, `NeutronMetadataAgent`, or `ControlPlane` |
 | `openstack.c5c3.io/owner-name` | The owning CR's name |
-| `openstack.c5c3.io/owner-namespace` | The owning CR's namespace. For the ten workload CRDs that is also the namespace the child lands in. A ControlPlane's remote children land in the namespace of the service it placed, so for them the label names the ControlPlane's namespace and the child sits elsewhere |
+| `openstack.c5c3.io/owner-namespace` | The owning CR's namespace. For the eleven workload CRDs that is also the namespace the child lands in. A ControlPlane's remote children land in the namespace of the service it placed, so for them the label names the ControlPlane's namespace and the child sits elsewhere |
 
 The kind is part of the key because a Keystone and a Barbican of the same name
 in the same namespace project into one target namespace, and each has to select

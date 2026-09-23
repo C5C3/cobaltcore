@@ -39,10 +39,12 @@ reaches it through the Nova and Neutron APIs and the OVN southbound database.
 
 Whether the implemented management/target-cluster mechanics
 ([Target Clusters](../reference/target-clusters.md)) extend to a hypervisor
-cluster is unexamined, and the Nova and Neutron operators this cluster
-presumes are not onboarded (see the service list on the
-[Architecture](../architecture/index.md#the-original-multi-cluster-picture)
-page).
+cluster is unexamined. The [Nova](../reference/nova/index.md) and
+[Neutron](../reference/neutron/index.md) control planes this cluster presumes
+are onboarded, and the [OVN operator](../reference/ovn/index.md) already
+projects `ovs` and `ovn-controller` onto labelled nodes. The compute side is
+missing: `nova-compute` and the node agents on dedicated compute clusters are
+tracked in [#1013](https://github.com/C5C3/cobaltcore/issues/1013).
 
 ## Source
 

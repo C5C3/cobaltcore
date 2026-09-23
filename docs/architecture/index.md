@@ -46,10 +46,10 @@ target clusters.
 │                                                                           │
 │  Orchestration                   Service operators                        │
 │  ┌─────────────────────────┐     ┌─────────────────────────────────────┐  │
-│  │ c5c3-operator           │     │ keystone-operator                   │  │
-│  │ └─ ControlPlane CR      │────▶│ glance-operator                     │  │
-│  │    creates infra CRs,   │     │ placement-operator                  │  │
-│  │    service CRs, and     │     │ horizon-operator                    │  │
+│  │ c5c3-operator           │     │ keystone-operator  neutron-operator │  │
+│  │ └─ ControlPlane CR      │────▶│ horizon-operator   ovn-operator     │  │
+│  │    creates infra CRs,   │     │ glance-operator    cinder-operator  │  │
+│  │    service CRs, and     │     │ placement-operator nova-operator    │  │
 │  │    K-ORC resources      │     │ barbican-operator                   │  │
 │  └───────────┬─────────────┘     └───────────────┬─────────────────────┘  │
 │              ▼                                   │ project Deployments,   │
@@ -57,9 +57,11 @@ target clusters.
 │  │ K-ORC                   │                     ▼                        │
 │  │ (declarative OpenStack  │     ┌─────────────────────────────────────┐  │
 │  │  resource management)   │     │ OpenStack services                  │  │
-│  └─────────────────────────┘     │ Keystone, Glance, Placement,        │  │
-│                                  │ Horizon, Barbican                   │  │
+│  └─────────────────────────┘     │ Keystone, Horizon, Glance,          │  │
+│                                  │ Placement, Barbican, Neutron,       │  │
+│                                  │ Cinder, Nova                        │  │
 │                                  │ (exposed via Gateway API)           │  │
+│                                  │ OVN central and chassis (SDN layer) │  │
 │                                  └─────────────────────────────────────┘  │
 └──────────────────────────────────────┬────────────────────────────────────┘
                                        │ kubeconfig Secrets
@@ -77,24 +79,31 @@ The stack is built in three declarative layers.
 **Infrastructure manifests** (`deploy/flux-system/`). A `FluxInstance` syncs
 the repository, and HelmReleases install cert-manager, the External Secrets
 Operator, OpenBao, and the infrastructure and service operators along an
-explicit `dependsOn` graph; K-ORC is applied by a separate Flux
-`Kustomization`. The full stack, its namespaces, and the dependency order are
-documented in
+explicit `dependsOn` graph; K-ORC and the RabbitMQ Cluster Operator are
+applied by Flux `Kustomization`s of their own. The full stack, its namespaces,
+and the dependency order are documented in
 [Infrastructure Manifests](../reference/infrastructure/infrastructure-manifests.md).
 
 **Service operators** (`operators/`). One operator per OpenStack service, each
 projecting the service's Deployments, Jobs, configuration, and Secrets from
 its CR. The [Keystone operator](../reference/keystone/) is the reference
 implementation that sets the patterns — CRD layout, sub-reconciler chain,
-webhooks, finalizers, instrumentation — and Glance, Placement, Horizon, and
-Barbican are onboarded on the same scaffolding
-([Adding a New Operator](../contributing/adding-a-new-operator.md)).
+webhooks, finalizers, instrumentation — and Horizon, Glance, Placement,
+Barbican, Neutron, Cinder, and Nova are onboarded on the same scaffolding
+([Adding a New Operator](../contributing/adding-a-new-operator.md)). The
+[OVN operator](../reference/ovn/) is the exception to the
+one-operator-per-service rule: it runs no OpenStack service of its own, only
+the OVN and Open vSwitch layer that the Neutron ML2/OVN driver programs.
 
 **Orchestration** (`operators/c5c3/`). The c5c3-operator turns one
-`ControlPlane` CR into a running control plane: it creates the MariaDB and
-Memcached CRs, projects the service CRs, mints the admin application
-credential through K-ORC, stewards the service-catalog entries, and aggregates
-readiness into the `ControlPlane` status. See
+`ControlPlane` CR into a running control plane: it creates the MariaDB,
+Memcached, and RabbitMQ CRs, projects the service CRs, mints the admin
+application credential through K-ORC, stewards the service-catalog entries,
+and aggregates readiness into the `ControlPlane` status. The OVN control plane
+stays outside it: the network service names an existing `OVNCentral`, which
+the c5c3-operator reads but never creates. Nova is not projected yet and runs
+as a standalone CR until its ControlPlane integration
+([#1019](https://github.com/C5C3/cobaltcore/issues/1019)) lands. See
 [ControlPlane Reconciler Architecture](../reference/c5c3/controlplane-reconciler.md).
 
 ## Secret flow
@@ -119,8 +128,9 @@ platform owners bring their own implementation.
 ## Multi-cluster placement
 
 The implemented multi-cluster model is management cluster plus target
-clusters. A target cluster is registered by a kubeconfig Secret, and the five
-workload CRDs carry an optional `spec.targetClusterRef` that sends every
+clusters. A target cluster is registered by a kubeconfig Secret, and the
+workload CRDs of every service operator carry an optional
+`spec.targetClusterRef` that sends every
 projected child there while the CR itself stays on the management cluster. The
 `ControlPlane` carries one ref per service, so a single control plane can
 spread its services across clusters. See
@@ -136,13 +146,14 @@ IronCore. The table maps them to the state in this repository:
 | --- | --- | --- |
 | Management | GitOps hub, OpenBao, ESO, observability UI (Greenhouse, Aurora) | Collapsed into the single management cluster above; a dedicated cluster is a [sketch](../future/management-cluster.md) |
 | Control Plane | OpenStack control-plane services, K-ORC, infrastructure | Implemented as the management cluster, with optional [target clusters](../reference/target-clusters.md) for workload placement |
-| Hypervisor | Compute virtualization on bare metal (LibVirt, OVN, node agents) | [Sketch](../future/hypervisor-cluster.md) |
+| Hypervisor | Compute virtualization on bare metal (LibVirt, OVN, node agents) | [Sketch](../future/hypervisor-cluster.md); the [Nova](../reference/nova/index.md) compute control plane and the [OVN](../reference/ovn/index.md) chassis layer are onboarded, the compute clusters that run `nova-compute` are not ([#1013](https://github.com/C5C3/cobaltcore/issues/1013)) |
 | Storage | Ceph via Rook, storage observability | [Sketch](../future/storage-cluster.md); block storage itself is onboarded as the [Cinder](../reference/cinder/index.md) control-plane service on the management cluster |
 
 Beyond the clusters, the original document scopes services that are not
-onboarded yet: the Nova operator with its Valkey infrastructure, the optional
-Cortex scheduler and Tempest operator, and consumer self-service via
-Crossplane.
+onboarded yet: Valkey infrastructure, the optional Cortex scheduler and Tempest
+operator, and consumer self-service via Crossplane. The Nova operator, which
+the document pairs with Valkey, is onboarded on MariaDB, Memcached, and
+RabbitMQ instead.
 Tempest exists in this repository as a container image driven by the
 [e2e test infrastructure](../reference/testing/tempest-test-infrastructure.md),
 not as an operator. New services follow the onboarding path in
