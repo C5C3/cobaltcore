@@ -42,15 +42,15 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # fixtures (13-immutable-base and 14-17, #466), eight validation-marker
 # fixtures (13-image-empty-tag through 20-perloggerlevels-invalid-value), and
 # the two extraConfig option-catalog fixtures (24-extraconfig-unknown-option
-# and 25-extraconfig-unknown-section). The
-# fixtures (00-, 01-) predate and are intentionally NOT generated. Bumping this
+# and 25-extraconfig-unknown-section). The two hand-written fixtures (00-, 01-)
+# predate the generator and are intentionally NOT generated. Bumping this
 # value requires adding the matching Fixture entry AND the matching
 # `file: <name>` line in chainsaw-test.yaml.
 _EXPECTED_FIXTURE_COUNT = 30
 
 
 def _load_generator() -> types.ModuleType:
-    spec = importlib.util.spec_from_file_location("cc0094_generate", _GENERATOR)
+    spec = importlib.util.spec_from_file_location("keystone_invalid_cr_generate", _GENERATOR)
     assert spec and spec.loader, f"failed to load spec for {_GENERATOR}"
     module = importlib.util.module_from_spec(spec)
     # Register before exec_module so @dataclass(frozen=True) can resolve
