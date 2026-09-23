@@ -270,7 +270,8 @@ func (r *NovaComputeReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 //
 // A step that sets its condition False for a reason that is not a wait on an
 // input returns a zero result, so the later steps still run: an empty
-// selection still reconciles the drain of the nodes the pool held.
+// selection still reconciles the drain of the nodes the pool held, and so does
+// a rollout that one NotReady node keeps from finishing.
 //
 // It is a method rather than a literal inside Reconcile so the drift guard can
 // enumerate the step names without running a reconcile.
@@ -286,6 +287,9 @@ func (r *NovaComputeReconciler) pipelineSteps(children client.Client, cr *novav1
 		}},
 		{Name: "PoolConfig", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileNovaComputeConfig(ctx, children, cr, pass)
+		}},
+		{Name: "DaemonSet", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileNovaComputeDaemonSet(ctx, children, cr, pass)
 		}},
 	}
 }
