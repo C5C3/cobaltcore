@@ -18,6 +18,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -2250,8 +2251,6 @@ func TestNovaKeystoneEndpoint_FollowsTheNova(t *testing.T) {
 func TestReconcileNova_NoMirrorTargetsWritesNothing(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := novaControlPlane()
-	g.Expect(novaComputeConfigMirrorTargets(cp)).To(BeEmpty(),
-		"#1013 is what fills this from the compute-cluster attachment")
 
 	// The contract is published, so a mirror that ran would have something to
 	// copy: the only Secret under that name must stay the published one.
@@ -2259,7 +2258,11 @@ func TestReconcileNova_NoMirrorTargetsWritesNothing(t *testing.T) {
 	r := newNovaTestReconciler(t, cp, published)
 	ctx := context.Background()
 
-	_, err := r.reconcileNova(ctx, cp)
+	targets, err := r.novaComputeConfigMirrorTargets(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(targets).To(BeEmpty(), "no NovaCompute of this Nova runs anywhere")
+
+	_, err = r.reconcileNova(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	convergeNovaChild(t, r, cp, getProjectedNova(t, r.Client, cp).Generation)
 
@@ -2279,6 +2282,121 @@ func TestReconcileNova_NoMirrorTargetsWritesNothing(t *testing.T) {
 	}
 	g.Expect(copies).To(ConsistOf(published.Namespace),
 		"nothing copies the compute contract while no target is enumerated")
+}
+
+// mirrorPool is a NovaCompute in cp's Nova namespace, joining novaRef and
+// placed on cluster ("" for the local one).
+func mirrorPool(cp *c5c3v1alpha1.ControlPlane, name, novaRef, cluster string) *novav1alpha1.NovaCompute {
+	pool := &novav1alpha1.NovaCompute{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.NovaNamespace()},
+		Spec: novav1alpha1.NovaComputeSpec{
+			NovaRef:      novav1alpha1.NovaRef{Name: novaRef},
+			NodeSelector: map[string]string{"pool": name},
+		},
+	}
+	if cluster != "" {
+		pool.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: cluster}
+	}
+	return pool
+}
+
+// TestNovaComputeConfigMirrorTargets pins the enumeration: one target per
+// cluster a pool of this plane's Nova runs on, sorted, in the Nova namespace,
+// without the Nova's own placement, a leaving pool, or another Nova's pool.
+func TestNovaComputeConfigMirrorTargets(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("one target per cluster a pool runs on", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		leaving := mirrorPool(cp, "pool-leaving", novaName(cp), "compute-c")
+		leaving.DeletionTimestamp = ptr.To(metav1.Now())
+		leaving.Finalizers = []string{"nova.openstack.c5c3.io/compute-drain"}
+		r := newNovaTestReconciler(t, cp,
+			mirrorPool(cp, "pool-b", novaName(cp), "compute-b"),
+			mirrorPool(cp, "pool-a1", novaName(cp), "compute-a"),
+			mirrorPool(cp, "pool-a2", novaName(cp), "compute-a"),
+			mirrorPool(cp, "pool-local", novaName(cp), ""),
+			mirrorPool(cp, "pool-other-nova", "other-nova", "compute-d"),
+			leaving,
+		)
+
+		targets, err := r.novaComputeConfigMirrorTargets(ctx, cp)
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(targets).To(Equal([]computeConfigMirrorTarget{
+			{ClusterRef: &commonv1.TargetClusterRefSpec{Name: "compute-a"}, Namespace: cp.NovaNamespace()},
+			{ClusterRef: &commonv1.TargetClusterRefSpec{Name: "compute-b"}, Namespace: cp.NovaNamespace()},
+		}))
+	})
+
+	t.Run("a placed Nova drops its own cluster and keeps the local one", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placedNovaControlPlane("control-a")
+		r := newNovaTestReconciler(t, cp,
+			mirrorPool(cp, "pool-beside-nova", novaName(cp), "control-a"),
+			mirrorPool(cp, "pool-compute", novaName(cp), "compute-a"),
+			mirrorPool(cp, "pool-local", novaName(cp), ""),
+		)
+
+		targets, err := r.novaComputeConfigMirrorTargets(ctx, cp)
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(targets).To(Equal([]computeConfigMirrorTarget{
+			{ClusterRef: nil, Namespace: cp.NovaNamespace()},
+			{ClusterRef: &commonv1.TargetClusterRefSpec{Name: "compute-a"}, Namespace: cp.NovaNamespace()},
+		}), "the published Secret already lives on control-a; mirroring there would label the Nova's own contract")
+	})
+
+	t.Run("an unserved NovaCompute kind yields no target", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		r := newNovaTestReconcilerWithList(t, &meta.NoKindMatchError{
+			GroupKind: novav1alpha1.GroupVersion.WithKind("NovaCompute").GroupKind(),
+		}, cp)
+
+		targets, err := r.novaComputeConfigMirrorTargets(ctx, cp)
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(targets).To(BeEmpty())
+	})
+
+	t.Run("a failed list fails NovaReady", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		r := newNovaTestReconcilerWithList(t, errors.New("etcd is down"), cp, publishedComputeConfig(cp))
+
+		_, err := r.reconcileNova(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		convergeNovaChild(t, r, cp, getProjectedNova(t, r.Client, cp).Generation)
+
+		_, err = r.reconcileNova(ctx, cp)
+
+		g.Expect(err).To(MatchError(ContainSubstring("etcd is down")))
+		cond := novaCondition(t, cp)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal("NovaComputeConfigError"))
+	})
+}
+
+// newNovaTestReconcilerWithList is newNovaTestReconciler whose NovaCompute
+// lists fail with listErr.
+func newNovaTestReconcilerWithList(t *testing.T, listErr error, objs ...client.Object) *ControlPlaneReconciler {
+	t.Helper()
+	s := novaTestScheme(t)
+	seeded := withNovaTenantStore(withReadyNovaRegistration(withNovaBusSecret(withReadyNovaDBCreds(objs))))
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &novav1alpha1.Nova{},
+			&c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*novav1alpha1.NovaComputeList); ok {
+					return listErr
+				}
+				return cl.List(ctx, list, opts...)
+			},
+		}).Build()
+	return &ControlPlaneReconciler{Client: c, Scheme: s}
 }
 
 // publishedComputeConfig builds the Secret the nova operator publishes the
@@ -2320,6 +2438,8 @@ func TestMirrorNovaComputeConfig_CopiesTheSecretToTheTarget(t *testing.T) {
 	g.Expect(mirror.Data).To(Equal(published.Data))
 	g.Expect(mirror.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
 	g.Expect(mirror.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
+	g.Expect(mirror.Labels).To(HaveKeyWithValue(novav1alpha1.ComputeConfigMirrorLabel, "true"),
+		"the last NovaCompute on the cluster recognizes the mirror it reaps by this label")
 	g.Expect(mirror.OwnerReferences).To(BeEmpty(),
 		"a mirror in another namespace cannot carry an owner reference")
 }
