@@ -279,8 +279,8 @@ The command prints `Dynamic Dynamic`. Watch for:
   so a changed credential rolls all of them. Both DSNs travel in environment
   variables, which only take effect on a pod restart.
 
-The cell mappings stay as they were. They hold templates rather than
-credentials, and every process expands them with the connection it now runs
+The cell mappings stay as they were. They hold templates that carry no
+credential, and every process expands them with the connection it now runs
 with, so the cutover needs no `nova-manage cell_v2 update_cell`. Confirm it with
 the plain `list_cells` (never `--verbose`, which prints the passwords):
 
