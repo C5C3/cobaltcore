@@ -384,6 +384,9 @@ for op in $ALL_OPERATORS; do
 done
 [[ "$canary" == "true" ]] && e2e_ops=$(set_add "$e2e_ops" "$CANARY_OPERATOR")
 filter_on e2e_openbao && e2e_ops=$(set_add "$e2e_ops" barbican)
+# A K-ORC pin change is proven only by a job that runs hack/ci-deploy-korc.sh;
+# the c5c3 leg is the cheapest of them (image reused from main).
+filter_on e2e_korc && e2e_ops=$(set_add "$e2e_ops" c5c3)
 [[ "$force" == "true" ]] && e2e_ops="$ALL_OPERATORS"
 
 # On a push the operator matrix keeps today's publish semantics: it drives

@@ -296,10 +296,17 @@ jobs:
               - '.github/actions/setup-test-deps/**'
               - '.github/actions/load-e2e-images/**'
               - '.github/actions/registry-login/**'
-            # OpenBao is the one piece of the substrate with an operator that
+            # OpenBao is one piece of the substrate with an operator that
             # exercises it directly, so barbican joins the canary for it.
             e2e_openbao:
               - 'deploy/openbao/**'
+            # K-ORC is the other: only the jobs that run hack/ci-deploy-korc.sh
+            # deploy its pinned commit and image, so the c5c3 leg (the
+            # cheapest of them) joins the canary for a change to the pin.
+            e2e_korc:
+              - 'deploy/flux-system/sources/k-orc.yaml'
+              - 'deploy/flux-system/releases/k-orc.yaml'
+              - 'hack/ci-deploy-korc.sh'
             ci_plumbing:
               - '.github/workflows/ci.yaml'
               - '.github/actions/**'
@@ -420,6 +427,7 @@ jobs:
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
           FILTER_e2e_shared: ${{ steps.filter.outputs.e2e_shared }}
           FILTER_e2e_openbao: ${{ steps.filter.outputs.e2e_openbao }}
+          FILTER_e2e_korc: ${{ steps.filter.outputs.e2e_korc }}
           FILTER_ci_plumbing: ${{ steps.filter.outputs.ci_plumbing }}
           FILTER_actionlint: ${{ steps.filter.outputs.actionlint }}
           FILTER_makefile: ${{ steps.filter.outputs.makefile }}

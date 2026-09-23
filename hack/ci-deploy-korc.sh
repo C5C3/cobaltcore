@@ -32,7 +32,10 @@
 #     bytes.
 # On top of that a drift guard asserts the (documentation-only) image tag equals
 # commit-<first 7 chars of the pinned commit>, so a Renovate commit bump that
-# forgets to re-pin the image fails this step loudly on the bump PR.
+# forgets to re-pin the image fails loudly on the bump PR: the pin gates run
+# offline under KORC_VERIFY_ONLY=true in tests/unit/deploy/korc_pin_lockstep_test.sh
+# (make test-shell, which runs on every pull request), and a change to either
+# K-ORC manifest adds the c5c3 e2e leg, which runs this script in full.
 #
 # Used by the e2e-controlplane CI job, which deploys the c5c3 + keystone
 # operators as local dev images and needs K-ORC's CRDs + controller alongside
@@ -47,6 +50,9 @@
 #                  (default: 180s).
 #   GITHUB_TOKEN — Authenticates the clone from github.com; CI passes the
 #                  workflow token, a run without one clones anonymously.
+#   KORC_VERIFY_ONLY — "true" runs only the offline pin gates (commit shape,
+#                  tag and digest shape, tag/commit drift) and exits 0 before
+#                  the clone. No git, kubectl, or network is used.
 #
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
 
@@ -105,6 +111,11 @@ KORC_EXPECTED_TAG="commit-${KORC_COMMIT:0:7}"
 if [[ "${KORC_IMAGE_TAG}" != "${KORC_EXPECTED_TAG}" ]]; then
   echo "::error::K-ORC image tag ${KORC_IMAGE_TAG} in ${KORC_RELEASE} does not match the pinned commit ${KORC_COMMIT} in ${KORC_SOURCE} (expected ${KORC_EXPECTED_TAG}); bump spec.images[].newTag in lockstep with ref.commit"
   exit 1
+fi
+
+if [[ "${KORC_VERIFY_ONLY:-false}" == "true" ]]; then
+  echo "K-ORC pin verified: commit ${KORC_COMMIT}, image ${KORC_IMAGE_TAG}@${KORC_IMAGE_DIGEST}"
+  exit 0
 fi
 
 # Fetch the pinned tree. --filter=blob:none keeps the clone small (blobs are
