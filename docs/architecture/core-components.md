@@ -36,6 +36,8 @@ convention `<service>.openstack.c5c3.io`.
 | barbican-operator | `Barbican`, `BarbicanSecretStore` | Key management | [Overview](../reference/barbican/) |
 | ovn-operator | `OVNCentral`, `OVNChassis` | SDN control plane and chassis | [Overview](../reference/ovn/) |
 | neutron-operator | `Neutron`, `NeutronMetadataAgent` | Networking | [Overview](../reference/neutron/) |
+| cinder-operator | `Cinder`, `CinderBackend`, `CinderBackupBackend` | Block storage | [Overview](../reference/cinder/) |
+| nova-operator | `Nova` | Compute control plane | [Overview](../reference/nova/) |
 
 The ovn-operator is the exception to the one-operator-per-service rule. It
 manages no OpenStack service of its own; it owns the OVN and Open vSwitch
