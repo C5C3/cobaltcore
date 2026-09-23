@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The nova-operator controller runs in its own dedicated nova-system
-# Namespace; the Nova CRs and the operator-managed payload (five Deployments,
-# Services, ConfigMaps, Secrets, the migration Jobs, the archive CronJob,
-# HTTPRoutes, NetworkPolicies) live in the tenant Namespace the CRs are
-# created in.
+# Namespace; the Nova and NovaCompute CRs and the operator-managed payload (five
+# Deployments, Services, ConfigMaps, Secrets, the migration Jobs, the archive
+# CronJob, HTTPRoutes, NetworkPolicies, and a NovaCompute's nova-compute
+# DaemonSet with its config ConfigMaps) live in the tenant Namespace the CRs
+# are created in.
 # dependsOn: keystone-operator is ordered so the compute service's identity
 # backend exists before Nova is projected; mariadb-operator is required
 # because Nova has databases and memcached-operator because it caches

@@ -1029,7 +1029,8 @@ for iSCSI, multipath and NVMe that os-brick (the library nova attaches volumes
 with) runs, `cryptsetup` and `genisoimage`, and a rootwrap and sudo posture
 that lets the unprivileged `openstack` user start nova's privileged helpers.
 The [nova](#nova) control-plane image carries none of it (decision D14 of
-issue #1014). The node-pool satellite of issue #1061 is the first consumer.
+issue #1014). Its consumer is the [NovaCompute](../nova/novacompute-crd.md)
+node pool, which runs it under the tag of the Nova's installed release.
 
 The image has a directory of its own instead of a second stage in
 `images/nova/Dockerfile`. `hack/ci-generate-cleanup-matrix.sh` turns every
@@ -1066,8 +1067,8 @@ The price is one repeated install step.
   with `visudo`
 - Sets `USER openstack` for non-root execution
 
-There is no noVNC stage and no `nova-amqp-ready`: the compute pod's probes
-belong to issue #1061.
+There is no noVNC stage and no `nova-amqp-ready`: the NovaCompute pod runs no
+probe, because the service state Nova reports is its health signal.
 
 **Runtime packages** (`nova-compute.apt_packages`, the same list in both
 releases):
@@ -1144,7 +1145,9 @@ installs no OVS package. `openvswitch-common` carries `ovsdb-client`,
 `[os_vif_ovs] ovsdb_connection` at the host's OVSDB socket is the consumer's
 configuration.
 
-**What the image expects from its pod** (issue #1061 owns the pod spec):
+**What the image expects from its pod** (the
+[NovaCompute node contract](../nova/novacompute-crd.md#node-contract) is the pod
+spec that meets it):
 
 - Configuration mounted below `/etc/nova`, such as `/etc/nova/compute.conf.d`,
   and never a volume at `/etc/nova` itself, which would hide `rootwrap.conf`
@@ -1158,8 +1161,12 @@ configuration.
   and must find again after every pod recreation, and `instances` below it.
   Without it the next start writes a new node UUID, which collides with the
   existing `ComputeNode` record of the host
-- `/var/lib/nova`, `/var/lib/nova/instances` and `/var/lib/nova/tmp` on the
-  host owned by 42424:42424 before nova-compute starts. The mount hides the
+- For a consumer that runs nova-compute as the image's `openstack` user:
+  `/var/lib/nova`, `/var/lib/nova/instances` and `/var/lib/nova/tmp` on the
+  host owned by 42424:42424 before nova-compute starts. The NovaCompute pod
+  runs nova-compute as root, because a stock host's libvirt socket is
+  `root:libvirt` 0660 with a host-specific group ID, so it needs none of this;
+  a non-root consumer does. The mount hides the
   image's own directories, the kubelet creates a missing `hostPath` directory
   as `root:root` 0755, and `fsGroup` does not apply to a `hostPath`. On a
   directory nova-compute cannot write, the first start fails to write

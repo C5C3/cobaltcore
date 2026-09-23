@@ -141,6 +141,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Nova` | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the projected Nova compute-service child status changes. The nova-operator is installed only for a ControlPlane that runs the compute service, so both legs sit behind the discovery probe with the other sibling-operator kinds |
 | `OpenBaoCluster`, `OpenBaoTenant` | `Owns()` | Re-reconciles when the OpenBao instance provisioned for a dedicated Barbican secret store, or the tenant admitting its namespace, changes. The openbao-operator is installed only for that mode, so a ControlPlane without one runs on a cluster that never serves these kinds; both legs sit behind the discovery probe with the other sibling-operator kinds (`probeOptionalWatches`, which skips the leg and registers a leader-gated re-check that restarts the operator once the CRD appears) |
 | `RabbitmqCluster` (unstructured `rabbitmqClusterGVK`) | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the managed message-bus child status changes, so `InfrastructureReady` follows `AllReplicasReady` instead of waiting for the periodic requeue. Watched as `*unstructured.Unstructured`, since the c5c3 operator takes no dependency on the RabbitMQ Cluster Operator's Go module. Messaging is opt-in, so both legs sit behind the discovery probe with the openbao kinds: a cluster that does not serve `rabbitmqclusters.rabbitmq.com` starts without them, and `crdWatchGate` restarts the operator once the CRD appears |
+| `NovaCompute` | `Watches()` | Per-CR fan-out via `novaComputeToControlPlaneMapper`, matching the Nova namespace and the Nova name a pool's `spec.novaRef` names. Pools are user-authored and only read, for the clusters the compute contract is mirrored to, so they carry no owner reference. The predicate admits a pool being created, deleted or starting to be deleted, the events that change the mirror targets. The leg sits behind the discovery probe with the other nova-operator kinds |
 | `OVNCentral` | `Watches()` | Per-CR fan-out via `ovnCentralToControlPlaneMapper`. The central is deployed outside the plane and only named by `spec.services.neutron.ovn.centralRef`, so it carries no owner reference an `Owns()` could match; the leg re-runs `reconcileOVN` when the central's status moves instead of waiting for the periodic requeue. The ovn-operator is installed only for a plane that runs a network service, so the leg sits behind the discovery probe with the other sibling-operator kinds |
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
@@ -2647,16 +2648,28 @@ services:
 **The compute-config mirror.** The nova operator publishes the compute contract,
 the `nova.conf` fragment and bus credentials a nova-compute needs to join this
 plane, as `{controlplane.Name}-nova-compute-config` in the Nova namespace. A
-compute node does not read it there: it runs outside this cluster, and its agents
-are configured from the namespace its own attachment names. `mirrorNovaComputeConfig`
-copies the Secret into one target namespace on that target's cluster, stamped
-with this ControlPlane's ownership labels so the teardown reaps it with the rest.
-A target that cannot be served parks `NovaReady` rather than failing the pass:
-the control plane is up, but a compute cluster that never receives the contract
-registers no hypervisor. `novaComputeConfigMirrorTargets` returns **nil** today,
-so the loop is skipped and the mirror writes nothing; #1013 fills it from the
-compute-cluster attachment it introduces, one target per attached cluster, which
-is why that issue adds the enumeration rather than the delivery.
+[NovaCompute](../nova/novacompute-crd.md) node pool mounts it in its own
+namespace on the cluster its pods run on, so the Secret has to exist there a
+second time. `novaComputeConfigMirrorTargets` lists the NovaComputes in the Nova
+namespace and returns one target per cluster a pool of this plane's Nova runs
+on, sorted, in the Nova namespace. Pools sharing a cluster share a target, the
+Nova's own placement is dropped because the published Secret lives there
+already, and a pool being deleted is left out. An unserved NovaCompute kind
+yields no target; any other list error fails `NovaReady` with
+`NovaComputeConfigError`. `mirrorNovaComputeConfig` copies the Secret into each
+target, stamped with this ControlPlane's ownership labels so the teardown reaps
+it with the rest, and with `nova.openstack.c5c3.io/compute-config-mirror:
+"true"`. A target that cannot be served parks `NovaReady` rather than failing
+the pass: the control plane is up, but a compute cluster that never receives the
+contract registers no hypervisor.
+
+The plane records nothing in its status about what it mirrored, because
+`reconcileNova` runs in the parallel group, which keeps only conditions and
+metadata. A mirror left behind by the last pool of a cluster is reaped by that
+pool's own teardown, which deletes the Secret only while it carries the mirror
+label. A `NovaCompute` watch wakes the plane whose Nova a pool names, narrowed to
+pools being created, deleted or starting to be deleted, so a pool's status polls
+do not reconcile the plane.
 
 Unsetting `spec.services.nova` deletes nothing on its own. With
 `c5c3.io/allow-nova-deletion: "true"`, `deleteOrphanedNova` releases the `Nova`
@@ -2701,8 +2714,8 @@ unowned, and the finalizer sweeps it by those labels.
 | Nova child not yet Ready | False | `WaitingForNova` | requeue 15s |
 | projected Nova spec rejected (HTTP 422 Invalid) | False | `NovaProjectionRejected` | returns the error; the projection violates a Nova CRD/webhook rule, so reconcile the ControlPlane spec to a valid projection to recover |
 | Nova create/update fails | False | `NovaError` | returns the error |
-| the compute contract has not been published yet | False | `WaitingForComputeConfig` | requeue 15s; only reachable once a mirror target is enumerated |
-| reading the compute contract or writing a mirror fails | False | `NovaComputeConfigError` | returns the error |
+| the compute contract has not been published yet | False | `WaitingForComputeConfig` | requeue 15s; only reachable once a NovaCompute runs on a cluster other than the Nova's own |
+| listing the NovaComputes, reading the compute contract, or writing a mirror fails | False | `NovaComputeConfigError` | returns the error |
 | Nova child Ready, every mirror target served, and its registration Ready | True | `NovaReady` | — |
 
 ### reconcileKORC

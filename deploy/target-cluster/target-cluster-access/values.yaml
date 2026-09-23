@@ -45,10 +45,10 @@ authDelegatorBinding: false
 # createNamespaces has to be true, since the chart cannot label a namespace it
 # does not create; either violation fails the render.
 #
-# Turn it on only for a namespace an OVNChassis is placed in: OVS and
-# ovn-controller run with hostNetwork, hostPath and added capabilities, and on a
-# cluster whose PodSecurity admission defaults to baseline or restricted their
-# pods are rejected without the label. The service APIs stay Restricted and need
+# Turn it on only for a namespace an OVNChassis or a NovaCompute is placed in:
+# OVS and ovn-controller run with hostNetwork, hostPath and added capabilities,
+# nova-compute privileged as root, and on a cluster whose PodSecurity admission
+# defaults to baseline or restricted their pods are rejected without the label. The service APIs stay Restricted and need
 # no entry.
 #
 # WHAT THE LABEL COSTS. PodSecurity admission is what keeps this account's
