@@ -5,12 +5,12 @@ quadrant: operator
 
 # Target Clusters
 
-Eleven workload CRDs carry an optional `spec.targetClusterRef`:
+Twelve workload CRDs carry an optional `spec.targetClusterRef`:
 [Keystone](./keystone/keystone-crd.md), [Barbican](./barbican/barbican-crd.md),
 [Horizon](./horizon/horizon-crd.md), [Glance](./glance/glance-crd.md),
 [Placement](./placement/placement-crd.md), [Cinder](./cinder/cinder-crd.md),
-[Nova](./nova/nova-crd.md), `OVNCentral`, `OVNChassis`, `Neutron`, and
-`NeutronMetadataAgent`. The field
+[Nova](./nova/nova-crd.md), [NovaCompute](./nova/novacompute-crd.md),
+`OVNCentral`, `OVNChassis`, `Neutron`, and `NeutronMetadataAgent`. The field
 names a registered target cluster that receives every child the CR projects:
 Deployments, ConfigMaps, Secrets, and, for the services that have one, the
 database CRs. The CR itself does not move. It is created, reconciled, and
@@ -104,17 +104,19 @@ on the management cluster, as equally privileged until an authorization model
 lands.
 :::
 
-Two grants therefore need locking down on the management cluster:
+Three grants therefore need locking down on the management cluster:
 
 | Grant | Why |
 | --- | --- |
 | `create`/`update` on Secrets in `c5c3-clusters` | A labelled Secret here registers a cluster. Whoever can write one decides which clusters the operator holds credentials for |
 | `create` on `keystones`, `barbicans`, `glances`, `horizons`, `placements`, `cinders`, `novas`, `controlplanes` | A CR author picks the cluster its children land on, from every name registered. A ControlPlane picks one per service |
+| `create` on `novacomputes` | Root on every node the author's `spec.nodeSelector` and `spec.tolerations` reach: the pool runs a privileged, host-network `nova-compute` as uid 0, with `/dev` and `/var/lib/nova` mounted, from the image `spec.image` names. That holds on any registered cluster, and on the management cluster when `targetClusterRef` is unset. A pool of a ControlPlane's Nova naming a cluster also makes the ControlPlane copy the compute contract there, the bus `transport_url` with the RabbitMQ password and the service password among it, whether or not the pool selects a node |
 
-An install that needs no target clusters carries neither exposure: a
-namespace-scoped install clears `--clusters-namespace` (see below), the operator
-engages nothing, and a `targetClusterRef` naming any cluster reports
-`TargetClusterUnavailable`.
+An install that needs no target clusters carries none of the cross-cluster
+exposure: a namespace-scoped install clears `--clusters-namespace` (see below),
+the operator engages nothing, and a `targetClusterRef` naming any cluster
+reports `TargetClusterUnavailable`. The `novacomputes` grant still reaches the
+management cluster's own nodes.
 
 ## Registration does not validate credentials
 
@@ -238,7 +240,7 @@ cluster.
 
 ## Prerequisites on the target cluster
 
-For the eleven workload CRDs, the CR's namespace must already exist on the target.
+For the twelve workload CRDs, the CR's namespace must already exist on the target.
 Their operators do not create it, and a child write into a missing namespace
 fails. A ControlPlane is the exception: it ensures the namespaces it places
 services in, on both clusters (see
@@ -325,6 +327,15 @@ A `NeutronMetadataAgent`'s namespace needs the same entry. Its
 bidirectional `/run/netns` mount, which is why the kind is projected into the
 namespace of the `OVNChassis` it attaches to: one entry covers both node-level
 workloads, and the `Neutron` API needs none.
+
+A `NovaCompute`'s namespace needs it too. Its `nova-compute` DaemonSet runs
+privileged as root on the host network, with a bidirectional `/var/lib/nova`
+mount and the node's libvirt and Open vSwitch sockets (see the
+[node contract](./nova/novacompute-crd.md#node-contract)). On a compute cluster
+openstack-hypervisor-operator runs beside it: list the namespace in its
+`--agent-namespaces` as well, because that is where it looks for the agent pods
+it waits on before it deletes an offboarded node's compute service, and give no
+pod of the pool an indefinite toleration of `kvm.cloud.sap/offboarding`.
 
 A placed `Cinder` mounts every backend export and the backup share as an inline
 CSI volume in the pod spec, so the target cluster needs an NFS CSI mounter of
@@ -549,10 +560,10 @@ that engaged perfectly well. Its first cached read on the target returns
 controller-runtime's `unknown namespace for the cache`, which the credential
 gate records on the CR's first gate condition, carrying that message. That is
 `SecretsReady` on a Keystone, Barbican, Horizon, Glance, Placement, Neutron,
-Cinder or Nova. The other three start their pipeline on a different condition:
+Cinder or Nova. The other four start their pipeline on a different condition:
 `TLSReady` on an
 OVNCentral, `CentralReady` on an OVNChassis, `ChassisReady` on a
-NeutronMetadataAgent. Nothing is created on the target: the reconciler writes
+NeutronMetadataAgent, and `NovaReady` on a NovaCompute. Nothing is created on the target: the reconciler writes
 nothing it could not first read. Neither retrying nor waiting changes a cache's
 scope, so the condition holds until the registration or the CR moves.
 
@@ -624,9 +635,9 @@ is recorded in three labels the operator stamps on every remote child:
 
 | Label | Value |
 | --- | --- |
-| `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, `Placement`, `Cinder`, `Nova`, `OVNCentral`, `OVNChassis`, `Neutron`, `NeutronMetadataAgent`, or `ControlPlane` |
+| `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, `Placement`, `Cinder`, `Nova`, `NovaCompute`, `OVNCentral`, `OVNChassis`, `Neutron`, `NeutronMetadataAgent`, or `ControlPlane` |
 | `openstack.c5c3.io/owner-name` | The owning CR's name |
-| `openstack.c5c3.io/owner-namespace` | The owning CR's namespace. For the eleven workload CRDs that is also the namespace the child lands in. A ControlPlane's remote children land in the namespace of the service it placed, so for them the label names the ControlPlane's namespace and the child sits elsewhere |
+| `openstack.c5c3.io/owner-namespace` | The owning CR's namespace. For the twelve workload CRDs that is also the namespace the child lands in. A ControlPlane's remote children land in the namespace of the service it placed, so for them the label names the ControlPlane's namespace and the child sits elsewhere |
 
 The kind is part of the key because a Keystone and a Barbican of the same name
 in the same namespace project into one target namespace, and each has to select
@@ -683,6 +694,12 @@ deletion open. The pass requeues and the finalizer stays on until the two
 five-minute windows run out. Then it is released without a sweep, under a
 `RemoteChildrenAbandoned` warning event naming what went undeleted, and the
 children stay on the unreachable cluster, to be removed there by hand.
+
+A placed `NovaCompute` comes down before the `Nova` it joins and before the
+`OVNChassis` on its nodes. Its teardown drains every node it holds through the
+Nova API, so the Nova has to still answer, and its pods wait on the chassis's
+`/run/openvswitch` socket. The drain holds the deletion until Nova reports each
+host empty (see [The drain](./nova/novacompute-crd.md#the-drain)).
 
 The four CRs of a placed network service come down in one order, because each of
 the first three reads something a later one owns. Delete the

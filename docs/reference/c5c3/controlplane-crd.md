@@ -3150,11 +3150,15 @@ Managed-mode Keystone.
 | `False` | `NovaProjectionRejected` | The Nova API server rejected the projected Nova spec (HTTP 422): the projection violates a CRD/webhook rule. Reconcile the ControlPlane spec to a valid projection to recover. |
 | `False` | `NovaError` | Error create-or-updating the Nova CR. |
 | `False` | `WaitingForComputeConfig` | The child is Ready but the compute contract Secret `{controlplane.Name}-nova-compute-config` the nova operator publishes has not appeared yet, so a mirror target cannot be served. Requeue 15s. |
-| `False` | `NovaComputeConfigError` | Error reading the published compute contract or writing its mirror into a target namespace. |
+| `False` | `NovaComputeConfigError` | Error listing the NovaComputes, reading the published compute contract, or writing its mirror into a target namespace. |
 
-The compute-config reasons only appear once a compute cluster is attached to the
-ControlPlane: `novaComputeConfigMirrorTargets` enumerates no targets today, so
-the mirror writes nothing and the loop is skipped.
+The compute-config reasons only appear once a [NovaCompute](../nova/novacompute-crd.md)
+of the plane's Nova runs on a cluster other than the Nova's own. The mirror
+targets are one per such cluster, in the Nova namespace: pools sharing a cluster
+share a target, a pool being deleted is left out, and a cluster that does not
+serve the NovaCompute kind has no pools and so no target. The mirror carries
+`nova.openstack.c5c3.io/compute-config-mirror: "true"`, and the last pool of the
+Nova on a cluster reaps it when it is torn down.
 
 A registration that is provisioned but not yet fully `Ready` relays its own first
 failing sub-condition's reason onto `NovaReady`, the same way its peers do.
