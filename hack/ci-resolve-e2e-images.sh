@@ -8,8 +8,9 @@
 #
 # The key set is every image an E2E consumer can name: one operator image per
 # operators/<op>/ that has a go.mod, one service image per (operator, release)
-# pair in releases/*/source-refs.yaml, one Tempest image per releases/<release>/,
-# and the release-independent federation proxy. Deriving it from the tree means a
+# pair in releases/*/source-refs.yaml, one derived image per release of the
+# service it is built from (nova-compute from nova), one Tempest image per
+# releases/<release>/, and the release-independent federation proxy. Deriving it from the tree means a
 # new operator or release directory extends the set with no workflow edit.
 #
 # An image whose sources this pull request changed is built in this job and
@@ -48,7 +49,10 @@
 #
 # Written to GITHUB_ENV for the build and push steps to loop over:
 #   BUILD_OPERATORS        — one operator name per line
-#   BUILD_SERVICE_IMAGES   — one "<service> <release>" pair per line
+#   BUILD_SERVICE_IMAGES   — one "<service> <release> [<image>]" line per
+#                            image; the third field names a derived image
+#                            built from the service's source, and a line
+#                            without it builds the service's own image
 #   BUILD_TEMPEST_RELEASES — one release per line
 #   BUILD_PROXY            — true or false
 #   NEEDS_BASE_IMAGES      — true when a service or Tempest image is built. Both
@@ -336,6 +340,23 @@ for operator in "${operators[@]}"; do
     fi
   done < <(OPERATOR="${operator}" "${REPO_ROOT}/hack/ci-service-image-releases.sh")
 done
+
+# The derived image nova-compute: an image built from nova's source, patches
+# and constraints under a name of its own (images/nova-compute/). It is built
+# whenever nova's image is, since both come from the same source, and otherwise
+# reused from what main published under its own name.
+while read -r release; do
+  [[ -n "${release}" ]] || continue
+  built=false
+  if has_line "$(printf '%s\n' ${build_service_images[@]+"${build_service_images[@]}"})" "nova ${release}"; then
+    built=true
+  fi
+  add_entry "${IMAGE_PREFIX}/nova-compute:${release}" \
+    "${IMAGE_PREFIX}/nova-compute:${release}" "${built}"
+  if [[ "${ENTRY_BUILT}" == "true" ]]; then
+    build_service_images+=("nova ${release} nova-compute")
+  fi
+done < <(OPERATOR=nova "${REPO_ROOT}/hack/ci-service-image-releases.sh")
 
 for release in "${releases[@]}"; do
   add_entry "${IMAGE_PREFIX}/tempest:${release}" \
