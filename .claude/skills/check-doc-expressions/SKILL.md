@@ -3,10 +3,12 @@ name: check-doc-expressions
 description: >-
   Audit documentation prose quality for the CobaltCore docs — sentence clarity,
   active voice, terminology, ambiguity, tone, jargon control, adherence
-  to STYLE_GUIDE.md's rhetorical-device budget, and the readability of
-  command examples and code-adjacent explanations. Use when asked to
-  improve writing quality, after drafting or editing prose, or when a
-  page reads correctly but not clearly.
+  to STYLE_GUIDE.md's rhetorical-device budget (em-dashes, italics,
+  antithesis, callouts, aphorisms, filler words, counted per page by a
+  script), and the readability of command examples and code-adjacent
+  explanations. Use when asked to improve writing quality, after drafting
+  or editing prose, when a page reads correctly but not clearly, or to
+  find the pages furthest over the style budget.
 ---
 
 # Check documentation expressions
@@ -18,7 +20,7 @@ examples should be readable, and important claims should not be buried
 in vague language.
 
 It is repeatable — run it any time text changes materially, especially in
-user-facing guides, tutorials, reference prose, or release notes.
+user-facing guides, tutorials, and reference prose.
 
 ## What expressions means here
 
@@ -30,8 +32,8 @@ prose is muddy or inconsistent.
 |---|---|---|
 | Sentence clarity | short, direct sentences; one idea per sentence; no dangling references | the intended reader outcome |
 | Voice and tone | active voice, concrete verbs, minimal hedging; no marketing or aspirational phrasing ("the shortest path to…", "seamlessly") in operational docs | `STYLE_GUIDE.md` and the doc family style used elsewhere in the repo |
-| Rhetorical-device budget | em-dash, italic emphasis, antithesis ("not X, but Y"), aphoristic one-liner closers, and `:::` callouts stay within the per-1,000-word limits; filler vocabulary and meta-signposting are cut | `STYLE_GUIDE.md`'s budget table and Do/Don't list |
-| Terminology | one term per concept, no accidental synonyms | the repo glossary and established usage |
+| Rhetorical-device budget | em-dashes and italic emphasis stay within their per-1,000-word limits, antithesis ("not X, but Y"), aphoristic one-liner closers, and `:::` callouts within their per-page limits; filler vocabulary, quality self-labels, and meta-signposting are cut | `STYLE_GUIDE.md`'s budget table and Do/Don't list |
+| Terminology | one term per concept, no accidental synonyms | established usage across `docs/`, anchored on the CRD field, condition, and resource names the `docs/reference/` pages define |
 | Command examples | commands are complete, ordered, and copyable | the real workflow the docs describe |
 | Explanatory text | definitions appear before specialized terms are used | the implementation or process being documented |
 | Unexplained references | named tools, daemons, helper processes, or APIs (e.g. a background service invoked indirectly, an internal API) are explained or linked on first use **on the page they appear on** — a definition living only in a different page does not count | the reader landing on this specific page, not the whole corpus |
@@ -79,30 +81,68 @@ Check whether each paragraph does the following:
 
 ### 3. Check the style-guide budget
 
-`STYLE_GUIDE.md` sets checkable limits per ~1,000 words: at most 2
-em-dashes, 4 italic spans, 1 antithesis ("not X, but Y" / "rather
-than"), 1 aphoristic one-liner close, and 1–2 `:::` callout boxes.
-Count each device against the page and flag:
+`STYLE_GUIDE.md` sets checkable limits: at most 2 em-dashes and 4
+italic spans per ~1,000 words, and per page at most 1 antithesis
+("not X, but Y" / "rather than"), 1 aphoristic one-liner close, and
+1–2 `:::` callout boxes. Filler vocabulary and quality self-labels are
+retired outright. Count first, then judge:
 
-- More em-dashes or italic spans than the budget allows.
-- A second "not X, but Y" construction on the same page.
-- A quality self-label ("robust", "clean", "battle-tested", "seamless")
-  with nothing concrete backing it — the fix replaces the label with
-  the fact it was standing in for (a linked test, a condition name, a
-  command), it doesn't just delete the sentence.
-- A paragraph that closes on a slogan *and* a `:::` box repeating it.
-- Filler vocabulary past its retirement point (`load-bearing`,
-  `by construction`, `structural rather than aspirational`,
-  `first-class`, `precisely`, `exactly`, `deliberately`) — `precisely`
-  and `exactly` are cut outright rather than replaced.
+```bash
+bash .claude/skills/check-doc-expressions/scripts/count-style-budget.sh [<page.md|dir>...]
+bash .claude/skills/check-doc-expressions/scripts/count-style-budget.sh --page <page.md>
+```
+
+Without arguments it reads every `docs/**/*.md` outside
+`docs/.vitepress/` plus `README.md`. It strips frontmatter, fenced code,
+HTML comments and tags, inline code, link and image URLs, code imports,
+container markers, and dash-only table cells, then prints one line per
+page: `[OVER]` or `[PASS]`, the word count, each device's count (em and
+ital also per 1,000 words), and a `!` on every device over its
+allowance. A top-10 summary by excess follows (`--top N` changes it).
+`--page` lists every hit as `file:line: device: snippet`, the form
+[[fix-docs]] edits from. The exit code is 0 unless `--strict` is given
+and a page is over budget. The helper `count_style_budget.py` beside
+the script does the parsing; without `python3` the count is skipped.
+
+Then judge each hit:
+
+- **em, ital** are exact counts. Keep the one em-dash a paragraph's real
+  pivot needs and italics on a term's first definition; cut the rest.
+- **anti** lists candidates: "rather than", "not X, but Y", "not just
+  X but Y", "doesn't just", and "X, not Y". Keep the one antithesis the
+  page earns and rewrite the others as plain statements. A contrast in
+  parentheses ("(not the image)") is not counted; read for it.
+- **aph** lists candidates: the short declarative sentence that closes
+  a paragraph of two or more sentences. Most are plain statements;
+  report only real slogans ("Idempotency is the whole point."). A slogan
+  that a `:::` box then repeats is not counted; read for it.
+- **call**: a guide's `::: info Devstack` container is required by
+  `docs/contributing/guide-conventions.md`, and the operator-owned
+  `::: warning` of a ControlPlane guide comes with the
+  [[prepare-new-guide]] skeleton (its V4 check wants one beside any edit
+  of a projected child). Both count toward the budget but are not
+  findings. `::: details` and `::: v-pre` are not counted.
+- **filler** (`load-bearing`, `by construction`, `structural rather than
+  aspirational`, `first-class`, `precisely`, `exactly`, `deliberately`):
+  `precisely` and `exactly` are cut outright rather than replaced;
+  "exactly" before a number ("exactly one of clusterRef or host") states
+  a quantity and is not counted.
+- **label** ("robust", "clean", "battle-tested", "seamless"): a
+  self-label with nothing concrete backing it. The fix replaces the
+  label with the fact it was standing in for (a linked test, a
+  condition name, a command); it doesn't just delete the sentence.
+  "clean up" and compounds such as `db-clean` are not counted.
+
+Two items stay manual:
+
 - A sentence with three or more subordinate clauses that can't be read
   aloud in one breath — the fix splits it at a colon or semicolon.
 - A sentence that only previews the next one ("The section below
   covers…") — the fix deletes it; the heading already orients the
   reader.
 
-This is a mechanical count, separate from the meaning-level read in
-step 2 — do both passes.
+This is a mechanical pass, separate from the meaning-level read in
+step 2 — do both.
 
 ### 4. Inspect code-adjacent text
 
@@ -140,8 +180,8 @@ Group by severity:
   one-liner pattern repeating every paragraph) that it degrades
   readability rather than just drifting from house style.
 - **LOW** — awkward phrasing, overly long sentences, depth-parity
-  drift, or a step 3 style-guide budget item over its per-1,000-word
-  limit without otherwise changing the meaning.
+  drift, or a step 3 style-guide budget item over its limit without
+  otherwise changing the meaning.
 
 End with a short verdict for the page or doc set.
 
@@ -171,6 +211,13 @@ and no comprehension-impacting defects are found, report a clean result.
 
 ## Notes
 
+- `scripts/count-style-budget.sh` is a triage aid, not a gate: the
+  heuristic devices (anti, aph) report candidates, and most reference
+  pages are over budget today (the large ControlPlane and Keystone
+  reference pages carry several times their em-dash allowance). In a
+  quick or standard run, report the pages the change touched plus the
+  top of the summary rather than every `[OVER]` line; a deep run can
+  walk the summary.
 - This skill is read-only; do not rewrite the page until the wording
   issue has been localized. Hand findings to [[fix-docs]] to apply them.
   Step 3 findings map to STYLE_GUIDE.md's own Do/Don't pairs, so

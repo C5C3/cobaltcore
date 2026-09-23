@@ -26,15 +26,22 @@ classes of drift appear everywhere:
 
 | Layer | What to check | Source of truth |
 |---|---|---|
-| Page metadata | frontmatter fields, title, sidebar order, quadrant/category markers | the doc family conventions in `docs/` and `architecture/` |
+| Page metadata | frontmatter fields (`title` everywhere, `quadrant` on the reference/guide families), sidebar order | the doc family conventions under `docs/` |
 | Heading hierarchy | H1/H2/H3 order, required section names, no skipped levels | the current page template for that doc type |
 | Navigation | VitePress sidebar, index pages, cross-links from sibling docs | `docs/.vitepress/` and the relevant section index |
 | Links and anchors | relative links, fragment anchors, code-block references | the linked page and its actual heading text |
-| Coverage | orphan pages, duplicate topics, stale renamed paths | the directory tree under `docs/` and `architecture/` |
+| Coverage | orphan pages, duplicate topics, stale renamed paths | the directory tree under `docs/` (including `docs/architecture/` and `docs/future/`) |
 | Tutorial-family naming | when several pages walk through the same workflow at different depth/audience (e.g. a base quick start plus deeper variants), names signal the relationship and scope instead of ambiguous modifiers like "extended"; cross-references point at the specific source section instead of restating it | the full set of sibling walkthrough pages, read together, not each in isolation |
 
 A structural finding is any page that cannot be discovered, rendered,
 or read in the expected order because its scaffolding drifted.
+
+Two gates already exist and this skill defers to them: `npm run
+docs:build` (the CI `docs` job) fails on a link to a page that does not
+exist, and the shell tests under `tests/unit/docs/` (run by `make
+test-shell`) pin specific cross-links and quick-start coverage. Neither
+checks fragment anchors, sidebar entries, heading hierarchy, or
+reachability; the audit script below does.
 
 ## Depth modes
 
@@ -51,6 +58,40 @@ Use the same criteria at each depth; only the scope changes.
 ## Procedure
 
 Work through these steps in order and report findings at the end.
+
+### 0. Run the deterministic audit
+
+```bash
+bash .claude/skills/check-doc-structure/scripts/audit-doc-structure.sh          # T1–T6
+bash .claude/skills/check-doc-structure/scripts/audit-doc-structure.sh --full   # + npm run docs:build
+```
+
+- **T1** — every page has a frontmatter block with `title:`; pages
+  without `quadrant:` are listed for a family-level judgement (the
+  architecture, contributing, quick-start, and landing pages carry none
+  today).
+- **T2** — exactly one H1 per page and no skipped heading level.
+- **T3** — every docs link resolves to a page and every `#fragment`
+  resolves to an anchor on the target page. Anchors are computed with
+  VitePress' own slugify, which differs from GitHub's: runs of
+  separators collapse to one hyphen (`Owner-ref / GC model` →
+  `#owner-ref-gc-model`, not `#owner-ref--gc-model`), a slug starting
+  with a digit gains an underscore (`6. Recover…` → `#_6-recover…`),
+  punctuation outside the separator set survives (an em dash stays in
+  the slug), and `.` is a separator (`extra-packages.yaml` →
+  `#extra-packages-yaml`). A heading can pin its id with `{#custom-id}`.
+- **T4** — every sidebar/nav `link:` in `docs/.vitepress/config.ts`
+  resolves to a page (the build does not check these).
+- **T5** — no orphan page: every page is in the sidebar/nav or linked
+  from another page. Pages reachable only through links are listed as
+  `[INFO]`.
+- **T6** — no bare `<placeholder>` in prose. VitePress compiles every
+  page as a Vue template, so `<name>` outside backticks or a fence is an
+  element that never closes and fails the whole `docs:build` with
+  `Element is missing end tag`. Wrap placeholders in code.
+
+Every `[FAIL]` is a HIGH or MEDIUM finding per step 6; the script cannot
+judge the steps below.
 
 ### 1. Identify the doc family
 
@@ -79,9 +120,11 @@ Confirm the page is reachable from the places readers actually use:
 
 ### 4. Check links and anchors
 
-Resolve every local link and fragment anchor that the page introduces or
-updates. If a link target moved, update the source and the destination
-path together.
+Step 0's T3/T4 resolve every local link and anchor mechanically. By
+hand, check that each link lands where the sentence promises (a link
+that resolves to the wrong section is a finding T3 cannot see). If a
+link target moved, update the source and the destination path
+together.
 
 ### 5. Check tutorial/guide families as a set
 
@@ -157,3 +200,5 @@ report a clean result.
   those, re-run this skill on the page.
 - If a generated doc or a site template is involved, verify the generator
   or template separately before patching the rendered page.
+- `docs/.vitepress/dist/` and `cache/` are build output; never audit or
+  edit them.

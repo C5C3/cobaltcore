@@ -63,6 +63,25 @@ For each fact in the docs, decide where the truth lives:
 
 If the source is unclear, the doc is already at risk of drift.
 
+Where the truth usually lives for the facts docs repeat most:
+
+| Fact | Source of truth |
+|---|---|
+| Operators | `OPERATORS ?=` in `Makefile`, `ls operators/*/api` |
+| Services and their upstream tags per release | the keys and values of `releases/<version>/source-refs.yaml` |
+| Supported releases | `ls releases/` |
+| Default release of the kind quick start | `openStackRelease` in `deploy/kind/controlplane/controlplane.yaml` |
+| Test-tool versions (chainsaw, flux, kind, kubectl) | `*_VERSION=` in `hack/install-test-deps.sh` |
+| Build/lint tool versions | `*_VERSION ?=` in `Makefile`, `env:` in `.github/workflows/ci.yaml` |
+| Infrastructure chart versions | `deploy/flux-system/releases/*.yaml`, `deploy/kind/base/*.yaml` |
+| CRD fields, defaults, validation | `operators/<op>/api/v1alpha1/*_types.go` and the generated `operators/<op>/config/crd/bases/` |
+| Condition types | the `subReconcilerConditionTypes` map in `operators/<op>/internal/controller/instrumentation.go` |
+| Tempest-covered services | `ALL_TEMPEST_SERVICES` in `hack/ci-generate-tempest-matrix.sh` |
+
+A doc that copies one of these values (rather than naming the file it
+comes from) is a consistency finding waiting to happen; say so in the
+report when the copy has already drifted.
+
 ### 2. Compare the repeated surfaces
 
 Check the places where the same fact is likely repeated:
@@ -127,6 +146,8 @@ explicit clean verdict instead of inventing weak findings.
 ## Notes
 
 - This skill is read-only; hand findings to [[fix-docs]] to apply them.
+- Link and anchor integrity is mechanised in [[check-doc-structure]]'s
+  audit script; this skill does not need to re-check it.
 - Pair this with [[check-doc-structure]] for page-level navigation and
   with [[check-doc-expressions]] for readability and the
   `STYLE_GUIDE.md` rhetorical-device budget — style drift is out of
