@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Opt-in kind overlay for a nova-compute on nova's fake virt driver. Nothing
+# applies it for you: hack/deploy-infra.sh never does, and the production
+# overlays (deploy/flux-system/kustomization.yaml) do not list it. The reader
+# of the ControlPlane quick start applies it by hand, once the ControlPlane
+# reports NovaReady=True:
+#
+#   kubectl apply -k deploy/kind/fake-compute
+#
+# It bundles one ConfigMap and one Deployment in `openstack`, both in
+# fake-compute.yaml. Their header explains why the order matters: the
+# Deployment mounts the compute contract Secret the nova operator publishes,
+# which exists only once the projected Nova is Ready.
+#
+# There is NO inline namespace.yaml: `openstack` is the ControlPlane's own
+# namespace and exists before the ControlPlane does.
+#
+# All resource references are local to this overlay (no parent-directory
+# paths). The overlay therefore renders under kustomize's default
+# `LoadRestrictionsRootOnly` security check, so `kubectl apply -k` works
+# without `--load-restrictor`, which kubectl's embedded kustomize does not
+# expose (kubernetes/kubectl#948).
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - fake-compute.yaml
