@@ -24,6 +24,26 @@ webhooks:
     resources:
     - novas
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-nova-openstack-c5c3-io-v1alpha1-novacompute
+  failurePolicy: Fail
+  name: mnovacompute.kb.io
+  rules:
+  - apiGroups:
+    - nova.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - novacomputes
+  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -49,4 +69,24 @@ webhooks:
     - UPDATE
     resources:
     - novas
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-nova-openstack-c5c3-io-v1alpha1-novacompute
+  failurePolicy: Fail
+  name: vnovacompute.kb.io
+  rules:
+  - apiGroups:
+    - nova.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - novacomputes
   sideEffects: None

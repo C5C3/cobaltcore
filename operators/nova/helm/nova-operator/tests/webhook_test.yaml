@@ -1,7 +1,7 @@
 # Webhook configuration unit tests.
 #
-# The operator serves admission for the Nova kind alone, so each configuration
-# carries exactly one entry.
+# The operator serves admission for two kinds, Nova and NovaCompute, so each
+# configuration carries two entries: Nova first, NovaCompute second.
 suite: Webhook Configuration
 templates:
   - templates/webhook-configuration.yaml
@@ -39,7 +39,7 @@ tests:
           value: None
       - lengthEqual:
           path: webhooks
-          count: 1
+          count: 2
 
   - it: should render ValidatingWebhookConfiguration when webhook is enabled
     documentIndex: 1
@@ -81,7 +81,46 @@ tests:
           content: DELETE
       - lengthEqual:
           path: webhooks
-          count: 1
+          count: 2
+
+  - it: should carry the NovaCompute mutating webhook as second entry
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: webhooks[1].name
+          value: mnovacompute.kb.io
+      - equal:
+          path: webhooks[1].clientConfig.service.path
+          value: /mutate-nova-openstack-c5c3-io-v1alpha1-novacompute
+      - equal:
+          path: webhooks[1].rules[0].apiGroups
+          value:
+            - nova.openstack.c5c3.io
+      - contains:
+          path: webhooks[1].rules[0].resources
+          content: novacomputes
+      - equal:
+          path: webhooks[1].failurePolicy
+          value: Fail
+
+  - it: should carry the NovaCompute validating webhook as second entry
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: webhooks[1].name
+          value: vnovacompute.kb.io
+      - equal:
+          path: webhooks[1].clientConfig.service.path
+          value: /validate-nova-openstack-c5c3-io-v1alpha1-novacompute
+      - contains:
+          path: webhooks[1].rules[0].resources
+          content: novacomputes
+      - equal:
+          path: webhooks[1].failurePolicy
+          value: Fail
+      - notContains:
+          path: webhooks[1].rules[0].operations
+          content: DELETE
 
   - it: should set cert-manager CA injection annotation on both configs
     documentIndex: 0
