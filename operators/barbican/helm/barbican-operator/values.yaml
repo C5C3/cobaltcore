@@ -122,9 +122,12 @@ networkPolicy:
   # Kubernetes API server reachability. When networkPolicy is
   # enabled, both cidrs and ports MUST be non-empty — an empty list would render
   # an open egress rule (fail-closed guard in templates/networkpolicy.yaml).
-  # Discover the CIDR with:  kubectl get endpoints kubernetes -o json
-  # Kind default (uncomment to enable on a kind cluster):
-  #   cidrs: ["10.96.0.1/32"]
+  # Take the addresses from the kubernetes Endpoints, not the Service VIP
+  # (10.96.0.1): an enforcing CNI DNATs the VIP to an endpoint IP before it
+  # evaluates policy, so a rule naming the VIP never matches. List every IP:
+  #   kubectl get endpoints kubernetes -n default -o json
+  # On a kind devstack that is the control-plane node on the kind bridge, e.g.:
+  #   cidrs: ["172.18.0.2/32"]
   #   ports: [6443]
   kubeApiServer:
     cidrs: []
