@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Keystone CR fixture for the upgrade-abort E2E test.
-# Managed mode with initial image tag 2026.1. The next sequential release
-# (2026.2) has no pre-loaded image, so an upgrade to it wedges in the Expanding
-# phase — the deterministic stuck-upgrade the abort path must rescue.
+# Managed mode with initial image tag 2026.1. 01-patch-stuck-upgrade.yaml moves
+# to the next sequential release (2026.2) on an unresolvable registry, so the
+# upgrade wedges in the Expanding phase whether or not a 2026.2 image exists:
+# the deterministic stuck-upgrade the abort path must rescue.
 # Unique name and database name keep this suite isolated under parallel runs.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

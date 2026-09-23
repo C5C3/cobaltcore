@@ -132,7 +132,7 @@ Deployment rollout, bootstrap Job).
 | rolling-update-zero-downtime | `keystone-rolling-update` | Full graceful-termination chain keeps the API serving during an image-tag rolling update |
 | trust-flush | `keystone-trust-flush` | Trust-flush CronJob creation, schedule and suspend tracking `spec.trustFlush` |
 | trust-flush-default | `keystone-trust-flush-default` | Default-on posture: omitted `spec.trustFlush` materializes the hourly CronJob |
-| upgrade-abort | `keystone-upgrade-abort` | In-flight upgrade abort by reverting the image tag; wedge in `Expanding` recovers cleanly |
+| upgrade-abort | `keystone-upgrade-abort` | In-flight upgrade abort by reverting the image tag; the upgrade wedges in `Expanding` because its target is pulled from an unresolvable `registry.invalid` repository, whichever releases exist, and recovers cleanly |
 | upgrade-flow | `keystone-upgrade-flow` | Expand-migrate-contract phase progression with `installedRelease`/`targetRelease` bookkeeping |
 | uwsgi | `keystone-uwsgi` | `spec.uwsgi` defaulting and propagation into the uWSGI command line |
 
@@ -1051,8 +1051,8 @@ tests/e2e/keystone/
 ├── upgrade-abort/
 │   ├── chainsaw-test.yaml              Abort an in-flight upgrade by reverting the image tag
 │   ├── 00-keystone-cr.yaml             Keystone CR at release 2026.1
-│   ├── 01-patch-stuck-upgrade.yaml     Patch to 2026.2 (no image — wedges in Expanding)
-│   └── 02-patch-abort.yaml             Patch back to 2026.1 to abort
+│   ├── 01-patch-stuck-upgrade.yaml     Patch to 2026.2 on registry.invalid (pull fails — wedges in Expanding)
+│   └── 02-patch-abort.yaml             Patch back to ghcr.io/c5c3/keystone:2026.1 to abort
 ├── upgrade-flow/
 │   ├── chainsaw-test.yaml              Expand-migrate-contract upgrade
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial release
