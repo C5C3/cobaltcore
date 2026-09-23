@@ -1287,7 +1287,7 @@ one under review — which is why the `e2e_controlplane` path filter also watche
 | 3 | `load-e2e-images` composite | Restores `keystone-operator:dev`, `c5c3-operator:dev`, `keystone:2025.2`, `tempest:2025.2` from GHCR |
 | 4 | `kind load docker-image` | Loads the four images into kind |
 | 5 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=controlplane-keystone` |
-| 6 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit; runs with `GITHUB_TOKEN` so the clone from `github.com` is authenticated (see [hack/ci-build-service-image.sh](#hackci-build-service-imagesh) for why) |
+| 6 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit; runs with `GITHUB_TOKEN` so the clone from `github.com` is authenticated (see [hack/ci-build-service-image.sh](#hack-ci-build-service-image-sh) for why) |
 | 7 | `hack/ci-deploy-operator.sh` (keystone) | Deploys the keystone-operator dev image into `keystone-system` |
 | 8 | `hack/ci-deploy-operator.sh` (c5c3) | Deploys the c5c3-operator dev image into `c5c3-system` |
 | 9 | `chainsaw test` | Runs the full-chain suite with `E2E_REQUIRE_CONTROLPLANE_STACK=true` |

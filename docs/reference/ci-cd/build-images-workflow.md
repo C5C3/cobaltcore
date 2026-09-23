@@ -727,7 +727,7 @@ The service image build passes three build arguments sourced from
 
 `PIP_EXTRAS` and `PIP_PACKAGES` are consumed in the Dockerfile build stage (stage 1).
 `EXTRA_APT_PACKAGES` is consumed in the runtime stage (stage 2). See
-[Container Images — extra-packages.yaml](container-images.md#extra-packagesyaml) for the
+[Container Images — extra-packages.yaml](container-images.md#extra-packages-yaml) for the
 YAML schema.
 
 This job does not declare outputs. The `verify-service-images` job derives its own image
@@ -1600,7 +1600,7 @@ releases/2026.1/
 `PIP_PACKAGES`, and `EXTRA_APT_PACKAGES` build arguments. `test-refs.yaml` is required —
 the `build-tempest` job reads it to resolve `TEMPEST_VERSION` and
 `KEYSTONE_TEMPEST_PLUGIN_VERSION` build arguments. See
-[Container Images — extra-packages.yaml](container-images.md#extra-packagesyaml) for the
+[Container Images — extra-packages.yaml](container-images.md#extra-packages-yaml) for the
 YAML schema and `releases/2025.2/extra-packages.yaml` for a working example.
 
 ### 2. Verify matrix discovery

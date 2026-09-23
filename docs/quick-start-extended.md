@@ -179,7 +179,7 @@ Free the port (or stop that process) before creating the cluster.
 
 ---
 
-## Step 3 — Deploy the infrastructure stack
+## Step 3 — Deploy the infrastructure stack {#step-3-deploy-the-infrastructure-stack}
 
 The `deploy-infra` target runs an 8-step deployment sequence that installs and configures all
 dependencies the Keystone operator needs:
@@ -570,9 +570,8 @@ The kind overlay can ship a slimmed-down `kube-prometheus-stack` (Prometheus +
 Grafana + the prometheus-operator) under the `monitoring` namespace. This is a
 **kind-only opt-in**: production overlays (`deploy/flux-system/`) omit the
 stack so production clusters can wire their own Prometheus. If you have not
-already opted in, see the
-[Enabling Prometheus & Grafana](#enabling-prometheus--grafana) tip in
-Step 3 (`WITH_PROMETHEUS=true make deploy-infra`).
+already opted in, see the Enabling Prometheus & Grafana tip in
+[Step 3](#step-3-deploy-the-infrastructure-stack) (`WITH_PROMETHEUS=true make deploy-infra`).
 
 Forward the Grafana service port:
 
