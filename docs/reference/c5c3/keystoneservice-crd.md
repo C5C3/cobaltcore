@@ -134,9 +134,10 @@ surfaces as `Ready=False/ControlPlaneNotFound`, not as an admission error.
 Registering an endpoint row never connects to it, so the URL may point at a
 service that is not running yet.
 
-Endpoint groups and per-endpoint regions are not expressible: K-ORC has no
-EndpointGroup kind and its `EndpointResourceSpec` carries no region field. Both
-are upstream gaps, tracked as follow-ups on #846.
+Every endpoint row is registered in the referenced ControlPlane's
+`spec.region`, so a client that sets `region_name` finds it. A row cannot be
+placed in any other region, and endpoint groups are not expressible: K-ORC has
+no EndpointGroup kind, an upstream gap tracked as a follow-up on #846.
 
 ### KeystoneServiceAccountSpec
 
@@ -381,12 +382,12 @@ idea.
 | Type | Status | Reason | Meaning |
 | --- | --- | --- | --- |
 | `CatalogReady` | True | `CatalogNotDeclared` | No catalog block is declared. |
-| `CatalogReady` | True | `CatalogRegistered` | The service row and every declared endpoint row are registered and Available. |
+| `CatalogReady` | True | `CatalogRegistered` | The service row and every declared endpoint row are registered in the ControlPlane's region and Available. |
 | `CatalogReady` | False | `ServiceCollision` | A catalog entry of this type and name already exists and `catalog.adopt` is not set. Nothing was touched. |
 | `CatalogReady` | False | `ProbingForCollision` | The collision probe has not resolved yet. |
-| `CatalogReady` | False | `WaitingForCatalog` | The Service or an Endpoint child is registered but not yet Available. |
-| `CatalogReady` | False | `CatalogFailed` | K-ORC reported a terminal error on the Service or an Endpoint; it has stopped retrying. A latched transport error is cleared first, so K-ORC retries. |
-| `CatalogReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the Service or an Endpoint child failed, for example because the operator's RBAC lacks `patch` on the K-ORC status subresources. |
+| `CatalogReady` | False | `WaitingForCatalog` | The Service, the Region import or an Endpoint child is registered but not yet Available, or the region-less Endpoint an earlier version registered is being removed now that its regioned replacement is Available. |
+| `CatalogReady` | False | `CatalogFailed` | K-ORC reported a terminal error on the Service, the Region import or an Endpoint; it has stopped retrying. A latched transport error is cleared first, so K-ORC retries. |
+| `CatalogReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the Service, the Region import or an Endpoint child failed, for example because the operator's RBAC lacks `patch` on the K-ORC status subresources. |
 | `CatalogReady` | False | `CatalogError` | A Kubernetes-level failure applying a catalog child (not a K-ORC or OpenStack failure). |
 | `AccountReady` | True | `AccountNotDeclared` | No account block is declared. |
 | `AccountReady` | True | `AccountProvisioned` | The account exists in Keystone with its roles bound, and its credentials are materialized in the consumer Secret. |
@@ -476,7 +477,7 @@ authenticates them with is materialized. They are named from a per-CR prefix:
 
 The hash covers `<namespace>/<name>`, so two same-named registrations in
 different namespaces cannot collide on a child name. Discriminators are fixed
-per kind (`user`, `project`, `service`, `endpoint-<interface>`,
+per kind (`user`, `project`, `service`, `region`, `region-ep-<interface>`,
 `role-<slug>`, `assign-<slug>`, and the `-probe` twins of the three probed
 kinds), which is what makes `kubectl get user -n <controlplane-namespace>` read
 as the registration each user belongs to.
@@ -499,6 +500,7 @@ destroys in Keystone follows managed-versus-referenced ownership:
 | Resource | Fate |
 | --- | --- |
 | Catalog service row and its endpoints | **Deleted**, including an adopted row |
+| Region | Left in place (an unmanaged import is released, never deleted) |
 | Keystone user | **Deleted**, including an adopted user |
 | Project with `create: true` | **Deleted** |
 | Project with `create: false` | Left in place (an unmanaged import is released, never deleted) |

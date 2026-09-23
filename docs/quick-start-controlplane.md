@@ -768,14 +768,11 @@ A run aborted before the final `delete` leaves `first-image` behind; delete it
 (`openstack --insecure image delete first-image`) before retrying, or the next
 `image create` fails on a name collision.
 
-::: warning Leave OS_REGION_NAME unset
-Do **not** add `OS_REGION_NAME` to the host exports: the projected K-ORC
-catalog rows for image, placement, key-manager, and network alike carry no
-region, so a region-scoped lookup finds no endpoint. The upload fails with
-`public endpoint for image service in RegionOne region not found`, the
-placement, secret, and network calls with the same message under their own
-service names. Keystone's own bootstrap registers RegionOne identity rows, so
-identity is unaffected. Only the projected rows need the filter left clear.
+::: tip OS_REGION_NAME is optional
+Every catalog row the ControlPlane registers sits in its `spec.region`
+(`RegionOne` here), beside the identity rows Keystone's bootstrap inserted, so
+the `openstack` commands on this page work with `OS_REGION_NAME=RegionOne`
+exported and without it.
 :::
 
 ### List placement resource classes
@@ -801,8 +798,7 @@ request, so a listing of the standard classes (`VCPU`, `MEMORY_MB` and `DISK_GB`
 among them) covers the catalog row, the gateway listener, and the service user's
 token validation in one command. It needs the `osc-placement` plugin from the
 prerequisites; without it the `openstack` CLI rejects `resource class list` as
-an unknown command. `OS_REGION_NAME` has to stay unset here as well, for the
-reason above.
+an unknown command.
 
 ### Store and retrieve a first secret
 
@@ -834,9 +830,7 @@ against Keystone, and the payload travels through castellan's vault plugin into
 the dedicated `controlplane-barbican-bao` instance and out again. The
 `openstack secret` subcommands come from the `python-barbicanclient` plugin in
 the prerequisites; without it the CLI rejects `secret store` as an unknown
-command. `OS_REGION_NAME` stays unset here too: the key-manager rows carry no
-region either, and with it set the store call fails with `public endpoint for
-key-manager service in RegionOne region not found`.
+command.
 
 ::: warning Do not substitute real key material into `--payload`
 The literal above is a throwaway, and this snippet is written for a devstack. A
@@ -887,10 +881,6 @@ openstack --insecure subnet delete demo-subnet
 openstack --insecure network delete demo-net
 ```
 
-`OS_REGION_NAME` has to stay unset here too: the network rows carry no region
-either, and with it set the create call fails with `public endpoint for network
-service in RegionOne region not found`.
-
 ### Create a first volume
 
 This check belongs to the optional block-storage block of Step 3; skip it if you
@@ -929,9 +919,6 @@ openstack --insecure volume delete demo-vol
 [Configure NFS backups](./guides/cinder/configure-nfs-backups.md) starts from
 the `demo-vol` this check leaves behind, so keep the volume if that guide is
 your next stop.
-
-`OS_REGION_NAME` has to stay unset here too: the block-storage rows carry no
-region either, and with it set the volume create finds no endpoint.
 
 ### Open the Horizon dashboard
 

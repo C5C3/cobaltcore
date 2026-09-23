@@ -1631,6 +1631,7 @@ func (r *ControlPlaneReconciler) releaseStalledRegistrationChildren(
 			&orcv1alpha1.RoleAssignmentList{},
 			&orcv1alpha1.RoleList{},
 			&orcv1alpha1.EndpointList{},
+			&orcv1alpha1.RegionList{},
 			&orcv1alpha1.ServiceList{},
 			&orcv1alpha1.UserList{},
 			&orcv1alpha1.ProjectList{},

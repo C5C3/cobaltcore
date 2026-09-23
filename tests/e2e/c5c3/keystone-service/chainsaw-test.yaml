@@ -16,7 +16,7 @@
 #
 # ── Five legs ────────────────────────────────────────────────────────────────
 #   ROUND-TRIP  the registration registers a catalog entry and an account from
-#               the plane's own namespace, its seven K-ORC children come up
+#               the plane's own namespace, its eight K-ORC children come up
 #               owner-referenced to the CR, the consumer Secret materializes,
 #               and a Job authenticates with it and sees the catalog row.
 #   LATCH       a terminal K-ORC error injected on the Project child. A 409
@@ -94,7 +94,7 @@ spec:
           CREDS_SECRET=workflow-credentials
           KS_SELECTOR="c5c3.io/keystoneservice-name=${KS_NAME},c5c3.io/keystoneservice-namespace=${CP_NS}"
           LEGACY_SELECTOR="c5c3.io/keystoneservice-name=${LEGACY_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
-          KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud
+          KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud
           WORKFLOW_URL="http://workflow-api.${CP_NS}.svc.cluster.local:8989/v2"
           LEGACY_URL="http://legacy-api.${CP_NS}.svc.cluster.local:8777/"
           WORKFLOW_KV="openstack/keystone/${CP_NS}/${KS_NAME}/service-accounts/credentials"
@@ -515,10 +515,10 @@ spec:
           # discriminator>". The two role children carry a slug of the role name
           # as their discriminator: "service-9df6b026" for the "service" role this
           # suite declares, from sha256("service")[:8].
-          assert_eq "seven K-ORC children sit in the plane's namespace" "7" \
+          assert_eq "eight K-ORC children sit in the plane's namespace" "8" \
             "$(count_of "${KORC_KINDS}" "${CP_NS}" "${KS_SELECTOR}")"
-          CHILD_NAME_RE='^workflow-[0-9a-f]{8}-registration-(user|project|role-service-9df6b026|assign-service-9df6b026|service|endpoint-public|endpoint-internal)$'
-          for kind in users projects roles roleassignments services endpoints; do
+          CHILD_NAME_RE='^workflow-[0-9a-f]{8}-registration-(user|project|role-service-9df6b026|assign-service-9df6b026|service|region|region-ep-public|region-ep-internal)$'
+          for kind in users projects roles roleassignments services regions endpoints; do
             for child in $(kubectl get "${kind}.openstack.k-orc.cloud" -n "${CP_NS}" \
               -l "${KS_SELECTOR}" -o jsonpath='{.items[*].metadata.name}'); do
               if ! grep -Eq "${CHILD_NAME_RE}" <<<"${child}"; then
@@ -808,7 +808,7 @@ spec:
             "$(child_field services "${LEGACY_SERVICE}" "{.status.conditions[?(@.type=='Available')].status}")"
           LEGACY_ENDPOINT="$(kubectl get endpoints.openstack.k-orc.cloud -n "${CP_NS}" \
             -l "${LEGACY_SELECTOR}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
-            | grep -- '-registration-endpoint-public$' || true)"
+            | grep -- '-registration-region-ep-public$' || true)"
           assert_nonempty "the adopted row has an Endpoint child" "${LEGACY_ENDPOINT}"
           assert_eq "endpoints/${LEGACY_ENDPOINT} is Available" "True" \
             "$(child_field endpoints "${LEGACY_ENDPOINT}" "{.status.conditions[?(@.type=='Available')].status}")"
@@ -1096,7 +1096,7 @@ spec:
           # per-tenant store, then wait the plane out. When this ordering loses
           # a race, the operators' bounded stall breakers still converge the
           # namespace — inside chainsaw's cleanup budget instead of past it.
-          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
           DRAIN_DEADLINE=$(( $(date +%s) + 240 ))
           while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do
             if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then

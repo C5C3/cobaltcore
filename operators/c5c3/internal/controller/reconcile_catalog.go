@@ -343,11 +343,16 @@ func managedCatalogService(
 // a catalog row. Same SSA projection as managedCatalogService; its Interface comes
 // from the endpoint row (today always "public") and its ServiceRef points at the
 // row's Service CR.
+//
+// It names no region: the identity row is the public endpoint the keystone
+// bootstrap inserted into spec.region, which K-ORC adopts by interface, service
+// and URL, so the row already sits in the region. A regionRef added to the live CR
+// would change nothing either, since K-ORC never updates an endpoint's region.
 func managedCatalogEndpoint(
 	cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference,
 	row managedCatalogServiceRow, ep managedCatalogEndpointRow,
 ) *orcv1alpha1.Endpoint {
-	return managedCatalogEndpointChild(ep.crName, childNamespace(cp), ep.iface, ep.url, row.crName, credRef)
+	return managedCatalogEndpointChild(ep.crName, childNamespace(cp), ep.iface, ep.url, row.crName, "", credRef)
 }
 
 // managedCatalogRegion builds the MANAGED K-ORC Region CR adopting the Keystone

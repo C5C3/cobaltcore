@@ -620,8 +620,9 @@ spec:
           # 6d: the rows the registration added, seen from the admin side. A1
           # stays the baseline the ControlPlane alone must not pollute (Block 5
           # asserts that), and the registration's own rows are diffed against it
-          # here. The endpoint check counts `nova compute` matches and never
-          # reads the region column, which the K-ORC rows leave empty.
+          # here. The endpoint check counts `nova compute` matches. The region
+          # the registration imports is the fixture's own RegionOne, so no
+          # region row is added either.
           capture_inventory "${WORK}/A1b"
           if ! diff "${WORK}/A1.domain" "${WORK}/A1b.domain" >/dev/null; then
             echo "ERROR: external domain inventory changed after the nova registration:"

@@ -7,15 +7,19 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // ensureCatalog projects the declared catalog block: one managed K-ORC Service
-// for the catalog row plus one managed Endpoint per declared interface.
+// for the catalog row, an unmanaged import of the ControlPlane's Keystone region,
+// and one managed Endpoint per declared interface, registered in that region.
 //
 // It is MODE-INDEPENDENT, and deliberately unlike the ControlPlane's own catalog
 // reconciler: that one imports rather than creates in External mode, because the
@@ -65,10 +69,24 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 		status.ServiceID = *service.Status.ID
 	}
 
+	// Every endpoint is registered in the region K-ORC's clouds.yaml names. A row
+	// without a region is invisible to a client that sets region_name, as every
+	// nova client section and the neutron notifier do: keystoneauth answers
+	// EndpointNotFound. The region is imported rather than the ControlPlane's own
+	// Region CR referenced: K-ORC holds a Region CR while an Endpoint names it, so
+	// a shared one would tie the plane's teardown to every registration, and an
+	// External plane has none.
+	region := unmanagedRegionImport(keystoneServiceCatalogRegionRef(ks), keystoneServiceChildNamespace(cp),
+		korcRegion(cp), credRef)
+	if err := r.ensureKeystoneServiceChild(ctx, ks, region); err != nil {
+		fail(reasonKeystoneServiceCatalogError, fmt.Sprintf("applying the catalog Region import: %v", err))
+		return ctrl.Result{}, err
+	}
+
 	endpoints := make([]*orcv1alpha1.Endpoint, 0, len(catalog.Endpoints))
 	for _, ep := range catalog.Endpoints {
 		endpoint := managedCatalogEndpointChild(keystoneServiceCatalogEndpointRef(ks, ep.Interface),
-			keystoneServiceChildNamespace(cp), string(ep.Interface), ep.URL, service.Name, managedCredRef)
+			keystoneServiceChildNamespace(cp), string(ep.Interface), ep.URL, service.Name, region.Name, managedCredRef)
 		if err := r.ensureKeystoneServiceChild(ctx, ks, endpoint); err != nil {
 			fail(reasonKeystoneServiceCatalogError, fmt.Sprintf("applying the %q catalog Endpoint: %v", ep.Interface, err))
 			return ctrl.Result{}, err
@@ -84,8 +102,8 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 	// A latched transport error is handed back to K-ORC first, so it retries the
 	// create it gave up on; korc_unlatch.go states the policy. Every latch this
 	// leaves in place still fails loud below.
-	objs := make([]orcv1alpha1.ObjectWithConditions, 0, 1+len(endpoints))
-	objs = append(objs, service)
+	objs := make([]orcv1alpha1.ObjectWithConditions, 0, 2+len(endpoints))
+	objs = append(objs, service, region)
 	for _, endpoint := range endpoints {
 		objs = append(objs, endpoint)
 	}
@@ -94,11 +112,18 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 		return ctrl.Result{}, err
 	}
 
-	// The Service's terminal error is reported before its Endpoints', so the ROOT
-	// stuck dependency surfaces rather than an Endpoint merely blocked on it.
+	// The Service's and the Region's terminal errors are reported before the
+	// Endpoints', so the ROOT stuck dependency surfaces rather than an Endpoint
+	// merely blocked on it.
 	if termErr := orcv1alpha1.GetTerminalError(service); termErr != nil {
 		fail(conditionReasonCatalogFailed, fmt.Sprintf(
 			"K-ORC reported a terminal error registering the catalog Service %q: %v", service.Name, termErr,
+		))
+		return requeue, nil
+	}
+	if termErr := orcv1alpha1.GetTerminalError(region); termErr != nil {
+		fail(conditionReasonCatalogFailed, fmt.Sprintf(
+			"K-ORC reported a terminal error importing the catalog Region %q: %v", region.Name, termErr,
 		))
 		return requeue, nil
 	}
@@ -122,6 +147,14 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 			service)
 		return requeue, nil
 	}
+	if !korcAvailableUpToDate(region) {
+		r.keystoneServiceWaitOrClassify(ks, cp, conditionTypeKeystoneServiceCatalogReady,
+			conditionReasonWaitingForCatalog,
+			fmt.Sprintf("the Keystone region %q the catalog endpoints are registered in is not resolved yet (Region %q)",
+				korcRegion(cp), region.Name),
+			region)
+		return requeue, nil
+	}
 	for _, endpoint := range endpoints {
 		if !korcAvailableUpToDate(endpoint) {
 			r.keystoneServiceWaitOrClassify(ks, cp, conditionTypeKeystoneServiceCatalogReady,
@@ -132,10 +165,59 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 		}
 	}
 
+	retiring, err := r.retireLegacyCatalogEndpoints(ctx, ks, keystoneServiceChildNamespace(cp))
+	if err != nil {
+		fail(reasonKeystoneServiceCatalogError, fmt.Sprintf("retiring the region-less catalog Endpoints: %v", err))
+		return ctrl.Result{}, err
+	}
+	if len(retiring) > 0 {
+		fail(conditionReasonWaitingForCatalog, fmt.Sprintf(
+			"the region-less catalog Endpoint(s) %s are being removed now that their replacements in region %q are Available",
+			strings.Join(retiring, ", "), korcRegion(cp),
+		))
+		return requeue, nil
+	}
+
 	keystoneServiceSetTrue(ks, conditionTypeKeystoneServiceCatalogReady, reasonKeystoneServiceCatalogRegistered,
-		fmt.Sprintf("catalog entry %q of type %q is registered with %d endpoint(s)",
-			serviceName, catalog.ServiceType, len(catalog.Endpoints)))
+		fmt.Sprintf("catalog entry %q of type %q is registered with %d endpoint(s) in region %q",
+			serviceName, catalog.ServiceType, len(catalog.Endpoints), korcRegion(cp)))
 	return ctrl.Result{}, nil
+}
+
+// retireLegacyCatalogEndpoints deletes the region-less Endpoint CR an earlier
+// version registered for each declared interface, and returns the names still
+// present. The caller runs it only once every regioned replacement is Available,
+// so the catalog carries each interface throughout: for a moment it carries two
+// rows with one URL, which a client resolves the same way whichever it picks.
+//
+// Deleting the CR is what removes the Keystone row, through K-ORC's finalizer, so
+// a name stays listed until that finalizer is gone. An interface the spec no
+// longer declares is not this function's: the per-pass sweep removes its
+// legacy row together with the regioned one.
+func (r *KeystoneServiceReconciler) retireLegacyCatalogEndpoints(
+	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, namespace string,
+) ([]string, error) {
+	var retiring []string
+	for _, ep := range ks.Spec.Catalog.Endpoints {
+		name := keystoneServiceLegacyCatalogEndpointRef(ks, ep.Interface)
+		legacy := &orcv1alpha1.Endpoint{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, legacy); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, fmt.Errorf("reading Endpoint %q: %w", name, err)
+		}
+		if !ownsKeystoneServiceChild(ks, legacy) {
+			continue
+		}
+		if legacy.DeletionTimestamp == nil {
+			if err := client.IgnoreNotFound(r.Delete(ctx, legacy)); err != nil {
+				return nil, fmt.Errorf("deleting Endpoint %q: %w", name, err)
+			}
+		}
+		retiring = append(retiring, name)
+	}
+	return retiring, nil
 }
 
 // keystoneServiceCatalogCollisionGate implements decision D6's fail-loudly

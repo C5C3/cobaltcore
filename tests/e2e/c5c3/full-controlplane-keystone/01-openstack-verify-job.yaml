@@ -149,33 +149,24 @@ spec:
               openstack --os-cloud admin role assignment list --user neutron-nova --names -f value -c Role | grep -qx service
               openstack --os-cloud admin role assignment list --user neutron-nova --names -f value -c Role | grep -qx admin
               echo "== image upload round-trip =="
-              # The projected K-ORC catalog rows carry no region — K-ORC's
-              # EndpointResourceSpec has no region field — while the mounted
-              # clouds.yaml pins region_name (RegionOne by default), so a
-              # region-scoped lookup finds no image endpoint at all ("internal
-              # endpoint for image service in RegionOne region not found"). The
-              # image commands therefore run against a copy of the document with
-              # the region_name line stripped; an empty --os-region-name or
-              # OS_REGION_NAME override is DROPPED by osc-lib's config merge, so
-              # the stripped copy is the only way to clear the filter. Interface
-              # resolution (endpoint_type: internal) still selects the projected
-              # internal endpoint, and identity is unaffected: keystone-manage
-              # bootstrap registers its own RegionOne identity rows.
-              grep -v 'region_name' /etc/openstack/clouds.yaml > /tmp/clouds-noregion.yaml
+              # Every call from here on resolves its endpoint through the mounted
+              # clouds.yaml, which pins region_name (RegionOne by default). That
+              # is the lookup nova's client sections and the neutron notifier
+              # make, and it finds a projected row only because each
+              # registration places its endpoints in spec.region; a region-less
+              # row answers "internal endpoint for image service in RegionOne
+              # region not found".
               dd if=/dev/urandom of=/tmp/e2e.img bs=1024 count=1
-              OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin image create --disk-format raw --container-format bare --file /tmp/e2e.img e2e-upload
-              STATUS="$(OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin image show e2e-upload -f value -c status)"
+              openstack --os-cloud admin image create --disk-format raw --container-format bare --file /tmp/e2e.img e2e-upload
+              STATUS="$(openstack --os-cloud admin image show e2e-upload -f value -c status)"
               test "${STATUS}" = "active" || { echo "ERROR: uploaded image status '${STATUS}' != active"; exit 1; }
-              OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin image delete e2e-upload
+              openstack --os-cloud admin image delete e2e-upload
               echo "OK: image uploaded to the projected endpoint, reached active, and was deleted"
               echo "== placement API round-trip =="
-              # The projected placement catalog rows carry no region either — the
-              # same K-ORC constraint documented above — so the osc-placement
-              # commands run against the region-stripped copy too. `resource class
-              # list` is a read-only call through the projected Placement endpoint:
-              # it proves the API answers an authenticated request, not just that
-              # the endpoint is catalogued.
-              OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin resource class list
+              # `resource class list` is a read-only call through the projected
+              # Placement endpoint: it proves the API answers an authenticated
+              # request, not just that the endpoint is catalogued.
+              openstack --os-cloud admin resource class list
               echo "OK: placement answered a resource-class listing through the projected endpoint"
               echo "== barbican secret round-trip =="
               # Store a secret and read its payload back. This is the only check
@@ -183,14 +174,13 @@ spec:
               # the endpoint, Barbican validates the token against Keystone, and the
               # payload travels through the vault plugin into the dedicated OpenBao
               # instance and back out. Catalogue-only checks miss every step after
-              # the first. The key-manager rows carry no region either, so this runs
-              # against the region-stripped copy for the reason documented above.
+              # the first.
               SECRET_PAYLOAD='c5c3-e2e-barbican-payload'
-              SECRET_HREF="$(OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin secret store --name e2e-roundtrip --payload "${SECRET_PAYLOAD}" -f value -c 'Secret href')"
+              SECRET_HREF="$(openstack --os-cloud admin secret store --name e2e-roundtrip --payload "${SECRET_PAYLOAD}" -f value -c 'Secret href')"
               test -n "${SECRET_HREF}" || { echo "ERROR: secret store returned no href"; exit 1; }
-              RETRIEVED="$(OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin secret get -p "${SECRET_HREF}" -f value -c Payload)"
+              RETRIEVED="$(openstack --os-cloud admin secret get -p "${SECRET_HREF}" -f value -c Payload)"
               test "${RETRIEVED}" = "${SECRET_PAYLOAD}" || { echo "ERROR: retrieved payload '${RETRIEVED}' != stored payload '${SECRET_PAYLOAD}'"; exit 1; }
-              OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin secret delete "${SECRET_HREF}"
+              openstack --os-cloud admin secret delete "${SECRET_HREF}"
               echo "OK: secret round-trip payload matches the stored literal, and the secret was deleted"
               echo "== network round-trip =="
               # The D8 CRUD check for the network service, driven through the
@@ -198,21 +188,17 @@ spec:
               # identity. cp-verify-net is a pure-OVN LOGICAL network: northd
               # runs in the referenced OVNCentral and writes it into the
               # Northbound database, so no chassis has to be bound for the
-              # create to reach ACTIVE. The network rows carry no region either,
-              # so this runs against the region-stripped copy for the reason
-              # documented above.
-              OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin network create cp-verify-net
-              NET_STATUS="$(OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin network show cp-verify-net -f value -c status)"
+              # create to reach ACTIVE.
+              openstack --os-cloud admin network create cp-verify-net
+              NET_STATUS="$(openstack --os-cloud admin network show cp-verify-net -f value -c status)"
               test "${NET_STATUS}" = "ACTIVE" || { echo "ERROR: created network status '${NET_STATUS}' != ACTIVE"; exit 1; }
-              OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin network delete cp-verify-net
+              openstack --os-cloud admin network delete cp-verify-net
               echo "OK: network round-trip created, showed ACTIVE, and deleted cp-verify-net"
               echo "== block-storage round-trips =="
               # The D8 CRUD checks for the block-storage service, driven through
               # the ControlPlane's own admin credential like the network one
-              # above. The block-storage rows carry no region either, so every
-              # call in this section goes through one wrapper over the
-              # region-stripped copy.
-              osc() { OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin "$@"; }
+              # above. Every call in this section goes through one wrapper.
+              osc() { openstack --os-cloud admin "$@"; }
               # wait_status <kind> <name> <want> <timeoutSeconds>: poll one
               # object's status every 5s, and print the last status seen when the
               # deadline passes. Cinder answers a create before the volume exists
@@ -335,8 +321,7 @@ spec:
               echo "== compute round-trip =="
               # The CRUD check for the compute service, driven through the
               # ControlPlane's own admin credential like the network and
-              # block-storage ones and through the same region-stripped osc()
-              # wrapper: the compute rows carry no region either.
+              # block-storage ones and through the same osc() wrapper.
               #
               # The fake compute the suite deploys is the only nova-compute on
               # this cluster, so exactly one host has to report up. The state

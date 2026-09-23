@@ -3107,13 +3107,17 @@ on the pass before K-ORC first writes to the region — no later pass repeats it
 failed `Region` apply stamps `CatalogReady` False and silences the retry pass, and
 a ControlPlane that carries a description never raises it.
 
-The catalog rows carry no region of their own: `managedCatalogService` and
+The identity row names no region of its own: `managedCatalogService` and
 `managedCatalogEndpoint` set the management policy, the credentials ref, and the
 resource block (type/name/enabled, and interface/URL/serviceRef), and nothing
-else. The registration children carry no region either, for the same upstream
-reason: K-ORC's `EndpointResourceSpec` has no region field. The region every
-client filters on comes from the `clouds.yaml` `region_name` the admin
-credential renders from `spec.region`.
+else. The row K-ORC adopts for it is the public endpoint the keystone bootstrap
+inserted into `spec.region`, so it already sits in that region. The rows the
+registration children create are placed there explicitly: each KeystoneService
+imports `spec.region` and names the import as every Endpoint's `regionRef` (see
+[Catalog Projection](./keystoneservice-reconciler.md#catalog-projection)). A
+client that sets `region_name`, as every nova client section and the neutron
+notifier do, finds no region-less row. `spec.region` is also the `clouds.yaml`
+`region_name` the admin credential renders.
 
 Registering the child CRs only instructs K-ORC to create the catalog entries —
 it does not mean they exist in Keystone — so `CatalogReady` is gated on every

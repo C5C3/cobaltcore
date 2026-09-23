@@ -984,6 +984,21 @@ func simulateRegistrationCatalogAvailableWhenPresent(
 	svc.Status.ID = ptr.To("registration-service-id")
 	g.Expect(c.Status().Update(ctx, svc)).To(Succeed(), "set the catalog Service Available=True")
 
+	// The region import resolves to the region the keystone bootstrap inserted.
+	region := &orcv1alpha1.Region{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: keystoneServiceCatalogRegionRef(ks)}, region)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the catalog Region import should be created")
+	meta.SetStatusCondition(&region.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		ObservedGeneration: region.Generation,
+		Message:            "simulated available",
+	})
+	region.Status.ID = ptr.To(korcRegion(cp))
+	g.Expect(c.Status().Update(ctx, region)).To(Succeed(), "set the catalog Region import Available=True")
+
 	// Both interfaces (D6): a built-in row registers an internal and a public
 	// Endpoint from the start.
 	for _, entry := range ks.Spec.Catalog.Endpoints {
@@ -3148,6 +3163,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 					"the Endpoint must reference its own row's Service CR")
 			g.Expect(rowEP.Spec.Resource.URL).To(Equal(registration.url),
 				"both interfaces advertise the in-cluster API URL (no gateway in this fixture)")
+			g.Expect(rowEP.Spec.Resource.RegionRef).
+				To(Equal(ptr.To(orcv1alpha1.KubernetesNameRef(keystoneServiceCatalogRegionRef(registration.child)))),
+					"the Endpoint must be registered in the plane's region, or a client setting region_name misses it")
 		}
 
 		liveRegistration := &c5c3v1alpha1.KeystoneService{}
@@ -4214,6 +4232,7 @@ func TestIntegration_ControlPlaneDeletion_SweepsProjectedRegistrationsFirst(t *t
 			return apierrors.IsNotFound(c.Get(ctx, client.ObjectKey{Name: name, Namespace: childNS}, obj))
 		}
 		if !goneInChildNS(keystoneServiceCatalogServiceRef(reg), &orcv1alpha1.Service{}) ||
+			!goneInChildNS(keystoneServiceCatalogRegionRef(reg), &orcv1alpha1.Region{}) ||
 			!goneInChildNS(keystoneServiceProjectRef(reg), &orcv1alpha1.Project{}) ||
 			!goneInChildNS(keystoneServiceRoleImportRef(reg, "service"), &orcv1alpha1.Role{}) ||
 			!goneInChildNS(keystoneServiceRoleAssignmentRef(reg, "service"), &orcv1alpha1.RoleAssignment{}) {
