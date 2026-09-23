@@ -25,6 +25,12 @@
 #   build-matrix         — {service, release, platform, runner} for build jobs
 #   tempest-matrix       — {release, platform, runner} for Tempest build jobs
 #   tempest-release-matrix — {release} for Tempest merge jobs
+#   nova-compute-releases — JSON array of the releases whose nova pair survived
+#                           SERVICES, [] when none did; the nova-compute build
+#                           job gates on it, and the merge and verify jobs use
+#                           it as their release matrix
+#   nova-compute-build-matrix — {release, platform, runner} for the
+#                           nova-compute build job
 #
 # Extracted from inline workflow step to standalone script.
 
@@ -40,6 +46,13 @@ emit() {
   echo "$1=$2"
 }
 
+# per_platform — reads a JSON array of {release} objects, writes one leg per
+# platform as {"include": [{release, platform, runner}]}
+per_platform() {
+  jq -c --argjson p "$platforms" \
+    '[.[] as $r | $p[] | {release: $r.release, platform: .platform, runner: .runner}] | {"include": .}'
+}
+
 # ---------------------------------------------------------------------------
 # 1. Discover release directories
 # ---------------------------------------------------------------------------
@@ -52,6 +65,8 @@ if [[ ${#dirs[@]} -eq 0 ]]; then
   emit build-matrix '{"include":[]}'
   emit tempest-matrix '{"include":[]}'
   emit tempest-release-matrix '{"include":[]}'
+  emit nova-compute-releases '[]'
+  emit nova-compute-build-matrix '{"include":[]}'
   exit 0
 fi
 
@@ -110,7 +125,15 @@ build_matrix=$(echo "$pairs" | jq -c \
 emit build-matrix "${build_matrix}"
 
 # ---------------------------------------------------------------------------
-# 5. Tempest matrix: one image per release (not per service)
+# 5. nova-compute: images/nova-compute/ is built from nova's source pin, so
+#    its releases are the nova pairs that survived the SERVICES filter
+# ---------------------------------------------------------------------------
+compute_pairs=$(echo "$pairs" | jq -c '[.[] | select(.service == "nova")]')
+emit nova-compute-releases "$(echo "$compute_pairs" | jq -c '[.[].release]')"
+emit nova-compute-build-matrix "$(per_platform <<<"$compute_pairs")"
+
+# ---------------------------------------------------------------------------
+# 6. Tempest matrix: one image per release (not per service)
 # ---------------------------------------------------------------------------
 releases=$(
   for release_dir in "${dirs[@]}"; do
@@ -122,7 +145,4 @@ releases=$(
 
 emit tempest-release-matrix "$(echo "$releases" | jq -c '{"include": .}')"
 
-tempest_matrix=$(echo "$releases" | jq -c \
-  --argjson p "$platforms" \
-  '[.[] as $r | $p[] | {release: $r.release, platform: .platform, runner: .runner}] | {"include": .}')
-emit tempest-matrix "${tempest_matrix}"
+emit tempest-matrix "$(per_platform <<<"$releases")"
