@@ -5,7 +5,10 @@
 #
 # audit-fixture-drift.sh — mechanical fixture-drift checks for the CobaltCore repo.
 # Verifies that test fixtures still match the CRD they claim to instantiate:
-#   X1  every CobaltCore CR fixture names a known kind on a served apiVersion
+#   X1  every fixture document in an API group the repo's CRDs declare names a
+#       known kind on a served apiVersion; other *.c5c3.io groups (external
+#       operators such as memcached.c5c3.io) are [INFO], an undeclared group
+#       shaped like a repo group (*.openstack.c5c3.io) is a [FAIL]
 #   X2  every spec field in such a fixture exists in that CRD's schema
 #   X3  every <NN>- or <NNN>-*.yaml next to a chainsaw-test.yaml is referenced
 #       from it
@@ -188,9 +191,10 @@ while IFS= read -r gen; do
   fx_count=$(find "${d}" -maxdepth 1 \
     \( -name '[0-9][0-9]-*.yaml' -o -name '[0-9][0-9][0-9]-*.yaml' \) | wc -l | tr -d ' ')
   # Every <NN>-/<NNN>-*.yaml the generator names, whether in its FIXTURES list
-  # or in an exemption set (keystone/invalid-cr carries two pre-CC-0094 fixtures
-  # it deliberately does not regenerate). A file on disk that the generator
-  # never names is outside the --check gate.
+  # or in an exemption set (keystone/invalid-cr carries two hand-written
+  # fixtures that predate its generator, which names them in an exemption set
+  # and deliberately does not regenerate them). A file on disk that the
+  # generator never names is outside the --check gate.
   named=$(grep -oE '[0-9]{2,3}-[A-Za-z0-9_-]+\.yaml' "${gen}" 2>/dev/null | sort -u | grep -c . || true)
   info "${d}: ${fx_count} fixture(s) on disk, ${named} named in $(basename "${gen}")"
 done <<< "${GENERATORS_LIST}"

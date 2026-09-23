@@ -71,10 +71,15 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 
 - **P1** — image layer: `images/<svc>/Dockerfile`, the
   `verify_<svc>.sh` contract script, and the per-release config
-  (source-refs key, extra-packages block, test-excludes file) in
-  *every* release. A missing release entry means the build matrix —
-  which auto-discovers from these files — silently skips the
-  service×release combination.
+  (source-refs key, extra-packages block) in *every* release. A
+  missing release entry means the build matrix — which
+  auto-discovers from these files — silently skips the
+  service×release combination. `releases/<rel>/test-excludes/<svc>.txt`
+  is optional: `hack/ci-run-unit-tests.sh` passes `--exclude-list`
+  only when the file exists, so its absence is an `[INFO]` (the
+  service runs its full upstream unit suite). The reverse direction,
+  an excludes file named after no source-refs key, is
+  `verify_release_config.sh`'s Test 7.
 - **P2** — operator module: `operators/<svc>/go.mod`, the `go.work`
   use entry, the Makefile `OPERATORS ?=` default, and the
   `operators/Dockerfile` module-manifest COPY line. A miss here means
@@ -176,8 +181,9 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 - The **inventory** lists, per service, the helm-unittest, e2e, and
   chaos suite counts, plus whether the service appears in the
   two-cluster placed-services suite (`tests/e2e-multicluster/` —
-  keystone and barbican today; membership is a coverage decision, not
-  a P12 failure). Cross-reference outliers by hand in step 2.
+  keystone, barbican and neutron today, neutron with the OVNCentral it
+  needs; membership is a coverage decision, not a P12 failure).
+  Cross-reference outliers by hand in step 2.
 
 ### 2. Cross-reference by hand
 
@@ -202,12 +208,15 @@ The script checks presence, not content. Using the inventory, confirm:
    service actually needs: compare the projected CronJobs against the
    `<svc>-manage` subcommands upstream documents for periodic use
    (`db purge`, `archive_deleted_rows`, `purge_deleted`, cache pruning,
-   expiry sweeps — the table in [[prepare-new-service]] § Recurring
-   maintenance jobs). A service passing P10 with a key task still
-   unscheduled is the same finding as one failing it. Check the shape
+   expiry sweeps — the table in [[prepare-new-service]]
+   (`references/recurring-maintenance-jobs.md`)). A service passing
+   P10 with a key task still unscheduled is the same finding as one
+   failing it. Check the shape
    too: `ConcurrencyPolicy: Forbid`, a per-run row cap,
    `ActiveDeadlineSeconds`, and a condition that reports the newest
    terminal run instead of merely confirming the CronJob exists.
+   Recorded per-service outcomes (cinder's `db purge` takes no row
+   cap) are in [references/service-notes.md](references/service-notes.md).
 6. That every Job/CronJob pod template actually sets a non-`api`
    component value (grep the builders for `componentLabels(` /
    `naming.ComponentLabels`). P11 only proves the helpers are
@@ -216,7 +225,10 @@ The script checks presence, not content. Using the inventory, confirm:
    reintroduces the #778 endpoint pollution. Keystone's
    `maintenance-endpoint-isolation` suite pins the isolation
    end-to-end; a service with maintenance CronJobs and no equivalent
-   assertion is a candidate for pattern 2 below.
+   assertion is a candidate for pattern 2 below. Cinder's worked
+   answer (two maintenance builders labelled, migration Job pods
+   unlabelled) is in
+   [references/service-notes.md](references/service-notes.md).
 7. That the placement wiring P12 smoke-checks actually routes every
    child write through the resolved children client (grep for direct
    `r.Client.Create`/`Patch` on child kinds that bypass
@@ -225,10 +237,10 @@ The script checks presence, not content. Using the inventory, confirm:
    through the tunnel/proxy seam when placed — barbican's
    port-forward-tunneled OpenBao dials are the worked example. Decide
    whether the service should join the placed-services suite
-   (`tests/e2e-multicluster/`) or record why keystone + barbican
-   coverage suffices; the ci.yaml `e2e-multicluster` job hard-codes
-   the image list it preloads, so suite membership means extending
-   that job too.
+   (`tests/e2e-multicluster/`) or record why keystone + barbican +
+   neutron coverage suffices; the ci.yaml `e2e-multicluster` job
+   hard-codes the image list it preloads, so suite membership means
+   extending that job too.
 8. That the registration P13 found actually describes the service:
    `serviceType` is the catalog type upstream publishes and
    `serviceName` the upstream service name, the user and project
@@ -252,7 +264,7 @@ make verify-helm-schema                                # helm chart layer
 make chainsaw-lint                                     # e2e suite layer
 ```
 
-Trust these over the P1–P9 smoke checks for the layers they cover;
+Trust these over the P1–P13 smoke checks for the layers they cover;
 the smoke checks exist for the cross-layer absences these gates cannot
 see.
 
@@ -306,8 +318,8 @@ These recurring shapes are worth grepping for first:
    `db purge` was retro-fitted, which then cost an API block, an
    admission bound on `metadata.name` in two operators, and a
    hash-collapse fallback for the CRs admitted before that bound —
-   [[prepare-new-service]] § Recurring maintenance jobs exists to keep
-   the next service from repeating it.
+   [[prepare-new-service]] (`references/recurring-maintenance-jobs.md`)
+   exists to keep the next service from repeating it.
 6. **Release config added for one release only.** The service key
    landed in the newest `releases/<version>/source-refs.yaml` but not
    the older ones (or vice versa), so the build matrix builds the
@@ -360,34 +372,8 @@ These recurring shapes are worth grepping for first:
   [[check-fixture-drift]], and [[check-doc-drift]] — those audit each
   layer in depth; this skill audits that every service is present in
   every layer at all.
-- Cinder's `db purge` has no per-run row cap to check at either
-  release: `cinder-manage db purge <days>` takes the age alone at
-  27.0.0 and at 28.0.0, with no `--max_rows` counterpart to glance's
-  cap, and a run issues one unbounded delete per table. Item 5's shape
-  check records that as a deviation in the report rather than a
-  finding, and it needs no `ALLOWED_DEVIATIONS` token, because the
-  scripted P10 check passes on the projected CronJob. The other three
-  elements still apply, and cinder meets them. Cinder also runs
-  maintenance work item 5 never reaches: the
-  `<cinder>-<backend>-service-remove` Job fires from the detach
-  sequence a `CinderBackend` deletion starts, with no CronJob behind
-  it, so comparing projected CronJobs against the `cinder-manage`
-  subcommands does not see it.
-- Cinder is the first service with four Deployment kinds under one
-  instance label (API, scheduler, one `cinder-volume` per attached
-  backend, `cinder-backup`), which is why its API Service selector
-  carries the component key from the first pass. On item 6, the
-  db-purge CronJob carries `componentLabels(cinder, "db-purge")` on
-  the pod template under its job template, and the service-remove Job
-  reassigns `Spec.Template.Labels` to
-  `componentLabels(cinder, "service-remove")` after the shared builder
-  returns. The migration Jobs carry no component value at all:
-  `job.BuildMigrationJob` labels the Job object only and leaves the
-  pod template unlabelled, so the db-sync and schema-check pods hold
-  no `app.kubernetes.io` keys and miss the API Service selector by
-  absence. Item 6's grep therefore finds the two maintenance builders,
-  not the migration Job.
-  `tests/e2e/cinder/maintenance-endpoint-isolation` pins the pods it
-  covers: it samples the API Service EndpointSlices while a live
-  db-purge pod and a live service-remove pod each hold a pod IP, and
-  fails if either IP appears among the addresses.
+- Service-specific findings that items 5 and 6 of step 2 would
+  otherwise rediscover (cinder's uncapped `db purge`, the component
+  labels on its Job pods) live in
+  [references/service-notes.md](references/service-notes.md); add a
+  section there rather than growing this file.
