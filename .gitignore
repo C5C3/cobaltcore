@@ -45,6 +45,7 @@ _output/
 keystone.yaml
 keystone-ca.crt
 controlplane.yaml
+controlplane-ovn.yaml
 cp2.yml
 demo/
 

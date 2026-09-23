@@ -4,9 +4,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the optional block-storage path in docs/quick-start-controlplane.md:
-#   - the `### Create a first volume` check exists in Step 6
-#   - the Step 5 chain runs NeutronReady -> CinderReady -> ServiceAccountsReady
-#   - Step 3 carries the `::: details` container for the optional block
+#   - the `### Create a first volume` check exists in Step 7
+#   - the Step 6 chain runs NeutronReady -> CinderReady -> ServiceAccountsReady
+#   - Step 4 carries the `::: details` container for the optional block
 #   - Step 2 documents the WITH_NFS=true bring-up
 #   - the `# block-storage.yaml` fragment names the two kind NFS exports and
 #     the gateway hostname the guides under docs/guides/cinder/ rely on
@@ -35,15 +35,15 @@ if [[ ! -f "$QUICK_START_DOC" ]]; then
   exit 1
 fi
 
-# --- Test 1: the Step 6 walkthrough heading ---
+# --- Test 1: the Step 7 walkthrough heading ---
 test_volume_heading() {
-  echo "Test: Step 6 carries the '### Create a first volume' check"
+  echo "Test: Step 7 carries the '### Create a first volume' check"
   assert_file_contains "'### Create a first volume' heading present" \
     "$QUICK_START_DOC" \
     '^### Create a first volume$'
 }
 
-# --- Test 2: the Step 5 condition chain ---
+# --- Test 2: the Step 6 condition chain ---
 test_condition_chain() {
   echo "Test: the chain runs NeutronReady -> CinderReady -> ServiceAccountsReady"
   assert_file_contains "CinderReady sits between NeutronReady and ServiceAccountsReady" \
@@ -51,9 +51,9 @@ test_condition_chain() {
     'NeutronReady → CinderReady → ServiceAccountsReady'
 }
 
-# --- Test 3: the Step 3 details container ---
+# --- Test 3: the Step 4 details container ---
 test_details_container() {
-  echo "Test: Step 3 opens the optional block-storage container"
+  echo "Test: Step 4 opens the optional block-storage container"
   assert_file_contains "'::: details Optional: block storage' container present" \
     "$QUICK_START_DOC" \
     '^::: details Optional: block storage (needs WITH_NFS=true in Step 2)$'
@@ -73,7 +73,7 @@ test_details_container
 test_with_nfs_bring_up
 
 # Extract the first fenced yaml block that begins with the `# block-storage.yaml`
-# filename marker (the optional Step 3 fragment).
+# filename marker (the optional Step 4 fragment).
 BLOCK_STORAGE_YAML="$(mktemp)"
 trap 'rm -f "$BLOCK_STORAGE_YAML"' EXIT
 
