@@ -289,6 +289,29 @@ func TestBuildDaemonSet_PodSecurityContextVerbatimNoFSGroup(t *testing.T) {
 	g.Expect(got.FSGroup).To(gomega.BeNil())
 }
 
+// A nil Affinity renders none, which is what every chassis and agent caller
+// passes, so their pinned DaemonSets stay as they are. A set one is rendered
+// as the caller built it.
+func TestBuildDaemonSet_AffinityVerbatim(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	g.Expect(BuildDaemonSet(daemonSetParams()).Spec.Template.Spec.Affinity).To(gomega.BeNil())
+
+	affinity := &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+			NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+				MatchFields: []corev1.NodeSelectorRequirement{{
+					Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{"node-1"},
+				}},
+			}},
+		},
+	}}
+	p := daemonSetParams()
+	p.Affinity = affinity
+
+	g.Expect(BuildDaemonSet(p).Spec.Template.Spec.Affinity).To(gomega.BeIdenticalTo(affinity))
+}
+
 // The selector is immutable after creation, so it takes the narrow label set
 // alone while the object and the template carry the full one. Stamping the
 // full set into the selector would pin the managed-by and component labels for

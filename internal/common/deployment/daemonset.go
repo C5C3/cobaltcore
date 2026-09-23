@@ -48,6 +48,11 @@ type DaemonSetParams struct {
 	// schedulable node.
 	NodeSelector map[string]string
 
+	// Affinity is the pod affinity, rendered verbatim. Nil renders none. A
+	// workload that has to keep a pod on a node its selector no longer matches
+	// expresses the node set here instead of in NodeSelector.
+	Affinity *corev1.Affinity
+
 	// Tolerations let the pod onto tainted nodes.
 	Tolerations []corev1.Toleration
 
@@ -138,6 +143,7 @@ func BuildDaemonSet(p DaemonSetParams) *appsv1.DaemonSet {
 				},
 				Spec: corev1.PodSpec{
 					NodeSelector:                  p.NodeSelector,
+					Affinity:                      p.Affinity,
 					Tolerations:                   p.Tolerations,
 					HostNetwork:                   p.HostNetwork,
 					DNSPolicy:                     dnsPolicy,
