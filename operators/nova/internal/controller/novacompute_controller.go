@@ -50,6 +50,18 @@ const novaComputeDrainFinalizer = "nova.openstack.c5c3.io/compute-drain"
 // watch legs, the conflict rules and the aggregate set all resolve through it.
 const NovaComputeNovaRefIndexKey = "spec.novaRef.name"
 
+// The step names of the NovaCompute pipeline. Each is the sub_reconciler metric
+// label (see subReconcilerConditionTypes), and teardownSteps picks the steps a
+// deleting pool that holds no node runs by name.
+const (
+	stepNovaRef    = "NovaRef"
+	stepNodes      = "Nodes"
+	stepPoolConfig = "PoolConfig"
+	stepDaemonSet  = "DaemonSet"
+	stepAggregates = "Aggregates"
+	stepServices   = "Services"
+)
+
 // Condition types of the NovaCompute pipeline, one per step.
 const (
 	conditionTypeNovaReady       = "NovaReady"
@@ -66,6 +78,7 @@ const (
 	eventReasonComputeServiceDeleted     = "ComputeServiceDeleted"
 	eventReasonAggregateCreated          = "AggregateCreated"
 	eventReasonAggregateDeleted          = "AggregateDeleted"
+	eventReasonAggregateKept             = "AggregateKept"
 	eventReasonComputeConfigMirrorReaped = "ComputeConfigMirrorReaped"
 	eventReasonNodeConflict              = "NodeConflict"
 )
@@ -279,17 +292,23 @@ func (r *NovaComputeReconciler) pipelineSteps(children client.Client, cr *novav1
 	pass *novaComputePass,
 ) []commonreconcile.Step {
 	return []commonreconcile.Step{
-		{Name: "NovaRef", Fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Name: stepNovaRef, Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileNovaComputeNova(ctx, cr, pass)
 		}},
-		{Name: "Nodes", Fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Name: stepNodes, Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileNovaComputeNodes(ctx, children, cr, pass)
 		}},
-		{Name: "PoolConfig", Fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Name: stepPoolConfig, Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileNovaComputeConfig(ctx, children, cr, pass)
 		}},
-		{Name: "DaemonSet", Fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Name: stepDaemonSet, Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileNovaComputeDaemonSet(ctx, children, cr, pass)
+		}},
+		{Name: stepAggregates, Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileNovaComputeAggregates(ctx, cr, pass)
+		}},
+		{Name: stepServices, Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileNovaComputeServices(ctx, children, cr, pass)
 		}},
 	}
 }
@@ -301,9 +320,9 @@ func (r *NovaComputeReconciler) pipelineSteps(children client.Client, cr *novav1
 // its compute service deleted, and the aggregates are recomputed without this
 // CR, so the last pool of a Nova removes the ones it created (see
 // teardownSteps). The finalizers
-// stay until status.nodes is empty and the aggregates step completed. An
-// unreachable Nova API therefore blocks the deletion; removing the drain
-// finalizer by hand is the escape.
+// stay until a pass that began with no node held completed the aggregates
+// step. An unreachable Nova API therefore blocks the deletion; removing the
+// drain finalizer by hand is the escape.
 //
 // Once that is done, or at once when the Nova is gone or the target cluster
 // was abandoned, the remote children are swept, the compute-contract mirror is
@@ -329,10 +348,14 @@ func (r *NovaComputeReconciler) reconcileDelete(ctx context.Context, cr *novav1a
 		}
 		if novaExists {
 			statusBefore := cr.Status.DeepCopy()
+			// A pass that began holding a node ran its Aggregates step before
+			// the Services step deleted the last service, which is what empties
+			// the aggregates the host sat in. One more pass cleans them up.
+			heldAtStart := len(cr.Status.Nodes) > 0
 			pass := &novaComputePass{}
 			result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument,
 				r.teardownSteps(children, cr, pass))
-			if err != nil || len(cr.Status.Nodes) > 0 || !pass.aggregatesEnsured {
+			if err != nil || heldAtStart || !pass.aggregatesEnsured {
 				if err == nil && result.IsZero() {
 					result = ctrl.Result{RequeueAfter: RequeueComputeDrainPolling}
 				}
@@ -372,7 +395,7 @@ func (r *NovaComputeReconciler) teardownSteps(children client.Client, cr *novav1
 		return steps
 	}
 	return slices.DeleteFunc(steps, func(step commonreconcile.Step) bool {
-		return step.Name != "NovaRef" && step.Name != "Aggregates"
+		return step.Name != stepNovaRef && step.Name != stepAggregates
 	})
 }
 
