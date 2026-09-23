@@ -67,9 +67,9 @@ func main() {
 				return err
 			}
 			if webhooks {
-				// One registration wires both the defaulting and the validating
-				// webhook: NovaWebhook implements admission.Defaulter and
-				// admission.Validator for the single Nova kind.
+				// One registration per kind wires both the defaulting and the
+				// validating webhook: NovaWebhook and NovaComputeWebhook each
+				// implement admission.Defaulter and admission.Validator.
 				//
 				// DECISION: the webhook reads through mgr.GetAPIReader()
 				// (direct, uncached) rather than mgr.GetClient(), so a
@@ -77,6 +77,11 @@ func main() {
 				// a stale informer cache and the cached client's lazy informer
 				// start does not happen inside the webhook timeout.
 				if err := (&novav1alpha1.NovaWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+					return err
+				}
+				// The NovaCompute webhook reads the referenced Nova for its
+				// extraConfig catalog check, through the same uncached reader.
+				if err := (&novav1alpha1.NovaComputeWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
 					return err
 				}
 			}

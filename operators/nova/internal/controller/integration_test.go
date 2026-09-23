@@ -113,14 +113,17 @@ const (
 
 // --- Shared helpers ---
 
-// registerNovaWebhooks wires the webhook handler onto mgr. The webhook manifests
-// envtest installs carry the Nova kind with failurePolicy=Fail, so an unserved
-// handler would fail admission.
+// registerNovaWebhooks wires the webhook handlers of both kinds onto mgr. The
+// webhook manifests envtest installs carry the Nova and NovaCompute kinds with
+// failurePolicy=Fail, so an unserved handler would fail admission.
 //
 // mgr.GetAPIReader() mirrors main.go: admission lookups read the API server
 // directly, never a stale informer cache.
 func registerNovaWebhooks(mgr ctrl.Manager) error {
-	return (&novav1alpha1.NovaWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
+	if err := (&novav1alpha1.NovaWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+		return err
+	}
+	return (&novav1alpha1.NovaComputeWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 }
 
 // registerNovaController wires the reconciler onto mgr through the production
