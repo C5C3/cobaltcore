@@ -61,6 +61,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"NovaRef":    conditionTypeNovaReady,
 	"Nodes":      conditionTypeNodesReady,
 	"PoolConfig": conditionTypeConfigReady,
+	"DaemonSet":  conditionTypeDaemonSetReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error

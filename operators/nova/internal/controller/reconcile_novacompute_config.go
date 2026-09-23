@@ -40,10 +40,13 @@ const (
 	poolConfigMountPath = "/etc/nova/compute-pool.conf.d"
 )
 
+// runOVSDir is the node's Open vSwitch run directory, which the pod mounts.
+const runOVSDir = "/run/openvswitch"
+
 // ovsDBSocket is the local Open vSwitch database the OVNChassis pods on the node
 // serve. os-vif plugs instance ports through it, and the wait-for-chassis gate
-// reads the chassis registration from it.
-const ovsDBSocket = "/run/openvswitch/db.sock"
+// reads the chassis registration from it, handed the path as OVSDB_SOCKET.
+const ovsDBSocket = runOVSDir + "/db.sock"
 
 // novaComputeConfigHashAnnotation carries a hash of the compute contract on the
 // pod template, so a rotated password or bus URL rolls the pods.
