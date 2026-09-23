@@ -122,3 +122,5 @@ For a `Nova` named `{name}`:
   emits
 - [Reconciler Architecture](./nova-reconciler.md): the sub-reconciler pipeline,
   conditions, and requeue semantics
+- [Cells](./nova-cells.md): cell0 and cell1, the template URLs, host discovery
+  and unmapping, and why one CR maps a single real cell
