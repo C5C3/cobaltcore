@@ -58,10 +58,12 @@ var subReconcilerConditionTypes = map[string]string{
 
 	// The NovaCompute pipeline. No name clashes with a Nova step, so one map
 	// serves both kinds.
-	"NovaRef":    conditionTypeNovaReady,
-	"Nodes":      conditionTypeNodesReady,
-	"PoolConfig": conditionTypeConfigReady,
-	"DaemonSet":  conditionTypeDaemonSetReady,
+	stepNovaRef:    conditionTypeNovaReady,
+	stepNodes:      conditionTypeNodesReady,
+	stepPoolConfig: conditionTypeConfigReady,
+	stepDaemonSet:  conditionTypeDaemonSetReady,
+	stepAggregates: conditionTypeAggregatesReady,
+	stepServices:   conditionTypeServicesReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error
