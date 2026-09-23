@@ -1,0 +1,132 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Reads what the NovaCompute left behind in Nova, from the outside, through the
+# openstack CLI: the compute service of the node and the two host aggregates
+# the pool seeds. The ConfigMap nova-pool-verify, written by the suite before
+# each run, names the node and the state to expect:
+#
+#   registered  the node's service is enabled and up, and the aggregates
+#               nova-pool-az1 (availability zone nova-pool-az1) and
+#               tenant_filter_tests (none) both exist and carry the marker
+#               c5c3.io:nova=openstack/nova-pool
+#   released    the node's service is gone, and so is nova-pool-az1, while
+#               tenant_filter_tests stays for the pool that still exists
+#   torndown    tenant_filter_tests is gone too
+#
+# backoffLimit is 0 so a failed run keeps the pod whose log says why.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-pool-verify
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: verify
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NODE
+              valueFrom:
+                configMapKeyRef:
+                  name: nova-pool-verify
+                  key: node
+            - name: EXPECT
+              valueFrom:
+                configMapKeyRef:
+                  name: nova-pool-verify
+                  key: expect
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-pool.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              MARKER=openstack/nova-pool
+
+              # aggregate_check <name> <zone>: the aggregate exists, carries the
+              # availability zone (empty for none) and the marker. The client
+              # renders properties as a dict or as key='value' text depending on
+              # its version, so both shapes are accepted.
+              aggregate_check() {
+                openstack aggregate show "$1" -f json | python3 -c '
+              import json, sys
+              name, zone, marker = sys.argv[1:4]
+              agg = json.load(sys.stdin)
+              got_zone = agg.get("availability_zone") or ""
+              if got_zone != zone:
+                  sys.exit("ERROR: aggregate %s has availability zone %r, want %r" % (name, got_zone, zone))
+              props = agg.get("properties") or {}
+              if isinstance(props, dict):
+                  found = props.get("c5c3.io:nova")
+              else:
+                  found = marker if ("c5c3.io:nova=" + chr(39) + marker + chr(39)) in props else None
+              if found != marker:
+                  sys.exit("ERROR: aggregate %s carries no marker c5c3.io:nova=%s: %r" % (name, marker, props))
+              print("OK: aggregate %s (zone %s) carries the marker" % (name, zone or "none"))
+              ' "$1" "$2" "${MARKER}"
+              }
+
+              # aggregate_absent <name>
+              aggregate_absent() {
+                if openstack aggregate show "$1" >/dev/null 2>&1; then
+                  echo "ERROR: aggregate $1 still exists"
+                  openstack aggregate show "$1" || true
+                  exit 1
+                fi
+                echo "OK: aggregate $1 is gone"
+              }
+
+              SERVICES="$(openstack compute service list --service nova-compute \
+                -f value -c Host -c Status -c State || true)"
+              echo "${SERVICES}"
+
+              case "${EXPECT}" in
+                registered)
+                  if ! grep -qx "${NODE} enabled up" <<<"${SERVICES}"; then
+                    echo "ERROR: the compute service of ${NODE} is not enabled and up"
+                    exit 1
+                  fi
+                  echo "OK: compute service ${NODE} is enabled and up"
+                  aggregate_check nova-pool-az1 nova-pool-az1
+                  aggregate_check tenant_filter_tests ""
+                  ;;
+                released)
+                  if awk '{print $1}' <<<"${SERVICES}" | grep -qx "${NODE}"; then
+                    echo "ERROR: the compute service of ${NODE} still exists"
+                    exit 1
+                  fi
+                  echo "OK: the compute service of ${NODE} is deleted"
+                  aggregate_absent nova-pool-az1
+                  aggregate_check tenant_filter_tests ""
+                  ;;
+                torndown)
+                  aggregate_absent tenant_filter_tests
+                  ;;
+                *)
+                  echo "ERROR: unknown EXPECT '${EXPECT}'"
+                  exit 1
+                  ;;
+              esac
+
+              echo NOVA-POOL-VERIFY-OK

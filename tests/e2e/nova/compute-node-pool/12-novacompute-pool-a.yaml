@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The node pool under test. It selects the node step 1 labels with
+# openstack.c5c3.io/nova-compute-pool=a, and removing that label is how step 7
+# starts the drain.
+#
+# spec.extraConfig is the fake-driver seam: kind has no KVM, and
+# FakeDriverWithoutFakeNodes reports one node named after [DEFAULT] host, which
+# the pod takes from spec.nodeName, so the compute service, the hypervisor and
+# the resource provider all carry the node's name. vif plugging is switched off
+# because no ML2 agent runs here to report a port as bound; the server carries
+# no NIC either way. All three options are in the 2025.2 catalog, so the
+# webhook's catalog check admits them.
+#
+# The resources are the ones the fake compute of ../basic-deployment runs on.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: pool-a
+  namespace: openstack
+spec:
+  novaRef:
+    name: nova-pool
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: a
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 768Mi
+  extraConfig:
+    DEFAULT:
+      compute_driver: fake.FakeDriverWithoutFakeNodes
+      vif_plugging_is_fatal: "false"
+      vif_plugging_timeout: "0"
