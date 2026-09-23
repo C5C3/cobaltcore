@@ -1748,11 +1748,12 @@ jobs:
     # independently gated (see continue-on-error below) and so the suites run
     # in parallel.
     #
-    # test_dirs lists the per-suite test directories explicitly. chainsaw
-    # v0.2.14 accepts --{include,exclude}-test-regex flags but does not apply
-    # them in the runner (the config field is set but never read), so regex
-    # filtering is a no-op and a new test directory must be added to the
-    # appropriate suite below when introduced.
+    # test_dirs lists the per-suite test directories explicitly, so a new test
+    # directory must be added to the appropriate suite below when introduced.
+    # (chainsaw's --{include,exclude}-test-regex flags were no-ops up to
+    # v0.2.14; the pinned release applies them, but they match the Go test
+    # name chainsaw/<metadata.name>, not a directory, and a bare name selects
+    # nothing and still exits 0, so the explicit list stays.)
     strategy:
       fail-fast: false
       matrix:
