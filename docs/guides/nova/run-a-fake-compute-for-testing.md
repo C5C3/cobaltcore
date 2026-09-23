@@ -175,12 +175,31 @@ Set it on the ControlPlane, which projects it into the child's
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
   -p '{"spec":{"services":{"nova":{"extraConfig":{"DEFAULT":{"allow_resize_to_same_host":"true"}}}}}}'
-kubectl wait controlplane/controlplane -n openstack \
-  --for=condition=NovaReady --timeout=10m
+ok=
+for _ in $(seq 120); do
+  CM=$(kubectl get deploy/controlplane-nova -n openstack \
+    -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+  kubectl get configmap "$CM" -n openstack -o jsonpath='{.data.nova\.conf}' \
+    | grep -Fxq 'allow_resize_to_same_host = true' && { ok=1; break; }
+  sleep 5
+done
+if [ -n "$ok" ]; then
+  kubectl rollout status deploy/controlplane-nova -n openstack --timeout=10m
+else
+  echo "controlplane-nova does not mount the option after 10m: check the Nova CR's DatabaseReady condition" >&2
+fi
 ```
 
-The option is read by the compute API, so the control-plane roles roll onto the
-new config; the fake compute does not need it. Then resize onto a second flavor
+The option lands in a new config ConfigMap, and the nova operator re-runs the
+db-sync Job against it before it touches the API Deployment. Until that Job
+finishes, the Deployment still mounts the old ConfigMap and describes the old
+pods, and a rollout check passes at once. The loop therefore waits until the
+ConfigMap the Deployment mounts carries the option, and the rollout check then
+waits for the API pods to run on it. A failed db-sync Job holds the Deployment
+on the old ConfigMap, so the loop gives up after ten minutes and names the
+condition that reports the Job. On a second run the option is already mounted
+and the loop ends at once. The option is read by the compute API when it plans a
+resize, so the fake compute does not need it. Then resize onto a second flavor
 and confirm:
 
 ```bash

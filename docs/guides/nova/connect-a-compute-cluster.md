@@ -199,9 +199,12 @@ Gateway already carries the listener `https-nova-metadata` for it:
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
   -p '{"spec":{"services":{"nova":{"metadataGateway":{"parentRef":{"name":"openstack-gw"},"hostname":"nova-metadata.127-0-0-1.nip.io"}}}}}'
-kubectl wait nova/controlplane-nova -n openstack \
-  --for=condition=MetadataHTTPRouteReady --timeout=5m
+kubectl wait nova/controlplane-nova -n openstack --timeout=5m \
+  --for=jsonpath='{.status.conditions[?(@.type=="MetadataHTTPRouteReady")].reason}'=HTTPRouteAccepted
 ```
+
+`MetadataHTTPRouteReady` reads `True` under `HTTPRouteNotRequired` while no
+metadata gateway is set, so the wait keys on the reason an accepted route sets.
 
 The `NeutronMetadataAgent` on the compute cluster then points at that hostname
 over HTTPS and signs with the key the contract carries. Its `sharedSecretRef`

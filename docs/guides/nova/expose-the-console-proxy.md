@@ -57,11 +57,13 @@ kubectl patch controlplane controlplane -n openstack --type merge \
 ```
 
 The nova operator creates the HTTPRoute `controlplane-nova-console` and reports
-the Gateway's verdict on it as `ConsoleHTTPRouteReady`:
+the Gateway's verdict on it as `ConsoleHTTPRouteReady`. That condition already
+reads `True` before the patch, under the reason `HTTPRouteNotRequired`, so wait
+for the reason an accepted route sets:
 
 ```bash
-kubectl wait nova/controlplane-nova -n openstack \
-  --for=condition=ConsoleHTTPRouteReady --timeout=5m
+kubectl wait nova/controlplane-nova -n openstack --timeout=5m \
+  --for=jsonpath='{.status.conditions[?(@.type=="ConsoleHTTPRouteReady")].reason}'=HTTPRouteAccepted
 kubectl get httproute controlplane-nova-console -n openstack
 ```
 
