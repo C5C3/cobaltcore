@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
@@ -25,6 +26,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/nova/internal/computeapi/computeapitest"
 )
 
 // The shared fixture coordinates. The Nova, the MariaDB holding its two schemas
@@ -69,14 +71,19 @@ func testScheme() *runtime.Scheme {
 }
 
 // novaFakeClientBuilder returns a fake client builder with the package scheme,
-// the status subresource the reconciler writes, and the Secret-name field index
-// the watch mapper resolves against.
+// the status subresource both reconcilers write, the Secret-name and novaRef
+// field indexes the watch mappers and the NovaCompute steps resolve against,
+// and the spec.nodeName pod index the API server provides as a field selector.
 func novaFakeClientBuilder(objs ...client.Object) *fake.ClientBuilder {
 	return fake.NewClientBuilder().
 		WithScheme(testScheme()).
 		WithObjects(objs...).
-		WithStatusSubresource(&novav1alpha1.Nova{}).
-		WithIndex(&novav1alpha1.Nova{}, NovaSecretNameIndexKey, novaSecretNameExtractor)
+		WithStatusSubresource(&novav1alpha1.Nova{}, &novav1alpha1.NovaCompute{}).
+		WithIndex(&novav1alpha1.Nova{}, NovaSecretNameIndexKey, novaSecretNameExtractor).
+		WithIndex(&novav1alpha1.NovaCompute{}, NovaComputeNovaRefIndexKey, novaComputeNovaRefExtractor).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
+			return []string{obj.(*corev1.Pod).Spec.NodeName}
+		})
 }
 
 // newNovaTestReconciler builds a NovaReconciler over a fake client pre-loaded
@@ -341,4 +348,90 @@ func collectEvents(rec *record.FakeRecorder) []string {
 			return out
 		}
 	}
+}
+
+// --- NovaCompute fixtures ---
+
+// The NovaCompute fixture coordinates: one pool selecting one node in one zone.
+const (
+	testPoolName   = "pool-a"
+	testPoolLabel  = "openstack.c5c3.io/nova-compute-pool"
+	testNodeName   = "node-1"
+	testZone       = "az1"
+	testContract   = testNovaName + "-" + componentComputeConfig
+	testPoolMarker = testNamespace + "/" + testNovaName
+)
+
+// testPoolCreated is the creation time of the pool fixture; rivals are made
+// older or younger than it.
+var testPoolCreated = metav1.NewTime(time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC))
+
+// validNovaCompute returns a NovaCompute joining validNova with a one-label
+// selector, in the shape an admitted CR has.
+func validNovaCompute() *novav1alpha1.NovaCompute {
+	return &novav1alpha1.NovaCompute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              testPoolName,
+			Namespace:         testNamespace,
+			UID:               "pool-a-uid",
+			Generation:        1,
+			CreationTimestamp: testPoolCreated,
+		},
+		Spec: novav1alpha1.NovaComputeSpec{
+			NovaRef:        novav1alpha1.NovaRef{Name: testNovaName},
+			NodeSelector:   map[string]string{testPoolLabel: "a"},
+			Libvirt:        novav1alpha1.NovaComputeLibvirtSpec{VirtType: "kvm"},
+			UpdateStrategy: novav1alpha1.NovaComputeUpdateStrategy{Type: "RollingUpdate"},
+		},
+	}
+}
+
+// readyNovaForCompute returns validNova as a pool finds it once the control
+// plane is up: a release installed and the compute contract published.
+func readyNovaForCompute() *novav1alpha1.Nova {
+	nova := validNova()
+	nova.Status.InstalledRelease = "2025.2"
+	nova.Status.ComputeConfigSecretRef = &corev1.LocalObjectReference{Name: testContract}
+	return nova
+}
+
+// computeContractSecret returns the compute contract readyNovaForCompute
+// publishes, carrying the given service password.
+func computeContractSecret(password string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: testContract, Namespace: testNamespace},
+		Data: map[string][]byte{
+			computeConfigFragmentKey: []byte("[DEFAULT]\nuse_stderr = true\n"),
+			transportURLKey:          []byte("rabbit://nova:secret@rabbitmq.openstack.svc:5672/"),
+			passwordKey:              []byte(password),
+			cellNameKey:              []byte(computeCellName),
+		},
+	}
+}
+
+// poolNode returns a Node carrying the given labels.
+func poolNode(name string, labels map[string]string) *corev1.Node {
+	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels}}
+}
+
+// selectedNode returns a node the pool fixture selects, in testZone.
+func selectedNode(name string) *corev1.Node {
+	return poolNode(name, map[string]string{testPoolLabel: "a", zoneLabel: testZone})
+}
+
+// newNovaComputeTestReconciler returns a reconciler on a fake client holding
+// objs, talking to api for Keystone and Nova.
+func newNovaComputeTestReconciler(api *computeapitest.Fake, objs ...client.Object) *NovaComputeReconciler {
+	c := novaFakeClientBuilder(objs...).Build()
+	return &NovaComputeReconciler{
+		Client:     c,
+		Scheme:     c.Scheme(),
+		Recorder:   record.NewFakeRecorder(100),
+		HTTPClient: api,
+	}
+}
+
+// novaComputeCondition returns one of the NovaCompute's conditions, or nil.
+func novaComputeCondition(cr *novav1alpha1.NovaCompute, conditionType string) *metav1.Condition {
+	return conditions.GetCondition(cr.Status.Conditions, conditionType)
 }

@@ -24,29 +24,34 @@ import (
 
 // TestSubReconcilerConditionTypesCoversAllNames is one half of the drift guard:
 // every condition_type value in subReconcilerConditionTypes must be a member of
-// subConditionTypes, otherwise an addition to one list without the other will
-// silently produce metrics with a stale condition_type label. The repo's
-// condition-coverage audit keys on this exact test.
+// subConditionTypes or novaComputeSubConditionTypes, otherwise an addition to
+// one list without the other will silently produce metrics with a stale
+// condition_type label. One map serves both kinds, so the union of the two
+// vocabularies is what it is checked against. The repo's condition-coverage
+// audit keys on this exact test.
 func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 
+	known := append(slices.Clone(subConditionTypes), novaComputeSubConditionTypes...)
 	for name, condType := range subReconcilerConditionTypes {
-		g.Expect(subConditionTypes).To(ContainElement(condType),
-			"sub_reconciler %q maps to condition_type %q, which subConditionTypes does not "+
-				"aggregate. update the list or fix the mapping", name, condType)
+		g.Expect(known).To(ContainElement(condType),
+			"sub_reconciler %q maps to condition_type %q, which neither subConditionTypes nor "+
+				"novaComputeSubConditionTypes aggregates. update the owning list or fix the mapping", name, condType)
 	}
 }
 
 // TestPipelineStepNamesAreMapped is the other half of the drift guard, walking
-// the mapping in the opposite direction: every step name the pipeline actually
-// runs must be a key in subReconcilerConditionTypes, otherwise its error series
-// carries condition_type=UNKNOWN. The names come from the pipeline itself, so a
-// step added to Reconcile without a mapping entry fails here rather than in a
-// Prometheus query.
+// the mapping in the opposite direction: every step name either pipeline
+// actually runs must be a key in subReconcilerConditionTypes, otherwise its
+// error series carries condition_type=UNKNOWN. The names come from the
+// pipelines themselves (both kinds' pipelineSteps plus the Nova parallel
+// group's members), so a step added to either Reconcile without a mapping entry
+// fails here rather than in a Prometheus query.
 func TestPipelineStepNamesAreMapped(t *testing.T) {
 	g := NewGomegaWithT(t)
 	r := &NovaReconciler{}
 	state := &pipelineState{}
+	pool := &NovaComputeReconciler{}
 
 	var names []string
 	add := func(name string) {
@@ -69,6 +74,9 @@ func TestPipelineStepNamesAreMapped(t *testing.T) {
 			"parallel member %q reports condition %q but the metrics map says %q",
 			sub.Name, sub.ConditionType, subReconcilerConditionTypes[sub.Name])
 	}
+	for _, step := range pool.pipelineSteps(pool.Client, validNovaCompute(), &novaComputePass{}) {
+		add(step.Name)
+	}
 
 	for _, name := range names {
 		g.Expect(subReconcilerConditionTypes).To(HaveKey(name),
@@ -80,7 +88,7 @@ func TestPipelineStepNamesAreMapped(t *testing.T) {
 		"every mapped sub_reconciler must correspond to a pipeline step")
 	for name := range subReconcilerConditionTypes {
 		g.Expect(names).To(ContainElement(name),
-			"subReconcilerConditionTypes maps sub_reconciler %q, which no Nova pipeline step runs", name)
+			"subReconcilerConditionTypes maps sub_reconciler %q, which no pipeline step of either kind runs", name)
 	}
 }
 
