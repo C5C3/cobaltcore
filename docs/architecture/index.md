@@ -101,9 +101,9 @@ Memcached, and RabbitMQ CRs, projects the service CRs, mints the admin
 application credential through K-ORC, stewards the service-catalog entries,
 and aggregates readiness into the `ControlPlane` status. The OVN control plane
 stays outside it: the network service names an existing `OVNCentral`, which
-the c5c3-operator reads but never creates. Nova is not projected yet and runs
-as a standalone CR until its ControlPlane integration
-([#1019](https://github.com/C5C3/cobaltcore/issues/1019)) lands. See
+the c5c3-operator reads but never creates. Nova is projected through
+`services.nova`; the compute nodes that join it are the follow-on
+[#1013](https://github.com/C5C3/cobaltcore/issues/1013). See
 [ControlPlane Reconciler Architecture](../reference/c5c3/controlplane-reconciler.md).
 
 ## Secret flow
