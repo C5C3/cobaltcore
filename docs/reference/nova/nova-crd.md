@@ -558,6 +558,16 @@ The mount path is part of the contract. `[oslo_messaging_rabbit] ssl_ca_file`
 resolves to `/etc/nova/compute-config/ca.crt`, so a compute that projects the
 Secret anywhere else finds no CA bundle where its own config says one is.
 
+The consumer is the [NovaCompute](./novacompute-crd.md) kind of this group. A
+node pool mounts the Secret at `/etc/nova/compute-config`, reads the fragment
+as its `--config-file` and `compute-pool.conf` beside it, and takes
+`transport_url` and `password` as environment overrides. It reads the Secret in
+its own namespace on the cluster its pods run on. For a Nova a ControlPlane
+projects, the ControlPlane copies the Secret there under the same name, labelled
+`nova.openstack.c5c3.io/compute-config-mirror: "true"`, and the last pool of
+the Nova on that cluster deletes the copy when it is torn down. A Secret without
+that label (the Nova's own, or one copied by hand) is never reaped.
+
 ## Network policy
 
 While `spec.networkPolicy` is set, one NetworkPolicy covers every pod of the CR.

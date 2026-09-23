@@ -23,7 +23,10 @@ the schema migrations and the three upgrade phases, and
 Grafana dashboard `operators/nova/dashboards/nova-operator.json` reads them
 under the uid `nova-operator`.
 
-One controller owns the whole kind. There is no satellite CRD in this API group.
+Two controllers run in the binary. The pipeline below reconciles the `Nova`
+kind; the [NovaCompute](#novacompute) controller runs the second kind, a node
+pool of a compute cluster, on a pipeline of its own, and shares the
+instrumenter and the metric vectors with it.
 
 ## Pipeline
 
@@ -378,3 +381,152 @@ Terminating.
 
 Every other owned resource is namespace-scoped with a controller owner
 reference, so Kubernetes garbage collection reclaims it.
+
+## NovaCompute
+
+A [NovaCompute](./novacompute-crd.md) runs `nova-compute` on one node pool. Its
+controller (`novacompute_controller.go`, recorder `novacompute-controller`)
+runs six sequential steps under the same `nova_operator` instrumenter. Each
+owns one condition, and the aggregate `Ready` is True only when all six are.
+`ExtraConfigHealthy` stays out of it, as it does for the Nova.
+
+### NovaCompute pipeline
+
+```text
+NovaRef ──► Nodes ──► PoolConfig ──► DaemonSet ──► Aggregates ──► Services
+```
+
+| Step | Function | Condition |
+| --- | --- | --- |
+| `NovaRef` | `reconcileNovaComputeNova` | `NovaReady` |
+| `Nodes` | `reconcileNovaComputeNodes` | `NodesReady` |
+| `PoolConfig` | `reconcileNovaComputeConfig` | `ConfigReady` |
+| `DaemonSet` | `reconcileNovaComputeDaemonSet` | `DaemonSetReady` |
+| `Aggregates` | `reconcileNovaComputeAggregates` | `AggregatesReady` |
+| `Services` | `reconcileNovaComputeServices` | `ServicesReady` |
+
+A step that sets its condition False for a reason that is not a wait on an input
+returns a zero result, so the later steps still run: `NoMatchingNodes`,
+`NodeConflict`, `DaemonSetProgressing`, `NodesWithoutZone` and
+`AggregateZoneMismatch`. An empty selection therefore still drains the nodes the
+pool held, and so does a rollout one NotReady node keeps from finishing. The `computeapi`
+client the last two steps call Keystone and Nova through is built once per pass,
+so a pass requests one token.
+
+Every CR carries the finalizer `nova.openstack.c5c3.io/compute-drain`, and a CR
+naming a target cluster carries the remote-children finalizer too. Both go on
+before the pipeline runs.
+
+### reconcileNovaComputeNova
+
+Reads the Nova `spec.novaRef` names in the CR's namespace, on the management
+cluster. In order it waits for the Nova (`NovaNotFound`), its installed release
+(`WaitingForInstalledRelease`), its published contract
+(`ComputeConfigNotPublished`), its cluster (`TargetClusterUnavailable`) and its
+service-user password (`WaitingForServiceUserSecret`), each requeued after 15
+seconds. The password is read on the cluster the Nova is placed on, and a placed
+Nova is called through that cluster's service proxy. The step hands the later
+ones the effective image, `spec.image` or
+`ghcr.io/c5c3/nova-compute:<status.installedRelease>`, the contract Secret name,
+and the Keystone and Nova URLs with the service user's credentials.
+
+### reconcileNovaComputeNodes
+
+Lists the selected Nodes through an uncached reader (the target cluster's own,
+or the manager's API reader for a local pool), so no cluster-wide Node informer
+starts on an install whose RBAC is namespace-scoped. It reads their metadata
+only: a node's name and labels are all the rules use. A deleting pool lists
+nothing. Held nodes the list no longer returns are read one by one, and a gone
+node counts as leaving. The rivals are the other NovaComputes of the same Nova
+on the same cluster, found through the `spec.novaRef.name` field index. The
+phase rules are listed on the [CRD page](./novacompute-crd.md#node-phases). A
+new conflict records a Warning `NodeConflict` event once. A 403 reports
+`NodesForbidden` and requeues after 15 seconds; any other read error is
+`NodeListError` and returns the error.
+
+### reconcileNovaComputeConfig
+
+Reads the contract Secret `<nova>-compute-config` in the CR's namespace on the
+pool's cluster, waits for it (`WaitingForComputeConfig`) and for its three keys
+(`ComputeConfigIncomplete`), renders `compute-pool.conf` with `spec.extraConfig`
+merged over it into an immutable `{name}-config-<hash>` ConfigMap, prunes the
+history to the three newest, and hashes the Secret's key/value pairs for the
+pod template.
+
+### reconcileNovaComputeDaemonSet
+
+Builds the node affinity from the selector and the nodes the Nodes step
+excluded and held, and applies `{name}-nova-compute`. With no affinity term (a
+deleting pool holding no Draining node) it deletes the DaemonSet it owns
+instead, which releases the last pod. It mirrors `desiredNumberScheduled` and
+`numberReady`, reports `DaemonSetProgressing` while a rollout is in flight
+without stopping the pipeline, and stamps `status.installedImage` once every
+node runs a ready pod.
+
+### reconcileNovaComputeAggregates
+
+Lists the host aggregates, ensures one per zone of the pool's `Pending` and
+`Active` nodes and, while the pool is not being deleted, `tenant_filter_tests`,
+and marks what it creates with `c5c3.io:nova=<namespace>/<nova>`; an aggregate
+it could not mark is deleted again. The set of aggregates still needed is the
+union over every NovaCompute of the Nova that is not being deleted, on any
+cluster; a pass that skipped the Nodes step lists those NovaComputes itself
+(`NovaComputeListError` when that fails). A marked aggregate outside the set is
+deleted once it holds no host, unless it carries metadata beyond the marker and
+its availability zone, which keeps it and records a Warning `AggregateKept`. A
+failed call reports `ComputeAPIError` and requeues after 30 seconds without an
+error. Only a completed pass lets a deleting pool release its finalizer.
+
+### reconcileNovaComputeServices
+
+Lists the `nova-compute` services once, at microversion 2.69, and fails the
+pass with `ComputeAPIError` when a cell did not answer, since its hosts would
+otherwise read as serviceless and empty. It then walks the nodes: `Pending` and
+`Active` follow the registration, `Draining` disables an enabled service once
+and counts the servers on the host, and `Releasing` waits until no pod of the
+pool runs on the node and then deletes the service, or drops the entry with no
+call under a handover or when the service is already gone. The pods are listed
+once per pass: on the node for a single `Releasing` node, and for the whole
+pool when there are more. Its requeue is the
+periodic poll of Nova: the shortest interval any node needs at entry or at exit.
+
+### Requeue and teardown
+
+| Interval | Constant | Used by |
+| --- | --- | --- |
+| 1s | `RequeueNextPass` | After a finalizer add |
+| 10s | `RequeueComputeReleasePolling` | A `Releasing` node, and a node dropped in this pass |
+| 10s | `RequeueDeploymentPolling` | An aggregate created concurrently |
+| 15s | `RequeueSecretPolling` | The waits of `NovaReady`, `ConfigReady`, `NodesForbidden`, and an unresolvable target |
+| 30s | `RequeueComputeDrainPolling` | A `Draining` or `Pending` node, and the retry after a failed Keystone or Nova call |
+| 60s | `RequeueComputeServicePolling` | A pool whose nodes are all settled |
+
+A deleting pool runs the pipeline with every held node leaving until a pass
+that began with no node held completed the aggregates step. The pass that
+releases the last node therefore keeps the finalizers: deleting the service
+empties the aggregates the host sat in after its Aggregates step ran. Once the
+pool holds no node, only the `NovaRef` and `Aggregates` steps run, so a pass
+from a stale copy of the CR cannot recreate what the sweep removed. When the
+Nova is gone, or the target cluster was abandoned, that part is skipped. Then
+the remote children (the DaemonSet and the ConfigMaps) are swept, the
+ControlPlane's contract mirror is reaped when no other pool of the Nova on the
+cluster is live or still holds a node, and the finalizers are released.
+
+### Watches
+
+The NovaCompute controller watches its CRs (status-only updates filtered) and
+`Owns` its DaemonSet and ConfigMaps, locally and, by ownership label, on the
+target clusters. Beyond that:
+
+- a Nova wakes its pools through the `spec.novaRef.name` index on a spec
+  change and on a change to the two status fields a pool waits on, the
+  installed release and the published contract;
+- a NovaCompute wakes the other pools of the same Nova on a spec change, the
+  start of its deletion, or a change in which nodes it holds, in which phase
+  and zone, so a node one of them takes or releases re-evaluates the conflicts
+  of the rest;
+- the Secret `<nova>-compute-config` wakes the pools of `<nova>`, on the
+  management cluster and on the target clusters;
+- a Node label change on a target cluster wakes the pools placed there that
+  select the node or hold it. There is no local Node leg: its informer cannot
+  sync on a namespace-scoped install, and the pool's poll picks up a relabel.
