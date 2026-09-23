@@ -12,10 +12,16 @@ eight levels deep in controller-gen output. The grep-and-awk version this
 replaced read only each file's first document and silently matched no CRD
 properties at all, so X2 never ran.
 
-X1 — every document whose apiVersion is in a c5c3.io group names a kind some
-CRD declares, on a version that CRD still serves.
+X1 — every document whose apiVersion is in an API group the repo's own CRDs
+declare (spec.group under operators/*/config/crd/bases/) names a kind some CRD
+declares, on a version that CRD still serves. Documents in any other *.c5c3.io
+group come from an external operator (memcached.c5c3.io: the memcached-operator
+chart deploy/flux-system/releases/memcached-operator.yaml installs) and are
+reported as one [INFO] line per group. A group that looks like the repo's own
+but is not declared — it ends in .openstack.c5c3.io, or its first label names a
+repo group (keystone.opnestack.c5c3.io) — is a typo and fails.
 
-X2 — every field in such a document's spec exists in that CRD's schema,
+X2 — every field in an in-scope document's spec exists in that CRD's schema,
 recursively. Descent stops at x-kubernetes-preserve-unknown-fields and at
 free-form maps (additionalProperties without properties), which accept any key
 by design. Chainsaw assertion keys — "(length(items))", "~.(spec)", "($name)" —
@@ -60,13 +66,15 @@ def header(title: str) -> None:
     print(f"=== {title} ===")
 
 
-def load_crds() -> dict:
-    """Map (apiVersion, kind) -> (crd path, spec schema), plus served versions per kind."""
+def load_crds():
+    """Map (apiVersion, kind) -> (crd path, spec schema); served versions per kind; API groups."""
     crds = {}
     served = {}
+    groups = set()
     for path in sorted(REPO_ROOT.glob("operators/*/config/crd/bases/*.yaml")):
         doc = yaml.safe_load(path.read_text())
         group = doc["spec"]["group"]
+        groups.add(group)
         kind = doc["spec"]["names"]["kind"]
         for version in doc["spec"]["versions"]:
             api_version = f"{group}/{version['name']}"
@@ -75,7 +83,22 @@ def load_crds() -> dict:
             crds[(api_version, kind)] = (path.relative_to(REPO_ROOT), spec_schema)
             if version.get("served", True):
                 served.setdefault(kind, set()).add(api_version)
-    return crds, served
+    return crds, served, groups
+
+
+def api_group(api_version) -> str:
+    """The group of an apiVersion ("" for the core group or a non-string)."""
+    if not isinstance(api_version, str) or "/" not in api_version:
+        return ""
+    return api_version.rsplit("/", 1)[0]
+
+
+def looks_like_repo_group(group: str, repo_groups: set) -> bool:
+    """True for an undeclared group that is probably a typo of a repo group."""
+    if group.endswith(".openstack.c5c3.io"):
+        return True
+    first_labels = {g.split(".", 1)[0] for g in repo_groups if g.count(".") > 1}
+    return group.split(".", 1)[0] in first_labels
 
 
 def walk(schema: dict, obj, path: str, findings: list) -> None:
@@ -122,22 +145,28 @@ def fixture_documents():
 
 
 def main() -> int:
-    crds, served = load_crds()
+    crds, served, repo_groups = load_crds()
     if not crds:
         emit("FAIL", "no CRDs under operators/*/config/crd/bases/ — run: make manifests")
         return 1
 
     documents = list(fixture_documents())
     in_scope = []
+    # Documents in a *.c5c3.io group no repo CRD declares: per group, the
+    # documents (for the typo FAIL) — external groups only get counted.
+    undeclared = {}
     for rel, index, doc in documents:
-        api_version = doc.get("apiVersion")
-        if isinstance(api_version, str) and "c5c3.io/" in api_version:
+        group = api_group(doc.get("apiVersion"))
+        if group in repo_groups:
             in_scope.append((rel, index, doc))
+        elif group == "c5c3.io" or group.endswith(".c5c3.io"):
+            undeclared.setdefault(group, []).append((rel, index, doc))
 
     suites = sorted({rel.parts[1] for rel, _, _ in in_scope if len(rel.parts) > 1})
     emit(
         "INFO",
-        f"{len(crds)} CRD version(s) across {len(served)} kind(s); "
+        f"{len(crds)} CRD version(s) across {len(served)} kind(s) in "
+        f"{len(repo_groups)} API group(s); "
         f"{len(in_scope)} CobaltCore CR document(s) under {TEST_ROOT}/",
     )
     emit("INFO", f"suite roots carrying CobaltCore CRs: {', '.join(suites)}")
@@ -145,6 +174,26 @@ def main() -> int:
     # ---------------------------------------------------------------------
     header("X1: every CobaltCore fixture names a known kind on a served apiVersion")
     unknown = 0
+    for group in sorted(undeclared):
+        entries = undeclared[group]
+        if looks_like_repo_group(group, repo_groups):
+            for rel, index, doc in entries:
+                where = f"{rel}" if index == 0 else f"{rel} (document {index + 1})"
+                emit(
+                    "FAIL",
+                    f"{where}: API group '{group}' is declared by no CRD under "
+                    "operators/*/config/crd/bases/ — a typo of a repo group, "
+                    "or a CRD make manifests has not generated",
+                )
+                unknown += 1
+        else:
+            kinds = ", ".join(sorted({str(doc.get("kind")) for _, _, doc in entries}))
+            files = len({rel for rel, _, _ in entries})
+            emit(
+                "INFO",
+                f"{group}: {len(entries)} document(s) in {files} file(s) ({kinds}) — "
+                "external operator's CRD, not a repo CRD; X1/X2 skip it",
+            )
     per_kind = {}
     for rel, index, doc in in_scope:
         kind = doc.get("kind")

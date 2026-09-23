@@ -9,7 +9,8 @@
 # c5c3 is the ControlPlane operator, not a service):
 #   P1  image layer: images/<svc>/Dockerfile, tests/container-images/
 #       verify_<svc>.sh, and per-release config (source-refs.yaml key,
-#       extra-packages.yaml block, test-excludes/<svc>.txt) in EVERY release
+#       extra-packages.yaml block) in EVERY release; a missing
+#       test-excludes/<svc>.txt is [INFO] (the file is optional)
 #   P2  operator module: operators/<svc>/go.mod, go.work use entry, Makefile
 #       OPERATORS default, operators/Dockerfile go.mod COPY line
 #   P3  helm chart: crds/, values.schema.json, helm-unittest suite set at
@@ -118,7 +119,10 @@ check() {
 # ---------------------------------------------------------------------------
 # Discovery — services are the keys of the latest release's source-refs.yaml
 # ---------------------------------------------------------------------------
-LATEST_RELEASE="$(ls releases | sort | tail -1)"
+# Release directories only: a stray file under releases/ is not a release.
+RELEASES="$(find releases -mindepth 1 -maxdepth 1 -type d -exec basename {} \; \
+  2>/dev/null | sort | tr '\n' ' ')"
+LATEST_RELEASE="$(tr ' ' '\n' <<<"${RELEASES}" | grep . | tail -1 || true)"
 if [[ -z "${LATEST_RELEASE}" ]]; then
   fail "no release directories under releases/"
   exit 1
@@ -131,8 +135,6 @@ if [[ -z "${SERVICES// /}" ]]; then
   fail "no service keys found in releases/${LATEST_RELEASE}/source-refs.yaml"
   exit 1
 fi
-
-RELEASES="$(ls releases | tr '\n' ' ')"
 
 hdr "Discovered services and releases"
 info "latest release: ${LATEST_RELEASE} (e2e variant slug: ${LATEST_SLUG})"
@@ -170,9 +172,13 @@ for svc in ${SERVICES}; do
     check "${svc}" P1 "releases/${rel}/extra-packages" "${t}" \
       "releases/${rel}/extra-packages.yaml carries the ${svc} block"
 
-    t=0; [[ -f "releases/${rel}/test-excludes/${svc}.txt" ]] || t=1
-    check "${svc}" P1 "releases/${rel}/test-excludes" "${t}" \
-      "releases/${rel}/test-excludes/${svc}.txt present"
+    # Optional: hack/ci-run-unit-tests.sh passes --exclude-list only when the
+    # file exists, and verify_release_config.sh treats its absence as fine.
+    if [[ -f "releases/${rel}/test-excludes/${svc}.txt" ]]; then
+      pass "${svc}: releases/${rel}/test-excludes/${svc}.txt present"
+    else
+      info "${svc}: no releases/${rel}/test-excludes/${svc}.txt — runs the full upstream unit suite (optional file)"
+    fi
   done
 done
 

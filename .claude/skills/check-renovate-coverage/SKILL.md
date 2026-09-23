@@ -33,24 +33,33 @@ which Renovate has to understand:
 
 | Layer | Where it lives | Renovate handle |
 |---|---|---|
-| OpenStack release tags | `releases/<release>/source-refs.yaml` (one line per component: `keystone: "29.0.0"`) | customManager #1 — matches `^(?<depName>[\w.-]+):\s*"(?<currentValue>\d+\.\d+\.\d+)"` per file under `releases/.*/source-refs.yaml` |
-| Shell script constants | `hack/deploy-infra.sh` and `hack/deploy-mgmt-cluster.sh` (`FLUX_OPERATOR_VERSION="v…"` — deliberately duplicated across the two bring-up scripts, one customManager matches both files —, `GATEWAY_API_VERSION="${…:-v…}"`) | customManager — one regex per constant |
-| kind base manifests | `deploy/kind/base/flux-web.yaml` (`- version: "…"`), `deploy/kind/base/envoy-gateway.yaml` (range like `">=0.0.0 <0.0.0"`) | customManager — one regex per file shape |
-| FluxCD HelmRelease versions | `deploy/flux-system/releases/*.yaml` (`spec.chart.spec.version`) | native `flux` / `helm-values` manager (no customManager needed) |
-| Go module deps | `operators/*/go.mod`, `internal/common/go.mod` | native `gomod` manager (no customManager needed) |
+| OpenStack release tags | `releases/<release>/source-refs.yaml` (one line per component: `keystone: "29.0.0"`) | customManager — `^(?<depName>[\w.-]+):\s*"(?<currentValue>\d+\.\d+\.\d+)"` over `releases/.*/source-refs.yaml`, git-tags on opendev |
+| Release test and constraint pins | `releases/<release>/test-refs.yaml`, `overrides/<release>/constraints.txt` | customManager each (pypi) |
+| Shell script constants | `hack/deploy-infra.sh` + `hack/deploy-mgmt-cluster.sh` (`FLUX_OPERATOR_VERSION="v…"`, deliberately duplicated, one customManager over both files; `GATEWAY_API_VERSION`, `ENVOY_GATEWAY_VERSION`, `REGISTRY_CACHE_IMAGE`), `hack/install-test-deps.sh` (chainsaw, flux, kind, kubectl), `hack/dizzy.sh` | customManager, one regex per constant |
+| kind manifests | `deploy/kind/base/{flux-web,envoy-gateway,headlamp}.yaml`, `deploy/kind/infrastructure/openbao-instance.yaml`, `deploy/kind/nfs/{nfs-server,release}.yaml` | customManager, one regex per file shape |
+| Flux sources and images pinned by tag/commit/digest | `deploy/flux-system/sources/{k-orc,openbao-operator,rabbitmq-cluster-operator}.yaml`, `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml` | customManager each. The K-ORC image in `deploy/flux-system/releases/k-orc.yaml` is **not** tracked (pattern 7) |
+| FluxCD HelmRelease chart versions | `deploy/flux-system/releases/*.yaml` (`spec.chart.spec.version: ">=0.1.0 <1.0.0"`) | **not Renovate-tracked**: floating semver ranges Flux resolves at reconcile time. The native `flux` manager's default file pattern is `gotk-components.yaml` only and `renovate.json` sets no `flux.managerFilePatterns`, so raising a `<1.0.0` ceiling is a manual edit |
+| Pins in Go source | `operators/c5c3/internal/controller/reconcile_barbican_openbao.go` (`defaultOpenBaoVersion`), `operators/ovn/internal/controller/image.go` (`defaultOVNVersion`) | customManager each, paired with the matching manifest/Dockerfile pin |
+| Go module deps | `operators/*/go.mod`, `internal/common/go.mod` | native `gomod` manager |
 | GitHub Actions versions | `.github/workflows/*.yaml` (`uses: org/action@v…`) | native `github-actions` manager |
-| Dockerfile base images | `operators/*/Dockerfile` (`FROM image:tag`) | native `dockerfile` manager |
-| Tool pins in Makefile | `Makefile` (`GOFUMPT_VERSION ?= v0.9.2`, `ENVTEST_K8S_VERSION ?= 1.35`) | **no manager** — must be a customManager, or manually tracked |
-| Duplicated Makefile ↔ ci.yaml pins | `GOFUMPT_VERSION` lives in both `Makefile` and the `ci.yaml` `env:` block ("Must be kept in sync" comment); `ENVTEST_K8S_VERSION` is single-sourced (ci.yaml `awk`-reads the Makefile) | **no manager** — R7 enforces the lockstep mechanically |
+| Dockerfile base images | `images/*/Dockerfile` and the single `operators/Dockerfile` (`FROM image:tag`) | native `dockerfile` manager; the `ARG OVN_VERSION` / `ARG NOVNC_VERSION` + `NOVNC_COMMIT` pins in `images/{ovn,nova}/Dockerfile` carry a customManager each |
+| Nix flake, venv-builder requirements | `flake.nix` + `flake.lock`, `images/venv-builder/requirements.txt` | native `nix` (enabled in `renovate.json`, weekly lockFileMaintenance) and `pip_requirements` |
+| e2e fixture images | the openldap, keycloak, aws-cli and nfs-server images pinned by tag + digest in `tests/e2e*/` fixtures | customManager per image |
+| Tool pins in Makefile + workflows | `GOFUMPT_VERSION` (customManager over `/Makefile$/` + workflows); `CONTROLLER_GEN_VERSION`, `GOLANGCI_LINT_VERSION`, `KIND_VERSION`, `YQ_VERSION`, `ACTIONLINT_VERSION` in workflow `env:` blocks; `RENOVATE_VALIDATOR_VERSION` in a `tests/unit/renovate/` test | customManager each. `ENVTEST_K8S_VERSION ?= 1.35` has **no manager** (bumped by hand) |
+| Duplicated Makefile ↔ ci.yaml pins | `GOFUMPT_VERSION` lives in both `Makefile` and the `ci.yaml` `env:` block ("Must be kept in sync" comment); `ENVTEST_K8S_VERSION` is single-sourced (ci.yaml `awk`-reads the Makefile) | one customManager bumps both files; R7 enforces the lockstep mechanically |
 
-The authoritative gate is the `renovate-config-validator` (run via the
-existing shell unit tests under `tests/unit/renovate/`). This skill
+The authoritative gate is the shell unit tests under
+`tests/unit/renovate/`: one of them runs `renovate-config-validator`,
+the rest run each customManager's `matchStrings` through `perl` against
+the file on disk. This skill
 defers to those tests for `renovate.json` correctness and adds the
-coverage check the validator cannot express: "is every version literal
-on disk claimed by some manager?"
+coverage checks the validator cannot express: "is every version literal
+on disk claimed by some manager, and does a packageRule triage it?"
 
 A coverage finding is any version literal that no Renovate manager
-matches, or a customManager with no packageRules to triage its PRs.
+matches, a customManager whose file patterns match nothing, a
+customManager no packageRule applies to, or a customManager no
+regression test exercises.
 
 ## Procedure
 
@@ -77,18 +86,39 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   and `${VAR:?}` required-env passthroughs — are exempt; they are not
   pins Renovate could bump.
 - **R3** — every `version: "…"` literal in `deploy/kind/base/*.yaml`
-  is matched by a customManager pattern. The two existing managers
-  cover `flux-web.yaml` and `envoy-gateway.yaml`; any other file in
-  the same dir is flagged.
-- **R4** — every customManager entry in `renovate.json` has at least
-  one paired entry in `packageRules` (otherwise updates land
-  untriaged: no major-bump gate, no minimumReleaseAge, no automerge
-  policy).
+  is matched by a customManager pattern. The existing managers cover
+  `flux-web.yaml`, `envoy-gateway.yaml` and `headlamp.yaml`; any other
+  file in the same dir is flagged.
+- **R4** — per customManager, two findings. First, its
+  `managerFilePatterns` must match at least one `git ls-files` path; a
+  manager matching nothing is a **dead manager**, and one pattern
+  matching nothing beside live siblings is a **stale pattern** (a
+  renamed file). Second, some `packageRules` entry must apply to it,
+  otherwise updates land untriaged: no major-bump gate, no
+  minimumReleaseAge, no automerge policy. A rule applies when its
+  `matchFileNames` matches one of the manager's tracked files
+  (minimatch semantics: `**` spans directories only as a whole path
+  segment, so `tests/unit/renovate/**.sh` behaves like `*.sh`; `*`
+  never crosses `/`; `/…/` entries are regexes) or its
+  `matchPackageNames` / `matchDepNames` names the manager's dependency
+  (`packageNameTemplate` / `depNameTemplate`, or a literal
+  `(?<depName>…)` capture). As in Renovate, the rule's conditions AND:
+  a `matchPackageNames` naming a different package, or a
+  `matchManagers` without `custom.regex`, rules it out. The `[PASS]`
+  line names the pairing rule and the condition that matched.
 - **R5** — every entry in `releases/*/source-refs.yaml` has a paired
   packageRule that disables major bumps (the OpenStack tags rule).
   A new entry that bypasses the rule silently allows major bumps.
-- **R6** — the shell-script tests under `tests/unit/renovate/` still
-  exist for every customManager (so the rule has a regression test).
+- **R6** — per customManager, some `tests/unit/renovate/*_test.sh`
+  singles it out. The needles are the manager's file pattern (as a
+  path, or its longest literal run), its package and dependency names,
+  and the variable-like identifiers of its `matchStrings`
+  (`FLUX_OPERATOR_VERSION`, `defaultOVNVersion`); a needle more than
+  half the tests mention (`renovate`) is dropped. A test counts when
+  the needles it mentions are not all shared by one other manager:
+  `hack/install-test-deps.sh` alone fits four managers,
+  `hack/install-test-deps.sh` + `KIND_VERSION` only one. The `[PASS]`
+  line lists every covering test; uncovered managers fail one by one.
 - **R7** — every `<NAME>_VERSION` pin that appears in **both** the
   Makefile and the `ci.yaml` `env:` block carries the same value.
   A drifted pair means local dev and CI run different tool versions
@@ -96,9 +126,11 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   Pins present on only one side are `[INFO]`: either single-sourced
   (ci.yaml derives `ENVTEST_K8S_VERSION` from the Makefile via `awk`)
   or PATH-resolved locally (`controller-gen`, `golangci-lint`).
-- The **inventories** are review aids: every version literal found on
-  disk, grouped by file; every Renovate manager (native or custom)
-  with its matched paths.
+- R4 and R6 need `jq` and report `[INFO]` skipped without it.
+- The **inventory** is a review aid: every `<NAME>_VERSION` pin in the
+  `Makefile` and in workflow `env:` blocks, each marked as tracked by
+  a customManager (named), bumped by hand (no customManager claims it —
+  a MEDIUM candidate), or resolved at run time (`${{ … }}`, not a pin).
 
 ### 2. Cross-reference the inventory
 
@@ -107,17 +139,21 @@ confirm:
 
 1. For each `[FAIL]` from R1–R3, decide whether to add a new
    customManager or normalise the file to match an existing one.
-2. For each `[FAIL]` from R4–R5, add the missing packageRules entry
+2. For each packageRules `[FAIL]` from R4–R5, add the missing entry
    (with `matchUpdateTypes: [major]` disabled by default, paired
    automerge + 3-day `minimumReleaseAge` for minor/patch, matching
-   the existing pattern).
-3. Confirm by hand that every newly added customManager has a
-   regression test under `tests/unit/renovate/`.
-4. For tool pins in `Makefile` (`GOFUMPT_VERSION`, `ENVTEST_K8S_VERSION`),
-   decide whether to add a customManager. These are often
-   intentionally pinned and not auto-bumped — but document the
-   decision in `renovate.json` (or in a comment in the Makefile)
-   either way.
+   the existing pattern). For a dead manager or stale pattern, find
+   the renamed file (`git log --follow --diff-filter=R`) and re-point
+   the pattern, or delete the manager and its rules and test.
+3. For each R6 `[FAIL]`, add a sibling test that selects the manager
+   the way the existing ones do (`select(.packageNameTemplate ==
+   $pkg)`, `select(any(.managerFilePatterns[]; test("…")))`) and runs
+   its `matchStrings` against the file on disk.
+4. For each inventory pin marked "bumped by hand"
+   (`ENVTEST_K8S_VERSION` today), decide whether to add a
+   customManager. Some pins are intentionally not auto-bumped —
+   document the decision in `renovate.json` (or in a comment beside
+   the pin) either way.
 5. For each `[FAIL]` from R7, align the two values — and prefer
    eliminating the duplication over patching it: the
    `ENVTEST_K8S_VERSION` pattern (ci.yaml `awk`-reads the Makefile
@@ -129,23 +165,34 @@ The script does not invoke Renovate. Run the real gates and report the
 exact outcomes:
 
 ```bash
-bash tests/unit/renovate/fluxoperator_custommanager_test.sh
-bash tests/unit/renovate/flux_web_chart_custommanager_test.sh
-bash tests/unit/renovate/envoy_gateway_manager_test.sh
-# Optionally, with npx available:
-npx --package renovate -- renovate-config-validator renovate.json
+for t in tests/unit/renovate/*_test.sh; do bash "$t"; done
+# or the whole shell-test suite, which includes them:
+make test-shell
 ```
 
-These confirm `renovate.json` is syntactically valid and that the
-existing customManagers still match the on-disk constants. Trust their
-outcome over the R1–R6 smoke checks when they disagree.
+These confirm `renovate.json` is valid and that every customManager
+still matches the on-disk constants. Trust their outcome over the R1–R6
+smoke checks when they disagree. Read the `Results:` line of each test,
+not `FAIL` hits in the log (test titles contain the word).
+
+`fluxoperator_custommanager_test.sh` is the test that runs
+`renovate-config-validator`, through `npx` at the
+`RENOVATE_VALIDATOR_VERSION` it pins (~30 s on a cold cache, network
+needed; skipped without `npx`). Locally it is red with
+`14 passed, 1 failed` on a clean `main` while CI passes: the
+npx-installed Renovate cannot
+load its optional `re2` module (`Cannot find module 're2'`), falls back
+to JavaScript `RegExp`, and rejects every `matchStrings` entry that
+uses the `(?m)` inline flag as `Invalid regExp`. Treat that one failure
+as environmental; any other red test is real.
 
 ### 4. Report
 
 Produce a concise summary grouped by severity:
 
 - **HIGH** — `renovate-config-validator` fails; a version literal on
-  disk is not matched by any manager; a customManager has no
+  disk is not matched by any manager; a dead customManager or a stale
+  pattern (R4); a customManager has no
   paired packageRules entry; a `releases/*/source-refs.yaml` entry
   has no major-bump-disable rule; a `<NAME>_VERSION` pin duplicated
   between the Makefile and ci.yaml carries two different values.
@@ -177,12 +224,14 @@ These recurring shapes are worth grepping for first:
    to triage its PRs. Renovate raises untriaged PRs (major bumps not
    gated, no minimumReleaseAge), so reviewers waste time closing them.
 4. **New kind base manifest, no customManager.** A new YAML under
-   `deploy/kind/base/` with a `version: "…"` line. The two existing
+   `deploy/kind/base/` with a `version: "…"` line. The existing
    managers are file-name-anchored; a sibling needs its own manager.
-5. **Tool pin in Makefile.** `GOFUMPT_VERSION ?= v0.9.2` or similar
-   is a real pin that gets bumped manually. No native Renovate
-   manager catches Makefile constants; a customManager (with regex
-   `^([A-Z_]+_VERSION) \?= (v[0-9.]+)`) would close the gap.
+5. **Tool pin in Makefile.** No native Renovate manager reads Makefile
+   constants. `GOFUMPT_VERSION` got a customManager over `/Makefile$/`
+   plus the workflows (`GOFUMPT_VERSION\s*[?=:]+\s*"?(?<currentValue>v…)`,
+   one regex for both the `?=` and the `env:` spelling);
+   `ENVTEST_K8S_VERSION ?= 1.35` still has none. A new `?=` pin needs
+   the same treatment or a comment saying why it is bumped by hand.
 6. **Duplicated pin bumped on one side only.** A tool version lives in
    both the Makefile (for local dev) and the ci.yaml `env:` block (for
    the workflow), guarded only by a "Must be kept in sync" comment. A
@@ -191,6 +240,25 @@ These recurring shapes are worth grepping for first:
    formatting that CI's `format-check` rejects (or vice versa). Fix by
    aligning, or better by single-sourcing one side from the other the
    way ci.yaml already `awk`-reads `ENVTEST_K8S_VERSION`.
+7. **Half-tracked pin pair: the K-ORC main commit.** Renovate tracks
+   the upstream main commit in `deploy/flux-system/sources/k-orc.yaml`
+   (`ref.commit`, datasource `git-refs`, digest updates automerged) but
+   **not** the controller image in `deploy/flux-system/releases/k-orc.yaml`
+   (`spec.images[].newTag: commit-<short sha>` plus `digest`); that
+   file's header says so. `hack/ci-deploy-korc.sh` fails CI when the tag
+   does not match the pinned commit ("K-ORC image tag … does not match
+   the pinned commit"), so a Renovate commit bump stays red until the
+   image is re-pinned by hand. Quay `commit-<sha>` tags also expire
+   after four weeks, after which the pinned digest returns `NotFound`
+   and every leg that deploys K-ORC hangs in `ImagePullBackOff`. R4
+   reports the source manager as paired; the gap is the image, which
+   no manager claims. Move the pins together with
+   [[bump-korc-pin]].
+8. **Renamed file, stale pattern.** A pinned file moves (a fixture
+   directory renamed, a script split) and the customManager's
+   file-anchored regex keeps pointing at the old path. Renovate raises
+   no error; the pin just stops receiving updates. R4 reports it as a
+   stale pattern, or a dead manager when no pattern matches anything.
 
 ## Notes
 
@@ -199,13 +267,13 @@ These recurring shapes are worth grepping for first:
   unit test) as a separate, explicitly-scoped task.
 - Some pins are *intentionally* not Renovate-tracked (e.g. a tool
   whose upstream release cadence is too aggressive). When the
-  decision is to skip, document it: either an empty customManager
-  matchStrings (`"matchStrings": []` with a description), or an
-  HCL-style comment in the Makefile near the pin.
+  decision is to skip, document it in a comment beside the pin (the
+  K-ORC image in `deploy/flux-system/releases/k-orc.yaml` is the worked
+  example).
 - The existing tests under `tests/unit/renovate/` are the source of
   truth for "what is covered today". If you add a customManager, add
-  a sibling test there — the audit script flags missing tests as a
-  MEDIUM.
+  a sibling test there — R6 fails on a manager no test singles out,
+  and the report grades that MEDIUM.
 - Pair this with [[check-doc-drift]] — that skill checks that
   infrastructure version pins documented in the prose match the
   `deploy/` reality; this skill checks that the pins themselves are

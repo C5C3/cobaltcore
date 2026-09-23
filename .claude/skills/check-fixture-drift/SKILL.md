@@ -15,8 +15,8 @@ description: >-
 
 This skill verifies that the CobaltCore **test fixtures still match the CRD
 they claim to instantiate**: every fixture document under `tests/` whose
-apiVersion is in a `c5c3.io` group uses only Spec fields
-that the current CRD schema accepts, every invalid-cr fixture is
+apiVersion is in an API group the repo's own CRDs declare uses only Spec
+fields that the current CRD schema accepts, every invalid-cr fixture is
 referenced from a Chainsaw test that exercises it, and the
 `verify-invalid-cr-fixtures` generator's outputs stay in sync.
 
@@ -37,7 +37,7 @@ of truth:
 
 | Fixture role | Where it lives | Source of truth |
 |---|---|---|
-| Happy-path e2e CR | `tests/e2e/<op>/<scenario>/*.yaml` (filename pattern `<NN>-*.yaml`, referenced from `chainsaw-test.yaml`) | that kind's CRD under `operators/<op>/config/crd/bases/` and the webhook in `operators/<op>/internal/controller/` |
+| Happy-path e2e CR | `tests/e2e/<op>/<scenario>/*.yaml` (filename pattern `<NN>-*.yaml`, referenced from `chainsaw-test.yaml`) | that kind's CRD under `operators/<op>/config/crd/bases/` and the webhook in `operators/<op>/api/v1alpha1/<kind>_webhook.go` |
 | Chaos / scale e2e CR | `tests/e2e-chaos/<scenario>/*.yaml`, `tests/e2e/infrastructure/*` | same CRDs |
 | Two-cluster placed e2e CR | `tests/e2e-multicluster/<scenario>/*.yaml` — CRs carrying `targetClusterRef` | same CRDs |
 | Suite-specific CR | `tests/tempest/<svc>-<release>/*.yaml`, `tests/e2e-ovn-overlay/<scenario>/*.yaml`, `tests/e2e-controlplane-sso/*.yaml`, `tests/e2e-operator-upgrade/<scenario>/*.yaml` | same CRDs |
@@ -68,10 +68,21 @@ bash .claude/skills/check-fixture-drift/scripts/audit-fixture-drift.sh
 The script catches the mechanically-checkable gaps and prints an
 inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 
-- **X1** — every fixture document in a `c5c3.io` group names a kind some
-  CRD declares, on a version that CRD still serves. A fixture on
-  an old apiVersion fails to apply but the failure is generic.
-- **X2** — every Spec field in such a document appears in that CRD's
+- **X1** — every fixture document in an API group the repo's CRDs
+  declare (`spec.group` under `operators/*/config/crd/bases/`) names a
+  kind some CRD declares, on a version that CRD still serves. A fixture
+  on an old apiVersion fails to apply but the failure is generic.
+  Documents in another `*.c5c3.io` group belong to an external
+  operator's CRD — `memcached.c5c3.io/v1beta1` `Memcached`, installed by
+  the memcached-operator chart
+  (`deploy/flux-system/releases/memcached-operator.yaml`), which the
+  nova suites' `00-keystone-cr.yaml` fixtures instantiate — and get one
+  `[INFO]` line per group with a document count; X1/X2 do not check
+  them. An undeclared group shaped like a repo group (ending in
+  `.openstack.c5c3.io`, or whose first label names one, such as
+  `keystone.opnestack.c5c3.io`) still fails: it is a typo, or a CRD
+  `make manifests` has not generated yet.
+- **X2** — every Spec field in an X1-scoped document appears in that CRD's
   schema, recursively. A removed/renamed field is the
   most common fixture-drift source after a CRD edit; the cluster
   rejects the CR with `unknown field`, which is hard to diff against
@@ -83,18 +94,20 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 - **X4** — every file referenced from a `chainsaw-test.yaml` exists
   on disk under the same directory. A renamed fixture leaves a
   Chainsaw step pointing at nothing.
+- **X5** — the invalid-cr generator + unit tests still pass when
+  invoked as `make verify-invalid-cr-fixtures`. Chained only with
+  `--full`, and skipped if `python3` is not on PATH.
 - **X6** — every `_generate.py` under `tests/` is run with `--check` by
   the `verify-invalid-cr-fixtures` make target, has a sibling
   `test_generate.py` the target also runs, and every path the target
   names still exists. A new service's invalid-CR corpus that nobody
   wired into the target has no drift gate at all.
-- **X5** — the invalid-cr generator + unit tests still pass when
-  invoked as `make verify-invalid-cr-fixtures` (gated check; skipped
-  if `python3` is not on PATH).
 - The **inventories** are review aids: per Chainsaw test directory,
-  the count of `<NN>-*.yaml` fixtures vs `chainsaw-test.yaml` step
-  references; per invalid-cr fixture, the matching `+kubebuilder`
-  marker the rejection should reference.
+  the count of `<NN>-*.yaml` fixtures; per invalid-cr corpus, the
+  fixtures on disk vs the ones its `_generate.py` names (in its
+  fixture list or an exemption set — keystone's `invalid-cr` keeps two
+  hand-written fixtures that predate the generator). A file the
+  generator never names is outside the `--check` gate.
 
 ### 2. Cross-reference the inventory
 
@@ -189,6 +202,11 @@ These recurring shapes are worth grepping for first:
   `python3` with PyYAML (the same baseline `make verify-helm-rbac`
   already assumes); they report `[INFO]` and skip if either is missing.
   X3/X4/X6 are pure shell; X5 wraps the existing make-target gate.
+- X1/X2 scope by API group, not by the `c5c3.io` suffix: the group set
+  is read from the CRDs on every run, so a new operator's group is in
+  scope as soon as `make manifests` writes its CRD. A fixture for an
+  external `*.c5c3.io` operator needs no allowlist entry; its group
+  shows up as an `[INFO]` line.
 - Pair this with [[check-crd-drift]] — that skill confirms the CRD
   YAML mirrors the Go source; this skill confirms the fixtures
   exercise that CRD correctly.
