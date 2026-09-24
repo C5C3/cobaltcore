@@ -820,6 +820,106 @@ test_nova_leg_narrows_parallelism_and_budget() {
     "runs-on: \${{ matrix.operator == 'keystone'"
 }
 
+test_nova_leg_runs_as_two_shards() {
+  echo "Test: the nova e2e leg runs its suites as two shards"
+
+  # compute-node-pool runs 27 minutes with no other suite beside it, and with
+  # it the leg overran its 150-minute wall on 2026-09-24. The leg runs as two
+  # shards since, each on a kind cluster of its own, and every way the split
+  # breaks is silent: a suite in neither shard is never applied, a suite in
+  # both costs a shard its wall, a publish job reading the sharded matrix
+  # pushes the nova image and chart twice, and a second upload under the
+  # first shard's artifact name fails.
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local script output
+  script=$(mktemp)
+  output=$(mktemp)
+  yq -r '.jobs.changes.steps[]
+    | select(.id == "e2e-operator-legs") | .run' "$CI_YAML" >"$script"
+
+  E2E_OPERATORS='{"operator":["keystone","nova"]}' GITHUB_OUTPUT="$output" \
+    bash "$script"
+  assert_eq "nova splits into shards 1 and 2, keystone stays one leg" \
+    '{"include":[{"operator":"keystone"},{"operator":"nova","shard":"1"},{"operator":"nova","shard":"2"}]}' \
+    "$(sed -n 's/^legs=//p' "$output")"
+
+  : >"$output"
+  E2E_OPERATORS='{"operator":["__none__"]}' GITHUB_OUTPUT="$output" \
+    bash "$script"
+  assert_eq "the resolver's empty-matrix sentinel passes through" \
+    '{"include":[{"operator":"__none__"}]}' \
+    "$(sed -n 's/^legs=//p' "$output")"
+
+  assert_contains "the changes job exports the sharded matrix" \
+    "$(job_block changes)" \
+    'e2e-operator-legs: ${{ steps.e2e-operator-legs.outputs.legs }}'
+  assert_contains "the e2e-operator job runs it" "$(job_block e2e-operator)" \
+    'matrix: ${{ fromJson(needs.changes.outputs.e2e-operator-legs) }}'
+  local publish
+  for publish in build-and-push merge-operator-images helm-push; do
+    assert_not_contains "$publish keeps the unsharded matrix" \
+      "$(job_block "$publish")" "e2e-operator-legs"
+  done
+  assert_contains "each shard uploads its report under a name of its own" \
+    "$(job_step e2e-operator "Upload JUnit report")" \
+    "name: e2e-\${{ matrix.operator }}\${{ matrix.shard && format('-{0}', matrix.shard) || '' }}-junit-report"
+
+  # Run the chainsaw step with chainsaw stubbed out to see the directories each
+  # shard passes. It runs in a scratch directory whose tests/ links to the
+  # repository's, so its mkdir -p _output/reports stays out of the checkout.
+  local stubs work one two all keystone shard_two name rc
+  stubs=$(mktemp -d)
+  work=$(mktemp -d)
+  ln -s "$PROJECT_ROOT/tests" "$work/tests"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$@"\n' >"$stubs/chainsaw"
+  chmod +x "$stubs/chainsaw"
+  yq -r '.jobs.e2e-operator.steps[]
+    | select(.name == "Run E2E tests") | .run' "$CI_YAML" >"$script"
+
+  one=$(cd "$work" && PATH="$stubs:$BASE_PATH" OPERATOR=nova SHARD=1 \
+    bash -e -o pipefail "$script" | grep '/$')
+  two=$(cd "$work" && PATH="$stubs:$BASE_PATH" OPERATOR=nova SHARD=2 \
+    bash -e -o pipefail "$script" | grep '/$')
+  all=$(cd "$PROJECT_ROOT" &&
+    printf '%s\n' tests/e2e/nova/*/ tests/e2e/nova-operator/*/ | sort)
+
+  assert_eq "every nova suite runs in exactly one shard" "$all" \
+    "$(printf '%s\n%s\n' "$one" "$two" | sort)"
+  assert_contains "compute-node-pool runs in shard 2" "$two" \
+    "tests/e2e/nova/compute-node-pool/"
+  assert_contains "the chart-level metrics suite runs in shard 1" "$one" \
+    "tests/e2e/nova-operator/metrics/"
+
+  # A name in shard 2's list that matches no directory moves nothing: the suite
+  # it meant stays in shard 1, and the split the wall is derived from is gone.
+  shard_two=$(job_step e2e-operator "Run E2E tests" |
+    sed -n 's/^ *shard_two="\(.*\)"$/\1/p')
+  assert_not_empty "shard 2 names its suites" "$shard_two"
+  for name in $shard_two; do
+    assert_contains "shard 2 runs $name" "$two" "tests/e2e/nova/$name/"
+  done
+
+  # A nova leg without a shard stops instead of running no suite.
+  (cd "$work" && PATH="$stubs:$BASE_PATH" OPERATOR=nova SHARD='' \
+    bash -e -o pipefail "$script" >/dev/null 2>&1)
+  rc=$?
+  assert_nonzero_exit "a nova leg without a shard fails" "$rc"
+
+  # And the other legs pass their directories as before.
+  keystone=$(cd "$work" && PATH="$stubs:$BASE_PATH" OPERATOR=keystone SHARD='' \
+    bash -e -o pipefail "$script" | grep '/$')
+  assert_eq "a leg without a shard runs both of its directories" \
+    "$(printf '%s\n' tests/e2e/keystone/ tests/e2e/keystone-operator/)" \
+    "$keystone"
+
+  rm -rf "$script" "$output" "$stubs" "$work"
+}
+
 test_nova_leg_dumps_the_siblings() {
   echo "Test: the nova e2e leg dumps its five sibling Namespaces"
 
@@ -2193,6 +2293,7 @@ test_nova_e2e_filter_is_wired
 test_nova_leg_opts_into_the_broker
 test_nova_leg_deploys_the_sibling_operators
 test_nova_leg_narrows_parallelism_and_budget
+test_nova_leg_runs_as_two_shards
 test_nova_leg_dumps_the_siblings
 test_nova_leg_loads_the_tempest_image
 test_chaos_nova_leg_runs_the_nova_suites

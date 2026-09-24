@@ -794,10 +794,10 @@ Chainsaw E2E test suites.
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn`, `neutron` and `nova` legs pass `WITH_OVN_KERNEL_MODULES: true`, the `cinder` and `nova` legs pass `WITH_MESSAGING: true`, and the `cinder` leg alone passes `WITH_NFS: true` |
 | 7 | `hack/ci-deploy-operator.sh` (sibling operators) | `nova` leg: keystone-, placement- and glance-operator; `neutron` and `nova` legs: ovn-operator; `nova` leg: neutron-operator. Each goes into its `<op>-system` Namespace, ahead of the matrix operator |
 | 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
-| 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` |
+| 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` and `tests/e2e/<operator>-operator/`; a `nova` shard runs its half of the suite directories |
 | 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, node pressure (capacity and allocated requests, containers with restarts and their last termination reason, per-pod memory working set, kernel OOM lines from the kind node), events, operator logs |
 | 11 | `hack/ci-dump-diagnostics.sh` (always, sibling operators) | The `neutron` leg dumps `ovn-system`; the `nova` leg dumps `keystone-system`, `placement-system`, `glance-system`, `ovn-system` and `neutron-system`, one call per operator under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again |
-| 12 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
+| 12 | Upload JUnit report | Uploads test results as the `e2e-<operator>-junit-report` artifact, `e2e-nova-<shard>-junit-report` on a `nova` shard (14-day retention) |
 | 13 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Matrix strategy:**
@@ -805,13 +805,17 @@ Chainsaw E2E test suites.
 ```yaml
 strategy:
   fail-fast: false
-  matrix: ${{ fromJson(needs.changes.outputs.e2e-operators) }}
+  matrix: ${{ fromJson(needs.changes.outputs.e2e-operator-legs) }}
 ```
 
 The operator matrix is dynamically constructed by the `changes` job, including only operators
-whose code (or shared code) changed. The `imagePullPolicy: Never` Helm value ensures the
+whose code (or shared code) changed. Its `Shard the e2e-operator matrix` step
+turns the `e2e-operators` output into `e2e-operator-legs`: one leg per
+operator, except `nova`, which becomes two legs with `shard: "1"` and
+`shard: "2"`. The publish jobs keep reading `e2e-operators`, so they still see
+`nova` once. The `imagePullPolicy: Never` Helm value ensures the
 kind-loaded image is used instead of attempting a registry pull. Timeout: 68
-minutes, 150 for the `nova` leg.
+minutes, 150 for each `nova` shard.
 
 **The two OVN legs.** `ovn` ships no per-release service image. Its Pods all
 run `ghcr.io/c5c3/ovn:<pin>`, where `<pin>` is what
@@ -877,7 +881,23 @@ Keystone, an OVNCentral, a Neutron, a Placement, a Glance and the five Nova
 workloads. The wall is
 `timeout-minutes: ${{ matrix.operator == 'nova' && 150 || 68 }}`, so only this
 leg pays for its image loads, its sibling deploys and the suites stacked on
-it. A third step, `Dump diagnostic info (nova siblings)`,
+it.
+
+The leg runs as two shards, `e2e-operator (nova, 1)` and
+`e2e-operator (nova, 2)`, each on its own runner and kind cluster with the
+full bring-up above. As a single leg it took 125 to 137 minutes, until
+`compute-node-pool`, 27 minutes that no other suite runs beside, pushed it past
+its 150-minute wall on 2026-09-24. The `Run E2E tests` step names the
+suites of shard 2 (`compute-node-pool`, `invalid-novacompute-cr`,
+`basic-deployment-2026-1`, `release-upgrade`, `healthcheck`, `deletion-cleanup`
+and `pod-security-restricted`) and gives shard 1 every other suite directory
+of `tests/e2e/nova/` and `tests/e2e/nova-operator/`, so a new suite runs in
+shard 1 until it is moved. Each shard takes three of the six suites that run
+24 to 30 minutes, which puts both at about 80 to 95 minutes.
+`tests/unit/ci/nova_e2e_matrix_test.sh` fails when a suite runs in neither
+shard or in both.
+
+A third step, `Dump diagnostic info (nova siblings)`,
 calls `hack/ci-dump-diagnostics.sh` once per sibling under `always()`, each
 with `OPERATOR_ONLY=1`: the dump above it already emitted the infrastructure
 block and the `openstack` Namespace's Job and pod logs, which do not change

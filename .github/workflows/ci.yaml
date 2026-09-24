@@ -95,6 +95,7 @@ jobs:
       build-e2e-images: ${{ steps.result.outputs.build-e2e-images }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
+      e2e-operator-legs: ${{ steps.e2e-operator-legs.outputs.legs }}
       test-targets: ${{ steps.result.outputs.test-targets }}
       tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
       cleanup-e2e-packages: ${{ steps.cleanup-matrix.outputs.cleanup-e2e-packages }}
@@ -454,6 +455,20 @@ jobs:
       - name: Generate cleanup package matrix
         id: cleanup-matrix
         run: hack/ci-generate-cleanup-matrix.sh
+
+      # The e2e-operator job runs one leg per operator in e2e-operators, except
+      # nova, whose suites run as two shards on two kind clusters (see "Run E2E
+      # tests" there). The publish jobs read e2e-operators and must see nova
+      # once, so the shards live in an output of their own.
+      - name: Shard the e2e-operator matrix
+        id: e2e-operator-legs
+        env:
+          E2E_OPERATORS: ${{ steps.result.outputs.e2e-operators }}
+        run: |
+          legs=$(jq -c '{include: [.operator[] | if . == "nova"
+            then {operator: ., shard: "1"}, {operator: ., shard: "2"}
+            else {operator: .} end]}' <<<"${E2E_OPERATORS}")
+          echo "legs=${legs}" >>"$GITHUB_OUTPUT"
 
   lint:
     needs: [changes]
@@ -1292,17 +1307,24 @@ jobs:
     # 90-minute wall cancelled it with three full-tier suites unfinished. A wall
     # that arrives first kills chainsaw outright: no catch block runs and no
     # JUnit report is written, so the job says nothing about which suite it
-    # stopped in. 150 is the estimate for the whole leg (about 125 minutes)
-    # plus headroom; confirm it against the first green run of this leg and
-    # re-derive if it overruns. The other legs keep 68; the neutron leg, with
-    # one sibling, took 41 minutes on 2026-09-17.
+    # stopped in. Under a 150-minute wall the leg took 125 to 137 minutes,
+    # until compute-node-pool, 27 minutes that no other suite runs beside,
+    # pushed it past 150 on 2026-09-24 with one suite unfinished. It now runs
+    # as two shards (the matrix below), each with the bring-up and about half
+    # the suites: about 80 to 95 minutes, so 150 is the wall per shard with
+    # headroom for a slow runner. Move a suite between the shards, or
+    # re-derive, if one overruns. The other legs keep 68; the neutron leg,
+    # with one sibling, took 41 minutes on 2026-09-17.
     timeout-minutes: ${{ matrix.operator == 'nova' && 150 || 68 }}
     permissions:
       contents: read
       packages: read
+    # e2e-operators with the nova leg split into shards 1 and 2 (see "Shard
+    # the e2e-operator matrix" in the changes job). A leg without a shard is
+    # named as before, e2e-operator (<operator>).
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.changes.outputs.e2e-operators) }}
+      matrix: ${{ fromJson(needs.changes.outputs.e2e-operator-legs) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -1546,6 +1568,7 @@ jobs:
       - name: Run E2E tests
         env:
           OPERATOR: ${{ matrix.operator }}
+          SHARD: ${{ matrix.shard }}
         run: |
           mkdir -p _output/reports
           # Operator-chart-level tests (e.g. network-policy-egress)
@@ -1555,6 +1578,32 @@ jobs:
           test_dirs=("tests/e2e/${OPERATOR}/")
           if [ -d "tests/e2e/${OPERATOR}-operator/" ]; then
             test_dirs+=("tests/e2e/${OPERATOR}-operator/")
+          fi
+          # The nova leg runs as two shards. Shard 2 runs the suites named
+          # below, shard 1 every other suite of both directories, so a new
+          # suite lands in shard 1 without an edit here. The split follows the
+          # durations measured on 2026-09-24: each shard takes three of the six
+          # suites that run 24 to 30 minutes, compute-node-pool among shard 2's,
+          # and shard 1 takes gateway-quick-start-smoke and scale, the two other
+          # suites that run alone (concurrent: false). The NovaCompute suites
+          # stay together in shard 2. The suites are passed as directories
+          # because chainsaw's include/exclude regex filters are no-ops.
+          if [ "${OPERATOR}" = "nova" ]; then
+            shard_two="compute-node-pool invalid-novacompute-cr basic-deployment-2026-1 release-upgrade healthcheck deletion-cleanup pod-security-restricted"
+            test_dirs=()
+            for dir in tests/e2e/nova/*/ tests/e2e/nova-operator/*/; do
+              case " ${shard_two} " in
+                *" $(basename "${dir}") "*) shard=2 ;;
+                *) shard=1 ;;
+              esac
+              if [ "${shard}" = "${SHARD}" ]; then
+                test_dirs+=("${dir}")
+              fi
+            done
+            if [ "${#test_dirs[@]}" -eq 0 ]; then
+              echo "::error::no nova suite belongs to shard '${SHARD}'"
+              exit 1
+            fi
           fi
           # Every neutron suite carries its own OVNCentral beside the Neutron
           # API, its two worker Deployments and a db-sync Job, so four of them
@@ -1601,11 +1650,13 @@ jobs:
           for op in keystone placement glance ovn neutron; do
             OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           done
+      # Two artifacts of one run cannot share a name, so each nova shard adds
+      # its number: e2e-nova-1-junit-report and e2e-nova-2-junit-report.
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-${{ matrix.operator }}-junit-report
+          name: e2e-${{ matrix.operator }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}-junit-report
           path: _output/reports/
           retention-days: 14
       # Last step of the job, so the dump above still had a cluster to read;
