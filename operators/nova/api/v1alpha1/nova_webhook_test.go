@@ -1587,3 +1587,107 @@ func TestNovaValidate_TopologySpreadSelectorNamesTheComponent(t *testing.T) {
 		})
 	}
 }
+
+// remoteComputeNova returns validNova() on a verified bus with the remote
+// compute block set, the shape the remote-compute rules admit.
+func remoteComputeNova() *Nova {
+	obj := validNova()
+	obj.Spec.Messaging.TLS = &commonv1.MessagingTLSSpec{
+		CABundleSecretRef: commonv1.SecretRefSpec{Name: "rabbitmq-ca", Key: "ca.crt"},
+	}
+	obj.Spec.RemoteCompute = &NovaRemoteComputeSpec{
+		KeystoneEndpoint: "https://keystone.example.com/v3",
+		TransportURLSecretRef: commonv1.SecretRefSpec{
+			Name: "nova-remote-transport", Key: commonv1.DefaultTransportURLSecretKey,
+		},
+	}
+	return obj
+}
+
+// The remote transport URL is read under the key a brownfield bus Secret uses,
+// and the block itself stays opt-in.
+func TestNovaDefault_RemoteComputeTransportKey(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &NovaWebhook{}
+
+	obj := remoteComputeNova()
+	obj.Spec.RemoteCompute.TransportURLSecretRef.Key = ""
+	g.Expect(w.Default(context.Background(), obj)).To(gomega.Succeed())
+	g.Expect(obj.Spec.RemoteCompute.TransportURLSecretRef.Key).To(gomega.Equal("transport_url"))
+
+	explicit := remoteComputeNova()
+	explicit.Spec.RemoteCompute.TransportURLSecretRef.Key = "url"
+	g.Expect(w.Default(context.Background(), explicit)).To(gomega.Succeed())
+	g.Expect(explicit.Spec.RemoteCompute.TransportURLSecretRef.Key).To(gomega.Equal("url"))
+
+	absent := validNova()
+	g.Expect(w.Default(context.Background(), absent)).To(gomega.Succeed())
+	g.Expect(absent.Spec.RemoteCompute).To(gomega.BeNil(), "the remote contract is never switched on by default")
+}
+
+func TestNovaValidateCreate_RemoteComputeOnAVerifiedBusAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &NovaWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), remoteComputeNova())
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// The remote-compute rules as a CR that bypassed the schema meets them: the
+// twin of the CEL rule, the URL check that also keeps a newline out of the
+// remote fragment, and the Secret name the remote transport URL is read from.
+func TestNovaValidateCreate_RemoteComputeRejections(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mutate   func(o *Nova)
+		wantPath string
+		wantSub  string
+	}{
+		{
+			name:     "remote compute on a plaintext bus",
+			mutate:   func(o *Nova) { o.Spec.Messaging.TLS = nil },
+			wantPath: "spec.messaging.tls: Required value",
+			wantSub:  "is required when spec.remoteCompute is set",
+		},
+		{
+			name:     "keystone endpoint carrying a newline",
+			mutate:   func(o *Nova) { o.Spec.RemoteCompute.KeystoneEndpoint = "https://k\n[x]" },
+			wantPath: "spec.remoteCompute.keystoneEndpoint",
+			wantSub:  "must be a valid URL",
+		},
+		{
+			name:     "keystone endpoint without a scheme",
+			mutate:   func(o *Nova) { o.Spec.RemoteCompute.KeystoneEndpoint = "keystone.example.com" },
+			wantPath: "spec.remoteCompute.keystoneEndpoint",
+			wantSub:  "scheme must be http or https",
+		},
+		{
+			name:     "keystone endpoint over plain http",
+			mutate:   func(o *Nova) { o.Spec.RemoteCompute.KeystoneEndpoint = "http://keystone.example.com/v3" },
+			wantPath: "spec.remoteCompute.keystoneEndpoint",
+			wantSub:  "must use scheme https: every compute on another cluster sends the nova service-user password",
+		},
+		{
+			name:     "transport URL Secret without a name",
+			mutate:   func(o *Nova) { o.Spec.RemoteCompute.TransportURLSecretRef.Name = "" },
+			wantPath: "spec.remoteCompute.transportURLSecretRef.name: Required value",
+			wantSub:  "the transport URL of the broker's external listener",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &NovaWebhook{}
+			obj := remoteComputeNova()
+			tc.mutate(obj)
+
+			_, err := w.ValidateCreate(context.Background(), obj)
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantPath))
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantSub))
+
+			_, err = w.ValidateUpdate(context.Background(), remoteComputeNova(), obj)
+			g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(tc.wantPath)),
+				"the rule is shared with update, so a later edit cannot introduce the violation either")
+		})
+	}
+}
