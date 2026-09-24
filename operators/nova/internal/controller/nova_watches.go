@@ -34,13 +34,15 @@ const NovaSecretNameIndexKey = "spec.secretRefs.name"
 // NovaSecretNameIndexKey. It returns the deduplicated, non-empty union of Secret
 // names a Nova CR references: the two database credentials, the TLS material of
 // each schema whose block is enabled, the service-user password, the metadata
-// shared secret, the brownfield transport URL, and the broker CA bundle. A
-// disabled TLS block keeps its references, so they are indexed only while the
-// block is on and the connection actually reads them.
+// shared secret, the brownfield transport URL, the broker CA bundle, and the
+// remote transport URL. A disabled TLS block keeps its references, so they are
+// indexed only while the block is on and the connection actually reads them.
 //
 // spec.messaging.secretRef is nil in managed mode, where the transport URL is
 // derived from a RabbitmqCluster instead of read from a Secret, and
-// spec.messaging.tls is nil on a plaintext bus.
+// spec.messaging.tls is nil on a plaintext bus. spec.remoteCompute is nil on a
+// Nova that publishes no remote contract; while it is set, a rotated remote
+// URL, or a Secret that appears after the step waited for it, enqueues the Nova.
 func novaSecretNameExtractor(obj client.Object) []string {
 	nova, ok := obj.(*novav1alpha1.Nova)
 	if !ok {
@@ -67,6 +69,9 @@ func novaSecretNameExtractor(obj client.Object) []string {
 	if nova.Spec.Messaging.TLS != nil {
 		referenced = append(referenced, nova.Spec.Messaging.TLS.CABundleSecretRef.Name)
 	}
+	if rc := nova.Spec.RemoteCompute; rc != nil {
+		referenced = append(referenced, rc.TransportURLSecretRef.Name)
+	}
 
 	names := make([]string, 0, len(referenced))
 	for _, name := range referenced {
@@ -82,7 +87,7 @@ func novaSecretNameExtractor(obj client.Object) []string {
 // requests for Nova CRs that either reference the Secret by name (resolved via
 // the NovaSecretNameIndexKey field indexer) or own it via an OwnerReference with
 // Kind=Nova and an APIVersion in the Nova API group (the two derived
-// db-connection Secrets, the transport-url Secret and the compute contract). It
+// db-connection Secrets, the transport-url Secret and the two compute contracts). It
 // binds the shared watch.SecretToOwnersMapper to the Nova types; the group-only
 // owner-ref match and the cached staleness Get live there.
 func secretToNovaMapper(c client.Reader) handler.MapFunc {

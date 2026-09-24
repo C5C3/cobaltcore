@@ -133,6 +133,21 @@ func TestSecretToNovaMapper(t *testing.T) {
 	g.Expect(mapper(context.Background(), namedSecret("unrelated"))).To(BeEmpty())
 }
 
+// TestNovaSecretNameExtractor_IndexesTheRemoteTransportSecret covers the Secret
+// the remote contract reads its transport URL from. It is read on every pass
+// while spec.remoteCompute is set, so a rotated value, or a Secret that appears
+// after the step waited for it, has to reach the CR. Without the block nothing
+// reads it, and an event on it changes nothing.
+func TestNovaSecretNameExtractor_IndexesTheRemoteTransportSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	g.Expect(novaSecretNameExtractor(remoteComputeNova())).To(ContainElement(testRemoteTransportSecret))
+	g.Expect(novaSecretNameExtractor(novaWithMessagingTLS())).NotTo(ContainElement(testRemoteTransportSecret))
+
+	mapper := secretToNovaMapper(mapperClient(remoteComputeNova()))
+	g.Expect(mapper(context.Background(), namedSecret(testRemoteTransportSecret))).To(ConsistOf(novaRequest))
+}
+
 // TestMariaDBToNovaMapper_EitherClusterRef pins the two-schema half of the
 // watch: Nova holds nova_api and the cell schema on independently referenced
 // clusters, so an outage of either one has to reach the CR. A mapper bound to

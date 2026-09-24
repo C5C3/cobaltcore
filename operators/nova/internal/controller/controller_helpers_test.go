@@ -217,6 +217,27 @@ func novaWithMessagingTLS() *novav1alpha1.Nova {
 	return nova
 }
 
+// testRemoteTransportSecret is the Secret remoteComputeNova reads the broker's
+// external listener from.
+const testRemoteTransportSecret = "nova-remote-transport"
+
+// testRemoteKeystoneEndpoint is the Keystone URL remoteComputeNova hands a
+// compute on another cluster.
+const testRemoteKeystoneEndpoint = "https://keystone.example.com/v3"
+
+// remoteComputeNova returns the verified-bus fixture publishing the remote
+// compute contract as well, the shape the remote-compute CEL rule admits.
+func remoteComputeNova() *novav1alpha1.Nova {
+	nova := novaWithMessagingTLS()
+	nova.Spec.RemoteCompute = &novav1alpha1.NovaRemoteComputeSpec{
+		KeystoneEndpoint: testRemoteKeystoneEndpoint,
+		TransportURLSecretRef: commonv1.SecretRefSpec{
+			Name: testRemoteTransportSecret, Key: commonv1.DefaultTransportURLSecretKey,
+		},
+	}
+	return nova
+}
+
 // defaulted runs the real defaulting webhook over a fixture, so the tests
 // describe a CR admission can actually produce instead of restating the
 // webhook's output beside it.

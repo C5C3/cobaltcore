@@ -7,10 +7,12 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -169,6 +171,95 @@ compute = auto
 [vnc]
 enabled = true
 novncproxy_base_url = http://nova-novncproxy.openstack.svc.cluster.local:6080/vnc_lite.html
+`
+
+// pinRemoteComputeConfigGolden is the remote fragment rendered for the
+// validNova fixture with spec.remoteCompute.keystoneEndpoint set to
+// testRemoteKeystoneEndpoint. It differs from pinComputeConfigGolden in the
+// addressing keys alone: every auth_url and [barbican] auth_endpoint name the
+// remote Keystone URL, and every client section resolves the public catalog
+// row.
+const pinRemoteComputeConfigGolden = `[DEFAULT]
+debug = false
+use_stderr = true
+
+[barbican]
+auth_endpoint = https://keystone.example.com/v3
+barbican_endpoint_type = public
+barbican_region_name = RegionOne
+send_service_user_token = true
+
+[cinder]
+auth_type = password
+auth_url = https://keystone.example.com/v3
+catalog_info = block-storage:cinder:publicURL
+os_region_name = RegionOne
+project_domain_name = Default
+project_name = service
+user_domain_name = Default
+username = nova
+
+[glance]
+region_name = RegionOne
+valid_interfaces = public
+
+[key_manager]
+backend = barbican
+
+[keystone_authtoken]
+auth_type = password
+auth_url = https://keystone.example.com/v3
+project_domain_name = Default
+project_name = service
+region_name = RegionOne
+user_domain_name = Default
+username = nova
+www_authenticate_uri = https://keystone.example.com
+
+[neutron]
+auth_type = password
+auth_url = https://keystone.example.com/v3
+project_domain_name = Default
+project_name = service
+region_name = RegionOne
+user_domain_name = Default
+username = nova
+valid_interfaces = public
+
+[oslo_messaging_notifications]
+driver = noop
+
+[oslo_messaging_rabbit]
+rabbit_quorum_queue = true
+rabbit_transient_quorum_queue = true
+use_queue_manager = true
+
+[placement]
+auth_type = password
+auth_url = https://keystone.example.com/v3
+project_domain_name = Default
+project_name = service
+region_name = RegionOne
+user_domain_name = Default
+username = nova
+valid_interfaces = public
+
+[service_user]
+auth_type = password
+auth_url = https://keystone.example.com/v3
+project_domain_name = Default
+project_name = service
+region_name = RegionOne
+send_service_user_token = true
+user_domain_name = Default
+username = nova
+
+[upgrade_levels]
+compute = auto
+
+[vnc]
+enabled = true
+novncproxy_base_url = https://console.example.com/vnc_lite.html
 `
 
 // testComputeTransportURL is the bus URL the messaging step returns, which the
@@ -467,4 +558,371 @@ func TestReconcileComputeConfig_RefusesAnUnownedSecretOnATarget(t *testing.T) {
 	live := publishedComputeConfig(t, children, nova)
 	g.Expect(string(live.Data[computeConfigFragmentKey])).To(Equal("somebody else's fragment"))
 	g.Expect(live.Labels).To(BeEmpty(), "a refused object keeps no ownership label")
+}
+
+// testRemoteTransportURL is the broker's external listener the remote
+// contract carries in place of the in-cluster bus URL.
+const testRemoteTransportURL = "rabbit://u:p@198.51.100.10:5671/"
+
+// remoteTransportSecret returns the Secret remoteComputeNova reads its remote
+// transport URL from, carrying value under the default key.
+func remoteTransportSecret(value string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteTransportSecret, Namespace: testNamespace},
+		Data:       map[string][]byte{commonv1.DefaultTransportURLSecretKey: []byte(value)},
+	}
+}
+
+// publishedRemoteComputeConfig reads the remote compute-contract Secret back
+// off c.
+func publishedRemoteComputeConfig(t *testing.T, c client.Client, nova *novav1alpha1.Nova) *corev1.Secret {
+	t.Helper()
+
+	secret := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: nova.Namespace, Name: remoteComputeConfigSecretName(nova)}
+	if err := c.Get(context.Background(), key, secret); err != nil {
+		t.Fatalf("reading the published remote compute config Secret %s: %v", key, err)
+	}
+	return secret
+}
+
+// remoteComputeConfigAbsent reports whether c holds no remote compute-contract
+// Secret for nova.
+func remoteComputeConfigAbsent(c client.Client, nova *novav1alpha1.Nova) bool {
+	err := c.Get(context.Background(), client.ObjectKey{
+		Namespace: nova.Namespace, Name: remoteComputeConfigSecretName(nova),
+	}, &corev1.Secret{})
+	return apierrors.IsNotFound(err)
+}
+
+// expectComputeConfigCondition asserts ComputeConfigReady carries status and
+// reason, and returns it for further checks.
+func expectComputeConfigCondition(g Gomega, nova *novav1alpha1.Nova, status metav1.ConditionStatus,
+	reason string,
+) *metav1.Condition {
+	cond := novaCondition(nova, conditionTypeComputeConfigReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(status))
+	g.Expect(cond.Reason).To(Equal(reason))
+	return cond
+}
+
+// TestPinRemoteComputeConfigFragment pins the remote fragment byte for byte,
+// and pins what it shares with the in-cluster one: the address a 401 points a
+// client at, the bus settings and the console. Only the addressing keys may
+// differ between the two documents.
+func TestPinRemoteComputeConfigFragment(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	nova := validNova()
+	nova.Spec.RemoteCompute = &novav1alpha1.NovaRemoteComputeSpec{KeystoneEndpoint: testRemoteKeystoneEndpoint}
+
+	remote := remoteComputeConfigDefaults(nova)
+	expectGolden(t, config.RenderINI(remote), pinRemoteComputeConfigGolden)
+
+	local := computeConfigDefaults(nova)
+	g.Expect(remote).To(HaveLen(len(local)), "both documents carry the same sections")
+	for section := range local {
+		g.Expect(remote).To(HaveKey(section))
+	}
+	g.Expect(remote["keystone_authtoken"]["www_authenticate_uri"]).
+		To(Equal(local["keystone_authtoken"]["www_authenticate_uri"]))
+	g.Expect(remote["oslo_messaging_rabbit"]).To(Equal(local["oslo_messaging_rabbit"]))
+	g.Expect(remote["vnc"]).To(Equal(local["vnc"]))
+}
+
+// TestRemoteComputeConfigDefaults_DropsEveryOverride covers the overrides: they
+// name addresses the control-plane pods dial, so the in-cluster fragment keeps
+// them and the remote one resolves the public catalog row instead.
+func TestRemoteComputeConfigDefaults_DropsEveryOverride(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	nova := remoteComputeNova()
+	nova.Spec.Endpoints.Placement.Override = "http://placement.openstack.svc:8778"
+	nova.Spec.Endpoints.Neutron.Override = "http://neutron.openstack.svc:9696"
+	nova.Spec.Endpoints.Glance.Override = "http://glance.openstack.svc:9292"
+	nova.Spec.Endpoints.Cinder.Override = "http://cinder.openstack.svc:8776/v3/%(project_id)s"
+	nova.Spec.Endpoints.Barbican.Override = "http://barbican.openstack.svc:9311"
+
+	local := config.RenderINI(computeConfigDefaults(nova))
+	g.Expect(local).To(ContainSubstring("endpoint_override = http://placement.openstack.svc:8778"))
+	g.Expect(local).To(ContainSubstring("endpoint_template = http://cinder.openstack.svc:8776"))
+	g.Expect(local).To(ContainSubstring("barbican_endpoint = http://barbican.openstack.svc:9311"))
+
+	remote := config.RenderINI(remoteComputeConfigDefaults(nova))
+	for _, absent := range []string{"endpoint_override", "endpoint_template", "barbican_endpoint ="} {
+		g.Expect(remote).NotTo(ContainSubstring(absent),
+			"%s names an address the control-plane pods dial, not one a compute cluster reaches", absent)
+	}
+	g.Expect(strings.Count(remote, "valid_interfaces = public")).To(Equal(3))
+}
+
+// TestRemoteComputeConfigDefaults_OptionalSiblingsOff covers a Nova without
+// block storage and key manager: the remote rewrite has no section of theirs to
+// re-address, and must not invent one.
+func TestRemoteComputeConfigDefaults_OptionalSiblingsOff(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	nova := remoteComputeNova()
+	nova.Spec.Endpoints.Cinder.Enabled = false
+	nova.Spec.Endpoints.Barbican.Enabled = false
+
+	sections := remoteComputeConfigDefaults(nova)
+	g.Expect(sections).NotTo(HaveKey("cinder"))
+	g.Expect(sections).NotTo(HaveKey("barbican"))
+	g.Expect(sections).NotTo(HaveKey("key_manager"))
+	g.Expect(sections["placement"]["valid_interfaces"]).To(Equal("public"))
+}
+
+// TestReconcileComputeConfig_PublishesTheRemoteContract covers the second
+// contract: the same six keys as the in-cluster one, the external transport URL
+// in place of the bus URL, and every other value shared.
+func TestReconcileComputeConfig_PublishesTheRemoteContract(t *testing.T) {
+	g := NewGomegaWithT(t)
+	nova := remoteComputeNova()
+	r := newNovaTestReconciler(nova, remoteTransportSecret(testRemoteTransportURL))
+
+	result, err := r.reconcileComputeConfig(context.Background(), r.Client, nova,
+		testComputeTransportURL, computeSecretValues())
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+
+	local := publishedComputeConfig(t, r.Client, nova)
+	remote := publishedRemoteComputeConfig(t, r.Client, nova)
+	g.Expect(remote.Type).To(Equal(corev1.SecretTypeOpaque))
+	g.Expect(remote.Labels).To(Equal(componentLabels(nova, componentRemoteComputeConfig)))
+	g.Expect(remote.Data).To(HaveLen(6))
+	for key := range local.Data {
+		g.Expect(remote.Data).To(HaveKey(key), "the remote contract carries every key of the in-cluster one")
+	}
+	g.Expect(string(remote.Data[transportURLKey])).To(Equal(testRemoteTransportURL))
+	g.Expect(string(local.Data[transportURLKey])).To(Equal(testComputeTransportURL),
+		"the in-cluster contract keeps the bus URL its neighbours reach")
+	for _, key := range []string{passwordKey, metadataSharedSecretKey, cellNameKey, caBundleKey} {
+		g.Expect(remote.Data[key]).To(Equal(local.Data[key]), "%s is the same value in both contracts", key)
+	}
+	g.Expect(string(remote.Data[computeConfigFragmentKey])).
+		To(Equal(config.RenderINI(remoteComputeConfigDefaults(nova))))
+	g.Expect(string(remote.Data[computeConfigFragmentKey])).
+		To(ContainSubstring("ssl_ca_file = /etc/nova/compute-config/ca.crt"),
+			"the remote compute mounts the Secret at the same path")
+
+	g.Expect(nova.Status.RemoteComputeConfigSecretRef).NotTo(BeNil())
+	g.Expect(nova.Status.RemoteComputeConfigSecretRef.Name).To(Equal("nova-remote-compute-config"))
+	expectComputeConfigCondition(g, nova, metav1.ConditionTrue, conditionReasonComputeConfigPublished)
+}
+
+// TestReconcileComputeConfig_WaitsForTheRemoteTransportURL covers a transport
+// URL that is not there yet: the in-cluster contract is still written, the
+// pipeline goes on, and a remote contract published earlier keeps its bytes.
+func TestReconcileComputeConfig_WaitsForTheRemoteTransportURL(t *testing.T) {
+	t.Run("missing Secret", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nova := remoteComputeNova()
+		r := newNovaTestReconciler(nova)
+
+		result, err := r.reconcileComputeConfig(context.Background(), r.Client, nova,
+			testComputeTransportURL, computeSecretValues())
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(result.IsZero()).To(BeTrue(), "the wait does not halt the control-plane steps behind it")
+		publishedComputeConfig(t, r.Client, nova)
+		g.Expect(nova.Status.ComputeConfigSecretRef).NotTo(BeNil())
+		g.Expect(remoteComputeConfigAbsent(r.Client, nova)).To(BeTrue())
+		g.Expect(nova.Status.RemoteComputeConfigSecretRef).To(BeNil())
+
+		cond := expectComputeConfigCondition(g, nova, metav1.ConditionFalse,
+			conditionReasonWaitingForRemoteTransportURL)
+		g.Expect(cond.Message).To(HavePrefix("spec.remoteCompute.transportURLSecretRef:"))
+		g.Expect(cond.Message).To(ContainSubstring("not found"))
+	})
+
+	t.Run("empty key keeps the published Secret", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nova := remoteComputeNova()
+		r := newNovaTestReconciler(nova, remoteTransportSecret(testRemoteTransportURL))
+
+		_, err := r.reconcileComputeConfig(context.Background(), r.Client, nova,
+			testComputeTransportURL, computeSecretValues())
+		g.Expect(err).NotTo(HaveOccurred())
+		published := publishedRemoteComputeConfig(t, r.Client, nova)
+
+		live := &corev1.Secret{}
+		g.Expect(r.Get(context.Background(), client.ObjectKey{
+			Namespace: testNamespace, Name: testRemoteTransportSecret,
+		}, live)).To(Succeed())
+		live.Data[commonv1.DefaultTransportURLSecretKey] = nil
+		g.Expect(r.Update(context.Background(), live)).To(Succeed())
+
+		result, err := r.reconcileComputeConfig(context.Background(), r.Client, nova,
+			testComputeTransportURL, computeSecretValues())
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(result.IsZero()).To(BeTrue())
+		g.Expect(publishedRemoteComputeConfig(t, r.Client, nova).Data).To(Equal(published.Data))
+		cond := expectComputeConfigCondition(g, nova, metav1.ConditionFalse,
+			conditionReasonWaitingForRemoteTransportURL)
+		g.Expect(cond.Message).To(HavePrefix("spec.remoteCompute.transportURLSecretRef:"))
+		g.Expect(cond.Message).To(ContainSubstring(`missing key "transport_url"`))
+	})
+}
+
+// TestReconcileComputeConfig_RejectsANonRabbitRemoteURL covers a remote URL for
+// a driver the compute is not configured for. The error names the scheme and
+// never the URL, which carries the broker password.
+func TestReconcileComputeConfig_RejectsANonRabbitRemoteURL(t *testing.T) {
+	g := NewGomegaWithT(t)
+	const amqp = "amqp://u:p@198.51.100.10:5671/"
+	nova := remoteComputeNova()
+	r := newNovaTestReconciler(nova, remoteTransportSecret(amqp))
+
+	_, err := r.reconcileComputeConfig(context.Background(), r.Client, nova,
+		testComputeTransportURL, computeSecretValues())
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(HavePrefix("resolving the remote transport URL:"))
+	g.Expect(err.Error()).To(ContainSubstring("scheme must be rabbit"))
+	g.Expect(err.Error()).NotTo(ContainSubstring(amqp))
+	g.Expect(remoteComputeConfigAbsent(r.Client, nova)).To(BeTrue())
+
+	cond := expectComputeConfigCondition(g, nova, metav1.ConditionFalse, conditionReasonComputeConfigError)
+	g.Expect(cond.Message).NotTo(ContainSubstring("u:p@"))
+}
+
+// TestReconcileComputeConfig_RemoteApplyFailureSetsErrorAndWraps covers the
+// failing write of the remote Secret: the status advertises no Secret the
+// cluster does not have.
+func TestReconcileComputeConfig_RemoteApplyFailureSetsErrorAndWraps(t *testing.T) {
+	g := NewGomegaWithT(t)
+	nova := remoteComputeNova()
+	boom := errors.New("the API server is unavailable")
+	r := failingApplyReconciler(boom, "Secret", remoteComputeConfigSecretName(nova),
+		nova, remoteTransportSecret(testRemoteTransportURL))
+
+	_, err := r.reconcileComputeConfig(context.Background(), r.Client, nova,
+		testComputeTransportURL, computeSecretValues())
+
+	g.Expect(err).To(MatchError(boom))
+	g.Expect(err.Error()).To(HavePrefix("publishing the remote compute config Secret:"))
+	g.Expect(nova.Status.RemoteComputeConfigSecretRef).To(BeNil())
+	cond := expectComputeConfigCondition(g, nova, metav1.ConditionFalse, conditionReasonComputeConfigError)
+	g.Expect(cond.Message).To(ContainSubstring("the API server is unavailable"))
+}
+
+// TestReconcileComputeConfig_ClearingRemoteComputeDeletesTheSecret covers the
+// block's removal: the remote contract goes with it, a same-named Secret the
+// Nova does not control stays, and a failing delete is reported.
+func TestReconcileComputeConfig_ClearingRemoteComputeDeletesTheSecret(t *testing.T) {
+	t.Run("the published Secret is deleted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nova := remoteComputeNova()
+		r := newNovaTestReconciler(nova, remoteTransportSecret(testRemoteTransportURL))
+
+		_, err := r.reconcileComputeConfig(context.Background(), r.Client, nova,
+			testComputeTransportURL, computeSecretValues())
+		g.Expect(err).NotTo(HaveOccurred())
+		publishedRemoteComputeConfig(t, r.Client, nova)
+
+		nova.Spec.RemoteCompute = nil
+		_, err = r.reconcileComputeConfig(context.Background(), r.Client, nova,
+			testComputeTransportURL, computeSecretValues())
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(remoteComputeConfigAbsent(r.Client, nova)).To(BeTrue())
+		g.Expect(nova.Status.RemoteComputeConfigSecretRef).To(BeNil())
+		g.Expect(nova.Status.ComputeConfigSecretRef).NotTo(BeNil(), "the in-cluster contract stays")
+		expectComputeConfigCondition(g, nova, metav1.ConditionTrue, conditionReasonComputeConfigPublished)
+	})
+
+	// On a target cluster the Secret carries the ownership labels in place of
+	// an owner reference, so the delete has to recognize it by those.
+	t.Run("the published Secret is deleted on a target cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nova := remoteComputeNova()
+		nova.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "remote-a"}
+		r := newNovaTestReconciler(nova)
+		target := novaFakeClientBuilder(remoteTransportSecret(testRemoteTransportURL)).Build()
+		children := mctestutil.RemoteChildren(t, r.Client, target)
+
+		_, err := r.reconcileComputeConfig(context.Background(), children, nova,
+			testComputeTransportURL, computeSecretValues())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(publishedRemoteComputeConfig(t, target, nova).OwnerReferences).To(BeEmpty(),
+			"a target-cluster child is claimed by its labels")
+
+		nova.Spec.RemoteCompute = nil
+		_, err = r.reconcileComputeConfig(context.Background(), children, nova,
+			testComputeTransportURL, computeSecretValues())
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(remoteComputeConfigAbsent(target, nova)).To(BeTrue(),
+			"the Secret carries the broker URL and both credentials, so it must not outlive the block")
+		g.Expect(nova.Status.RemoteComputeConfigSecretRef).To(BeNil())
+		expectComputeConfigCondition(g, nova, metav1.ConditionTrue, conditionReasonComputeConfigPublished)
+	})
+
+	t.Run("a Secret the Nova does not control survives", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nova := novaWithMessagingTLS()
+		foreign := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: remoteComputeConfigSecretName(nova), Namespace: nova.Namespace},
+			Data:       map[string][]byte{computeConfigFragmentKey: []byte("somebody else's fragment")},
+		}
+		r := newNovaTestReconciler(nova, foreign)
+
+		_, err := r.reconcileComputeConfig(context.Background(), r.Client, nova,
+			testComputeTransportURL, computeSecretValues())
+
+		g.Expect(err).NotTo(HaveOccurred())
+		live := &corev1.Secret{}
+		g.Expect(r.Get(context.Background(), client.ObjectKeyFromObject(foreign), live)).To(Succeed())
+		g.Expect(string(live.Data[computeConfigFragmentKey])).To(Equal("somebody else's fragment"))
+	})
+
+	t.Run("a failing delete is reported", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nova := remoteComputeNova()
+		boom := errors.New("the API server is unavailable")
+		r := failingDeleteReconciler(boom, "Secret", remoteComputeConfigSecretName(nova),
+			nova, remoteTransportSecret(testRemoteTransportURL))
+
+		_, err := r.reconcileComputeConfig(context.Background(), r.Client, nova,
+			testComputeTransportURL, computeSecretValues())
+		g.Expect(err).NotTo(HaveOccurred())
+
+		nova.Spec.RemoteCompute = nil
+		_, err = r.reconcileComputeConfig(context.Background(), r.Client, nova,
+			testComputeTransportURL, computeSecretValues())
+
+		g.Expect(err).To(MatchError(boom))
+		g.Expect(err.Error()).To(HavePrefix("deleting the remote compute config Secret:"))
+		expectComputeConfigCondition(g, nova, metav1.ConditionFalse, conditionReasonComputeConfigError)
+	})
+}
+
+// TestReconcileComputeConfig_ControlCharInRemoteKeystoneEndpointKeepsThePublishedSecret
+// covers the remote fragment's own guard. spec.remoteCompute.keystoneEndpoint
+// is rendered into every auth_url of the remote fragment, and a CR that
+// bypassed admission can carry a newline in it: the injected section must not
+// reach the remote Secret, and the one published earlier stays as it was.
+func TestReconcileComputeConfig_ControlCharInRemoteKeystoneEndpointKeepsThePublishedSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+	nova := remoteComputeNova()
+	r := newNovaTestReconciler(nova, remoteTransportSecret(testRemoteTransportURL))
+
+	_, err := r.reconcileComputeConfig(context.Background(), r.Client, nova,
+		testComputeTransportURL, computeSecretValues())
+	g.Expect(err).NotTo(HaveOccurred())
+	published := publishedRemoteComputeConfig(t, r.Client, nova)
+
+	nova.Spec.RemoteCompute.KeystoneEndpoint = "https://k\n[workarounds]\ndisable_rootwrap = true"
+	result, err := r.reconcileComputeConfig(context.Background(), r.Client, nova,
+		testComputeTransportURL, computeSecretValues())
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	live := publishedRemoteComputeConfig(t, r.Client, nova)
+	g.Expect(live.Data).To(Equal(published.Data), "the injected section must never reach the Secret")
+	expectComputeConfigCondition(g, nova, metav1.ConditionFalse, conditionReasonComputeConfigError)
 }
