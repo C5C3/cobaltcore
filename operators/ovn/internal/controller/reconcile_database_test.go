@@ -313,35 +313,73 @@ func TestRaftResources_UnsetBlockGetsTheRequestFloor(t *testing.T) {
 	}
 }
 
-// Any CPU or memory request or limit means the operator renders the block
-// untouched. A limit alone must stay alone: the API server defaults an unset
-// request to its limit, and a floor request added beside it would silently
-// lower the request.
-func TestRaftResources_BlockWithACPUOrMemoryRequestOrLimitIsUsedAsWritten(t *testing.T) {
-	t.Run("limit only", func(t *testing.T) {
-		g := NewWithT(t)
+// Each of CPU and memory is filled on its own. A limit alone must stay alone:
+// the API server defaults an unset request to its limit, and a floor request
+// added beside it would silently lower the request.
+func TestRaftResources_FillsEachUnnamedResource(t *testing.T) {
+	q := resource.MustParse
+	cases := []struct {
+		name string
+		spec *corev1.ResourceRequirements
+		want corev1.ResourceRequirements
+	}{
+		{
+			name: "CPU request only gains the memory request",
+			spec: &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: q("1")}},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("1"), corev1.ResourceMemory: q("256Mi")},
+			},
+		},
+		{
+			name: "memory limit only gains the CPU request",
+			spec: &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: q("1Gi")}},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("100m")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: q("1Gi")},
+			},
+		},
+		{
+			name: "memory request only gains the CPU request",
+			spec: &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: q("512Mi")}},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: q("512Mi"), corev1.ResourceCPU: q("100m")},
+			},
+		},
+	}
 
-		got := raftResources(&corev1.ResourceRequirements{
-			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			g.Expect(raftResources(tc.spec)).To(Equal(tc.want))
 		})
+	}
+}
 
-		g.Expect(got.Requests).To(BeEmpty())
-		g.Expect(got.Limits).To(HaveLen(1))
-		g.Expect(got.Limits.Memory().String()).To(Equal("1Gi"))
-	})
+// A block that names both CPU and memory, as request or as limit, gets nothing
+// added.
+func TestRaftResources_BlockNamingCPUAndMemoryIsUsedAsWritten(t *testing.T) {
+	q := resource.MustParse
+	cases := []struct {
+		name string
+		spec *corev1.ResourceRequirements
+	}{
+		{name: "requests", spec: &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: q("250m"), corev1.ResourceMemory: q("1Gi")},
+		}},
+		{name: "CPU request and memory limit", spec: &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: q("250m")},
+			Limits:   corev1.ResourceList{corev1.ResourceMemory: q("2Gi")},
+		}},
+	}
 
-	t.Run("memory request only", func(t *testing.T) {
-		g := NewWithT(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
 
-		got := raftResources(&corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			g.Expect(raftResources(tc.spec)).To(Equal(*tc.spec))
 		})
-
-		g.Expect(got.Requests).To(HaveLen(1))
-		g.Expect(got.Requests).NotTo(HaveKey(corev1.ResourceCPU), "no per-key fill")
-		g.Expect(got.Requests.Memory().String()).To(Equal("512Mi"))
-		g.Expect(got.Limits).To(BeEmpty())
-	})
+	}
 }
 
 // The QoS class is computed from CPU and memory alone, so a block that names
