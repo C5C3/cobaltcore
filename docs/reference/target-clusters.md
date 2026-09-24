@@ -395,7 +395,9 @@ the migration Jobs read the transport URL, and the managed mode reads the
 whose broker runs on the management cluster names the bus with
 `spec.messaging.secretRef`. The compute-config Secret that
 `status.computeConfigSecretRef` names is written on the target, next to the
-workloads. Nova placement, too, is covered by envtest alone.
+workloads. While `spec.remoteCompute` is set, `{name}-remote-compute-config` is
+written there beside it, and the transport URL Secret that block names is read
+from the target as well. Nova placement, too, is covered by envtest alone.
 
 The verdict of the migrate Job's `cinder-status upgrade check` comes from the
 pod's termination message. The operator lists the Job's pods through the

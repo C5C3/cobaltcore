@@ -419,6 +419,11 @@ that would surface only once the first consumer rendered `ssl = true` against a
 plaintext broker. In brownfield mode the broker's listeners belong to whoever
 runs it, so the block only says which CA the consumer trusts.
 
+A brownfield bus with `tls` is also the precondition of
+[`services.nova.remoteCompute`](#servicenovaremotecomputespec): a compute cluster
+reaches the bus across a cluster boundary, and this bundle is the only trust
+anchor the remote compute contract carries.
+
 There is no `enabled` flag: any present `tls` block asks for an encrypted
 connection, a nil block for a plaintext one.
 
@@ -491,6 +496,7 @@ validating webhook is bypassed) and mirrored by the validating webhook; see
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), so a malformed endpoint fails at admission rather than wedging the projected Keystone CR. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 | `federationProxyImage` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the `mod_auth_openidc` sidecar image projected onto the Keystone child's `spec.federation.proxyImage`. When `nil` the reconciler projects `ghcr.io/c5c3/keystone-federation-proxy:latest`. That default is a **mutable tag**: every node re-pulls it on each pod start, and a locally built sidecar cannot be exercised. Override it with a digest-carrying `ImageSpec` for the immutable pin published images are expected to carry. Inert until a federation-typed `KeystoneIdentityBackend` attaches. Forbidden in External mode (CEL + webhook). |
+| `remoteCompute` | [`*ServiceNovaRemoteComputeSpec`](#servicenovaremotecomputespec) | No | `nil` (compute clusters receive the in-cluster contract) | Makes the compute contract resolvable from a compute cluster. The projected child publishes a second contract whose addresses leave the cluster, and the ControlPlane mirrors that one, instead of the in-cluster one, onto compute clusters. Admitted only beside a brownfield bus with `tls`, a published https Keystone, and published siblings (webhook). |
 | `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Keystone on one mode while another service (e.g. Glance) stays on the other. Empty (the default) **inherits** the shared mode — deliberately **not** materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when the Keystone service declares a [dedicated](#dedicatedbackingservices) database (dedicated is `Static`-only — set `dedicatedBackingServices.database.credentialsMode` instead; see [Credential modes](#credential-modes)) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. **Forbidden in External mode (CEL + webhook)** — no managed database is provisioned there, so there is no credentials mode to override. |
 | `dedicatedBackingServices` | [`*KeystoneDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide instances) | Opts the Keystone service **out** of the shared `spec.infrastructure` instances and gives it backing services of its own. Forbidden in External mode (CEL + webhook): no backing services are provisioned at all there. |
 | `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the Keystone service — and the backing services, secret store, and credential material that follow it — in a namespace of its own. Create-only. Forbidden in External mode (CEL + webhook): no Keystone workload is deployed, so there is nothing to place. See [Service Namespaces](#service-namespaces). |
@@ -1168,7 +1174,7 @@ and operator policy) rather than set here. `spec.networkPolicy`,
 are not projected, so the nova operator's own network policies, autoscaling,
 logging, and uWSGI parameters stay authoritative.
 
-Seven fields have no counterpart on the other services. Three are replica counts,
+Eight fields have no counterpart on the other services. Three are replica counts,
 because the compute service runs a metadata API, a scheduler, and a conductor in
 Deployments beside its API. Two are the metadata pair, `metadataGateway` and
 `metadataSharedSecretRef`: the metadata API is the one endpoint dialed from a
@@ -1176,7 +1182,9 @@ compute cluster rather than from inside the control plane, and the agent that
 dials it signs every request with a secret both sides have to hold.
 `consoleProxy` sizes and publishes the noVNC console proxy, a browser-facing
 bridge to the hypervisors no other service runs, and `dbArchive` tunes the
-archive of the rows Nova soft-deletes instead of removing.
+archive of the rows Nova soft-deletes instead of removing. `remoteCompute` hands
+over the one address of the compute contract the ControlPlane cannot derive: the
+bus's external listener.
 
 Forbidden entirely when `services.keystone.mode` is `External` (Nova needs its
 own External-mode design), so, like `ServiceCinderSpec`, none of its fields carry
@@ -1216,6 +1224,47 @@ rather than parking the projected child on a rule of its own.
 | `enabled` | `*bool` | No | `nil` (projected as `true`) | Projects the console proxy. An omitted `consoleProxy` block leaves the switch absent on the wire and the nova defaulting webhook enables the proxy; a block present with `enabled` unset is projected as `true` outright. Setting it to `false` deletes the proxy Deployment, its Service, and its HTTPRoute. |
 | `replicas` | `*int32` | No | `nil` (projected as `1` inside an enabled block) | Sizes the console-proxy Deployment. With the whole `consoleProxy` block omitted nothing is written and the nova defaulting webhook resolves its own default, also 1. Minimum 1. Forbidden while the proxy is disabled. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the console proxy externally. It takes a hostname of its own rather than a path under the API's: the noVNC client opens a WebSocket against the host the console URL names, and the API hands that URL to the browser. The `path` must be empty or `/`, since the console page and its WebSocket both open on the root of the hostname. Forbidden while the proxy is disabled. |
+
+### ServiceNovaRemoteComputeSpec
+
+Hands the ControlPlane the external address of the message bus. The compute
+contract the Nova child publishes names in-cluster addresses: the broker's
+Service, the in-cluster Keystone, and the `internal` catalog rows. A
+`nova-compute` on a compute cluster reaches none of them. The ControlPlane knows
+the public addresses it registers in the catalog, but not how the platform
+exposes the broker outside the cluster, so the platform hands over that one URL
+and the ControlPlane derives the rest.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `transportURLSecretRef` | [`commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | Yes | `key: transport_url` | A Secret in the ControlPlane's namespace on the management cluster holding the complete `rabbit://` URL of the broker's external TLS listener, with the same user, password and vhost as `spec.infrastructure.messaging.secretRef`. The ControlPlane reads it and never writes it. The listener's certificate must chain to the CA bundle `spec.infrastructure.messaging.tls` names, because that bundle is the only one the remote contract carries. The shared type rejects an empty `name`. |
+
+While the block is set, the reconciler delivers the handed URL into the Nova
+namespace as `{controlplane.Name}-nova-remote-messaging`, and projects the child's
+`spec.remoteCompute` as the public Keystone URL (`publicEndpoint`, else
+`https://{gateway.hostname}/v3`) paired with that Secret. The nova operator then
+publishes `{controlplane.Name}-nova-remote-compute-config`, and the compute-config
+mirror copies it onto compute clusters under the in-cluster contract's name
+(see [Nova CRD: the remote contract](../nova/nova-crd.md#the-remote-contract)).
+
+The validating webhook admits the block only where the remote contract can work.
+Every rule is **webhook-only**:
+
+| Field | Type | Message |
+| --- | --- | --- |
+| `spec.services.nova.remoteCompute` | `field.Forbidden` | `requires a brownfield bus with tls (spec.infrastructure.messaging.secretRef and spec.infrastructure.messaging.tls): a managed RabbitmqCluster is provisioned without a TLS listener, and a compute cluster reaches the bus across a cluster boundary` |
+| `spec.infrastructure.messaging.tls` | `field.Required` | `is required when services.nova.remoteCompute is set: a compute cluster reaches the bus across a cluster boundary and verifies the broker against this CA bundle` |
+| `spec.services.keystone.publicEndpoint` (absent or unpublished Keystone) | `field.Required` | `one of publicEndpoint or gateway is required when services.nova.remoteCompute is set: a compute cluster authenticates against the public Keystone URL` |
+| `spec.services.keystone.publicEndpoint` (`http://`) | `field.Invalid` | `must use scheme https when services.nova.remoteCompute is set: every compute cluster sends the nova service-user password to this URL across a cluster boundary` |
+| `spec.services.<svc>.publicEndpoint` for Glance, Placement and Neutron, and Cinder and Barbican when declared | `field.Required` | `one of publicEndpoint or gateway is required when services.nova.remoteCompute is set: a compute cluster resolves this service through its public catalog row, which otherwise names the in-cluster Service` |
+
+A missing messaging block is reported by the messaging-consumer rule alone, and
+an undeclared Placement, Neutron or Glance by the Nova dependency rules. A public
+catalog row without a `publicEndpoint` or a `gateway` falls back to the in-cluster
+Service URL, which no compute cluster resolves.
+
+Clearing the block while compute clusters are attached switches the mirror back to
+the in-cluster contract, whose addresses those clusters cannot reach.
 
 ### ServiceNovaDBArchiveSpec
 
@@ -2340,6 +2389,11 @@ short-circuit on the first error.
 | Projected Cinder name bound | `metadata.name` | `field.Invalid` | The projected child `{controlplane.Name}-cinder` would exceed the 43-character `metadata.name` cap the Cinder CRD enforces, which is itself the 52-character CronJob bound minus the `-db-purge` suffix of the purge CronJob. The ControlPlane name may therefore be at most 36 characters while `services.cinder` is set. Runs on create and on the update that newly declares `services.cinder`, for the reason the Neutron bound above is also gated. **Webhook-only.** |
 | Nova needs Placement, Neutron and Glance | `spec.services.placement`, `spec.services.neutron`, `spec.services.glance` | `field.Required` | `services.nova` is set while one of the three siblings is not. Each message names what the compute service does with it: Placement, "Nova claims every instance's resources in Placement before it boots"; Neutron, "Nova creates and binds a port for every instance"; Glance, "Nova reads the image of every instance it boots". They are the first cross-service dependency rules on the ControlPlane, and errors rather than warnings because the child addresses its siblings by naming convention, so a missing one fails every boot with nothing on the plane naming the cause. **Cross-field, webhook-only.** |
 | Nova needs the shared bus | `spec.infrastructure.messaging` | `field.Required` | `services.nova` is set while `spec.infrastructure` carries no `messaging` block: "is required when services.nova is set: the Nova CRD requires spec.messaging, and the ControlPlane derives the child's transport URL from the shared bus". Reported by the same `validateMessagingConsumers` as the Neutron and Cinder rules above, once per declared consumer. **Cross-field, webhook-only.** |
+| Nova remote compute needs a brownfield bus | `spec.services.nova.remoteCompute` | `field.Forbidden` | `services.nova.remoteCompute` is set beside a managed bus (`spec.infrastructure.messaging.clusterRef`): "requires a brownfield bus with tls (spec.infrastructure.messaging.secretRef and spec.infrastructure.messaging.tls): a managed RabbitmqCluster is provisioned without a TLS listener, and a compute cluster reaches the bus across a cluster boundary". **Cross-field, webhook-only.** |
+| Nova remote compute needs a verified bus | `spec.infrastructure.messaging.tls` | `field.Required` | `services.nova.remoteCompute` is set beside a brownfield bus without `tls`: "is required when services.nova.remoteCompute is set: a compute cluster reaches the bus across a cluster boundary and verifies the broker against this CA bundle". A missing messaging block is left to the shared-bus rule above. **Cross-field, webhook-only.** |
+| Nova remote compute needs a published Keystone | `spec.services.keystone.publicEndpoint` | `field.Required` | `services.nova.remoteCompute` is set while Keystone is absent or carries neither a `publicEndpoint` nor a `gateway`: "one of publicEndpoint or gateway is required when services.nova.remoteCompute is set: a compute cluster authenticates against the public Keystone URL". **Cross-field, webhook-only.** |
+| Nova remote compute needs an https Keystone | `spec.services.keystone.publicEndpoint` | `field.Invalid` | `services.nova.remoteCompute` is set and the Keystone `publicEndpoint` uses `http://`: "must use scheme https when services.nova.remoteCompute is set: every compute cluster sends the nova service-user password to this URL across a cluster boundary". **Cross-field, webhook-only.** |
+| Nova remote compute needs published siblings | `spec.services.{glance,placement,neutron,cinder,barbican}.publicEndpoint` | `field.Required` | `services.nova.remoteCompute` is set while Glance, Placement or Neutron, or Cinder or Barbican when declared, carries neither a `publicEndpoint` nor a `gateway`: "one of publicEndpoint or gateway is required when services.nova.remoteCompute is set: a compute cluster resolves this service through its public catalog row, which otherwise names the in-cluster Service". An undeclared Glance, Placement or Neutron is left to the dependency rule above. **Cross-field, webhook-only.** |
 | Nova gateway hostname required | `spec.services.nova.gateway.hostname`, `.metadataGateway.hostname`, `.consoleProxy.gateway.hostname` | `field.Required` | A gateway block is configured but its `hostname` is empty. Mirrors the `MinLength=1` marker on `commonv1.GatewaySpec.Hostname`. Nova is the one service with more than one gateway, so all three run through one helper and each carries the usable-DNS-name check the Keystone and Horizon hostnames take. |
 | Nova console route is root-only | `spec.services.nova.consoleProxy.gateway.path` | `field.Invalid` | The path is neither empty nor `/`. The console page the API hands a browser sits at the root of the console hostname and the noVNC client opens its WebSocket there as well, so a prefix match would route neither while the HTTPRoute reports `Accepted`. Mirrors the rule the Nova CRD's own webhook applies to the block this one is projected onto. |
 | Nova metadata route is root-only | `spec.services.nova.metadataGateway.path` | `field.Invalid` | The path is neither empty nor `/`. The Neutron metadata agent addresses nova-api-metadata by scheme, host and port alone (neutron has no path option) and the route rewrites nothing, so every request it proxies arrives on the root of the hostname and a prefix match would route none of them while the HTTPRoute reports `Accepted`. **Webhook-only.** |
@@ -3130,9 +3184,11 @@ service account. Neutron and Glance are required beside the block at admission
 but gate nothing here; Cinder and Barbican are optional siblings that switch the
 child's `endpoints.cinder` and `endpoints.barbican` on. Once gated through, the
 pass delivers the shared message bus into the namespace the compute service runs
-in, ensures the two DB credentials the `nova_api` and cell schemas take, and
-generates the metadata shared secret before it projects the child, so everything
-the child references exists by the time the nova operator resolves it. Past the
+in (and, while `services.nova.remoteCompute` is set, the handed external bus URL
+as `{controlplane.Name}-nova-remote-messaging`), ensures the two DB credentials
+the `nova_api` and cell schemas take, and generates the metadata shared secret
+before it projects the child, so everything the child references exists by the
+time the nova operator resolves it. Past the
 child's readiness it delivers the compute contract to every mirror target. Nova
 is **forbidden in External mode**, so it is only ever managed against a
 Managed-mode Keystone.
@@ -3140,12 +3196,14 @@ Managed-mode Keystone.
 | Status | Reason | When |
 | --- | --- | --- |
 | `True` | `NovaReady` | The projected Nova CR reports Ready, every compute-config mirror target is served, and its registration reports Ready. |
-| `True` | `NovaNotManaged` | `spec.services.nova` is unset: no compute service is managed, so the aggregate `Ready` is not blocked. Any previously-projected Nova child (with its two DB-credential chains, the generated metadata shared secret, the two messaging Secrets, and the registration) is **preserved** unless the `c5c3.io/allow-nova-deletion: "true"` annotation opts in to its deletion. Both dynamic DB-credential generators, their ServiceAccounts, and their client Certificates are torn down **either way**. |
+| `True` | `NovaNotManaged` | `spec.services.nova` is unset: no compute service is managed, so the aggregate `Ready` is not blocked. Any previously-projected Nova child (with its two DB-credential chains, the generated metadata shared secret, the three messaging Secrets, and the registration) is **preserved** unless the `c5c3.io/allow-nova-deletion: "true"` annotation opts in to its deletion. Both dynamic DB-credential generators, their ServiceAccounts, and their client Certificates are torn down **either way**. |
 | `False` | `WaitingForKeystone` | `KeystoneReady` is not `True`; Nova projection deferred. Requeue 5s. |
 | `False` | `WaitingForPlacement` | `PlacementReady` is not `True`; Nova projection deferred. A ControlPlane that manages no placement service reports that condition `True` under its own not-managed reason, so this gate reads the condition rather than the block. Requeue 5s. |
 | `False` | `WaitingForMessagingCredentials` | The shared bus has not delivered its transport URL yet: the `RabbitmqCluster`, its default-user Secret, or the brownfield Secret is missing. Nothing is written, so the child never sees a partial URL. Requeue 15s. |
 | `False` | `WaitingForMessagingCABundle` | `spec.infrastructure.messaging.tls` names a CA bundle Secret that does not exist, or one that carries no data under the referenced key. Requeue 15s. |
 | `False` | `NovaMessagingError` | Error resolving the shared transport URL, writing either messaging Secret into the Nova namespace, or removing the stale CA mirror after the `tls` block was dropped. |
+| `False` | `WaitingForRemoteMessaging` | `services.nova.remoteCompute` is set but the handed Secret, or its key, is missing or empty. The message is prefixed `services.nova.remoteCompute.transportURLSecretRef:`. No child is written this pass, so the child never names a Secret that is not there. Requeue 15s. |
+| `False` | `NovaRemoteMessagingError` | The handed URL is not a `rabbit://` URL (the message names the scheme, never the URL), or writing `{controlplane.Name}-nova-remote-messaging` into the Nova namespace failed, or deleting it after `services.nova.remoteCompute` was removed failed. |
 | `False` | `TargetClusterUnavailable` | The cluster the Nova namespace lives on did not resolve, so the messaging Secrets, the registration's credential mirror, the DB-credential objects, the metadata generator pair, or a compute-config mirror cannot be written there. The resolver's own message is relayed. Requeue 15s from the bus delivery, the metadata secret and the compute-config mirror, 10s from the registration mirror and the DB credentials. |
 | `False` | `WaitingForServiceRegistration` | The projected `KeystoneService` registration has not provisioned the `nova` account yet; projection deferred until its Keystone user and password exist. The message relays the registration's own failing sub-condition, so a collision on the `nova` user or its catalog row reads here verbatim. |
 | `False` | `ServiceRegistrationError` | Kubernetes-level error writing, reading, or mirroring the `KeystoneService` registration child; a refused adoption of a same-named foreign CR is among them. |
@@ -3159,7 +3217,7 @@ Managed-mode Keystone.
 | `False` | `WaitingForNova` | The Nova CR is ensured but not yet Ready. Requeue 15s. |
 | `False` | `NovaProjectionRejected` | The Nova API server rejected the projected Nova spec (HTTP 422): the projection violates a CRD/webhook rule. Reconcile the ControlPlane spec to a valid projection to recover. |
 | `False` | `NovaError` | Error create-or-updating the Nova CR. |
-| `False` | `WaitingForComputeConfig` | The child is Ready but the compute contract Secret `{controlplane.Name}-nova-compute-config` the nova operator publishes has not appeared yet, so a mirror target cannot be served. Requeue 15s. |
+| `False` | `WaitingForComputeConfig` | The child is Ready but the compute contract Secret the nova operator publishes has not appeared yet, so a mirror target cannot be served. The message names the Secret waited for: `{controlplane.Name}-nova-compute-config`, or `{controlplane.Name}-nova-remote-compute-config` while `services.nova.remoteCompute` is set, which the nova operator writes only once the delivered remote URL resolves. Requeue 15s. |
 | `False` | `NovaComputeConfigError` | Error listing the NovaComputes, reading the published compute contract, or writing its mirror into a target namespace. |
 
 The compute-config reasons only appear once a [NovaCompute](../nova/novacompute-crd.md)
@@ -3450,6 +3508,14 @@ flows one ControlPlane needs are:
 | each service's namespace | its own database | `3306` | the service's DB connection |
 | each service's namespace | its own cache | `11211` | the service's cache connection |
 | a gateway namespace | the exposed service's namespace | the service port | external ingress via Gateway API |
+| each compute cluster's nodes | the platform's external bus listener | the port of the `services.nova.remoteCompute` transport URL | `nova-compute` RPC over TLS, only while `services.nova.remoteCompute` is set |
+| each compute cluster's nodes | the Gateway that publishes Keystone, Placement, Neutron and Glance (and Cinder and Barbican when declared) | its listener port | `nova-compute` authenticates against Keystone and calls each service through its public catalog row, only while `services.nova.remoteCompute` is set |
+
+The two compute-cluster flows are filtered elsewhere. `nova-compute` runs with
+host networking, so on the compute side the node's firewall filters its traffic;
+a namespace NetworkPolicy does not. The broker side belongs to the platform's
+exposure of the bus: `loadBalancerSourceRanges` on its Service, or a policy of its
+own.
 
 ### Uniqueness and immutability
 
