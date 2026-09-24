@@ -100,6 +100,8 @@ func buildConductorDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 		PodAnnotations: novaRPCPodAnnotations(nova, digests),
 		Deployment:     &nova.Spec.Conductor.Deployment,
 		Autoscaling:    nil,
+		// Each nova-conductor worker is one single-threaded process.
+		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), effectiveWorkers(nova.Spec.Conductor.Workers), 1),
 		Container: deployment.ContainerParams{
 			Name:  componentConductor,
 			Image: nova.Spec.Image.Reference(),

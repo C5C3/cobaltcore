@@ -7,6 +7,7 @@ package deployment
 import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -45,6 +46,12 @@ type WorkloadParams struct {
 	// A non-nil value leaves .spec.replicas unmanaged.
 	Autoscaling *commonv1.AutoscalingSpec
 
+	// DefaultMemory is the memory the builder renders as request and limit
+	// when the Deployment's block names no memory. Callers size it from the
+	// process and thread count the container runs; a zero value falls back to
+	// the figure for one single-threaded process.
+	DefaultMemory resource.Quantity
+
 	// Container is the primary API container.
 	Container ContainerParams
 
@@ -82,8 +89,10 @@ type ContainerParams struct {
 //   - the pod-level knobs TerminationGracePeriodSeconds,
 //     TopologySpreadConstraints, and PriorityClassName, plus the FSGroup pod
 //     security context;
-//   - on the single container, ContainerResources, RestrictedSecurityContext,
-//     and the preStop sleep hook from PreStopSleepCommand.
+//   - on the single container, the resources from
+//     commonv1.WithResourceDefaults with p.DefaultMemory,
+//     RestrictedSecurityContext, and the preStop sleep hook from
+//     PreStopSleepCommand.
 //
 // Everything else — image, command, env, ports, probes, volumes, and mounts —
 // comes from p and is rendered verbatim, nilness included, so a service that
@@ -91,7 +100,8 @@ type ContainerParams struct {
 //
 // p.Deployment must be non-nil; every caller passes &cr.Spec.Deployment. The
 // builder does not nil-check it, matching the contract of the knob helpers it
-// calls (Strategy, ContainerResources, and friends all dereference the spec).
+// calls (Strategy, TopologySpreadConstraints, and friends all dereference the
+// spec).
 //
 // BuildWorkload is a total function over valid params: it performs no I/O and
 // has no error paths.
@@ -121,7 +131,7 @@ func BuildWorkload(p WorkloadParams) *appsv1.Deployment {
 					Containers: []corev1.Container{{
 						Name:            p.Container.Name,
 						Image:           p.Container.Image,
-						Resources:       ContainerResources(p.Deployment),
+						Resources:       commonv1.WithResourceDefaults(p.Deployment.Resources, p.DefaultMemory),
 						SecurityContext: RestrictedSecurityContext(),
 						Command:         p.Container.Command,
 						Env:             p.Container.Env,

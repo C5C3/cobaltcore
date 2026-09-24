@@ -13,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -27,6 +28,7 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
 
@@ -242,6 +244,19 @@ func (r *BarbicanReconciler) reconcileDeployment(
 	return ctrl.Result{}, nil
 }
 
+// barbicanAPIMemory returns the memory the API container gets as request and
+// limit when spec.deployment.resources names no memory. It is sized from the
+// uWSGI process and thread count the container runs; spec.apiServer is
+// optional, so a nil block yields the uWSGI defaults.
+func barbicanAPIMemory(barbican *barbicanv1alpha1.Barbican) resource.Quantity {
+	var uwsgi *barbicanv1alpha1.UWSGISpec
+	if barbican.Spec.APIServer != nil {
+		uwsgi = barbican.Spec.APIServer.UWSGI
+	}
+	processes, threads := deployment.EffectiveUWSGIConcurrency(uwsgi)
+	return commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), processes, threads)
+}
+
 // buildBarbicanDeployment constructs the desired Barbican API Deployment. The
 // rendered config Secret mounts read-only as the whole barbicanConfigMountPath
 // directory, shadowing the image's own /etc/barbican, and both the secret
@@ -261,6 +276,7 @@ func buildBarbicanDeployment(
 		PodAnnotations: barbicanPodAnnotations(dsnDigest, authtokenDigest, projection.secretIDDigest),
 		Deployment:     &barbican.Spec.Deployment,
 		Autoscaling:    barbican.Spec.Autoscaling,
+		DefaultMemory:  barbicanAPIMemory(barbican),
 		Container: deployment.ContainerParams{
 			Name:    "barbican-api",
 			Image:   barbican.Spec.Image.Reference(),

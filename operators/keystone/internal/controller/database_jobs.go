@@ -107,7 +107,8 @@ func keystoneJobSetParams(keystone *keystonev1alpha1.Keystone, configMapName, do
 //
 // TODO: Wire spec.Resources (or a smaller Job-specific default) to the
 // container. Currently runs as BestEffort QoS. See
-// deployment.ContainerResources for the pattern used by the keystone container.
+// commonv1.WithResourceDefaults for the defaults the keystone container gets
+// (#1099 wires Jobs).
 func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, image, nameSuffix string, command []string) *batchv1.Job {
 	return database.BuildJob(keystoneJobSetParams(keystone, configMapName, domainsSecretName), image, nameSuffix, command, 4)
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
 
@@ -152,6 +153,8 @@ func buildNorthdDeployment(cr *ovnv1alpha1.OVNCentral) *appsv1.Deployment {
 		Labels:         naming.ComponentLabels(centralAppName, cr.Name, componentNorthd),
 		SelectorLabels: componentSelectorLabels(cr, componentNorthd),
 		Deployment:     &northd.Deployment,
+		// ovn-northd is one process that runs northd.Threads threads.
+		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, northd.Threads),
 		Container: deployment.ContainerParams{
 			Name:  componentNorthd,
 			Image: effectiveImage(cr.Spec.Image).Reference(),

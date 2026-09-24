@@ -363,6 +363,7 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 		PodAnnotations: glancePodAnnotations(dsnDigest, authtokenDigest),
 		Deployment:     &glance.Spec.Deployment,
 		Autoscaling:    glance.Spec.Autoscaling,
+		DefaultMemory:  glanceAPIMemory(glance),
 		Container: deployment.ContainerParams{
 			Name:    "glance-api",
 			Image:   glance.Spec.Image.Reference(),
@@ -681,6 +682,42 @@ func glanceLaunchCommand(glance *glancev1alpha1.Glance) []string {
 		return glanceUWSGICommand(glance.Spec.APIServer)
 	}
 	return []string{"glance-api", "--config-dir", glanceConfigDir, "--config-dir", glanceBackendsConfigDir}
+}
+
+// glanceMemoryPerProcess is the memory one Glance API process adds on top of
+// the shared base, in place of the shared per-process figure. The glance-api
+// container carries the S3 store driver (boto3/botocore), which raises both the
+// per-process import footprint and the per-request allocation churn: two
+// workers already idle near 360Mi and, under concurrent image traffic, overrun
+// a 512Mi limit within a minute, an OOM-kill crash loop the gateway surfaces as
+// waves of 503s.
+var glanceMemoryPerProcess = resource.MustParse("400Mi")
+
+// glanceAPIMemory returns the memory the API container gets as request and
+// limit when spec.deployment.resources names no memory. It is sized from the
+// processes and threads glanceAPIConcurrency resolves for spec.openStackRelease.
+func glanceAPIMemory(glance *glancev1alpha1.Glance) resource.Quantity {
+	processes, threads := glanceAPIConcurrency(glance, glance.Spec.OpenStackRelease)
+	return commonv1.MemoryForProcesses(glanceMemoryPerProcess, processes, threads)
+}
+
+// glanceAPIConcurrency resolves the processes, and the threads in each, that an
+// API container of the given OpenStack release runs. Under uWSGI (2026.1+)
+// they come from spec.apiServer.uwsgi with the command's default resolution,
+// and spec.apiServer.workers is inert. Under eventlet (below 2026.1, or an empty
+// or unparseable release) they are effectiveEventletWorkers processes of one
+// thread each, and spec.apiServer.uwsgi is inert. The memory default and the
+// connection cap both size from it, so the two cannot disagree on the launch
+// mode.
+func glanceAPIConcurrency(glance *glancev1alpha1.Glance, openStackRelease string) (processes, threads int32) {
+	if !glanceReleaseUsesUWSGI(openStackRelease) {
+		return effectiveEventletWorkers(glance), 1
+	}
+	var uwsgi *glancev1alpha1.UWSGISpec
+	if glance.Spec.APIServer != nil {
+		uwsgi = glance.Spec.APIServer.UWSGI
+	}
+	return deployment.EffectiveUWSGIConcurrency(uwsgi)
 }
 
 // glanceReleaseUsesUWSGI reports whether a Glance API of the given OpenStack

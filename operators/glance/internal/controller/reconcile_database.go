@@ -75,22 +75,17 @@ func effectiveEventletWorkers(glance *glancev1alpha1.Glance) int32 {
 }
 
 // glanceConnectionsPerPod is the connection ceiling of one API pod running the
-// given OpenStack release. Under uWSGI (2026.1+) it is processes × (threads +
-// glanceTaskPoolConnections), from spec.apiServer.uwsgi with the command's
-// default resolution; spec.apiServer.workers is inert there. Under eventlet
-// (below 2026.1, or an empty or unparseable release) it is
-// effectiveEventletWorkers × glanceEventletWorkerConnections, and
-// spec.apiServer.uwsgi is inert. The defaults give 12 and 10.
+// given OpenStack release, over the processes and threads glanceAPIConcurrency
+// resolves for it. Under uWSGI (2026.1+) it is processes × (threads +
+// glanceTaskPoolConnections). Under eventlet (below 2026.1, or an empty or
+// unparseable release) it is the effectiveEventletWorkers processes ×
+// glanceEventletWorkerConnections. The defaults give 12 and 10.
 func glanceConnectionsPerPod(glance *glancev1alpha1.Glance, openStackRelease string) int32 {
+	processes, threads := glanceAPIConcurrency(glance, openStackRelease)
 	if glanceReleaseUsesUWSGI(openStackRelease) {
-		var uwsgi *glancev1alpha1.UWSGISpec
-		if glance.Spec.APIServer != nil {
-			uwsgi = glance.Spec.APIServer.UWSGI
-		}
-		processes, threads := deployment.EffectiveUWSGIConcurrency(uwsgi)
 		return processes * (threads + glanceTaskPoolConnections)
 	}
-	return effectiveEventletWorkers(glance) * glanceEventletWorkerConnections
+	return processes * glanceEventletWorkerConnections
 }
 
 // glanceMaxUserConnections sizes the SQL user's max_user_connections cap for

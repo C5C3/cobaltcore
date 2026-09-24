@@ -144,17 +144,6 @@ func BuildHPA(namespace, name string, labels map[string]string, spec *commonv1.D
 	return hpa
 }
 
-// ContainerResources returns the ResourceRequirements for the API container.
-// It dereferences spec.Resources if set, falling back to a zero value if nil
-// (safe fallback for CRs that bypassed the webhook, e.g. pre-existing CRs
-// during operator upgrade).
-func ContainerResources(spec *commonv1.DeploymentSpec) corev1.ResourceRequirements {
-	if spec.Resources != nil {
-		return *spec.Resources
-	}
-	return corev1.ResourceRequirements{}
-}
-
 // TopologySpreadConstraints returns the topology spread constraints for the
 // API pods. If spec.TopologySpreadConstraints is non-nil, those are used
 // verbatim (an empty slice disables defaults). Otherwise, two default

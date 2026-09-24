@@ -120,6 +120,8 @@ func buildSchedulerDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 		// to scale against, and spec.scheduler.deployment.replicas is the only
 		// owner of the count.
 		Autoscaling: nil,
+		// Each nova-scheduler worker is one single-threaded process.
+		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), effectiveWorkers(nova.Spec.Scheduler.Workers), 1),
 		Container: deployment.ContainerParams{
 			Name:  componentScheduler,
 			Image: nova.Spec.Image.Reference(),

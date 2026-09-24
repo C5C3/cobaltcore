@@ -186,6 +186,9 @@ func buildBackupDeployment(cinder *cinderv1alpha1.Cinder, backup *backupProjecti
 		PodAnnotations: cinderRPCPodAnnotations(cinder, digests),
 		Deployment:     &cinder.Spec.Backup.Deployment,
 		Autoscaling:    nil,
+		// cinder-backup's footprint follows the backup chunk size rather than a
+		// process count, so it gets a fixed figure.
+		DefaultMemory: cinderv1alpha1.DefaultBackupMemoryLimit(),
 		Container: deployment.ContainerParams{
 			Name:  componentBackup,
 			Image: cinder.Spec.Image.Reference(),

@@ -36,6 +36,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
@@ -59,16 +60,6 @@ func deployTestKeystone() *keystonev1alpha1.Keystone {
 		Spec: keystonev1alpha1.KeystoneSpec{
 			Deployment: keystonev1alpha1.DeploymentSpec{
 				Replicas: 3,
-				Resources: &corev1.ResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceMemory: commonv1.DefaultMemoryRequest(),
-						corev1.ResourceCPU:    commonv1.DefaultCPURequest(),
-					},
-					Limits: corev1.ResourceList{
-						corev1.ResourceMemory: commonv1.DefaultMemoryLimit(),
-						corev1.ResourceCPU:    commonv1.DefaultCPULimit(),
-					},
-				},
 			},
 			Image: commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
@@ -1192,18 +1183,52 @@ func TestBuildPodDisruptionBudget_ZeroReplicas(t *testing.T) {
 	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
 }
 
-func TestReconcileDeployment_ContainerResources(t *testing.T) {
-	g := NewGomegaWithT(t)
-	ks := deployTestKeystone()
+// TestBuildKeystoneDeployment_RendersResourceDefaults verifies the render-time
+// defaults: memory follows the uWSGI process and thread count, the CPU gets a
+// 100m request and no limit, and a resource the block names is used as
+// written with nothing added beside it.
+func TestBuildKeystoneDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(ks *keystonev1alpha1.Keystone)
+		want   corev1.ResourceRequirements
+	}{
+		{
+			name:   "default uWSGI counts",
+			mutate: func(*keystonev1alpha1.Keystone) {},
+			want:   testutil.RenderedResourceDefaults("512Mi"),
+		},
+		{
+			name: "four processes",
+			mutate: func(ks *keystonev1alpha1.Keystone) {
+				ks.Spec.UWSGI = &keystonev1alpha1.UWSGISpec{Processes: 4}
+			},
+			want: testutil.RenderedResourceDefaults("800Mi"),
+		},
+		{
+			name: "memory limit only",
+			mutate: func(ks *keystonev1alpha1.Keystone) {
+				ks.Spec.Deployment.Resources = &corev1.ResourceRequirements{
+					Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+				}
+			},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := deployTestKeystone()
+			tc.mutate(ks)
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "", nil)
+			deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "", nil)
 
-	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
-	container := deploy.Spec.Template.Spec.Containers[0]
-	g.Expect(container.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryRequest()))
-	g.Expect(container.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPURequest()))
-	g.Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryLimit()))
-	g.Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPULimit()))
+			g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(tc.want))
+		})
+	}
 }
 
 func TestReconcileDeployment_CustomResources(t *testing.T) {
@@ -1230,10 +1255,10 @@ func TestReconcileDeployment_CustomResources(t *testing.T) {
 	g.Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("1")))
 }
 
-// TestReconcileDeployment_NilResources verifies the nil-safety fallback in
-// containerResources(): when spec.Resources is nil (e.g. pre-existing CRs that
-// bypassed the webhook), the container gets a zero-value ResourceRequirements
-// instead of a nil-pointer panic.
+// TestReconcileDeployment_NilResources verifies that a nil spec.Resources
+// (the CR stores no block, since no webhook writes one) renders the defaults
+// for the default uWSGI counts instead of a nil-pointer panic or an empty
+// BestEffort block.
 func TestReconcileDeployment_NilResources(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1243,7 +1268,7 @@ func TestReconcileDeployment_NilResources(t *testing.T) {
 
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	container := deploy.Spec.Template.Spec.Containers[0]
-	g.Expect(container.Resources).To(Equal(corev1.ResourceRequirements{}))
+	g.Expect(container.Resources).To(Equal(testutil.RenderedResourceDefaults("512Mi")))
 }
 
 func TestReconcileDeployment_PDBEnsureError(t *testing.T) {

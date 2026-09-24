@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -26,6 +27,7 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
@@ -207,6 +209,19 @@ func (r *PlacementReconciler) reconcileDeployment(ctx context.Context, children 
 	return ctrl.Result{}, nil
 }
 
+// placementAPIMemory returns the memory the API container gets as request and
+// limit when spec.deployment.resources names no memory. It is sized from the
+// uWSGI process and thread count the container runs; spec.apiServer is
+// optional, so a nil block yields the uWSGI defaults.
+func placementAPIMemory(placement *placementv1alpha1.Placement) resource.Quantity {
+	var uwsgi *placementv1alpha1.UWSGISpec
+	if placement.Spec.APIServer != nil {
+		uwsgi = placement.Spec.APIServer.UWSGI
+	}
+	processes, threads := deployment.EffectiveUWSGIConcurrency(uwsgi)
+	return commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), processes, threads)
+}
+
 // buildPlacementDeployment constructs the desired Placement API Deployment. The
 // rendered config ConfigMap mounts read-only as the whole
 // placementConfigMountPath directory, shadowing the image's own /etc/placement,
@@ -222,6 +237,7 @@ func buildPlacementDeployment(placement *placementv1alpha1.Placement, configMapN
 		PodAnnotations: placementPodAnnotations(dsnDigest, authtokenDigest),
 		Deployment:     &placement.Spec.Deployment,
 		Autoscaling:    placement.Spec.Autoscaling,
+		DefaultMemory:  placementAPIMemory(placement),
 		Container: deployment.ContainerParams{
 			Name:    "placement-api",
 			Image:   placement.Spec.Image.Reference(),

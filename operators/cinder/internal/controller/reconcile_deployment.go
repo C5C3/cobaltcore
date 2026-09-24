@@ -278,6 +278,7 @@ func buildCinderDeployment(cinder *cinderv1alpha1.Cinder, art configArtifacts,
 	digests workloadDigests,
 ) *appsv1.Deployment {
 	volumes, mounts := cinderWorkloadVolumes(cinder, art)
+	apiProcesses, apiThreads := deployment.EffectiveUWSGIConcurrency(cinder.Spec.API.UWSGI)
 	return deployment.BuildWorkload(deployment.WorkloadParams{
 		Namespace:      cinder.Namespace,
 		Name:           cinder.Name,
@@ -286,6 +287,7 @@ func buildCinderDeployment(cinder *cinderv1alpha1.Cinder, art configArtifacts,
 		PodAnnotations: cinderPodAnnotations(digests),
 		Deployment:     &cinder.Spec.API.Deployment,
 		Autoscaling:    cinder.Spec.Autoscaling,
+		DefaultMemory:  commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), apiProcesses, apiThreads),
 		Container: deployment.ContainerParams{
 			Name:    "cinder-api",
 			Image:   cinder.Spec.Image.Reference(),

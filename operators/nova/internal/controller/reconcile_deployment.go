@@ -342,6 +342,7 @@ func buildAPIDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 	digests workloadDigests,
 ) *appsv1.Deployment {
 	volumes, mounts := novaWorkloadVolumes(nova, art, roleAPI)
+	apiProcesses, apiThreads := deployment.EffectiveUWSGIConcurrency(nova.Spec.API.UWSGI)
 	return deployment.BuildWorkload(deployment.WorkloadParams{
 		Namespace:      nova.Namespace,
 		Name:           nova.Name,
@@ -350,6 +351,7 @@ func buildAPIDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 		PodAnnotations: novaPodAnnotations(digests),
 		Deployment:     &nova.Spec.API.Deployment,
 		Autoscaling:    nova.Spec.Autoscaling,
+		DefaultMemory:  commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), apiProcesses, apiThreads),
 		Container: deployment.ContainerParams{
 			Name:    "nova-api",
 			Image:   nova.Spec.Image.Reference(),

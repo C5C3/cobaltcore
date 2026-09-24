@@ -19,6 +19,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 )
 
 // findContainer returns the container with the given name, avoiding brittle
@@ -336,4 +337,16 @@ func TestBuildHorizonService_Port8080(t *testing.T) {
 	podLabels := buildHorizonDeployment(h, "cm", "").Spec.Template.Labels
 	g.Expect(labels.SelectorFromSet(svc.Spec.Selector).Matches(labels.Set(podLabels))).To(BeTrue(),
 		"the dashboard pod template must satisfy the Service selector")
+}
+
+// TestBuildHorizonDeployment_RendersResourceDefaults verifies that a CR whose
+// spec.deployment.resources names nothing renders the defaults for the fixed
+// two uWSGI processes: a 100m CPU request, no CPU limit, and 512Mi as memory
+// request and limit.
+func TestBuildHorizonDeployment_RendersResourceDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildHorizonDeployment(testHorizon(), "cm", "")
+
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("512Mi")))
 }

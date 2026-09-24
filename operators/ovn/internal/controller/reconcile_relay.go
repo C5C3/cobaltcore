@@ -227,6 +227,8 @@ func buildRelayDeployment(cr *ovnv1alpha1.OVNCentral) *appsv1.Deployment {
 		Labels:         naming.ComponentLabels(centralAppName, cr.Name, componentRelay),
 		SelectorLabels: componentSelectorLabels(cr, componentRelay),
 		Deployment:     &knobs,
+		// The relay is one single-threaded ovsdb-server process.
+		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, 1),
 		Container: deployment.ContainerParams{
 			Name:  "relay",
 			Image: effectiveImage(cr.Spec.Image).Reference(),

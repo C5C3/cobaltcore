@@ -75,7 +75,12 @@ spec:
               - -c
               - sleep 5
         name: periodic-workers
-        resources: {}
+        resources:
+          limits:
+            memory: 368Mi
+          requests:
+            cpu: 100m
+            memory: 368Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -188,7 +193,12 @@ spec:
               - -c
               - sleep 5
         name: ovn-maintenance-worker
-        resources: {}
+        resources:
+          limits:
+            memory: 368Mi
+          requests:
+            cpu: 100m
+            memory: 368Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
