@@ -699,6 +699,14 @@ spec:
   # for the pod, the way tests/e2e/c5c3/messaging/ tears its bus down, rather
   # than leaving a seven-day grace period inside a two-minute budget.
   #
+  # The delete uses foreground propagation. With the default background
+  # propagation the RabbitmqCluster leaves etcd the instant the operator drops
+  # its finalizer, and the operator drops it through CreateOrUpdate
+  # (rabbitmq/cluster-operator#1864): a second reconcile that reads NotFound
+  # creates a fresh broker under the same name, whose pod then outlives the
+  # wait below. Foreground keeps the CR until its children are gone, so that
+  # reconcile finds it and does nothing, as in the c5c3 messaging teardown.
+  #
   # The Cinder CR goes first: it is the only consumer of the bus here, and a
   # reconcile that ran between the two deletes would find a RabbitmqCluster
   # mid-teardown and report the CR unready for a bus that is meant to be gone.
@@ -727,7 +735,7 @@ spec:
           echo "OK: the Cinder CR and its pods are gone"
 
           kubectl delete rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
-            --ignore-not-found --wait=true --timeout=180s
+            --ignore-not-found --cascade=foreground --wait=true --timeout=180s
           BUS_DEADLINE=$(( $(date +%s) + 180 ))
           while [ -n "$(kubectl get pod "${BUS}-server-0" -n "$NAMESPACE" -o name 2>/dev/null)" ]; do
             if [ "$(date +%s)" -ge "${BUS_DEADLINE}" ]; then
