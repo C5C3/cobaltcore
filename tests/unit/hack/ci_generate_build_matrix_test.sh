@@ -13,7 +13,10 @@
 #     gate on has-services, while the Tempest matrices stay full;
 #   - an unknown name exits 1 before a single matrix line is written, so a typo
 #     in the resolver's service list cannot show up as a silently missing leg;
-#   - a tree without releases/ keeps its ::error:: and its four empty matrices.
+#   - a tree without releases/ keeps its ::error:: and its six empty outputs;
+#   - the two nova-compute outputs follow the nova pairs that survive SERVICES,
+#     on the same platforms as the build matrix, and are empty ([] and
+#     {"include":[]}) whenever no nova pair does.
 #
 # Follows the project-native bash test pattern (tests/lib/assertions.sh),
 # mirroring tests/unit/hack/ci_generate_cleanup_matrix_test.sh.
@@ -78,11 +81,25 @@ make_tree() {
   echo "$tree"
 }
 
+# A tree with nova and glance in both releases, for the nova-compute outputs.
+make_nova_tree() {
+  local tree="$TMP_DIR/nova-tree"
+  mkdir -p "$tree/releases/2025.2" "$tree/releases/2026.1"
+  printf 'nova:\n  ref: a\nglance:\n  ref: b\n' \
+    >"$tree/releases/2025.2/source-refs.yaml"
+  printf 'nova:\n  ref: c\nglance:\n  ref: d\n' \
+    >"$tree/releases/2026.1/source-refs.yaml"
+  echo "$tree"
+}
+
 FULL_MATRIX='{"include":[{"service":"keystone","release":"2025.2"},{"service":"glance","release":"2025.2"},{"service":"keystone","release":"2026.1"},{"service":"glance","release":"2026.1"},{"service":"neutron","release":"2026.1"}]}'
 GLANCE_MATRIX='{"include":[{"service":"glance","release":"2025.2"},{"service":"glance","release":"2026.1"}]}'
 GLANCE_BUILD_MATRIX='{"include":[{"service":"glance","release":"2025.2","platform":"linux/amd64","runner":"ubuntu-latest"},{"service":"glance","release":"2026.1","platform":"linux/amd64","runner":"ubuntu-latest"}]}'
 FULL_TEMPEST_RELEASES='{"include":[{"release":"2025.2"},{"release":"2026.1"}]}'
 FULL_TEMPEST_MATRIX='{"include":[{"release":"2025.2","platform":"linux/amd64","runner":"ubuntu-latest"},{"release":"2026.1","platform":"linux/amd64","runner":"ubuntu-latest"}]}'
+COMPUTE_RELEASES='["2025.2","2026.1"]'
+COMPUTE_PR_BUILD_MATRIX='{"include":[{"release":"2025.2","platform":"linux/amd64","runner":"ubuntu-latest"},{"release":"2026.1","platform":"linux/amd64","runner":"ubuntu-latest"}]}'
+COMPUTE_PUSH_BUILD_MATRIX='{"include":[{"release":"2025.2","platform":"linux/amd64","runner":"ubuntu-latest"},{"release":"2025.2","platform":"linux/arm64","runner":"ubuntu-24.04-arm"},{"release":"2026.1","platform":"linux/amd64","runner":"ubuntu-latest"},{"release":"2026.1","platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]}'
 
 # ---------------------------------------------------------------------------
 # Test 1: SERVICES unset and SERVICES=all both keep every pair
@@ -91,8 +108,8 @@ test_unset_and_all_keep_every_pair() {
   echo "Test: SERVICES unset and SERVICES=all keep every {service, release} pair"
 
   if ! have_tools; then
-    echo "  SKIP: yq or jq not installed (6 checks skipped)"
-    SKIP=$((SKIP + 6))
+    echo "  SKIP: yq or jq not installed (8 checks skipped)"
+    SKIP=$((SKIP + 8))
     return
   fi
 
@@ -104,6 +121,11 @@ test_unset_and_all_keep_every_pair() {
   assert_output "SERVICES unset keeps all five pairs" matrix "$FULL_MATRIX"
   assert_output "SERVICES unset keeps the full Tempest matrix" \
     tempest-matrix "$FULL_TEMPEST_MATRIX"
+  # make_tree has no nova key, so no nova-compute leg runs.
+  assert_output "a tree without nova has no nova-compute release" \
+    nova-compute-releases '[]'
+  assert_output "a tree without nova has an empty nova-compute build matrix" \
+    nova-compute-build-matrix '{"include":[]}'
 
   local unset_output="$OUTPUT"
 
@@ -148,19 +170,22 @@ test_empty_services_empties_service_matrices() {
   echo "Test: SERVICES='' yields empty service matrices and exits 0"
 
   if ! have_tools; then
-    echo "  SKIP: yq or jq not installed (5 checks skipped)"
-    SKIP=$((SKIP + 5))
+    echo "  SKIP: yq or jq not installed (7 checks skipped)"
+    SKIP=$((SKIP + 7))
     return
   fi
 
   local tree
-  tree="$(make_tree)"
+  tree="$(make_nova_tree)"
 
   run_matrix "$tree" SERVICES=
 
   assert_eq "generator exits 0" "0" "$RC"
   assert_output "matrix is empty" matrix '{"include":[]}'
   assert_output "build-matrix is empty" build-matrix '{"include":[]}'
+  assert_output "nova-compute-releases is empty" nova-compute-releases '[]'
+  assert_output "nova-compute-build-matrix is empty" \
+    nova-compute-build-matrix '{"include":[]}'
   assert_output "the Tempest matrix stays full" \
     tempest-matrix "$FULL_TEMPEST_MATRIX"
   assert_output "the Tempest release matrix stays full" \
@@ -196,11 +221,11 @@ test_unknown_service_fails_before_any_output() {
 # Test 5: a tree without releases/ keeps its error and its empty matrices
 # ---------------------------------------------------------------------------
 test_no_releases_directory() {
-  echo "Test: a tree without releases/ emits four empty matrices and exits 0"
+  echo "Test: a tree without releases/ emits empty matrices and exits 0"
 
   if ! have_tools; then
-    echo "  SKIP: yq or jq not installed (6 checks skipped)"
-    SKIP=$((SKIP + 6))
+    echo "  SKIP: yq or jq not installed (8 checks skipped)"
+    SKIP=$((SKIP + 8))
     return
   fi
 
@@ -217,6 +242,57 @@ test_no_releases_directory() {
   assert_output "tempest-matrix is empty" tempest-matrix '{"include":[]}'
   assert_output "tempest-release-matrix is empty" \
     tempest-release-matrix '{"include":[]}'
+  assert_output "nova-compute-releases is empty" nova-compute-releases '[]'
+  assert_output "nova-compute-build-matrix is empty" \
+    nova-compute-build-matrix '{"include":[]}'
+}
+
+# ---------------------------------------------------------------------------
+# Test 6: the nova-compute outputs follow the nova pairs
+# ---------------------------------------------------------------------------
+test_nova_compute_follows_nova_pairs() {
+  echo "Test: the nova-compute outputs follow the nova pairs that survive SERVICES"
+
+  if ! have_tools; then
+    echo "  SKIP: yq or jq not installed (11 checks skipped)"
+    SKIP=$((SKIP + 11))
+    return
+  fi
+
+  local tree
+  tree="$(make_nova_tree)"
+
+  # A pull request builds amd64 only, like the service build matrix.
+  run_matrix "$tree"
+  assert_eq "generator exits 0 on a pull request" "0" "$RC"
+  assert_output "both nova releases are nova-compute releases" \
+    nova-compute-releases "$COMPUTE_RELEASES"
+  assert_output "a pull request builds both releases on linux/amd64 only" \
+    nova-compute-build-matrix "$COMPUTE_PR_BUILD_MATRIX"
+
+  # A push adds the arm64 leg the published manifest needs.
+  run_matrix "$tree" GITHUB_EVENT_NAME=push
+  assert_eq "generator exits 0 on a push" "0" "$RC"
+  assert_output "a push builds both releases on both platforms" \
+    nova-compute-build-matrix "$COMPUTE_PUSH_BUILD_MATRIX"
+
+  # A pull request that leaves nova alone builds no compute image.
+  run_matrix "$tree" SERVICES=glance
+  assert_output "SERVICES=glance leaves no nova-compute release" \
+    nova-compute-releases '[]'
+  assert_output "SERVICES=glance leaves an empty nova-compute build matrix" \
+    nova-compute-build-matrix '{"include":[]}'
+
+  run_matrix "$tree" SERVICES=nova
+  assert_output "SERVICES=nova keeps both nova-compute releases" \
+    nova-compute-releases "$COMPUTE_RELEASES"
+
+  # The upstream error path writes nothing, the nova-compute lines included.
+  run_matrix "$tree" SERVICES=bogus
+  assert_eq "generator exits 1 on an unknown service" "1" "$RC"
+  assert_contains "the annotation names the unknown service" \
+    "$OUTPUT" "::error::Unknown service 'bogus' in SERVICES"
+  assert_not_contains "no nova-compute line is written" "$OUTPUT" "nova-compute-"
 }
 
 # ---------------------------------------------------------------------------
@@ -227,6 +303,7 @@ test_service_list_filters_service_matrices
 test_empty_services_empties_service_matrices
 test_unknown_service_fails_before_any_output
 test_no_releases_directory
+test_nova_compute_follows_nova_pairs
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

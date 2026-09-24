@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the optional block-storage path in docs/quick-start-controlplane.md:
-#   - the `### Create a first volume` check exists in Step 7
-#   - the Step 6 chain runs NeutronReady -> CinderReady -> ServiceAccountsReady
+#   - the `### Create a first volume` check exists in Step 6
+#   - the Step 6 chain runs NeutronReady -> CinderReady -> NovaReady
 #   - Step 4 carries the `::: details` container for the optional block
 #   - Step 2 documents the WITH_NFS=true bring-up
 #   - the `# block-storage.yaml` fragment names the two kind NFS exports and
@@ -45,10 +45,10 @@ test_volume_heading() {
 
 # --- Test 2: the Step 6 condition chain ---
 test_condition_chain() {
-  echo "Test: the chain runs NeutronReady -> CinderReady -> ServiceAccountsReady"
-  assert_file_contains "CinderReady sits between NeutronReady and ServiceAccountsReady" \
+  echo "Test: the chain runs NeutronReady -> CinderReady -> NovaReady"
+  assert_file_contains "CinderReady sits between NeutronReady and NovaReady" \
     "$QUICK_START_DOC" \
-    'NeutronReady → CinderReady → ServiceAccountsReady'
+    'NeutronReady → CinderReady → NovaReady'
 }
 
 # --- Test 3: the Step 4 details container ---

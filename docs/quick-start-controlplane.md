@@ -13,7 +13,7 @@ This guide creates the [ControlPlane devstack](./contributing/guide-conventions.
 a local kind environment that takes a single c5c3 `ControlPlane` CR from `git
 clone` to an authenticated Keystone API call. Compared with the [Quick Start](./quick-start.md), the
 c5c3-operator now provisions the `MariaDB`, `Memcached`, `RabbitmqCluster`,
-`Keystone`, `Horizon`, `Glance`, `Placement`, `Barbican`, and `Neutron`
+`Keystone`, `Horizon`, `Glance`, `Placement`, `Barbican`, `Neutron`, and `Nova`
 children against a referenced `OVNCentral`, mints the admin application
 credential through
 [K-ORC](https://github.com/k-orc/openstack-resource-controller), mirrors it to
@@ -76,9 +76,9 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 `WITH_CONTROLPLANE=true` brings up the shared infrastructure and then the
 ControlPlane operator stack (keystone-operator, horizon-operator,
 glance-operator, placement-operator, barbican-operator, ovn-operator,
-neutron-operator, cinder-operator, K-ORC, c5c3-operator) from the published
-charts. It does not create the `ControlPlane` CR itself; you create and apply
-that in Step 4. The RabbitMQ Cluster Operator that serves the managed bus
+neutron-operator, cinder-operator, nova-operator, K-ORC, c5c3-operator) from
+the published charts. It does not create the `ControlPlane` CR itself; you
+create and apply that in Step 4. The RabbitMQ Cluster Operator that serves the managed bus
 arrives through a Flux Kustomization of its own, on every cluster this script
 provisions, with or without `WITH_CONTROLPLANE=true`. In this mode the
 ControlPlane provisions its own MariaDB/Memcached (managed mode), so
@@ -284,6 +284,20 @@ spec:
       ovn:
         centralRef:
           name: controlplane-ovn
+    nova:
+      replicas: 1
+      # Drop publicEndpoint on the default port 443 and the operator derives
+      # https://nova.127-0-0-1.nip.io from the gateway hostname. Both compute
+      # catalog rows append /v2.1 to it.
+      publicEndpoint: https://nova.127-0-0-1.nip.io:8443
+      # Exposed through the same shared Envoy Gateway, via the tenth HTTPS
+      # listener the kind overlay adds for nova.127-0-0-1.nip.io. The metadata
+      # API, the scheduler, the conductor and the console proxy run one replica
+      # each and stay in-cluster.
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: nova.127-0-0-1.nip.io
 ```
 
 ```bash
@@ -318,10 +332,10 @@ Keystone tokens it receives. Its database and cache derive from
 database its DB credential is engine-issued and auto-rotated like Keystone's,
 as short-lived leases from the OpenBao database engine, and the Step 4
 onboarding provisions the engine tenant for all database services (keystone,
-glance, placement, barbican, neutron, and cinder when the block-storage block
-is present). A `GlanceReady` condition joins the chain, gated on
-`KeystoneReady` plus that registration having provisioned the account, and
-`status.services` gains a third entry.
+glance, placement, barbican, neutron, nova's two schemas, and cinder when the
+block-storage block is present). A `GlanceReady` condition joins the chain,
+gated on `KeystoneReady` plus that registration having provisioned the account,
+and `status.services` gains a third entry.
 
 The `placement` block projects a Placement child, `controlplane-placement`: the
 API deployment, its own logical schema on the shared MariaDB, and a Keystone
@@ -374,6 +388,40 @@ eighth HTTPS listener, `neutron.127-0-0-1.nip.io`, and `publicEndpoint` carries
 the `:8443` host port into the public network catalog row. `status.services`
 gains a sixth entry.
 
+The `nova` block adds the compute service. The reconciler projects the Nova
+child `controlplane-nova`, which runs five Deployments: the API
+`controlplane-nova`, the metadata API `controlplane-nova-metadata`, the
+scheduler `controlplane-nova-scheduler`, the conductor
+`controlplane-nova-conductor`, and the console proxy
+`controlplane-nova-novncproxy`. Two `KeystoneService` registrations come with
+it. `controlplane-nova` carries the compute catalog entry and the `nova`
+account in a project of its own, `service-nova`, with the roles `service` and
+`admin`: nova calls the block-storage API through its service user where it
+holds no user token, and Cinder refuses a caller holding `service` alone on a
+user's volume. `controlplane-neutron-nova` carries no catalog entry, only the
+`neutron-nova` account the network service posts its port-status notifications
+to Nova as. It sits in Neutron's project `service-neutron` and holds `service`
+and `admin` too, because Nova looks up the instance behind a notified port with
+the caller's own context.
+
+Nova keeps its state in two schemas, `nova_api` and `nova` (with `nova_cell0`
+beside it), and each takes an engine-issued credential of its own from the
+tenant Step 4 onboards: `controlplane-nova-api-db-credentials` and
+`controlplane-nova-db-credentials`. The bus reaches the child as
+`controlplane-nova-messaging`, like Neutron's. The ControlPlane generates the
+shared secret the metadata API verifies proxied instance requests with into
+`controlplane-nova-metadata-secret`, and the child publishes the compute
+contract `controlplane-nova-compute-config`, the Secret a `nova-compute` joins
+this control plane with. The `gateway` block puts the API on the tenth HTTPS
+listener, `nova.127-0-0-1.nip.io`, and `publicEndpoint` carries the `:8443` host
+port into the public compute catalog row. A `NovaReady` condition joins the
+chain, gated on `KeystoneReady`, `PlacementReady`, and the registration, and
+`status.services` gains a seventh entry. The webhook admits `services.nova`
+only beside `services.placement`, `services.neutron`, `services.glance`, and
+`spec.infrastructure.messaging`: Nova claims every instance's resources in
+Placement, binds its ports in Neutron, reads its image from Glance, and reaches
+its conductor and scheduler over the bus.
+
 ::: details Optional: block storage (needs WITH_NFS=true in Step 2)
 The `cinder` block adds the block-storage service on the two NFS exports the
 Step 2 overlay pre-creates. Drop the fragment into `spec.services` of either CR
@@ -413,8 +461,8 @@ cinder:
 The block projects a `Cinder` child `controlplane-cinder` with one
 `cinder-volume` Deployment per backend and one `cinder-backup` Deployment, plus
 the `CinderBackend` `nfs1` and the `CinderBackupBackend` `nfsbk`. Both
-satellites carry the bare entry name from the CR. `status.services` gains a
-seventh entry. The message bus is required here as well and
+satellites carry the bare entry name from the CR. `status.services` gains an
+eighth entry. The message bus is required here as well and
 `spec.infrastructure.messaging` above already declares it: a volume create
 travels from the API through the scheduler to the volume service over that bus.
 
@@ -522,6 +570,13 @@ spec:
         centralRef:
           name: controlplane-ovn
           namespace: openstack        # the ControlPlane's own namespace
+    nova:
+      replicas: 1
+      publicEndpoint: https://nova.127-0-0-1.nip.io:8443
+      gateway:
+        parentRef:
+          name: openstack-gw          # same Gateway; tenth listener
+        hostname: nova.127-0-0-1.nip.io
   korc:
     adminCredential:
       cloudCredentialsRef:
@@ -576,6 +631,11 @@ against a production OpenBao use a token with write access to
 `database/mariadb/*`. The script is idempotent: re-running it refreshes the
 connection and role in place.
 
+Beside Keystone's role the script provisions one role per database service the
+CR declares, and two for Nova, whose state spans two schemas:
+`nova-api-<namespace>` issues users on `nova_api`, and `nova-cell-<namespace>`
+issues users on `nova` and `nova_cell0`.
+
 Skip this step only when:
 
 - Step 2 ran with `WITH_CONTROLPLANE_CR=true`, in which case deploy-infra
@@ -606,7 +666,7 @@ ControlPlane. See the
 
 ## Step 6 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all 18 sub-conditions are met, in
+The aggregate `Ready` flips to `True` once all 19 sub-conditions are met, in
 dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady`,
 `PlacementReady`, and `BarbicanReady` gate on `KeystoneReady` plus the
 `KeystoneService` registration each service projects for itself; `OVNReady`
@@ -616,11 +676,14 @@ does not own; `NeutronReady` carries the two gates its siblings do, plus
 `OVNReady` and the delivery of the message bus into the network service's
 namespace; `CinderReady` gates on `KeystoneReady`, its registration and the bus
 delivery, and reads `True/CinderNotManaged` when the block-storage block is
-absent; `ServiceAccountsReady` then folds those five registrations, so it comes
-after them; the K-ORC branch runs alongside):
+absent; `NovaReady` gates on `KeystoneReady`, `PlacementReady`, its
+registration and the bus delivery; `ServiceAccountsReady` then folds the
+registrations of glance, placement, barbican, neutron, neutron-nova, cinder
+when present, and nova, so it comes after them; the K-ORC branch runs
+alongside):
 
 ```
-NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady → BarbicanReady → OVNReady → NeutronReady → CinderReady → ServiceAccountsReady → RegistrationTenantStoresReady
+NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady → BarbicanReady → OVNReady → NeutronReady → CinderReady → NovaReady → ServiceAccountsReady → RegistrationTenantStoresReady
 ```
 
 `RegistrationTenantStoresReady` closes the chain and reads
@@ -687,6 +750,7 @@ sudo sh -c 'cat >> /etc/hosts <<EOF
 127.0.0.1 barbican.127-0-0-1.nip.io
 127.0.0.1 neutron.127-0-0-1.nip.io
 127.0.0.1 cinder.127-0-0-1.nip.io
+127.0.0.1 nova.127-0-0-1.nip.io
 EOF'
 ```
 
@@ -724,8 +788,8 @@ openstack --insecure token issue
 > `foo-keystone-admin-credentials` instead.
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
-> and drop all six `publicEndpoint` lines (keystone, glance, placement,
-> barbican, neutron, and cinder) from the CR in Step 4.
+> and drop all seven `publicEndpoint` lines (keystone, glance, placement,
+> barbican, neutron, nova, and cinder) from the CR in Step 4.
 
 ### Upload a first image
 
@@ -920,6 +984,119 @@ openstack --insecure volume delete demo-vol
 the `demo-vol` this check leaves behind, so keep the volume if that guide is
 your next stop.
 
+### Boot a first server
+
+With the same `OS_*` variables still exported, confirm the compute service
+reached the catalog:
+
+```bash
+openstack --insecure catalog list
+```
+
+A `compute` row proves the ControlPlane registered both endpoints: the
+in-cluster one at `http://controlplane-nova.openstack.svc:8774/v2.1` and the
+public one at `https://nova.127-0-0-1.nip.io:8443/v2.1`, the `publicEndpoint`
+from Step 3 with the `/v2.1` the registration appends. Then list the compute
+services the control plane runs:
+
+```bash
+openstack --insecure compute service list
+```
+
+`nova-scheduler` and `nova-conductor` each report `up`. Each registers under the
+name of its pod, `controlplane-nova-scheduler-…` and
+`controlplane-nova-conductor-…`, because the control plane sets no
+`[DEFAULT] host`; a `down` row under an older pod name is a pod that has been
+replaced since. No `nova-compute` row appears. The ControlPlane runs no compute
+node, so the plane accepts a server but has no host to place it on.
+
+::: details Optional: boot a server on a fake compute
+The kind overlay `deploy/kind/fake-compute/` adds a `nova-compute` on nova's
+fake virt driver. It is built from the compute contract
+`controlplane-nova-compute-config` the way a compute cluster would build one,
+and the servers it hosts run nothing. `make deploy-infra` never applies it.
+Apply it now that `NovaReady` is `True`, and wait for the rollout:
+
+```bash
+kubectl apply -k deploy/kind/fake-compute
+kubectl rollout status deploy/controlplane-fake-compute -n openstack --timeout=5m
+```
+
+The compute registers under the name of the kind node,
+`cobaltcore-control-plane`. Wait until its service row reads `up`, which takes
+about a minute:
+
+```bash
+for _ in $(seq 24); do
+  [ "$(openstack --insecure compute service list --service nova-compute \
+    --host cobaltcore-control-plane -f value -c State)" = up ] && break
+  sleep 5
+done
+openstack --insecure compute service list --service nova-compute
+```
+
+The scheduler places a server only on a host that is mapped into the cell, and
+its discovery periodic maps a new host within 300 seconds. Map it now by running
+the discovery in the conductor pod, or wait out those 300 seconds:
+
+```bash
+kubectl exec -n openstack deploy/controlplane-nova-conductor -c conductor -- \
+  nova-manage --config-dir /etc/nova/nova.conf.d cell_v2 discover_hosts --verbose
+```
+
+`openstack --insecure hypervisor list` now shows `cobaltcore-control-plane`.
+Create a flavor the fake driver can satisfy and a 1 MiB image it never reads,
+then boot a server without a network:
+
+```bash
+openstack --insecure flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
+truncate -s 1M /tmp/boot-image.raw
+openstack --insecure image create --disk-format raw --container-format bare \
+  --file /tmp/boot-image.raw boot-image
+for _ in $(seq 30); do
+  [ "$(openstack --insecure image show boot-image -f value -c status)" = active ] && break
+  sleep 2
+done
+openstack --insecure server create --image boot-image --flavor m1.nano \
+  --nic none --wait demo-server
+openstack --insecure server show demo-server -c status -f value
+```
+
+The last command prints `ACTIVE`. That one word covers the compute chain: the
+API validated the admin token against Keystone, the conductor asked the
+scheduler for a host over the message bus, the scheduler claimed the flavor's
+resources in Placement, and the fake compute took the instance.
+
+`--nic none` is what lets the boot finish here. This devstack runs no
+`OVNChassis`, so a port on a network could never bind, and a server with one
+would fail on the binding.
+
+A server in `ERROR` whose fault reads `No valid host was found` was booted
+before the host was mapped:
+
+```bash
+openstack --insecure server show demo-server -c fault -f value
+```
+
+Run the discovery above, delete the server
+(`openstack --insecure server delete --wait demo-server`), and boot it again.
+
+Clean up in reverse order, the server first:
+
+```bash
+openstack --insecure server delete --wait demo-server
+openstack --insecure image delete boot-image
+openstack --insecure flavor delete m1.nano
+```
+
+The fake compute itself keeps running.
+[Run a Fake Compute for Testing](./guides/nova/run-a-fake-compute-for-testing.md)
+explains its settings, resizes a server on it, and removes it again.
+[Expose the Console Proxy](./guides/nova/expose-the-console-proxy.md) starts
+from the `demo-server` this check boots, so keep the server if that guide is
+your next stop.
+:::
+
 ### Open the Horizon dashboard
 
 The dashboard is exposed through the same shared Envoy Gateway as Keystone, on
@@ -934,9 +1111,8 @@ a kind cluster, where the listener terminates with a self-signed certificate.
 Log in with `admin` / the password from the
 `controlplane-keystone-admin-credentials` Secret above (domain `Default`).
 
-After login the dashboard redirects to `/project/`, which reports
-"Unauthorized": the default landing page needs a Compute service this control
-plane does not serve yet. Open the Identity panel instead:
+After login the dashboard redirects to `/project/`. Open the Identity panel to
+see the users and projects the ControlPlane provisioned:
 
 ```bash
 open https://horizon.127-0-0-1.nip.io:8443/identity/
@@ -968,6 +1144,8 @@ make teardown-infra
 - [Cinder Operator](./reference/cinder/index.md) — the projected block-storage
   service, its `CinderBackend` and `CinderBackupBackend` satellites, and the
   reconciler chain.
+- [Nova Operator](./reference/nova/index.md) — the projected compute service,
+  its cells, the compute contract, and the reconciler chain.
 - [OVN Operator](./reference/ovn/index.md) — the referenced `OVNCentral`, the
   `OVNChassis` node layer, and the reconciler chain.
 - [Quick Start](./quick-start.md) — the compact per-service Keystone path.

@@ -44,7 +44,9 @@ cluster is unexamined. The [Nova](../reference/nova/index.md) and
 are onboarded, and the [OVN operator](../reference/ovn/index.md) already
 projects `ovs` and `ovn-controller` onto labelled nodes. The compute side is
 missing: `nova-compute` and the node agents on dedicated compute clusters are
-tracked in [#1013](https://github.com/C5C3/cobaltcore/issues/1013).
+tracked in [#1013](https://github.com/C5C3/cobaltcore/issues/1013). What such a
+cluster reads from the control plane, and what it has to provide in return, is
+written down in [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md).
 
 ## Source
 

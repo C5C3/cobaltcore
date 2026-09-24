@@ -107,3 +107,41 @@ nova:
     # No qemu-utils: the control-plane roles convert nothing (#1014 D14). No
     # libvirt0: the fake driver of #1018 needs no libvirt, and nova.virt.fake
     # imports without it (#1015 section (a.1)).
+nova-compute:
+  # The image of images/nova-compute/. It is built from the nova source pin
+  # above with nova's patches and constraints, so it has no source-refs.yaml
+  # key of its own.
+  pip_extras: []
+  pip_packages:
+    # The libvirt driver's binding, pinned by upper-constraints.txt. PyPI
+    # ships it as an sdist only; the build stage compiles it against
+    # libvirt-dev.
+    - libvirt-python
+  apt_packages:
+    # libvirt.so.0, libvirt-qemu.so.0 and libvirt-lxc.so.0, which the
+    # binding's extension modules link (nova/virt/libvirt/host.py imports it).
+    - libvirt0
+    # qemu-img create (nova/virt/libvirt/utils.py), info and convert
+    # (nova/privsep/qemu.py).
+    - qemu-utils
+    # iscsiadm (os_brick/initiator/connectors/iscsi.py). The postinst writes
+    # /etc/iscsi/initiatorname.iscsi, which the Dockerfile removes.
+    - open-iscsi
+    # multipath and multipathd (os_brick/initiator/linuxscsi.py). The package
+    # ships /etc/multipath.conf, which the Dockerfile removes.
+    - multipath-tools
+    # nvme (os_brick/initiator/connectors/nvmeof.py,
+    # os_brick/privileged/nvmeof.py). The postinst writes /etc/nvme/hostnqn
+    # and /etc/nvme/hostid, which the Dockerfile removes.
+    - nvme-cli
+    # lsscsi (os_brick/initiator/linuxscsi.py).
+    - lsscsi
+    # /lib/udev/scsi_id (os_brick/initiator/linuxscsi.py, get_scsi_wwn).
+    - udev
+    # cryptsetup, run by the LUKS encryptors (os_brick/encryptors/luks.py)
+    # when an encrypted volume attaches. The compute contract enables the
+    # Barbican key manager whenever Barbican is enabled.
+    - cryptsetup-bin
+    # genisoimage, the default [DEFAULT] mkisofs_cmd
+    # (nova/conf/configdrive.py), which builds config drives.
+    - genisoimage

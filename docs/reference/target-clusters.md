@@ -26,8 +26,9 @@ so an existing CR keeps its behavior without an edit.
 The [ControlPlane](./c5c3/controlplane-crd.md) carries the ref per service
 instead of once per CR: `services.keystone`, `services.horizon`,
 `services.glance`, `services.placement`, `services.barbican`,
-`services.neutron`, and `services.cinder` each take one, so one control plane
-can run its identity service on one cluster and its dashboard on another.
+`services.neutron`, `services.cinder`, and `services.nova` each take one, so
+one control plane can run its identity service on one cluster and its dashboard
+on another.
 Everything on this page applies to it, and what is specific to it is collected
 under [ControlPlane placement](#controlplane-placement).
 
@@ -187,7 +188,7 @@ it, surfaces on the CR's first gate condition:
 | --- | --- | --- | --- | --- |
 | Keystone, Barbican, Horizon, Glance, Placement, Neutron, Cinder, Nova | `SecretsReady` | `False` | `TargetClusterUnavailable` | The resolver's error, `cluster not found` for a name that was never registered |
 | BarbicanSecretStore, GlanceBackend, CinderBackend, CinderBackupBackend | `CredentialsReady` | `False` | `TargetClusterUnavailable` | Same |
-| ControlPlane | `NamespacesReady` usually, since it runs first; otherwise whichever sub-reconciler reaches the cluster first, out of `InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`, `AdminPasswordReady`, `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `CinderReady`, `ServiceAccountsReady`, and `KORCReady` | `False` | `TargetClusterUnavailable` | Same |
+| ControlPlane | `NamespacesReady` usually, since it runs first; otherwise whichever sub-reconciler reaches the cluster first, out of `InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`, `AdminPasswordReady`, `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `CinderReady`, `NovaReady`, `ServiceAccountsReady`, and `KORCReady` | `False` | `TargetClusterUnavailable` | Same |
 
 The pass ends there. The CR requeues after 15 seconds, on a flat poll rather than
 a backoff, and nothing is created on any cluster. Resolution runs before any
@@ -733,8 +734,8 @@ spec:
 Five rules apply at admission on top of the name-only shape. A placed service
 needs a `namespace` block of its own, because a namespace exists on exactly one
 cluster and the ControlPlane's own namespace stays where the ControlPlane is. A
-placed catalog service (keystone, glance, placement, barbican, neutron, cinder)
-needs a `publicEndpoint` or a `gateway`, since its catalog entry would otherwise
+placed catalog service (keystone, glance, placement, barbican, neutron, cinder,
+nova) needs a `publicEndpoint` or a `gateway`, since its catalog entry would otherwise
 advertise an in-cluster Service DNS name that resolves nowhere else; the
 dashboard is exempt, being reached by a browser rather than looked up in the
 catalog. And services sharing a namespace must name the same cluster, an unplaced
@@ -792,7 +793,7 @@ What a placed service takes with it, and what stays behind:
 
 | Object | Created on |
 | --- | --- |
-| The seven projected service CRs, each carrying `spec.targetClusterRef` verbatim | The management cluster |
+| The eight projected service CRs, each carrying `spec.targetClusterRef` verbatim | The management cluster |
 | The `BarbicanSecretStore`, `GlanceBackend`, `CinderBackend` and `CinderBackupBackend` CRs, which carry no ref and follow their parent's | The management cluster |
 | Every K-ORC CR: the admin `ApplicationCredential`, the catalog `Service` and `Endpoint` rows, the adopted `Region`, and the service accounts' `User`, `Project`, `Domain`, `Role`, and `RoleAssignment` | The management cluster |
 | The admin-credential chain: the minted application-credential Secret, its backup `PushSecret`, and the `clouds.yaml` `ExternalSecret` | The management cluster |
@@ -805,6 +806,7 @@ What a placed service takes with it, and what stays behind:
 | Barbican's dedicated OpenBao ensemble, including the auth-delegator `ClusterRoleBinding` | The service's cluster |
 | A registration's service-account delivery objects: source Secret, `PushSecret`, `ExternalSecret`, and the Secret ESO materializes from it | The management cluster |
 | The mirrored `ExternalSecret` a placed built-in service reads, and the Secret ESO materializes from it | The service's cluster |
+| The metadata shared secret's `Password` generator and `ExternalSecret`, and the Secret ESO materializes from it | The service's cluster |
 | The namespace a service is placed in | Both |
 
 The namespace is on both because both sides need it: the projected CR lives in it

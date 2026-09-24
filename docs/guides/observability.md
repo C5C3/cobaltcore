@@ -10,9 +10,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Observability & Diagnostics
 
-How to read what a CobaltCore service operator is doing — without tailing controller
-logs. The walkthrough reads the devstack's Keystone CR; the other service
-operators surface the same channels on their own CRs.
+To read what a CobaltCore service operator is doing, start with the CR status, then inspect the event stream, and only then read the operator or service logs.
 
 ## Prerequisites
 
@@ -24,30 +22,31 @@ kind create cluster --name cobaltcore --config hack/kind-config.yaml
 make deploy-infra
 ```
 
-Follow that tutorial through to its final **Verify the deployment** step, so a
-Keystone CR named `keystone` is `Ready` in the `openstack` namespace. Every
-resource name in the examples below is one that devstack produces.
+Follow that tutorial through to its final Verify step, so the Keystone CR named
+`keystone` is `Ready` in the `openstack` namespace. The examples below use a
+Keystone CR as a representative service example, but the same workflow applies
+to other operators too.
 :::
 
-The operator surfaces its state through three complementary channels:
+Every controller surfaces state through the same three channels:
 
 | Channel | Purpose | Primary audience |
 |---------|---------|------------------|
-| **Print columns** | One-line health summary for every Keystone CR | Humans, `kubectl get` |
-| **Status conditions** | Structured, programmatic state | Automation, CI, alerts |
-| **Events** | Timestamped audit trail of transitions | Humans investigating incidents |
+| Print columns | One-line health summary for the CR | Humans, `kubectl get` |
+| Status conditions | Structured, programmatic state | Automation, CI, alerts |
+| Events | Timestamped audit trail of transitions | Humans investigating incidents |
 
 ---
 
 ## Print columns
 
-`kubectl get keystones` exposes a compact summary via four printer columns:
+The exact CR kind varies by service, but the pattern stays the same:
 
 ```bash
 kubectl get keystones -A
 ```
 
-```
+```text
 NAMESPACE   NAME       READY   ENDPOINT                                                 RELEASE   AGE
 openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/v3      2025.2    12m
 ```
@@ -55,35 +54,19 @@ openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/
 | Column | Source | Meaning |
 |--------|--------|---------|
 | `READY` | `.status.conditions[?(@.type=='Ready')].status` | Aggregate health |
-| `ENDPOINT` | `.status.endpoint` | In-cluster Keystone API URL (`…:5000/v3`) |
+| `ENDPOINT` | `.status.endpoint` | Service API URL, if the CR exposes one |
 | `RELEASE` | `.status.installedRelease` | OpenStack release currently deployed |
 | `AGE` | `.metadata.creationTimestamp` | CR age |
+
+Some services do not expose every field. In those cases, read the related status block instead of assuming the CR has the same shape as Keystone.
 
 ---
 
 ## Status conditions
 
-`.status.conditions[]` follows the standard Kubernetes pattern (`type`, `status`, `reason`, `message`, `lastTransitionTime`, `observedGeneration`). Fourteen sub-conditions feed into the aggregate `Ready`. All are always reported; the ones tied to an optional spec field carry a "not required" / "disabled" reason when that field is unset rather than disappearing:
+`.status.conditions[]` follows the standard Kubernetes pattern (`type`, `status`, `reason`, `message`, `lastTransitionTime`, `observedGeneration`). The aggregate `Ready` condition is the first thing to check. Each service adds its own subconditions for the phases that matter to it, such as secrets, deployment health, database sync, API readiness, network policy, or upgrade progress.
 
-| Condition | Means |
-|-----------|-------|
-| `SecretsReady` | Referenced database and admin Secrets are available |
-| `FernetKeysReady` | Fernet key Secret and rotation CronJob exist |
-| `CredentialKeysReady` | Credential key Secret and rotation CronJob exist (always managed; `spec.credentialKeys` only tunes the schedule and max active keys) |
-| `DatabaseReady` | `db_sync` Job completed successfully (and schema check passed) |
-| `DatabaseTLSReady` | Database TLS client certificate issued, or `NotRequired` — see [Enable Keystone Database TLS](./keystone/enable-keystone-database-tls.md) |
-| `PolicyValidReady` | `spec.policyOverrides` validated against `oslo.policy` |
-| `DeploymentReady` | API Deployment has available replicas |
-| `KeystoneAPIReady` | Keystone API is responding to `/v3` health probes |
-| `HPAReady` | HorizontalPodAutoscaler created (if `spec.autoscaling` is set) |
-| `NetworkPolicyReady` | NetworkPolicy created (if `spec.networkPolicy` is set) |
-| `HTTPRouteReady` | Gateway API HTTPRoute reconciled, or not required when `spec.gateway` is unset |
-| `BootstrapReady` | Bootstrap Job completed (admin user, region, endpoints) |
-| `TrustFlushReady` | Trust-flush CronJob created — defaults to hourly |
-| `PasswordRotationReady` | Scheduled admin-password rotation reconciled, or `RotationDisabled` when `spec.passwordRotation` is unset — see [Schedule Keystone Admin Password Rotation](./keystone/keystone-admin-password-scheduled-rotation.md) |
-| `Ready` | All of the above are `True` |
-
-Read them as a tree:
+Read the condition tree for a specific CR:
 
 ```bash
 kubectl get keystone keystone -n openstack \
@@ -91,32 +74,36 @@ kubectl get keystone keystone -n openstack \
   | column -t -s $'\t'
 ```
 
-Or wait for a specific one:
+Or wait for one specific condition:
 
 ```bash
 kubectl wait keystone/keystone -n openstack \
   --for=condition=DatabaseReady --timeout=5m
 ```
 
-::: tip Diagnosing a stuck CR
-The first `status=False` condition from the top is usually the bottleneck:
+The exact condition names vary by operator. The main pattern is consistent:
 
-- `SecretsReady=False` → check that `keystone-db` and `keystone-admin` Secrets exist in the same namespace
-- `DatabaseReady=False` → look at Events for `DBSyncFailed` or `SchemaDriftDetected`
-- `DeploymentReady=False` → `kubectl describe deploy keystone` — usually image pull or probe failures
+- `Ready=False` → inspect the first false condition in the list
+- `SecretsReady=False` → check the backing Secret or external secret state
+- `DatabaseReady=False` → inspect DB sync, schema, or migration status
+- `DeploymentReady=False` → check rollout, probes, or image-pull issues
+- `BootstrapReady=False` → the setup Job has not completed yet
+
+::: tip Diagnosing a stuck CR
+The first `status=False` condition from the top is usually the bottleneck. Work from the top of the list toward the bottom until the failure is explained.
 :::
 
 ---
 
 ## Upgrade status fields
 
-During a release upgrade, three additional status fields track progress (see [Day 2 Operations — Upgrade the OpenStack release](./day-2-operations.md#upgrade-the-openstack-release)):
+Some services expose additional status fields during a release upgrade. The exact names and phase transitions vary by operator, but the pattern is similar to this:
 
 | Field | Outside upgrade | During upgrade |
 |-------|-----------------|----------------|
 | `.status.installedRelease` | Currently deployed release | Previous release (not yet changed) |
 | `.status.targetRelease` | `""` | Target release |
-| `.status.upgradePhase` | `""` | `Expanding` → `Migrating` → `RollingUpdate` → `Contracting` |
+| `.status.upgradePhase` | `""` | In progress, such as `Expanding` or `Migrating` |
 
 Watch the upgrade live:
 
@@ -125,11 +112,13 @@ kubectl get keystone keystone -n openstack -w \
   -o custom-columns=NAME:.metadata.name,PHASE:.status.upgradePhase,FROM:.status.installedRelease,TO:.status.targetRelease
 ```
 
+For the service-specific field semantics and phase model, read the controller's reference page and the day-2 guide for that service.
+
 ---
 
 ## Events
 
-Every lifecycle transition emits a Kubernetes Event with a stable, PascalCase `reason`. Events are deduplicated by (object, reason, message) — repeated reconciles do not spam the event stream.
+Every lifecycle transition emits a Kubernetes Event with a stable `reason`. Events are deduplicated by object, reason, and message, so repeated reconciles do not spam the event stream.
 
 ### Show everything for a CR
 
@@ -137,7 +126,7 @@ Every lifecycle transition emits a Kubernetes Event with a stable, PascalCase `r
 kubectl describe keystone keystone -n openstack
 ```
 
-The bottom of the output lists the Events in reverse-chronological order. Alternatively, a timeline view:
+The Events section sits at the bottom of the output in reverse-chronological order. You can also view a timeline:
 
 ```bash
 kubectl get events -n openstack \
@@ -145,75 +134,38 @@ kubectl get events -n openstack \
   --sort-by='.lastTimestamp'
 ```
 
-### Common reasons
-
-| Reason | Type | When you see it |
-|--------|------|-----------------|
-| `BootstrapComplete` | Normal | Bootstrap Job finished (admin user, region, endpoints created) |
-| `DatabaseSynced` | Normal | `db_sync` finished, schema matches Alembic head |
-| `FernetKeysGenerated` | Normal | Fernet Secret was created or rotated |
-| `UpgradeInitiated` | Normal | `spec.image.tag` change triggered an upgrade |
-| `ExpandComplete` / `MigrateComplete` | Normal | Upgrade phase boundary reached |
-| `UpgradeComplete` | Normal | Full expand-migrate-contract pipeline finished, `installedRelease` advanced |
-| `ContractFailed` | Warning | Contract phase `db_sync --contract` returned non-zero |
-| `DBSyncFailed` | Warning | `db_sync` Job returned non-zero |
-| `SchemaDriftDetected` | Warning | Schema check found unexpected drift |
-| `DowngradeNotSupported` | Warning | Target tag is older than `installedRelease` |
-| `UpgradePathInvalid` | Warning | Target tag skips a release (non-sequential) |
-
-The full catalogue is in [Keystone Controller Events](../reference/keystone/keystone-events.md).
+The exact reason names are operator-specific. Use the controller event reference for the service you are debugging to map those reasons back to the underlying transition. For example, the full Keystone catalogue lives in [Keystone Controller Events](../reference/keystone/keystone-events.md), and the other service operators have the same pattern in their own reference pages.
 
 ---
 
-## Keystone application logs
+## Service logs
 
-For the Keystone API itself (as opposed to the operator), tail the workload pods directly:
+For the workload itself, tail the service pods directly:
 
 ```bash
 kubectl logs -n openstack -l app.kubernetes.io/name=keystone --tail=200 -f
 ```
 
-Two distinct streams are interleaved on the same stdout/stderr:
+The exact labels and log format vary by service. In general, the goal is the same: identify the last request that failed, the last error that was logged, and whether the app is reporting a dependency issue or a self-inflicted one.
 
-- **uWSGI access lines** — emitted per HTTP request via an always-on `--log-master
-  --log-format` literal, e.g.
-  `GET /v3/auth/tokens => generated 1234 bytes in 12 msecs (HTTP/1.1 201)`.
-  Useful for traffic-shape questions (latency, status code distribution).
-- **oslo.log application records** — emitted by Keystone code paths (auth, federation,
-  middleware), formatted by `oslo.log` per `spec.logging`. Useful for "why did this
-  request fail" questions.
-
-Only the oslo.log stream honours `spec.logging.format`; the uWSGI access lines use a
-fixed plain-text format regardless. The oslo.log default is `text` (line format,
-human-readable). Switch to JSON for direct ingest by Loki/OpenSearch:
-
-```bash
-kubectl patch keystone -n openstack keystone --type=merge \
-  -p '{"spec":{"logging":{"format":"json"}}}'
-
-# Wait for the rollout, then verify each oslo.log record is jq-parseable:
-kubectl logs -n openstack -l app.kubernetes.io/name=keystone --tail=20 \
-  | grep -v 'generated.*bytes in' \
-  | jq -e .
-```
-
-`jq -e .` exits non-zero if any input line is not valid JSON, giving a binary
-pass/fail signal for the format toggle. See
-[`spec.logging` in the CRD reference](../reference/keystone/keystone-crd.md#loggingspec)
-for the full field semantics, including `level`, `debug`, and `perLoggerLevels`.
+As a concrete example, Keystone interleaves uWSGI access lines and `oslo.log` application records, which means you can answer both traffic-shape questions and request failure questions from the same pod stream. See [Keystone Controller Events](../reference/keystone/keystone-events.md) and the CRD reference for the service-specific logger configuration.
 
 ---
 
-## Controller logs (last resort)
+## Controller logs
 
-If status and events don't explain a failure, read the operator logs directly:
+This is the last resort when the pattern is no longer visible in status or
+events. The key is to narrow the view to the affected object before reading a
+long log stream.
+
+If status and events do not explain the failure, read the operator logs directly:
 
 ```bash
 kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
   --tail=200 -f
 ```
 
-The operator uses structured `logr` output — every line includes the reconciled object's namespace/name and the sub-reconciler that produced the log. Filter a specific CR:
+The operator emits structured `logr` output, and each line carries the reconciled object and the sub-reconciler that produced it. Filter a specific CR:
 
 ```bash
 kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --tail=500 \
@@ -224,19 +176,15 @@ kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --ta
 
 ## Further reading
 
-- [Keystone Controller Events](../reference/keystone/keystone-events.md) — full event reason catalogue with example messages and alerting templates
-- [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md) — sub-reconciler contracts and watches
-- [Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md) — metric catalogue, labels, buckets, and sample PromQL
-- [Reconcile duration SLOs](../reference/keystone-operator-metrics.md#reconcile-duration-slos) — steady-state and rotation-wait p95 targets for the reconcile loop
-- [Enable the Keystone operator metrics endpoint](./keystone/enable-keystone-operator-metrics.md) — ServiceMonitor enablement and Grafana import walk-through
-- [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md) — state machine that drives upgrade conditions
-- [Day 2 Operations](./day-2-operations.md) — putting this observability into practice during scale, upgrade, rotation
+- [Keystone Controller Events](../reference/keystone/keystone-events.md): full event reason catalogue for the Keystone controller
+- [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md): sub-reconciler contracts and watches
+- [Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md): metric catalogue, labels, buckets, and sample PromQL
+- [Enable the Keystone operator metrics endpoint](./keystone/enable-keystone-operator-metrics.md): start collecting service metrics and dashboards
+- [Day 2 Operations](./day-2-operations.md): putting observability into practice during scale, upgrade, and rotation
 
 ## Tested by
 
-Lifecycle event emission and `spec.logging` → oslo.log propagation — the two
-observable surfaces this guide reads — are asserted on the CI e2e kind cluster
-by these chainsaw suites:
+The status, event, and log flow in this guide is asserted on the CI e2e kind cluster by the Keystone suites that cover the common operator pattern:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/events

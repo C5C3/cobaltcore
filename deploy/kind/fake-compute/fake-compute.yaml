@@ -2,35 +2,43 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# The nova-compute this suite schedules onto, on nova's fake virt driver.
+# A nova-compute on nova's fake virt driver, for the ControlPlane quick start
+# on kind.
 #
 # The ControlPlane projects no compute workload: a nova-compute belongs to a
 # hypervisor, not to the control plane, and what the projected Nova publishes
-# for one is the contract Secret controlplane-keystone-nova-compute-config. This
+# for one is the contract Secret controlplane-nova-compute-config. This
 # Deployment is what a compute cluster would build out of that Secret, cut down
-# to what runs inside kind.
+# to what runs inside kind. The servers it hosts run nothing: the fake driver
+# reports them ACTIVE without a disk, a console or a network behind them.
 #
 # The Secret is CONSUMED, never created here: the nova operator writes it and
 # reports it on status.computeConfigSecretRef, and a second writer under the same
 # name would hand the compute a transport URL and a password the control plane
-# never issued. The fixture is therefore applied only after NovaReady, which is
-# the point at which the contract exists.
+# never issued. Apply this file only after the ControlPlane reports
+# NovaReady=True, which is the point at which the contract exists.
+#
+# The names assume the quick start's ControlPlane, controlplane in openstack.
+# For a ControlPlane named <cp>, replace every "controlplane-" prefix in this
+# file with "<cp>-", which turns the Secret into <cp>-nova-compute-config, and
+# put the ControlPlane's namespace into both metadata.namespace fields. For a
+# spec.openStackRelease other than 2025.2, set both image tags to that release,
+# so the compute runs the nova the control plane runs.
 #
 # The labels are app.kubernetes.io/name: nova-fake-compute rather than "nova".
 # Every selector the nova operator writes (the three Services, the
 # PodDisruptionBudget, the NetworkPolicy pod selector) matches on
 # app.kubernetes.io/name: nova, so a pod under that name would join workloads it
-# is not part of. The instance label stays controlplane-keystone-nova so the
-# suite's diagnostic dumps still find it.
+# is not part of. The instance label names the Nova the compute joins.
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: controlplane-keystone-fake-compute-conf
+  name: controlplane-fake-compute-conf
   namespace: openstack
   labels:
     app.kubernetes.io/name: nova-fake-compute
-    app.kubernetes.io/instance: controlplane-keystone-nova
+    app.kubernetes.io/instance: controlplane-nova
 data:
   # The overlay the contract fragment says nothing about: what to drive, where
   # to write and which console address to report. oslo.config reads every file
@@ -41,10 +49,10 @@ data:
   # which keeps the hypervisor, the compute service and the resource provider
   # under one name.
   #
-  # vif plugging is switched off and given a zero timeout. The server the verify
-  # Job boots does carry a port on an isolated network, but the chassis claims no
-  # port that no OVS interface backs, so network-vif-plugged never arrives and a
-  # compute that waited for it would time out on the boot.
+  # vif plugging is switched off and given a zero timeout. No OVS interface
+  # backs a port on this pod, so no chassis claims one and network-vif-plugged
+  # never arrives: a compute that waited for it would time out on the boot of
+  # every server that carries a port.
   #
   # server_proxyclient_address is the loopback the fake driver would serve a
   # console on. Nothing connects to it, but [vnc] enabled is true in the
@@ -64,11 +72,11 @@ data:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: controlplane-keystone-fake-compute
+  name: controlplane-fake-compute
   namespace: openstack
   labels:
     app.kubernetes.io/name: nova-fake-compute
-    app.kubernetes.io/instance: controlplane-keystone-nova
+    app.kubernetes.io/instance: controlplane-nova
 spec:
   replicas: 1
   # Recreate, because the two pods of a rolling update would register under the
@@ -78,12 +86,12 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: nova-fake-compute
-      app.kubernetes.io/instance: controlplane-keystone-nova
+      app.kubernetes.io/instance: controlplane-nova
   template:
     metadata:
       labels:
         app.kubernetes.io/name: nova-fake-compute
-        app.kubernetes.io/instance: controlplane-keystone-nova
+        app.kubernetes.io/instance: controlplane-nova
     spec:
       # nova-compute never calls the Kubernetes API, so the pod gets no token.
       automountServiceAccountToken: false
@@ -130,11 +138,10 @@ spec:
             - /etc/nova/compute.conf.d
           env:
             # The identity the compute registers under. It is the node's name
-            # because the OVN chassis registers under that name too
-            # (operators/ovn/internal/controller/reconcile_nodes.go:145 sets
-            # external_ids:hostname="${NODE_NAME}"), and neutron binds a port
-            # only to a host that has a live chassis. A compute under any other
-            # name would leave every port unbound.
+            # because the OVN chassis registers under that name too (the OVN
+            # operator sets its external_ids:hostname to the node name), and
+            # neutron binds a port only to a host that has a live chassis. A
+            # compute under any other name would leave every port unbound.
             - name: OS_DEFAULT__HOST
               valueFrom:
                 fieldRef:
@@ -142,7 +149,7 @@ spec:
             - name: OS_DEFAULT__TRANSPORT_URL
               valueFrom:
                 secretKeyRef:
-                  name: controlplane-keystone-nova-compute-config
+                  name: controlplane-nova-compute-config
                   key: transport_url
             # The four client sections of the fragment and the token middleware
             # all authenticate as the one service account the contract publishes
@@ -150,27 +157,27 @@ spec:
             - name: OS_KEYSTONE_AUTHTOKEN__PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: controlplane-keystone-nova-compute-config
+                  name: controlplane-nova-compute-config
                   key: password
             - name: OS_SERVICE_USER__PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: controlplane-keystone-nova-compute-config
+                  name: controlplane-nova-compute-config
                   key: password
             - name: OS_PLACEMENT__PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: controlplane-keystone-nova-compute-config
+                  name: controlplane-nova-compute-config
                   key: password
             - name: OS_NEUTRON__PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: controlplane-keystone-nova-compute-config
+                  name: controlplane-nova-compute-config
                   key: password
             - name: OS_CINDER__PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: controlplane-keystone-nova-compute-config
+                  name: controlplane-nova-compute-config
                   key: password
           resources:
             requests:
@@ -201,10 +208,10 @@ spec:
         # beside the fragment, which is where its ssl_ca_file points.
         - name: compute-config
           secret:
-            secretName: controlplane-keystone-nova-compute-config
+            secretName: controlplane-nova-compute-config
         - name: compute-overlay
           configMap:
-            name: controlplane-keystone-fake-compute-conf
+            name: controlplane-fake-compute-conf
         - name: state
           emptyDir: {}
         - name: tmp

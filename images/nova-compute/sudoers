@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+Defaults secure_path="/var/lib/openstack/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+openstack ALL = (root) NOPASSWD: /var/lib/openstack/bin/nova-rootwrap /etc/nova/rootwrap.conf *
