@@ -46,7 +46,7 @@ Database ──► Conductor ──► Scheduler ──► Metadata ──► Co
 | DBConnectionSecrets | Materializes both pymysql DSNs into `{name}-api-db-connection` and `{name}-db-connection` and digests each. The `nova_api` half runs first and returns on its own requeue, so a cell Secret is never derived while the `nova_api` credentials are missing | `SecretsReady` |
 | TransportURLSecret | Materializes the `rabbit://` URL into `{name}-transport-url`, digests it, and resolves the broker port the NetworkPolicy member opens and the two bus workloads probe. A brownfield URL without an explicit port or with an IPv6 literal host sets `SecretsReady` False with the reason `TransportURLRejected` before the derived Secret is written, so a restarting pod keeps the last accepted URL: nova expands the cell mapping's `{hostname}:{port}` template from it | `SecretsReady` |
 | Config | Renders `nova.conf` and the four role overlays (plus `logging.ini` under json logging) into an immutable content-addressed ConfigMap, and maintains the informational `ExtraConfigHealthy` condition. A section carrying a control character is not re-rendered: the step returns the artefacts the live API Deployment currently mounts, so the running pods keep their last-good config. Failures report through `SecretsReady` with the reason `ConfigError` | `SecretsReady` |
-| ComputeConfig | Applies `{name}-compute-config`, the contract a compute node joins on, and stamps `status.computeConfigSecretRef`. It runs here because four of its keys are values the three steps above read. A fragment carrying a control character is not written: the published Secret stays as it was and the condition goes False | `ComputeConfigReady` |
+| ComputeConfig | Applies `{name}-compute-config`, the contract a compute node joins on, and stamps `status.computeConfigSecretRef`. It runs here because four of its keys are values the three steps above read. A fragment carrying a control character is not written: the published Secret stays as it was and the condition goes False. While `spec.remoteCompute` is set it also reads the external transport URL and applies `{name}-remote-compute-config`, stamping `status.remoteComputeConfigSecretRef`; a missing Secret or key waits as `WaitingForRemoteTransportURL` without halting the pipeline, and a remote Secret published earlier stays as it was. Without the block it deletes a remote Secret this Nova controls and clears the reference. The condition goes True once both contracts are in the state the spec asks for | `ComputeConfigReady` |
 | Database | Provisions both schemas and cell0, gates the requested release against the installed one, runs the migration Jobs, and promotes `installedRelease`; a release bump instead runs the expand-migrate-contract flow | `DatabaseReady` |
 | Conductor | Ensures the `{name}-conductor` Deployment. No Service, no PodDisruptionBudget, no autoscaling: the conductor takes its work off the bus | `ConductorReady` |
 | Scheduler | Ensures the `{name}-scheduler` Deployment, under the same contract | `SchedulerReady` |
@@ -88,7 +88,7 @@ not depool a Nova whose API serves fine.
 | Type | True reasons | False reasons |
 | --- | --- | --- |
 | `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForMetadataSharedSecret`, `MetadataSharedSecretEmpty`, `WaitingForMessagingCA`, `WaitingForMessagingCredentials`, `TransportURLRejected`, `ConfigError` |
-| `ComputeConfigReady` | `ComputeConfigPublished` | `ComputeConfigError` |
+| `ComputeConfigReady` | `ComputeConfigPublished` | `ComputeConfigError`, `WaitingForRemoteTransportURL` |
 | `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `WaitingForConfig`, `ImageReleaseMismatch`, `DBSyncFailed`, `DBSyncInProgress`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `UpgradeTargetChanged`, `ExpandInProgress`, `MigrateInProgress`, `UpgradeRollingUpdate`, `ContractInProgress`, `ExpandFailed`, `MigrateFailed`, `ContractFailed` |
 | `ConductorReady` | `ConductorReady` | `WaitingForConductor` |
 | `SchedulerReady` | `SchedulerReady` | `WaitingForScheduler` |
@@ -328,10 +328,11 @@ Beyond the owned set it watches:
   index holds the deduplicated union of every Secret name a CR references: both
   database credentials, the service-user password, the metadata shared secret,
   the CA bundle and client certificate of each database block whose `tls` is
-  enabled, the brownfield `spec.messaging.secretRef`, and the broker CA bundle.
-  A disabled TLS block contributes nothing, so a name is indexed only while the
-  connection actually reads it. The owner-reference leg is what reaches the four
-  derived Secrets, which ESO does not own.
+  enabled, the brownfield `spec.messaging.secretRef`, the broker CA bundle, and
+  `spec.remoteCompute.transportURLSecretRef` while that block is set. A disabled
+  TLS block contributes nothing, so a name is indexed only while the connection
+  actually reads it. The owner-reference leg is what reaches the derived
+  Secrets, which ESO does not own.
 - MariaDB clusters, through one leg carrying both `clusterRef` fields: a Nova is
   enqueued when either block names the cluster the event came from, and once
   rather than twice when both name the same one.

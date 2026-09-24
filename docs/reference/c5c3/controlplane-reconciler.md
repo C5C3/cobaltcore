@@ -224,7 +224,7 @@ namespace-scoped List, mirroring the keystone operator's
 | Aspect | Value |
 | --- | --- |
 | Index key | `ControlPlaneSecretNameIndexKey = "spec.korc.adminCredential.passwordSecretRef.name"` (exported package-level constant in `operators/c5c3/internal/controller/controlplane_controller.go`) |
-| Indexed fields | `spec.korc.adminCredential.passwordSecretRef.name` — currently the only Secret a ControlPlane references. The extractor (`controlPlaneSecretNameExtractor`) returns an empty slice when the name is unset so an unset field does not pollute the index, and returns `nil` if invoked with the wrong type rather than panicking. |
+| Indexed fields | `spec.korc.adminCredential.passwordSecretRef.name` (the effective admin-password Secret), the CA bundle of the Keystone endpoint K-ORC dials, and `spec.services.nova.remoteCompute.transportURLSecretRef.name` while that block is set, deduplicated. The extractor (`controlPlaneSecretNameExtractor`) returns an empty slice when the name is unset so an unset field does not pollute the index, and returns `nil` if invoked with the wrong type rather than panicking. |
 | Registration site | `SetupWithManager` → `registerControlPlaneSecretNameIndex(ctx, local.GetFieldIndexer())`, invoked **before** the `Watches(Secret, …)` chain. It goes on the **local** field indexer rather than the multicluster manager's: with a provider configured, that one registers its indexes against the target clusters, which hold no `ControlPlane` CR, and applying it while engaging a cluster would fail that engagement. Every request the legs emit is pinned to the management cluster, so a remote event still resolves its CR through this index. Any error from `IndexField` is wrapped with the index key and propagated, so manager startup aborts loudly if registration fails. |
 | Lookup site | `secretToControlPlaneMapper(local.GetClient())` — performs a namespace-scoped `client.List` with `client.MatchingFields{ControlPlaneSecretNameIndexKey: secret.Name}`. On List error the error is logged via `log.FromContext` and the mapper returns `nil` per the `handler.MapFunc` contract (it must not return errors). |
 | Result | Each matching ControlPlane in the Secret's namespace is enqueued as a `reconcile.Request`; an event matching no ControlPlane returns `nil`. |
@@ -2366,7 +2366,7 @@ ownership labels and applied unowned, and the finalizer sweeps it by those label
 | Condition | `CinderReady` |
 | Gate | `KeystoneReady == True` (Cinder validates every token against the Keystone child) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)). There is no OVN gate, and neither Glance nor Barbican gates the pass |
 | Projects / Owns | one `Cinder` child named `{controlplane.Name}-cinder` (`cinderNameSuffix`) in `cp.CinderNamespace()`; one `CinderBackend` satellite per `services.cinder.backends` entry, named after the entry itself, and one `CinderBackupBackend` named after `services.cinder.backupBackend`; the bus delivery beside the child, a `{controlplane.Name}-cinder-messaging` Secret (key `transport_url`) and, only while the shared bus declares `tls`, a `{controlplane.Name}-cinder-messaging-ca` Secret (key `ca.crt`); the `{controlplane.Name}-cinder` `KeystoneService` registration; and, on a managed database only, the per-ControlPlane DB-credential objects in the same namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `cinder-db-creds`, an mTLS client Certificate `{controlplane.Name}-cinder-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/cinder-{cinder-namespace}` (auth role `cinder-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-cinder-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/cinder/{cinder-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.cinder` is set |
-| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on `KeystoneReady`; `infraRequeueAfter` = **15s** while the bus material has not landed, while the backing services or the bus do not resolve, and while the child is not Ready; `korcRequeueAfter` = **10s** while the `cinder` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on `KeystoneReady`; `infraRequeueAfter` = **15s** while the bus material or the handed remote bus URL has not landed, while the backing services or the bus do not resolve, and while the child is not Ready; `korcRequeueAfter` = **10s** while the `cinder` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed |
 
 `reconcileCinder` runs in a fixed order: the not-managed branch first, then a
 nil-safety fail-safe on the resolved database, cache and shared bus (a
@@ -2512,10 +2512,10 @@ unowned, and the finalizer sweeps it by those labels.
 
 | Aspect | Value |
 | --- | --- |
-| File | `reconcile_nova.go`, `reconcile_service_messaging.go`, `reconcile_nova_dbcredentials.go`, `reconcile_nova_metadata_secret.go` |
+| File | `reconcile_nova.go`, `reconcile_service_messaging.go`, `reconcile_nova_dbcredentials.go`, `reconcile_nova_metadata_secret.go`, `reconcile_nova_remote_compute.go` |
 | Condition | `NovaReady` |
 | Gate | `KeystoneReady == True` (Nova validates every token against the Keystone child), `PlacementReady == True` (the conductor claims every instance's resources in Placement before it boots) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)). Neutron and Glance are required at admission but gate nothing here, and Cinder and Barbican are optional siblings |
-| Projects / Owns | one `Nova` child named `{controlplane.Name}-nova` (`novaNameSuffix`) in `cp.NovaNamespace()`; the bus delivery beside it, a `{controlplane.Name}-nova-messaging` Secret (key `transport_url`) and, only while the shared bus declares `tls`, a `{controlplane.Name}-nova-messaging-ca` Secret (key `ca.crt`); the `{controlplane.Name}-nova` `KeystoneService` registration; the generated metadata shared secret, an ESO `Password` generator and an `ExternalSecret` both named `{controlplane.Name}-nova-metadata-secret`, unless `services.nova.metadataSharedSecretRef` names one instead; and, on a managed database only, **two** per-ControlPlane DB-credential chains in the same namespace. In **Dynamic** mode (the managed-shared default) each chain carries a ServiceAccount (`nova-api-db-creds` / `nova-cell-db-creds`), an mTLS client Certificate (`{controlplane.Name}-nova-api-db-openbao-client` / `{controlplane.Name}-nova-db-openbao-client`), a `VaultDynamicSecret` generator reading `database/mariadb/creds/nova-api-{nova-namespace}` (auth role `nova-api-db`) or `database/mariadb/creds/nova-cell-{nova-namespace}` (auth role `nova-cell-db`), and a generator-backed `ExternalSecret` (`{controlplane.Name}-nova-api-db-credentials` / `{controlplane.Name}-nova-db-credentials`); in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/nova/{nova-namespace}/{controlplane.Name}/api-db` or `…/db` (properties `username`, `password`). Only when `spec.services.nova` is set |
+| Projects / Owns | one `Nova` child named `{controlplane.Name}-nova` (`novaNameSuffix`) in `cp.NovaNamespace()`; the bus delivery beside it, a `{controlplane.Name}-nova-messaging` Secret (key `transport_url`) and, only while the shared bus declares `tls`, a `{controlplane.Name}-nova-messaging-ca` Secret (key `ca.crt`); only while `services.nova.remoteCompute` is set, a `{controlplane.Name}-nova-remote-messaging` Secret (key `transport_url`) carrying the handed external bus URL; the `{controlplane.Name}-nova` `KeystoneService` registration; the generated metadata shared secret, an ESO `Password` generator and an `ExternalSecret` both named `{controlplane.Name}-nova-metadata-secret`, unless `services.nova.metadataSharedSecretRef` names one instead; and, on a managed database only, **two** per-ControlPlane DB-credential chains in the same namespace. In **Dynamic** mode (the managed-shared default) each chain carries a ServiceAccount (`nova-api-db-creds` / `nova-cell-db-creds`), an mTLS client Certificate (`{controlplane.Name}-nova-api-db-openbao-client` / `{controlplane.Name}-nova-db-openbao-client`), a `VaultDynamicSecret` generator reading `database/mariadb/creds/nova-api-{nova-namespace}` (auth role `nova-api-db`) or `database/mariadb/creds/nova-cell-{nova-namespace}` (auth role `nova-cell-db`), and a generator-backed `ExternalSecret` (`{controlplane.Name}-nova-api-db-credentials` / `{controlplane.Name}-nova-db-credentials`); in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/nova/{nova-namespace}/{controlplane.Name}/api-db` or `…/db` (properties `username`, `password`). Only when `spec.services.nova` is set |
 | Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on `KeystoneReady` or `PlacementReady`; `infraRequeueAfter` = **15s** while the bus material has not landed, while the backing services or the bus do not resolve, while a compute-config mirror cannot be served, and while the child is not Ready; `korcRequeueAfter` = **10s** while the `nova` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while either Dynamic DB credential has not landed |
 
 `reconcileNova` runs in a fixed order: the not-managed branch first, then a
@@ -2595,6 +2595,17 @@ services:
   `pruneServiceMessagingCA` runs on the far side of the child's readiness return
   for the same reason. The transport URL's digest is **not** projected: the nova
   operator rolls its pods off the Secret it derives itself.
+- **Remote compute:** `spec.remoteCompute` is assigned unconditionally from
+  `novaRemoteComputeSpec(cp)`: nil without `services.nova.remoteCompute`, and
+  otherwise the public Keystone URL (`keystonePublicEndpoint`) paired with the
+  `{controlplane.Name}-nova-remote-messaging` Secret
+  `reconcileNovaRemoteMessaging` wrote beside the child right after the shared
+  bus. Clearing the ControlPlane block reverts the child, and
+  `reapNovaRemoteMessaging` deletes the delivered Secret beside the CA-mirror
+  reap, once the child reports `observedGeneration >= generation`, because the
+  nova operator reads it on every pass until then. A webhook-bypassed
+  ControlPlane with no Keystone publication projects an empty `keystoneEndpoint`,
+  which the Nova CRD refuses under `NovaProjectionRejected`.
 - **Keystone endpoint:** `keystoneEndpoint` is derived top-down via
   `novaKeystoneEndpoint(cp)`, the cluster-local `{controlplane.Name}-keystone`
   Service URL while Nova and Keystone resolve to the same cluster, and the public
@@ -2659,9 +2670,13 @@ yields no target; any other list error fails `NovaReady` with
 `NovaComputeConfigError`. `mirrorNovaComputeConfig` copies the Secret into each
 target, stamped with this ControlPlane's ownership labels so the teardown reaps
 it with the rest, and with `nova.openstack.c5c3.io/compute-config-mirror:
-"true"`. A target that cannot be served parks `NovaReady` rather than failing
-the pass: the control plane is up, but a compute cluster that never receives the
-contract registers no hypervisor.
+"true"`. While `services.nova.remoteCompute` is set the source is the remote
+contract, `{controlplane.Name}-nova-remote-compute-config`, whose addresses a
+compute cluster reaches; the mirror keeps the in-cluster contract's name, the
+one a NovaCompute reads from its Nova's `status.computeConfigSecretRef`. A
+target that cannot be served parks `NovaReady` rather than failing the pass: the
+control plane is up, but a compute cluster that never receives the contract
+registers no hypervisor.
 
 The plane records nothing in its status about what it mirrored, because
 `reconcileNova` runs in the parallel group, which keeps only conditions and
@@ -2675,8 +2690,9 @@ Unsetting `spec.services.nova` deletes nothing on its own. With
 `c5c3.io/allow-nova-deletion: "true"`, `deleteOrphanedNova` releases the `Nova`
 child, both DB-credential chains (each `ExternalSecret`, its `VaultDynamicSecret`,
 its client Certificate and its ServiceAccount), the metadata `ExternalSecret` and
-the `Password` generator behind it, the two messaging Secrets, and finally the
-`KeystoneService` registration, whose finalizer is what tears the compute catalog
+the `Password` generator behind it, the three messaging Secrets (the shared bus,
+its CA mirror, and the remote bus URL), and finally the `KeystoneService`
+registration, whose finalizer is what tears the compute catalog
 rows, the service user and its project down. The materialised metadata Secret
 carries ESO's own owner reference, so it comes down with its ExternalSecret. Each
 object is only removed while this ControlPlane still owns it, so a foreign object
@@ -2701,6 +2717,8 @@ unowned, and the finalizer sweeps it by those labels.
 | the shared bus has not delivered its transport URL yet | False | `WaitingForMessagingCredentials` | requeue 15s; nothing is written, so the child never sees a partial URL |
 | the messaging CA bundle Secret is absent or carries no data under its key | False | `WaitingForMessagingCABundle` | requeue 15s |
 | resolving the URL, writing either messaging Secret, or reaping the stale CA mirror after the child stopped naming it fails | False | `NovaMessagingError` | returns the error |
+| `services.nova.remoteCompute` is set but the handed Secret or its key is missing or empty | False | `WaitingForRemoteMessaging` | requeue 15s; the message is prefixed `services.nova.remoteCompute.transportURLSecretRef:` and no Nova child is written this pass |
+| the handed URL is not a `rabbit://` URL, or writing or reaping `{controlplane.Name}-nova-remote-messaging` fails | False | `NovaRemoteMessagingError` | returns the error, which names the scheme and never the URL |
 | the cluster the Nova namespace resolves to is unavailable | False | `TargetClusterUnavailable` | the resolver's own message; a wait, not a failed reconcile. Requeue 15s from the bus delivery, the metadata secret and the compute-config mirror, 10s from the registration mirror and the DB credentials |
 | the projected registration has not provisioned the account yet | False | `WaitingForServiceRegistration` | requeue 10s; no Nova child is written until the Keystone user and its password exist. See [Built-in service registrations](#built-in-service-registrations) |
 | projecting, reading or mirroring the registration child fails | False | `ServiceRegistrationError` | returns the error |
@@ -2714,7 +2732,7 @@ unowned, and the finalizer sweeps it by those labels.
 | Nova child not yet Ready | False | `WaitingForNova` | requeue 15s |
 | projected Nova spec rejected (HTTP 422 Invalid) | False | `NovaProjectionRejected` | returns the error; the projection violates a Nova CRD/webhook rule, so reconcile the ControlPlane spec to a valid projection to recover |
 | Nova create/update fails | False | `NovaError` | returns the error |
-| the compute contract has not been published yet | False | `WaitingForComputeConfig` | requeue 15s; only reachable once a NovaCompute runs on a cluster other than the Nova's own |
+| the compute contract has not been published yet | False | `WaitingForComputeConfig` | requeue 15s; only reachable once a NovaCompute runs on a cluster other than the Nova's own. The message names the source waited for, `{controlplane.Name}-nova-remote-compute-config` while `services.nova.remoteCompute` is set |
 | listing the NovaComputes, reading the compute contract, or writing a mirror fails | False | `NovaComputeConfigError` | returns the error |
 | Nova child Ready, every mirror target served, and its registration Ready | True | `NovaReady` | — |
 
@@ -3970,7 +3988,9 @@ namespace, and through `projectedRegistrationKeys` for both registration keys.
   rather than being deleted by name.
 - The bus delivery: the `{controlplane.Name}-nova-messaging` Secret and the
   `{controlplane.Name}-nova-messaging-ca` mirror, both from
-  `serviceMessagingSecrets(novaMessagingTarget(cp))`.
+  `serviceMessagingSecrets(novaMessagingTarget(cp))`, and the
+  `{controlplane.Name}-nova-remote-messaging` Secret the remote compute contract
+  reads its transport URL from.
 - The `Nova` child and the `{controlplane.Name}-nova` `KeystoneService`
   registration, whose finalizer removes the compute catalog rows, the service
   user, and its project.
@@ -4214,7 +4234,8 @@ cross-namespace teardown assertions.
 | `reconcile_service_messaging_test.go` | Bus delivery on the Neutron target, a second target under its own names, `serviceMessagingSpec`, the CA-mirror reap gate, the teardown stubs |
 | `reconcile_cinder_test.go` | Cinder projection, the Keystone and registration gates, the satellite projection and prune, the derived Glance/Barbican/internal-tenant fields, the replica pins, the orphan teardown |
 | `reconcile_cinder_dbcredentials_test.go` | Cinder DB-credential names, OpenBao paths, and the effective mode |
-| `reconcile_nova_test.go` | Nova projection, the Keystone and Placement gates, the registration gate, the two database blocks and their shared mode, the console-proxy shapes, the replica pins, the compute-config mirror seam, the orphan teardown |
+| `reconcile_nova_test.go` | Nova projection, the Keystone and Placement gates, the registration gate, the two database blocks and their shared mode, the console-proxy shapes, the replica pins, the compute-config mirror seam and its remote source, the remote-compute projection and reap, the orphan teardown |
+| `reconcile_nova_remote_compute_test.go` | The remote bus delivery: the projected `spec.remoteCompute`, the handed URL landing in `{controlplane.Name}-nova-remote-messaging` at home and on a target, its rotation, the waits and errors, and the reap once the child has converged |
 | `reconcile_nova_dbcredentials_test.go` | The two Nova DB-credential targets: names, OpenBao roles and paths, and the one effective mode both carry |
 | `reconcile_nova_metadata_secret_test.go` | The generated metadata shared secret: the `Password` generator, the non-refreshing ExternalSecret and its `shared_secret` rewrite, the resolved reference, the pair a reference to the generated Secret keeps, and the reap once `metadataSharedSecretRef` names another Secret, on the target cluster as well as at home |
 | `builtin_registrations_test.go` | The shared registration leg: the projected child, the gate, the credential mirror, the reclaim of foreign spec fields, and the per-service roles |
@@ -4293,6 +4314,8 @@ operators/c5c3/
     │   │                                        roles and paths, the one shared mode
     │   ├── reconcile_nova_metadata_secret.go   The generated metadata shared secret (Password
     │   │                                        generator + ExternalSecret, resolve and prune)
+    │   ├── reconcile_nova_remote_compute.go    The remote bus delivery, the projected
+    │   │                                        spec.remoteCompute, and its reap
     │   ├── reconcile_korc.go                   reconcileKORC (AC mint/re-mint, drift detection)
     │   ├── reconcile_admincredential.go        reconcileAdminCredential (assemble + push + re-push
     │   │                                        nudges, semantic clouds.yaml gate)
@@ -4344,6 +4367,7 @@ operators/c5c3/
     │   ├── reconcile_cinder_dbcredentials_test.go Cinder DB-credential tests
     │   ├── reconcile_nova_dbcredentials_test.go Nova DB-credential tests
     │   ├── reconcile_nova_metadata_secret_test.go Nova metadata shared-secret tests
+    │   ├── reconcile_nova_remote_compute_test.go Nova remote bus delivery tests
     │   ├── reconcile_korc_test.go              K-ORC mint/re-mint tests
     │   ├── reconcile_admincredential_test.go   AdminCredential tests
     │   ├── reconcile_catalog_test.go           Catalog (managed-mode) tests

@@ -14,7 +14,10 @@ One `Nova` CR describes the compute control plane: its OpenStack release, the
 container image, the two database schemas, the cache and message-bus
 connections, the Keystone integration, the services Nova calls as a client, and
 the pod-level knobs of its five Deployments. The compute nodes are not in this
-spec. They read the contract Secret `status.computeConfigSecretRef` names.
+spec. They read the contract Secret `status.computeConfigSecretRef` names. A
+compute on another cluster reads a copy of the remote contract
+`status.remoteComputeConfigSecretRef` names, and the ControlPlane mirrors that
+copy under the name `status.computeConfigSecretRef` gives.
 
 `kubectl get novas` shows Ready
 (`.status.conditions[?(@.type=='Ready')].status`), Release
@@ -37,6 +40,7 @@ spec. They read the contract Secret `status.computeConfigSecretRef` names.
 | `consoleProxy` | [`NovaConsoleProxySpec`](#novaconsoleproxyspec) | no | The console proxy: the switch that projects it, its Deployment, and its own gateway block |
 | `keystoneEndpoint` | `string` | yes | The Keystone auth URL rendered as `[keystone_authtoken] auth_url` and as the `auth_url` of every client section; `MinLength=1`, pattern `^https?://`, and the webhook also requires a parseable URL with a host. Nova reaches it server-side on every request and before every outgoing call, so it must resolve from inside the cluster. Nova has no Keystone-free posture: an instance boot needs a Placement allocation, a Neutron port and a Glance image, and all three are authenticated calls |
 | `keystonePublicEndpoint` | `string` | no | The browser-facing Keystone base URL rendered as `www_authenticate_uri`, the address a 401 points unauthenticated clients at. When empty the operator falls back to `keystoneEndpoint` at render time (`EffectiveKeystonePublicEndpoint`), correct only when the internal and public URLs coincide |
+| `remoteCompute` | [`NovaRemoteComputeSpec`](#novaremotecomputespec) | no | Publishes a second compute contract, `{name}-remote-compute-config`, for a `nova-compute` on another cluster: the same keys, with addresses that leave the cluster. Requires `messaging.tls` (CEL rule on the spec, mirrored by the webhook). When nil no remote contract is published, and one published earlier is deleted. See [The remote contract](#the-remote-contract) |
 | `serviceUser` | [`ServiceUserSpec`](#serviceuserspec) | yes | The Keystone service account and the Secret holding its password. The same account validates tokens and makes every outgoing call |
 | `region` | `string` | no | The Keystone region (`region_name` in both identity sections and in every client section); omitted when empty, and Nova then uses the catalog's default region |
 | `endpoints` | [`NovaEndpointsSpec`](#novaendpointsspec) | no | Pins the services Nova calls as a client and switches the two optional ones on |
@@ -137,6 +141,15 @@ reach, or none at all.
 | `barbican.enabled` | `bool` | no | `false` | Renders `[key_manager]` and `[barbican]`, which is what lets Nova read the key of an encrypted volume |
 | `barbican.override` | `string` | no | | `[barbican] barbican_endpoint`, read only while `barbican.enabled` is true |
 
+### NovaRemoteComputeSpec
+
+The two addresses the remote contract cannot derive from the rest of the spec.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `keystoneEndpoint` | `string` | yes | | The Keystone v3 URL a compute on another cluster authenticates against. It renders as every `auth_url` of the remote fragment and as `[barbican] auth_endpoint`; `MinLength=1`, pattern `^https://`, and the webhook also requires a parseable URL with a host and scheme `https`. The nova service-user password is sent to it on every token request, across a cluster boundary |
+| `transportURLSecretRef` | `SecretRefSpec` | yes | `key` to `transport_url` | A Secret in this Nova's namespace, on the cluster its children run on, holding the complete `rabbit://` URL of the broker's external listener. The operator reads it and never writes it, and copies the value into the remote contract's `transport_url`. `name` is required (`MinLength=1`) |
+
 ### DBArchiveSpec
 
 Nova never hard-deletes on its own: deleting an instance flips its row to
@@ -203,10 +216,12 @@ while it is disabled, gives the scheduler and the conductor the
 200-second grace period and two workers each, materializes both `uwsgi` blocks
 and `spec.logging`, fills the cache backend, and materializes the
 `ServiceUserSpec` identity defaults together with the two Secret keys
-(`password` and `shared_secret`). It leaves `spec.dbArchive` untouched, because
-those fields are resolved at reconcile time.
+(`password` and `shared_secret`), and fills an empty
+`spec.remoteCompute.transportURLSecretRef.key` with `transport_url` while that
+block is set. It leaves `spec.dbArchive` untouched, because those fields are
+resolved at reconcile time.
 
-Six CEL rules sit on `NovaSpec` itself:
+Seven CEL rules sit on `NovaSpec` itself:
 
 | Rule | Message |
 | --- | --- |
@@ -216,6 +231,7 @@ Six CEL rules sit on `NovaSpec` itself:
 | `self.apiDatabase.database != self.database.database + '_cell0'` | `apiDatabase must not name the cell0 schema derived from database` |
 | the two `credentialsMode` values, each resolved to `Static` when empty | `apiDatabase and database must use the same credentialsMode` |
 | `!has(self.consoleProxy.deployment)` while the proxy is disabled | `consoleProxy.deployment must not be set when consoleProxy.enabled is false` |
+| `!has(self.remoteCompute) \|\| has(self.messaging.tls)` | `remoteCompute requires messaging.tls: a compute on another cluster verifies the broker against the messaging CA bundle` |
 
 Five more sit on the two database blocks:
 
@@ -242,15 +258,24 @@ The console rule only ever meets a block written past the defaulting webhook,
 which removes the block while the proxy is disabled. The invalid-cr corpus
 therefore carries no fixture for it; the CRD-only envtest pins it.
 
+The remote-compute rule ties the second contract to a verified bus. A compute on
+another cluster reaches the broker across a cluster boundary, with the broker
+credentials in the URL, and the messaging CA bundle is the only trust anchor
+either contract carries.
+
 The validating webhook accumulates every violation into one admission response.
 It repeats the schema-layer rules as defense in depth (the image tag/digest
 XOR, both databases' mutual-exclusivity and Dynamic-requires-clusterRef rules,
-the database rules and transition rules above, the console rule, the cache and messaging rules,
+the database rules and transition rules above, the console rule, the remote-compute
+rule as a `Required` error on `spec.messaging.tls`, the `https` scheme of
+`spec.remoteCompute.keystoneEndpoint`, the cache and messaging rules,
 the secret-store-ref shape, the replica floor of every block, the worker floors,
 the autoscaling bounds including the implicit `minReplicas` default from
 `spec.api.deployment.replicas`, the network-policy ingress source, and the
-hostname and `parentRef.name` of all three gateway blocks) and adds the rules
-CEL cannot express: the URL shape of every endpoint field, the cron grammar of
+hostname and `parentRef.name` of all three gateway blocks, and the non-empty
+`spec.remoteCompute.transportURLSecretRef.name`) and adds the rules CEL cannot
+express: the URL shape of every endpoint field, `spec.remoteCompute.keystoneEndpoint`
+included (its `url.Parse` also refuses a newline), the cron grammar of
 `spec.dbArchive.schedule`, the logging enums including the per-logger-level map,
 the graceful-termination arithmetic (`preStopSleepSeconds <
 terminationGracePeriodSeconds`, and each `harakiri` strictly inside its own
@@ -500,6 +525,7 @@ and rolling every pod.
 | `upgradePhase` | The current phase during an active release upgrade (`Expanding`, `Migrating`, `RollingUpdate`, `Contracting`); empty when no upgrade is in flight |
 | `cells` | One entry per mapped cell, `name` and `uuid`, cell0 first. The UUIDs are read back off the `db-sync` Job's termination log, because nova generates them at map time and a per-cell `nova-manage cell_v2` command addresses a cell by UUID |
 | `computeConfigSecretRef` | Names the compute-contract Secret, `{name}-compute-config` |
+| `remoteComputeConfigSecretRef` | Names the remote compute-contract Secret, `{name}-remote-compute-config`, on this Nova's own cluster. A copy on a compute cluster carries the name its copier gives it; the ControlPlane mirror keeps the `computeConfigSecretRef` name. Set once that Secret is written while `spec.remoteCompute` is set, and cleared when the block is removed |
 
 ## Compute contract
 
@@ -568,6 +594,42 @@ projects, the ControlPlane copies the Secret there under the same name, labelled
 the Nova on that cluster deletes the copy when it is torn down. A Secret without
 that label (the Nova's own, or one copied by hand) is never reaped.
 
+### The remote contract
+
+`{name}-compute-config` names in-cluster addresses: the broker's Service, the
+in-cluster Keystone, and the `internal` catalog rows, which name Service URLs. A
+`nova-compute` on another cluster reaches none of them. While `spec.remoteCompute`
+is set, the ComputeConfig step also publishes `{name}-remote-compute-config` for
+such a compute, and names it in `status.remoteComputeConfigSecretRef`. The
+in-cluster contract keeps its bytes, so a compute beside this Nova keeps reading
+it.
+
+The remote contract carries the same six keys. `password`,
+`metadata_proxy_shared_secret`, `cell_name` and `ca.crt` hold the same values,
+and the fragment has the same sections and the same mount path. It differs in
+four places:
+
+| Difference | In-cluster contract | Remote contract |
+| --- | --- | --- |
+| Every `auth_url` (`[keystone_authtoken]`, `[service_user]`, `[placement]`, `[neutron]`, `[cinder]`) and `[barbican] auth_endpoint` | `spec.keystoneEndpoint` | `spec.remoteCompute.keystoneEndpoint` |
+| The catalog row each client section resolves | `valid_interfaces = internal`, `catalog_info = block-storage:cinder:internalURL`, `barbican_endpoint_type = internal` | `valid_interfaces = public`, `catalog_info = block-storage:cinder:publicURL`, `barbican_endpoint_type = public` |
+| Override keys | `endpoint_override`, `endpoint_template` and `barbican_endpoint` from `spec.endpoints` | none: an override names an address the control-plane pods dial |
+| `transport_url` | the URL the control-plane pods use | the value of `spec.remoteCompute.transportURLSecretRef` |
+
+`www_authenticate_uri`, `[oslo_messaging_rabbit]`, `[vnc]` and `[upgrade_levels]`
+are the same in both documents.
+
+A missing transport URL Secret, or an empty key in it, sets
+`ComputeConfigReady=False` under `WaitingForRemoteTransportURL` with a message
+prefixed `spec.remoteCompute.transportURLSecretRef:`. That wait does not stop the
+pipeline, because the remote contract is an output only a compute reads, and a
+remote Secret published earlier stays as it was. A URL whose scheme is not
+`rabbit` is an error (`ComputeConfigError`), which does halt the steps behind the
+ComputeConfig step until the Secret is fixed. The error names the scheme and
+never the URL, which carries the broker password. Removing `spec.remoteCompute`
+deletes the remote Secret, unless a same-named Secret is not this Nova's, and
+clears the status reference.
+
 ## Network policy
 
 While `spec.networkPolicy` is set, one NetworkPolicy covers every pod of the CR.
@@ -596,6 +658,10 @@ Egress is auto-derived in a fixed order:
 6. The broker port of the resolved transport URL. It is omitted while the
    messaging step has not materialised a URL yet.
 7. Everything in `spec.networkPolicy.additionalEgress`, appended last.
+
+The remote transport URL contributes no rule: only a compute on another cluster
+dials it, never a pod of this CR, so the broker rule keeps the port of the
+in-cluster URL.
 
 The sibling rule reads only the port off each endpoint. A block that pins an
 override contributes that URL's port; a block that pins none contributes the
@@ -644,6 +710,7 @@ The other children carry a suffix:
 | Cell DB-connection Secret | `{name}-db-connection` | Derived pymysql DSN of the cell schema, stable name |
 | Transport-URL Secret | `{name}-transport-url` | Derived `rabbit://` URL, stable name |
 | Compute-contract Secret | `{name}-compute-config` | Stable name, updated in place |
+| Remote compute-contract Secret | `{name}-remote-compute-config` | Only while `spec.remoteCompute` is set; stable name, updated in place |
 | DB-sync Job | `{name}-db-sync` | Both schema migrations and the cell mapping |
 | Upgrade Jobs | `{name}-db-expand`, `{name}-db-migrate`, `{name}-db-contract` | The three release-upgrade phases |
 | DB-archive CronJob | `{name}-db-archive` | `nova-manage db archive_deleted_rows` |
@@ -725,6 +792,8 @@ messaging union rules, the messaging TLS rule, the archive and scheduler bounds,
 the two cross-database rules, the cell0 name rules, both `extraConfig` guards,
 the two `metadata.name` rules, the two empty-`name` reference rules
 (`spec.metadata.sharedSecretRef`, `spec.targetClusterRef`), the region
-control-character rule, the URL fields and the console gateway path.
+control-character rule, the URL fields, the console gateway path, and the two
+`spec.remoteCompute` rules (the `messaging.tls` requirement and the
+`https` pattern of its `keystoneEndpoint`, with and without a scheme).
 The functional suites that reconcile a Nova to Ready are described in
 [Nova E2E Test Suites](../testing/nova-e2e-tests.md).

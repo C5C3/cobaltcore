@@ -117,6 +117,7 @@ For a `Nova` named `{name}`:
 | Secret | `{name}-api-db-connection`, `{name}-db-connection` | The two derived pymysql DSNs |
 | Secret | `{name}-transport-url` | The derived `rabbit://` URL |
 | Secret | `{name}-compute-config` | The compute contract, updated in place under a stable name |
+| Secret | `{name}-remote-compute-config` | The remote compute contract, only while `spec.remoteCompute` is set |
 | Job | `{name}-db-sync` | Both schema migrations and the cell mapping |
 | Job | `{name}-db-expand`, `{name}-db-migrate`, `{name}-db-contract` | The three release-upgrade phases |
 | CronJob | `{name}-db-archive` | The recurring `nova-manage db archive_deleted_rows` |

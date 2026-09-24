@@ -29,7 +29,7 @@ owns a `nova-pss` namespace labelled with the restricted profile, and
 `nova-operator/metrics` installs a second nova-operator Helm release in
 `nova-system`.
 
-### Two fixture tiers
+### Fixture tiers
 
 Eight suites run a Nova with nothing beside it but the broker: `scale`,
 `healthcheck`, `httproute`, `network-policy`, `deletion-cleanup`,
@@ -42,6 +42,11 @@ Neutron or Glance in the cluster. The CRD requires `spec.keystoneEndpoint` and
 convention URL nothing serves and point the service user at the kind-only
 `keystone-admin` Secret from `deploy/kind/infrastructure`. Nothing validates
 that password here.
+
+`remote-compute-contract` runs lighter still, with no broker either. It asserts
+the two compute contracts the ComputeConfig step publishes, and that step runs
+before the Database step, so no step it waits on dials a backend. Every address
+in its CR is a placeholder, and its Nova never reaches `Ready`.
 
 The four suites that boot a server carry the whole stack a boot touches:
 `basic-deployment`, `basic-deployment-2026-1`, `db-archive` and `console-proxy`
@@ -221,7 +226,8 @@ a labelled namespace of its own.
 | [release-upgrade](#release-upgrade) | `nova-upgrade` | Cross-release upgrade 2025.2 to 2026.1: phase progression, the three phase Jobs, the five Deployments, the cell mappings and the API on the new release |
 | [compute-node-pool](#compute-node-pool) | `nova-pool`, pools `pool-a` and `pool-b` | A NovaCompute on the fake driver: Ready, the node Active with its service up, the wait-for-chassis gate, both aggregates marked, a conflicting second pool, the drain of a node with a server on it, the release, and the teardown of the last pool |
 | [console-proxy](#console-proxy) | `nova-vnc` | The console URL the API publishes carries the gateway hostname, the token handshake through it reaches the instance console, and an invalid token is turned down |
-| [invalid-cr](#invalid-cr) | (rejected at admission) | `Nova` rejection corpus: the release pattern, the image and database and cache and messaging union rules, the messaging TLS rule, the archive and scheduler bounds, the two cross-database rules, the cell0 name rules, both `extraConfig` guards, the two name rules, the URL fields and the console gateway path. See [Nova CRD](../nova/nova-crd.md#chainsaw-e2e-tests) |
+| [remote-compute-contract](#remote-compute-contract) | `nova-rc` | The remote compute contract `spec.remoteCompute` publishes: both status refs, the six keys, the external transport URL, a fragment addressed at the public Keystone URL and the public catalog rows, the in-cluster contract unchanged, and the Secret gone once the block is removed |
+| [invalid-cr](#invalid-cr) | (rejected at admission) | `Nova` rejection corpus: the release pattern, the image and database and cache and messaging union rules, the messaging TLS rule, the archive and scheduler bounds, the two cross-database rules, the cell0 name rules, both `extraConfig` guards, the two name rules, the URL fields, the console gateway path and the two `spec.remoteCompute` rules. See [Nova CRD](../nova/nova-crd.md#chainsaw-e2e-tests) |
 | [invalid-novacompute-cr](#invalid-novacompute-cr) | (rejected at admission) | `NovaCompute` rejection corpus: the novaRef, selector, name and target rules, the offboarding toleration by key and as a wildcard, the cpuModels rule both ways, the two libvirt enums, a rejected extraConfig key, maxUnavailable under OnDelete and the image pin. See [NovaCompute CRD](../nova/novacompute-crd.md#defaulting-and-validation) |
 | [metrics](#metrics) | — (operator-level) | nova-operator chart renders and removes the ServiceMonitor |
 
@@ -655,6 +661,33 @@ proxy's HTTPRoute.
 
 ---
 
+### remote-compute-contract
+
+**File:** `tests/e2e/nova/remote-compute-contract/chainsaw-test.yaml`
+
+**Purpose:** The remote compute contract as a live API server stores it. A Nova
+with a verified bus and `spec.remoteCompute` publishes
+`nova-rc-remote-compute-config` beside `nova-rc-compute-config`. The suite
+decodes both Secrets and checks each expected line in the INI section it belongs
+to. No broker, Keystone or database runs for it: the brownfield database host,
+the cache servers, the in-cluster bus URL and the external listener are
+placeholders, because the ComputeConfig step runs before the Database step and
+nothing before it dials them. The db-sync Job the Database step creates against
+the placeholder host goes with the Nova at cleanup.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply the inputs, then the CR | `apply` | The seven input Secrets, then `nova-rc` with Cinder and Barbican enabled and `remoteCompute` naming `https://keystone.example.test/v3` and `nova-rc-remote-messaging` |
+| 2 | Assert the condition and both status refs | `assert` (3m) | `ComputeConfigReady=True/ComputeConfigPublished`, `status.computeConfigSecretRef.name: nova-rc-compute-config`, `status.remoteComputeConfigSecretRef.name: nova-rc-remote-compute-config` |
+| 3 | Assert the content of both contracts | `script` (1m) | The remote Secret has six keys and `transport_url` is `rabbit://nova:nova@198.51.100.10:5671/`. The remote fragment has `auth_url = https://keystone.example.test/v3` in `[keystone_authtoken]` and `[service_user]`, `valid_interfaces = public` in `[placement]`, `[neutron]` and `[glance]`, `catalog_info = block-storage:cinder:publicURL`, `barbican_endpoint_type = public` and `ssl_ca_file = /etc/nova/compute-config/ca.crt`. The in-cluster fragment keeps its `auth_url` and `valid_interfaces = internal` |
+| 4 | Remove `spec.remoteCompute` | `script` + `error` + `script` | A JSON patch removes the block; the remote Secret is gone, and a script polls until `status.remoteComputeConfigSecretRef` prints empty, since a JMESPath expression on the absent field would abort the assertion |
+
+**Fixtures:** `00-secrets.yaml`, `01-nova-cr.yaml`
+
+---
+
 ### invalid-cr
 
 **File:** `tests/e2e/nova/invalid-cr/chainsaw-test.yaml`
@@ -700,8 +733,11 @@ is generated by `_generate.py`.
 | 26 | `25-name-collides-with-sibling-child.yaml` | `metadata.name` … `so the two CRs would share and delete each other` |
 | 27 | `26-region-control-chars.yaml` | `spec.region` … `value must not contain a newline or carriage return` |
 | 28 | `27-consoleproxy-gateway-path.yaml` | `consoleProxy.gateway.path` … `the console page and its WebSocket are served from the root of the console hostname` |
+| 29 | `28-remotecompute-without-messaging-tls.yaml` | `remoteCompute requires messaging.tls` |
+| 30 | `29-remotecompute-keystoneendpoint-not-url.yaml` | `remoteCompute.keystoneEndpoint` … `should match` |
+| 31 | `30-remotecompute-keystoneendpoint-plaintext.yaml` | `remoteCompute.keystoneEndpoint` … `^https://` |
 
-**Fixtures:** `_generate.py` and the 28 numbered fixtures above.
+**Fixtures:** `_generate.py` and the 31 numbered fixtures above.
 `make verify-invalid-cr-fixtures` runs `_generate.py --check` and
 `test_generate.py`, so a hand-edited fixture fails the build before the
 cluster-bound job runs.
@@ -989,7 +1025,7 @@ tests/e2e/nova/
 │   ├── chainsaw-test.yaml             Nova rejection corpus
 │   ├── _generate.py                   Generator for the fixtures below
 │   ├── test_generate.py               Unit test of the generator
-│   └── 00-…-27-….yaml                 Twenty-eight rejection fixtures
+│   └── 00-…-30-….yaml                 Thirty-one rejection fixtures
 ├── invalid-novacompute-cr/
 │   ├── chainsaw-test.yaml             NovaCompute rejection corpus
 │   ├── _generate.py                   Generator for the fixtures below
@@ -1018,6 +1054,10 @@ tests/e2e/nova/
 │   ├── 03-metadata-secret.yaml        The metadata shared secret
 │   ├── 04-nova-cr.yaml                Nova CR nova-upgrade on 2025.2
 │   └── 05-patch-upgrade.yaml          Patch to release and image tag 2026.1
+├── remote-compute-contract/
+│   ├── chainsaw-test.yaml             Both compute contracts, and the remote one's removal
+│   ├── 00-secrets.yaml                The seven input Secrets, every address a placeholder
+│   └── 01-nova-cr.yaml                Nova CR nova-rc with spec.remoteCompute
 └── scale/
     ├── chainsaw-test.yaml             API replica scaling and PDB policy
     ├── 00-metadata-secret.yaml        The metadata shared secret
