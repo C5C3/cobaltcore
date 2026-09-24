@@ -221,6 +221,15 @@ operators if you also need to remove the generator objects.
   `DB_CREDS_*` beyond that, raise the role's `token_ttl`/`token_max_ttl` in
   lockstep — a shorter token silently drops the ephemeral MySQL user under a
   running Glance long before the advertised lease end.
+- **No per-user connection cap on the dynamic path.** In Static mode the
+  operator sizes the MariaDB `User` CR's `max_user_connections` for the CR's
+  topology, counting the API pods, their uWSGI processes and threads or eventlet
+  workers, the rollout surge, and headroom for a migration Job. The engine's
+  `CREATE USER` statement sets no cap, so once Glance runs on an engine-issued
+  login the server's own `max_connections` is the only bound. Below 2026.1 the
+  `[database] max_pool_size = 5` and `max_overflow = 0` pin still bounds each
+  eventlet worker at five connections, because it is config, not a user
+  attribute.
 - **Revocation semantics:** revoking a lease runs `DROP USER`, which rejects
   *new* connections. Already-open sessions of a dropped user may persist until
   they disconnect.

@@ -69,6 +69,10 @@ sibling Glance operator's `workers` field has no counterpart here.
 | --- | --- | --- | --- |
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | no | uWSGI application-server parameters |
 
+The process and thread counts, together with the replica count, size the
+database user's `max_user_connections`; see
+[Connection cap](./placement-reconciler.md#connection-cap).
+
 ### UWSGISpec
 
 A cross-field CEL rule mirrors the webhook: `httpKeepAliveTimeout` may only be

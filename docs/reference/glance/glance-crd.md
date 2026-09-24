@@ -71,6 +71,10 @@ either mode, the operator simply ignores the inert one.
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | no | release ≥ `2026.1` (uWSGI launch mode) | uWSGI application-server parameters; inert below `2026.1` |
 | `workers` | `*int32` (Minimum=1) | no | release < `2026.1` (eventlet launch mode) | The eventlet API worker count, rendered as `[DEFAULT] workers`; inert from `2026.1` |
 
+The process, thread and worker counts, together with the replica count, size
+the database user's `max_user_connections`; see
+[Connection cap](./glance-reconciler.md#connection-cap).
+
 ### UWSGISpec
 
 A cross-field CEL rule mirrors the webhook: `httpKeepAliveTimeout` may only be

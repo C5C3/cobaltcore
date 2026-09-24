@@ -152,6 +152,61 @@ ready, it advances the phase to `Contracting` and requeues so the contract Job
 runs. See the [Glance Upgrade Flow](./glance-upgrade-flow.md) for the phase
 table, condition reasons, events, and abort semantics.
 
+### Connection cap
+
+The operator sets the MariaDB `User`'s `max_user_connections` to a cap sized
+for the CR's own topology. It owns the field and applies the computed figure on
+every reconcile, so a value edited on the `User` by hand is reset; the cap
+rises only with the counts in the formula below. The mariadb-operator default
+of 10 is too small for the default fleet: three 2026.1 pods of two uWSGI
+processes hold up to 30 connections, and a single eventlet worker without the
+pool pin described below opened 32. A cap below the fleet's demand does not
+degrade gracefully. The process that opens the connection past it gets MySQL
+error 1226: at start-up its pod crash-loops, and under load the upload, import
+or snapshot it serves answers HTTP 500.
+
+```text
+(apiPods + 1) x perPod + 2
+
+perPod under uWSGI (2026.1 and later):  uwsgiProcesses x (uwsgiThreads + 5)
+perPod under eventlet (below 2026.1):   workers x 5
+```
+
+The defaults size to 50 at 2026.1 and 42 below it. `apiPods` is the
+autoscaling ceiling when an HPA owns the count, and the `+ 1` beside it is the
+rolling-update surge. Under uWSGI each request thread holds one connection, and
+the `+ 5` is what the per-process async import pool added on top while
+`web-download` imports ran. A heavier import mix pushes that term toward
+`[wsgi] task_pool_threads`, which defaults to 16 per process. Under eventlet
+each worker is bounded at a pool size of 5 by the pool pin.
+Each launch mode ignores the other's knob: `spec.apiServer.workers` is inert
+under uWSGI, and `spec.apiServer.uwsgi` is inert below 2026.1.
+
+`perPod` is the largest figure over `spec.openStackRelease`,
+`status.installedRelease` and `status.targetRelease`. The launch modes mix only
+across a release boundary. During the `RollingUpdate` phase of a 2025.2 to
+2026.1 upgrade the old eventlet pods run beside the new uWSGI pods, and an abort
+mixes them the other way. Sized from the spec release alone, a 2025.2 Glance
+with `workers: 8` would drop to a cap of 50 mid-upgrade while its old pods hold
+up to 120. The trailing `+ 2` is headroom for one migration Job (db-sync, or the
+active expand, migrate or contract Job) overlapping a `{name}-db-purge` run. The
+`cache-maintenance` sidecar opens no database connection.
+
+Below 2026.1 the operator renders `[database] max_pool_size = 5` and
+`max_overflow = 0`. The eventlet server runs every request as a greenthread on
+one pool per worker, so with oslo.db's default overflow of 50 a worker's
+connection count follows client concurrency, up to 55, and no topology figure
+bounds it. With the pin, greenthreads beyond five wait for a pooled connection,
+up to SQLAlchemy's `pool_timeout` of 30 s, instead of failing with error 1226.
+The pool size of 5 is oslo.db's default. The operator renders it anyway, so the
+figure the cap counts is one it sets rather than one it assumes. Measured
+against the 2025.2 image under 16 concurrent clients, the pinned worker served
+more requests than an unpinned one and logged no pool timeout. Under uWSGI
+neither key is rendered: the thread count bounds demand there, and the overflow
+pin would queue requests in any process running more than five threads. An
+`extraConfig` override of `[database] max_pool_size` or `max_overflow` is
+honoured and reported through `ExtraConfigHealthy`.
+
 ## DBPurge
 
 The DBPurge step runs in the parallel group, after Database and Deployment, so

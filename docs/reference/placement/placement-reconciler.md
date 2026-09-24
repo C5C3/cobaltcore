@@ -164,6 +164,31 @@ and `installedRelease` would advance off a run of the previous release's binary.
 The second guard compares `status.installedImage`, so it covers a digest-pinned
 image the first one cannot read.
 
+### Connection cap
+
+The operator sets the MariaDB `User`'s `max_user_connections` to a cap sized
+for the CR's own topology. It owns the field and applies the computed figure on
+every reconcile, so a value edited on the `User` by hand is reset; the cap
+rises only with the counts in the formula below. The mariadb-operator default
+of 10 is too small for the default fleet: three pods of two processes peak at 12
+connections under load, and at 16 during a rollout. The process that opens the
+connection past the cap gets MySQL error 1226: at start-up its pod crash-loops,
+and under load the request answers HTTP 500 and the Nova scheduling call behind
+it fails.
+
+```text
+(apiPods + 1) x uwsgiProcesses x uwsgiThreads x 2 + 2
+```
+
+The default topology sizes to 18. `apiPods` is the autoscaling ceiling when an
+HPA owns the count, and the `+ 1` beside it is the rolling-update surge. Each
+request thread counts twice because a request can hold a second connection
+behind its first. Measured on the `ghcr.io/c5c3/placement` 2025.2 and 2026.1
+images, a single-threaded process peaked at 2 connections, a 4-thread process at
+6, and an 8-thread process at 9.
+The trailing `+ 2` is the `{name}-db-sync` Job, whose three commands run in
+sequence and hold up to two connections. Placement renders no CronJob.
+
 ## Requeue semantics
 
 | Interval | Used by |
