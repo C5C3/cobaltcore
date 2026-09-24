@@ -546,11 +546,8 @@ func TestNeutronValidateCreate_NameLengthBoundedByOVNDBSyncCronJob(t *testing.T)
 }
 
 // The bound is create-only. metadata.name is immutable, so on update it could
-// only ever fire against a CR a pre-upgrade operator already admitted — and the
-// validating webhook registers the update verb, so it also sees the
-// finalizer-removal update reconcileDelete issues. Rejecting that would wedge the
-// grandfathered CR in Terminating forever, with no field left to edit to repair
-// it.
+// only ever fire against a CR a pre-upgrade operator already admitted, and it
+// would refuse every update to that CR with no field left to edit to repair it.
 func TestNeutronValidateUpdate_OverlongNameStaysUpdatable(t *testing.T) {
 	g := gomega.NewWithT(t)
 	w := &NeutronWebhook{}
@@ -564,7 +561,72 @@ func TestNeutronValidateUpdate_OverlongNameStaysUpdatable(t *testing.T) {
 
 	_, err := w.ValidateUpdate(context.Background(), grandfathered, deleting)
 	g.Expect(err).NotTo(gomega.HaveOccurred(),
-		"an over-long grandfathered CR must stay updatable, or its deletion never completes")
+		"an over-long grandfathered CR must stay updatable, since its name cannot be edited to comply")
+}
+
+// The finalizer removal reconcileDelete issues is an update, and it passes the
+// defaulting webhook before the validating one. A spec the webhook admitted
+// earlier can fail today's rules (a topology-spread constraint over the name and
+// instance pair alone, a PriorityClass deleted since), and rejecting the removal
+// would hold the CR in Terminating. A default the defaulter fills on the removal
+// alone, because the CR was last written before an operator release added it, is
+// no spec change either. A deleting CR whose spec changes is still validated.
+func TestNeutronValidateUpdate_FinalizerRemovalOnADeletingCRSkipsValidation(t *testing.T) {
+	ctx := context.Background()
+	w := &NeutronWebhook{}
+
+	deleting := func() *Neutron {
+		obj := validNeutron()
+		obj.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+			spreadOn("kubernetes.io/hostname", wideSpreadLabels()),
+		}
+		obj.Finalizers = []string{"neutron.openstack.c5c3.io/finalizer"}
+		obj.DeletionTimestamp = ptr.To(metav1.Now())
+		return obj
+	}
+	// release returns the finalizer removal as the validating webhook receives
+	// it: the stored object without its finalizer, after the defaulting webhook.
+	release := func(g gomega.Gomega, stored *Neutron) *Neutron {
+		released := stored.DeepCopy()
+		released.Finalizers = nil
+		g.Expect(w.Default(ctx, released)).To(gomega.Succeed())
+		return released
+	}
+
+	t.Run("a spec the defaulter filled on create", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		stale := deleting()
+		g.Expect(w.Default(ctx, stale)).To(gomega.Succeed())
+
+		warnings, err := w.ValidateUpdate(ctx, stale, release(g, stale))
+		g.Expect(warnings).To(gomega.BeNil())
+		g.Expect(err).NotTo(gomega.HaveOccurred(),
+			"the finalizer removal must pass however the unchanged spec fares against today's rules")
+	})
+
+	// validNeutron() carries neither spec.logging nor the service-user names, so
+	// the defaulter fills them on the removal alone.
+	t.Run("a spec stored before a default existed", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		stale := deleting()
+
+		_, err := w.ValidateUpdate(ctx, stale, release(g, stale))
+		g.Expect(err).NotTo(gomega.HaveOccurred(),
+			"a default filled on the finalizer removal alone must not count as a spec change")
+	})
+
+	t.Run("a spec edit on a deleting CR", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		stale := deleting()
+		g.Expect(w.Default(ctx, stale)).To(gomega.Succeed())
+		edited := release(g, stale)
+		edited.Spec.Deployment.Replicas = 5
+
+		_, err := w.ValidateUpdate(ctx, stale, edited)
+		g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(
+			"labelSelector.matchLabels must equal the Deployment selector labels")),
+			"a spec edit on a deleting CR is validated like any other")
+	})
 }
 
 func TestNeutronValidateCreate_MissingPriorityClassRejected(t *testing.T) {

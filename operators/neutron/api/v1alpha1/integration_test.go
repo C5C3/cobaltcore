@@ -12,9 +12,11 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -332,4 +334,41 @@ func TestIntegration_WebhookDefaults(t *testing.T) {
 		g.Expect(got.Spec.Logging).NotTo(BeNil())
 		g.Expect(got.Spec.Logging.Level).To(Equal("INFO"))
 	})
+}
+
+// TestIntegration_WebhookFinalizerRemovalAfterPriorityClassDeleted sends the
+// finalizer removal through the real admission chain. The defaulting webhook
+// runs on it before the validating one, so the deletion bypass holds only while
+// the defaulter leaves a spec it already filled unchanged. The PriorityClass the
+// CR names is deleted first: a validated removal would be rejected and hold the
+// CR in Terminating.
+func TestIntegration_WebhookFinalizerRemovalAfterPriorityClassDeleted(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+	ns := newNamespace(t, ctx, c, "neutron-finalizer-")
+
+	pc := &schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: "neutron-finalizer-pc"}, Value: 1000}
+	g.Expect(c.Create(ctx, pc)).To(Succeed())
+
+	neutron := integrationNeutron("neutron", ns)
+	neutron.Finalizers = []string{"neutron.openstack.c5c3.io/finalizer"}
+	neutron.Spec.Deployment.PriorityClassName = ptr.To(pc.Name)
+	g.Expect(c.Create(ctx, neutron)).To(Succeed(), "a Neutron naming an existing PriorityClass should be accepted")
+
+	g.Expect(c.Delete(ctx, pc)).To(Succeed())
+	g.Expect(c.Delete(ctx, neutron)).To(Succeed())
+
+	key := client.ObjectKeyFromObject(neutron)
+	got := &Neutron{}
+	g.Expect(c.Get(ctx, key, got)).To(Succeed())
+	g.Expect(got.DeletionTimestamp).NotTo(BeNil(), "the finalizer must hold the CR in Terminating")
+	got.Finalizers = nil
+	g.Expect(c.Update(ctx, got)).To(Succeed(),
+		"the finalizer removal must clear the defaulting and the validating webhook")
+
+	g.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, key, &Neutron{}))
+	}).Should(BeTrue(), "the CR must be gone once its finalizer is removed")
 }
