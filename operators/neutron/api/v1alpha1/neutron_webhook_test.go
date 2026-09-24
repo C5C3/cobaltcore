@@ -12,6 +12,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -589,6 +590,224 @@ func TestNeutronValidateCreate_ExistingPriorityClassAccepted(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// --- spec.deployment.topologySpreadConstraints ---
+
+// apiSpreadLabels returns the pod selector of the API Deployment of
+// validNeutron(), and wideSpreadLabels the name and instance pair that pod
+// shares with the worker and ovn-db-sync pods. Both are spelled out rather than
+// built from naming.APISelectorLabels, so a renamed constant cannot make the
+// tests below agree with themselves.
+func apiSpreadLabels() map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":      "neutron",
+		"app.kubernetes.io/instance":  "test-neutron",
+		"app.kubernetes.io/component": "api",
+	}
+}
+
+func wideSpreadLabels() map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":     "neutron",
+		"app.kubernetes.io/instance": "test-neutron",
+	}
+}
+
+// spreadOn returns one topology-spread constraint over topologyKey selecting
+// the given labels.
+func spreadOn(topologyKey string, labels map[string]string) corev1.TopologySpreadConstraint {
+	return corev1.TopologySpreadConstraint{
+		MaxSkew:           1,
+		TopologyKey:       topologyKey,
+		WhenUnsatisfiable: corev1.ScheduleAnyway,
+		LabelSelector:     &metav1.LabelSelector{MatchLabels: labels},
+	}
+}
+
+// spec.deployment configures the API Deployment alone, so a custom
+// topology-spread constraint has to name that Deployment's pod selector: the
+// name and instance labels narrowed by app.kubernetes.io/component=api. The pair
+// without the component also matches the pods of the two worker Deployments and
+// of the ovn-db-sync CronJob, and would measure the API pods' skew over pods
+// they do not control. The rejection message carries the selector the webhook
+// required, which is what the component assertion pins.
+func TestNeutronValidate_TopologySpreadSelectorNamesTheAPIComponent(t *testing.T) {
+	const (
+		selectorPath = "spec.deployment.topologySpreadConstraints[0].labelSelector"
+		mismatch     = "labelSelector.matchLabels must equal the Deployment selector labels"
+		apiComponent = "app.kubernetes.io/component:api"
+	)
+
+	withLabel := func(labels map[string]string, key, value string) map[string]string {
+		labels[key] = value
+		return labels
+	}
+	withExpression := func(tsc corev1.TopologySpreadConstraint) corev1.TopologySpreadConstraint {
+		tsc.LabelSelector.MatchExpressions = []metav1.LabelSelectorRequirement{{
+			Key:      "tier",
+			Operator: metav1.LabelSelectorOpExists,
+		}}
+		return tsc
+	}
+
+	tests := []struct {
+		name string
+		tscs []corev1.TopologySpreadConstraint
+		// wantSubs is nil when the constraints are admitted.
+		wantSubs   []string
+		wantAbsent []string
+	}{
+		{
+			name: "the API selector admitted",
+			tscs: []corev1.TopologySpreadConstraint{spreadOn("kubernetes.io/hostname", apiSpreadLabels())},
+		},
+		{
+			name:     "the name and instance pair rejected",
+			tscs:     []corev1.TopologySpreadConstraint{spreadOn("kubernetes.io/hostname", wideSpreadLabels())},
+			wantSubs: []string{selectorPath, mismatch, apiComponent},
+		},
+		{
+			name: "a worker selector rejected",
+			tscs: []corev1.TopologySpreadConstraint{spreadOn("kubernetes.io/hostname",
+				withLabel(wideSpreadLabels(), "app.kubernetes.io/component", "periodic-workers"))},
+			wantSubs: []string{selectorPath, mismatch, apiComponent},
+		},
+		{
+			name: "a fourth label rejected",
+			tscs: []corev1.TopologySpreadConstraint{spreadOn("kubernetes.io/hostname",
+				withLabel(apiSpreadLabels(), "app.kubernetes.io/managed-by", "neutron-operator"))},
+			wantSubs: []string{selectorPath, mismatch, apiComponent},
+		},
+		{
+			name: "matchExpressions beside the API selector rejected",
+			tscs: []corev1.TopologySpreadConstraint{
+				withExpression(spreadOn("kubernetes.io/hostname", apiSpreadLabels())),
+			},
+			wantSubs: []string{
+				selectorPath + ".matchExpressions",
+				"matchExpressions are not allowed; labelSelector must use matchLabels only",
+			},
+			wantAbsent: []string{mismatch},
+		},
+		// The empty list names no selector. It only switches the injected
+		// defaults off.
+		{
+			name: "an empty list admitted",
+			tscs: []corev1.TopologySpreadConstraint{},
+		},
+		{
+			name: "only the offending index rejected",
+			tscs: []corev1.TopologySpreadConstraint{
+				spreadOn("topology.kubernetes.io/zone", apiSpreadLabels()),
+				spreadOn("kubernetes.io/hostname", wideSpreadLabels()),
+			},
+			wantSubs:   []string{"spec.deployment.topologySpreadConstraints[1].labelSelector", mismatch},
+			wantAbsent: []string{"topologySpreadConstraints[0]"},
+		},
+		{
+			name: "a nil labelSelector rejected",
+			tscs: []corev1.TopologySpreadConstraint{{
+				MaxSkew:           1,
+				TopologyKey:       "kubernetes.io/hostname",
+				WhenUnsatisfiable: corev1.ScheduleAnyway,
+			}},
+			wantSubs: []string{selectorPath, "labelSelector is required on each TopologySpreadConstraint"},
+		},
+		{
+			name: "an empty labelSelector rejected",
+			tscs: []corev1.TopologySpreadConstraint{{
+				MaxSkew:           1,
+				TopologyKey:       "kubernetes.io/hostname",
+				WhenUnsatisfiable: corev1.ScheduleAnyway,
+				LabelSelector:     &metav1.LabelSelector{},
+			}},
+			wantSubs: []string{selectorPath, mismatch},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			obj := validNeutron()
+			obj.Spec.Deployment.TopologySpreadConstraints = tc.tscs
+
+			_, err := (&NeutronWebhook{}).ValidateCreate(context.Background(), obj)
+			if tc.wantSubs == nil {
+				g.Expect(err).NotTo(gomega.HaveOccurred())
+				return
+			}
+			g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "want an Invalid error, got %v", err)
+			for _, sub := range tc.wantSubs {
+				g.Expect(err.Error()).To(gomega.ContainSubstring(sub))
+			}
+			for _, sub := range tc.wantAbsent {
+				g.Expect(err.Error()).NotTo(gomega.ContainSubstring(sub))
+			}
+		})
+	}
+
+	// The PriorityClass lookup's NotFound and the selector mismatch land in one
+	// response, so the author sees both at once.
+	t.Run("a wide selector and a missing PriorityClass aggregate", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		obj := validNeutron()
+		obj.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+			spreadOn("kubernetes.io/hostname", wideSpreadLabels()),
+		}
+		obj.Spec.Deployment.PriorityClassName = ptr.To("nonexistent-class")
+
+		_, err := (&NeutronWebhook{Client: newFakeClient().Build()}).ValidateCreate(context.Background(), obj)
+		g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "want an Invalid error, got %v", err)
+		g.Expect(err.Error()).To(gomega.ContainSubstring(selectorPath))
+		g.Expect(err.Error()).To(gomega.ContainSubstring("spec.deployment.priorityClassName"))
+	})
+}
+
+// The component requirement is a hard switch. A stored CR that still carries
+// the name and instance pair takes no update until its constraint names the API
+// selector, and that includes an update leaving the spec alone while the CR is
+// not being deleted.
+func TestNeutronValidateUpdate_WideTopologySpreadSelectorRejected(t *testing.T) {
+	stored := func() *Neutron {
+		obj := validNeutron()
+		obj.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+			spreadOn("kubernetes.io/hostname", wideSpreadLabels()),
+		}
+		return obj
+	}
+
+	t.Run("a replica change is rejected", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		updated := stored()
+		updated.Spec.Deployment.Replicas = 5
+
+		_, err := (&NeutronWebhook{}).ValidateUpdate(context.Background(), stored(), updated)
+		g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "want an Invalid error, got %v", err)
+		g.Expect(err.Error()).To(gomega.ContainSubstring("app.kubernetes.io/component:api"))
+	})
+
+	t.Run("an unchanged spec on a live CR is rejected", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		updated := stored()
+		updated.Labels = map[string]string{"team": "network"}
+
+		_, err := (&NeutronWebhook{}).ValidateUpdate(context.Background(), stored(), updated)
+		g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(
+			"labelSelector.matchLabels must equal the Deployment selector labels")),
+			"only a CR that is being deleted skips validation of an unchanged spec")
+	})
+
+	t.Run("replacing the pair with the API selector is admitted", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		updated := stored()
+		updated.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+			spreadOn("kubernetes.io/hostname", apiSpreadLabels()),
+		}
+
+		_, err := (&NeutronWebhook{}).ValidateUpdate(context.Background(), stored(), updated)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	})
 }
 
 // --- spec.extraConfig option catalog ---

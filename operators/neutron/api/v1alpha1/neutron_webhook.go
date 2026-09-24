@@ -29,6 +29,12 @@ import (
 // in every Secret it issues.
 const defaultMessagingCABundleKey = "ca.crt"
 
+// neutronAppName is the app.kubernetes.io/name label value every Neutron-owned
+// object carries. It is duplicated from the controller package (which builds the
+// objects) because the api package cannot import the controller; the
+// topology-spread selector check composes the API Deployment's selector from it.
+const neutronAppName = "neutron"
+
 // NeutronWebhook implements defaulting and validation webhooks for the Neutron
 // CRD. Client is injected at startup for cluster-scoped resource lookups (e.g.
 // PriorityClass validation). Production wiring injects mgr.GetAPIReader() — a
@@ -563,16 +569,16 @@ func (w *NeutronWebhook) validate(
 			specPath.Child("deployment", "priorityClassName"), *n.Spec.Deployment.PriorityClassName)...)
 	}
 
-	// Validate that custom TopologySpreadConstraints use the correct LabelSelector
-	// matching the Deployment's selector labels.
+	// Validate that custom TopologySpreadConstraints name the API Deployment's
+	// pod selector: the shared selector labels narrowed by
+	// app.kubernetes.io/component=api. The pods of the two worker Deployments and
+	// of the ovn-db-sync CronJob share the name and instance labels, so a
+	// selector without the component key would count them too.
 	if n.Spec.Deployment.TopologySpreadConstraints != nil {
 		allErrs = append(allErrs, validation.TopologySpreadSelector(
 			specPath.Child("deployment", "topologySpreadConstraints"),
 			n.Spec.Deployment.TopologySpreadConstraints,
-			map[string]string{
-				naming.LabelKeyName:     "neutron",
-				naming.LabelKeyInstance: n.Name,
-			},
+			naming.APISelectorLabels(neutronAppName, n.Name),
 		)...)
 	}
 
