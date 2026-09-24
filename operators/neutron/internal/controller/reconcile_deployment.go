@@ -32,6 +32,7 @@ import (
 // Neutron-owned sub-resource. The api package keeps its own neutronAppName
 // constant with the same value, from which the validating webhook composes its
 // topology-spread selector with naming.APISelectorLabels.
+// TestTopologySpreadSelectorMatchesTheAPIDeployment fails if the two drift.
 const neutronAppName = "neutron"
 
 // neutronAPIPort is the TCP port neutron-server serves its API on, the upstream
