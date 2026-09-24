@@ -29,8 +29,9 @@ import (
 )
 
 // neutronAppName is the app.kubernetes.io/name label value applied to every
-// Neutron-owned sub-resource. It matches the literal the validating webhook uses
-// for its TopologySpreadConstraints selector check, so the two never drift.
+// Neutron-owned sub-resource. The api package keeps its own neutronAppName
+// constant with the same value, from which the validating webhook composes its
+// topology-spread selector with naming.APISelectorLabels.
 const neutronAppName = "neutron"
 
 // neutronAPIPort is the TCP port neutron-server serves its API on, the upstream
