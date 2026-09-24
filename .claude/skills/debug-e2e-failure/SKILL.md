@@ -105,12 +105,15 @@ table; it lives at the top of the script and is the single place to add one.
 
 Read the scan's verdict line, then confirm:
 
-- **Infrastructure** when a job has zero steps or no log (the job-log
-  endpoint answers 404), when the failed step is `Set up job`, a clone or an
-  image pull/push, when the same signature hits unrelated PRs, or when the
-  image provenance shows the implicated image reused from an older main. Go
-  to the first table; fix the environment, not the tree. A red
-  `Deploy K-ORC` is either half: `korc-tag-expired` or `korc-suspend-race`.
+- **Infrastructure** when a job has zero steps or no log (the collector's
+  `no log` line carries gh's `HTTP 404` from the job-log endpoint), when the
+  failed step is `Set up job`, a clone or an image pull/push, when the same
+  signature hits unrelated PRs, or when the image provenance shows the
+  implicated image reused from an older main. Go to the first table; fix the
+  environment, not the tree. A red `Deploy K-ORC` is either half:
+  `korc-tag-expired` or `korc-suspend-race`. A `no log` line with any other
+  gh error is a failed download, not a lost runner: fix the download and
+  collect again.
 - **Suite / product** otherwise. Read the chainsaw block (step 3) and the
   dump (step 4), then the second table.
 
