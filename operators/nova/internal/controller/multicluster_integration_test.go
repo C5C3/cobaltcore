@@ -200,8 +200,12 @@ func TestIntegration_Multicluster_NovaTargetCluster(t *testing.T) {
 		multiclusterEnsureNamespace(t, ctx, mgmtClient, targetNamespace)
 		multiclusterEnsureNamespace(t, ctx, targetClient, targetNamespace)
 		createNovaPrerequisites(t, ctx, targetClient, targetNamespace)
+		// The placed Nova publishes the remote compute contract as well, whose
+		// inputs are read on the target like every other Secret it consumes.
+		createRemoteComputeInputs(t, ctx, targetClient, targetNamespace, true)
 
-		g.Expect(mgmtClient.Create(ctx, integrationNovaCR(integrationNovaName, targetNamespace, targetRef))).
+		g.Expect(mgmtClient.Create(ctx,
+			withRemoteCompute(integrationNovaCR(integrationNovaName, targetNamespace, targetRef)))).
 			To(Succeed(), "create the placed Nova CR")
 
 		waitForNovaCondition(t, ctx, mgmtClient, novaKey, "SecretsReady",
@@ -246,6 +250,8 @@ func TestIntegration_Multicluster_NovaTargetCluster(t *testing.T) {
 		g.Expect(after.Status.Conditions).NotTo(BeEmpty(), "status should be populated on the management cluster")
 		g.Expect(after.Status.ComputeConfigSecretRef).NotTo(BeNil(),
 			"the compute contract is named on the CR wherever its Secret was written")
+		g.Expect(after.Status.RemoteComputeConfigSecretRef).NotTo(BeNil(),
+			"so is the remote compute contract")
 		g.Expect(controllerutil.ContainsFinalizer(after, commonmulticluster.RemoteChildrenFinalizer)).To(BeTrue(),
 			"the remote-children finalizer should be on a CR whose children live on another cluster")
 	})
@@ -503,6 +509,10 @@ func novaRemoteChildren(name, ns, configMapName string) []remoteChild {
 		{
 			key: client.ObjectKey{Namespace: ns, Name: name + "-" + componentComputeConfig},
 			obj: &corev1.Secret{}, what: "compute-contract Secret",
+		},
+		{
+			key: client.ObjectKey{Namespace: ns, Name: name + "-" + componentRemoteComputeConfig},
+			obj: &corev1.Secret{}, what: "remote compute-contract Secret",
 		},
 	}
 	for _, block := range novaDatabaseBlocks(name, ns) {
