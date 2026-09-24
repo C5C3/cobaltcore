@@ -61,7 +61,6 @@ ghcr-transient|docker login to [a-z0-9.-]+ failed after [0-9]+ attempts|infra: g
 ghcr-transient|docker push [a-z0-9./:@-]+ failed after [0-9]+ attempts|infra: ghcr.io stayed unreachable through every push retry
 go-merge-with-main|FAIL: operators/[a-z0-9]+ is not tidy|infra: a module is not tidy; if the branch leaves it untouched, the merge with main is (PR CI tests the merge), tidy in a merged tree
 go-merge-with-main|reading https://sum\.golang\.org/|infra: the go command fetched checksums from the sumdb, which is flaky; usually a module out of lockstep with main
-go-merge-with-main|diff --git a/go\.work\.sum|infra: go.work.sum churn in verify-codegen: a workspace module lags main's versions
 job-wall|has exceeded the maximum execution time|the job wall (timeout-minutes) cancelled the job before the suite's own timeout: no catch block, no JUnit; the last suite or step started is the one that stalled
 korc-suspend-race|conflict with \"kustomize-controller\"|Flux reconciled k-orc before deploy-infra suspended it; fixed by the suspended Kustomization in deploy/kind/base
 rabbitmq-recreate-race|rabbitmqcluster/[a-z0-9-]+ was not removed within|upstream cluster-operator re-created an unowned broker; check the FinalizingMessaging guard ran before blaming the suite

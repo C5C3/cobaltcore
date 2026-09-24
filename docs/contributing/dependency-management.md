@@ -77,7 +77,10 @@ every operator module replaces `internal/common`, and `operators/c5c3` also repl
 the service operators. A bump in `internal/common` that raises an indirect requirement
 of the operators therefore arrives tidy in every module. Both options stay listed
 because the validator does not check `postUpdateOptions` values: a hosted bot too old
-for `gomodTidyAll` would silently skip it, and `gomodTidy` still runs.
+for `gomodTidyAll` would silently skip it, and `gomodTidy` still runs. `go.work.sum` is
+not tracked (see `.gitignore`). The go command appends a checksum to it whenever a
+workspace build needs one that no member `go.sum` holds, so its content depends on
+which command ran, and Renovate's gomod manager writes it only when it vendors.
 
 Separately, the native `nix` manager keeps the development flake fresh: it maintains
 `flake.lock` (the pinned `nixpkgs` revision) via lock-file maintenance, opening a grouped
@@ -165,8 +168,8 @@ sed -i.bak 's/^go 1\.25\.10$/go 1.26.3/' \
   operators/c5c3/go.mod
 rm -f go.work.bak internal/common/go.mod.bak operators/*/go.mod.bak
 
-# 2. Resync the workspace. This refreshes `go.work.sum` and the indirect
-#    requirement lists in each `go.mod`.
+# 2. Resync the workspace. This refreshes the indirect requirement lists
+#    in each `go.mod`.
 go work sync
 
 # 3. Build every module from its own directory (the workspace cannot be

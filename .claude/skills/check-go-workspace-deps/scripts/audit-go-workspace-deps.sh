@@ -12,7 +12,7 @@
 #   W4  every shared dep is pinned identically across modules that require it:
 #       the fixed SHARED_DEPS list below (direct or // indirect), plus every
 #       module that two or more members require DIRECTLY
-#   W5  go.work.sum is present and tracked by git
+#   W5  go.work.sum is not tracked by git and .gitignore covers it
 #
 # Defers `make verify-go-tidy` and `go build ./...` to the human. Exit 1 on [FAIL].
 
@@ -195,20 +195,22 @@ done <<< "${shared_direct}"
 pass "checked ${checked} further direct requirement(s) shared by two or more modules"
 
 # ---------------------------------------------------------------------------
-# W5 — go.work.sum present
+# W5 — go.work.sum untracked
 # ---------------------------------------------------------------------------
-# go.work.sum is tracked on purpose: CI and every laptop then verify the same
-# checksums for the modules only the workspace (not any single go.mod) pulls in.
-hdr "W5: go.work.sum present and tracked"
-if [[ -f go.work.sum ]]; then
-  pass "go.work.sum present"
-  if git ls-files --error-unmatch go.work.sum >/dev/null 2>&1; then
-    pass "go.work.sum tracked by git"
-  else
-    fail "go.work.sum exists but is not tracked by git — do not add it to .gitignore"
-  fi
+# go.work.sum is untracked on purpose: the go command appends to it whenever a
+# workspace build needs a checksum no member go.sum holds, so its content
+# depends on the command that ran, and Renovate does not write it. Tracked, it
+# turned every Go module bump red in verify-codegen.
+hdr "W5: go.work.sum untracked and ignored"
+if git ls-files --error-unmatch go.work.sum >/dev/null 2>&1; then
+  fail "go.work.sum is tracked by git — git rm --cached go.work.sum"
 else
-  fail "go.work.sum missing — run a workspace build (go build ./...) and commit it"
+  pass "go.work.sum not tracked by git"
+fi
+if git check-ignore -q go.work.sum; then
+  pass "go.work.sum ignored by .gitignore"
+else
+  fail "go.work.sum not covered by .gitignore — a workspace build leaves it as an untracked file"
 fi
 
 # ---------------------------------------------------------------------------
