@@ -50,7 +50,7 @@ member creates the database file. See
 | `nodePortBase` | `*int32` (Minimum=30000, Maximum=32767) | no | `30641` for `northbound`, `30651` for `southbound` | The first node port of this database's range. Member `i` is published on `nodePortBase + i`, because a Raft client has to address the individual members |
 | `electionTimerMs` | `int32` (Minimum=1000, Maximum=180000) | no | `1000` | How long a follower waits without hearing from the leader before it starts an election. Written into the database when it is created, so it is immutable through this field |
 | `inactivityProbeMs` | `int32` (Minimum=0) | no | `60000` | How long `ovsdb-server` lets a client connection sit idle before probing it. Zero disables the probe, which is what a client behind a connection-tracking middlebox needs when the probe is what tears the connection down |
-| `resources` | `*corev1.ResourceRequirements` | no | operator-resolved `100m` CPU, `256Mi` memory requests; no limit | Requests and limits for the `ovsdb` container. When nil, or when the block sets no CPU or memory request or limit, the operator requests 100m CPU and 256Mi memory and sets no limit, so each Raft member runs in the Burstable QoS class. Other resources the block names, such as an `ephemeral-storage` limit, are kept beside the floor. A member without requests would run BestEffort, the class the kubelet evicts first under node memory pressure. There is no default limit because the database grows with the number of logical ports: size the memory request, and any limit, from that count. A block that sets any CPU or memory request or limit is used as written. The floor is resolved at reconcile time and never written into the CR, so upgrading to an operator that changes it rolls the members once, one at a time. See [The request floor](#the-request-floor) for LimitRanges and the upgrade roll |
+| `resources` | `*corev1.ResourceRequirements` | no | operator-resolved `100m` CPU, `256Mi` memory requests; no limit | Requests and limits for the `ovsdb` container. The floor is filled per resource: a CPU the block names neither as request nor as limit gets a 100m request, and a memory it names neither way gets a 256Mi request, both without a limit, so each Raft member runs in the Burstable QoS class. Other resources the block names, such as an `ephemeral-storage` limit, are kept beside the floor. A member without requests would run BestEffort, the class the kubelet evicts first under node memory pressure. There is no default limit because the database grows with the number of logical ports: size the memory request, and any limit, from that count. A resource the block names is used as written, and no request is added beside a limit the block sets. The floor is resolved at reconcile time and never written into the CR, so upgrading to an operator that changes it rolls the members once, one at a time. See [The request floor](#the-request-floor) for LimitRanges and the upgrade roll |
 
 #### The request floor
 
@@ -61,19 +61,23 @@ when the LimitRange sets a `default` limit below 100m CPU or 256Mi memory, a
 `min` above them, or a `maxLimitRequestRatio` smaller than its `default` limit
 divided by the floor. The rejection shows up as `FailedCreate` events on the
 StatefulSet, while the CR reports only how many members are ready. In such a
-namespace, set `resources` to values the LimitRange admits.
+namespace, set `resources` to values the LimitRange admits, naming both CPU and
+memory, because the floor still fills a resource the block leaves out.
 
 Upgrading from an operator without the floor changes the pod template of every
-database whose `resources` sets no CPU or memory value, and the StatefulSet
-recreates its members one at a time, highest ordinal first. Each recreated
-member now needs 100m CPU and 256Mi memory of unrequested allocatable on a node
-it can run on. A member on node-local storage, such as `local-path`, TopoLVM or
-a local PersistentVolume, can run only on the node that holds its volume. If
-that node lacks the room the member stays `Pending`, and if a LimitRange rejects
-it the member is never created. Either way the rollout stops there: a
-three-member database runs on two members and tolerates no further loss. Setting
-`resources` to values that fit the node and the LimitRange recovers the
-rollout, because any CPU or memory request or limit replaces the floor.
+database whose `resources` sets no CPU or memory value, and upgrading from an
+operator that filled the floor only when the block named neither changes the
+template of every database whose block names only one of the two. The
+StatefulSet recreates its members one at a time, highest ordinal first. Each
+recreated member now needs 100m CPU and 256Mi memory of unrequested allocatable
+on a node it can run on. A member on node-local storage, such as `local-path`,
+TopoLVM or a local PersistentVolume, can run only on the node that holds its
+volume. If that node lacks the room the member stays `Pending`, and if a
+LimitRange rejects it the member is never created. Either way the rollout stops
+there: a three-member database runs on two members and tolerates no further
+loss. Setting `resources` to values that fit the node and the LimitRange
+recovers the rollout, because a CPU or memory request or limit replaces the
+floor for that resource.
 
 ### OVNStorageSpec
 
@@ -89,20 +93,20 @@ backup volume, which have the same two knobs.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | The pod-level knobs of the northd Deployment: `replicas` (default 3), `resources` (100m/500m CPU, 256Mi/512Mi memory), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`. Three northd pods are one active instance and two standbys, so the count sizes failover |
+| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | The pod-level knobs of the northd Deployment: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and 368Mi as memory request and limit at one thread, plus 32Mi per extra thread, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`. Three northd pods are one active instance and two standbys, so the count sizes failover |
 | `threads` | `int32` (Minimum=1, Maximum=16) | no | `1` | Parallel logical-flow computation threads. Past a handful the lock contention inside northd eats the gain, so the ceiling stays low |
 
 ### OVNRelaySpec
 
 Relays are stateless caches, so they scale independently of the Raft cluster
 behind them. The block has no `deployment` field: there is nothing to drain and
-no rollout ordering to respect, so the operator applies the shared deployment
-defaults to the two knobs below.
+no rollout ordering to respect, so the operator applies the shared replica
+default and the render-time resource defaults to the two knobs below.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `replicas` | `int32` (Minimum=1) | yes | — | The number of relay pods. Unlike the database replicas this is a plain scaling knob with no odd-count or immutability constraint |
-| `resources` | `*corev1.ResourceRequirements` | no | 100m/500m CPU, 256Mi/512Mi memory | Requests and limits for the relay container |
+| `resources` | `*corev1.ResourceRequirements` | no | operator-resolved `100m` CPU request, `368Mi` memory request and limit | Requests and limits for the relay container. The operator resolves defaults per resource when it renders the pod: a CPU the block names neither as request nor as limit gets a 100m request and no limit, and a memory it names neither way gets 368Mi as both request and limit, the figure for one single-threaded process (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). Anything else the block sets is kept |
 
 ### OVNTLSSpec
 
@@ -151,20 +155,24 @@ that outlives the CR.
 The mutating webhook leaves the object untouched. Every default is either a
 `+kubebuilder:default` the API server applies from the CRD schema, or a value
 the operator resolves at reconcile time: the image, the two node-port bases, the
-backup schedule and retention, and the database request floor. Resolving those
-five late keeps an unset field tracking the operator default across upgrades
-instead of freezing today's value into the stored CR. The webhook stays
-registered so a default that has to be materialized later can be added without
-changing the deployed webhook configuration.
+backup schedule and retention, the database request floor, and the container
+resources of northd and the relays. Resolving those late keeps an unset field
+tracking the operator default across upgrades instead of freezing today's value
+into the stored CR. The webhook stays registered so a default that has to be
+materialized later can be added without changing the deployed webhook
+configuration.
 
 `ovncentral_webhook.go` holds the constants those resolutions read:
 `DefaultBackupSchedule` is `0 2 * * *`, `DefaultBackupRetentionDays` is 14,
 `DefaultNorthboundNodePortBase` is 30641 and `DefaultSouthboundNodePortBase` is
 30651. The two bases carry their database's OVSDB port in the last two digits,
 and sit ten apart so both ranges reach the five-replica ceiling without
-colliding. The database request floor reads the shared request defaults
-instead, `DefaultCPURequest` (100m) and `DefaultMemoryRequest` (256Mi) in
-`internal/common/types/workload.go`.
+colliding. The database request floor reads its 100m CPU request from the
+shared `DefaultCPURequest` in `internal/common/types/workload.go` and sets its
+256Mi memory request in `raftResources`. The northd and relay containers get
+theirs from `WithResourceDefaults` and `MemoryForProcesses` in
+`internal/common/types/resources.go`: 368Mi at one thread, and 32Mi more per
+extra northd thread.
 
 ### Schema-layer rules
 

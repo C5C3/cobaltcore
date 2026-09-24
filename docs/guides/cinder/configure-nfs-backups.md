@@ -185,12 +185,12 @@ does not divide. Leaving either field unset lets the satellite CRD's defaults
 apply, `52428800` and `zlib`.
 
 The chunk size is also the memory rule. The backup process holds one object and
-its compressed form in memory at a time, so the footprint follows `fileSize`, and
-the defaulting webhook sizes the backup container's memory limit at `2Gi` to
-match. That limit has been reached on the CI tempest leg by a backup of a 1 GiB
-volume, which is more than the chunk arithmetic alone accounts for. Treat `2Gi`
-as the budget for volumes of roughly that size, and raise it before a backup
-target takes larger ones.
+its compressed form in memory at a time, so the footprint follows `fileSize`,
+and the reconciler renders `2Gi` as the backup container's memory request and
+limit to match. That limit has been reached on the CI tempest leg by a backup of
+a 1 GiB volume, which is more than the chunk arithmetic alone accounts for.
+Treat `2Gi` as the budget for volumes of roughly that size, and raise it before
+a backup target takes larger ones.
 
 The ControlPlane exposes no pod-level knob for the backup Deployment, so the
 raise is a standalone-CR change. It goes on `spec.backup.deployment.resources` of
