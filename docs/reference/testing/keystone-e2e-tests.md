@@ -128,7 +128,7 @@ Deployment rollout, bootstrap Job).
 | namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` still reconciles to Ready |
 | network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources |
 | prometheus-stack | — (operator-level) | `WITH_PROMETHEUS=true` opt-in addon: kube-prometheus-stack scrapes the operator end to end |
-| resources | `keystone-resources` | `spec.deployment.resources` webhook defaulting and propagation to the Deployment |
+| resources | `keystone-resources` | Render-time per-resource defaults on the Deployment and a running Pod (no CPU limit, Burstable), propagation of a patched `spec.deployment.resources`, and default memory that follows `spec.uwsgi.processes` once the block is removed |
 | rolling-update-zero-downtime | `keystone-rolling-update` | Full graceful-termination chain keeps the API serving during an image-tag rolling update |
 | trust-flush | `keystone-trust-flush` | Trust-flush CronJob creation, schedule and suspend tracking `spec.trustFlush` |
 | trust-flush-default | `keystone-trust-flush-default` | Default-on posture: omitted `spec.trustFlush` materializes the hourly CronJob |
@@ -1019,7 +1019,8 @@ tests/e2e/keystone/
 ├── resources/
 │   ├── chainsaw-test.yaml              Resource defaults and propagation
 │   ├── 00-keystone-cr.yaml             Keystone CR without explicit resources
-│   └── 01-patch-custom-resources.yaml  Patch with custom resource limits
+│   ├── 01-patch-custom-resources.yaml  Patch with custom resource limits
+│   └── 02-patch-uwsgi-processes.yaml   Patch removing resources, uwsgi.processes 4
 ├── rolling-update-zero-downtime/
 │   ├── chainsaw-test.yaml              Zero-downtime rolling update
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial image tag
