@@ -98,7 +98,7 @@ spec:
       automountServiceAccountToken: false
       initContainers:
         - name: prepare-exports
-          image: docker.io/itsthenetwork/nfs-server-alpine:12@sha256:7fa99ae65c23c5af87dd4300e543a86b119ed15ba61422444207efc7abd0ba20
+          image: docker.io/itsthenetwork/nfs-server-alpine:12@sha256:79f203edfcf81e8ef27e81ca47049d8b3e6007969337b808a49288317b6a26c3
           command:
             - sh
             - -c
@@ -114,7 +114,7 @@ spec:
               memory: 64Mi
       containers:
         - name: nfs-server
-          image: docker.io/itsthenetwork/nfs-server-alpine:12@sha256:7fa99ae65c23c5af87dd4300e543a86b119ed15ba61422444207efc7abd0ba20
+          image: docker.io/itsthenetwork/nfs-server-alpine:12@sha256:79f203edfcf81e8ef27e81ca47049d8b3e6007969337b808a49288317b6a26c3
           env:
             # The entrypoint exits 1 without this variable.
             - name: SHARED_DIRECTORY
