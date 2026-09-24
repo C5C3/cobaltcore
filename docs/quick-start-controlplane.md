@@ -27,7 +27,7 @@ Same toolchain as the [Quick Start](./quick-start.md), plus:
 - A stable internet connection while `make deploy-infra` clones K-ORC from GitHub
 - Roughly 8 GB RAM, 2 CPU cores, and 10 GB of free disk for a laptop-sized kind cluster
 - Room for the managed message bus on top of that: the RabbitMQ Cluster Operator requests 1 CPU and 2 Gi for the single broker pod Step 3 declares
-- Room for the compute service as well: its five Deployments (the API, the metadata API, the scheduler, the conductor, and the console proxy) request 100m CPU and 256 MiB each at one replica, 500m CPU and 1280 MiB together. The optional fake compute in Step 6 adds 50m CPU and 128Mi
+- Room for the compute service as well: its five Deployments (the API, the metadata API, the scheduler, the conductor, and the console proxy) request 100m CPU each and 512 MiB each (368 MiB for the console proxy) at one replica, 500m CPU and 2416 MiB together. The optional fake compute in Step 6 adds 50m CPU and 128Mi
 - `yq` v4.x on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
 
 Docker Desktop and Podman are both valid kind providers. When using Podman,

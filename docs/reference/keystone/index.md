@@ -47,7 +47,9 @@ in-depth reference doc for that area.
 - **Validating + Defaulting webhooks.** CEL validation rules enforced by the
   API server (database/cache exclusivity, autoscaling targets, replica/key
   minimums, graceful-termination invariants) plus defaults injected by the
-  webhook for replicas, resources, and graceful-termination knobs.
+  webhook for replicas. Container resources and the graceful-termination
+  fallbacks resolve when the reconciler renders the pod (see
+  [Resource defaults](./keystone-crd.md#resource-defaults)).
 - **Stable sub-resource naming.** All emitted resources are named after the
   CR with no `-api` suffix; cluster-internal DNS aligns with the public
   Gateway hostname.

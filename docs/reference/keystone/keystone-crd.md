@@ -178,12 +178,63 @@ Groups the pod-level knobs for the Keystone API Deployment under `spec.deploymen
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `replicas` | `int32` | No | `3` | Number of Keystone API replicas. Minimum: 1. The webhook provides a secondary default of 3 when zero. |
-| `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See below | CPU and memory requests and limits for the Keystone API container. When unset, the defaulting webhook injects sensible defaults to ensure Burstable QoS class and enable HPA utilization calculations. |
+| `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See [Resource defaults](#resource-defaults) | CPU and memory requests and limits for the Keystone API container. The operator never writes defaults into this field. It resolves them per resource when it renders the pod: `100m` CPU request, no CPU limit, and `512Mi` memory request and limit at the default uWSGI counts. The effective values show on the Deployment and its Pods, not on the CR. |
 | `topologySpreadConstraints` | [`[]corev1.TopologySpreadConstraint`](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) | No | See [below](#topologyspreadconstraints) | Scheduler hints for spreading pods across zones and nodes. `nil` injects two defaults (zone + hostname, MaxSkew=1, `ScheduleAnyway`); a non-nil value (including `[]`) is used verbatim. |
 | `priorityClassName` | `*string` | No | `nil` | PriorityClass attached to the Keystone API pod spec. When set, the webhook verifies the class exists; when unset, no priority class is configured. |
 | `terminationGracePeriodSeconds` | `*int64` | No | `nil` | Grace period (seconds) granted to Keystone API pods between SIGTERM and SIGKILL during rolling updates. When `nil`, the reconciler applies `30` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `10`. Must be strictly greater than `preStopSleepSeconds`. Drives the PodSpec `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields). |
 | `preStopSleepSeconds` | `*int64` | No | `nil` | Sleep duration (seconds) of the preStop lifecycle hook, covering the window between EndpointSlice removal and kube-proxy/ingress propagation. When `nil`, the reconciler applies `5` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `0`. Must be strictly less than `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields). |
 | `strategy` | [`*appsv1.DeploymentStrategy`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/#DeploymentSpec) | No | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | Overrides the Deployment rollout strategy. When `nil`, the reconciler injects `RollingUpdate` with `maxUnavailable=0` and `maxSurge=1` so available capacity never drops below `spec.deployment.replicas` during an image-tag patch. Set to customize surge/unavailable counts or switch to `Recreate`. |
+
+### Resource defaults
+
+The operator resolves container resources when it renders the pod and never
+writes them into the CR. It fills each resource on its own:
+
+- A CPU the block names neither as request nor as limit gets a `100m` request
+  and no limit.
+- A memory the block names neither as request nor as limit gets one figure as
+  both request and limit.
+- Everything else is kept as written: a resource the block names in either map
+  (a zero quantity included), other resources such as `ephemeral-storage` and
+  `hugepages-*`, and `claims`.
+
+No request is added beside a limit the block sets for the same resource.
+Kubernetes defaults that request to the limit, and an added request would
+silently lower it. A block that sets only an `ephemeral-storage` request
+therefore keeps the CPU and memory defaults, and a CPU-only block still gets its
+memory.
+
+The memory figure follows the process and thread count the container runs:
+
+```text
+224Mi + processes × (perProcess + (threads − 1) × 32Mi)
+```
+
+`perProcess` is `144Mi`, and `processes` and `threads` below 1 count as 1. For
+Keystone they come from `spec.uwsgi`, so the default two processes of one thread
+come to `512Mi`, `processes: 4` to `800Mi`, and `processes: 4, threads: 2` to
+`928Mi`. A later change of `spec.uwsgi` moves the memory with it. Other
+services use the same rule with their own counts; their CRD references name the
+figure. The constants are estimates that later measurements calibrate, so an
+operator upgrade may change them for every container whose block leaves memory
+unset.
+
+Read the effective values from the Deployment or its Pods:
+
+```bash
+kubectl get deployment keystone -n openstack \
+  -o jsonpath='{.spec.template.spec.containers[0].resources}'
+```
+
+A CR admitted by an operator that still wrote defaults into
+`spec.deployment.resources` keeps that stored block, including its `500m` CPU
+limit. Remove the `resources` block to adopt the render-time defaults.
+
+That operator rendered a stored block that named only CPU or only memory as
+written. The per-resource rule adds the default for the resource the block
+leaves out, so a CPU-only block gains a memory request and limit, and its pods
+roll once on the upgrade. To keep the pod spec unchanged, set that resource in
+the block before you upgrade.
 
 ### CEL Validation Rules
 
@@ -436,12 +487,15 @@ older CRs continue to reconcile without the fields set:
 | `spec.deployment.terminationGracePeriodSeconds` | PodSpec receives `30`                                       |
 | `spec.deployment.preStopSleepSeconds`           | preStop command is `sleep 5`                                |
 | `spec.deployment.strategy`                      | `RollingUpdate` with `maxUnavailable=0`, `maxSurge=1`       |
+| `spec.deployment.resources`                     | Per-resource defaults, see [Resource defaults](#resource-defaults) |
 | `spec.uwsgi.harakiri`                | `--harakiri` flag is omitted                                |
 | `spec.uwsgi.httpKeepAliveTimeout`    | `--http-keepalive-timeout` flag is omitted                  |
 
 These fallbacks live in `internal/controller/reconcile_deployment.go`
 (`terminationGracePeriodSeconds`, `preStopSleepCommand`, `deploymentStrategy`,
 `uwsgiCommand`) and are the single source of truth for the no-op upgrade path.
+The resource defaults come from `commonv1.WithResourceDefaults`
+(`internal/common/types/resources.go`), which every service operator shares.
 
 ### Example
 
@@ -1313,7 +1367,6 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
 | `spec.uwsgi.processes` | `== 0` (when `spec.uwsgi` is non-nil) | `2` — webhook only; when `spec.uwsgi` is `nil`, the reconciler applies this default internally. |
 | `spec.uwsgi.threads` | `== 0` (when `spec.uwsgi` is non-nil) | `1` — same nil-pointer caveat as processes. |
 | `spec.uwsgi.httpKeepAlive` | Field absent from JSON payload | `true` — the field is a nil-preserving `*bool`, so the defaulting webhook restores the documented default when the pointer is nil, while preserving an explicit `false`. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting). |
-| `spec.deployment.resources` | `== nil` or empty (`requests` and `limits` both unset) | `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` — ensures Burstable QoS class and enables HPA utilization calculations. |
 | `spec.database.tls.mode` | `spec.database.tls != nil && mode == ""` | `"require"` — `DefaultDatabaseTLSMode` in `keystone_webhook.go`. Only materialized when the `tls` block is explicitly present; the webhook never materializes the block itself. |
 
 **Not defaulted by the webhook:**
@@ -1324,6 +1377,9 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
   fallbacks. For `topologySpreadConstraints` the reconciler distinguishes `nil`
   (inject zone+hostname defaults) from `[]` (opt out), so the webhook must not
   materialise a struct.
+- `spec.deployment.resources` — resolved at reconcile time, per resource, and
+  never written into the CR (see [Resource defaults](#resource-defaults)). A
+  block an older operator already wrote stays until `resources` is removed.
 - `spec.database.tls` itself — the webhook never materializes the `tls` block.
   TLS is strictly opt-in, so an upgrade of a previously plaintext CR cannot
   silently turn encryption on (which would also trigger Certificate
@@ -1495,7 +1551,7 @@ exercise the CRD schema constraints.
 | --- | --- | --- |
 | `TestIntegration_WebhookDefaultsSetsZeroValues` | Defaults applied | Creates a CR with zero-valued defaultable fields; verifies `replicas=3`, `cache.backend="dogpile.cache.pymemcache"`, `bootstrap.adminUser="admin"`, `bootstrap.region="RegionOne"`, `fernet.maxActiveKeys=3` after admission. |
 | `TestIntegration_WebhookDefaultsPreservesExplicit` | Explicit values preserved | Creates a CR with `replicas=5` and `region="EU-West"`; verifies these values are not overwritten by the defaulting webhook. |
-| `TestIntegration_ResourcesDefaultedWhenNil` | Resources defaulted | Creates a CR with `spec.deployment.resources` unset (`nil`); verifies the defaulting webhook injects `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}`. |
+| `TestIntegration_ResourcesNotMaterializedWhenNil` | Resources not materialized | Creates a CR with `spec.deployment.resources` unset (`nil`); verifies it reads back `nil`, because the reconciler resolves the defaults when it renders the Deployment. |
 | `TestIntegration_ResourcesPreservedWhenExplicit` | Explicit resources preserved | Creates a CR with explicit `spec.deployment.resources` (1Gi/2Gi memory, 200m/1 CPU); verifies the defaulting webhook does not overwrite them. |
 | `TestIntegration_UWSGIDefaultsAppliedWhenEmpty` | uWSGI defaults applied | Creates a CR with `spec.uwsgi: {}` (all zero values); verifies processes=2, threads=1, httpKeepAlive=true after admission. |
 | `TestIntegration_UWSGIExplicitValuesPreserved` | Explicit uWSGI preserved | Creates a CR with `spec.uwsgi.processes=4, threads=4`; verifies these values are not overwritten by the defaulting webhook. |

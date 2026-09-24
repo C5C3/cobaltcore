@@ -55,7 +55,7 @@ The API is the only Deployment that scales horizontally.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 3` | Pod-level knobs: `replicas`, `resources` (256Mi/512Mi memory, 100m/500m CPU), `terminationGracePeriodSeconds` (30), `preStopSleepSeconds` (5), `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | `DeploymentSpec` | no | `replicas: 3` | Pod-level knobs: `replicas`, `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and memory sized from `spec.api.uwsgi`, 512Mi as request and limit at its defaults, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds` (30), `preStopSleepSeconds` (5), `strategy`, `topologySpreadConstraints`, `priorityClassName` |
 | `uwsgi` | `UWSGISpec` | no | materialized | uWSGI parameters: `processes` (2), `threads` (1), `httpKeepAlive` (true), `harakiri` and `httpKeepAliveTimeout` (both omitted when unset). The defaulting webhook materializes the block, so the API always runs with the documented values |
 
 ### NovaMetadataSpec
@@ -67,7 +67,7 @@ asked.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 1` | The same pod-level knobs. The front end holds no state between requests, so the count may be raised |
+| `deployment` | `DeploymentSpec` | no | `replicas: 1` | The same pod-level knobs, with memory sized from `spec.metadata.uwsgi` (512Mi at its defaults). The front end holds no state between requests, so the count may be raised |
 | `uwsgi` | `UWSGISpec` | no | materialized | The same uWSGI parameters as the API's |
 | `sharedSecretRef` | `SecretRefSpec` | yes | `key` to `shared_secret` | The Secret holding the value the Neutron metadata agent signs proxied requests with. The operator reads it rather than generating one: the same value has to reach the `NeutronMetadataAgent`, and a value only this side knows leaves every metadata request rejected |
 | `gateway` | `GatewaySpec` | no | | External exposure of the metadata API on a hostname of its own. Rarely wanted: the metadata agent dials the Service from inside the cluster |
@@ -76,14 +76,14 @@ asked.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `terminationGracePeriodSeconds: 200` | The same pod-level knobs. Schedulers are peers that read the same host state out of Placement and hold nothing between requests, so the count may be raised |
+| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `terminationGracePeriodSeconds: 200` | The same pod-level knobs, with memory sized from `workers`, one single-threaded process each: 512Mi at the default two, 656Mi at three. Schedulers are peers that read the same host state out of Placement and hold nothing between requests, so the count may be raised |
 | `workers` | `*int32` (Minimum=1) | no | `2` | `nova-scheduler` worker processes per pod, rendered into the scheduler's own overlay. Raising it multiplies the database and bus connections the pod holds |
 
 ### NovaConductorSpec
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `terminationGracePeriodSeconds: 200` | The same pod-level knobs |
+| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `terminationGracePeriodSeconds: 200` | The same pod-level knobs, with memory sized from `workers` like the scheduler's (512Mi at the default two) |
 | `workers` | `*int32` (Minimum=1) | no | `2` | `nova-conductor` worker processes per pod, rendered into the conductor's own overlay |
 
 The raised grace period is the one place these two blocks depart from the
@@ -103,7 +103,7 @@ before any mutating webhook runs.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `enabled` | `*bool` | no | `true` | Projects the proxy. Setting it to `false` deletes the Deployment, the Service, the HTTPRoute and the proxy's NetworkPolicy, renders `[vnc] enabled = false` in `nova.conf` and in the compute contract, and the defaulting webhook removes `consoleProxy.deployment` in the same request |
-| `deployment` | `*DeploymentSpec` | no | `replicas: 1` while enabled | The pod-level knobs. The field is a pointer so an absent block stays absent: a value block would serialize as `deployment: {}` on every CR, the API server would fill it with three replicas, and the console rule below would fire on a block nobody wrote. For the same reason the defaulting webhook removes the block it materialized once the proxy is switched off, so a patch that sets only `enabled: false` is admitted |
+| `deployment` | `*DeploymentSpec` | no | `replicas: 1` while enabled | The pod-level knobs. The field is a pointer so an absent block stays absent: a value block would serialize as `deployment: {}` on every CR, the API server would fill it with three replicas, and the console rule below would fire on a block nobody wrote. For the same reason the defaulting webhook removes the block it materialized once the proxy is switched off, so a patch that sets only `enabled: false` is admitted. The proxy runs one single-threaded process, so a block that names neither CPU nor memory, or no block at all, renders a 100m CPU request, no CPU limit, and 368Mi as memory request and limit |
 | `gateway` | `GatewaySpec` | no | | External exposure of the proxy on a hostname of its own. The console URL is `https://<hostname>/vnc_lite.html?path=%3Ftoken%3D<token>`, and the WebSocket that follows the page opens on `/`, so the two cannot be split off the API's hostname by path. For the same reason `path` must be empty or `/` (webhook): a prefix route would match neither |
 
 ### ServiceUserSpec

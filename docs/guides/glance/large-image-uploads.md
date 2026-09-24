@@ -144,9 +144,8 @@ CRs — co-schedule freely. Four pods at the default may legitimately reach 80 G
 of scratch on one node, and once the node crosses its eviction threshold the
 kubelet ranks and evicts across every pod on it, not only the Glance ones. Size
 nodes against `replicas × 2 × sizeLimit`. To make the scheduler account for it,
-add `ephemeral-storage` to `spec.deployment.resources.requests` — and repeat the
-CPU and memory values there, because a `resources` block that is present at all
-suppresses the operator's resource defaults.
+add `ephemeral-storage` to `spec.deployment.resources.requests`. The operator
+fills the CPU and memory defaults per resource, so they stay beside it.
 
 Finally, it does not meter tenants. It caps how much local disk the imports on
 one pod may consume before the kubelet steps in, and says nothing about how many
