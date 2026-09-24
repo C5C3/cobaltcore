@@ -320,6 +320,52 @@ func TestBuildNeutronService_And_PDB_SelectTheAPIComponent(t *testing.T) {
 		"the three Deployments of one CR must not select each other's pods")
 }
 
+// TestTopologySpreadSelectorMatchesTheAPIDeployment feeds the pod selector of
+// the API Deployment back into the validating webhook as a
+// spec.deployment.topologySpreadConstraints selector. The webhook demands exact
+// equality with the selector it composes, so one it rejects would leave the
+// field unusable: the only accepted value would be a selector no Deployment
+// carries. The name and instance pair and a worker selector are rejected,
+// because both also match pods the API Deployment does not control.
+func TestTopologySpreadSelectorMatchesTheAPIDeployment(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	// The fixture leaves spec.deployment.replicas at 0, which ValidateCreate
+	// rejects; admission runs the defaulter first.
+	neutron := validNeutron()
+	g.Expect((&neutronv1alpha1.NeutronWebhook{}).Default(ctx, neutron)).To(Succeed())
+	api := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "", "")
+
+	admitted := neutron.DeepCopy()
+	admitted.Spec.Deployment.TopologySpreadConstraints = spreadOver(api.Spec.Selector.MatchLabels)
+	_, err := (&neutronv1alpha1.NeutronWebhook{}).ValidateCreate(ctx, admitted)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"the webhook must accept the selector of the Deployment spec.deployment configures")
+
+	for name, labels := range map[string]map[string]string{
+		"the name and instance pair":     naming.SelectorLabels(neutronAppName, neutron.Name),
+		"the periodic workers' selector": workerSelectorLabels(neutron, componentPeriodicWorkers),
+	} {
+		rejected := neutron.DeepCopy()
+		rejected.Spec.Deployment.TopologySpreadConstraints = spreadOver(labels)
+
+		_, err := (&neutronv1alpha1.NeutronWebhook{}).ValidateCreate(ctx, rejected)
+		g.Expect(err).To(HaveOccurred(), "spec.deployment must not take "+name)
+		g.Expect(err.Error()).To(ContainSubstring("spec.deployment.topologySpreadConstraints"))
+	}
+}
+
+// spreadOver returns one topology-spread constraint selecting the given labels.
+func spreadOver(labels map[string]string) []corev1.TopologySpreadConstraint {
+	return []corev1.TopologySpreadConstraint{{
+		MaxSkew:           1,
+		TopologyKey:       "kubernetes.io/hostname",
+		WhenUnsatisfiable: corev1.ScheduleAnyway,
+		LabelSelector:     &metav1.LabelSelector{MatchLabels: labels},
+	}}
+}
+
 // TestReconcileDeployment_RollingUpdateHoldsUntilTheImageIsDrained covers the
 // upgrade gate. The surge-tolerant readiness turns true while old-image pods
 // still serve, and the contract phase drops what those pods still read, so the
