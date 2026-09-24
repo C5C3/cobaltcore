@@ -267,6 +267,11 @@ func novaComputeMembershipPredicate() predicate.Predicate {
 // its agents are configured from the namespace its own attachment names, so the
 // Secret has to exist a second time wherever those agents look.
 //
+// While services.nova.remoteCompute is set, the source is the remote contract
+// (<cp>-nova-remote-compute-config), whose addresses a compute cluster reaches.
+// The mirror keeps the in-cluster contract's name either way, the name a
+// NovaCompute on the compute cluster reads from status.computeConfigSecretRef.
+//
 // ok=false is a WAIT rather than a failure, and reason/message carry what an
 // operator reading the ControlPlane condition needs: the contract has not been
 // published yet, or the target's cluster does not resolve. The resolver's own
@@ -282,6 +287,10 @@ func (r *ControlPlaneReconciler) mirrorNovaComputeConfig(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, target computeConfigMirrorTarget,
 ) (ok bool, reason, message string, err error) {
 	name := novaComputeConfigSecretName(cp)
+	sourceName := name
+	if cp.Spec.Services.Nova != nil && cp.Spec.Services.Nova.RemoteCompute != nil {
+		sourceName = novaRemoteComputeConfigSecretName(cp)
+	}
 	novaNS := cp.NovaNamespace()
 
 	source, err := r.childrenClientFor(ctx, cp, novaNS)
@@ -290,14 +299,14 @@ func (r *ControlPlaneReconciler) mirrorNovaComputeConfig(
 	}
 
 	published := &corev1.Secret{}
-	switch gerr := source.Get(ctx, client.ObjectKey{Namespace: novaNS, Name: name}, published); {
+	switch gerr := source.Get(ctx, client.ObjectKey{Namespace: novaNS, Name: sourceName}, published); {
 	case apierrors.IsNotFound(gerr):
 		return false, reasonWaitingForComputeConfig, fmt.Sprintf(
 			"the compute config Secret %s/%s has not been published yet; the nova operator writes it once the "+
 				"control plane has converged, and the compute nodes in namespace %q are configured from it",
-			novaNS, name, target.Namespace), nil
+			novaNS, sourceName, target.Namespace), nil
 	case gerr != nil:
-		return false, "", "", fmt.Errorf("reading the compute config Secret %s/%s: %w", novaNS, name, gerr)
+		return false, "", "", fmt.Errorf("reading the compute config Secret %s/%s: %w", novaNS, sourceName, gerr)
 	}
 
 	delivery, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, target.ClusterRef)

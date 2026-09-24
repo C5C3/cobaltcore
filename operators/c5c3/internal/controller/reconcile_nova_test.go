@@ -2642,3 +2642,106 @@ func TestMirrorNovaComputeConfig_ReportsAnUnresolvableCluster(t *testing.T) {
 	g.Expect(reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
 	g.Expect(message).To(ContainSubstring("cluster not found"))
 }
+
+// publishedRemoteComputeConfig builds the Secret the nova operator publishes the
+// remote compute contract under, the mirror's source while
+// services.nova.remoteCompute is set.
+func publishedRemoteComputeConfig(cp *c5c3v1alpha1.ControlPlane) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: novaRemoteComputeConfigSecretName(cp), Namespace: cp.NovaNamespace(),
+		},
+		Data: map[string][]byte{
+			"nova-compute.conf": []byte("[placement]\nvalid_interfaces = public\n"),
+			"transport_url":     []byte(novaRemoteTransportURL),
+		},
+	}
+}
+
+// TestNovaRemoteComputeConfigSecretName_MatchesTheNovaOperator pins the name the
+// two operators share: the nova operator publishes the remote contract as
+// "<nova>-remote-compute-config", and the Nova child is named novaName(cp).
+func TestNovaRemoteComputeConfigSecretName_MatchesTheNovaOperator(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := novaControlPlane()
+
+	g.Expect(novaRemoteComputeConfigSecretName(cp)).To(Equal(novaName(cp) + "-remote-compute-config"))
+	g.Expect(novaRemoteComputeConfigSecretName(cp)).To(Equal("cp-nova-remote-compute-config"))
+}
+
+// TestMirrorNovaComputeConfig_CopiesTheRemoteContract covers the source switch:
+// while services.nova.remoteCompute is set, a compute cluster receives the
+// contract whose addresses it reaches, under the name it reads the in-cluster
+// one by.
+func TestMirrorNovaComputeConfig_CopiesTheRemoteContract(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := remoteComputeNovaControlPlane()
+	remote := publishedRemoteComputeConfig(cp)
+	r := newNovaTestReconciler(t, cp, publishedComputeConfig(cp), remote)
+	ctx := context.Background()
+
+	ok, _, _, err := r.mirrorNovaComputeConfig(ctx, cp, computeConfigMirrorTarget{Namespace: "compute-nodes"})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeTrue())
+	mirror := &corev1.Secret{}
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: novaComputeConfigSecretName(cp), Namespace: "compute-nodes",
+	}, mirror)).To(Succeed())
+	g.Expect(mirror.Data).To(Equal(remote.Data), "the compute cluster receives the remote contract")
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, types.NamespacedName{
+		Name: novaRemoteComputeConfigSecretName(cp), Namespace: "compute-nodes",
+	}, &corev1.Secret{}))).To(BeTrue(), "the mirror keeps the in-cluster contract's name")
+}
+
+// TestMirrorNovaComputeConfig_WaitsForTheRemoteSource covers a remote contract
+// the nova operator has not published yet, typically because it still waits on
+// the delivered transport URL: the wait names the Secret it is waiting for, and
+// the in-cluster contract is not delivered in its place.
+func TestMirrorNovaComputeConfig_WaitsForTheRemoteSource(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := remoteComputeNovaControlPlane()
+	r := newNovaTestReconciler(t, cp, publishedComputeConfig(cp))
+
+	ok, reason, message, err := r.mirrorNovaComputeConfig(context.Background(), cp,
+		computeConfigMirrorTarget{Namespace: "compute-nodes"})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeFalse())
+	g.Expect(reason).To(Equal(reasonWaitingForComputeConfig))
+	g.Expect(message).To(ContainSubstring("default/cp-nova-remote-compute-config"))
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: novaComputeConfigSecretName(cp), Namespace: "compute-nodes",
+	}, &corev1.Secret{})).NotTo(Succeed(), "the in-cluster contract must not stand in for the remote one")
+}
+
+// TestMirrorNovaComputeConfig_WrapsARemoteReadError covers a read of the remote
+// source that fails for another reason than absence: it is a failure, and the
+// error names the Secret the read was for.
+func TestMirrorNovaComputeConfig_WrapsARemoteReadError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := remoteComputeNovaControlPlane()
+	s := novaTestScheme(t)
+	boom := errors.New("the API server is unavailable")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, publishedRemoteComputeConfig(cp)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object,
+				opts ...client.GetOption,
+			) error {
+				if key.Name == novaRemoteComputeConfigSecretName(cp) {
+					return boom
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	ok, _, _, err := r.mirrorNovaComputeConfig(context.Background(), cp,
+		computeConfigMirrorTarget{Namespace: "compute-nodes"})
+
+	g.Expect(ok).To(BeFalse())
+	g.Expect(err).To(MatchError(boom))
+	g.Expect(err.Error()).To(HavePrefix("reading the compute config Secret default/cp-nova-remote-compute-config:"))
+}
