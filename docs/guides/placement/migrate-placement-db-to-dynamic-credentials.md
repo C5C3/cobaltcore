@@ -227,6 +227,12 @@ Roll back the operators if you also need to remove the generator objects.
   default. When raising `DB_CREDS_*` beyond that, raise the role's TTLs in
   lockstep. A shorter token silently drops the ephemeral MySQL user under a
   running Placement long before the advertised lease end.
+- **No per-user connection cap on the dynamic path.** In Static mode the
+  operator sizes the MariaDB `User` CR's `max_user_connections` for the CR's
+  topology, counting two connections per uWSGI thread across the API pods and
+  the rollout surge, plus headroom for the db-sync Job. The engine's
+  `CREATE USER` statement sets no cap, so once Placement runs on an
+  engine-issued login the server's own `max_connections` is the only bound.
 - **Revocation semantics:** revoking a lease runs `DROP USER`, which rejects new
   connections. Already-open sessions of a dropped user may persist until they
   disconnect.
