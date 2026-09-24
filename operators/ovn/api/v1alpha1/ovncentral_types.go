@@ -194,7 +194,17 @@ type OVNDatabaseSpec struct {
 	InactivityProbeMs int32 `json:"inactivityProbeMs,omitempty"`
 
 	// Resources defines the CPU and memory requests and limits for the
-	// ovsdb-server container. When nil the operator applies its own defaults.
+	// ovsdb-server container. When nil, or when it sets no CPU or memory request
+	// or limit, the operator adds requests of 100m CPU and 256Mi memory and no
+	// limit, keeping any other resource it sets, so each Raft member runs in the
+	// Burstable QoS class rather than BestEffort, the class the kubelet evicts
+	// first under node memory pressure. There is no default limit because the
+	// database grows with the number of logical ports: size the memory request,
+	// and any limit, from that count. A block that sets any CPU or memory request
+	// or limit is used as written. In a namespace whose LimitRange sets a default
+	// limit below 100m CPU or 256Mi memory, set it explicitly: the floor's
+	// request would exceed the limit the LimitRange fills in, and the member pod
+	// is rejected.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }

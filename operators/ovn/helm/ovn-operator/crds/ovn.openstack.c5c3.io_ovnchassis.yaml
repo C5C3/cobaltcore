@@ -120,12 +120,14 @@ spec:
               controller:
                 description: |-
                   Controller tunes the ovn-controller container. When nil the operator
-                  applies its own defaults.
+                  renders no requests or limits for the container.
                 properties:
                   resources:
                     description: |-
-                      Resources defines the CPU and memory requests and limits for the container.
-                      When nil the operator applies its own defaults.
+                      Resources defines the CPU and memory requests and limits for the
+                      container. When nil the operator renders none, unless a LimitRange in the
+                      namespace fills them in: what a datapath needs depends on the traffic the
+                      node carries, so no default fits most hardware.
                     properties:
                       claims:
                         description: |-
@@ -269,13 +271,16 @@ spec:
                 type: object
               ovs:
                 description: |-
-                  OVS tunes the Open vSwitch container. When nil the operator applies its own
-                  defaults.
+                  OVS tunes the ovs-vswitchd container. When nil the operator renders no
+                  requests or limits for the container. The local ovsdb-server container
+                  beside it takes none from any field.
                 properties:
                   resources:
                     description: |-
-                      Resources defines the CPU and memory requests and limits for the container.
-                      When nil the operator applies its own defaults.
+                      Resources defines the CPU and memory requests and limits for the
+                      container. When nil the operator renders none, unless a LimitRange in the
+                      namespace fills them in: what a datapath needs depends on the traffic the
+                      node carries, so no default fits most hardware.
                     properties:
                       claims:
                         description: |-
