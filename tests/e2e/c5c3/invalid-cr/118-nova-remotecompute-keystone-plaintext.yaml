@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.nova.remoteCompute beside a Keystone published over plain http is
+# rejected (webhook-only): every compute cluster sends the nova service-user
+# password to the public Keystone URL across a cluster boundary. The bus is
+# brownfield with tls and the siblings are published over https, so the step
+# anchors on `spec.services.keystone.publicEndpoint` and `must use scheme https
+# when services.nova.remoteCompute is set`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-nova-remote-http-keystone
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+      tls:
+        caBundleSecretRef:
+          name: bus-ca
+  services:
+    keystone:
+      mode: Managed
+      publicEndpoint: http://keystone.example.com/v3
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+      publicEndpoint: https://glance.example.com
+    placement:
+      publicEndpoint: https://placement.example.com
+    neutron:
+      ovn:
+        centralRef:
+          name: ovn
+      publicEndpoint: https://neutron.example.com
+    nova:
+      remoteCompute:
+        transportURLSecretRef:
+          name: nova-remote-transport
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

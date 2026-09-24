@@ -854,6 +854,51 @@ spec:
             ($error != null): true
             (contains($error, 'services.nova.metadataGateway.hostname')): true
             (contains($error, 'on the same Gateway listener')): true
+    # services.nova.remoteCompute beside a managed bus is forbidden (webhook-only):
+    # a managed RabbitmqCluster has no TLS listener for a compute cluster to reach.
+    - apply:
+        file: 114-nova-remotecompute-managed-bus.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'requires a brownfield bus with tls')): true
+    # A brownfield bus without tls gives a compute cluster no CA bundle to verify
+    # the broker against (webhook-only).
+    - apply:
+        file: 115-nova-remotecompute-without-messaging-tls.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.infrastructure.messaging.tls')): true
+            (contains($error, 'is required when services.nova.remoteCompute is set')): true
+            (contains($error, 'a compute cluster reaches the bus across a cluster boundary')): true
+    # Every compute cluster authenticates against the public Keystone URL, so
+    # Keystone must be published (webhook-only).
+    - apply:
+        file: 116-nova-remotecompute-keystone-unpublished.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'a compute cluster authenticates against the public Keystone URL')): true
+    # The remote contract resolves Placement through its public catalog row, which
+    # names the in-cluster Service without a publication (webhook-only).
+    - apply:
+        file: 117-nova-remotecompute-placement-unpublished.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.placement.publicEndpoint')): true
+            (contains($error, 'resolves this service through its public catalog row')): true
+    # Every compute cluster sends the nova service-user password to the public
+    # Keystone URL, so a Keystone published over plain http is refused
+    # (webhook-only).
+    - apply:
+        file: 118-nova-remotecompute-keystone-plaintext.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.keystone.publicEndpoint')): true
+            (contains($error, 'must use scheme https when services.nova.remoteCompute is set')): true
     # A 256-character spec.regionDescription is refused by the CRD's MaxLength 255
     # marker (K-ORC's bound on RegionResourceSpec.Description); there is no
     # webhook mirror, so the error is the API server's own.

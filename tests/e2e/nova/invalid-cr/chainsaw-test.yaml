@@ -326,3 +326,34 @@ spec:
             ($error != null): true
             (contains($error, 'consoleProxy.gateway.path')): true
             (contains($error, 'the console page and its WebSocket are served from the root of the console hostname')): true
+  # spec.remoteCompute on a plaintext bus must be rejected by the CRD schema's
+  # remote-compute CEL rule: a compute on another cluster verifies the broker
+  # against the messaging CA bundle.
+  - try:
+    - apply:
+        file: 28-remotecompute-without-messaging-tls.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'remoteCompute requires messaging.tls')): true
+  # spec.remoteCompute.keystoneEndpoint without a scheme must be rejected by the
+  # ^https:// pattern the field carries.
+  - try:
+    - apply:
+        file: 29-remotecompute-keystoneendpoint-not-url.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'remoteCompute.keystoneEndpoint')): true
+            (contains($error, 'should match')): true
+  # spec.remoteCompute.keystoneEndpoint over plain http must be rejected by the
+  # same pattern: a compute on another cluster sends the nova service-user
+  # password to this URL.
+  - try:
+    - apply:
+        file: 30-remotecompute-keystoneendpoint-plaintext.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'remoteCompute.keystoneEndpoint')): true
+            (contains($error, '^https://')): true
