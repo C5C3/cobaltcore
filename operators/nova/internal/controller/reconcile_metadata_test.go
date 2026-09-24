@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
@@ -192,4 +193,38 @@ func TestReconcileMetadata_ServiceFailureWrapsTheError(t *testing.T) {
 
 	g.Expect(err).To(MatchError(boom))
 	g.Expect(err).To(MatchError(ContainSubstring("ensuring metadata Service:")))
+}
+
+// TestBuildMetadataDeployment_RendersResourceDefaults verifies that the
+// metadata API memory follows spec.metadata.uwsgi, beside a 100m CPU request
+// and no CPU limit: 512Mi at the default counts, 800Mi at four processes, and
+// still 512Mi when only spec.api.uwsgi moves.
+func TestBuildMetadataDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(nova *novav1alpha1.Nova)
+		want   string
+	}{
+		{name: "default uWSGI counts", mutate: func(*novav1alpha1.Nova) {}, want: "512Mi"},
+		{
+			name:   "four metadata processes",
+			mutate: func(nova *novav1alpha1.Nova) { nova.Spec.Metadata.UWSGI.Processes = 4 },
+			want:   "800Mi",
+		},
+		{
+			name:   "four API processes",
+			mutate: func(nova *novav1alpha1.Nova) { nova.Spec.API.UWSGI.Processes = 4 },
+			want:   "512Mi",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			nova := validNova()
+			tc.mutate(nova)
+
+			deploy := buildMetadataDeployment(nova, workloadArtifacts(), workloadDigests{})
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults(tc.want)))
+		})
+	}
 }

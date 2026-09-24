@@ -284,8 +284,8 @@ func TestIntegration_CRD_CELOnly_RejectsTargetClusterRefPresenceFlip(t *testing.
 // TestIntegration_WebhookDefaultsMinimalCR proves the mutating webhook turns a
 // minimal CR — the required fields plus only the service-user password Secret
 // name — into a fully specified one: the service-user identity and secretRef
-// key, the placement-specific container resource budget, and a materialized
-// spec.logging block.
+// key and a materialized spec.logging block. It leaves spec.deployment.resources
+// unset.
 func TestIntegration_WebhookDefaultsMinimalCR(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -308,17 +308,9 @@ func TestIntegration_WebhookDefaultsMinimalCR(t *testing.T) {
 	g.Expect(got.Spec.ServiceUser.ProjectDomainName).To(Equal("Default"))
 	g.Expect(got.Spec.ServiceUser.SecretRef.Key).To(Equal("password"))
 
-	// The placement-specific memory budget (512Mi/1Gi) replaces the shared
-	// 256Mi/512Mi baseline; CPU keeps the shared defaults.
-	g.Expect(got.Spec.Deployment.Resources).NotTo(BeNil(), "resources must be defaulted")
-	requestedMemory := got.Spec.Deployment.Resources.Requests[corev1.ResourceMemory]
-	limitMemory := got.Spec.Deployment.Resources.Limits[corev1.ResourceMemory]
-	requestedCPU := got.Spec.Deployment.Resources.Requests[corev1.ResourceCPU]
-	limitCPU := got.Spec.Deployment.Resources.Limits[corev1.ResourceCPU]
-	g.Expect(requestedMemory.String()).To(Equal("512Mi"))
-	g.Expect(limitMemory.String()).To(Equal("1Gi"))
-	g.Expect(requestedCPU.String()).To(Equal("100m"))
-	g.Expect(limitCPU.String()).To(Equal("500m"))
+	// Resources are resolved when the Deployment is rendered, never written
+	// into the CR.
+	g.Expect(got.Spec.Deployment.Resources).To(BeNil(), "resources must not be materialized")
 
 	// spec.logging is materialized so the reconciler never dereferences a nil
 	// pointer.

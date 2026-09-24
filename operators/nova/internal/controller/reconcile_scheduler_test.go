@@ -13,8 +13,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
@@ -242,4 +244,31 @@ func TestAMQPPortEnv(t *testing.T) {
 	g.Expect(amqpPortEnv(5671)).To(Equal(corev1.EnvVar{Name: "NOVA_AMQP_PORT", Value: "5671"}))
 	g.Expect(amqpPortEnv(0)).To(Equal(corev1.EnvVar{Name: "NOVA_AMQP_PORT", Value: "0"}),
 		"a messaging step that resolved no port stamps zero rather than nothing")
+}
+
+// TestBuildSchedulerDeployment_RendersResourceDefaults verifies that the
+// scheduler memory follows spec.scheduler.workers, one single-threaded process
+// per worker: 512Mi at the default two and 656Mi at three, beside a 100m CPU
+// request and no CPU limit.
+func TestBuildSchedulerDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		workers *int32
+		want    string
+	}{
+		{name: "default workers", want: "512Mi"},
+		{name: "three workers", workers: ptr.To(int32(3)), want: "656Mi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			nova := validNova()
+			if tc.workers != nil {
+				nova.Spec.Scheduler.Workers = tc.workers
+			}
+
+			deploy := buildSchedulerDeployment(nova, workloadArtifacts(), workloadDigests{}, testEgressPort)
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults(tc.want)))
+		})
+	}
 }

@@ -123,11 +123,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            cpu: 500m
             memory: 512Mi
           requests:
             cpu: 100m
-            memory: 256Mi
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -296,11 +295,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            cpu: 500m
             memory: 512Mi
           requests:
             cpu: 100m
-            memory: 256Mi
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -466,11 +464,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            cpu: 500m
             memory: 512Mi
           requests:
             cpu: 100m
-            memory: 256Mi
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

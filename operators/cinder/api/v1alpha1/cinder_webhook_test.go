@@ -87,13 +87,12 @@ func TestCinderDefault_MaterializesAbsentDeploymentBlocks(t *testing.T) {
 		appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType})))
 	g.Expect(obj.Spec.API.Deployment.Strategy).To(gomega.BeNil())
 
-	// The backup container carries the raised memory limit; every other block
-	// keeps the shared baseline.
-	g.Expect(obj.Spec.Backup.Deployment.Resources.Requests.Memory().String()).To(gomega.Equal("256Mi"))
-	g.Expect(obj.Spec.Backup.Deployment.Resources.Requests.Cpu().String()).To(gomega.Equal("100m"))
-	g.Expect(obj.Spec.Backup.Deployment.Resources.Limits.Memory().String()).To(gomega.Equal("2Gi"))
-	g.Expect(obj.Spec.Backup.Deployment.Resources.Limits.Cpu().String()).To(gomega.Equal("500m"))
-	g.Expect(obj.Spec.API.Deployment.Resources.Limits.Memory().String()).To(gomega.Equal("512Mi"))
+	// No block gets resources: the reconciler resolves them when it renders
+	// each Deployment, the backup's 2Gi included.
+	g.Expect(obj.Spec.API.Deployment.Resources).To(gomega.BeNil())
+	g.Expect(obj.Spec.Scheduler.Deployment.Resources).To(gomega.BeNil())
+	g.Expect(obj.Spec.Volume.Deployment.Resources).To(gomega.BeNil())
+	g.Expect(obj.Spec.Backup.Deployment.Resources).To(gomega.BeNil())
 
 	// The API always runs under uWSGI, so the block is materialized.
 	g.Expect(obj.Spec.API.UWSGI).NotTo(gomega.BeNil())
@@ -107,7 +106,7 @@ func TestCinderDefault_MaterializesAbsentDeploymentBlocks(t *testing.T) {
 }
 
 // A resources block the user wrote is never touched, not even the half of it
-// that is empty — the same nil-or-empty condition the shared defaults use.
+// that is empty.
 func TestCinderDefault_PreservesExplicitBackupResources(t *testing.T) {
 	g := gomega.NewWithT(t)
 	w := &CinderWebhook{}
@@ -121,6 +120,43 @@ func TestCinderDefault_PreservesExplicitBackupResources(t *testing.T) {
 
 	g.Expect(obj.Spec.Backup.Deployment.Resources.Limits.Memory().String()).To(gomega.Equal("4Gi"))
 	g.Expect(obj.Spec.Backup.Deployment.Resources.Requests).To(gomega.BeEmpty())
+}
+
+// The webhook writes no resources into any of the four blocks: a nil block
+// stays nil, an empty one stays empty, and an explicit one is left as written.
+func TestCinderDefault_LeavesResourcesAsWritten(t *testing.T) {
+	explicit := &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m"), corev1.ResourceMemory: resource.MustParse("1Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("4Gi")},
+	}
+	for _, tc := range []struct {
+		name      string
+		resources *corev1.ResourceRequirements
+	}{
+		{name: "nil", resources: nil},
+		{name: "empty", resources: &corev1.ResourceRequirements{}},
+		{name: "explicit", resources: explicit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &CinderWebhook{}
+
+			obj := validCinder()
+			blocks := []*DeploymentSpec{
+				&obj.Spec.API.Deployment, &obj.Spec.Scheduler.Deployment,
+				&obj.Spec.Volume.Deployment, &obj.Spec.Backup.Deployment,
+			}
+			for _, b := range blocks {
+				b.Resources = tc.resources.DeepCopy()
+			}
+
+			g.Expect(w.Default(context.Background(), obj)).To(gomega.Succeed())
+
+			for _, b := range blocks {
+				g.Expect(b.Resources).To(gomega.Equal(tc.resources))
+			}
+		})
+	}
 }
 
 // A present volume/backup block arrives with replicas already at the schema

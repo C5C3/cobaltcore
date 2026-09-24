@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
@@ -302,6 +303,31 @@ func TestReconcileConsoleProxy_DeleteFailureWrapsTheError(t *testing.T) {
 			g.Expect(err).To(MatchError(ContainSubstring(tc.wrap)))
 			g.Expect(novaCondition(nova, "ConsoleProxyReady")).To(BeNil(),
 				"a proxy that is still projected is not disabled yet")
+		})
+	}
+}
+
+// TestBuildConsoleProxyDeployment_RendersResourceDefaults verifies that the
+// console proxy, one single-threaded process, renders 368Mi as memory request
+// and limit beside a 100m CPU request and no CPU limit, both for the webhook's
+// block and for the consoleProxyDeploymentSpec fallback a CR that bypassed
+// admission renders from.
+func TestBuildConsoleProxyDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*novav1alpha1.Nova)
+	}{
+		{name: "defaulted block", mutate: func(*novav1alpha1.Nova) {}},
+		{name: "nil block fallback", mutate: func(nova *novav1alpha1.Nova) { nova.Spec.ConsoleProxy.Deployment = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			nova := validNova()
+			tc.mutate(nova)
+
+			deploy := buildConsoleProxyDeployment(nova, workloadArtifacts(), workloadDigests{})
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
 		})
 	}
 }

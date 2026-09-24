@@ -98,6 +98,14 @@ func TestNovaDefault_MaterializesAbsentDeploymentBlocks(t *testing.T) {
 	g.Expect(obj.Spec.ConsoleProxy.Deployment).NotTo(gomega.BeNil())
 	g.Expect(obj.Spec.ConsoleProxy.Deployment.Replicas).To(gomega.Equal(int32(1)))
 
+	// No block gets resources: the reconcilers resolve them when they render
+	// each Deployment.
+	g.Expect(obj.Spec.API.Deployment.Resources).To(gomega.BeNil())
+	g.Expect(obj.Spec.Metadata.Deployment.Resources).To(gomega.BeNil())
+	g.Expect(obj.Spec.Scheduler.Deployment.Resources).To(gomega.BeNil())
+	g.Expect(obj.Spec.Conductor.Deployment.Resources).To(gomega.BeNil())
+	g.Expect(obj.Spec.ConsoleProxy.Deployment.Resources).To(gomega.BeNil())
+
 	// The two RPC servers drain for over two and a half minutes, so both get a
 	// grace window that covers it; the HTTP front ends keep the shared default.
 	g.Expect(obj.Spec.Scheduler.Deployment.TerminationGracePeriodSeconds).To(

@@ -20,24 +20,30 @@ func TestDeploymentSpecDefault_FillsZeroValues(t *testing.T) {
 	d.Default()
 
 	g.Expect(d.Replicas).To(gomega.Equal(DefaultReplicas))
-	g.Expect(d.Resources).NotTo(gomega.BeNil())
-	g.Expect(d.Resources.Requests[corev1.ResourceMemory]).To(gomega.Equal(DefaultMemoryRequest()))
-	g.Expect(d.Resources.Requests[corev1.ResourceCPU]).To(gomega.Equal(DefaultCPURequest()))
-	g.Expect(d.Resources.Limits[corev1.ResourceMemory]).To(gomega.Equal(DefaultMemoryLimit()))
-	g.Expect(d.Resources.Limits[corev1.ResourceCPU]).To(gomega.Equal(DefaultCPULimit()))
 }
 
-// An empty-but-non-nil Resources block (`resources: {}`) would produce
-// BestEffort QoS and break HPA utilization calculations, so Default must fill
-// it exactly like the nil case.
-func TestDeploymentSpecDefault_FillsEmptyResources(t *testing.T) {
-	g := gomega.NewWithT(t)
+// Default must never write Resources: the reconcilers resolve the container
+// resources when they render the pod, so a nil block stays nil and an empty one
+// stays empty.
+func TestDeploymentSpecDefault_LeavesResourcesUnset(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		resources *corev1.ResourceRequirements
+		want      *corev1.ResourceRequirements
+	}{
+		{name: "nil", resources: nil, want: nil},
+		{name: "empty", resources: &corev1.ResourceRequirements{}, want: &corev1.ResourceRequirements{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
 
-	d := &DeploymentSpec{Resources: &corev1.ResourceRequirements{}}
-	d.Default()
+			d := &DeploymentSpec{Resources: tc.resources}
+			d.Default()
 
-	g.Expect(d.Resources.Requests).NotTo(gomega.BeEmpty())
-	g.Expect(d.Resources.Limits).NotTo(gomega.BeEmpty())
+			g.Expect(d.Replicas).To(gomega.Equal(DefaultReplicas))
+			g.Expect(d.Resources).To(gomega.Equal(tc.want))
+		})
+	}
 }
 
 func TestDeploymentSpecDefault_PreservesExplicitValues(t *testing.T) {

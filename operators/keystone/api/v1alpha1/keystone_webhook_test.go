@@ -64,12 +64,9 @@ func TestDefault_SetsZeroValueDefaults(t *testing.T) {
 	g.Expect(k.Spec.Cache.Backend).To(Equal("dogpile.cache.pymemcache"))
 	g.Expect(k.Spec.Bootstrap.AdminUser).To(Equal("admin"))
 	g.Expect(k.Spec.Bootstrap.Region).To(Equal("RegionOne"))
-	// Verify Resources defaults are applied.
-	g.Expect(k.Spec.Deployment.Resources).NotTo(BeNil())
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryRequest()))
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPURequest()))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryLimit()))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPULimit()))
+	// Resources are resolved when the Deployment is rendered, never written
+	// into the CR.
+	g.Expect(k.Spec.Deployment.Resources).To(BeNil())
 }
 
 func TestDefault_DoesNotSetFernetRotationSchedule(t *testing.T) {
@@ -1996,24 +1993,24 @@ func TestValidateDelete_AlwaysAllows(t *testing.T) {
 
 // --- Resources defaulting tests ---
 
-func TestDefault_ResourcesSetWhenNil(t *testing.T) {
+// TestDefault_ResourcesLeftUnsetWhenNil verifies that the webhook never
+// materializes spec.deployment.resources: the reconciler resolves the defaults
+// when it renders the Deployment, so a later change of the uWSGI counts moves
+// the memory with it.
+func TestDefault_ResourcesLeftUnsetWhenNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := &Keystone{}
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
-	g.Expect(k.Spec.Deployment.Resources).NotTo(BeNil())
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryRequest()))
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPURequest()))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryLimit()))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPULimit()))
+	g.Expect(k.Spec.Deployment.Resources).To(BeNil())
 }
 
-// TestDefault_ResourcesSetWhenEmpty verifies that `resources: {}` (non-nil but
-// empty ResourceRequirements) triggers defaulting. Without this, the container
-// gets no resources (BestEffort QoS) and HPA breaks.
-func TestDefault_ResourcesSetWhenEmpty(t *testing.T) {
+// TestDefault_ResourcesLeftEmptyWhenEmpty verifies that `resources: {}`
+// (non-nil but empty ResourceRequirements) stays empty. The reconciler renders
+// the defaults for it, so the container still lands in Burstable QoS.
+func TestDefault_ResourcesLeftEmptyWhenEmpty(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := &Keystone{
@@ -2024,11 +2021,7 @@ func TestDefault_ResourcesSetWhenEmpty(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
-	g.Expect(k.Spec.Deployment.Resources).NotTo(BeNil())
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryRequest()))
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPURequest()))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryLimit()))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPULimit()))
+	g.Expect(k.Spec.Deployment.Resources).To(Equal(&corev1.ResourceRequirements{}))
 }
 
 func TestDefault_ResourcesPreservedWhenExplicit(t *testing.T) {
@@ -2051,8 +2044,11 @@ func TestDefault_ResourcesPreservedWhenExplicit(t *testing.T) {
 		},
 	}
 
+	want := k.Spec.Deployment.Resources.DeepCopy()
+
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
+	g.Expect(k.Spec.Deployment.Resources).To(Equal(want))
 	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("1Gi")))
 	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("200m")))
 	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("2Gi")))

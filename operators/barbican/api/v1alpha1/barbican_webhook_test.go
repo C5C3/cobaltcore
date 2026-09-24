@@ -62,8 +62,9 @@ func TestBarbicanDefault_MaterializesServiceUserAndLoggingDefaults(t *testing.T)
 	g.Expect(obj.Spec.ServiceUser.ProjectDomainName).To(gomega.Equal("Default"))
 	g.Expect(obj.Spec.ServiceUser.SecretRef.Key).To(gomega.Equal("password"))
 
-	// The shared block defaults come along too.
-	g.Expect(obj.Spec.Deployment.Resources).NotTo(gomega.BeNil())
+	// The shared block defaults come along too; resources are resolved when
+	// the Deployment is rendered, never written into the CR.
+	g.Expect(obj.Spec.Deployment.Resources).To(gomega.BeNil())
 	g.Expect(obj.Spec.Cache.Backend).To(gomega.Equal(commonv1.DefaultCacheBackend))
 	g.Expect(obj.Spec.Logging).NotTo(gomega.BeNil())
 	g.Expect(obj.Spec.Logging.Format).To(gomega.Equal("text"))
