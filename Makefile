@@ -36,7 +36,7 @@ GOFUMPT ?= $(LOCALBIN)/gofumpt
 
 # Kubernetes version for envtest binary downloads.
 # Pin to a specific version for reproducible integration tests across runs.
-ENVTEST_K8S_VERSION ?= 1.35
+ENVTEST_K8S_VERSION ?= 1.37
 
 # Image tag for docker-build. Uses deferred evaluation so $(OPERATOR) is resolved
 # at recipe expansion time.
