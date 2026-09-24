@@ -122,6 +122,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config
@@ -250,6 +257,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config
@@ -396,6 +410,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config
@@ -609,6 +630,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config
@@ -776,6 +804,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config
@@ -922,6 +957,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config
