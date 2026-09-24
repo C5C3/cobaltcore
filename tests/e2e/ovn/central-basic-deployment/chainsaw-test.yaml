@@ -10,6 +10,8 @@
 #     Service that publishes not-ready addresses (a member joins through peers
 #     it can resolve, so a Service that waited for readiness would deadlock the
 #     cluster) and behind one NodePort Service per member
+#   - member 0 of each database requests the 100m/256Mi floor and runs
+#     Burstable, since the CR leaves resources unset
 #   - northd, the three cert-manager Certificates and their Secrets, the
 #     scripts ConfigMap, the backup CronJob and its volume all exist
 #   - status.<db>.internalDbAddress names three ssl: members, and every
@@ -112,6 +114,14 @@ spec:
             # waits for the quorum the later members are what forms.
             podManagementPolicy: Parallel
             replicas: 3
+            # The CR sets no resources, so the operator renders no limit. That
+            # is checked on the template, not on the Pods: openstack is an
+            # OpenBao tenant namespace, and the LimitRange the openbao-operator
+            # provisioner puts there (openbao-operator-tenant-limits) gives
+            # every container without a limit 500m CPU and 512Mi memory.
+            template:
+              spec:
+                (length(containers[?name == 'ovsdb'].resources.limits) == `0`): true
           status:
             readyReplicas: 3
     - assert:
@@ -124,8 +134,38 @@ spec:
           spec:
             podManagementPolicy: Parallel
             replicas: 3
+            template:
+              spec:
+                (length(containers[?name == 'ovsdb'].resources.limits) == `0`): true
           status:
             readyReplicas: 3
+    # The CR sets no resources on either database, so the operator renders
+    # its request floor. The QoS class is what the kubelet ranks evictions by,
+    # and BestEffort would put a quorum member first in line.
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ovn-basic-nb-0
+            namespace: openstack
+          spec:
+            (containers[?name == 'ovsdb'].resources.requests.cpu | [0]): 100m
+            (containers[?name == 'ovsdb'].resources.requests.memory | [0]): 256Mi
+          status:
+            qosClass: Burstable
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ovn-basic-sb-0
+            namespace: openstack
+          spec:
+            (containers[?name == 'ovsdb'].resources.requests.cpu | [0]): 100m
+            (containers[?name == 'ovsdb'].resources.requests.memory | [0]): 256Mi
+          status:
+            qosClass: Burstable
     - assert:
         resource:
           apiVersion: v1
