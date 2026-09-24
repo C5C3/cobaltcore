@@ -132,13 +132,14 @@ type OVNChassisSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	RemoteProbeIntervalMs int32 `json:"remoteProbeIntervalMs,omitempty"`
 
-	// OVS tunes the Open vSwitch container. When nil the operator applies its own
-	// defaults.
+	// OVS tunes the ovs-vswitchd container. When nil the operator renders no
+	// requests or limits for the container. The local ovsdb-server container
+	// beside it takes none from any field.
 	// +optional
 	OVS *OVNChassisContainerSpec `json:"ovs,omitempty"`
 
 	// Controller tunes the ovn-controller container. When nil the operator
-	// applies its own defaults.
+	// renders no requests or limits for the container.
 	// +optional
 	Controller *OVNChassisContainerSpec `json:"controller,omitempty"`
 
@@ -205,10 +206,14 @@ type OVNChassisUpdateStrategy struct {
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 }
 
-// OVNChassisContainerSpec tunes one of the two containers in the chassis pod.
+// OVNChassisContainerSpec tunes one chassis container: ovs-vswitchd in the OVS
+// DaemonSet (spec.ovs) or ovn-controller in the controller DaemonSet
+// (spec.controller).
 type OVNChassisContainerSpec struct {
-	// Resources defines the CPU and memory requests and limits for the container.
-	// When nil the operator applies its own defaults.
+	// Resources defines the CPU and memory requests and limits for the
+	// container. When nil the operator renders none, unless a LimitRange in the
+	// namespace fills them in: what a datapath needs depends on the traffic the
+	// node carries, so no default fits most hardware.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
