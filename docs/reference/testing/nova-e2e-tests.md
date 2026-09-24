@@ -124,8 +124,14 @@ instead of the 68 the other legs take: a full-stack Nova suite is a Keystone, an
 OVNCentral, a Neutron, a Placement, a Glance and the five Nova workloads. Beside
 the operator and service images the leg loads `tempest:2025.2`, which is where
 the catalog, seed and verify Jobs get their `openstack` client, and
-`nova-compute` at both nova releases, the image a NovaCompute pool runs. See
-[CI Workflow](../ci-cd/ci-workflow.md#e2e-operator).
+`nova-compute` at both nova releases, the image a NovaCompute pool runs.
+
+The leg runs as two shards, each on a kind cluster of its own and under its own
+150-minute wall. Shard 2 runs `compute-node-pool`, `invalid-novacompute-cr`,
+`basic-deployment-2026-1`, `release-upgrade`, `healthcheck`, `deletion-cleanup`
+and `pod-security-restricted`. Shard 1 runs every other suite, so a new suite
+runs there until the `Run E2E tests` step in `.github/workflows/ci.yaml` names
+it for shard 2. See [CI Workflow](../ci-cd/ci-workflow.md#e2e-operator).
 
 ## Prerequisites
 
