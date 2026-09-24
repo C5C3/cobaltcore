@@ -14,12 +14,12 @@ import "github.com/c5c3/cobaltcore/internal/common/config"
 //
 //   - The registry is static. Conditionally rendered keys — [DEFAULT] workers /
 //     default_log_levels / log_config_append, the three [DEFAULT] image_cache_*
-//     keys, [database] max_overflow, the [keystone_authtoken] region_name /
-//     memcached_servers, and the [oslo_policy] policy_file — are registered
-//     unconditionally, because the registry documents "this key is not the
-//     user's to set", not "this key is currently rendered". A key the operator
-//     owns whenever it renders it stays owned even in the CRs where that render
-//     is skipped.
+//     keys, [database] max_pool_size / max_overflow, the [keystone_authtoken]
+//     region_name / memcached_servers, and the [oslo_policy] policy_file — are
+//     registered unconditionally, because the registry documents "this key is
+//     not the user's to set", not "this key is currently rendered". A key the
+//     operator owns whenever it renders it stays owned even in the CRs where
+//     that render is skipped.
 //
 //   - An entry is Reported (honored-but-surfaced through the ExtraConfigHealthy
 //     condition) unless honoring the override would already have done the damage
@@ -47,7 +47,7 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "DEFAULT", Key: "enabled_import_methods", OwnedBy: "operator-computed"},
 	{Section: "DEFAULT", Key: "use_stderr", OwnedBy: "operator-computed"},
 	{Section: "DEFAULT", Key: "debug", OwnedBy: "operator-computed"},
-	{Section: "DEFAULT", Key: "workers", OwnedBy: "operator-computed"},
+	{Section: "DEFAULT", Key: "workers", OwnedBy: "operator-computed", Impact: "below 2026.1 the connection cap counts spec.apiServer.workers; a raised value lets the extra workers open connections past max_user_connections and fail with MySQL error 1226"},
 	{Section: "DEFAULT", Key: "default_log_levels", OwnedBy: "operator-computed"},
 	{Section: "DEFAULT", Key: "log_config_append", OwnedBy: "operator-computed"},
 
@@ -73,9 +73,10 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "database", Key: "max_retries", OwnedBy: "operator-computed"},
 	{Section: "database", Key: "connection_recycle_time", OwnedBy: "operator-computed"},
 	{Section: "database", Key: "connection", OwnedBy: "operator-computed", Impact: "the runtime value comes from the OS_DATABASE__CONNECTION env override, so the file override is ignored"},
-	// max_overflow renders only below 2026.1 (eventlet), pinned to 0. It is
-	// Reported: an override costs HTTP 500s under load but does no damage
-	// before ExtraConfigHealthy can surface it.
+	// max_pool_size and max_overflow render only below 2026.1 (eventlet),
+	// pinned to 5 and 0. They are Reported: an override costs HTTP 500s under
+	// load but does no damage before ExtraConfigHealthy can surface it.
+	{Section: "database", Key: "max_pool_size", OwnedBy: "operator-computed", Impact: "the connection cap sizes an eventlet worker at the pool size; a raised value lets a worker open connections past max_user_connections and fail with MySQL error 1226"},
 	{Section: "database", Key: "max_overflow", OwnedBy: "operator-computed", Impact: "the connection cap sizes an eventlet worker at the pool size; a raised value lets a worker open connections past max_user_connections and fail with MySQL error 1226"},
 
 	// [keystone_authtoken] — rendered by keystoneauth.Section.

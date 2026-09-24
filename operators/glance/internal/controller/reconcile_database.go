@@ -16,6 +16,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/release"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
@@ -39,6 +40,99 @@ const (
 	conditionReasonImageReleaseMismatch = "ImageReleaseMismatch"
 )
 
+// The per-process connection figures below were measured on 2026-09-24 against
+// mariadb:11.4 with ghcr.io/c5c3/glance:2025.2 (glance 31.1.0, oslo.db 17.4.0)
+// and :2026.1 (glance 32.0.0, oslo.db 18.0.0): 16 clients drove 60 s of
+// create, upload, download, delete, list, show and property-PATCH traffic, with
+// web-download imports on 10 % of operations, while a sampler counted each
+// process's connections to port 3306.
+
+// glanceTaskPoolConnections is what a uWSGI process adds beyond one connection
+// per request thread: the per-process async import pool runs web-download
+// imports on threads of its own, each holding a connection. With imports the
+// per-process peaks sat up to 5 above the thread count (processes × threads:
+// 1 × 1 → 4, 2 × 1 → 5, 1 × 4 and 2 × 4 → 8 to 9, 1 × 8 → 12); without
+// imports they were one per thread (1 × 1 → 1, 1 × 4 → 4). A heavier import
+// mix pushes the term toward [wsgi] task_pool_threads, which defaults to 16
+// per process.
+const glanceTaskPoolConnections int32 = 5
+
+// glanceEventletWorkerConnections is one eventlet worker's ceiling: the
+// glanceEventletMaxPoolSize plus glanceEventletMaxOverflow operatorDefaults pins
+// below 2026.1. With the pin one worker held 5 connections; unpinned it opened
+// 30 to 32 (1 worker) and 18 to 21 (2 workers), following client concurrency.
+const glanceEventletWorkerConnections = glanceEventletMaxPoolSize + glanceEventletMaxOverflow
+
+// effectiveEventletWorkers resolves the eventlet [DEFAULT] workers count that
+// operatorDefaults renders and the connection cap sizes for:
+// spec.apiServer.workers when set to at least 1, otherwise
+// glancev1alpha1.DefaultEventletWorkers.
+func effectiveEventletWorkers(glance *glancev1alpha1.Glance) int32 {
+	if s := glance.Spec.APIServer; s != nil && s.Workers != nil && *s.Workers >= 1 {
+		return *s.Workers
+	}
+	return glancev1alpha1.DefaultEventletWorkers
+}
+
+// glanceConnectionsPerPod is the connection ceiling of one API pod running the
+// given OpenStack release. Under uWSGI (2026.1+) it is processes × (threads +
+// glanceTaskPoolConnections), from spec.apiServer.uwsgi with the command's
+// default resolution; spec.apiServer.workers is inert there. Under eventlet
+// (below 2026.1, or an empty or unparseable release) it is
+// effectiveEventletWorkers × glanceEventletWorkerConnections, and
+// spec.apiServer.uwsgi is inert. The defaults give 12 and 10.
+func glanceConnectionsPerPod(glance *glancev1alpha1.Glance, openStackRelease string) int32 {
+	if glanceReleaseUsesUWSGI(openStackRelease) {
+		var uwsgi *glancev1alpha1.UWSGISpec
+		if glance.Spec.APIServer != nil {
+			uwsgi = glance.Spec.APIServer.UWSGI
+		}
+		processes, threads := deployment.EffectiveUWSGIConcurrency(uwsgi)
+		return processes * (threads + glanceTaskPoolConnections)
+	}
+	return effectiveEventletWorkers(glance) * glanceEventletWorkerConnections
+}
+
+// glanceMaxUserConnections sizes the SQL user's max_user_connections cap for
+// the CR's own topology: (pods + 1) × perPod + 2. pods is the autoscaling
+// ceiling when an HPA owns the replica count, and the extra pod is the rollout
+// surge (maxSurge=1, maxUnavailable=0). The defaults size to 50 at 2026.1
+// ((3+1)×2×(1+5)+2) and 42 below it ((3+1)×2×5+2).
+//
+// perPod is the largest glanceConnectionsPerPod over spec.openStackRelease,
+// status.installedRelease and status.targetRelease, skipping empty status
+// fields. The launch modes mix only across a release boundary: during the
+// RollingUpdate phase of a 2025.2 → 2026.1 upgrade old eventlet pods run beside
+// new uWSGI pods, and an abort mixes them the other way. Sized from the spec
+// release alone, a 2025.2 Glance with workers: 8 would drop to a cap of 50
+// mid-upgrade while its old pods hold up to 120.
+//
+// The trailing 2 covers one migration Job (db-sync, or the one active expand,
+// migrate or contract phase Job) plus an overlapping {name}-db-purge CronJob
+// run. The cache-maintenance sidecar opens no database connection.
+//
+// Left unsized, the mariadb-operator CRD default of 10 applies, which three
+// 2026.1 pods of two processes cross under load (up to 30 connections). The
+// process that opens the connection past the cap gets MySQL error 1226: at
+// start-up --need-app crash-loops its pod, and under load the request answers
+// HTTP 500, a failed upload, import or snapshot.
+func glanceMaxUserConnections(glance *glancev1alpha1.Glance) int32 {
+	pods := deployment.EffectiveReplicas(&glance.Spec.Deployment)
+	if glance.Spec.Autoscaling != nil {
+		pods = glance.Spec.Autoscaling.MaxReplicas
+	}
+	// The spec release always counts, even when empty: an empty release launches
+	// the eventlet server, so it sizes as one rather than collapsing the cap to
+	// the Job headroom.
+	perPod := glanceConnectionsPerPod(glance, glance.Spec.OpenStackRelease)
+	for _, rel := range []string{glance.Status.InstalledRelease, glance.Status.TargetRelease} {
+		if rel != "" {
+			perPod = max(perPod, glanceConnectionsPerPod(glance, rel))
+		}
+	}
+	return (pods+1)*perPod + 2
+}
+
 // reconcileDatabase provisions and migrates the Glance database schema and
 // tracks the installed OpenStack release. It always runs the shared provisioning
 // flow (MariaDB cluster gate + Database/User/Grant in managed mode, no-op in
@@ -53,16 +147,17 @@ func (r *GlanceReconciler) reconcileDatabase(ctx context.Context, children clien
 	// ensure, Dynamic-credentials skip of the User/Grant. A non-zero result means
 	// the flow set a not-ready condition and we must return it unchanged.
 	res, err := database.ReconcileProvision(ctx, database.ProvisionFlowParams{
-		Client:        children,
-		Scheme:        r.Scheme,
-		Owner:         glance,
-		InstanceName:  glance.Name,
-		Namespace:     glance.Namespace,
-		Database:      &glance.Spec.Database,
-		Conditions:    &glance.Status.Conditions,
-		Generation:    glance.Generation,
-		ConditionType: "DatabaseReady",
-		RequeueAfter:  RequeueDatabaseWait,
+		Client:             children,
+		Scheme:             r.Scheme,
+		Owner:              glance,
+		InstanceName:       glance.Name,
+		Namespace:          glance.Namespace,
+		Database:           &glance.Spec.Database,
+		Conditions:         &glance.Status.Conditions,
+		Generation:         glance.Generation,
+		ConditionType:      "DatabaseReady",
+		RequeueAfter:       RequeueDatabaseWait,
+		MaxUserConnections: glanceMaxUserConnections(glance),
 	})
 	if err != nil || !res.IsZero() {
 		return res, err

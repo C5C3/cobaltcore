@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
@@ -14,13 +15,16 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
@@ -112,6 +116,59 @@ func failedGlanceUpgradeJob(glance *glancev1alpha1.Glance, configMapName, verb s
 	return j
 }
 
+// readyMariaDBCluster returns the MariaDB cluster managedGlance references,
+// reporting Ready so the provisioning flow passes its cluster gate.
+func readyMariaDBCluster() *mariadbv1alpha1.MariaDB {
+	cluster := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: "default"},
+	}
+	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Running",
+	})
+	return cluster
+}
+
+// readyGlanceDatabase returns the Database CR the provisioning flow applies for
+// the shared fixture, reporting Ready so the flow reaches the User step.
+func readyGlanceDatabase() *mariadbv1alpha1.Database {
+	db := &mariadbv1alpha1.Database{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-glance", Namespace: "default"},
+	}
+	meta.SetStatusCondition(&db.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Created",
+	})
+	return db
+}
+
+// failingUserApplyReconciler builds a reconciler whose server-side apply of the
+// shared fixture's User CR fails with boom, so the wrapping of the error can be
+// asserted. The provisioning flow writes through Apply, not Create.
+func failingUserApplyReconciler(boom error, objs ...client.Object) *GlanceReconciler {
+	s := dbTestScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).
+		WithStatusSubresource(&glancev1alpha1.Glance{}, &glancev1alpha1.GlanceBackend{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration,
+				opts ...client.ApplyOption,
+			) error {
+				if co, ok := obj.(client.Object); ok &&
+					co.GetObjectKind().GroupVersionKind().Kind == "User" && co.GetName() == "test-glance" {
+					return boom
+				}
+				return cl.Apply(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	return &GlanceReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(50)}
+}
+
+// atRelease moves glance to the given OpenStack release, bumping the image tag
+// in lockstep as the operator's decoupled-field contract requires.
+func atRelease(glance *glancev1alpha1.Glance, openStackRelease string) {
+	glance.Spec.OpenStackRelease = openStackRelease
+	glance.Spec.Image.Tag = openStackRelease
+}
+
 // TestGlanceReleaseUsesUWSGI pins the launch-mode boundary on a bare release
 // string: uWSGI from 2026.1 onward, the eventlet glance-api server below it and
 // for a release that does not parse. The connection-cap sizing asks it about
@@ -133,6 +190,302 @@ func TestGlanceReleaseUsesUWSGI(t *testing.T) {
 		t.Run(tc.release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			g.Expect(glanceReleaseUsesUWSGI(tc.release)).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestGlanceMaxUserConnections pins the connection-cap arithmetic in both launch
+// modes and across a mixed fleet. The cap is what the operator asks
+// mariadb-operator for, and a value below the real concurrency does not
+// degrade: the process that opens the connection past it gets MySQL error 1226
+// and the upload, import or snapshot it serves answers 500.
+func TestGlanceMaxUserConnections(t *testing.T) {
+	apiServer := func(uwsgi *glancev1alpha1.UWSGISpec, workers *int32) *glancev1alpha1.APIServerSpec {
+		return &glancev1alpha1.APIServerSpec{UWSGI: uwsgi, Workers: workers}
+	}
+	cases := []struct {
+		name    string
+		mutate  func(*glancev1alpha1.Glance)
+		want    int32
+		because string
+	}{
+		// uWSGI (2026.1): perPod = processes × (threads + 5).
+		{
+			name:    "uwsgi default topology",
+			want:    50,
+			because: "3 API pods plus one surge run 2 processes of 1 thread plus the import pool, and two Jobs may overlap",
+		},
+		{
+			name: "uwsgi autoscaling raises the pod ceiling",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				gl.Spec.Autoscaling = &glancev1alpha1.AutoscalingSpec{MaxReplicas: 5}
+			},
+			want:    74,
+			because: "an HPA owns the replica count, so the cap is sized for its ceiling",
+		},
+		{
+			name: "uwsgi processes multiply threads plus the import pool",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				gl.Spec.APIServer = apiServer(&glancev1alpha1.UWSGISpec{Processes: 4, Threads: 2}, nil)
+			},
+			want:    114,
+			because: "(3+1)*4*(2+5)+2",
+		},
+		{
+			name:    "uwsgi single replica",
+			mutate:  func(gl *glancev1alpha1.Glance) { gl.Spec.Deployment.Replicas = 1 },
+			want:    26,
+			because: "the surge pod doubles a single-replica fleet during a rollout",
+		},
+		// Eventlet (2025.2): perPod = workers × 5.
+		{
+			name:    "eventlet default topology",
+			mutate:  func(gl *glancev1alpha1.Glance) { atRelease(gl, "2025.2") },
+			want:    42,
+			because: "2 pinned eventlet workers hold 5 connections each",
+		},
+		{
+			name: "eventlet workers multiply the pool size",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				atRelease(gl, "2025.2")
+				gl.Spec.APIServer = apiServer(nil, ptr.To(int32(4)))
+			},
+			want:    82,
+			because: "(3+1)*4*5+2",
+		},
+		{
+			name: "eventlet raised replica count",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				atRelease(gl, "2025.2")
+				gl.Spec.Deployment.Replicas = 5
+			},
+			want:    62,
+			because: "(5+1)*2*5+2",
+		},
+		{
+			name: "eventlet autoscaling raises the pod ceiling",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				atRelease(gl, "2025.2")
+				gl.Spec.Autoscaling = &glancev1alpha1.AutoscalingSpec{MaxReplicas: 5}
+			},
+			want:    62,
+			because: "an HPA owns the replica count, so the cap is sized for its ceiling",
+		},
+		// Each mode ignores the other mode's knob.
+		{
+			name: "eventlet ignores the inert uwsgi block",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				atRelease(gl, "2025.2")
+				gl.Spec.APIServer = apiServer(&glancev1alpha1.UWSGISpec{Processes: 8}, nil)
+			},
+			want:    42,
+			because: "the eventlet server runs [DEFAULT] workers, not uWSGI processes",
+		},
+		{
+			name: "uwsgi ignores the inert workers field",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				gl.Spec.APIServer = apiServer(nil, ptr.To(int32(8)))
+			},
+			want:    50,
+			because: "uWSGI runs its own processes and ignores [DEFAULT] workers",
+		},
+		// Mixed fleets during an upgrade or its abort.
+		{
+			name: "installed eventlet fleet outweighs the uwsgi target",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				gl.Spec.APIServer = apiServer(nil, ptr.To(int32(8)))
+				gl.Status.InstalledRelease = "2025.2"
+				gl.Status.TargetRelease = "2026.1"
+			},
+			want:    162,
+			because: "the old eventlet pods of 8 workers hold 40 each until the RollingUpdate phase replaces them",
+		},
+		{
+			name: "mixed fleet at defaults sizes for uwsgi",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				gl.Status.InstalledRelease = "2025.2"
+				gl.Status.TargetRelease = "2026.1"
+			},
+			want:    50,
+			because: "a default uWSGI pod (12) holds more than a default eventlet pod (10)",
+		},
+		{
+			name: "uwsgi target outweighs the eventlet spec",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				atRelease(gl, "2025.2")
+				gl.Spec.APIServer = apiServer(&glancev1alpha1.UWSGISpec{Processes: 4}, nil)
+				gl.Status.InstalledRelease = "2025.2"
+				gl.Status.TargetRelease = "2026.1"
+			},
+			want:    98,
+			because: "an abort leaves uWSGI pods of 4 processes (24 each) beside the eventlet ones",
+		},
+		// Zero inputs fall back to the defaults.
+		{
+			name:    "zero replicas fall back to the default",
+			mutate:  func(gl *glancev1alpha1.Glance) { gl.Spec.Deployment.Replicas = 0 },
+			want:    50,
+			because: "an unset replica count is the default of 3, never a fleet of zero",
+		},
+		{
+			name: "zero workers fall back to the default",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				atRelease(gl, "2025.2")
+				gl.Spec.APIServer = apiServer(nil, ptr.To(int32(0)))
+			},
+			want:    42,
+			because: "a worker count below 1 sizes as DefaultEventletWorkers",
+		},
+		{
+			name: "zero uwsgi counts fall back to the defaults",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				gl.Spec.APIServer = apiServer(&glancev1alpha1.UWSGISpec{Processes: 0, Threads: 0}, nil)
+			},
+			want:    50,
+			because: "the command renders 2 processes and 1 thread for non-positive counts, and the cap follows it",
+		},
+		// Absent inputs fall back to the defaults.
+		{
+			name:    "uwsgi nil apiServer",
+			mutate:  func(gl *glancev1alpha1.Glance) { gl.Spec.APIServer = nil },
+			want:    50,
+			because: "an absent apiServer block runs the default 2 processes of 1 thread",
+		},
+		{
+			name: "eventlet nil apiServer",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				atRelease(gl, "2025.2")
+				gl.Spec.APIServer = nil
+			},
+			want:    42,
+			because: "an absent apiServer block runs DefaultEventletWorkers",
+		},
+		{
+			name: "empty status releases size from the spec release alone",
+			mutate: func(gl *glancev1alpha1.Glance) {
+				gl.Spec.APIServer = apiServer(nil, ptr.To(int32(8)))
+				gl.Status.InstalledRelease = ""
+				gl.Status.TargetRelease = ""
+			},
+			want:    50,
+			because: "a fresh install has no old pods, so the inert workers count must not size the cap",
+		},
+		// Releases that do not parse.
+		{
+			name:    "unparseable installed release",
+			mutate:  func(gl *glancev1alpha1.Glance) { gl.Status.InstalledRelease = "garbage" },
+			want:    50,
+			because: "garbage sizes as eventlet (10 per pod), which loses to uWSGI's 12",
+		},
+		{
+			name:    "empty spec release sizes as eventlet",
+			mutate:  func(gl *glancev1alpha1.Glance) { gl.Spec.OpenStackRelease = "" },
+			want:    42,
+			because: "an empty release launches the eventlet server, so the cap never collapses to the Job headroom",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			glance := testGlance()
+			if tc.mutate != nil {
+				tc.mutate(glance)
+			}
+			g.Expect(glanceMaxUserConnections(glance)).To(Equal(tc.want), tc.because)
+		})
+	}
+}
+
+// TestReconcileDatabase_SizesTheUserConnectionCap verifies that the User CR the
+// provisioning flow creates carries the cap sized for the launch mode of the
+// CR's release. Left unset, the mariadb-operator CRD default of 10 applies,
+// which the default fleet exceeds under load in either mode.
+func TestReconcileDatabase_SizesTheUserConnectionCap(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*glancev1alpha1.Glance)
+		want   int32
+	}{
+		{name: "uwsgi at 2026.1", want: 50},
+		{
+			name:   "eventlet at 2025.2",
+			mutate: func(gl *glancev1alpha1.Glance) { atRelease(gl, "2025.2") },
+			want:   42,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			glance := managedGlance()
+			if tc.mutate != nil {
+				tc.mutate(glance)
+			}
+			r := newDBTestReconciler(dbTestScheme(), glance, readyMariaDBCluster(), readyGlanceDatabase())
+
+			_, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
+			g.Expect(err).NotTo(HaveOccurred())
+
+			user := &mariadbv1alpha1.User{}
+			g.Expect(r.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-glance"}, user)).To(Succeed())
+			g.Expect(user.Spec.MaxUserConnections).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestReconcileDatabase_UserApplyErrorPropagates verifies that a failed apply of
+// the sized User CR surfaces as a reconcile error wrapping the cause, and that
+// no migration Job runs against a user whose cap was never written.
+func TestReconcileDatabase_UserApplyErrorPropagates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := managedGlance()
+	boom := errors.New("boom")
+	r := failingUserApplyReconciler(boom, glance, readyMariaDBCluster(), readyGlanceDatabase())
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, boom)).To(BeTrue(), "the apply error must stay in the chain")
+	g.Expect(err.Error()).To(ContainSubstring("ensuring database user"))
+
+	var syncJob batchv1.Job
+	getErr := r.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-glance-db-sync"}, &syncJob)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(), "no migration Job may run on this path")
+}
+
+// TestReconcileDatabase_NoUserOutsideStaticManaged verifies that the operator
+// sizes no User where it owns none: a brownfield database is not the
+// operator's to provision, and in Dynamic credentials mode the OpenBao engine
+// issues the users.
+func TestReconcileDatabase_NoUserOutsideStaticManaged(t *testing.T) {
+	cases := []struct {
+		name   string
+		glance func() *glancev1alpha1.Glance
+	}{
+		{name: "brownfield", glance: testGlance},
+		{
+			name: "dynamic credentials",
+			glance: func() *glancev1alpha1.Glance {
+				gl := managedGlance()
+				gl.Spec.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+				return gl
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			glance := tc.glance()
+			r := newDBTestReconciler(dbTestScheme(), glance, readyMariaDBCluster(), readyGlanceDatabase())
+
+			_, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
+			g.Expect(err).NotTo(HaveOccurred())
+
+			users := &mariadbv1alpha1.UserList{}
+			g.Expect(r.List(context.Background(), users, client.InNamespace("default"))).To(Succeed())
+			g.Expect(users.Items).To(BeEmpty())
 		})
 	}
 }
