@@ -415,8 +415,9 @@ func novaUWSGIProbeHandler(port int32) corev1.ProbeHandler {
 }
 
 // novaUWSGIStartupProbe returns the startup probe of an HTTP front end. It
-// carries the cold-start window: every uWSGI worker imports nova under the
-// container's CPU limit, which measured 40 to 78 seconds on a CI node, while the
+// carries the cold-start window: every uWSGI worker imports nova, which under a
+// CPU limit set on the container or on a contended node measured 40 to 78
+// seconds (on a CI node under the former 500m default CPU limit), while the
 // liveness probe alone gives up 55 seconds after the container started and
 // restarts a front end that is still loading. The timings are the sibling
 // operators': 30x10s of startup budget, and an 8s timeout because a

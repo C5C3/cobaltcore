@@ -8,7 +8,7 @@
 #   - kustomize build deploy/kind/infrastructure renders MariaDB/openstack-db
 #     with a memory request equal to its memory limit. Without a request the
 #     single replica is BestEffort, the QoS class the kernel OOM killer takes
-#     first, while every operator workload requests 256Mi; CI run 34718789784
+#     first, while every operator workload requests memory; CI run 34718789784
 #     lost the database five times in 36 minutes that way and failed whichever
 #     e2e suite was waiting on DatabaseReady.
 #   - the same render carries NO cpu request and NO cpu limit: a 500m request

@@ -281,11 +281,12 @@ func buildNeutronDeployment(neutron *neutronv1alpha1.Neutron,
 			// All three probes GET the API root, which serves the version document
 			// without a token and without touching the database. The startup probe
 			// carries the cold-start window: every uWSGI worker imports the whole
-			// plugin stack under the container's CPU limit, which stretches past the
-			// liveness budget once spec.apiServer.uwsgi.processes rises above the
-			// default. The timings are the sibling operators': 30x10s of startup
-			// budget, and an 8s timeout because a cold-starting WSGI app can hold even
-			// a plain HTTP GET past the kubelet's 1s default.
+			// plugin stack, which under a CPU limit set on the container or on a
+			// contended node stretches past the liveness budget once
+			// spec.apiServer.uwsgi.processes rises above the default. The timings are
+			// the sibling operators': 30x10s of startup budget, and an 8s timeout
+			// because a cold-starting WSGI app can hold even a plain HTTP GET past the
+			// kubelet's 1s default.
 			StartupProbe: &corev1.Probe{
 				ProbeHandler:     neutronAPIProbeHandler(),
 				FailureThreshold: 30,

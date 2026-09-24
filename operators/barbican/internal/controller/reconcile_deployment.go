@@ -293,14 +293,15 @@ func buildBarbicanDeployment(
 			// Startup, readiness AND liveness hit the healthcheck app, which the
 			// paste composite routes outside the authtoken pipeline, so the probes
 			// need no token and touch no database. The startup probe carries the
-			// cold-start window: every uWSGI worker imports the whole app under the
-			// container's CPU limit, which stretches past the liveness budget once
+			// cold-start window: every uWSGI worker imports the whole app, which
+			// under a CPU limit set on the container or on a contended node
+			// stretches past the liveness budget once
 			// spec.apiServer.uwsgi.processes rises above the default (observed
-			// 66-91s at processes=4 under the default 500m limit, against the
-			// ~55s the liveness probe allows). Same numbers as keystone's startup
-			// probe: 30x10s of budget, and an 8s timeout because a cold-starting
-			// WSGI app can hold even a plain HTTP GET past the kubelet's 1s
-			// default.
+			// 66-91s at processes=4 under the former 500m default CPU limit,
+			// against the ~55s the liveness probe allows). Same numbers as
+			// keystone's startup probe: 30x10s of budget, and an 8s timeout
+			// because a cold-starting WSGI app can hold even a plain HTTP GET past
+			// the kubelet's 1s default.
 			StartupProbe: &corev1.Probe{
 				ProbeHandler:     barbicanHealthcheckProbeHandler(),
 				FailureThreshold: 30,

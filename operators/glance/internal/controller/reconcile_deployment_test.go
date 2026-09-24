@@ -690,10 +690,10 @@ func TestBuildGlanceDeployment_ProbesOnHealthcheck(t *testing.T) {
 }
 
 // TestBuildGlanceDeployment_StartupProbeCoversColdStart covers the cold start of
-// the API in both launch modes. Every worker imports glance under the
-// container's CPU limit, which took 66 to 90 seconds under uWSGI in a kind pod
-// at 120m CPU. The liveness probe alone restarts the container 55 seconds after
-// it started, so the startup probe holds it back.
+// the API in both launch modes. Every worker imports glance, which under a CPU
+// limit set on the container or on a contended node took 66 to 90 seconds under
+// uWSGI (measured in a kind pod at 120m CPU). The liveness probe alone restarts
+// the container 55 seconds after it started, so the startup probe holds it back.
 func TestBuildGlanceDeployment_StartupProbeCoversColdStart(t *testing.T) {
 	for _, release := range []string{"2025.2", "2026.1"} {
 		t.Run(release, func(t *testing.T) {

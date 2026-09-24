@@ -377,14 +377,15 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 				ContainerPort: glanceAPIPort,
 			}},
 			// All three probes GET /healthcheck on the API port, served by the oslo
-			// healthcheck middleware without touching the database, identical in
-			// both launch modes. The startup probe carries the cold-start window:
-			// every worker imports glance under the container's CPU limit, which
-			// took 66 to 90 seconds under uWSGI in a kind pod at 120m CPU, while
-			// the liveness probe alone restarts the container 55 seconds after it
-			// started. The timings are the sibling operators': 30x10s of startup
-			// budget, and an 8s timeout because a cold-starting WSGI app can hold
-			// even a plain HTTP GET past the kubelet's 1s default.
+			// healthcheck middleware without touching the database, identical in both
+			// launch modes. The startup probe carries the cold-start window: every
+			// worker imports glance, which under a CPU limit set on the container or
+			// on a contended node took 66 to 90 seconds under uWSGI (measured in a
+			// kind pod at 120m CPU), while the liveness probe alone restarts the
+			// container 55 seconds after it started. The timings are the sibling
+			// operators': 30x10s of startup budget, and an 8s timeout because a
+			// cold-starting WSGI app can hold even a plain HTTP GET past the kubelet's
+			// 1s default.
 			StartupProbe: &corev1.Probe{
 				ProbeHandler:     glanceHealthcheckProbeHandler(),
 				FailureThreshold: 30,

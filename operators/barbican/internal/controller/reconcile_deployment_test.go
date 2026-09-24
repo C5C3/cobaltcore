@@ -290,13 +290,14 @@ func TestBuildBarbicanDeployment_ReMintedSecretIDRollsThePods(t *testing.T) {
 	g.Expect(afterAnnotations[secretStoreCredentialsHashAnnotation]).To(Equal("digest-after"))
 }
 
-// Every uWSGI worker imports the whole app under the container's CPU limit, so
-// the cold start stretches past the liveness budget once
-// spec.apiServer.uwsgi.processes rises above the default (observed 66-91s at
-// processes=4 under the default 500m limit, against a ~55s liveness budget:
-// the container is killed before the app ever answers, forever). The startup
-// probe must therefore exist and carry a budget that outlasts the worst
-// observed cold start, and only then does the liveness probe take over.
+// Every uWSGI worker imports the whole app, so under a CPU limit set on the
+// container or on a contended node the cold start stretches past the liveness
+// budget once spec.apiServer.uwsgi.processes rises above the default (observed
+// 66-91s at processes=4 under the former 500m default CPU limit, against a ~55s
+// liveness budget: the container is killed before the app ever answers,
+// forever). The startup probe must therefore exist and carry a budget that
+// outlasts the worst observed cold start, and only then does the liveness probe
+// take over.
 func TestBuildBarbicanDeployment_StartupProbeOutlastsSlowColdStarts(t *testing.T) {
 	g := NewGomegaWithT(t)
 	barbican := testBarbican()

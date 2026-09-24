@@ -254,17 +254,18 @@ func buildPlacementDeployment(placement *placementv1alpha1.Placement, configMapN
 				Name:          "placement-api",
 				ContainerPort: placementAPIPort,
 			}},
-			// All three probes GET "/", the version document placement serves
-			// without authentication and without touching the database. The
-			// startup probe carries the cold-start window: before the app answers,
-			// every uWSGI worker imports placement under the container's CPU limit
-			// and syncs the traits and resource classes against the database
-			// (loadapp calls update_database, which runs trait.ensure_sync and
-			// resource_class.ensure_sync). That took 41 to 45 seconds in a kind pod
-			// at 120m CPU, while the liveness probe alone restarts the container 55
-			// seconds after it started. The timings are the sibling operators':
-			// 30x10s of startup budget, and an 8s timeout because a cold-starting
-			// WSGI app can hold even a plain HTTP GET past the kubelet's 1s default.
+			// All three probes GET "/", the version document placement serves without
+			// authentication and without touching the database. The startup probe
+			// carries the cold-start window: before the app answers, every uWSGI
+			// worker imports placement and syncs the traits and resource classes
+			// against the database (loadapp calls update_database, which runs
+			// trait.ensure_sync and resource_class.ensure_sync). Under a CPU limit set
+			// on the container or on a contended node that took 41 to 45 seconds
+			// (measured in a kind pod at 120m CPU), while the liveness probe alone
+			// restarts the container 55 seconds after it started. The timings are the
+			// sibling operators': 30x10s of startup budget, and an 8s timeout because
+			// a cold-starting WSGI app can hold even a plain HTTP GET past the
+			// kubelet's 1s default.
 			StartupProbe: &corev1.Probe{
 				ProbeHandler:     placementRootProbeHandler(),
 				FailureThreshold: 30,
