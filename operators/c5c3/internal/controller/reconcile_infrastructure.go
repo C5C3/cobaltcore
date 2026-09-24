@@ -716,10 +716,14 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, c client.Cli
 // unstructured.Unstructured because memcached.c5c3.io ships no Go module (see
 // memcachedGVK).
 //
-// Like ensureMariaDB it stays read-modify-write: it reads the live object's
-// owner references to project only onto an owned CR and adopt an externally
-// provisioned one read-only (never claiming GC ownership), and it is
-// unstructured, which apply.EnsureObject's typed-struct path does not cover.
+// Like ensureMariaDB it stays read-modify-write: the write is gated on the LIVE
+// object's ownership through isControlPlaneChild, the same test ensureMariaDB
+// uses. Owned means the controller owner reference, or the ownership labels in
+// any namespace, the form a child in a service namespace or on a target cluster
+// is created with. An owned CR has spec.replicas re-projected, while an
+// externally provisioned CR carrying neither is adopted read-only and never has
+// ownership claimed. It is also unstructured, which apply.EnsureObject's
+// typed-struct path does not cover.
 func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, cache *commonv1.CacheSpec, namespace string) (bool, error) {
 	key := types.NamespacedName{
 		Name:      cache.ClusterRef.Name,
@@ -748,11 +752,16 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.C
 		// An existing Memcached. If this ControlPlane OWNS it (we created it on an
 		// earlier pass), reconcile spec.replicas so a ControlPlane spec change
 		// (the declared instance's cache.replicas) actually scales the cache we own
-		// instead of being ignored after first creation. If it is a pre-existing /
-		// externally-provisioned instance (NOT owned) we adopt it as-is and never
-		// reshape it — same rationale as ensureMariaDB — nor claim GC ownership of
-		// shared infra.
-		if metav1.IsControlledBy(u, cp) {
+		// instead of being ignored after first creation. The re-projection runs in
+		// both directions and needs no opt-in: scaling a cache drops cached entries
+		// and no data. If it is a pre-existing / externally-provisioned instance
+		// (NOT owned) we adopt it as-is and never reshape it — same rationale as
+		// ensureMariaDB — nor claim GC ownership of shared infra.
+		//
+		// Ownership is isControlPlaneChild, not IsControlledBy: a child in a service
+		// namespace or on a target cluster carries the ownership labels instead of
+		// an owner reference.
+		if isControlPlaneChild(u, cp) {
 			desired := int64(cache.Replicas)
 			current, found, gerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
 			if gerr != nil {
@@ -855,7 +864,12 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(ctx context.Context, c client.Cl
 		// messaging.replicas scales the broker we own instead of being ignored after
 		// first creation. A pre-existing / externally-provisioned one (NOT owned) is
 		// adopted as-is, never reshaped and never claimed for GC, on the rationale
-		// ensureMemcached states.
+		// ensureMemcached states. managedInfraInstances enumerates the bus only at
+		// childNamespace(cp) on the local client, so claimChildOwnership always
+		// gives it a controller owner reference and IsControlledBy is exact. The
+		// gate stays that strict so a broker that carries our labels but no owner
+		// reference (one this operator never creates) is never shrunk by the
+		// delete-and-recreate below.
 		if metav1.IsControlledBy(u, cp) {
 			desired := int64(replicas)
 			current, found, gerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
