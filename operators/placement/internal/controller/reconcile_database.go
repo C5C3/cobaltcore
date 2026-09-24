@@ -16,9 +16,52 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/release"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
+
+// placementThreadConnections is how many connections one uWSGI request thread
+// is sized for. A request can hold a second connection behind its first, so a
+// single-threaded process peaked at 2. Measured on 2026-09-24 against
+// mariadb:11.4 with ghcr.io/c5c3/placement:2025.2 and :2026.1 (placement
+// 14.0.0, oslo.db 17.4.0, max_pool_size 5, max_overflow 50), 16 clients
+// driving 60 s of allocation-candidate, allocation PUT/DELETE and
+// provider/usage/inventory traffic, the per-process peaks were: 1 × 1 thread
+// → 1; 2 × 1 and 4 × 1 → 2; 1 × 4 and 2 × 4 → 5 to 6; 1 × 8 (24 clients,
+// 90 s) → 9. Two per thread covers the 4-thread peak of 6 and the 8-thread
+// peak of 9. Keystone's threads + 1 would size a 4-thread process at 5, one
+// below the measured 6.
+const placementThreadConnections int32 = 2
+
+// placementMaxUserConnections sizes the SQL user's max_user_connections cap for
+// the CR's own topology: (pods + 1) × processes × threads ×
+// placementThreadConnections + 2. pods is the autoscaling ceiling when an HPA
+// owns the replica count. The extra pod is the rollout surge (maxSurge=1,
+// maxUnavailable=0 runs a full extra pod beside the fleet during an update).
+// The trailing 2 covers the {name}-db-sync Job, whose three commands run in
+// sequence and hold up to two connections, like one API thread; Placement
+// renders no CronJob. The default topology (3 replicas × 2 processes × 1
+// thread) sizes to (3+1)×2×1×2+2 = 18.
+//
+// Left unsized, the mariadb-operator CRD default of 10 applies, which the
+// default fleet already crosses under load (12 connections, 16 during a
+// rollout). The process that opens the connection past the cap gets MySQL
+// error 1226: at start-up --need-app crash-loops its pod, and under load the
+// request answers HTTP 500, which for Placement is a failed Nova scheduling
+// call.
+func placementMaxUserConnections(placement *placementv1alpha1.Placement) int32 {
+	pods := deployment.EffectiveReplicas(&placement.Spec.Deployment)
+	if placement.Spec.Autoscaling != nil {
+		pods = placement.Spec.Autoscaling.MaxReplicas
+	}
+	var uwsgi *placementv1alpha1.UWSGISpec
+	if placement.Spec.APIServer != nil {
+		uwsgi = placement.Spec.APIServer.UWSGI
+	}
+	processes, threads := deployment.EffectiveUWSGIConcurrency(uwsgi)
+	return (pods+1)*processes*threads*placementThreadConnections + 2
+}
 
 // conditionReasonImageReleaseMismatch flags the operator error where the
 // tag-pinned spec.image names a different OpenStack release than
@@ -69,16 +112,17 @@ func (r *PlacementReconciler) reconcileDatabase(ctx context.Context, children cl
 	// ensure, Dynamic-credentials skip of the User/Grant. A non-zero result means
 	// the flow set a not-ready condition and we must return it unchanged.
 	res, err := database.ReconcileProvision(ctx, database.ProvisionFlowParams{
-		Client:        children,
-		Scheme:        r.Scheme,
-		Owner:         placement,
-		InstanceName:  placement.Name,
-		Namespace:     placement.Namespace,
-		Database:      &placement.Spec.Database,
-		Conditions:    &placement.Status.Conditions,
-		Generation:    placement.Generation,
-		ConditionType: "DatabaseReady",
-		RequeueAfter:  RequeueDatabaseWait,
+		Client:             children,
+		Scheme:             r.Scheme,
+		Owner:              placement,
+		InstanceName:       placement.Name,
+		Namespace:          placement.Namespace,
+		Database:           &placement.Spec.Database,
+		Conditions:         &placement.Status.Conditions,
+		Generation:         placement.Generation,
+		ConditionType:      "DatabaseReady",
+		RequeueAfter:       RequeueDatabaseWait,
+		MaxUserConnections: placementMaxUserConnections(placement),
 	})
 	if err != nil || !res.IsZero() {
 		return res, err
