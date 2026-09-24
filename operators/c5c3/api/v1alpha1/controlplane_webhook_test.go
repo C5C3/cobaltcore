@@ -9467,6 +9467,200 @@ func TestValidateNova_LeavesTheBusToMessagingConsumers(t *testing.T) {
 	g.Expect(validateKeystoneMode(cp)).To(ContainElement(HaveField("Field", "spec.infrastructure")))
 }
 
+// remoteComputeNovaControlPlane returns novaControlPlane() with everything
+// services.nova.remoteCompute needs beside it: a brownfield bus with tls, an
+// https Keystone publication, and a publicEndpoint on each of the three
+// siblings the remote contract resolves through the public catalog. Each is
+// published through publicEndpoint alone, so no gateway host rule can answer
+// in place of the rule under test.
+func remoteComputeNovaControlPlane() *ControlPlane {
+	cp := novaControlPlane()
+	cp.Spec.Infrastructure.Messaging.TLS = &commonv1.MessagingTLSSpec{
+		CABundleSecretRef: commonv1.SecretRefSpec{Name: "bus-ca"},
+	}
+	cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+	cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
+	cp.Spec.Services.Placement.PublicEndpoint = "https://placement.example.com"
+	cp.Spec.Services.Neutron.PublicEndpoint = "https://neutron.example.com"
+	cp.Spec.Services.Nova.RemoteCompute = &ServiceNovaRemoteComputeSpec{
+		TransportURLSecretRef: commonv1.SecretRefSpec{Name: "nova-remote-transport"},
+	}
+	return cp
+}
+
+// TestValidateCreate_NovaRemoteCompute_Admitted pins the baseline: a
+// ControlPlane that meets every remote-compute rule is admitted.
+func TestValidateCreate_NovaRemoteCompute_Admitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), remoteComputeNovaControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestDefault_NovaRemoteComputeTransportKey verifies the handed Secret is read
+// under the key a brownfield bus Secret uses, that an explicit key is kept, and
+// that the block itself is never invented.
+func TestDefault_NovaRemoteComputeTransportKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := remoteComputeNovaControlPlane()
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services.Nova.RemoteCompute.TransportURLSecretRef.Key).
+		To(Equal(commonv1.DefaultTransportURLSecretKey))
+
+	explicit := remoteComputeNovaControlPlane()
+	explicit.Spec.Services.Nova.RemoteCompute.TransportURLSecretRef.Key = "url"
+	g.Expect(w.Default(context.Background(), explicit)).To(Succeed())
+	g.Expect(explicit.Spec.Services.Nova.RemoteCompute.TransportURLSecretRef.Key).To(Equal("url"))
+
+	bare := novaControlPlane()
+	g.Expect(w.Default(context.Background(), bare)).To(Succeed())
+	g.Expect(bare.Spec.Services.Nova.RemoteCompute).To(BeNil())
+}
+
+// TestValidateCreate_NovaRemoteCompute_BusRules pins the two bus rules. A
+// managed RabbitmqCluster is provisioned without a TLS listener, and a
+// brownfield bus without tls gives the remote compute no CA bundle to verify
+// the broker against.
+func TestValidateCreate_NovaRemoteCompute_BusRules(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("managed bus", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := remoteComputeNovaControlPlane()
+		cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "rabbitmq"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.remoteCompute: Forbidden"))
+		g.Expect(err.Error()).To(ContainSubstring("requires a brownfield bus with tls"))
+	})
+
+	t.Run("brownfield bus without tls", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := remoteComputeNovaControlPlane()
+		cp.Spec.Infrastructure.Messaging.TLS = nil
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure.messaging.tls: Required value"))
+		g.Expect(err.Error()).To(ContainSubstring("a compute cluster reaches the bus across a cluster boundary"))
+	})
+
+	t.Run("missing bus is named by the messaging consumers rule alone", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := remoteComputeNovaControlPlane()
+		cp.Spec.Infrastructure.Messaging = nil
+
+		for _, err := range validateNovaRemoteCompute(cp) {
+			g.Expect(err.Field).NotTo(HavePrefix("spec.infrastructure.messaging"))
+		}
+	})
+}
+
+// TestValidateCreate_NovaRemoteCompute_KeystoneRules pins the Keystone rules:
+// every compute cluster authenticates against the public Keystone URL, so it
+// has to exist and it has to be https. A gateway alone publishes it, since the
+// ControlPlane derives https://{hostname}/v3 from it.
+func TestValidateCreate_NovaRemoteCompute_KeystoneRules(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("unpublished", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := remoteComputeNovaControlPlane()
+		cp.Spec.Services.Keystone.PublicEndpoint = ""
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.publicEndpoint: Required value"))
+		g.Expect(err.Error()).To(ContainSubstring("a compute cluster authenticates against the public Keystone URL"))
+	})
+
+	t.Run("plaintext", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := remoteComputeNovaControlPlane()
+		cp.Spec.Services.Keystone.PublicEndpoint = "http://keystone.example.com/v3"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.publicEndpoint: Invalid value"))
+		g.Expect(err.Error()).To(ContainSubstring("must use scheme https when services.nova.remoteCompute is set"))
+	})
+
+	t.Run("published through a gateway alone", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := remoteComputeNovaControlPlane()
+		cp.Spec.Services.Keystone.PublicEndpoint = ""
+		cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{
+			Hostname:  "keystone.example.com",
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateCreate_NovaRemoteCompute_SiblingsMustBePublished pins the sibling
+// rule: the remote contract resolves every client section through its public
+// catalog row, which names the in-cluster Service unless the block carries a
+// publicEndpoint or a gateway. Cinder and Barbican are measured only while
+// their blocks are declared.
+func TestValidateCreate_NovaRemoteCompute_SiblingsMustBePublished(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for _, tc := range []struct {
+		service string
+		mutate  func(cp *ControlPlane)
+	}{
+		{"glance", func(cp *ControlPlane) { cp.Spec.Services.Glance.PublicEndpoint = "" }},
+		{"placement", func(cp *ControlPlane) { cp.Spec.Services.Placement.PublicEndpoint = "" }},
+		{"neutron", func(cp *ControlPlane) { cp.Spec.Services.Neutron.PublicEndpoint = "" }},
+		{"cinder", func(cp *ControlPlane) {
+			cp.Spec.Services.Cinder = cinderControlPlane().Spec.Services.Cinder
+		}},
+		{"barbican", func(cp *ControlPlane) {
+			cp.Spec.Services.Barbican = barbicanControlPlane().Spec.Services.Barbican
+		}},
+	} {
+		t.Run(tc.service, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := remoteComputeNovaControlPlane()
+			tc.mutate(cp)
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(
+				"spec.services." + tc.service + ".publicEndpoint: Required value"))
+			g.Expect(err.Error()).To(ContainSubstring("resolves this service through its public catalog row"))
+		})
+	}
+
+	t.Run("published cinder and barbican are admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := remoteComputeNovaControlPlane()
+		cp.Spec.Services.Cinder = cinderControlPlane().Spec.Services.Cinder
+		cp.Spec.Services.Cinder.PublicEndpoint = "https://cinder.example.com"
+		cp.Spec.Services.Barbican = barbicanControlPlane().Spec.Services.Barbican
+		cp.Spec.Services.Barbican.PublicEndpoint = "https://barbican.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("without remoteCompute nothing has to be published", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := novaControlPlane()
+		cp.Spec.Services.Cinder = cinderControlPlane().Spec.Services.Cinder
+
+		g.Expect(validateNovaRemoteCompute(cp)).To(BeEmpty())
+	})
+}
+
 // TestValidateCreate_NovaPublicEndpointMustBeABareOrigin pins the origin shape
 // the CRD Pattern marker cannot express: the ControlPlane appends /v2.1 to what
 // it registers, so anything past the origin lands in the middle of the catalog

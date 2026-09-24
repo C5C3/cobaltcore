@@ -1721,6 +1721,7 @@ func validateNova(cp *ControlPlane) field.ErrorList {
 	}
 
 	allErrs = append(allErrs, validateNovaDependencies(cp)...)
+	allErrs = append(allErrs, validateNovaRemoteCompute(cp)...)
 
 	return allErrs
 }
@@ -1828,6 +1829,81 @@ func validateNovaDependencies(cp *ControlPlane) field.ErrorList {
 	if cp.Spec.Services.Glance == nil {
 		allErrs = append(allErrs, field.Required(svcPath.Child("glance"),
 			"is required when services.nova is set: Nova reads the image of every instance it boots"))
+	}
+	return allErrs
+}
+
+// validateNovaRemoteCompute enforces what services.nova.remoteCompute needs to
+// produce a contract a compute cluster can use. Every address in that contract
+// crosses a cluster boundary, so each rule names an address a compute cluster
+// would otherwise not reach, or reach without transport security:
+//
+//   - The bus must be brownfield with tls. A managed RabbitmqCluster is
+//     provisioned without a TLS listener, and the remote contract carries the
+//     messaging CA bundle as its only trust anchor. A missing messaging block
+//     is left to validateMessagingConsumers.
+//   - Keystone must be published, over https. Every compute cluster
+//     authenticates against the public Keystone URL and sends the nova
+//     service-user password to it.
+//   - Glance, Placement and Neutron, and Cinder and Barbican when declared,
+//     must be published. The remote contract resolves each through its public
+//     catalog row, which otherwise names the in-cluster Service. An undeclared
+//     mandatory sibling is left to validateNovaDependencies.
+//
+// The external listener's certificate chaining to the tls bundle is not
+// checkable here; the field documents it as the platform's obligation.
+func validateNovaRemoteCompute(cp *ControlPlane) field.ErrorList {
+	nv := cp.Spec.Services.Nova
+	if nv == nil || nv.RemoteCompute == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+
+	if cp.Spec.Infrastructure != nil {
+		if m := cp.Spec.Infrastructure.Messaging; m != nil {
+			switch {
+			case m.ClusterRef != nil:
+				allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "services", "nova", "remoteCompute"),
+					"requires a brownfield bus with tls (spec.infrastructure.messaging.secretRef and "+
+						"spec.infrastructure.messaging.tls): a managed RabbitmqCluster is provisioned without a TLS "+
+						"listener, and a compute cluster reaches the bus across a cluster boundary"))
+			case m.SecretRef != nil && m.TLS == nil:
+				allErrs = append(allErrs, field.Required(field.NewPath("spec", "infrastructure", "messaging", "tls"),
+					"is required when services.nova.remoteCompute is set: a compute cluster reaches the bus across a "+
+						"cluster boundary and verifies the broker against this CA bundle"))
+			}
+		}
+	}
+
+	ksPath := field.NewPath("spec", "services", "keystone", "publicEndpoint")
+	ks := cp.Spec.Services.Keystone
+	switch {
+	case ks == nil || (ks.PublicEndpoint == "" && ks.Gateway == nil):
+		allErrs = append(allErrs, field.Required(ksPath,
+			"one of publicEndpoint or gateway is required when services.nova.remoteCompute is set: a compute "+
+				"cluster authenticates against the public Keystone URL"))
+	case externalAuthURLIsPlaintext(ks.PublicEndpoint):
+		allErrs = append(allErrs, field.Invalid(ksPath, ks.PublicEndpoint,
+			"must use scheme https when services.nova.remoteCompute is set: every compute cluster sends the nova "+
+				"service-user password to this URL across a cluster boundary"))
+	}
+
+	svcPath := field.NewPath("spec", "services")
+	resolvedPublicly := map[string]bool{
+		svcPath.Child("glance").String():    true,
+		svcPath.Child("placement").String(): true,
+		svcPath.Child("neutron").String():   true,
+		svcPath.Child("cinder").String():    true,
+		svcPath.Child("barbican").String():  true,
+	}
+	for _, a := range declaredServiceTargetClusters(cp) {
+		if !resolvedPublicly[a.path.String()] || a.published {
+			continue
+		}
+		allErrs = append(allErrs, field.Required(a.path.Child("publicEndpoint"),
+			"one of publicEndpoint or gateway is required when services.nova.remoteCompute is set: a compute "+
+				"cluster resolves this service through its public catalog row, which otherwise names the in-cluster "+
+				"Service"))
 	}
 	return allErrs
 }
@@ -2398,6 +2474,14 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		if ext := bn.SecretStore.External; ext != nil && ext.KVMountpoint == "" {
 			ext.KVMountpoint = DefaultBarbicanKVMountpoint
 		}
+	}
+
+	// The handed remote transport URL is read under the key the brownfield bus
+	// Secret uses, the default defaultMessagingLeaves applies to
+	// infrastructure.messaging.secretRef. The block itself is opt-in.
+	if nv := obj.Spec.Services.Nova; nv != nil && nv.RemoteCompute != nil &&
+		nv.RemoteCompute.TransportURLSecretRef.Key == "" {
+		nv.RemoteCompute.TransportURLSecretRef.Key = commonv1.DefaultTransportURLSecretKey
 	}
 
 	if obj.IsExternalKeystone() {

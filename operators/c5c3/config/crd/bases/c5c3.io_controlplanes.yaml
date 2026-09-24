@@ -5398,6 +5398,47 @@ spec:
                         maxLength: 512
                         pattern: ^https?://
                         type: string
+                      remoteCompute:
+                        description: |-
+                          RemoteCompute makes the compute contract resolvable from a compute
+                          cluster. When set, the Nova child publishes a second contract whose
+                          addresses leave the cluster: the public Keystone URL, the public catalog
+                          rows, and the external bus listener this block names. That remote
+                          contract, instead of the in-cluster one, is what the ControlPlane mirrors
+                          onto compute clusters. When nil (the default) the child publishes the
+                          in-cluster contract only. See ServiceNovaRemoteComputeSpec for what the
+                          validating webhook requires beside it.
+                        properties:
+                          transportURLSecretRef:
+                            description: |-
+                              TransportURLSecretRef names a Secret in the ControlPlane's namespace on
+                              the management cluster. It holds the complete rabbit:// URL of the
+                              broker's external TLS listener, with the same user, password and vhost as
+                              spec.infrastructure.messaging.secretRef. The ControlPlane reads it and
+                              never writes it, and carries the value into the Nova namespace. The
+                              listener's certificate must chain to the CA bundle
+                              spec.infrastructure.messaging.tls names, because that bundle is the only
+                              one the remote contract carries. The defaulting webhook materializes an
+                              empty key to "transport_url".
+                            properties:
+                              key:
+                                type: string
+                              name:
+                                description: |-
+                                  Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                                  subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                                  fixes every consumer at once — a service operator adminPasswordSecretRef /
+                                  database.secretRef / messaging / TLS cert refs and the c5c3
+                                  passwordSecretRef — so an empty name no longer slips through "required".
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                type: string
+                            required:
+                            - name
+                            type: object
+                        required:
+                        - transportURLSecretRef
+                        type: object
                       replicas:
                         description: |-
                           Replicas overrides the number of Nova API replicas. When nil the

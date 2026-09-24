@@ -4330,6 +4330,30 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 		}
 	}
 
+	// A remote-compute case meets every rule the webhook sets beside
+	// services.nova.remoteCompute: a brownfield bus with tls, an https Keystone
+	// publication, and a publicEndpoint on the three siblings the remote contract
+	// resolves through the public catalog. What remains to reject is the marker a
+	// case pins.
+	withRemoteComputeNova := func(transportSecret string) func(*c5c3v1alpha1.ControlPlane) {
+		return func(cp *c5c3v1alpha1.ControlPlane) {
+			withNova(integrationNovaService())(cp)
+			cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+				SecretRef: &commonv1.SecretRefSpec{Name: "cp-bus-url"},
+				TLS: &commonv1.MessagingTLSSpec{
+					CABundleSecretRef: commonv1.SecretRefSpec{Name: "cp-bus-ca"},
+				},
+			}
+			cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+			cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
+			cp.Spec.Services.Placement.PublicEndpoint = "https://placement.example.com"
+			cp.Spec.Services.Neutron.PublicEndpoint = "https://neutron.example.com"
+			cp.Spec.Services.Nova.RemoteCompute = &c5c3v1alpha1.ServiceNovaRemoteComputeSpec{
+				TransportURLSecretRef: commonv1.SecretRefSpec{Name: transportSecret},
+			}
+		}
+	}
+
 	cases := []struct {
 		name    string
 		mutate  func(*c5c3v1alpha1.ControlPlane)
@@ -4496,6 +4520,18 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			mutate:  withNova(integrationNovaService()),
 		},
 		{
+			name:    "nova remoteCompute valid",
+			wantErr: false,
+			mutate:  withRemoteComputeNova("cp-nova-remote-transport"),
+		},
+		{
+			// MinLength=1 on the shared SecretRefSpec.Name: the handed Secret is
+			// read by name, and an empty one names nothing.
+			name:    "nova remoteCompute transport secret name empty",
+			wantErr: true,
+			mutate:  withRemoteComputeNova(""),
+		},
+		{
 			name:    "valid access rules, bootstrap resources, and public endpoint",
 			wantErr: false,
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
@@ -4530,6 +4566,23 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			}
 		})
 	}
+
+	// The empty handed Secret name is answered by the schema, not by the webhook:
+	// the rest of the ControlPlane meets every remote-compute rule, so the
+	// MinLength marker is the only thing that can reject it.
+	t.Run("nova remoteCompute transport secret name empty names the marker", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-marker-"}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+		cp := integrationManagedControlPlane("cp-marker-remote", ns.Name)
+		withRemoteComputeNova("")(cp)
+
+		err := c.Create(ctx, cp)
+		g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected an Invalid status error, got: %v", err)
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.remoteCompute.transportURLSecretRef.name"))
+		g.Expect(err.Error()).To(ContainSubstring("should be at least 1 chars long"))
+	})
 
 	// The messaging replica floor cannot be reached through the table above: a Go
 	// zero int32 carries json:"replicas,omitempty", so the typed client drops the
