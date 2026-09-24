@@ -321,9 +321,8 @@ CR, so an unset field keeps tracking the operator default across upgrades:
 `metadata.name` is bounded at 40 characters, `MaxNeutronNameLength`, computed as
 `MaxCronJobNameLength` (52) minus `len("-ovn-db-sync")`. The bound is enforced on
 create alone: `metadata.name` is immutable, so on update the rule could only
-fire against an object a pre-upgrade operator already admitted, and the
-validating webhook also sees the finalizer-removal update that completes a
-deletion, which would wedge the CR in `Terminating` with no field left to edit.
+fire against an object a pre-upgrade operator already admitted, and it would
+refuse every update to that CR with no field left to edit.
 
 ```text
 name must be at most %d characters: the ovn-db-sync CronJob appends %q and Kubernetes caps CronJob names at %d characters
@@ -331,6 +330,14 @@ name must be at most %d characters: the ovn-db-sync CronJob appends %q and Kuber
 
 The three arguments are the bound (40), the suffix (`-ovn-db-sync`), and
 `MaxCronJobNameLength` (52).
+
+An update to a CR that is being deleted and leaves the spec unchanged is
+admitted without validation. That is the finalizer removal the reconciler
+issues, and an unchanged spec admitted earlier can fail today's rules: a
+PriorityClass deleted since, or a topology-spread constraint that still names
+only the name and instance labels. Rejecting the removal would hold the CR in
+`Terminating`. An update that changes the spec of a deleting CR is still
+validated.
 
 ### Schema-layer rules
 
@@ -439,7 +446,7 @@ Network policy, gateway, resources and scheduling:
 | `parentRef.name must be set when spec.gateway is configured` | `spec.gateway.parentRef.name` is empty |
 | `%s request must not exceed limit (%s)` | A request in `spec.deployment.resources` above its own limit. The arguments are the resource name and the limit |
 | `labelSelector is required on each TopologySpreadConstraint` | A constraint in `spec.deployment.topologySpreadConstraints` carries none |
-| `labelSelector.matchLabels must equal the Deployment selector labels %v` | The selector does not match the `neutron` name label and the instance label |
+| `labelSelector.matchLabels must equal the Deployment selector labels %v` | The selector does not equal the API Deployment's pod selector: the `neutron` name label, the instance label, and `app.kubernetes.io/component: api`. A selector without the component label also matches the worker and ovn-db-sync pods and is rejected |
 | `matchExpressions are not allowed; labelSelector must use matchLabels only` | A constraint selects with expressions |
 | `field.NotFound` on `spec.deployment.priorityClassName` | The named PriorityClass does not exist. The check is skipped when no lookup client is injected |
 | `failed to look up PriorityClass: %w` | The lookup itself failed |
