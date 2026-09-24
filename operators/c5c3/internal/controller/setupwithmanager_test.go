@@ -164,6 +164,27 @@ func TestControlPlaneSecretNameExtractor_ExternalWithoutPasswordStillIndexesCA(t
 	g.Expect(got).To(ConsistOf("keystone-ca"))
 }
 
+// TestControlPlaneSecretNameExtractor_IndexesTheHandedRemoteTransportSecret
+// covers the Secret handed through services.nova.remoteCompute: it is read on
+// every pass while the block is set, so a rotation has to wake the ControlPlane,
+// and without the block nothing reads it. A handed name the admin password
+// already uses is indexed once.
+func TestControlPlaneSecretNameExtractor_IndexesTheHandedRemoteTransportSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := mapperControlPlane("cp", "default", "keystone-admin")
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{}
+	g.Expect(controlPlaneSecretNameExtractor(cp)).To(ConsistOf("keystone-admin"))
+
+	cp.Spec.Services.Nova.RemoteCompute = &c5c3v1alpha1.ServiceNovaRemoteComputeSpec{
+		TransportURLSecretRef: commonv1.SecretRefSpec{Name: "nova-remote-transport"},
+	}
+	g.Expect(controlPlaneSecretNameExtractor(cp)).To(ConsistOf("keystone-admin", "nova-remote-transport"))
+
+	cp.Spec.Services.Nova.RemoteCompute.TransportURLSecretRef.Name = "keystone-admin"
+	g.Expect(controlPlaneSecretNameExtractor(cp)).To(ConsistOf("keystone-admin"))
+}
+
 func TestControlPlaneSecretNameExtractor_WrongTypeReturnsNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 

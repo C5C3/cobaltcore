@@ -946,9 +946,12 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 //   - the private-CA bundle Secret of whichever Keystone endpoint K-ORC dials
 //     (keystoneCABundleRef: the External-mode installation's, or a placed
 //     Keystone's), so rotating the CA wakes the ControlPlane immediately instead
-//     of waiting for the cache resync.
+//     of waiting for the cache resync;
+//   - the Secret handed through services.nova.remoteCompute, while that block is
+//     set, so a rotated external bus URL, or one handed after the pass waited
+//     for it, reaches the Nova namespace without waiting for a requeue.
 //
-// The two may name the same Secret, so the result is deduplicated: a duplicate
+// Any two may name the same Secret, so the result is deduplicated: a duplicate
 // index entry would enqueue the same ControlPlane twice per Secret event.
 func controlPlaneSecretNameExtractor(obj client.Object) []string {
 	cp, ok := obj.(*c5c3v1alpha1.ControlPlane)
@@ -963,6 +966,11 @@ func controlPlaneSecretNameExtractor(obj client.Object) []string {
 	}
 	if ref := keystoneCABundleRef(cp); ref != nil && ref.Name != "" && !slices.Contains(names, ref.Name) {
 		names = append(names, ref.Name)
+	}
+	if nv := cp.Spec.Services.Nova; nv != nil && nv.RemoteCompute != nil {
+		if name := nv.RemoteCompute.TransportURLSecretRef.Name; name != "" && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
 	}
 	return names
 }
