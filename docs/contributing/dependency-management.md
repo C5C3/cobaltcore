@@ -70,6 +70,15 @@ reason below. `build-images.yaml` runs on every `pull_request` touching `images/
 builds the amd64 image and runs `tests/container-images/verify_ovn.sh` against it, so
 the reviewer merges on a green build.
 
+Go module PRs run two post-update options. `gomodTidy` runs `go mod tidy` in the
+module whose `go.mod` Renovate updates. `gomodTidyAll` then runs it in every module
+that points at that module through a local `replace` directive, in dependency order:
+every operator module replaces `internal/common`, and `operators/c5c3` also replaces
+the service operators. A bump in `internal/common` that raises an indirect requirement
+of the operators therefore arrives tidy in every module. Both options stay listed
+because the validator does not check `postUpdateOptions` values: a hosted bot too old
+for `gomodTidyAll` would silently skip it, and `gomodTidy` still runs.
+
 Separately, the native `nix` manager keeps the development flake fresh: it maintains
 `flake.lock` (the pinned `nixpkgs` revision) via lock-file maintenance, opening a grouped
 weekly re-lock PR. That PR is **not** automerged: `nixos-unstable` is a rolling ref, so the
