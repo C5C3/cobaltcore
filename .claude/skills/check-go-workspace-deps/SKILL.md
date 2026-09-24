@@ -8,8 +8,8 @@ description: >-
   directive must stay in lockstep so the workspace builds the same versions
   everywhere. Use when asked to check workspace deps, after running
   `go get` in one module, after Renovate bumps a dependency in only some of
-  the modules, or when PR CI shows a go.work.sum diff in verify-codegen or
-  sum.golang.org errors that do not reproduce on the branch.
+  the modules, or when PR CI shows sum.golang.org errors that do not
+  reproduce on the branch.
 ---
 
 # Check Go workspace consistency
@@ -35,7 +35,7 @@ module, or after a Renovate PR that touched only some `go.mod` files.
 | Go directive | `go.work` `go <ver>` and every member `go.mod` | one version string shared by all modules (`setup-go` in CI reads `go-version-file: go.work`) |
 | Toolchain directive | `toolchain <ver>` in `go.work` / any `go.mod` | none is declared today; if one appears, it must be identical everywhere |
 | Shared dependency versions | each `go.mod` `require` block | identical version per module for the fixed k8s/controller-runtime/openbao list (direct or `// indirect`) and for every module two or more members require directly |
-| Workspace sum file | `go.work.sum` | tracked on purpose, so CI and laptops verify the same checksums for modules only the workspace pulls in |
+| Workspace sum file | `go.work.sum` | untracked on purpose (`.gitignore`): the go command appends to it per command that runs, and Renovate does not write it |
 
 The authoritative gates are `make verify-go-tidy` (every member's
 `go.mod`/`go.sum` equals what `go mod tidy -diff` would write; the first
@@ -79,7 +79,7 @@ Exit code `1` means at least one `[FAIL]`. Interpret:
   version too. Indirect pins outside the fixed list are ignored on
   purpose: `go mod tidy` computes them per module graph and they differ
   legitimately.
-- **W5** — `go.work.sum` exists and is tracked by git.
+- **W5** — `go.work.sum` is not tracked by git and `.gitignore` covers it.
 - The **inventory** table lists the fixed shared deps side by side per
   module.
 
@@ -121,7 +121,7 @@ Group findings by severity:
   exist; `make verify-go-tidy` fails.
 - **MEDIUM** — two modules pin different versions of the same shared
   dependency; a module on disk is missing from `go.work`; `go.work.sum`
-  is absent or untracked.
+  is tracked or not ignored.
 - **LOW** — a member without a `require` entry for a dependency all its
   siblings need (usually fine; the module may not import it).
 
@@ -140,8 +140,7 @@ the suggested fix. End with a per-dependency verdict.
 2. **PR CI tests the merge with `main`.** `pull_request` CI checks out
    the merge of the head with current `main`. A branch that keeps (or
    adds) a module at a version `main` has since bumped yields a mixed
-   workspace: `verify-codegen` fails with a large `go.work.sum` diff and
-   `test (<op>)` legs fail `[setup failed]` with
+   workspace: `test (<op>)` legs fail `[setup failed]` with
    `verifying go.mod: reading https://sum.golang.org/…`. Nothing
    reproduces on the branch. Reproduce in a worktree merged with
    `origin/main`, bump the lagging module, and run `go mod tidy` **in the
@@ -168,7 +167,8 @@ the suggested fix. End with a per-dependency verdict.
 - To align another cross-cutting dependency even where modules only
   require it indirectly, add it to `SHARED_DEPS` at the top of the
   script. Direct requirements shared by two modules need no entry.
-- `go.work.sum` stays tracked; do not add it to `.gitignore`.
+- `go.work.sum` stays untracked; do not commit it. Tracked, it failed
+  `verify-codegen` on every Go module PR Renovate opened.
 - Pair this with [[check-renovate-coverage]] — that skill ensures
   Renovate has a manager for these deps; this skill ensures Renovate's
   bumps land in every module.

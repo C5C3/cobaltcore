@@ -177,7 +177,6 @@ jobs:
             go_common:
               - 'internal/**'
               - 'go.work'
-              - 'go.work.sum'
               - 'operators/Dockerfile'
               - '.golangci.yml'
             # Every service image and both Tempest images are built from this.

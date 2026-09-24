@@ -16,7 +16,7 @@ ARG OPERATOR
 WORKDIR /workspace
 
 # Copy Go workspace and dependency manifests first for layer caching.
-COPY go.work go.work.sum ./
+COPY go.work ./
 COPY internal/common/go.mod internal/common/go.sum ./internal/common/
 COPY operators/keystone/go.mod operators/keystone/go.sum ./operators/keystone/
 COPY operators/c5c3/go.mod operators/c5c3/go.sum ./operators/c5c3/
