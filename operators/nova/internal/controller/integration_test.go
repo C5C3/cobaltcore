@@ -995,6 +995,132 @@ func TestIntegrationNova_Lifecycle(t *testing.T) {
 	})
 }
 
+// The remote compute contract's inputs: the broker CA bundle a verified bus
+// names, and the Secret carrying the broker's external listener.
+const (
+	// #nosec G101 -- Secret object names, not credentials.
+	integrationMessagingCASecretName = "nova-messaging-ca"
+	// #nosec G101 -- Secret object names, not credentials.
+	integrationRemoteTransportSecretName = "nova-remote-transport"
+	// integrationRemoteTransportURL is the external listener the remote contract
+	// carries in place of the in-cluster bus URL.
+	integrationRemoteTransportURL = "rabbit://nova:nova@198.51.100.10:5671/"
+)
+
+// withRemoteCompute puts nova on a verified bus and switches the remote
+// compute contract on, the shape the remote-compute CEL rule admits.
+func withRemoteCompute(nova *novav1alpha1.Nova) *novav1alpha1.Nova {
+	nova.Spec.Messaging.TLS = &commonv1.MessagingTLSSpec{
+		CABundleSecretRef: commonv1.SecretRefSpec{Name: integrationMessagingCASecretName, Key: "ca.crt"},
+	}
+	nova.Spec.RemoteCompute = &novav1alpha1.NovaRemoteComputeSpec{
+		KeystoneEndpoint:      "https://keystone.example.test/v3",
+		TransportURLSecretRef: commonv1.SecretRefSpec{Name: integrationRemoteTransportSecretName},
+	}
+	return nova
+}
+
+// createRemoteComputeInputs creates the two Secrets withRemoteCompute names,
+// the CA bundle always and the remote transport URL only when withTransport is
+// set, on the cluster the children run on.
+func createRemoteComputeInputs(t testing.TB, ctx context.Context, c client.Client, ns string, withTransport bool) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: integrationMessagingCASecretName, Namespace: ns},
+		Data:       map[string][]byte{"ca.crt": []byte("-----BEGIN CERTIFICATE-----")},
+	})).To(Succeed(), "create the messaging CA bundle Secret")
+	if withTransport {
+		createRemoteTransportSecret(t, ctx, c, ns)
+	}
+}
+
+// createRemoteTransportSecret creates the Secret carrying the broker's external
+// listener.
+func createRemoteTransportSecret(t testing.TB, ctx context.Context, c client.Client, ns string) {
+	t.Helper()
+	NewGomegaWithT(t).Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: integrationRemoteTransportSecretName, Namespace: ns},
+		Data: map[string][]byte{
+			commonv1.DefaultTransportURLSecretKey: []byte(integrationRemoteTransportURL),
+		},
+	})).To(Succeed(), "create the remote transport URL Secret")
+}
+
+// waitForComputeConfigReason polls the Nova CR until ComputeConfigReady carries
+// reason.
+func waitForComputeConfigReason(t testing.TB, ctx context.Context, c client.Client, key types.NamespacedName,
+	reason string,
+) {
+	t.Helper()
+	NewGomegaWithT(t).Eventually(func() string {
+		var cr novav1alpha1.Nova
+		if err := c.Get(ctx, key, &cr); err != nil {
+			return ""
+		}
+		if cond := meta.FindStatusCondition(cr.Status.Conditions, conditionTypeComputeConfigReady); cond != nil {
+			return cond.Reason
+		}
+		return ""
+	}, eventuallyLongTimeout, pollInterval).Should(Equal(reason),
+		"ComputeConfigReady should report %s", reason)
+}
+
+// TestIntegrationNova_RemoteComputeContract walks the remote compute contract
+// on a live API server. The Nova is created before the Secret carrying the
+// external transport URL, so the step waits first. The Secret's creation has to
+// wake the Nova through the Secret index, with nothing requeueing it by hand,
+// and removing spec.remoteCompute has to take the contract down again.
+func TestIntegrationNova_RemoteComputeContract(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+	ns := createTestNamespace(t, ctx, c)
+	createNovaPrerequisites(t, ctx, c, ns)
+	createRemoteComputeInputs(t, ctx, c, ns, false)
+
+	novaKey := types.NamespacedName{Name: integrationNovaName, Namespace: ns}
+	remoteKey := client.ObjectKey{Namespace: ns, Name: integrationNovaName + "-" + componentRemoteComputeConfig}
+	g := NewGomegaWithT(t)
+
+	g.Expect(c.Create(ctx, withRemoteCompute(integrationNovaCR(integrationNovaName, ns, nil)))).
+		To(Succeed(), "create the Nova CR")
+	waitForComputeConfigReason(t, ctx, c, novaKey, conditionReasonWaitingForRemoteTransportURL)
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, remoteKey, &corev1.Secret{}))).To(BeTrue(),
+		"no remote contract is written without its transport URL")
+	eventuallyExists(t, ctx, c, client.ObjectKey{
+		Namespace: ns, Name: integrationNovaName + "-" + componentComputeConfig,
+	}, &corev1.Secret{}, "in-cluster compute-config Secret", eventuallyTimeout)
+
+	createRemoteTransportSecret(t, ctx, c, ns)
+	waitForComputeConfigReason(t, ctx, c, novaKey, conditionReasonComputeConfigPublished)
+
+	remote := &corev1.Secret{}
+	g.Expect(c.Get(ctx, remoteKey, remote)).To(Succeed())
+	expectControlledByNova(t, remote, integrationNovaName, "the remote compute-config Secret")
+	g.Expect(string(remote.Data[transportURLKey])).To(Equal(integrationRemoteTransportURL))
+	g.Expect(string(remote.Data[computeConfigFragmentKey])).
+		To(ContainSubstring("auth_url = https://keystone.example.test/v3"))
+
+	cur := &novav1alpha1.Nova{}
+	g.Expect(c.Get(ctx, novaKey, cur)).To(Succeed())
+	g.Expect(cur.Status.RemoteComputeConfigSecretRef).NotTo(BeNil())
+	g.Expect(cur.Status.RemoteComputeConfigSecretRef.Name).To(Equal(remoteKey.Name))
+
+	patch := client.MergeFrom(cur.DeepCopy())
+	cur.Spec.RemoteCompute = nil
+	g.Expect(c.Patch(ctx, cur, patch)).To(Succeed(), "remove spec.remoteCompute")
+
+	g.Eventually(func(ig Gomega) {
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, remoteKey, &corev1.Secret{}))).To(BeTrue(),
+			"the remote contract goes with its block")
+		after := &novav1alpha1.Nova{}
+		ig.Expect(c.Get(ctx, novaKey, after)).To(Succeed())
+		ig.Expect(after.Status.RemoteComputeConfigSecretRef).To(BeNil())
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+}
+
 // TestIntegrationNova_UpgradeCycle_ExpandMigrateContract drives a full release
 // upgrade (2025.2 to 2026.1) end to end against envtest. It locks the two
 // properties no unit test observes together:
