@@ -40,17 +40,9 @@ const (
 	DefaultReplicas int32 = 3
 )
 
-// Default resource requests. These unexported vars are exposed only through
-// the accessor functions below, which return a copy so no caller can mutate the
-// shared default.
-var (
-	defaultMemoryRequest = resource.MustParse("256Mi")
-	defaultCPURequest    = resource.MustParse("100m")
-)
-
-// DefaultMemoryRequest returns a copy of the 256Mi memory request floor of the
-// OVN Raft members, its only caller.
-func DefaultMemoryRequest() resource.Quantity { return defaultMemoryRequest.DeepCopy() }
+// defaultCPURequest is exposed only through DefaultCPURequest, which returns a
+// copy so no caller can mutate the shared default.
+var defaultCPURequest = resource.MustParse("100m")
 
 // DefaultCPURequest returns a copy of the 100m CPU request WithResourceDefaults
 // gives a container whose block names no CPU. It is also the CPU half of the
