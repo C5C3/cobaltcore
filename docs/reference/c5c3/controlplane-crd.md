@@ -759,6 +759,16 @@ KMS unseal and a real replica count. See
 [reconcileBarbican](./controlplane-reconciler.md#reconcilebarbican) for the
 ensemble the reconciler projects around it.
 
+The `OpenBaoTenant` the operator creates to admit the service namespace is a
+self-service tenant in that namespace. The openbao-operator accepts quota and
+LimitRange overrides only from a tenant in its own namespace, so a namespace a
+ControlPlane-created tenant admits keeps the provisioner's default LimitRange:
+every container there without a CPU limit gets the openbao-operator's 500m
+default CPU limit, service containers included. The kind overlay's tenant for
+`openstack` lives in the operator namespace and drops that limit (see
+[OpenBao Proving Instance](../infrastructure/infrastructure-manifests.md#openbao-proving-instance)),
+and the operator creates no tenant of its own in a namespace one already admits.
+
 ### BarbicanExternalSecretStoreSpec
 
 Addresses an OpenBao or HashiCorp Vault server provisioned outside this control

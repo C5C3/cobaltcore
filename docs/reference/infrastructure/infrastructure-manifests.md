@@ -526,25 +526,38 @@ layer as garage-operator.
 
 | Key | Value | Purpose |
 | --- | --- | --- |
-| `tenancy.mode` | `single` | Deploy the controller alone, scoped to one namespace |
-| `tenancy.targetNamespace` | `openstack` | The namespace the instance CRs live in |
-| `controller.extraEnv[].WATCH_NAMESPACE` | `openstack` | What actually puts the controller in single-tenant mode |
+| `tenancy.mode` | `multi` | Deploy the provisioner next to the controller, so the controller reconciles in every namespace an `OpenBaoTenant` admits |
+| `tenancy.namespacePodSecurityLabels.mode` | `external` | Deny the provisioner every `Namespace` mutation, so it stamps no Pod Security labels |
 
-The chart defaults to multi-tenant mode, whose provisioner requires `OpenBaoTenant`
-onboarding per namespace and applies restricted Pod Security labels to the tenant
-namespaces it onboards. The shared `openstack` namespace cannot take those labels: it
-hosts every OpenStack service workload. Single-tenant mode leaves the provisioner out.
+The c5c3 operator projects a dedicated `OpenBaoCluster` into the Barbican service
+namespace of every ControlPlane, and those namespaces are created at runtime, so no
+single watched namespace covers them. Multi-tenant mode covers them: the controller
+reconciles in every namespace an `OpenBaoTenant` has onboarded.
 
-`tenancy.mode` does not reach the controller. At chart 0.4.2 it selects the
-single-tenant `ClusterRole` and drops the provisioner `Deployment`, but the controller
-reads its own tenancy from the `WATCH_NAMESPACE` environment variable, and no chart
-template sets it. A controller that starts without `WATCH_NAMESPACE` runs multi-tenant
-and pauses every reconcile until the `openbao-operator-tenant-rolebinding` RoleBinding
-appears in the namespace, which only `OpenBaoTenant` onboarding creates. It logs that
-pause at `V(1)`, so the visible symptom is an `OpenBaoCluster` that keeps an empty status
-and never gets a `StatefulSet`. `controller.extraEnv` is the chart's documented hook, and
-the value must match `tenancy.targetNamespace`: the controller watches the first while
-the chart scopes its RBAC to the second.
+`tenancy.mode` only shapes the chart's own output. The controller reads its tenancy from
+the `WATCH_NAMESPACE` environment variable, and no chart template sets it, so leaving
+`controller.extraEnv` unset is what runs it multi-tenant. A value reintroduced there pins
+the controller to one namespace and strands every other one.
+
+Under the chart default (`enforce`) the provisioner holds update and patch on namespaces
+cluster-wide and stamps restricted Pod Security labels onto every namespace it onboards,
+`openstack` included, which hosts every OpenStack service workload that restricted would
+start rejecting. `external` drops those verbs from the ClusterRole and widens the chart's
+ValidatingAdmissionPolicy to deny the provisioner any `Namespace` update. Tenant RBAC
+onboarding is unaffected.
+
+**Accepted gap.** Nothing in the repository stamps the Pod Security labels instead, so
+an onboarded namespace admits pods at whatever the cluster default is. For a namespace
+holding a dedicated OpenBao instance, the seal key and the raft volume are then in reach
+of any pod that namespace admits.
+
+Every namespace hosting an `OpenBaoCluster` needs an `OpenBaoTenant`. Without one the
+controller waits for the `openbao-operator-tenant-rolebinding` RoleBinding that tenant
+onboarding creates and pauses every reconcile in that namespace. It logs that pause at
+`V(1)`, so the visible symptom is an `OpenBaoCluster` that keeps an empty status and
+never gets a `StatefulSet`. The c5c3 operator creates a tenant for each service
+namespace it projects into, and the kind overlay carries a static one for the proving
+instance (see [OpenBao Proving Instance](#openbao-proving-instance)).
 
 **Accepted risk (decided 2026-08-05):** openbao-operator is a young, single-maintainer,
 pre-1.0 (v0.4.x) project, and unlike garage-operator it sits in the production data path
@@ -1115,6 +1128,33 @@ on. All live in the `openstack` namespace except the cluster-scoped ClusterRoleB
 | `ServiceAccount` | `v1` | `openbao-instance-provisioner` | Client identity the Kubernetes-auth role `provisioner` binds to |
 | `ClusterRoleBinding` | `rbac.authorization.k8s.io/v1` | `openbao-instance-auth-delegator` | Grants `system:auth-delegator` to the operator-created instance ServiceAccount `openbao-instance-serviceaccount` |
 | `OpenBaoCluster` | `openbao.org/v1alpha1` | `openbao-instance` | Profile `Development`, version `2.6.2`, one replica, 1Gi raft storage, TLS mode `External`, static seal, self-init enabled, applied `paused`, API-server egress patched in at deploy time |
+
+**Tenant.** `deploy/kind/infrastructure/openbao-tenant.yaml` declares the
+`OpenBaoTenant` `openstack` that admits the `openstack` namespace to the multi-tenant
+operator. It lives in `openbao-operator-system` and targets `openstack` from there,
+because the chart's admission policy accepts `spec.quota` and `spec.limitRange` only on
+a tenant in the operator namespace. Without those overrides the provisioner writes its
+default LimitRange into `openstack`, which gives every container without a CPU limit a
+500m one. The overrides are the provisioner defaults of chart 0.4.2 minus the CPU
+limits:
+
+| Object | Setting | Value |
+| --- | --- | --- |
+| ResourceQuota | `pods` | `50` |
+| ResourceQuota | `requests.cpu` | `20` |
+| ResourceQuota | `requests.memory` | `64Gi` |
+| ResourceQuota | `limits.memory` | `128Gi` |
+| LimitRange (`Container`) | `default.memory` | `512Mi` |
+| LimitRange (`Container`) | `defaultRequest.cpu` | `100m` |
+| LimitRange (`Container`) | `defaultRequest.memory` | `128Mi` |
+
+The upstream default `default.cpu: 500m` and `limits.cpu: 40` are left out: the service
+operators set no CPU limit, and a `limits.cpu` quota rejects every pod that sets none.
+An override replaces the whole default object, so every kept key is spelled out.
+`hack/deploy-infra.sh` waits for `status.provisioned` on the tenant in
+`openbao-operator-system` before it waits for the instance. A kind cluster created
+before the tenant moved keeps its old `openstack/openstack` tenant beside the new one,
+so recreate it.
 
 The instance runs in every kind deploy, so the primitives a managed Barbican secret store
 needs are exercised with no Barbican attached: static-seal auto-unseal, cert-manager TLS
