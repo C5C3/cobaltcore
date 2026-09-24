@@ -84,6 +84,11 @@ spec:
               deployment nobody wrote. For the same reason the defaulting webhook removes
               the block it materialized once the proxy is switched off, so the rule only
               ever meets a block written past that webhook.
+
+              The remote-compute rule ties the second compute contract to a verified bus.
+              A compute on another cluster reaches the broker across a cluster boundary,
+              with the broker credentials in the URL, and the messaging CA bundle is the
+              only trust anchor either contract carries.
             properties:
               api:
                 description: |-
@@ -3088,6 +3093,59 @@ spec:
                   Optional: when empty the option is omitted and Nova uses the Keystone
                   catalog's default region.
                 type: string
+              remoteCompute:
+                description: |-
+                  RemoteCompute publishes a second compute contract, the
+                  <name>-remote-compute-config Secret, for a nova-compute on another
+                  cluster. It carries the same keys as <name>-compute-config, with the
+                  addresses a compute outside this cluster can reach: every auth_url is
+                  remoteCompute.keystoneEndpoint, every client section resolves its service
+                  through the public catalog row, and transport_url is the broker's external
+                  listener. The in-cluster contract keeps its addresses, so a compute beside
+                  this Nova keeps reading it. When nil (the default) no remote contract is
+                  published, and one published earlier is deleted.
+
+                  It requires spec.messaging.tls (the rule on this spec): the remote compute
+                  verifies the broker against the same CA bundle the in-cluster contract
+                  carries.
+                properties:
+                  keystoneEndpoint:
+                    description: |-
+                      KeystoneEndpoint is the Keystone v3 URL a compute on another cluster
+                      authenticates against. It renders as every auth_url of the remote
+                      fragment and as [barbican] auth_endpoint, so it must resolve from the
+                      compute cluster's nodes. It must use https: the nova service-user
+                      password is sent to it on every token request, across a cluster boundary.
+                    minLength: 1
+                    pattern: ^https://
+                    type: string
+                  transportURLSecretRef:
+                    description: |-
+                      TransportURLSecretRef names a Secret in this Nova's namespace, on the
+                      cluster its children run on, holding the complete rabbit:// URL of the
+                      broker's external listener. The operator reads it and never writes it,
+                      and copies the value into the remote contract's transport_url. The
+                      defaulting webhook materializes an empty key to "transport_url".
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        description: |-
+                          Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                          subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                          fixes every consumer at once — a service operator adminPasswordSecretRef /
+                          database.secretRef / messaging / TLS cert refs and the c5c3
+                          passwordSecretRef — so an empty name no longer slips through "required".
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - keystoneEndpoint
+                - transportURLSecretRef
+                type: object
               scheduler:
                 description: Scheduler groups the knobs of the nova-scheduler Deployment.
                 properties:
@@ -3589,6 +3647,9 @@ spec:
                 is false
               rule: '!has(self.consoleProxy) || !has(self.consoleProxy.enabled) ||
                 self.consoleProxy.enabled || !has(self.consoleProxy.deployment)'
+            - message: 'remoteCompute requires messaging.tls: a compute on another
+                cluster verifies the broker against the messaging CA bundle'
+              rule: '!has(self.remoteCompute) || has(self.messaging.tls)'
           status:
             description: NovaStatus defines the observed state of Nova.
             properties:
@@ -3714,6 +3775,27 @@ spec:
                   reconciled, so a stale status is distinguishable from a current one.
                 format: int64
                 type: integer
+              remoteComputeConfigSecretRef:
+                description: |-
+                  RemoteComputeConfigSecretRef names the Secret carrying the remote compute
+                  contract, the one whose addresses a nova-compute on another cluster
+                  reaches. The name is the Secret's on this Nova's own cluster: a copy on a
+                  compute cluster carries the name its copier gives it, and the ControlPlane
+                  mirror keeps the in-cluster contract's name, the one
+                  computeConfigSecretRef gives. It is set while spec.remoteCompute is set
+                  and the Secret has been written, and cleared when the block is removed.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               targetRelease:
                 description: |-
                   TargetRelease is the spec.openStackRelease being converged to during an

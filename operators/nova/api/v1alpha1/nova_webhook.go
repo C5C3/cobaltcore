@@ -295,6 +295,13 @@ func (w *NovaWebhook) Default(_ context.Context, obj *Nova) error {
 	if obj.Spec.Metadata.SharedSecretRef.Key == "" {
 		obj.Spec.Metadata.SharedSecretRef.Key = DefaultSharedSecretKey
 	}
+
+	// The remote transport URL is read under the key a brownfield bus Secret
+	// uses. The block itself is never materialized: the remote contract is
+	// opt-in.
+	if rc := obj.Spec.RemoteCompute; rc != nil && rc.TransportURLSecretRef.Key == "" {
+		rc.TransportURLSecretRef.Key = commonv1.DefaultTransportURLSecretKey
+	}
 	return nil
 }
 
@@ -600,6 +607,8 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 			allErrs = append(allErrs, validateEndpointURL(endpoint.path, endpoint.value)...)
 		}
 	}
+
+	allErrs = append(allErrs, validateRemoteCompute(specPath, &n.Spec)...)
 
 	// Typed spec fields reach the same verbatim INI renderer as extraConfig: each
 	// value below is rendered as "%s = %s" into nova.conf and into the
@@ -935,6 +944,41 @@ func validateEndpointURL(fldPath *field.Path, endpoint string) field.ErrorList {
 		errs = append(errs, field.Invalid(fldPath, endpoint, "scheme must be http or https"))
 	case u.Host == "":
 		errs = append(errs, field.Invalid(fldPath, endpoint, "URL must include a host"))
+	}
+	return errs
+}
+
+// validateRemoteCompute checks the remote compute block while it is set. The
+// Keystone URL gets the shape check every URL field on NovaSpec gets; its
+// url.Parse also refuses a control character, so a newline cannot reach the
+// remote fragment through it. A well-formed Keystone URL must then use https,
+// the twin of the field's ^https:// pattern. The Secret name is the defense in
+// depth behind the MinLength marker on commonv1.SecretRefSpec.Name, and the TLS
+// check is the twin of the remote-compute CEL rule on NovaSpec, with the
+// message repeating the rule's reason.
+func validateRemoteCompute(specPath *field.Path, spec *NovaSpec) field.ErrorList {
+	rc := spec.RemoteCompute
+	if rc == nil {
+		return nil
+	}
+	var errs field.ErrorList
+	rcPath := specPath.Child("remoteCompute")
+	ksPath := rcPath.Child("keystoneEndpoint")
+	if urlErrs := validateEndpointURL(ksPath, rc.KeystoneEndpoint); len(urlErrs) > 0 {
+		errs = append(errs, urlErrs...)
+	} else if u, _ := url.Parse(rc.KeystoneEndpoint); u.Scheme != "https" {
+		errs = append(errs, field.Invalid(ksPath, rc.KeystoneEndpoint,
+			"must use scheme https: every compute on another cluster sends the nova service-user password "+
+				"to this URL across a cluster boundary"))
+	}
+	if rc.TransportURLSecretRef.Name == "" {
+		errs = append(errs, field.Required(rcPath.Child("transportURLSecretRef", "name"),
+			"transportURLSecretRef.name must be set: it carries the transport URL of the broker's external listener"))
+	}
+	if spec.Messaging.TLS == nil {
+		errs = append(errs, field.Required(specPath.Child("messaging", "tls"),
+			"is required when spec.remoteCompute is set: a compute on another cluster verifies the broker "+
+				"against this CA bundle"))
 	}
 	return errs
 }

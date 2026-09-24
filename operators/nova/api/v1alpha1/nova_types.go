@@ -69,12 +69,18 @@ type NovaList struct {
 // deployment nobody wrote. For the same reason the defaulting webhook removes
 // the block it materialized once the proxy is switched off, so the rule only
 // ever meets a block written past that webhook.
+//
+// The remote-compute rule ties the second compute contract to a verified bus.
+// A compute on another cluster reaches the broker across a cluster boundary,
+// with the broker credentials in the URL, and the messaging CA bundle is the
+// only trust anchor either contract carries.
 // +kubebuilder:validation:XValidation:rule="has(self.targetClusterRef) == has(oldSelf.targetClusterRef)",message="targetClusterRef is immutable"
 // +kubebuilder:validation:XValidation:rule="!has(self.targetClusterRef) || !has(oldSelf.targetClusterRef) || self.targetClusterRef.name == oldSelf.targetClusterRef.name",message="targetClusterRef is immutable"
 // +kubebuilder:validation:XValidation:rule="self.apiDatabase.database != self.database.database",message="apiDatabase and database must name different schemas"
 // +kubebuilder:validation:XValidation:rule="self.apiDatabase.database != self.database.database + '_cell0'",message="apiDatabase must not name the cell0 schema derived from database"
 // +kubebuilder:validation:XValidation:rule="(has(self.apiDatabase.credentialsMode) ? self.apiDatabase.credentialsMode : 'Static') == (has(self.database.credentialsMode) ? self.database.credentialsMode : 'Static')",message="apiDatabase and database must use the same credentialsMode"
 // +kubebuilder:validation:XValidation:rule="!has(self.consoleProxy) || !has(self.consoleProxy.enabled) || self.consoleProxy.enabled || !has(self.consoleProxy.deployment)",message="consoleProxy.deployment must not be set when consoleProxy.enabled is false"
+// +kubebuilder:validation:XValidation:rule="!has(self.remoteCompute) || has(self.messaging.tls)",message="remoteCompute requires messaging.tls: a compute on another cluster verifies the broker against the messaging CA bundle"
 type NovaSpec struct {
 	// OpenStackRelease names the OpenStack release this operator deploys and
 	// drives. It governs install/upgrade release tracking:
@@ -213,6 +219,22 @@ type NovaSpec struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^https?://`
 	KeystonePublicEndpoint string `json:"keystonePublicEndpoint,omitempty"`
+
+	// RemoteCompute publishes a second compute contract, the
+	// <name>-remote-compute-config Secret, for a nova-compute on another
+	// cluster. It carries the same keys as <name>-compute-config, with the
+	// addresses a compute outside this cluster can reach: every auth_url is
+	// remoteCompute.keystoneEndpoint, every client section resolves its service
+	// through the public catalog row, and transport_url is the broker's external
+	// listener. The in-cluster contract keeps its addresses, so a compute beside
+	// this Nova keeps reading it. When nil (the default) no remote contract is
+	// published, and one published earlier is deleted.
+	//
+	// It requires spec.messaging.tls (the rule on this spec): the remote compute
+	// verifies the broker against the same CA bundle the in-cluster contract
+	// carries.
+	// +optional
+	RemoteCompute *NovaRemoteComputeSpec `json:"remoteCompute,omitempty"`
 
 	// ServiceUser identifies the Keystone service account Nova authenticates as
 	// and the Secret holding its password. It is required, like
@@ -554,6 +576,28 @@ type NovaOptionalEndpointSpec struct {
 	Override string `json:"override,omitempty"`
 }
 
+// NovaRemoteComputeSpec names the two addresses the remote compute contract
+// cannot derive from the rest of the spec: the Keystone URL a compute on
+// another cluster authenticates against, and the broker listener it connects
+// to.
+type NovaRemoteComputeSpec struct {
+	// KeystoneEndpoint is the Keystone v3 URL a compute on another cluster
+	// authenticates against. It renders as every auth_url of the remote
+	// fragment and as [barbican] auth_endpoint, so it must resolve from the
+	// compute cluster's nodes. It must use https: the nova service-user
+	// password is sent to it on every token request, across a cluster boundary.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https://`
+	KeystoneEndpoint string `json:"keystoneEndpoint"`
+
+	// TransportURLSecretRef names a Secret in this Nova's namespace, on the
+	// cluster its children run on, holding the complete rabbit:// URL of the
+	// broker's external listener. The operator reads it and never writes it,
+	// and copies the value into the remote contract's transport_url. The
+	// defaulting webhook materializes an empty key to "transport_url".
+	TransportURLSecretRef commonv1.SecretRefSpec `json:"transportURLSecretRef"`
+}
+
 // DBArchiveSpec tunes the recurring database archive. Nova never hard-deletes on
 // its own: deleting an instance only flips its row to deleted, so the tables
 // grow for the lifetime of the deployment and every query that scans them gets
@@ -675,6 +719,16 @@ type NovaStatus struct {
 	// compute nodes, which this operator does not deploy.
 	// +optional
 	ComputeConfigSecretRef *corev1.LocalObjectReference `json:"computeConfigSecretRef,omitempty"`
+
+	// RemoteComputeConfigSecretRef names the Secret carrying the remote compute
+	// contract, the one whose addresses a nova-compute on another cluster
+	// reaches. The name is the Secret's on this Nova's own cluster: a copy on a
+	// compute cluster carries the name its copier gives it, and the ControlPlane
+	// mirror keeps the in-cluster contract's name, the one
+	// computeConfigSecretRef gives. It is set while spec.remoteCompute is set
+	// and the Secret has been written, and cleared when the block is removed.
+	// +optional
+	RemoteComputeConfigSecretRef *corev1.LocalObjectReference `json:"remoteComputeConfigSecretRef,omitempty"`
 }
 
 // NovaCellStatus pairs a mapped cell with the UUID nova assigned it.

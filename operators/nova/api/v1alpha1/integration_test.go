@@ -420,6 +420,72 @@ func TestIntegration_CRD_CELOnly_RejectsEndpointOverridePattern(t *testing.T) {
 	expectRejected(t, c.Create(ctx, nova), "spec.endpoints.placement.override")
 }
 
+// TestIntegration_CRD_CELOnly_RemoteComputeRequiresMessagingTLS pins the rule
+// that ties the remote compute contract to a verified bus. A compute on another
+// cluster reaches the broker across a cluster boundary, and the messaging CA
+// bundle is the only trust anchor the contract carries.
+func TestIntegration_CRD_CELOnly_RemoteComputeRequiresMessagingTLS(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+	ns := newNamespace(t, ctx, c, "remote-compute-tls-")
+
+	plaintext := integrationNova("nova-plaintext", ns)
+	plaintext.Spec.RemoteCompute = &NovaRemoteComputeSpec{
+		KeystoneEndpoint:      "https://keystone.example.com/v3",
+		TransportURLSecretRef: commonv1.SecretRefSpec{Name: "nova-remote-transport"},
+	}
+	expectRejected(t, c.Create(ctx, plaintext), "remoteCompute requires messaging.tls")
+
+	verified := plaintext.DeepCopy()
+	verified.Name = "nova-verified"
+	verified.Spec.Messaging.TLS = &commonv1.MessagingTLSSpec{
+		CABundleSecretRef: commonv1.SecretRefSpec{Name: "rabbitmq-ca", Key: "ca.crt"},
+	}
+	NewGomegaWithT(t).Expect(c.Create(ctx, verified)).To(Succeed(),
+		"the same remote block on a verified bus is admitted")
+}
+
+// TestIntegration_CRD_CELOnly_RemoteComputeFieldMarkers pins the two field
+// markers of the remote block: the Keystone URL uses https, and the transport
+// URL Secret has a name.
+func TestIntegration_CRD_CELOnly_RemoteComputeFieldMarkers(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+	ns := newNamespace(t, ctx, c, "remote-compute-markers-")
+
+	remote := func(name string) *Nova {
+		nova := integrationNova(name, ns)
+		nova.Spec.Messaging.TLS = &commonv1.MessagingTLSSpec{
+			CABundleSecretRef: commonv1.SecretRefSpec{Name: "rabbitmq-ca", Key: "ca.crt"},
+		}
+		nova.Spec.RemoteCompute = &NovaRemoteComputeSpec{
+			KeystoneEndpoint:      "https://keystone.example.com/v3",
+			TransportURLSecretRef: commonv1.SecretRefSpec{Name: "nova-remote-transport"},
+		}
+		return nova
+	}
+
+	noScheme := remote("nova-no-scheme")
+	noScheme.Spec.RemoteCompute.KeystoneEndpoint = "keystone.example.com"
+	err := c.Create(ctx, noScheme)
+	expectRejected(t, err, "spec.remoteCompute.keystoneEndpoint")
+	expectRejected(t, err, "should match")
+
+	plaintext := remote("nova-plaintext-keystone")
+	plaintext.Spec.RemoteCompute.KeystoneEndpoint = "http://keystone.example.com/v3"
+	err = c.Create(ctx, plaintext)
+	expectRejected(t, err, "spec.remoteCompute.keystoneEndpoint")
+	expectRejected(t, err, "should match '^https://'")
+
+	unnamed := remote("nova-unnamed")
+	unnamed.Spec.RemoteCompute.TransportURLSecretRef.Name = ""
+	err = c.Create(ctx, unnamed)
+	expectRejected(t, err, "spec.remoteCompute.transportURLSecretRef.name")
+	expectRejected(t, err, "should be at least 1 chars long")
+}
+
 // --- Live admission round-trip (webhooks running) ---
 
 // TestIntegration_WebhookDefaultsServiceUser proves the mutating webhook fills
