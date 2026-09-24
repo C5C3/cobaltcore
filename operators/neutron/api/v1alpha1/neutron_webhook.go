@@ -72,7 +72,7 @@ func (w *NeutronWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 // explicitly present, except spec.logging which is materialized so downstream
 // reconciler code never sees a nil pointer.
 func (w *NeutronWebhook) Default(_ context.Context, obj *Neutron) error {
-	// Shared-type defaults (replicas, container resources) are applied by the
+	// Shared-type defaults (replicas) are applied by the
 	// commonv1.DeploymentSpec Default method so they cannot drift across
 	// operators. Both Deployments get them: the API pods and the RPC workers are
 	// sized independently.

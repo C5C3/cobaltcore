@@ -660,7 +660,10 @@ func TestIntegration_WebhookDefaultsPreservesExplicit(t *testing.T) {
 
 // --- Task: Resources defaulting and validation integration tests ---
 
-func TestIntegration_ResourcesDefaultedWhenNil(t *testing.T) {
+// TestIntegration_ResourcesNotMaterializedWhenNil verifies that the webhook
+// never writes resource defaults into the stored CR: the reconciler resolves
+// them when it renders the Deployment.
+func TestIntegration_ResourcesNotMaterializedWhenNil(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
@@ -677,11 +680,7 @@ func TestIntegration_ResourcesDefaultedWhenNil(t *testing.T) {
 	got := &Keystone{}
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: "res-default", Namespace: ns.Name}, got)).To(Succeed())
 
-	g.Expect(got.Spec.Deployment.Resources).NotTo(BeNil(), "resources should be defaulted")
-	g.Expect(got.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryRequest()))
-	g.Expect(got.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPURequest()))
-	g.Expect(got.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryLimit()))
-	g.Expect(got.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPULimit()))
+	g.Expect(got.Spec.Deployment.Resources).To(BeNil(), "resources must not be materialized into the CR")
 }
 
 func TestIntegration_ResourcesPreservedWhenExplicit(t *testing.T) {

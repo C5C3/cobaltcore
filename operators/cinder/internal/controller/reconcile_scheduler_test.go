@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 )
 
@@ -187,4 +188,15 @@ func TestReconcileScheduler_ApplyFailureWrapsTheError(t *testing.T) {
 
 	g.Expect(err).To(MatchError(boom))
 	g.Expect(err).To(MatchError(ContainSubstring("ensuring scheduler Deployment:")))
+}
+
+// TestBuildSchedulerDeployment_RendersResourceDefaults verifies that the
+// scheduler, one single-threaded process, renders 368Mi as memory request and
+// limit beside a 100m CPU request and no CPU limit when its block names nothing.
+func TestBuildSchedulerDeployment_RendersResourceDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildSchedulerDeployment(workloadCinder(), workloadArtifacts(), workloadDigests{}, testEgressPort)
+
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
 }

@@ -49,7 +49,7 @@ func TestDefault_ZeroValueObject(t *testing.T) {
 	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
 
 	g.Expect(h.Spec.Deployment.Replicas).To(gomega.Equal(commonv1.DefaultReplicas))
-	g.Expect(h.Spec.Deployment.Resources).NotTo(gomega.BeNil())
+	g.Expect(h.Spec.Deployment.Resources).To(gomega.BeNil())
 	g.Expect(h.Spec.Cache.Backend).To(gomega.Equal(DefaultCacheBackend))
 	g.Expect(h.Spec.SecretKeyRef.Key).To(gomega.Equal(DefaultSecretKeyKey))
 	g.Expect(h.Spec.Logging).NotTo(gomega.BeNil())

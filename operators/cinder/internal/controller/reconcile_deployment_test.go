@@ -21,6 +21,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 )
@@ -512,4 +513,33 @@ func TestCinderDeploymentRolledOut(t *testing.T) {
 
 		g.Expect(desiredReplicas(deploy)).To(Equal(int32(1)))
 	})
+}
+
+// TestBuildCinderDeployment_RendersResourceDefaults verifies that an admitted CR
+// whose spec.api.deployment.resources names nothing renders a 100m CPU request,
+// no CPU limit, and a memory request and limit sized from spec.api.uwsgi: 512Mi
+// at the default counts, 800Mi at four processes, and 928Mi at four processes
+// of two threads. The webhook stores no block, so the reconciler resolves it.
+func TestBuildCinderDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		uwsgi *cinderv1alpha1.UWSGISpec
+		want  string
+	}{
+		{name: "default uWSGI counts", want: "512Mi"},
+		{name: "four processes", uwsgi: &cinderv1alpha1.UWSGISpec{Processes: 4}, want: "800Mi"},
+		{name: "four processes of two threads", uwsgi: &cinderv1alpha1.UWSGISpec{Processes: 4, Threads: 2}, want: "928Mi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cinder := workloadCinder()
+			if tc.uwsgi != nil {
+				cinder.Spec.API.UWSGI = tc.uwsgi
+			}
+
+			deploy := buildCinderDeployment(cinder, workloadArtifacts(), workloadDigests{})
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults(tc.want)))
+		})
+	}
 }

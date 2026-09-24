@@ -257,7 +257,10 @@ type OVNRelaySpec struct {
 	Replicas int32 `json:"replicas"`
 
 	// Resources defines the CPU and memory requests and limits for the relay
-	// container. When nil the operator applies its own defaults.
+	// container. The operator resolves defaults per resource when it renders the
+	// pod: a CPU the block names neither as request nor as limit gets a 100m
+	// request and no limit, and a memory it names neither way gets 368Mi as both
+	// request and limit. Anything else the block sets is kept.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }

@@ -121,7 +121,7 @@ func (w *KeystoneWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 // Fernet.RotationSchedule is NOT defaulted here — it relies on the Kubebuilder
 // +kubebuilder:default marker only (plan decision #3).
 func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
-	// Shared-type defaults (replicas, container resources) are applied by the
+	// Shared-type defaults (replicas) are applied by the
 	// commonv1.DeploymentSpec Default method so they cannot drift across
 	// operators.
 	obj.Spec.Deployment.Default()
@@ -175,7 +175,7 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	// Default zero-valued sub-fields of spec.logging.
 	// When the pointer is nil, materialize the production baseline so downstream
 	// reconciler code dereferences spec.logging unconditionally (mirrors the
-	// Resources-when-nil pattern). The leaf defaults (Format=text, Level=INFO,
+	// UWSGISpec precedent). The leaf defaults (Format=text, Level=INFO,
 	// Debug=false) are applied by the commonv1.LoggingSpec Default method so
 	// they cannot drift across operators; materializing the parent pointer
 	// stays a keystone decision.

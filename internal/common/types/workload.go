@@ -40,33 +40,22 @@ const (
 	DefaultReplicas int32 = 3
 )
 
-// Default resource requests and limits for the service API container. These
-// unexported vars are the single source of truth for the defaulting webhooks;
-// they ensure Burstable QoS class and enable HPA utilization-based scaling. They
-// are exposed only through the accessor functions below, which return a copy so
-// no caller can mutate the shared default.
+// Default resource requests. These unexported vars are exposed only through
+// the accessor functions below, which return a copy so no caller can mutate the
+// shared default.
 var (
 	defaultMemoryRequest = resource.MustParse("256Mi")
 	defaultCPURequest    = resource.MustParse("100m")
-	defaultMemoryLimit   = resource.MustParse("512Mi")
-	defaultCPULimit      = resource.MustParse("500m")
 )
 
-// DefaultMemoryRequest returns a copy of the default memory request for the
-// service API container.
+// DefaultMemoryRequest returns a copy of the 256Mi memory request floor of the
+// OVN Raft members, its only caller.
 func DefaultMemoryRequest() resource.Quantity { return defaultMemoryRequest.DeepCopy() }
 
-// DefaultCPURequest returns a copy of the default CPU request for the service
-// API container.
+// DefaultCPURequest returns a copy of the 100m CPU request WithResourceDefaults
+// gives a container whose block names no CPU. It is also the CPU half of the
+// OVN Raft request floor.
 func DefaultCPURequest() resource.Quantity { return defaultCPURequest.DeepCopy() }
-
-// DefaultMemoryLimit returns a copy of the default memory limit for the service
-// API container.
-func DefaultMemoryLimit() resource.Quantity { return defaultMemoryLimit.DeepCopy() }
-
-// DefaultCPULimit returns a copy of the default CPU limit for the service API
-// container.
-func DefaultCPULimit() resource.Quantity { return defaultCPULimit.DeepCopy() }
 
 // DeploymentSpec groups the pod-level knobs for the service API Deployment.
 // Grouping them under spec.deployment keeps the CR spec root legible as
@@ -85,11 +74,14 @@ type DeploymentSpec struct {
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
 
-	// Resources defines the CPU and memory requests and limits for the service API
-	// container. When unset, the defaulting webhook injects the operator's
-	// documented resource defaults (100m/500m CPU, with memory sized per
-	// service — see the operator's CRD reference) to ensure Burstable QoS class
-	// and enable HPA utilization calculations.
+	// Resources defines the CPU and memory requests and limits for the
+	// container. The operator never writes defaults into this field; it resolves
+	// them when it renders the pod, per resource: a CPU the block names neither
+	// as request nor as limit gets a 100m request and no limit, and a memory the
+	// block names neither way gets one figure as both request and limit, sized
+	// from the process and thread count the container runs (see the operator's
+	// CRD reference). A resource the block names is used as written, and
+	// anything else it sets is kept.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
@@ -152,30 +144,14 @@ type DeploymentSpec struct {
 }
 
 // Default sets the shared-type defaults on a DeploymentSpec in place: a
-// zero-valued Replicas becomes DefaultReplicas, and a nil-or-empty Resources
-// block is filled with the default requests/limits so the container gets
-// Burstable QoS and HPA utilization calculations work. It encodes exactly the
-// defaults the keystone defaulting webhook previously applied inline; operator
-// webhooks call it so the shared type defaults cannot drift across operators.
+// zero-valued Replicas becomes DefaultReplicas. It never writes Resources: the
+// reconcilers resolve container resources per resource when they render the
+// pod (WithResourceDefaults), so a later change of the process count moves the
+// memory with it. Operator webhooks call it so the replica default cannot drift
+// across operators.
 func (d *DeploymentSpec) Default() {
 	if d.Replicas == 0 {
 		d.Replicas = DefaultReplicas
-	}
-	// Default resource requests and limits for Burstable QoS and HPA
-	// utilization calculations. Also defaults when Resources is non-nil but
-	// empty (e.g. `resources: {}`), which would otherwise produce BestEffort
-	// QoS and break HPA utilization calculations.
-	if d.Resources == nil || (len(d.Resources.Requests) == 0 && len(d.Resources.Limits) == 0) {
-		d.Resources = &corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: DefaultMemoryRequest(),
-				corev1.ResourceCPU:    DefaultCPURequest(),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: DefaultMemoryLimit(),
-				corev1.ResourceCPU:    DefaultCPULimit(),
-			},
-		}
 	}
 }
 
@@ -247,7 +223,7 @@ type NetworkPolicyIngressSource struct {
 // LoggingSpec configures oslo.log output for the service API container.
 // Exposed as an optional pointer field on the CR spec; the defaulting webhook
 // materializes a baseline LoggingSpec when the pointer is nil so downstream
-// reconciler code never sees a nil pointer (mirrors UWSGISpec / Resources precedent).
+// reconciler code never sees a nil pointer (mirrors the UWSGISpec precedent).
 type LoggingSpec struct {
 	// Format selects the on-wire layout of oslo.log records.
 	// "text" emits the standard oslo.log line format; "json" emits one

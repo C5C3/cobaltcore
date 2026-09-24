@@ -363,10 +363,11 @@ type CinderVolumeSpec struct {
 // the same one-replica and Recreate constraints CinderVolumeSpec documents, for
 // the same reason: the backup service owns its target through a host identity.
 //
-// The defaulting webhook raises the memory limit to 2Gi for this block when it
-// carries no resources of its own. A backup reads a volume in chunks and
-// compresses each chunk in memory, so the shared 512Mi limit the other
-// Deployments run under puts the process at risk of being killed mid-backup.
+// The operator renders 2Gi as the memory request and limit of this container
+// when the block names no memory. A backup reads a volume in chunks and
+// compresses each chunk in memory, so its footprint follows the chunk size
+// rather than a process count, and a 512Mi limit would put the process at risk
+// of being killed mid-backup.
 type CinderBackupSpec struct {
 	// Deployment groups the pod-level knobs for the backup Deployment.
 	// +optional

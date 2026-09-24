@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -127,6 +128,14 @@ func (r *CinderReconciler) reconcileBackupService(ctx context.Context, children 
 	return ctrl.Result{}, nil
 }
 
+// backupMemory is the memory of the cinder-backup container, in place of a
+// figure sized from its process count. A backup reads the volume in chunks of
+// spec.fileSize bytes and compresses each chunk in memory before writing it, so
+// the peak footprint follows the chunk size rather than the request rate: under
+// a 512Mi limit the process is killed mid-backup, and the restarted service
+// begins the volume again.
+var backupMemory = resource.MustParse("2Gi")
+
 // buildBackupDeployment constructs the desired cinder-backup Deployment: the
 // workload volumes every process shares, the projected driver section, the
 // export the backups are written to, and every volume backend's export beside
@@ -188,7 +197,7 @@ func buildBackupDeployment(cinder *cinderv1alpha1.Cinder, backup *backupProjecti
 		Autoscaling:    nil,
 		// cinder-backup's footprint follows the backup chunk size rather than a
 		// process count, so it gets a fixed figure.
-		DefaultMemory: cinderv1alpha1.DefaultBackupMemoryLimit(),
+		DefaultMemory: backupMemory,
 		Container: deployment.ContainerParams{
 			Name:  componentBackup,
 			Image: cinder.Spec.Image.Reference(),

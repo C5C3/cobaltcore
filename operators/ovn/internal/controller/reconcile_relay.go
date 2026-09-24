@@ -197,8 +197,9 @@ func relayName(cr *ovnv1alpha1.OVNCentral) string {
 }
 
 // effectiveRelayDeployment resolves the deployment knobs of the relay: the two
-// the relay spec carries, with the shared defaults applied on top. The relay has
-// no spec.deployment block of its own because it is a stateless cache with
+// the relay spec carries, with the shared replica default applied on top.
+// Container resources are resolved when BuildWorkload renders the pod. The relay
+// has no spec.deployment block of its own because it is a stateless cache with
 // nothing to drain and no rollout ordering to respect.
 func effectiveRelayDeployment(cr *ovnv1alpha1.OVNCentral) commonv1.DeploymentSpec {
 	spec := commonv1.DeploymentSpec{

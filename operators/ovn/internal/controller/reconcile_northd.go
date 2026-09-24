@@ -111,9 +111,9 @@ func (r *OVNCentralReconciler) reconcileNorthd(ctx context.Context, children cli
 }
 
 // effectiveNorthd resolves the northd block the Deployment is rendered from: the
-// CR's own, on a copy, with the shared deployment defaults applied. The copy is
-// what keeps the resolution out of the CR that is written back at the end of the
-// pass.
+// CR's own, on a copy, with the shared replica default applied. The copy is what
+// keeps the resolution out of the CR that is written back at the end of the
+// pass. Container resources are resolved when BuildWorkload renders the pod.
 //
 // commonv1.DefaultReplicas applies unchanged. Three northd pods are not three
 // times the compile capacity, they are one active instance and two standbys, and

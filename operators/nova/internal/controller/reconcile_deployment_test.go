@@ -22,6 +22,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
@@ -820,4 +821,39 @@ func TestNovaStatusEndpoint(t *testing.T) {
 
 	nova.Spec.Gateway = nil
 	g.Expect(novaStatusEndpoint(nova)).To(Equal("http://nova.openstack.svc.cluster.local:8774"))
+}
+
+// TestBuildAPIDeployment_RendersResourceDefaults verifies that an admitted CR
+// whose spec.api.deployment.resources names nothing renders a 100m CPU request,
+// no CPU limit, and a memory request and limit sized from spec.api.uwsgi: 512Mi
+// at the default counts, 800Mi at four processes, and still 512Mi when only
+// spec.metadata.uwsgi moves.
+func TestBuildAPIDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(nova *novav1alpha1.Nova)
+		want   string
+	}{
+		{name: "default uWSGI counts", mutate: func(*novav1alpha1.Nova) {}, want: "512Mi"},
+		{
+			name:   "four API processes",
+			mutate: func(nova *novav1alpha1.Nova) { nova.Spec.API.UWSGI.Processes = 4 },
+			want:   "800Mi",
+		},
+		{
+			name:   "four metadata processes",
+			mutate: func(nova *novav1alpha1.Nova) { nova.Spec.Metadata.UWSGI.Processes = 4 },
+			want:   "512Mi",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			nova := validNova()
+			tc.mutate(nova)
+
+			deploy := buildAPIDeployment(nova, workloadArtifacts(), workloadDigests{})
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults(tc.want)))
+		})
+	}
 }

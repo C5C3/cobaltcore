@@ -26,6 +26,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 )
@@ -481,4 +482,16 @@ func TestBuildServiceRemoveJob_MountsTheDatabaseTLSKeypair(t *testing.T) {
 	g.Expect(withTLS.Spec.Template.Spec.Volumes[1].Name).To(Equal(dbTLSVolumeName))
 	mounts := withTLS.Spec.Template.Spec.Containers[0].VolumeMounts
 	g.Expect(mounts[len(mounts)-1].MountPath).To(Equal(dbTLSMountPath))
+}
+
+// TestBuildVolumeDeployment_RendersResourceDefaults verifies that a
+// cinder-volume, one single-threaded process, renders 368Mi as memory request
+// and limit beside a 100m CPU request and no CPU limit when its block names
+// nothing.
+func TestBuildVolumeDeployment_RendersResourceDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildVolumeDeployment(workloadCinder(), testBackendProjection("nfs"), workloadArtifacts(), workloadDigests{}, testEgressPort)
+
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
 }

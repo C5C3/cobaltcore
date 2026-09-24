@@ -106,10 +106,12 @@ func TestNeutronDefault_MaterializesServiceUserLoggingAndBothDeployments(t *test
 
 	// The shared block defaults come along too, for the API pods and for the RPC
 	// workers: a zero worker replica count would scale that Deployment to nothing.
+	// Resources are resolved when the Deployments are rendered, never written
+	// into the CR.
 	g.Expect(obj.Spec.Deployment.Replicas).To(gomega.Equal(commonv1.DefaultReplicas))
-	g.Expect(obj.Spec.Deployment.Resources).NotTo(gomega.BeNil())
+	g.Expect(obj.Spec.Deployment.Resources).To(gomega.BeNil())
 	g.Expect(obj.Spec.Workers.Deployment.Replicas).To(gomega.Equal(commonv1.DefaultReplicas))
-	g.Expect(obj.Spec.Workers.Deployment.Resources).NotTo(gomega.BeNil())
+	g.Expect(obj.Spec.Workers.Deployment.Resources).To(gomega.BeNil())
 	g.Expect(obj.Spec.Cache.Backend).To(gomega.Equal(commonv1.DefaultCacheBackend))
 	g.Expect(obj.Spec.Logging).NotTo(gomega.BeNil())
 	g.Expect(obj.Spec.Logging.Format).To(gomega.Equal("text"))
