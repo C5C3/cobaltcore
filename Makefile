@@ -380,6 +380,15 @@ verify-helm-schema:
 # Deployment and Docker Targets
 # ============================================================================
 
+.PHONY: openbao-unseal
+# openbao-unseal unseals the existing OpenBao cluster using the persisted
+# openbao-init-keys Secret. The script is idempotent and skips initialized,
+# already-unsealed pods.
+# Usage: make openbao-unseal [OPENBAO_NAMESPACE=shared-services]
+openbao-unseal:
+	@OPENBAO_NAMESPACE='$(if $(OPENBAO_NAMESPACE),$(OPENBAO_NAMESPACE),shared-services)' \
+		deploy/openbao/bootstrap/init-unseal.sh
+
 .PHONY: docker-build
 # docker-build builds the operator Docker image from operators/$(OPERATOR)/Dockerfile.
 # Build context is the repository root (required by go.work).
