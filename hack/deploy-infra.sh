@@ -3168,9 +3168,10 @@ main() {
   # (deploy/kind/infrastructure/openbao-tenant.yaml). Wait for that onboarding
   # first: in an un-admitted namespace the controller pauses silently at V(1),
   # and the Available wait below would burn its whole timeout on a CR with an
-  # empty status.
+  # empty status. The tenant lives in the operator namespace, the only one whose
+  # tenants may override the default LimitRange, and targets openstack.
   log "Waiting for the OpenBaoTenant to be provisioned..."
-  kubectl wait openbaotenant/openstack -n openstack \
+  kubectl wait openbaotenant/openstack -n openbao-operator-system \
     --for=jsonpath='{.status.provisioned}'=true --timeout="${POD_TIMEOUT}s"
   log "OpenBaoTenant is provisioned."
 

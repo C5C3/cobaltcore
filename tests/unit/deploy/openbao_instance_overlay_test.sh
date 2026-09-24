@@ -30,7 +30,9 @@
 #     namespacePodSecurityLabels.mode external, sets no WATCH_NAMESPACE (which
 #     would pin the controller to one namespace), and the kind overlay carries
 #     the OpenBaoTenant that admits openstack. A namespace without a tenant
-#     never gets its instance reconciled.
+#     never gets its instance reconciled. The tenant lives in
+#     openbao-operator-system, the only namespace whose tenants may override
+#     the default LimitRange and quota, and its overrides set no CPU limit.
 #
 # Usage: bash tests/unit/deploy/openbao_instance_overlay_test.sh
 
@@ -191,27 +193,43 @@ test_operator_release_runs_multi_tenant() {
     "$values" "WATCH_NAMESPACE"
 
   if ! command -v kustomize >/dev/null 2>&1; then
-    echo "  SKIP: kustomize not installed (1 check skipped)"
-    SKIP=$((SKIP + 1))
+    echo "  SKIP: kustomize not installed (5 checks skipped)"
+    SKIP=$((SKIP + 5))
     return
   fi
 
-  local rendered tenant_target
+  local rendered tenant
   if ! rendered="$(kustomize build "$KIND_INFRA_DIR" 2>&1)"; then
     echo "  FAIL: kustomize build $KIND_INFRA_DIR failed:"
     echo "$rendered" | head -20
-    FAIL=$((FAIL + 1))
+    FAIL=$((FAIL + 5))
     return
   fi
-  tenant_target="$(printf '%s\n' "$rendered" | yq -r \
-    'select(.kind == "OpenBaoTenant" and .metadata.name == "openstack") | .spec.targetNamespace' \
-    2>/dev/null | head -n1)"
+  tenant="$(printf '%s\n' "$rendered" | yq \
+    'select(.kind == "OpenBaoTenant" and .metadata.name == "openstack")' 2>/dev/null)"
 
   # Without a tenant admitting the namespace the controller waits for the
   # RoleBinding tenant onboarding creates and pauses every reconcile in it,
   # silently, at V(1), leaving the OpenBaoCluster with an empty status and no
   # StatefulSet until deploy-infra's Available wait times out.
-  assert_eq "the kind overlay onboards the openstack namespace" "openstack" "$tenant_target"
+  assert_eq "the kind overlay onboards the openstack namespace" "openstack" \
+    "$(printf '%s\n' "$tenant" | yq -r '.spec.targetNamespace' 2>/dev/null)"
+  # The chart's admission policy accepts spec.quota and spec.limitRange only on
+  # a tenant in the operator namespace; anywhere else the apply is denied.
+  assert_eq "the tenant lives in the operator namespace" "openbao-operator-system" \
+    "$(printf '%s\n' "$tenant" | yq -r '.metadata.namespace' 2>/dev/null)"
+  # The provisioner's default LimitRange gives every container without a CPU
+  # limit a 500m one, which throttles each uWSGI cold start; the service
+  # operators set no CPU limit.
+  assert_eq "the tenant LimitRange sets no default CPU limit" "null" \
+    "$(printf '%s\n' "$tenant" | yq -r '.spec.limitRange.limits[0].default.cpu' 2>/dev/null)"
+  # An override replaces the whole default LimitRange, so the memory default
+  # has to be spelled out to survive.
+  assert_eq "the tenant LimitRange keeps the 512Mi default memory limit" "512Mi" \
+    "$(printf '%s\n' "$tenant" | yq -r '.spec.limitRange.limits[0].default.memory' 2>/dev/null)"
+  # A limits.cpu quota rejects every pod that sets no CPU limit.
+  assert_eq "the tenant quota carries no limits.cpu" "null" \
+    "$(printf '%s\n' "$tenant" | yq -r '.spec.quota.hard["limits.cpu"]' 2>/dev/null)"
 }
 
 # --- Test 5: the deploy resolves the API-server egress and patches it with the un-pause ---

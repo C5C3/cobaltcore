@@ -14,11 +14,39 @@
 # runtime, so the c5c3 operator creates their tenants itself; it skips any
 # namespace an OpenBaoTenant already targets, this one included, because a
 # namespace admitted twice carries the finalizer of two tenants.
+#
+# The tenant lives in the operator namespace, openbao-operator-system, and
+# targets openstack from there. The chart's admission policy
+# (templates/admission/validate-openbao-tenant.yaml) accepts spec.quota and
+# spec.limitRange only on a tenant in the operator namespace, and a tenant
+# there may target any namespace. Without the overrides the provisioner writes
+# its default LimitRange into openstack, which gives every container without a
+# CPU limit a 500m one, and the service operators set no CPU limit. The
+# overrides are the provisioner defaults of chart 0.4.2
+# (internal/service/provisioner/quotas.go) minus the default CPU limit and
+# limits.cpu: a limits.cpu quota rejects every pod that sets no CPU limit. An
+# override replaces the whole default object, so every kept key is spelled out.
+# A kind cluster created before the move keeps its old openstack/openstack
+# tenant beside this one; recreate the cluster.
 ---
 apiVersion: openbao.org/v1alpha1
 kind: OpenBaoTenant
 metadata:
   name: openstack
-  namespace: openstack
+  namespace: openbao-operator-system
 spec:
   targetNamespace: openstack
+  quota:
+    hard:
+      pods: "50"
+      requests.cpu: "20"
+      requests.memory: 64Gi
+      limits.memory: 128Gi
+  limitRange:
+    limits:
+      - type: Container
+        default:
+          memory: 512Mi
+        defaultRequest:
+          cpu: 100m
+          memory: 128Mi

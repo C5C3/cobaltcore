@@ -202,7 +202,10 @@ No `controlplane-barbican-bao-tenant` appears on this devstack. The kind overlay
 already ships an `OpenBaoTenant` admitting `openstack`, and the operator skips a
 namespace some tenant already targets, because a namespace admitted twice carries
 two finalizers. A ControlPlane whose Barbican lands in a fresh service namespace
-gets its own tenant there.
+gets its own tenant there. That tenant is self-service, so the namespace keeps
+the openbao-operator's default LimitRange, and every container in it without a
+CPU limit gets a 500m default CPU limit. The kind overlay's tenant lives in the
+operator namespace and drops that limit for `openstack`.
 
 ## Step 5 — Store and read a secret back
 
