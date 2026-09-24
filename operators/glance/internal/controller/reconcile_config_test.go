@@ -324,6 +324,42 @@ func TestReconcileConfig_OwnedKeyOverrideReported(t *testing.T) {
 	g.Expect(conf).To(ContainSubstring("enabled_backends = rogue:file"))
 }
 
+// TestReconcileConfig_MaxOverflowOverrideReported verifies that the eventlet
+// pool pin is an ordinary Reported key: a raised [database] max_overflow in
+// spec.extraConfig replaces the operator's 0 in the rendered glance-api.conf,
+// and ExtraConfigHealthy plus a Warning event name it, because the value lets a
+// worker open connections past the sized max_user_connections.
+func TestReconcileConfig_MaxOverflowOverrideReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := glanceForConfig()
+	glance.Spec.OpenStackRelease = "2025.2"
+	glance.Spec.Image.Tag = "2025.2"
+	glance.Spec.ExtraConfig = map[string]map[string]string{
+		"database": {"max_overflow": "10"},
+	}
+	r := newGlanceTestReconciler(glance)
+
+	_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(glance.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+	g.Expect(cond.Message).To(ContainSubstring("[database] max_overflow"))
+
+	events := collectEvents(r.Recorder.(*record.FakeRecorder))
+	g.Expect(events).To(ContainElement(And(
+		ContainSubstring("Warning"),
+		ContainSubstring(config.EventReasonExtraConfigOwnedKeyOverride),
+		ContainSubstring("[database] max_overflow"),
+	)))
+
+	conf := renderedConfig(t, r, art)
+	g.Expect(conf).To(ContainSubstring("max_overflow = 10"))
+	g.Expect(conf).NotTo(ContainSubstring("max_overflow = 0"))
+}
+
 // TestReconcileConfig_ImportFilteringOverrideReported verifies the controller's
 // half of the [import_filtering_opts] ownership contract. The six keys are
 // Rejected registry entries, so the validating webhook blocks this extraConfig
@@ -479,6 +515,40 @@ func TestOperatorDefaults_EventletWorkers(t *testing.T) {
 			}
 			g.Expect(present).To(BeTrue(), "workers must render")
 			g.Expect(got).To(Equal(tc.wantWorkers))
+		})
+	}
+}
+
+// TestOperatorDefaults_EventletMaxOverflow pins the launch-mode-conditional pool
+// pin: below 2026.1 (eventlet) [database] max_overflow renders as 0, so a
+// worker holds at most the pool size of 5 connections and the sized
+// max_user_connections is a real bound. An unparseable release launches the
+// eventlet server and is pinned too. From 2026.1 (uWSGI) the thread count
+// bounds demand, so the key is absent and oslo.db's own default applies.
+func TestOperatorDefaults_EventletMaxOverflow(t *testing.T) {
+	tests := []struct {
+		name    string
+		release string
+		want    string // "" means the key must be absent
+	}{
+		{name: "eventlet pins the overflow to zero", release: "2025.2", want: "0"},
+		{name: "unparseable release falls back to eventlet and is pinned", release: "garbage", want: "0"},
+		{name: "uwsgi renders no pin", release: "2026.1", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			glance := testGlance()
+			glance.Spec.OpenStackRelease = tc.release
+			glance.Spec.Image.Tag = tc.release
+			defaults := operatorDefaults(glance, validProjection())
+			got, present := defaults["database"]["max_overflow"]
+			if tc.want == "" {
+				g.Expect(present).To(BeFalse(), "max_overflow must not render under uWSGI")
+				return
+			}
+			g.Expect(present).To(BeTrue(), "max_overflow must render below 2026.1")
+			g.Expect(got).To(Equal(tc.want))
 		})
 	}
 }
@@ -1019,32 +1089,51 @@ func TestOperatorDefaults_ImportPluginsRendering(t *testing.T) {
 // operatorDefaults to glancev1alpha1.OwnedConfigKeys: every key the operator
 // renders must be registered (forward) and every registered key must be
 // rendered (reverse), so the registry and the renderer cannot drift apart.
+// Both checks run against the union of a 2026.1 (uWSGI) and a 2025.2 (eventlet)
+// render, because some keys render in one launch mode only: [database]
+// max_overflow renders only in the eventlet fixture.
 func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
-	glance := glanceForConfig()
-	// glanceForConfig already sets Region=RegionOne (emits region_name), Workers
-	// (emits workers), and Cache.Servers (emits memcached_servers). Add json
-	// logging with per-logger levels and debug so log_config_append,
-	// default_log_levels, and debug all render.
-	glance.Spec.Logging = &glancev1alpha1.LoggingSpec{
-		Format:          "json",
-		Debug:           ptr.To(true),
-		PerLoggerLevels: map[string]string{"glance": "DEBUG"},
-	}
-	// Enable the image cache too, so the three conditionally rendered
-	// image_cache_* keys are covered by both directions of the check.
-	glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{}
-	// All three import plugins, so the conditionally rendered [image_conversion]
-	// and [inject_metadata_properties] keys are covered as well.
-	glance.Spec.ImportPlugins = &glancev1alpha1.ImportPluginsSpec{
-		Decompression: &glancev1alpha1.ImportDecompressionSpec{},
-		Conversion:    &glancev1alpha1.ImportConversionSpec{},
-		InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
-			Properties: map[string]string{"hw_disk_bus": "scsi"},
-		},
+	render := func(release string) map[string]map[string]string {
+		glance := glanceForConfig()
+		glance.Spec.OpenStackRelease = release
+		glance.Spec.Image.Tag = release
+		// glanceForConfig already sets Region=RegionOne (emits region_name),
+		// Workers (emits workers), and Cache.Servers (emits memcached_servers).
+		// Add json logging with per-logger levels and debug so
+		// log_config_append, default_log_levels, and debug all render.
+		glance.Spec.Logging = &glancev1alpha1.LoggingSpec{
+			Format:          "json",
+			Debug:           ptr.To(true),
+			PerLoggerLevels: map[string]string{"glance": "DEBUG"},
+		}
+		// Enable the image cache too, so the three conditionally rendered
+		// image_cache_* keys are covered by both directions of the check.
+		glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{}
+		// All three import plugins, so the conditionally rendered
+		// [image_conversion] and [inject_metadata_properties] keys are covered
+		// as well.
+		glance.Spec.ImportPlugins = &glancev1alpha1.ImportPluginsSpec{
+			Decompression: &glancev1alpha1.ImportDecompressionSpec{},
+			Conversion:    &glancev1alpha1.ImportConversionSpec{},
+			InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+				Properties: map[string]string{"hw_disk_bus": "scsi"},
+			},
+		}
+		defaults := operatorDefaults(glance, validProjection())
+		return config.InjectOsloPolicyConfig(defaults, policyFilePath)
 	}
 
-	defaults := operatorDefaults(glance, validProjection())
-	defaults = config.InjectOsloPolicyConfig(defaults, policyFilePath)
+	defaults := map[string]map[string]string{}
+	for _, release := range []string{"2026.1", "2025.2"} {
+		for section, kvs := range render(release) {
+			if defaults[section] == nil {
+				defaults[section] = map[string]string{}
+			}
+			for key, value := range kvs {
+				defaults[section][key] = value
+			}
+		}
+	}
 
 	registered := make(map[[2]string]struct{}, len(glancev1alpha1.OwnedConfigKeys))
 	for _, o := range glancev1alpha1.OwnedConfigKeys {

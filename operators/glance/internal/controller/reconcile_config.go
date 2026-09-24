@@ -191,6 +191,10 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 	return ctrl.Result{}, configArtifacts{configMapName: configMapName, backendsSecretName: projection.secretName}, nil
 }
 
+// glanceEventletMaxOverflow is the [database] max_overflow operatorDefaults pins
+// below 2026.1; the connection cap sizes an eventlet worker from it.
+const glanceEventletMaxOverflow int32 = 0
+
 // operatorDefaults builds the operator-owned glance-api.conf sections from the
 // CRD spec and the backends projection: the static
 // [DEFAULT]/[database]/[keystone_authtoken]/… scaffolding plus the
@@ -309,6 +313,21 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", *s.Workers)
 	} else if !glanceReleaseUsesUWSGI(glance.Spec.OpenStackRelease) {
 		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", glancev1alpha1.DefaultEventletWorkers)
+	}
+	// max_overflow = 0 bounds an eventlet worker at its pool size (oslo.db's
+	// max_pool_size of 5), which is what the connection cap sizes it at (see
+	// glanceEventletWorkerConnections). An eventlet worker serves every request
+	// as a greenthread on one pool, so without the pin its connection count
+	// follows client concurrency up to 55: measured on 2026-09-24 against
+	// ghcr.io/c5c3/glance:2025.2, one worker opened 30 to 32 connections under
+	// 16 clients, and 5 with the pin, which also served 3,127 requests against
+	// 2,960 and logged no QueuePool timeout. Greenthreads beyond five wait in
+	// the pool (SQLAlchemy's pool_timeout, 30 s by default) instead of opening
+	// a connection past max_user_connections. Under uWSGI (2026.1+) the key is
+	// not rendered: the thread count bounds demand there, and a pin would make
+	// requests queue in any process running more than five threads.
+	if !glanceReleaseUsesUWSGI(glance.Spec.OpenStackRelease) {
+		defaults["database"]["max_overflow"] = fmt.Sprintf("%d", glanceEventletMaxOverflow)
 	}
 	// PerLoggerLevels render into oslo.log's default_log_levels CSV; empty omits
 	// the key so oslo.log keeps its compiled-in defaults.
