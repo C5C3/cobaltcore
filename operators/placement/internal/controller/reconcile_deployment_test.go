@@ -227,9 +227,9 @@ func TestBuildPlacementDeployment_CustomServiceUserKey(t *testing.T) {
 	g.Expect(pw.ValueFrom.SecretKeyRef.Key).To(Equal("service-password"))
 }
 
-// TestBuildPlacementDeployment_ProbesAndSecurityContext pins both probes on the
-// version document, the absence of a startup probe, and the restricted security
-// context the API container runs under.
+// TestBuildPlacementDeployment_ProbesAndSecurityContext pins the readiness and
+// liveness probes on the version document and the restricted security context
+// the API container runs under.
 func TestBuildPlacementDeployment_ProbesAndSecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -251,13 +251,30 @@ func TestBuildPlacementDeployment_ProbesAndSecurityContext(t *testing.T) {
 	g.Expect(c.LivenessProbe.HTTPGet.Path).To(Equal("/"))
 	g.Expect(c.LivenessProbe.HTTPGet.Port.IntVal).To(Equal(placementAPIPort))
 
-	// No startup probe: the readiness probe's own delay covers the WSGI app
-	// coming up, and adding one would gate liveness behind a second timing knob.
-	g.Expect(c.StartupProbe).To(BeNil())
-
 	g.Expect(c.SecurityContext).To(Equal(deployment.RestrictedSecurityContext()))
 	g.Expect(deploy.Spec.Template.Spec.SecurityContext).NotTo(BeNil())
 	g.Expect(deploy.Spec.Template.Spec.SecurityContext.FSGroup).To(HaveValue(Equal(deployment.OpenStackUID)))
+}
+
+// TestBuildPlacementDeployment_StartupProbeCoversColdStart covers the cold start
+// of the API. Before it answers, every uWSGI worker imports placement and syncs
+// the traits and resource classes against the database, which took 41 to 45
+// seconds in a kind pod at 120m CPU. The liveness probe alone restarts the
+// container 55 seconds after it started, so the startup probe holds it back.
+func TestBuildPlacementDeployment_StartupProbeCoversColdStart(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildPlacementDeployment(testPlacement(), testConfigMapName, "", "")
+	probe := deploy.Spec.Template.Spec.Containers[0].StartupProbe
+
+	g.Expect(probe).NotTo(BeNil())
+	g.Expect(probe.HTTPGet).NotTo(BeNil())
+	g.Expect(probe.HTTPGet.Path).To(Equal("/"))
+	g.Expect(probe.HTTPGet.Port.IntVal).To(Equal(placementAPIPort))
+	g.Expect(probe.FailureThreshold*probe.PeriodSeconds).To(BeNumerically(">=", 300),
+		"startup budget in seconds")
+	g.Expect(probe.TimeoutSeconds).To(BeNumerically(">", 1),
+		"a loading WSGI app holds a GET past the kubelet's 1s default")
 }
 
 // TestBuildPlacementDeployment_ConfigVolume pins that the rendered ConfigMap is

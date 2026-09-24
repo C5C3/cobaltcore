@@ -238,10 +238,23 @@ func buildPlacementDeployment(placement *placementv1alpha1.Placement, configMapN
 				Name:          "placement-api",
 				ContainerPort: placementAPIPort,
 			}},
-			// Readiness AND liveness hit "/", the version document placement serves
-			// without authentication and without touching the database. Placement
-			// has no startup probe: the readiness probe's own delay covers the WSGI
-			// app coming up.
+			// All three probes GET "/", the version document placement serves
+			// without authentication and without touching the database. The
+			// startup probe carries the cold-start window: before the app answers,
+			// every uWSGI worker imports placement under the container's CPU limit
+			// and syncs the traits and resource classes against the database
+			// (loadapp calls update_database, which runs trait.ensure_sync and
+			// resource_class.ensure_sync). That took 41 to 45 seconds in a kind pod
+			// at 120m CPU, while the liveness probe alone restarts the container 55
+			// seconds after it started. The timings are the sibling operators':
+			// 30x10s of startup budget, and an 8s timeout because a cold-starting
+			// WSGI app can hold even a plain HTTP GET past the kubelet's 1s default.
+			StartupProbe: &corev1.Probe{
+				ProbeHandler:     placementRootProbeHandler(),
+				FailureThreshold: 30,
+				PeriodSeconds:    10,
+				TimeoutSeconds:   8,
+			},
 			LivenessProbe: &corev1.Probe{
 				ProbeHandler:        placementRootProbeHandler(),
 				InitialDelaySeconds: 15,
@@ -303,8 +316,8 @@ func placementPodAnnotations(dsnDigest, authtokenDigest string) map[string]strin
 	return annotations
 }
 
-// placementRootProbeHandler returns the shared readiness/liveness probe handler:
-// an HTTP GET of "/" on the API port.
+// placementRootProbeHandler returns the shared startup/readiness/liveness probe
+// handler: an HTTP GET of "/" on the API port.
 func placementRootProbeHandler() corev1.ProbeHandler {
 	return corev1.ProbeHandler{
 		HTTPGet: &corev1.HTTPGetAction{
