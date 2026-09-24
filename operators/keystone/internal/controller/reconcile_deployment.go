@@ -285,6 +285,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName,
 	if dbConnectionHash != "" && keystone.Spec.Database.CredentialsMode == commonv1.CredentialsModeDynamic {
 		podAnnotations = map[string]string{dbConnectionHashAnnotation: dbConnectionHash}
 	}
+	processes, threads := deployment.EffectiveUWSGIConcurrency(keystone.Spec.UWSGI)
 	deploy := deployment.BuildWorkload(deployment.WorkloadParams{
 		Namespace:      keystone.Namespace,
 		Name:           subResourceName(keystone),
@@ -293,6 +294,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName,
 		PodAnnotations: podAnnotations,
 		Deployment:     &keystone.Spec.Deployment,
 		Autoscaling:    keystone.Spec.Autoscaling,
+		DefaultMemory:  commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), processes, threads),
 		Container: deployment.ContainerParams{
 			Name:    "keystone",
 			Image:   keystone.Spec.Image.Reference(),

@@ -21,6 +21,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 )
 
@@ -192,4 +193,20 @@ func TestReconcileWorkers_ApplyFailureNamesTheDeployment(t *testing.T) {
 	g.Expect(err).To(MatchError(ContainSubstring("ensuring " + ovnMaintenanceName + " Deployment:")))
 	g.Expect(neutronCondition(neutron, conditionTypeWorkersReady)).To(BeNil(),
 		"a failed apply leaves the condition to the pipeline's error attribution")
+}
+
+// TestBuildWorkerDeployment_RendersResourceDefaults verifies that both worker
+// Deployments, one single-threaded process each, render 368Mi as memory
+// request and limit beside a 100m CPU request and no CPU limit when
+// spec.workers.deployment.resources names nothing.
+func TestBuildWorkerDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, component := range []string{componentPeriodicWorkers, componentOVNMaintenanceWorker} {
+		t.Run(component, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			deploy := buildWorkerDeployment(validNeutron(), component, nil, deploymentConfigMapName, "", "", "", "", "")
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
+		})
+	}
 }

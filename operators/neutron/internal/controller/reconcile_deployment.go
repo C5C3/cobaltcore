@@ -11,6 +11,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -236,6 +237,19 @@ func neutronDeploymentRolledOut(deploy *appsv1.Deployment) bool {
 		deploy.Status.Replicas == desired
 }
 
+// neutronAPIMemory returns the memory the API container gets as request and
+// limit when spec.deployment.resources names no memory. It is sized from the
+// uWSGI process and thread count the container runs; spec.apiServer is
+// optional, so a nil block yields the uWSGI defaults.
+func neutronAPIMemory(neutron *neutronv1alpha1.Neutron) resource.Quantity {
+	var uwsgi *neutronv1alpha1.UWSGISpec
+	if neutron.Spec.APIServer != nil {
+		uwsgi = neutron.Spec.APIServer.UWSGI
+	}
+	processes, threads := deployment.EffectiveUWSGIConcurrency(uwsgi)
+	return commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), processes, threads)
+}
+
 // buildNeutronDeployment constructs the desired Neutron API Deployment. The
 // rendered config ConfigMap mounts read-only as the whole neutronConfigMountPath
 // directory, shadowing the image's own /etc/neutron; the OVN client identity and
@@ -254,6 +268,7 @@ func buildNeutronDeployment(neutron *neutronv1alpha1.Neutron,
 		PodAnnotations: neutronPodAnnotations(dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest),
 		Deployment:     &neutron.Spec.Deployment,
 		Autoscaling:    neutron.Spec.Autoscaling,
+		DefaultMemory:  neutronAPIMemory(neutron),
 		Container: deployment.ContainerParams{
 			Name:    "neutron-api",
 			Image:   neutron.Spec.Image.Reference(),

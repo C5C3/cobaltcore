@@ -541,6 +541,8 @@ func buildVolumeDeployment(cinder *cinderv1alpha1.Cinder, backend backendProject
 		PodAnnotations: cinderRPCPodAnnotations(cinder, digests),
 		Deployment:     &cinder.Spec.Volume.Deployment,
 		Autoscaling:    nil,
+		// Each cinder-volume runs one single-threaded process.
+		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, 1),
 		Container: deployment.ContainerParams{
 			Name:  componentVolumePrefix + backend.name,
 			Image: cinder.Spec.Image.Reference(),

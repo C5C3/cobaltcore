@@ -158,6 +158,8 @@ func buildConsoleProxyDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 		PodAnnotations: novaRPCPodAnnotations(nova, digests),
 		Deployment:     consoleProxyDeploymentSpec(nova),
 		Autoscaling:    nil,
+		// The console proxy runs one single-threaded process.
+		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, 1),
 		Container: deployment.ContainerParams{
 			Name:  componentConsoleProxy,
 			Image: nova.Spec.Image.Reference(),

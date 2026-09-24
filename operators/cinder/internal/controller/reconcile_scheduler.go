@@ -147,6 +147,8 @@ func buildSchedulerDeployment(cinder *cinderv1alpha1.Cinder, art configArtifacts
 		// to scale against, and spec.scheduler.deployment.replicas is the only
 		// owner of the count.
 		Autoscaling: nil,
+		// cinder-scheduler runs one single-threaded process.
+		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, 1),
 		Container: deployment.ContainerParams{
 			Name:  componentScheduler,
 			Image: cinder.Spec.Image.Reference(),

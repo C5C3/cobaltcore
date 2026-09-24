@@ -110,7 +110,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -245,7 +250,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -398,7 +408,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -618,7 +633,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -792,7 +812,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -945,7 +970,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
