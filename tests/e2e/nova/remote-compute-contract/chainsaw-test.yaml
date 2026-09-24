@@ -1,0 +1,159 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the remote compute contract.
+# Verifies what the ComputeConfig step publishes on a live cluster while
+# spec.remoteCompute is set:
+#   - ComputeConfigReady=True with reason ComputeConfigPublished, and both
+#     status refs naming their Secret
+#   - the remote contract carries the six keys, the broker's external listener
+#     as transport_url, and a fragment addressed at the public Keystone URL and
+#     the public catalog rows
+#   - the in-cluster contract keeps its internal addresses
+#   - removing spec.remoteCompute deletes the remote Secret and clears its ref
+#
+# No broker, no Keystone and no database run for it: the step runs before the
+# Database step, and nothing before it dials a backend (see 01-nova-cr.yaml).
+# The unit and envtest suites cover the rest of the contract; this one pins
+# the bytes an API server round trip and the real Secret codec produce.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-remote-compute-contract
+spec:
+  namespace: openstack
+  timeouts:
+    # The contract is published within the first passes; nothing waits on a
+    # workload rollout or a migration.
+    assert: 3m
+    error: 3m
+  steps:
+  # ── Step 1: Apply the inputs, then the CR ──────────────────────────────
+  - try:
+    - apply:
+        file: 00-secrets.yaml
+    - apply:
+        file: 01-nova-cr.yaml
+    catch: &nova-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-rc
+        namespace: openstack
+    - script:
+        content: |
+          kubectl get secret -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-rc 2>&1 || true
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 2: Assert the condition and both status refs ──────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-rc
+            namespace: openstack
+          status:
+            computeConfigSecretRef:
+              name: nova-rc-compute-config
+            remoteComputeConfigSecretRef:
+              name: nova-rc-remote-compute-config
+            (conditions[?type == 'ComputeConfigReady']):
+            - status: "True"
+              reason: ComputeConfigPublished
+    catch: *nova-dump
+  # ── Step 3: Assert the content of both contracts ───────────────────────
+  # section prints the body of one INI section, so each expected line is
+  # checked in the section it belongs to rather than anywhere in the document.
+  - try:
+    - script:
+        shell: bash
+        timeout: 1m
+        content: |
+          set -euo pipefail
+          secret_key() {
+            kubectl get secret "$1" -n "$NAMESPACE" -o "jsonpath={.data.$2}" | base64 -d
+          }
+          section() {
+            awk -v want="[$2]" '$0 == want { on = 1; next } /^\[/ { on = 0 } on' "$1"
+          }
+          expect_line() {
+            if ! section "$1" "$2" | grep -Fxq -- "$3"; then
+              echo "[$2] of $1 lacks the line: $3" >&2
+              cat "$1" >&2
+              exit 1
+            fi
+          }
+
+          keys=$(kubectl get secret nova-rc-remote-compute-config -n "$NAMESPACE" -o go-template='{{len .data}}')
+          if [ "$keys" != "6" ]; then
+            echo "the remote contract carries $keys keys, want 6" >&2
+            exit 1
+          fi
+          transport=$(secret_key nova-rc-remote-compute-config transport_url)
+          if [ "$transport" != "rabbit://nova:nova@198.51.100.10:5671/" ]; then
+            echo "the remote contract's transport_url is not the external listener" >&2
+            exit 1
+          fi
+
+          remote=$(mktemp)
+          incluster=$(mktemp)
+          secret_key nova-rc-remote-compute-config 'nova-compute\.conf' > "$remote"
+          secret_key nova-rc-compute-config 'nova-compute\.conf' > "$incluster"
+
+          expect_line "$remote" keystone_authtoken "auth_url = https://keystone.example.test/v3"
+          expect_line "$remote" service_user "auth_url = https://keystone.example.test/v3"
+          expect_line "$remote" placement "valid_interfaces = public"
+          expect_line "$remote" neutron "valid_interfaces = public"
+          expect_line "$remote" glance "valid_interfaces = public"
+          expect_line "$remote" cinder "catalog_info = block-storage:cinder:publicURL"
+          expect_line "$remote" barbican "barbican_endpoint_type = public"
+          expect_line "$remote" oslo_messaging_rabbit "ssl_ca_file = /etc/nova/compute-config/ca.crt"
+
+          expect_line "$incluster" keystone_authtoken \
+            "auth_url = http://keystone-nova-rc.openstack.svc.cluster.local:5000/v3"
+          expect_line "$incluster" placement "valid_interfaces = internal"
+          expect_line "$incluster" neutron "valid_interfaces = internal"
+          expect_line "$incluster" glance "valid_interfaces = internal"
+          echo "both contracts carry the expected addresses"
+    catch: *nova-dump
+  # ── Step 4: Remove spec.remoteCompute ──────────────────────────────────
+  # The remote Secret goes with the block. The status ref is checked with a
+  # script: a JMESPath expression on a field that is absent from an existing
+  # status aborts the assertion instead of matching.
+  - try:
+    - script:
+        content: |
+          kubectl patch nova nova-rc -n "$NAMESPACE" --type json \
+            -p '[{"op":"remove","path":"/spec/remoteCompute"}]'
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nova-rc-remote-compute-config
+            namespace: openstack
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          for _ in $(seq 1 60); do
+            ref=$(kubectl get nova nova-rc -n "$NAMESPACE" -o 'jsonpath={.status.remoteComputeConfigSecretRef}')
+            if [ -z "$ref" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "status.remoteComputeConfigSecretRef is still set: $ref" >&2
+          exit 1
+    catch: *nova-dump
+  # Chainsaw deletes the applied Nova and the Secrets at the end of the test.
+  # The db-sync Job the Database step created against the placeholder host is
+  # owned by the Nova and goes with it.

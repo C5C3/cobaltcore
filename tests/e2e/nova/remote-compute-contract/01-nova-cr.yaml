@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Nova CR for the remote-compute-contract E2E test (2025.2 release).
+#
+# The lightest fixture tier: no broker, no Keystone and no database. The suite
+# asserts the two compute contracts the ComputeConfig step publishes, and that
+# step runs before the Database step, so nothing here is ever dialed. The
+# database blocks are brownfield and name a host that does not exist; the
+# db-sync Job the Database step creates against it goes with the Nova at
+# cleanup.
+#
+# Both optional client sections are on, so the remote fragment carries the
+# [cinder] and [barbican] rewrites as well. spec.remoteCompute names the public
+# Keystone URL a compute on another cluster authenticates against and the
+# Secret holding the broker's external listener; the verified bus is what the
+# remoteCompute CEL rule requires beside it.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-rc
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  apiDatabase:
+    host: nova-rc-db.openstack.svc
+    database: nova_rc_api
+    secretRef:
+      name: nova-rc-api-db
+  database:
+    host: nova-rc-db.openstack.svc
+    database: nova_rc
+    secretRef:
+      name: nova-rc-db
+  cache:
+    servers:
+    - nova-rc-cache.openstack.svc:11211
+  messaging:
+    secretRef:
+      name: nova-rc-messaging
+    tls:
+      caBundleSecretRef:
+        name: nova-rc-messaging-ca
+  keystoneEndpoint: http://keystone-nova-rc.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: nova-rc-service-user
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-rc-metadata
+  endpoints:
+    cinder:
+      enabled: true
+    barbican:
+      enabled: true
+  remoteCompute:
+    keystoneEndpoint: https://keystone.example.test/v3
+    transportURLSecretRef:
+      name: nova-rc-remote-messaging
