@@ -487,6 +487,16 @@ hdr "Downloading job logs and annotations"
 # would read the wrong log), and on the current runner log format it cannot
 # attribute steps ("UNKNOWN STEP") and returns the whole job log anyway. A
 # runner that died mid-job left no log blob: the endpoint answers 404.
+# gh 2.97.0 and later refuse to print a raw response that carries terminal
+# escape sequences, and every job log carries colour codes (strip_ansi drops
+# them below). Older gh rejects the flag that lifts the refusal, so it is
+# passed only when `gh api --help` lists it. A failed fetch reports gh's own
+# message: only an HTTP 404 there means the runner uploaded no log.
+log_args=()
+gh_api_help="$(gh api --help 2>/dev/null </dev/null || true)"
+if grep -q -- '--allow-escape-sequences' <<<"${gh_api_help}"; then
+  log_args=(--allow-escape-sequences)
+fi
 while IFS="$(printf '\t')" read -r id name concl nsteps fsteps _; do
   annots="$(gh api "repos/${REPO}/check-runs/${id}/annotations" \
     --jq '.[] | "\(.annotation_level)\t\(.message | gsub("\n"; " "))"' 2>/dev/null </dev/null || true)"
@@ -500,15 +510,24 @@ while IFS="$(printf '\t')" read -r id name concl nsteps fsteps _; do
     *) case "${annots}" in *"exceeded the maximum execution time"*) ;; *) continue ;; esac ;;
   esac
   part="${OUT_DIR}/.job-${id}.log"
-  if gh api "repos/${REPO}/actions/jobs/${id}/logs" > "${part}" 2>/dev/null </dev/null && [[ -s "${part}" ]]; then
+  err="${OUT_DIR}/.job-${id}.err"
+  why=""
+  if ! gh api ${log_args[@]+"${log_args[@]}"} "repos/${REPO}/actions/jobs/${id}/logs" \
+    > "${part}" 2> "${err}" </dev/null; then
+    why="$(tr -s '\n' ' ' < "${err}" | sed 's/ *$//')"
+    why="${why:-gh api failed without an error message}"
+  elif [[ ! -s "${part}" ]]; then
+    why="the endpoint returned an empty log"
+  fi
+  if [[ -z "${why}" ]]; then
     info "${name}: $(wc -l < "${part}" | tr -d ' ') lines"
     # <job> TAB <step> TAB <line>, the layout `gh run view --log` prints.
     awk -v job="${name}" '{ print job "\t-\t" $0 }' "${part}" >> "${RAW_FILE}"
   else
-    info "${name}: no log (HTTP 404: the runner never uploaded one)"
+    info "${name}: no log (${why})"
     NO_LOG="${NO_LOG}${name} (job ${id}); "
   fi
-  rm -f "${part}"
+  rm -f "${part}" "${err}"
 done < "${SEL_TSV}"
 strip_ansi "${RAW_FILE}" "${LOG_FILE}"
 strip_source "${RAW_FILE}" "${NOSRC_FILE}"
