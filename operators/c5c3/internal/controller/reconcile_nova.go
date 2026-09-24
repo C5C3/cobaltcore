@@ -329,12 +329,13 @@ func (r *ControlPlaneReconciler) mirrorNovaComputeConfig(
 // of its placement service accepts requests it cannot serve), and on the
 // KeystoneService child it projects for Nova (Nova authenticates as the Keystone
 // user that registration provisions). Once gated through, it delivers the shared
-// message bus into the compute service's namespace, ensures the two
-// DB-credential chains the nova_api and cell schemas take, generates the
-// metadata shared secret, projects the Nova CR (databases and cache DeepCopied
-// from the resolved backing services, the Keystone endpoint derived top-down
-// through novaKeystoneEndpoint), delivers the compute contract to every mirror
-// target, and folds both children's readiness into NovaReady.
+// message bus into the compute service's namespace (and the external bus URL
+// the remote compute contract carries, while services.nova.remoteCompute is
+// set), ensures the two DB-credential chains the nova_api and cell schemas take,
+// generates the metadata shared secret, projects the Nova CR (databases and
+// cache DeepCopied from the resolved backing services, the Keystone endpoint
+// derived top-down through novaKeystoneEndpoint), delivers the compute contract
+// to every mirror target, and folds both children's readiness into NovaReady.
 func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -431,6 +432,13 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 	// the nova operator rolls its pods off the Secret it derives itself, so a
 	// second digest on the child would only add a redundant rollout trigger.
 	if msgRes, halt, err := r.reconcileServiceMessaging(ctx, cp, novaMessagingTarget(cp)); halt {
+		return msgRes, err
+	}
+
+	// And the external bus URL the remote compute contract carries, when the
+	// ControlPlane was handed one. It halts the same way: a child projected with
+	// spec.remoteCompute before the Secret it names exists would only wait on it.
+	if msgRes, halt, err := r.reconcileNovaRemoteMessaging(ctx, cp); halt {
 		return msgRes, err
 	}
 
@@ -577,6 +585,12 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 	// endpoint).
 	nv.Spec.KeystoneEndpoint = novaKeystoneEndpoint(cp)
 	nv.Spec.KeystonePublicEndpoint = keystonePublicEndpoint(cp.Spec.Services.Keystone)
+
+	// The remote compute contract is addressed at the public Keystone URL and the
+	// external bus URL delivered above. Assigned unconditionally, so clearing the
+	// ControlPlane block reverts the child and the nova operator takes the remote
+	// contract down.
+	nv.Spec.RemoteCompute = novaRemoteComputeSpec(cp)
 
 	nv.Spec.Region = cp.Spec.Region
 
@@ -737,6 +751,13 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 		}
 	}
 
+	// The delivered remote bus URL waits for the same verdict once
+	// services.nova.remoteCompute is gone: the nova operator reads the Secret on
+	// every pass until it has reconciled the child without spec.remoteCompute.
+	if reapRes, halt, rerr := r.reapNovaRemoteMessaging(ctx, cp, nv); halt {
+		return reapRes, rerr
+	}
+
 	// The generated metadata shared secret waits for the same verdict once the
 	// ControlPlane names a Secret of its own. The apply above re-pointed the CR,
 	// but the live metadata Deployment sources its env from the generated Secret
@@ -787,7 +808,7 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 }
 
 // deleteOrphanedNova removes a previously-projected Nova child, the two
-// DB-credential chains, the generated metadata shared secret, the two messaging
+// DB-credential chains, the generated metadata shared secret, the three messaging
 // Secrets, and the KeystoneService registration that follow it, when
 // spec.services.nova is unset AND the ControlPlane has opted in to deletion via
 // novaDeletionAllowedAnnotation (the caller gates this). Each object is only
@@ -834,10 +855,14 @@ func (r *ControlPlaneReconciler) deleteOrphanedNova(ctx context.Context, cp *c5c
 		)
 	}
 
-	// The bus delivery: the brownfield transport-URL Secret and the CA mirror
-	// beside it. Nothing else writes them, so an unmanaged service leaves no broker
-	// credential behind in the namespace.
+	// The bus delivery: the brownfield transport-URL Secret, the CA mirror beside
+	// it, and the external bus URL the remote compute contract carries. Nothing
+	// else writes them, so an unmanaged service leaves no broker credential behind
+	// in the namespace.
 	children = append(children, serviceMessagingSecrets(novaMessagingTarget(cp))...)
+	children = append(children, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: novaRemoteMessagingSecretName(cp), Namespace: novaNS},
+	})
 
 	// The KeystoneService registration. It lives beside the service, on the
 	// management cluster whatever cluster Nova runs on. The credential mirror a

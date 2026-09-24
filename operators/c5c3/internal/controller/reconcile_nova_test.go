@@ -607,11 +607,11 @@ func TestReconcileNova_UnsetDeletionErrorIsReturned(t *testing.T) {
 
 // TestReconcileNova_UnsetDeletesChildWithOptIn verifies the opt-in deletion sweep
 // removes the child AND every object that follows it: both credential chains
-// whole, the generated metadata pair, the two messaging Secrets, and the
+// whole, the generated metadata pair, the three messaging Secrets, and the
 // registration that unregisters the compute service from the catalog.
 func TestReconcileNova_UnsetDeletesChildWithOptIn(t *testing.T) {
 	g := NewGomegaWithT(t)
-	cp := novaControlPlane()
+	cp := remoteComputeNovaControlPlane()
 	cp.Spec.Infrastructure.Messaging.TLS = &commonv1.MessagingTLSSpec{
 		CABundleSecretRef: commonv1.SecretRefSpec{Name: "bus-ca", Key: "ca.crt"},
 	}
@@ -619,12 +619,15 @@ func TestReconcileNova_UnsetDeletesChildWithOptIn(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "bus-ca", Namespace: cp.Namespace},
 		Data:       map[string][]byte{"ca.crt": []byte("ca-bundle")},
 	}
-	r := newNovaTestReconciler(t, cp, busCA)
+	r := newNovaTestReconciler(t, cp, busCA, handedRemoteTransportSecret(cp, novaRemoteTransportURL))
 	ctx := context.Background()
+	busDelivery := []string{
+		novaMessagingSecretName(cp), novaMessagingCASecretName(cp), novaRemoteMessagingSecretName(cp),
+	}
 
 	_, err := r.reconcileNova(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
-	for _, name := range []string{novaMessagingSecretName(cp), novaMessagingCASecretName(cp)} {
+	for _, name := range busDelivery {
 		g.Expect(r.Get(ctx, types.NamespacedName{Name: name, Namespace: cp.NovaNamespace()},
 			&corev1.Secret{})).To(Succeed(), "the bus delivery was written alongside the child")
 	}
@@ -659,7 +662,7 @@ func TestReconcileNova_UnsetDeletesChildWithOptIn(t *testing.T) {
 	g.Expect(r.Get(ctx, metadataKey, &esgenv1alpha1.Password{})).NotTo(Succeed(),
 		"the metadata Password generator must be swept too")
 
-	for _, name := range []string{novaMessagingSecretName(cp), novaMessagingCASecretName(cp)} {
+	for _, name := range busDelivery {
 		g.Expect(r.Get(ctx, types.NamespacedName{Name: name, Namespace: cp.NovaNamespace()},
 			&corev1.Secret{})).NotTo(Succeed(), "the bus delivery must be swept with the child")
 	}
@@ -2148,6 +2151,105 @@ func TestReconcileNova_ProjectsTheTargetClusterRef(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedNova(t, r2.Client, unplaced).Spec.TargetClusterRef).To(BeNil(),
 		"a service that names no cluster must project no ref at all")
+}
+
+// --- the remote compute contract ---
+
+// TestReconcileNova_RemoteComputeUnsetProjectsNothingRemote pins the default: no
+// handed URL is delivered, and the child publishes the in-cluster contract
+// alone.
+func TestReconcileNova_RemoteComputeUnsetProjectsNothingRemote(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := novaControlPlane()
+	r := newNovaTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileNova(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(getProjectedNova(t, r.Client, cp).Spec.RemoteCompute).To(BeNil())
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, deliveredRemoteMessagingKey(cp), &corev1.Secret{}))).To(BeTrue())
+}
+
+// TestReconcileNova_ProjectsRemoteCompute pins the projection: the child is
+// addressed at the public Keystone URL the ControlPlane registers, and at the
+// Secret this pass delivered the handed URL in.
+func TestReconcileNova_ProjectsRemoteCompute(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := remoteComputeNovaControlPlane()
+	r := newNovaTestReconciler(t, cp, handedRemoteTransportSecret(cp, novaRemoteTransportURL))
+	ctx := context.Background()
+
+	_, err := r.reconcileNova(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(getProjectedNova(t, r.Client, cp).Spec.RemoteCompute).To(Equal(&novav1alpha1.NovaRemoteComputeSpec{
+		KeystoneEndpoint: "https://keystone.example.com/v3",
+		TransportURLSecretRef: commonv1.SecretRefSpec{
+			Name: "cp-nova-remote-messaging", Key: commonv1.DefaultTransportURLSecretKey,
+		},
+	}))
+	delivered := &corev1.Secret{}
+	g.Expect(r.Get(ctx, deliveredRemoteMessagingKey(cp), delivered)).To(Succeed())
+	g.Expect(delivered.Data).To(HaveKeyWithValue(commonv1.DefaultTransportURLSecretKey,
+		[]byte(novaRemoteTransportURL)))
+	g.Expect(isControlPlaneChild(delivered, cp)).To(BeTrue())
+}
+
+// TestReconcileNova_RemoteMessagingWaitWritesNoChild covers the handed Secret
+// that is not there yet: a child projected with spec.remoteCompute would only
+// wait on the Secret it names, so none is written.
+func TestReconcileNova_RemoteMessagingWaitWritesNoChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := remoteComputeNovaControlPlane()
+	r := newNovaTestReconciler(t, cp)
+	ctx := context.Background()
+
+	res, err := r.reconcileNova(ctx, cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(infraRequeueAfter))
+	cond := novaCondition(t, cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForRemoteMessaging))
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, types.NamespacedName{
+		Name: novaName(cp), Namespace: cp.NovaNamespace(),
+	}, &novav1alpha1.Nova{}))).To(BeTrue(), "no child may be projected before its remote bus is delivered")
+}
+
+// TestReconcileNova_ClearingRemoteComputeReapsAfterConvergence covers the
+// block's removal end to end: the child reverts at once, and the delivered
+// Secret outlives it until the nova operator has reconciled the child without
+// spec.remoteCompute.
+func TestReconcileNova_ClearingRemoteComputeReapsAfterConvergence(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := remoteComputeNovaControlPlane()
+	r := newNovaTestReconciler(t, cp, handedRemoteTransportSecret(cp, novaRemoteTransportURL))
+
+	_, err := r.reconcileNova(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(r.Get(ctx, deliveredRemoteMessagingKey(cp), &corev1.Secret{})).To(Succeed())
+
+	// Pin the child one generation behind: Ready and converged on the spec that
+	// still carried spec.remoteCompute.
+	nv := getProjectedNova(t, r.Client, cp)
+	nv.Generation = 2
+	g.Expect(r.Client.Update(ctx, nv)).To(Succeed())
+	convergeNovaChild(t, r, cp, 1)
+
+	cp.Spec.Services.Nova.RemoteCompute = nil
+	_, err = r.reconcileNova(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedNova(t, r.Client, cp).Spec.RemoteCompute).To(BeNil(),
+		"clearing the ControlPlane block reverts the child")
+	g.Expect(r.Get(ctx, deliveredRemoteMessagingKey(cp), &corev1.Secret{})).To(Succeed(),
+		"the delivered Secret outlives the block until the child has reconciled the drop")
+
+	convergeNovaChild(t, r, cp, 2)
+	_, err = r.reconcileNova(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, deliveredRemoteMessagingKey(cp), &corev1.Secret{}))).To(BeTrue())
 }
 
 // placedNovaControlPlane places the compute service in a namespace of its own on
