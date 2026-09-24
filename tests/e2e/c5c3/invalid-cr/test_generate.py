@@ -41,7 +41,7 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # Number of fixtures emitted by _generate.py. Bumping this value requires adding
 # the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 114
+_EXPECTED_FIXTURE_COUNT = 119
 
 
 def _load_generator() -> types.ModuleType:
@@ -116,6 +116,18 @@ class TestFixtures(unittest.TestCase):
             )
         finally:
             sys.argv = argv
+
+    def test_remotecompute_fixtures_publish_through_public_endpoints(self) -> None:
+        # Fixtures 114 to 118 each break one remote-compute rule and publish every
+        # service the other rules name. A gateway anywhere would bring in the
+        # gateway host rules (105-nova-public-endpoint-host-mismatch.yaml), which
+        # could answer in place of the rule under test.
+        remote = [f for f in self.generator.FIXTURES if "-nova-remotecompute-" in f.filename]
+        self.assertEqual(len(remote), 5)
+        for fixture in remote:
+            rendered = fixture.render()
+            self.assertIn("remoteCompute:", rendered, fixture.filename)
+            self.assertNotIn("gateway:", rendered, f"{fixture.filename} must publish through publicEndpoint alone")
 
     def test_rendered_fixture_carries_spdx_header(self) -> None:
         for fixture in self.generator.FIXTURES:

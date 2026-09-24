@@ -44,7 +44,7 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # Number of fixtures emitted by _generate.py. Bumping this value requires adding
 # the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 28
+_EXPECTED_FIXTURE_COUNT = 31
 
 # MaxNovaNameLength in operators/nova/api/v1alpha1/nova_webhook.go: the
 # 52-character CronJob cap less the 11 characters of "-db-archive".
@@ -123,6 +123,19 @@ class TestFixtures(unittest.TestCase):
                 rendered.startswith("# SPDX-FileCopyrightText:"),
                 f"{fixture.filename} must start with the SPDX header",
             )
+
+    def test_remotecompute_fixtures_isolate_one_rule_each(self) -> None:
+        """The three remote-compute fixtures differ in the bus they declare.
+
+        Fixture 28 pins the CEL rule, so its bus must stay plaintext. Fixtures 29
+        and 30 pin the keystoneEndpoint pattern, so their bus must be verified:
+        without messaging.tls the CEL rule would reject them as well, and the
+        step could no longer tell which rule answered.
+        """
+        rendered = {fixture.filename: fixture.render() for fixture in self.generator.FIXTURES}
+        self.assertNotIn("    tls:\n", rendered["28-remotecompute-without-messaging-tls.yaml"])
+        self.assertIn("    tls:\n", rendered["29-remotecompute-keystoneendpoint-not-url.yaml"])
+        self.assertIn("    tls:\n", rendered["30-remotecompute-keystoneendpoint-plaintext.yaml"])
 
     def test_no_fixture_declares_a_namespace(self) -> None:
         """Chainsaw runs the suite in an ephemeral namespace it creates itself.

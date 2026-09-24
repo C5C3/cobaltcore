@@ -25,7 +25,8 @@ webhook: the API server validates the object against the structural schema and
 its CEL rules before it calls any validating webhook, so wherever both layers
 carry the same rule the schema message is the one the user sees. The schema
 answers the markers (patterns, minima, MinLength), the database CEL rules on
-NovaSpec and on spec.database, and the shared types' CEL rules. The console-proxy
+NovaSpec and on spec.database, the remote-compute CEL rule on NovaSpec, and the
+shared types' CEL rules. The console-proxy
 rule on NovaSpec has no fixture: the defaulting webhook removes a disabled
 proxy's deployment block before the schema measures it, so only a
 webhook-less API server (the CRD-only envtest) can observe it. Seven rules have
@@ -598,6 +599,69 @@ FIXTURES: tuple[Fixture, ...] = (
             "        name: gateway\n"
             "      hostname: console.example.com\n"
             "      path: /console\n"
+        ),
+    ),
+    Fixture(
+        filename="28-remotecompute-without-messaging-tls.yaml",
+        comment=(
+            "spec.remoteCompute on a plaintext bus violates the remote-compute CEL rule\n"
+            "on NovaSpec (!has(self.remoteCompute) || has(self.messaging.tls)): a\n"
+            "compute on another cluster verifies the broker against the messaging CA\n"
+            "bundle, and a plaintext bus carries none. The webhook mirrors it with a\n"
+            "Required error on spec.messaging.tls, but the schema answers first."
+        ),
+        extra=(
+            "  remoteCompute:\n"
+            "    keystoneEndpoint: https://keystone.example.com/v3\n"
+            "    transportURLSecretRef:\n"
+            "      name: nova-remote-transport\n"
+        ),
+    ),
+    Fixture(
+        filename="29-remotecompute-keystoneendpoint-not-url.yaml",
+        comment=(
+            "spec.remoteCompute.keystoneEndpoint without a scheme violates the\n"
+            "^https:// pattern the field carries, a schema-level rejection. The bus is\n"
+            "verified, so the remote-compute CEL rule is met and the pattern is the\n"
+            "only rule that fails."
+        ),
+        messaging=(
+            "  messaging:\n"
+            "    clusterRef:\n"
+            "      name: rabbitmq\n"
+            "    tls:\n"
+            "      caBundleSecretRef:\n"
+            "        name: nova-messaging-ca"
+        ),
+        extra=(
+            "  remoteCompute:\n"
+            "    keystoneEndpoint: keystone.example.com\n"
+            "    transportURLSecretRef:\n"
+            "      name: nova-remote-transport\n"
+        ),
+    ),
+    Fixture(
+        filename="30-remotecompute-keystoneendpoint-plaintext.yaml",
+        comment=(
+            "spec.remoteCompute.keystoneEndpoint over plain http violates the ^https://\n"
+            "pattern the field carries, a schema-level rejection: every compute on\n"
+            "another cluster sends the nova service-user password to this URL. The\n"
+            "webhook mirrors it with `must use scheme https`, but the schema answers\n"
+            "first. The bus is verified, so the pattern is the only rule that fails."
+        ),
+        messaging=(
+            "  messaging:\n"
+            "    clusterRef:\n"
+            "      name: rabbitmq\n"
+            "    tls:\n"
+            "      caBundleSecretRef:\n"
+            "        name: nova-messaging-ca"
+        ),
+        extra=(
+            "  remoteCompute:\n"
+            "    keystoneEndpoint: http://keystone.example.com/v3\n"
+            "    transportURLSecretRef:\n"
+            "      name: nova-remote-transport\n"
         ),
     ),
 )

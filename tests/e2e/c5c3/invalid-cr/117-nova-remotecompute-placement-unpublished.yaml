@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.nova.remoteCompute beside an unpublished Placement is rejected
+# (webhook-only): the remote contract resolves Placement through its public
+# catalog row, which names the in-cluster Service unless the block carries a
+# publicEndpoint or a gateway. Glance and Neutron get the same rule; Placement
+# stands for the three. Everything else is published, so the step anchors on
+# `spec.services.placement.publicEndpoint` and `resolves this service through its
+# public catalog row`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-nova-remote-no-placement
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+      tls:
+        caBundleSecretRef:
+          name: bus-ca
+  services:
+    keystone:
+      mode: Managed
+      publicEndpoint: https://keystone.example.com/v3
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+      publicEndpoint: https://glance.example.com
+    placement: {}
+    neutron:
+      ovn:
+        centralRef:
+          name: ovn
+      publicEndpoint: https://neutron.example.com
+    nova:
+      remoteCompute:
+        transportURLSecretRef:
+          name: nova-remote-transport
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

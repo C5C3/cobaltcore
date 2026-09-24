@@ -118,6 +118,14 @@ MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING = MANAGED_INFRA + (
     "        name: bus-url\n"
 )
 
+# MANAGED_INFRA plus a brownfield messaging block with tls (indent 2, trailing
+# newline), the only bus services.nova.remoteCompute is admitted beside.
+MANAGED_INFRA_WITH_BROWNFIELD_TLS_MESSAGING = MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING + (
+    "      tls:\n"
+    "        caBundleSecretRef:\n"
+    "          name: bus-ca\n"
+)
+
 
 # A valid glance service body (indent 4): one S3 backend promoted to the default
 # store. The three glance-block fixtures below mutate exactly one aspect of it,
@@ -186,6 +194,28 @@ VALID_CINDER = (
 # services.glance and spec.infrastructure.messaging. The nova fixtures below
 # mutate exactly one aspect of that base.
 VALID_NOVA = "    nova: {}\n"
+
+
+# The remote-compute fixtures (114 to 118) publish every service the
+# remote-compute rules name through a publicEndpoint and no gateway, so the
+# host-match rule behind 105-nova-public-endpoint-host-mismatch.yaml cannot fire,
+# and each fixture takes exactly one of them away.
+REMOTE_COMPUTE_KEYSTONE = (
+    "      mode: Managed\n"
+    "      publicEndpoint: https://keystone.example.com/v3\n"
+)
+REMOTE_COMPUTE_GLANCE = VALID_GLANCE + "      publicEndpoint: https://glance.example.com\n"
+REMOTE_COMPUTE_PLACEMENT = (
+    "    placement:\n"
+    "      publicEndpoint: https://placement.example.com\n"
+)
+REMOTE_COMPUTE_NEUTRON = VALID_NEUTRON + "      publicEndpoint: https://neutron.example.com\n"
+REMOTE_COMPUTE_NOVA = (
+    "    nova:\n"
+    "      remoteCompute:\n"
+    "        transportURLSecretRef:\n"
+    "          name: nova-remote-transport\n"
+)
 
 
 # A valid, MANAGED dedicated backing-services block for the Keystone service
@@ -2368,6 +2398,103 @@ FIXTURES: tuple[Fixture, ...] = (
             "        parentRef:\n"
             "          name: openstack-gw\n"
         ),
+    ),
+    Fixture(
+        filename="114-nova-remotecompute-managed-bus.yaml",
+        comment=(
+            "services.nova.remoteCompute beside a managed bus is forbidden (webhook-only). A\n"
+            "managed RabbitmqCluster is provisioned without a TLS listener, and a compute\n"
+            "cluster reaches the bus across a cluster boundary. Keystone and the three\n"
+            "siblings are published over https, so the managed bus is the ONLY violation\n"
+            "and the step anchors on `requires a brownfield bus with tls`."
+        ),
+        name="cp-nova-remote-managed-bus",
+        keystone=REMOTE_COMPUTE_KEYSTONE,
+        infrastructure=MANAGED_INFRA + (
+            "    messaging:\n"
+            "      clusterRef:\n"
+            "        name: rabbitmq\n"
+        ),
+        glance=REMOTE_COMPUTE_GLANCE,
+        placement=REMOTE_COMPUTE_PLACEMENT,
+        neutron=REMOTE_COMPUTE_NEUTRON,
+        nova=REMOTE_COMPUTE_NOVA,
+    ),
+    Fixture(
+        filename="115-nova-remotecompute-without-messaging-tls.yaml",
+        comment=(
+            "services.nova.remoteCompute beside a brownfield bus without tls is rejected\n"
+            "(webhook-only): spec.infrastructure.messaging.tls is required, because a compute\n"
+            "cluster verifies the broker against that CA bundle, the only trust anchor the\n"
+            "remote contract carries. Everything else is published, so the step anchors on\n"
+            "`spec.infrastructure.messaging.tls`, `is required when\n"
+            "services.nova.remoteCompute is set` and `a compute cluster reaches the bus`."
+        ),
+        name="cp-nova-remote-no-tls",
+        keystone=REMOTE_COMPUTE_KEYSTONE,
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=REMOTE_COMPUTE_GLANCE,
+        placement=REMOTE_COMPUTE_PLACEMENT,
+        neutron=REMOTE_COMPUTE_NEUTRON,
+        nova=REMOTE_COMPUTE_NOVA,
+    ),
+    Fixture(
+        filename="116-nova-remotecompute-keystone-unpublished.yaml",
+        comment=(
+            "services.nova.remoteCompute beside an unpublished Keystone is rejected\n"
+            "(webhook-only): one of publicEndpoint or gateway is required on\n"
+            "services.keystone, because every compute cluster authenticates against the\n"
+            "public Keystone URL. The bus is brownfield with tls and the siblings are\n"
+            "published, so the step anchors on `a compute cluster authenticates against the\n"
+            "public Keystone URL`."
+        ),
+        name="cp-nova-remote-no-keystone",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_TLS_MESSAGING,
+        glance=REMOTE_COMPUTE_GLANCE,
+        placement=REMOTE_COMPUTE_PLACEMENT,
+        neutron=REMOTE_COMPUTE_NEUTRON,
+        nova=REMOTE_COMPUTE_NOVA,
+    ),
+    Fixture(
+        filename="117-nova-remotecompute-placement-unpublished.yaml",
+        comment=(
+            "services.nova.remoteCompute beside an unpublished Placement is rejected\n"
+            "(webhook-only): the remote contract resolves Placement through its public\n"
+            "catalog row, which names the in-cluster Service unless the block carries a\n"
+            "publicEndpoint or a gateway. Glance and Neutron get the same rule; Placement\n"
+            "stands for the three. Everything else is published, so the step anchors on\n"
+            "`spec.services.placement.publicEndpoint` and `resolves this service through its\n"
+            "public catalog row`."
+        ),
+        name="cp-nova-remote-no-placement",
+        keystone=REMOTE_COMPUTE_KEYSTONE,
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_TLS_MESSAGING,
+        glance=REMOTE_COMPUTE_GLANCE,
+        placement="    placement: {}\n",
+        neutron=REMOTE_COMPUTE_NEUTRON,
+        nova=REMOTE_COMPUTE_NOVA,
+    ),
+    Fixture(
+        filename="118-nova-remotecompute-keystone-plaintext.yaml",
+        comment=(
+            "services.nova.remoteCompute beside a Keystone published over plain http is\n"
+            "rejected (webhook-only): every compute cluster sends the nova service-user\n"
+            "password to the public Keystone URL across a cluster boundary. The bus is\n"
+            "brownfield with tls and the siblings are published over https, so the step\n"
+            "anchors on `spec.services.keystone.publicEndpoint` and `must use scheme https\n"
+            "when services.nova.remoteCompute is set`."
+        ),
+        name="cp-nova-remote-http-keystone",
+        keystone=(
+            "      mode: Managed\n"
+            "      publicEndpoint: http://keystone.example.com/v3\n"
+        ),
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_TLS_MESSAGING,
+        glance=REMOTE_COMPUTE_GLANCE,
+        placement=REMOTE_COMPUTE_PLACEMENT,
+        neutron=REMOTE_COMPUTE_NEUTRON,
+        nova=REMOTE_COMPUTE_NOVA,
     ),
 )
 
