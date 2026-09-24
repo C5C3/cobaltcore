@@ -133,7 +133,10 @@ the suggested fix. End with a per-dependency verdict.
 1. **Partial Renovate bump.** Renovate bumped a dependency in some
    modules only (a new module added on a branch after the grouping rule
    ran is the usual cause). The workspace resolves to the higher pin; the
-   lagging module's own CI leg builds the lower one.
+   lagging module's own CI leg builds the lower one. A bump in
+   `internal/common` that raises an indirect pin of the operators is not
+   this pattern: Renovate's `gomodTidyAll` tidies every module that
+   replaces `internal/common` in the same PR.
 2. **PR CI tests the merge with `main`.** `pull_request` CI checks out
    the merge of the head with current `main`. A branch that keeps (or
    adds) a module at a version `main` has since bumped yields a mixed
