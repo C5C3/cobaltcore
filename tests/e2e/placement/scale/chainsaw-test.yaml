@@ -8,6 +8,10 @@
 #   - Initial deployment with replicas: 3 (PDB: minAvailable=1)
 #   - Scale up to 5 replicas — updatedReplicas proves new pods started
 #   - Scale down to 1 replica (PDB: maxUnavailable=1)
+# Each step also asserts the MariaDB User's maxUserConnections, which the
+# operator sizes from the replica count: (replicas + 1) x 2 processes x
+# 1 thread x 2 + 2, so 18, 26 and 10. The plain value is asserted because
+# chainsaw never matches a serialized integer against a JMESPath number.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -55,6 +59,15 @@ spec:
             namespace: openstack
           spec:
             minAvailable: 1
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: placement-scale
+            namespace: openstack
+          spec:
+            maxUserConnections: 18
     catch:
     - script:
         content: |
@@ -98,6 +111,15 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: placement-scale
+            namespace: openstack
+          spec:
+            maxUserConnections: 26
     catch:
     - script:
         content: |
@@ -150,6 +172,15 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: placement-scale
+            namespace: openstack
+          spec:
+            maxUserConnections: 10
     catch:
     - script:
         content: |
