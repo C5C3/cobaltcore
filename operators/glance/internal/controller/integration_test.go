@@ -463,7 +463,8 @@ func TestIntegrationGlance_DeleteReleasesFinalizer(t *testing.T) {
 //   - the rollout-gated contract flip: the phase stays RollingUpdate until the
 //     re-imaged Deployment reports ready, then advances to Contracting;
 //   - the eventlet → uWSGI launch-command switch the Deployment template takes on
-//     the release bump (glanceUsesUWSGI derives the mode from openStackRelease);
+//     the release bump (glanceReleaseUsesUWSGI derives the mode from
+//     openStackRelease);
 //   - the post-upgrade steady-state db-sync Job re-running with the new image on
 //     pod-spec-hash drift, so its db load_metadefs step loads the new release's
 //     definitions.

@@ -307,7 +307,7 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 	// when explicitly set, for transparency; the webhook warns on that combination.
 	if s := glance.Spec.APIServer; s != nil && s.Workers != nil {
 		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", *s.Workers)
-	} else if !glanceUsesUWSGI(glance) {
+	} else if !glanceReleaseUsesUWSGI(glance.Spec.OpenStackRelease) {
 		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", glancev1alpha1.DefaultEventletWorkers)
 	}
 	// PerLoggerLevels render into oslo.log's default_log_levels CSV; empty omits
