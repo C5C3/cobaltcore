@@ -112,6 +112,31 @@ func failedGlanceUpgradeJob(glance *glancev1alpha1.Glance, configMapName, verb s
 	return j
 }
 
+// TestGlanceReleaseUsesUWSGI pins the launch-mode boundary on a bare release
+// string: uWSGI from 2026.1 onward, the eventlet glance-api server below it and
+// for a release that does not parse. The connection-cap sizing asks it about
+// the installed and target releases, which can differ from the spec release
+// mid-upgrade.
+func TestGlanceReleaseUsesUWSGI(t *testing.T) {
+	cases := []struct {
+		release string
+		want    bool
+	}{
+		{release: "2026.1", want: true},
+		{release: "2026.2", want: true},
+		{release: "2027.1", want: true},
+		{release: "2025.2", want: false},
+		{release: "", want: false},
+		{release: "garbage", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.release, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(glanceReleaseUsesUWSGI(tc.release)).To(Equal(tc.want))
+		})
+	}
+}
+
 func TestReconcileDatabase_ProvisionGatesOnClusterReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	glance := managedGlance()

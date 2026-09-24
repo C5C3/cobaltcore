@@ -666,18 +666,19 @@ func glanceHealthcheckProbeHandler() corev1.ProbeHandler {
 // roots so the rendered config and the projected backends stores apply
 // identically.
 func glanceLaunchCommand(glance *glancev1alpha1.Glance) []string {
-	if glanceUsesUWSGI(glance) {
+	if glanceReleaseUsesUWSGI(glance.Spec.OpenStackRelease) {
 		return glanceUWSGICommand(glance.Spec.APIServer)
 	}
 	return []string{"glance-api", "--config-dir", glanceConfigDir, "--config-dir", glanceBackendsConfigDir}
 }
 
-// glanceUsesUWSGI reports whether the Glance API launches under uWSGI (release
-// 2026.1 or later) rather than the eventlet glance-api server. An unparseable
-// release (a CR that bypassed the CRD pattern) falls back to the eventlet launch
-// mode, the pre-2026.1 default.
-func glanceUsesUWSGI(glance *glancev1alpha1.Glance) bool {
-	rel, err := release.ParseRelease(glance.Spec.OpenStackRelease)
+// glanceReleaseUsesUWSGI reports whether a Glance API of the given OpenStack
+// release launches under uWSGI: true from 2026.1 onward, false below it and for
+// an empty or unparseable release, which launch the eventlet glance-api server.
+// It takes a release string rather than the CR so the connection-cap sizing can
+// ask about status.installedRelease and status.targetRelease as well.
+func glanceReleaseUsesUWSGI(openStackRelease string) bool {
+	rel, err := release.ParseRelease(openStackRelease)
 	if err != nil {
 		return false
 	}
