@@ -2151,7 +2151,7 @@ type CinderDedicatedBackingServicesSpec struct {
 // policy) rather than set by the user here, so this type stays a local copy of
 // the shapes it projects rather than an import of novav1alpha1.NovaSpec.
 //
-// Seven fields have no counterpart on the other services. Three are replica
+// Eight fields have no counterpart on the other services. Three are replica
 // counts, because the compute service runs a metadata API, a scheduler, and a
 // conductor in Deployments beside its API. Two are the metadata pair,
 // metadataGateway and metadataSharedSecretRef: the metadata API is the one
@@ -2160,6 +2160,8 @@ type CinderDedicatedBackingServicesSpec struct {
 // sides have to hold. consoleProxy sizes and publishes the noVNC console proxy,
 // a browser-facing bridge to the hypervisors no other service runs, and
 // dbArchive tunes the archive of the rows Nova soft-deletes instead of removing.
+// remoteCompute hands over the one address of the compute contract the
+// ControlPlane cannot derive: the bus's external listener.
 type ServiceNovaSpec struct {
 	// Replicas overrides the number of Nova API replicas. When nil the
 	// reconciler applies the nova operator's own default (3). It sizes the API
@@ -2265,6 +2267,17 @@ type ServiceNovaSpec struct {
 	// +optional
 	MetadataSharedSecretRef *commonv1.SecretRefSpec `json:"metadataSharedSecretRef,omitempty"`
 
+	// RemoteCompute makes the compute contract resolvable from a compute
+	// cluster. When set, the Nova child publishes a second contract whose
+	// addresses leave the cluster: the public Keystone URL, the public catalog
+	// rows, and the external bus listener this block names. That remote
+	// contract, instead of the in-cluster one, is what the ControlPlane mirrors
+	// onto compute clusters. When nil (the default) the child publishes the
+	// in-cluster contract only. See ServiceNovaRemoteComputeSpec for what the
+	// validating webhook requires beside it.
+	// +optional
+	RemoteCompute *ServiceNovaRemoteComputeSpec `json:"remoteCompute,omitempty"`
+
 	// DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
 	// for THIS service on the managed SHARED database, so a staged migration can run
 	// Nova on one mode while another service stays on the other. It applies to BOTH
@@ -2326,6 +2339,30 @@ type ServiceNovaSpec struct {
 	// validating webhook. See ServiceKeystoneSpec.TargetClusterRef.
 	// +optional
 	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
+}
+
+// ServiceNovaRemoteComputeSpec hands the ControlPlane the external address of
+// the message bus. The ControlPlane derives the rest of the remote compute
+// contract from what it registers in the catalog, but it cannot know how the
+// platform exposes the broker outside the cluster.
+//
+// The validating webhook admits the block only beside a brownfield bus with
+// tls (a managed RabbitmqCluster is provisioned without a TLS listener), an
+// https Keystone publication, and a publicEndpoint or gateway on Keystone,
+// Glance, Placement and Neutron, and on Cinder and Barbican when they are
+// declared. A public catalog row without either names the in-cluster Service,
+// which no compute cluster resolves.
+type ServiceNovaRemoteComputeSpec struct {
+	// TransportURLSecretRef names a Secret in the ControlPlane's namespace on
+	// the management cluster. It holds the complete rabbit:// URL of the
+	// broker's external TLS listener, with the same user, password and vhost as
+	// spec.infrastructure.messaging.secretRef. The ControlPlane reads it and
+	// never writes it, and carries the value into the Nova namespace. The
+	// listener's certificate must chain to the CA bundle
+	// spec.infrastructure.messaging.tls names, because that bundle is the only
+	// one the remote contract carries. The defaulting webhook materializes an
+	// empty key to "transport_url".
+	TransportURLSecretRef commonv1.SecretRefSpec `json:"transportURLSecretRef"`
 }
 
 // ServiceNovaConsoleProxySpec is the ControlPlane's view of the console proxy,
