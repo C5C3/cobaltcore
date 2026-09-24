@@ -50,7 +50,30 @@ member creates the database file. See
 | `nodePortBase` | `*int32` (Minimum=30000, Maximum=32767) | no | `30641` for `northbound`, `30651` for `southbound` | The first node port of this database's range. Member `i` is published on `nodePortBase + i`, because a Raft client has to address the individual members |
 | `electionTimerMs` | `int32` (Minimum=1000, Maximum=180000) | no | `1000` | How long a follower waits without hearing from the leader before it starts an election. Written into the database when it is created, so it is immutable through this field |
 | `inactivityProbeMs` | `int32` (Minimum=0) | no | `60000` | How long `ovsdb-server` lets a client connection sit idle before probing it. Zero disables the probe, which is what a client behind a connection-tracking middlebox needs when the probe is what tears the connection down |
-| `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits for the `ovsdb` container. When nil the container is built with empty requirements, so the pod lands in the BestEffort QoS class; the shared 100m/500m CPU and 256Mi/512Mi memory defaults apply to the northd and relay Deployments, not here |
+| `resources` | `*corev1.ResourceRequirements` | no | operator-resolved `100m` CPU, `256Mi` memory requests; no limit | Requests and limits for the `ovsdb` container. When nil, or when the block sets no CPU or memory request or limit, the operator requests 100m CPU and 256Mi memory and sets no limit, so each Raft member runs in the Burstable QoS class. Other resources the block names, such as an `ephemeral-storage` limit, are kept beside the floor. A member without requests would run BestEffort, the class the kubelet evicts first under node memory pressure. There is no default limit because the database grows with the number of logical ports: size the memory request, and any limit, from that count. A block that sets any CPU or memory request or limit is used as written. The floor is resolved at reconcile time and never written into the CR, so upgrading to an operator that changes it rolls the members once, one at a time. See [The request floor](#the-request-floor) for LimitRanges and the upgrade roll |
+
+#### The request floor
+
+The floor is an explicit request, so a LimitRange in the namespace no longer
+fills the `ovsdb` container's requests from its `defaultRequest`; it still fills
+a missing limit from its `default`. The API server then rejects every member pod
+when the LimitRange sets a `default` limit below 100m CPU or 256Mi memory, a
+`min` above them, or a `maxLimitRequestRatio` smaller than its `default` limit
+divided by the floor. The rejection shows up as `FailedCreate` events on the
+StatefulSet, while the CR reports only how many members are ready. In such a
+namespace, set `resources` to values the LimitRange admits.
+
+Upgrading from an operator without the floor changes the pod template of every
+database whose `resources` sets no CPU or memory value, and the StatefulSet
+recreates its members one at a time, highest ordinal first. Each recreated
+member now needs 100m CPU and 256Mi memory of unrequested allocatable on a node
+it can run on. A member on node-local storage, such as `local-path`, TopoLVM or
+a local PersistentVolume, can run only on the node that holds its volume. If
+that node lacks the room the member stays `Pending`, and if a LimitRange rejects
+it the member is never created. Either way the rollout stops there: a
+three-member database runs on two members and tolerates no further loss. Setting
+`resources` to values that fit the node and the LimitRange recovers the
+rollout, because any CPU or memory request or limit replaces the floor.
 
 ### OVNStorageSpec
 
@@ -127,19 +150,21 @@ that outlives the CR.
 
 The mutating webhook leaves the object untouched. Every default is either a
 `+kubebuilder:default` the API server applies from the CRD schema, or a value
-the operator resolves at reconcile time: the image, the two node-port bases, and
-the backup schedule and retention. Resolving those four late keeps an unset
-field tracking the operator default across upgrades instead of freezing today's
-value into the stored CR. The webhook stays registered so a default that has to
-be materialized later can be added without changing the deployed webhook
-configuration.
+the operator resolves at reconcile time: the image, the two node-port bases, the
+backup schedule and retention, and the database request floor. Resolving those
+five late keeps an unset field tracking the operator default across upgrades
+instead of freezing today's value into the stored CR. The webhook stays
+registered so a default that has to be materialized later can be added without
+changing the deployed webhook configuration.
 
 `ovncentral_webhook.go` holds the constants those resolutions read:
 `DefaultBackupSchedule` is `0 2 * * *`, `DefaultBackupRetentionDays` is 14,
 `DefaultNorthboundNodePortBase` is 30641 and `DefaultSouthboundNodePortBase` is
 30651. The two bases carry their database's OVSDB port in the last two digits,
 and sit ten apart so both ranges reach the five-replica ceiling without
-colliding.
+colliding. The database request floor reads the shared request defaults
+instead, `DefaultCPURequest` (100m) and `DefaultMemoryRequest` (256Mi) in
+`internal/common/types/workload.go`.
 
 ### Schema-layer rules
 
