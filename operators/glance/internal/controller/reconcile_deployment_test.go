@@ -688,6 +688,38 @@ func TestBuildGlanceDeployment_ProbesOnHealthcheck(t *testing.T) {
 	}
 }
 
+// TestBuildGlanceDeployment_StartupProbeCoversColdStart covers the cold start of
+// the API in both launch modes. Every worker imports glance under the
+// container's CPU limit, which took 66 to 90 seconds under uWSGI in a kind pod
+// at 120m CPU. The liveness probe alone restarts the container 55 seconds after
+// it started, so the startup probe holds it back.
+func TestBuildGlanceDeployment_StartupProbeCoversColdStart(t *testing.T) {
+	for _, release := range []string{"2025.2", "2026.1"} {
+		t.Run(release, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			deploy := buildGlanceDeployment(deployGlance(release), testArtifacts(), "", "")
+			var api *corev1.Container
+			for i, c := range deploy.Spec.Template.Spec.Containers {
+				if c.Name == "glance-api" {
+					api = &deploy.Spec.Template.Spec.Containers[i]
+				}
+			}
+			g.Expect(api).NotTo(BeNil(), release+": glance-api container")
+
+			probe := api.StartupProbe
+			g.Expect(probe).NotTo(BeNil(), release+": startup probe")
+			g.Expect(probe.HTTPGet).NotTo(BeNil(), release+": startup probe handler")
+			g.Expect(probe.HTTPGet.Path).To(Equal("/healthcheck"), release+": startup probe path")
+			g.Expect(probe.HTTPGet.Port.IntVal).To(Equal(glanceAPIPort), release+": startup probe port")
+			g.Expect(probe.FailureThreshold*probe.PeriodSeconds).To(BeNumerically(">=", 300),
+				release+": startup budget in seconds")
+			g.Expect(probe.TimeoutSeconds).To(BeNumerically(">", 1),
+				release+": a loading WSGI app holds a GET past the kubelet's 1s default")
+		})
+	}
+}
+
 func TestReconcileDeployment_ServiceAndPDBEnsured(t *testing.T) {
 	g := NewGomegaWithT(t)
 
