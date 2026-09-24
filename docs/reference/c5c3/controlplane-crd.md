@@ -280,9 +280,13 @@ projects a production-shaped Galera HA cluster (3 replicas, `galera.enabled`,
 `100Gi` storage), while `database.replicas: 1` projects a single-instance,
 non-Galera MariaDB so the fresh-create path schedules on a constrained cluster
 such as a single-node kind. `cache.replicas` (also default `3`) drives the
-Memcached replica count the same way. Both are only honoured in managed mode;
+Memcached replica count. Both are only honoured in managed mode;
 storage stays at `100Gi` regardless of the replica count, and a ControlPlane
 that adopts a pre-existing MariaDB/Memcached leaves its topology untouched.
+Unlike `database.replicas`, which is immutable after creation, `cache.replicas`
+stays mutable: a change is re-projected in place, in both directions, onto every
+Memcached the ControlPlane owns, whether in its own namespace, in a service
+namespace, or on a target cluster.
 
 > **`database.secretRef` is operator-owned in managed mode.** The
 > `DatabaseSpec` is projected onto the Keystone CR verbatim **except** for its
@@ -1470,7 +1474,7 @@ same path as a shared instance:
 | Guarantee | How it holds for a dedicated instance |
 | --- | --- |
 | Provisioning | `reconcileInfrastructure` ensures a `MariaDB` / `Memcached` child CR per managed instance a service **resolves to**, shared and dedicated alike, sized from **that instance's** `replicas` / `storageSize`. Opting out is a genuine opt-out: a shared instance every service has left has no consumer, so it is not provisioned. When every declared database consumer — Keystone, Glance, Placement, Barbican — takes a dedicated database, the shared cluster is never created — it would otherwise be an orphan (3 Galera replicas, 100Gi by default) that nothing talks to and readiness still waits for. |
-| Ownership and teardown | The child carries a controller owner reference to the ControlPlane with `blockOwnerDeletion`, so it is garbage-collected with the ControlPlane. A pre-existing CR under the same name is **adopted read-only** and never GC-claimed. |
+| Ownership and teardown | In the ControlPlane's own namespace the child carries a controller owner reference to the ControlPlane with `blockOwnerDeletion`, so it is garbage-collected with the ControlPlane. In a service namespace or on a target cluster it carries the ownership labels `c5c3.io/controlplane-name` / `c5c3.io/controlplane-namespace` instead, and the finalizer-driven teardown deletes it (see [Ownership and garbage collection](#ownership-and-garbage-collection), and for a target cluster [Ownership and teardown on the target](../target-clusters.md#ownership-and-teardown-on-the-target)). A pre-existing CR under the same name that carries neither is **adopted read-only** and never GC-claimed. |
 | Readiness gating | `InfrastructureReady` is `True` only once **every** managed instance is Ready. A service whose dedicated database is still converging holds the condition `False`, so its projection is deferred — it waits for the database it actually talks to, not just for the shared cluster. |
 | Credentials | The service child's `spec.database` is projected from the dedicated spec, so credential provisioning and rotation follow the instance the service connects to (see [Credential modes](#credential-modes) below). |
 | Network policy | The service operators derive their database/cache egress rules from the projected `spec.database` / `spec.cache`, so they follow the dedicated instance automatically. |

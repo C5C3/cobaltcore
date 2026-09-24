@@ -1031,18 +1031,25 @@ the reason vocabulary is unchanged by the dedicated opt-in.
 
 `ensureMariaDB` / `ensureMemcached` take the **declared instance** rather than
 reading `spec.infrastructure` directly, which is what makes a dedicated instance
-carry the shared block's lifecycle rather than a parallel one of its own: it is
-created with a controller owner reference (so it is garbage-collected with the
-ControlPlane), sized from **its** `replicas` / `storageSize`, re-projected on
-drift while owned, and **adopted read-only** — never reshaped, never GC-claimed —
-when a CR under that name already exists.
+carry the shared block's lifecycle rather than a parallel one of its own. It is
+created owned, in one of two forms. In the ControlPlane's own namespace it
+carries a controller owner reference, so it is garbage-collected with the
+ControlPlane. In a service namespace or on a target cluster it carries the two
+ownership labels `c5c3.io/controlplane-name` and `c5c3.io/controlplane-namespace`,
+and the finalizer-driven teardown deletes it (see
+[Owner-ref / GC model](#owner-ref-gc-model)). It is sized from **its**
+`replicas` / `storageSize` and re-projected on drift while it is owned in either
+form (`isControlPlaneChild`). A CR under that name that carries neither is
+**adopted read-only**: never reshaped, never GC-claimed.
 
 `ensureRabbitMQ` is the twin of `ensureMemcached`: read-modify-write on an
 `*unstructured.Unstructured` carrying `rabbitmqClusterGVK`. On
 `NotFound` it creates the CR with `spec.replicas` and a controller owner
 reference (`claimChildOwnership`); on a CR it already owns it re-projects
 `spec.replicas` and nothing else; a CR of that name owned by someone else is
-adopted read-only. The re-projection is asymmetric: growing an owned cluster is
+adopted read-only. Its ownership test is the controller owner reference alone
+(`IsControlledBy`), because the bus is only provisioned in the ControlPlane's own
+namespace on the management cluster. The re-projection is asymmetric: growing an owned cluster is
 an in-place `Update`, while **shrinking** it is a delete-and-recreate — the
 RabbitMQ Cluster Operator refuses an in-place scale-down, so a lowered count
 written onto the CR would sit there ignored while `AllReplicasReady` (and with it
