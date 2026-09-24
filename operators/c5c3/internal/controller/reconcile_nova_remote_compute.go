@@ -39,6 +39,14 @@ func novaRemoteMessagingSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 	return novaName(cp) + "-remote-messaging"
 }
 
+// novaRemoteComputeConfigSecretName returns the name the nova operator publishes
+// the remote compute contract under ("<cp>-nova-remote-compute-config"), the
+// Secret mirrorNovaComputeConfig copies onto compute clusters while
+// services.nova.remoteCompute is set.
+func novaRemoteComputeConfigSecretName(cp *c5c3v1alpha1.ControlPlane) string {
+	return novaName(cp) + "-remote-compute-config"
+}
+
 // novaRemoteComputeSpec returns the spec.remoteCompute the Nova child receives:
 // nil while services.nova.remoteCompute is unset, and otherwise the public
 // Keystone URL the ControlPlane registers in the catalog, paired with the Secret
