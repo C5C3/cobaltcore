@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch that raises spec.uwsgi.processes to 4 and removes spec.deployment.resources.
+# With no block left, the reconciler renders the defaults again, sized for four
+# processes: 800Mi memory request and limit, a 100m CPU request, no CPU limit.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-resources
+  namespace: openstack
+spec:
+  uwsgi:
+    processes: 4
+  deployment:
+    resources: null
