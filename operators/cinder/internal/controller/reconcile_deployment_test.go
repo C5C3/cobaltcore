@@ -422,6 +422,24 @@ func TestCinderRPCPodAnnotations(t *testing.T) {
 		"the API template stays free of the release stamp")
 }
 
+// TestAPIContainerCarriesAStartupProbe covers the cold start of the API. Its
+// uWSGI workers took about 60 seconds to import cinder on a CI node, and the
+// liveness probe alone restarts the container 55 seconds after it started, so
+// without a startup probe holding it back the API is killed while it loads.
+func TestAPIContainerCarriesAStartupProbe(t *testing.T) {
+	g := NewGomegaWithT(t)
+	deploy := buildCinderDeployment(workloadCinder(), workloadArtifacts(), workloadDigests{})
+
+	probe := deploy.Spec.Template.Spec.Containers[0].StartupProbe
+	g.Expect(probe).NotTo(BeNil())
+	g.Expect(probe.HTTPGet.Path).To(Equal("/healthcheck"))
+	g.Expect(probe.HTTPGet.Port.IntValue()).To(Equal(int(cinderAPIPort)))
+	g.Expect(probe.FailureThreshold*probe.PeriodSeconds).To(BeNumerically(">=", 300),
+		"startup budget in seconds")
+	g.Expect(probe.TimeoutSeconds).To(BeNumerically(">", 1),
+		"a loading WSGI app holds a GET past the kubelet's 1s default")
+}
+
 // TestBuildCinderService_And_PDB covers the selectors: one Cinder owns four
 // kinds of Deployment, so the API Service and its budget must reach the API pods
 // and nothing else.
