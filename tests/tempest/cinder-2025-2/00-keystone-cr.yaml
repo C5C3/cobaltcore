@@ -14,17 +14,14 @@ metadata:
 spec:
   deployment:
     replicas: 3
-    # Override the operator's default resource limits (100m/500m CPU,
-    # 256Mi/512Mi memory). The default CPU limit of 500m throttles the
-    # keystone-API pod to half a core, which more than doubled the Tempest
-    # run-time and pushed the job past its CI timeout. Give the tempest
-    # workload headroom so it matches the pre-existing behaviour (no limits).
+    # The operator sets no CPU limit, so this block exists for its memory: it
+    # gives the keystone-API pod a 1Gi limit, twice the 512Mi it gets by
+    # default at two uWSGI processes, as headroom for the Tempest run.
     resources:
       requests:
         cpu: 100m
         memory: 256Mi
       limits:
-        cpu: "2"
         memory: 1Gi
   image:
     repository: ghcr.io/c5c3/keystone

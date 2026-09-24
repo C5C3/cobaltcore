@@ -118,7 +118,7 @@ spec:
             # is checked on the template, not on the Pods: openstack is an
             # OpenBao tenant namespace, and the LimitRange the openbao-operator
             # provisioner puts there (openbao-operator-tenant-limits) gives
-            # every container without a limit 500m CPU and 512Mi memory.
+            # every container without a memory limit a 512Mi one.
             template:
               spec:
                 (length(containers[?name == 'ovsdb'].resources.limits) == `0`): true

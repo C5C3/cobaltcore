@@ -23,10 +23,7 @@ spec:
   openStackRelease: "2025.2"
   deployment:
     replicas: 1
-    # Mirror 00-keystone-cr.yaml: the operator's default 500m CPU limit
-    # throttles the glance-api pod to half a core. The volume suites push the
-    # seed image through this pod on every create-from-image, so give it the
-    # same headroom the glance leg gives its own API.
+    # The operator sets no CPU limit, so this block exists for its memory.
     #
     # The memory limit is sized for test_volume_upload, which runs since the leg
     # has a Neutron (VolumesActionsTest skips without one). Cinder uploads the
@@ -40,7 +37,6 @@ spec:
         cpu: 100m
         memory: 256Mi
       limits:
-        cpu: "2"
         memory: 3Gi
   image:
     repository: ghcr.io/c5c3/glance

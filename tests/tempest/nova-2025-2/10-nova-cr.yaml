@@ -35,18 +35,17 @@ spec:
       # tests/tempest/neutron-2025-2/04-neutron-cr.yaml both run two API
       # replicas.
       replicas: 2
-      # Mirror tests/tempest/cinder-2025-2/06-cinder-cr.yaml: with resources
-      # unset the webhook fills in the shared defaults (500m CPU, 512Mi memory,
-      # internal/common/types/workload.go), and the four uWSGI workers below do
-      # not fit. Each nova-api worker settles near 130 MiB RSS once it has
-      # initialized its cell worker thread pool, so the kernel OOM-kills the
-      # container and the CR never reports Ready.
+      # Mirror tests/tempest/cinder-2025-2/06-cinder-cr.yaml: the operator sets
+      # no CPU limit, so this block exists for its memory. Each nova-api worker
+      # settles near 130 MiB RSS once it has initialized its cell worker thread
+      # pool, and the four uWSGI workers below did not fit the former 512Mi
+      # default: the kernel OOM-killed the container and the CR never reported
+      # Ready.
       resources:
         requests:
           cpu: 200m
           memory: 512Mi
         limits:
-          cpu: "2"
           memory: 1536Mi
     # nova-api serves its API from uWSGI, so this pod's request capacity is
     # replicas x processes. The webhook default (2) is at the stestr worker
