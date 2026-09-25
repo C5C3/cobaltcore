@@ -173,6 +173,7 @@ var MetadataAgentOwnedConfigKeys = []config.OwnedKey{
 	{Section: "DEFAULT", Key: "nova_metadata_host", OwnedBy: "spec.novaMetadata.host"},
 	{Section: "DEFAULT", Key: "nova_metadata_port", OwnedBy: "spec.novaMetadata.port"},
 	{Section: "DEFAULT", Key: "nova_metadata_protocol", OwnedBy: "spec.novaMetadata.protocol"},
+	{Section: "DEFAULT", Key: "metadata_workers", OwnedBy: "spec.metadataWorkers"},
 	// metadata_proxy_shared_secret is env-injected from the referenced Secret, so
 	// a file value is inert at runtime. It is Rejected because rendering it would
 	// copy the secret the agent signs forwarded requests with into the config

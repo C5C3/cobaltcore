@@ -275,6 +275,15 @@ FIXTURES: tuple[Fixture, ...] = (
             "    protocol: ftp\n"
         ),
     ),
+    Fixture(
+        filename="11-metadataworkers-negative.yaml",
+        comment=(
+            "spec.metadataWorkers of -1 violates the Minimum=0 marker. 0 is the lowest\n"
+            "count the agent accepts: it serves metadata requests one at a time in the main\n"
+            "process. The schema answers before the validating webhook's twin."
+        ),
+        extra="  metadataWorkers: -1\n",
+    ),
 )
 
 

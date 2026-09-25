@@ -257,13 +257,13 @@ func TestReconcileAgentConfig_ExtraConfigOverridesTheDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cr := validAgent()
 	cr.Spec.ExtraConfig = map[string]map[string]string{
-		"DEFAULT": {"metadata_workers": "4"},
+		"DEFAULT": {"metadata_backlog": "2048"},
 		"agent":   {"report_interval": "30"},
 	}
 	r, name := renderAgentConfig(t, cr)
 
 	conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
-	g.Expect(conf).To(ContainSubstring("metadata_workers = 4"))
+	g.Expect(conf).To(ContainSubstring("metadata_backlog = 2048"))
 	g.Expect(conf).To(ContainSubstring("[agent]"))
 	g.Expect(conf).To(ContainSubstring("report_interval = 30"))
 	// The operator's own DEFAULT keys survive beside the addition.
@@ -402,4 +402,51 @@ func TestAgentOperatorDefaults_RenderEveryOwnedKey(t *testing.T) {
 		g.Expect(defaults[owned.Section]).To(HaveKey(owned.Key),
 			"%s.%s is registered as operator-owned but never rendered", owned.Section, owned.Key)
 	}
+}
+
+// metadata_workers is rendered from spec.metadataWorkers under either release,
+// and an unset field renders the default of 4 without writing it into the CR.
+func TestAgentOperatorDefaults_MetadataWorkers(t *testing.T) {
+	for _, release := range []string{"2025.2", "2026.1"} {
+		for _, tc := range []struct {
+			name    string
+			workers *int32
+			want    string
+		}{
+			{name: "unset", workers: nil, want: "4"},
+			{name: "zero serves requests in the main process", workers: ptr.To(int32(0)), want: "0"},
+			{name: "explicit count", workers: ptr.To(int32(8)), want: "8"},
+		} {
+			t.Run(release+"/"+tc.name, func(t *testing.T) {
+				g := NewGomegaWithT(t)
+				cr := validAgent()
+				cr.Spec.OpenStackRelease = release
+				cr.Spec.MetadataWorkers = tc.workers
+
+				defaults := agentOperatorDefaults(cr, resolvedForAgentConfig())
+
+				g.Expect(defaults["DEFAULT"]).To(HaveKeyWithValue("metadata_workers", tc.want))
+				g.Expect(cr.Spec.MetadataWorkers).To(Equal(tc.workers), "the default must not be written into the CR")
+			})
+		}
+	}
+}
+
+// An agent that already set metadata_workers through extraConfig keeps its
+// value, since extraConfig is merged last, and is told that the key now has a
+// typed field.
+func TestReconcileAgentConfig_MetadataWorkersOverrideIsReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := validAgent()
+	cr.Spec.ExtraConfig = map[string]map[string]string{"DEFAULT": {"metadata_workers": "2"}}
+	r, name := renderAgentConfig(t, cr)
+
+	conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
+	g.Expect(conf).To(ContainSubstring("metadata_workers = 2"))
+	g.Expect(conf).NotTo(ContainSubstring("metadata_workers = 4"))
+
+	cond := agentCondition(cr, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Message).To(ContainSubstring("[DEFAULT] metadata_workers"))
 }

@@ -154,3 +154,13 @@ spec:
             ($error != null): true
             (contains($error, 'novaMetadata.protocol')): true
             (contains($error, 'Unsupported value')): true
+  # spec.metadataWorkers below zero must be rejected by the Minimum=0 marker, which
+  # answers before the webhook twin ("metadataWorkers must be non-negative").
+  - try:
+    - apply:
+        file: 11-metadataworkers-negative.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.metadataWorkers')): true
+            (contains($error, 'should be greater than or equal to 0')): true
