@@ -193,12 +193,12 @@ the `ControlPlane` CR and watching the projected network service roll out:
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"neutron":{"replicas":2}}}}'
+  -p '{"spec":{"sizing":{"neutron":{"api":{"replicas":2}}}}}'
 kubectl rollout status deploy/controlplane-neutron -n openstack
 
 # revert
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"neutron":{"replicas":1}}}}'
+  -p '{"spec":{"sizing":{"neutron":{"api":{"replicas":1}}}}}'
 ```
 
 Set the replica count on the `ControlPlane` CR, not on the projected

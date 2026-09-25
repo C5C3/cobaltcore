@@ -176,7 +176,6 @@ spec:
       replicas: 1
   services:
     keystone:
-      replicas: 1
       # Place the identity service — and its database, cache, secret store,
       # and credential material — in a namespace of its own. Managed: the
       # operator creates, labels, and (on deletion) removes the namespace.
@@ -195,11 +194,17 @@ spec:
     horizon:
       # No namespace block: the dashboard stays in the ControlPlane's own
       # namespace (openstack), exactly as in the Quick Start.
-      replicas: 1
       gateway:
         parentRef:
           name: openstack-gw
         hostname: horizon.127-0-0-1.nip.io
+  sizing:
+    keystone:
+      api:
+        replicas: 1
+    horizon:
+      api:
+        replicas: 1
 ```
 
 ```bash

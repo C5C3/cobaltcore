@@ -225,12 +225,12 @@ the `ControlPlane` CR and watching the projected key manager roll out:
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"barbican":{"replicas":2}}}}'
+  -p '{"spec":{"sizing":{"barbican":{"api":{"replicas":2}}}}}'
 kubectl rollout status deploy/controlplane-barbican -n openstack
 
 # revert
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"barbican":{"replicas":1}}}}'
+  -p '{"spec":{"sizing":{"barbican":{"api":{"replicas":1}}}}}'
 ```
 
 Set the replica count on the `ControlPlane` CR, not on the projected

@@ -163,12 +163,12 @@ service roll out:
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"placement":{"replicas":2}}}}'
+  -p '{"spec":{"sizing":{"placement":{"api":{"replicas":2}}}}}'
 kubectl rollout status deploy/controlplane-placement -n openstack
 
 # revert
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"placement":{"replicas":1}}}}'
+  -p '{"spec":{"sizing":{"placement":{"api":{"replicas":1}}}}}'
 ```
 
 Set the replica count on the `ControlPlane` CR, not on the projected

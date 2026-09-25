@@ -216,20 +216,20 @@ it runs at, and puts the count back:
 
 ```bash
 if CUR=$(kubectl get controlplane controlplane -n openstack \
-     -o jsonpath='{.spec.services.nova.replicas}') &&
+     -o jsonpath='{.spec.sizing.nova.api.replicas}') &&
    RUN=$(kubectl get deploy/controlplane-nova -n openstack \
      -o jsonpath='{.spec.replicas}'); then
   NEW=$((RUN + 1))
 
   kubectl patch controlplane controlplane -n openstack --type merge \
-    -p "{\"spec\":{\"services\":{\"nova\":{\"replicas\":$NEW}}}}"
+    -p "{\"spec\":{\"sizing\":{\"nova\":{\"api\":{\"replicas\":$NEW}}}}}"
   kubectl wait deploy/controlplane-nova -n openstack --timeout=5m \
     --for=jsonpath='{.spec.replicas}'="$NEW"
   kubectl rollout status deploy/controlplane-nova -n openstack --timeout=5m
 
   # revert to the recorded count; null drops the override again
   kubectl patch controlplane controlplane -n openstack --type merge \
-    -p "{\"spec\":{\"services\":{\"nova\":{\"replicas\":${CUR:-null}}}}}"
+    -p "{\"spec\":{\"sizing\":{\"nova\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
 else
   echo "could not read the replica counts; nothing was patched" >&2
 fi
@@ -249,9 +249,10 @@ operator that cannot reach the API server never writes the count, and the wait
 times out. The new count is always one above the running one, so the patch
 changes the Deployment whatever size the API already runs at.
 
-`services.nova.replicas` sizes the API Deployment alone. The metadata API, the
-scheduler, the conductor and the console proxy carry counts of their own, so
-this patch rolls `controlplane-nova` and leaves the other four untouched.
+`spec.sizing.nova.api.replicas` sizes the API Deployment alone. The metadata
+API, the scheduler, the conductor and the console proxy carry counts of their
+own under `spec.sizing.nova`, so this patch rolls `controlplane-nova` and leaves
+the other four untouched.
 
 Set the replica count on the `ControlPlane` CR, not on the projected
 `controlplane-nova` child: the c5c3-operator re-asserts the child's

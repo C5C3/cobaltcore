@@ -42,8 +42,9 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
   instance (`spec.infrastructure.database.replicas: 1`, `cache.replicas: 1`) so
   the fresh-create chain fits a single-node kind cluster.
 - `database.replicas: 1` yields a single-instance, non-Galera MariaDB and
-  `cache.replicas: 1` a single Memcached pod. The CRD default for both is `3`,
-  which matches the production baseline but OOM-kills a laptop-sized kind.
+  `cache.replicas: 1` a single Memcached pod. Left unset, both take the
+  ControlPlane's sizing, whose `Standard` profile gives `3`: the production
+  baseline, which OOM-kills a laptop-sized kind.
 - On a bigger box, set `CONTROLPLANE_DB_REPLICAS=3` and/or
   `CONTROLPLANE_CACHE_REPLICAS=N` for Step 2. `2` is rejected for the database:
   Galera needs a quorum.
@@ -52,8 +53,8 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
 
 - The bundled CR also pins the MariaDB volume to a test size
   (`spec.infrastructure.database.storageSize: 512Mi`).
-- The CRD default is `100Gi`, which a kind/CI run never fills, so the managed
-  MariaDB requests a small volume instead.
+- The `Standard` sizing profile gives `100Gi`, which a kind/CI run never fills,
+  so the managed MariaDB requests a small volume instead.
 - To mirror the production volume on a bigger box, set
   `CONTROLPLANE_DB_STORAGE=100Gi` for Step 2. Any Kubernetes quantity in
   `Mi`/`Gi`/`Ti` is accepted.
@@ -185,12 +186,13 @@ metadata:
   namespace: openstack
 spec:
   openStackRelease: "2025.2"
-  # Single-node backing services for kind. Omit these and both default to 3 (a
-  # 3-node Galera MariaDB plus three Memcached pods), which OOM-kills a small kind.
+  # Single-node backing services for kind. Omit these and both take the Standard
+  # sizing profile's 3 (a 3-node Galera MariaDB plus three Memcached pods), which
+  # OOM-kills a small kind.
   infrastructure:
     database:
       replicas: 1         # single-instance, non-Galera MariaDB (Galera = replicas > 1)
-      storageSize: 512Mi  # test-sized volume; omit to default to 100Gi (production)
+      storageSize: 512Mi  # test-sized volume; omit for Standard's 100Gi (production)
     cache:
       replicas: 1     # single Memcached pod
     # The shared message bus. The webhook fills clusterRef.name with
@@ -200,7 +202,6 @@ spec:
       replicas: 1
   services:
     keystone:
-      replicas: 1
       # Drop publicEndpoint on the default port 443 — the operator then derives
       # https://keystone.127-0-0-1.nip.io/v3 from the gateway hostname.
       publicEndpoint: https://keystone.127-0-0-1.nip.io:8443/v3
@@ -210,7 +211,6 @@ spec:
         hostname: keystone.127-0-0-1.nip.io
         path: /
     horizon:
-      replicas: 1
       # Exposed through the same shared Envoy Gateway as Keystone, via the
       # second HTTPS listener the kind overlay adds for horizon.127-0-0-1.nip.io.
       gateway:
@@ -218,7 +218,6 @@ spec:
           name: openstack-gw
         hostname: horizon.127-0-0-1.nip.io
     glance:
-      replicas: 1
       # Drop publicEndpoint on the default port 443 — the operator then derives
       # https://glance.127-0-0-1.nip.io from the gateway hostname.
       publicEndpoint: https://glance.127-0-0-1.nip.io:8443
@@ -241,7 +240,6 @@ spec:
             credentialsSecretRef:
               name: garage-s3-credentials
     placement:
-      replicas: 1
       # Drop publicEndpoint on the default port 443 — the operator then derives
       # https://placement.127-0-0-1.nip.io from the gateway hostname.
       publicEndpoint: https://placement.127-0-0-1.nip.io:8443
@@ -252,7 +250,6 @@ spec:
           name: openstack-gw
         hostname: placement.127-0-0-1.nip.io
     barbican:
-      replicas: 1
       # An OpenBao instance this ControlPlane provisions and owns; its name, its
       # KV mount, and its AppRole are derived by convention, so the block is empty.
       secretStore:
@@ -267,10 +264,6 @@ spec:
           name: openstack-gw
         hostname: barbican.127-0-0-1.nip.io
     neutron:
-      replicas: 1
-      # Sizes both RPC worker Deployments. Omit it and each defaults to 3, so
-      # six idle worker pods land beside the rest of the control plane.
-      workerReplicas: 1
       # Drop publicEndpoint on the default port 443 and the operator derives
       # https://neutron.127-0-0-1.nip.io from the gateway hostname.
       publicEndpoint: https://neutron.127-0-0-1.nip.io:8443
@@ -286,7 +279,6 @@ spec:
         centralRef:
           name: controlplane-ovn
     nova:
-      replicas: 1
       # Drop publicEndpoint on the default port 443 and the operator derives
       # https://nova.127-0-0-1.nip.io from the gateway hostname. Both compute
       # catalog rows append /v2.1 to it.
@@ -299,6 +291,34 @@ spec:
         parentRef:
           name: openstack-gw
         hostname: nova.127-0-0-1.nip.io
+  # One pod per service API for the single-node kind cluster. Omit spec.sizing
+  # and every component takes the Standard profile's count: three for each API.
+  sizing:
+    keystone:
+      api:
+        replicas: 1
+    horizon:
+      api:
+        replicas: 1
+    glance:
+      api:
+        replicas: 1
+    placement:
+      api:
+        replicas: 1
+    barbican:
+      api:
+        replicas: 1
+    neutron:
+      api:
+        replicas: 1
+      # Sizes both RPC worker Deployments. Omit it and each takes Standard's 3,
+      # so six idle worker pods land beside the rest of the control plane.
+      workers:
+        replicas: 1
+    nova:
+      api:
+        replicas: 1
 ```
 
 ```bash
@@ -426,13 +446,13 @@ its conductor and scheduler over the bus.
 ::: details Optional: block storage (needs WITH_NFS=true in Step 2)
 The `cinder` block adds the block-storage service on the two NFS exports the
 Step 2 overlay pre-creates. Drop the fragment into `spec.services` of either CR
-shape on this page, beside the `neutron` block, and apply it again.
+shape on this page, beside the `neutron` block, add `cinder: {api: {replicas: 1}}`
+to `spec.sizing` for a single API pod, and apply it again.
 
 ```yaml
 # block-storage.yaml
 # Goes under `spec.services`, beside the `neutron` block above.
 cinder:
-  replicas: 1
   # Drop publicEndpoint on the default port 443 and the operator derives
   # https://cinder.127-0-0-1.nip.io from the gateway hostname.
   publicEndpoint: https://cinder.127-0-0-1.nip.io:8443
@@ -497,20 +517,19 @@ spec:
       secretRef:
         name: keystone-db         # placeholder default — the operator replaces it
                                   # with {name}-keystone-db-credentials (managed mode)
-      replicas: 1                 # single-instance, non-Galera; omit to default to 3 (Galera)
-      storageSize: 512Mi          # test-sized volume; omit to default to 100Gi (production)
+      replicas: 1                 # single-instance, non-Galera; omit for Standard's 3 (Galera)
+      storageSize: 512Mi          # test-sized volume; omit for Standard's 100Gi (production)
     cache:
       clusterRef:
         name: openstack-memcached
       backend: dogpile.cache.pymemcache
-      replicas: 1                 # single Memcached pod; omit to default to 3
+      replicas: 1                 # single Memcached pod; omit for Standard's 3
     messaging:
       clusterRef:
         name: openstack-rabbitmq  # RabbitmqCluster the operator provisions (managed mode)
-      replicas: 1                 # single broker pod; omit to default to 3
+      replicas: 1                 # single broker pod; omit for Standard's 3
   services:
     keystone:
-      replicas: 1
       publicEndpoint: https://keystone.127-0-0-1.nip.io:8443/v3
       gateway:
         parentRef:
@@ -518,7 +537,6 @@ spec:
         hostname: keystone.127-0-0-1.nip.io
         path: /
     horizon:
-      replicas: 1
       gateway:
         parentRef:
           name: openstack-gw          # same Gateway as Keystone; second listener
@@ -527,7 +545,6 @@ spec:
         name: horizon-secret-key       # default-identity kind shim Secret
         key: secret-key
     glance:
-      replicas: 1
       publicEndpoint: https://glance.127-0-0-1.nip.io:8443
       gateway:
         parentRef:
@@ -544,14 +561,12 @@ spec:
             credentialsSecretRef:
               name: garage-s3-credentials
     placement:
-      replicas: 1
       publicEndpoint: https://placement.127-0-0-1.nip.io:8443
       gateway:
         parentRef:
           name: openstack-gw          # same Gateway; sixth listener
         hostname: placement.127-0-0-1.nip.io
     barbican:
-      replicas: 1
       secretStore:
         dedicated: {}                 # OpenBao instance projected beside the child
       publicEndpoint: https://barbican.127-0-0-1.nip.io:8443
@@ -560,8 +575,6 @@ spec:
           name: openstack-gw          # same Gateway; seventh listener
         hostname: barbican.127-0-0-1.nip.io
     neutron:
-      replicas: 1
-      workerReplicas: 1
       publicEndpoint: https://neutron.127-0-0-1.nip.io:8443
       gateway:
         parentRef:
@@ -572,12 +585,35 @@ spec:
           name: controlplane-ovn
           namespace: openstack        # the ControlPlane's own namespace
     nova:
-      replicas: 1
       publicEndpoint: https://nova.127-0-0-1.nip.io:8443
       gateway:
         parentRef:
           name: openstack-gw          # same Gateway; tenth listener
         hostname: nova.127-0-0-1.nip.io
+  sizing:
+    keystone:
+      api:
+        replicas: 1
+    horizon:
+      api:
+        replicas: 1
+    glance:
+      api:
+        replicas: 1
+    placement:
+      api:
+        replicas: 1
+    barbican:
+      api:
+        replicas: 1
+    neutron:
+      api:
+        replicas: 1
+      workers:
+        replicas: 1
+    nova:
+      api:
+        replicas: 1
   korc:
     adminCredential:
       cloudCredentialsRef:
@@ -667,7 +703,7 @@ ControlPlane. See the
 
 ## Step 5 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all 19 sub-conditions are met, in
+The aggregate `Ready` flips to `True` once all 20 sub-conditions are met, in
 dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady`,
 `PlacementReady`, and `BarbicanReady` gate on `KeystoneReady` plus the
 `KeystoneService` registration each service projects for itself; `OVNReady`
@@ -684,7 +720,7 @@ when present, and nova, so it comes after them; the K-ORC branch runs
 alongside):
 
 ```
-NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady → BarbicanReady → OVNReady → NeutronReady → CinderReady → NovaReady → ServiceAccountsReady → RegistrationTenantStoresReady
+SizingReady → NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady → BarbicanReady → OVNReady → NeutronReady → CinderReady → NovaReady → ServiceAccountsReady → RegistrationTenantStoresReady
 ```
 
 `RegistrationTenantStoresReady` closes the chain and reads

@@ -123,7 +123,7 @@ Three numbers decide the value:
   images a fleet boots repeatedly. Size it around those, and accept that a
   rarely used image gets pruned out and re-fetched.
 - **Replicas multiply it.** Every replica holds its own copy, so
-  `services.glance.replicas` scales the node-disk cost linearly, and the
+  `spec.sizing.glance.api.replicas` scales the node-disk cost linearly, and the
   scheduler is not told about it: the operator derives no
   `resources.requests.ephemeral-storage` from this field, exactly as it derives
   none from `spec.staging`. Size nodes against

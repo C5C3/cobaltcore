@@ -137,12 +137,12 @@ through the `ControlPlane` CR and watching the projected image service roll out:
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"glance":{"replicas":2}}}}'
+  -p '{"spec":{"sizing":{"glance":{"api":{"replicas":2}}}}}'
 kubectl rollout status deploy/controlplane-glance -n openstack
 
 # revert
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"glance":{"replicas":1}}}}'
+  -p '{"spec":{"sizing":{"glance":{"api":{"replicas":1}}}}}'
 ```
 
 Set the replica count on the `ControlPlane` CR, not on the projected

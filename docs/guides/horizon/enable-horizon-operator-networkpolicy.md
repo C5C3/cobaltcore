@@ -116,12 +116,12 @@ through the `ControlPlane` CR and watching the projected dashboard roll out:
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"horizon":{"replicas":2}}}}'
+  -p '{"spec":{"sizing":{"horizon":{"api":{"replicas":2}}}}}'
 kubectl rollout status deploy/controlplane-horizon -n openstack
 
 # revert
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"horizon":{"replicas":1}}}}'
+  -p '{"spec":{"sizing":{"horizon":{"api":{"replicas":1}}}}}'
 ```
 
 Set the replica count on the `ControlPlane` CR, not on the projected

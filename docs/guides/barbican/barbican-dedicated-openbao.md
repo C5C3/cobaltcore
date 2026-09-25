@@ -71,7 +71,6 @@ kubectl edit controlplane controlplane -n openstack
 spec:
   services:
     barbican:
-      replicas: 1
       # The ControlPlane provisions the OpenBao instance and derives everything
       # else (its name, its KV mount, its AppRole) by convention, so the block
       # carries no fields.
@@ -84,6 +83,10 @@ spec:
         parentRef:
           name: openstack-gw
         hostname: barbican.127-0-0-1.nip.io
+  sizing:
+    barbican:
+      api:
+        replicas: 1
 ```
 
 `publicEndpoint` is what carries the `:8443` host port into the public

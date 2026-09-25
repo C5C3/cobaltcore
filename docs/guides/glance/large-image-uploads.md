@@ -215,10 +215,11 @@ multi-gibibyte uploads over slow links do this as readily as a client abusing it
 deliberately.
 
 Size against it rather than against the deadline. Widening the pool is the lever
-the CRs expose: `services.glance.replicas` on the `ControlPlane`, and — on a
-standalone `Glance` only, since the projection deliberately leaves
-`spec.apiServer` to the operator's release defaults — `spec.apiServer.uwsgi`
-`processes` and `threads`. Shedding the excess instead of queueing it is a
+the CRs expose: `spec.sizing.glance.api.replicas`, `.processes` and `.threads` on
+the `ControlPlane` (from 2026.1 the counts land in the child's
+`spec.apiServer.uwsgi`; below it the process count lands in
+`spec.apiServer.workers`), and `spec.apiServer.uwsgi` `processes` and `threads`
+on a standalone `Glance`. Shedding the excess instead of queueing it is a
 Gateway concern: on Envoy Gateway a `BackendTrafficPolicy` caps concurrent
 requests per backend. That policy belongs to the Gateway infrastructure and is
 not rendered by this operator.

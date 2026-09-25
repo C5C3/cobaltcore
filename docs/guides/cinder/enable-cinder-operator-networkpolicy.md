@@ -210,21 +210,21 @@ Read the current replica count first, so you can put it back:
 
 ```bash
 kubectl get controlplane controlplane -n openstack \
-  -o jsonpath='{.spec.services.cinder.replicas}'
+  -o jsonpath='{.spec.sizing.cinder.api.replicas}'
 
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"cinder":{"replicas":2}}}}'
+  -p '{"spec":{"sizing":{"cinder":{"api":{"replicas":2}}}}}'
 kubectl rollout status deploy/controlplane-cinder -n openstack
 
 # revert to the count you read above
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"cinder":{"replicas":1}}}}'
+  -p '{"spec":{"sizing":{"cinder":{"api":{"replicas":1}}}}}'
 ```
 
-`services.cinder.replicas` sizes the API Deployment alone. The scheduler, the
-volume services and the backup service are pinned to one replica by the
-projection, so this patch rolls `controlplane-cinder` and leaves the storage
-path untouched.
+`spec.sizing.cinder.api.replicas` sizes the API Deployment alone. The scheduler
+takes a count of its own under `spec.sizing.cinder.scheduler`, and the volume
+services and the backup service are pinned to one replica by the projection, so
+this patch rolls `controlplane-cinder` and leaves the storage path untouched.
 
 Set the replica count on the `ControlPlane` CR, not on the projected
 `controlplane-cinder` child: the c5c3-operator re-asserts the child's
