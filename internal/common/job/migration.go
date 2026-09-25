@@ -45,8 +45,10 @@ type MigrationJobParams struct {
 	// (for example a DB-TLS keypair or per-domain config).
 	ExtraVolumes      []corev1.Volume
 	ExtraVolumeMounts []corev1.VolumeMount
-	// PriorityClassName sets the Pod priority class; empty leaves it unset.
-	PriorityClassName string
+	// Pod is applied to the pod spec last: resources on the container, the
+	// priority class and the node placement. The zero value renders none of
+	// them.
+	Pod PodSettings
 	// BackoffLimit sets spec.backoffLimit.
 	BackoffLimit int32
 	// TTLSecondsAfterFinished, when non-nil, sets spec.ttlSecondsAfterFinished.
@@ -59,7 +61,7 @@ type MigrationJobParams struct {
 // mounts the rendered config read-only at ConfigMountPath — from ConfigMapName,
 // or from ConfigSecretName when the service renders its configuration into a
 // Secret — then appends any ExtraVolumes/ExtraVolumeMounts, so a caller with no
-// extras gets a plain config-mounted Job.
+// extras gets a plain config-mounted Job. It ends by applying p.Pod.
 func BuildMigrationJob(p MigrationJobParams) *batchv1.Job {
 	backoffLimit := p.BackoffLimit
 	configSource := corev1.VolumeSource{
@@ -85,8 +87,7 @@ func BuildMigrationJob(p MigrationJobParams) *batchv1.Job {
 			TTLSecondsAfterFinished: p.TTLSecondsAfterFinished,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
-					RestartPolicy:     corev1.RestartPolicyNever,
-					PriorityClassName: p.PriorityClassName,
+					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{{
 						Name:            p.ContainerName,
 						Image:           p.Image,
@@ -115,5 +116,6 @@ func BuildMigrationJob(p MigrationJobParams) *batchv1.Job {
 			job.Spec.Template.Spec.Containers[0].VolumeMounts, p.ExtraVolumeMounts...,
 		)
 	}
+	p.Pod.Apply(&job.Spec.Template.Spec)
 	return job
 }

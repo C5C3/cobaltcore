@@ -15,9 +15,12 @@ import (
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -770,6 +773,44 @@ func TestReconcileSyncJobs_dbSyncFailed(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(ReasonDBSyncFailed))
 	// InstalledRelease is NOT promoted on failure.
 	g.Expect(installed).To(BeEmpty())
+	g.Expect(rec.Events).To(Receive(ContainSubstring(ReasonDBSyncFailed)))
+}
+
+// The API server can refuse a rendered Job the webhook passed, for example an
+// affinity it does not check. The refusal surfaces as a db-sync failure that
+// names the Job, and the condition and a Warning event say so; a corrected CR
+// re-renders the template and runs the Job again.
+func TestReconcileSyncJobs_createRejected(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	var calls []string
+	rec := record.NewFakeRecorder(10)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, isJob := obj.(*batchv1.Job); isJob {
+					return apierrors.NewInvalid(
+						schema.GroupKind{Group: "batch", Kind: "Job"},
+						obj.GetName(),
+						field.ErrorList{field.Invalid(
+							field.NewPath("spec", "template", "spec", "affinity"), nil, "invalid affinity",
+						)},
+					)
+				}
+				return cl.Create(ctx, obj, opts...)
+			},
+		}).Build()
+
+	_, err := ReconcileSyncJobs(context.Background(), syncParams(c, s, owner, &conds, rec, nil, &calls))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("running db_sync: creating Job " + flowNamespace + "/keystone-db-sync:"))
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue())
+	cond := meta.FindStatusCondition(conds, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(ReasonDBSyncFailed))
 	g.Expect(rec.Events).To(Receive(ContainSubstring(ReasonDBSyncFailed)))
 }
 

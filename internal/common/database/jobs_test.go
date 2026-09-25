@@ -9,9 +9,14 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/job"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // keystoneJobSet returns a JobSetParams shaped like the keystone operator's
@@ -41,7 +46,7 @@ func keystoneJobSet() JobSetParams {
 			MountPath: "/etc/keystone/db-tls/",
 			ReadOnly:  true,
 		}},
-		PriorityClassName:  "keystone-critical",
+		Pod:                job.PodSettings{PriorityClassName: "keystone-critical"},
 		SyncCommand:        []string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"},
 		SchemaCheckCommand: []string{"/bin/sh", "-eu", "-c", "keystone-manage db_sync --check"},
 	}
@@ -136,8 +141,9 @@ func TestSyncJob_ConfigSecretMountedInsteadOfConfigMap(t *testing.T) {
 }
 
 // TestBuildJob_noExtras exercises the empty-extras edge path: a JobSetParams with
-// no ExtraVolumes/ExtraVolumeMounts, no Env, and no PriorityClass yields a plain
-// config-mounted Job with a single volume and mount.
+// no ExtraVolumes/ExtraVolumeMounts, no Env, and zero pod settings yields a
+// plain config-mounted Job with a single volume and mount, and no resources,
+// priority class or placement.
 func TestBuildJob_noExtras(t *testing.T) {
 	g := NewWithT(t)
 	p := JobSetParams{
@@ -153,9 +159,36 @@ func TestBuildJob_noExtras(t *testing.T) {
 	g.Expect(j.Name).To(Equal("glance-db-sync"))
 	spec := j.Spec.Template.Spec
 	g.Expect(spec.PriorityClassName).To(BeEmpty())
+	g.Expect(spec.NodeSelector).To(BeNil())
+	g.Expect(spec.Tolerations).To(BeNil())
+	g.Expect(spec.Affinity).To(BeNil())
 	g.Expect(spec.Volumes).To(HaveLen(1))
 	c := spec.Containers[0]
+	g.Expect(c.Resources).To(Equal(corev1.ResourceRequirements{}))
 	g.Expect(c.Env).To(BeEmpty())
 	g.Expect(c.VolumeMounts).To(HaveLen(1))
 	g.Expect(c.Command).To(Equal([]string{"glance-manage", "db", "sync"}))
+}
+
+// Every Job of the set renders the resolved pod settings it is given: the
+// resources on its container, the priority class, and the placement.
+func TestSyncJob_RendersPodSettings(t *testing.T) {
+	g := NewWithT(t)
+	p := keystoneJobSet()
+	p.Pod = job.ResolvePodSettings(&commonv1.JobSpec{
+		NodePlacementSpec: commonv1.NodePlacementSpec{NodeSelector: map[string]string{"pool": "jobs"}},
+	}, &commonv1.DeploymentSpec{PriorityClassName: ptr.To("high")})
+
+	for _, j := range []*batchv1.Job{SyncJob(p), SchemaCheckJob(p)} {
+		spec := j.Spec.Template.Spec
+		g.Expect(spec.PriorityClassName).To(Equal("high"))
+		g.Expect(spec.NodeSelector).To(Equal(map[string]string{"pool": "jobs"}))
+		g.Expect(spec.Containers[0].Resources.Requests).To(Equal(corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("368Mi"),
+		}))
+		g.Expect(spec.Containers[0].Resources.Limits).To(Equal(corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("368Mi"),
+		}))
+	}
 }

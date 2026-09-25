@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/job"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
@@ -82,7 +83,7 @@ func keystoneJobSetParams(keystone *keystonev1alpha1.Keystone, configMapName, do
 		Env:               []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
 		ExtraVolumes:      extraVolumes,
 		ExtraVolumeMounts: extraMounts,
-		PriorityClassName: priorityClassName(keystone),
+		Pod:               job.PodSettings{PriorityClassName: priorityClassName(keystone)},
 		SyncCommand:       []string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"},
 		// Read-only schema verification via keystone-manage db_sync --check.
 		// Exit codes: 0 = up-to-date, 1..4 = needs expand/migrate/contract. This
