@@ -284,6 +284,21 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
         extra="  metadataWorkers: -1\n",
     ),
+    Fixture(
+        filename="12-novametadata-cabundle-without-https.yaml",
+        comment=(
+            "spec.novaMetadata.caBundleSecretRef beside protocol: http violates the CEL\n"
+            "rule on NovaMetadataSpec, which the API server answers before the webhook's\n"
+            "field.Invalid twin runs. The agent verifies the Nova metadata API's\n"
+            "certificate only over TLS, so the bundle would be mounted and never read."
+        ),
+        extra=(
+            "  novaMetadata:\n"
+            "    protocol: http\n"
+            "    caBundleSecretRef:\n"
+            "      name: nova-metadata-ca\n"
+        ),
+    ),
 )
 
 

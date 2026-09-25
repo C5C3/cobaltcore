@@ -160,6 +160,11 @@ type OVNChassisRef struct {
 // terminates the instance's request to 169.254.169.254 and forwards it to that
 // API with the instance identity attached, signed with the shared secret both
 // sides carry.
+//
+// The CEL rule keeps a CA bundle off a plain-http agent: the agent verifies the
+// Nova metadata API's certificate only over TLS, so a bundle beside "http" would
+// be mounted and never read.
+// +kubebuilder:validation:XValidation:rule="!has(self.caBundleSecretRef) || (has(self.protocol) && self.protocol == 'https')",message="caBundleSecretRef requires protocol https"
 type NovaMetadataSpec struct {
 	// Host is the address of the Nova metadata API. When empty the oslo default
 	// applies.
@@ -188,6 +193,16 @@ type NovaMetadataSpec struct {
 	// key is webhook-defaulted to "shared_secret".
 	// +optional
 	SharedSecretRef *commonv1.SecretRefSpec `json:"sharedSecretRef,omitempty"`
+
+	// CABundleSecretRef references a Secret in the agent's namespace, on the
+	// cluster its pods run on, that holds the PEM bundle signing the Nova
+	// metadata API's certificate: the issuer of the metadata Gateway listener
+	// for an agent on a compute cluster. The operator mounts it into the agent
+	// container and renders its path as [DEFAULT] auth_ca_cert. The key is
+	// webhook-defaulted to "ca.crt". Without it, an "https" agent verifies the
+	// certificate against the image's default CA bundle.
+	// +optional
+	CABundleSecretRef *commonv1.SecretRefSpec `json:"caBundleSecretRef,omitempty"`
 }
 
 // NeutronMetadataAgentStatus defines the observed state of NeutronMetadataAgent.

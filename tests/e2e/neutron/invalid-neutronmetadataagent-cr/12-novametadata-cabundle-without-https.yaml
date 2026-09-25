@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.novaMetadata.caBundleSecretRef beside protocol: http violates the CEL
+# rule on NovaMetadataSpec, which the API server answers before the webhook's
+# field.Invalid twin runs. The agent verifies the Nova metadata API's
+# certificate only over TLS, so the bundle would be mounted and never read.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: neutron-metadata-agent
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  chassisRef:
+    name: ovn-chassis
+  novaMetadata:
+    protocol: http
+    caBundleSecretRef:
+      name: nova-metadata-ca

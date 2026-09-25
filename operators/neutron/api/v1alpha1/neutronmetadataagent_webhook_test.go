@@ -68,6 +68,23 @@ func TestNeutronMetadataAgentDefault_NovaMetadata(t *testing.T) {
 	g.Expect(explicit.Spec.NovaMetadata.Port).To(gomega.Equal(int32(18775)))
 	g.Expect(explicit.Spec.NovaMetadata.Protocol).To(gomega.Equal("https"))
 	g.Expect(explicit.Spec.NovaMetadata.SharedSecretRef.Key).To(gomega.Equal("proxy-secret"))
+	g.Expect(explicit.Spec.NovaMetadata.CABundleSecretRef).To(gomega.BeNil())
+
+	caDefaulted := validNeutronMetadataAgent()
+	caDefaulted.Spec.NovaMetadata = &NovaMetadataSpec{
+		Protocol:          "https",
+		CABundleSecretRef: &commonv1.SecretRefSpec{Name: "nova-metadata-ca"},
+	}
+	g.Expect(w.Default(context.Background(), caDefaulted)).To(gomega.Succeed())
+	g.Expect(caDefaulted.Spec.NovaMetadata.CABundleSecretRef.Key).To(gomega.Equal("ca.crt"))
+
+	caExplicit := validNeutronMetadataAgent()
+	caExplicit.Spec.NovaMetadata = &NovaMetadataSpec{
+		Protocol:          "https",
+		CABundleSecretRef: &commonv1.SecretRefSpec{Name: "nova-metadata-ca", Key: "bundle.pem"},
+	}
+	g.Expect(w.Default(context.Background(), caExplicit)).To(gomega.Succeed())
+	g.Expect(caExplicit.Spec.NovaMetadata.CABundleSecretRef.Key).To(gomega.Equal("bundle.pem"))
 }
 
 // spec.logging is materialized so downstream reconciler code dereferences it
@@ -145,6 +162,36 @@ func TestNeutronMetadataAgentValidateCreate_AcceptedShapes(t *testing.T) {
 		{
 			name:   "unset metadataWorkers",
 			mutate: func(o *NeutronMetadataAgent) { o.Spec.MetadataWorkers = nil },
+		},
+		{
+			name: "https agent with a CA bundle",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.NovaMetadata = &NovaMetadataSpec{
+					Host:              "nova-metadata.example.test",
+					Port:              443,
+					Protocol:          "https",
+					SharedSecretRef:   &commonv1.SecretRefSpec{Name: "metadata-proxy-secret", Key: "shared_secret"},
+					CABundleSecretRef: &commonv1.SecretRefSpec{Name: "nova-metadata-ca", Key: "ca.crt"},
+				}
+			},
+		},
+		// auth_ca_cert is owned but not Rejected: an extraConfig value is
+		// rendered and reported, never refused.
+		{
+			name: "extraConfig auth_ca_cert is admitted",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.ExtraConfig = map[string]map[string]string{
+					"DEFAULT": {"auth_ca_cert": "/etc/ssl/certs/ca-certificates.crt"},
+				}
+			},
+		},
+		{
+			name: "extraConfig nova_metadata_insecure is admitted",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.ExtraConfig = map[string]map[string]string{
+					"DEFAULT": {"nova_metadata_insecure": "true"},
+				}
+			},
 		},
 	}
 
@@ -232,6 +279,41 @@ func TestNeutronMetadataAgentValidateCreate_RejectionTable(t *testing.T) {
 				}
 			},
 			wantSub: "sharedSecretRef.name must be set",
+		},
+		{
+			name: "caBundleSecretRef with protocol http rejected",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.NovaMetadata = &NovaMetadataSpec{
+					Port:              8775,
+					Protocol:          "http",
+					CABundleSecretRef: &commonv1.SecretRefSpec{Name: "nova-metadata-ca", Key: "ca.crt"},
+				}
+			},
+			wantSub: `spec.novaMetadata.caBundleSecretRef: Invalid value: "nova-metadata-ca": ` +
+				"caBundleSecretRef requires protocol https: the agent verifies the Nova metadata API's certificate only over TLS",
+		},
+		{
+			name: "caBundleSecretRef with an empty protocol rejected",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.NovaMetadata = &NovaMetadataSpec{
+					Port:              8775,
+					CABundleSecretRef: &commonv1.SecretRefSpec{Name: "nova-metadata-ca", Key: "ca.crt"},
+				}
+			},
+			wantSub: `spec.novaMetadata.caBundleSecretRef: Invalid value: "nova-metadata-ca": ` +
+				"caBundleSecretRef requires protocol https: the agent verifies the Nova metadata API's certificate only over TLS",
+		},
+		{
+			name: "caBundleSecretRef without a name rejected",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.NovaMetadata = &NovaMetadataSpec{
+					Port:              8775,
+					Protocol:          "https",
+					CABundleSecretRef: &commonv1.SecretRefSpec{Key: "ca.crt"},
+				}
+			},
+			wantSub: "spec.novaMetadata.caBundleSecretRef.name: Required value: " +
+				"caBundleSecretRef.name must be set when spec.novaMetadata.caBundleSecretRef is configured",
 		},
 		{
 			name: "novaMetadata host with a newline rejected",

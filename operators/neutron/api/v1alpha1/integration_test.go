@@ -254,6 +254,39 @@ func TestIntegration_CRD_CELOnly_RejectsMessagingXOR(t *testing.T) {
 	})
 }
 
+// TestIntegration_CRD_CELOnly_RejectsCABundleWithoutHTTPS pins the CEL rule on
+// NovaMetadataSpec: the agent verifies the Nova metadata API's certificate only
+// over TLS, so a CA bundle beside a plain-http protocol, or beside no protocol
+// at all, would be mounted and never read.
+func TestIntegration_CRD_CELOnly_RejectsCABundleWithoutHTTPS(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+	ns := newNamespace(t, ctx, c, "agent-cabundle-https-")
+	const wantSub = "caBundleSecretRef requires protocol https"
+
+	plain := integrationAgent("agent-http", ns, "chassis")
+	plain.Spec.NovaMetadata = &NovaMetadataSpec{
+		Protocol:          "http",
+		CABundleSecretRef: &commonv1.SecretRefSpec{Name: "nova-metadata-ca"},
+	}
+	expectRejected(t, c.Create(ctx, plain), wantSub)
+
+	unset := integrationAgent("agent-unset", ns, "chassis")
+	unset.Spec.NovaMetadata = &NovaMetadataSpec{
+		CABundleSecretRef: &commonv1.SecretRefSpec{Name: "nova-metadata-ca"},
+	}
+	expectRejected(t, c.Create(ctx, unset), wantSub)
+
+	tls := integrationAgent("agent-https", ns, "chassis")
+	tls.Spec.NovaMetadata = &NovaMetadataSpec{
+		Protocol:          "https",
+		CABundleSecretRef: &commonv1.SecretRefSpec{Name: "nova-metadata-ca"},
+	}
+	g.Expect(c.Create(ctx, tls)).To(Succeed(), "an https agent with a CA bundle should be accepted")
+}
+
 // TestIntegration_CRD_NestedDefaultsMaterialized proves the API server fills the
 // nested schema defaults of the Neutron kind without a mutating webhook. Each
 // value below sits under an object the CR carries but leaves empty, so it only

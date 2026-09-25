@@ -31,6 +31,9 @@ const (
 	// defaultSharedSecretKey is the Secret key spec.novaMetadata.sharedSecretRef
 	// is defaulted to.
 	defaultSharedSecretKey = "shared_secret"
+	// defaultCABundleKey is the Secret key spec.novaMetadata.caBundleSecretRef
+	// is defaulted to.
+	defaultCABundleKey = "ca.crt"
 	// DefaultMetadataWorkers is the [DEFAULT] metadata_workers value rendered
 	// when spec.metadataWorkers is unset.
 	DefaultMetadataWorkers int32 = 4
@@ -85,6 +88,9 @@ func (w *NeutronMetadataAgentWebhook) Default(_ context.Context, obj *NeutronMet
 		}
 		if obj.Spec.NovaMetadata.SharedSecretRef != nil && obj.Spec.NovaMetadata.SharedSecretRef.Key == "" {
 			obj.Spec.NovaMetadata.SharedSecretRef.Key = defaultSharedSecretKey
+		}
+		if obj.Spec.NovaMetadata.CABundleSecretRef != nil && obj.Spec.NovaMetadata.CABundleSecretRef.Key == "" {
+			obj.Spec.NovaMetadata.CABundleSecretRef.Key = defaultCABundleKey
 		}
 	}
 	return nil
@@ -212,6 +218,22 @@ func (w *NeutronMetadataAgentWebhook) validate(a *NeutronMetadataAgent, extra fi
 				novaPath.Child("sharedSecretRef", "name"),
 				"sharedSecretRef.name must be set when spec.novaMetadata.sharedSecretRef is configured",
 			))
+		}
+		if ref := a.Spec.NovaMetadata.CABundleSecretRef; ref != nil {
+			if ref.Name == "" {
+				allErrs = append(allErrs, field.Required(
+					novaPath.Child("caBundleSecretRef", "name"),
+					"caBundleSecretRef.name must be set when spec.novaMetadata.caBundleSecretRef is configured",
+				))
+			}
+			// Webhook twin of the CEL rule on NovaMetadataSpec. An empty protocol
+			// is rejected too: the defaulting webhook resolves it to "http".
+			if a.Spec.NovaMetadata.Protocol != "https" {
+				allErrs = append(allErrs, field.Invalid(
+					novaPath.Child("caBundleSecretRef"), ref.Name,
+					"caBundleSecretRef requires protocol https: the agent verifies the Nova metadata API's certificate only over TLS",
+				))
+			}
 		}
 	}
 
