@@ -142,6 +142,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `OpenBaoCluster`, `OpenBaoTenant` | `Owns()` | Re-reconciles when the OpenBao instance provisioned for a dedicated Barbican secret store, or the tenant admitting its namespace, changes. The openbao-operator is installed only for that mode, so a ControlPlane without one runs on a cluster that never serves these kinds; both legs sit behind the discovery probe with the other sibling-operator kinds (`probeOptionalWatches`, which skips the leg and registers a leader-gated re-check that restarts the operator once the CRD appears) |
 | `RabbitmqCluster` (unstructured `rabbitmqClusterGVK`) | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the managed message-bus child status changes, so `InfrastructureReady` follows `AllReplicasReady` instead of waiting for the periodic requeue. Watched as `*unstructured.Unstructured`, since the c5c3 operator takes no dependency on the RabbitMQ Cluster Operator's Go module. Messaging is opt-in, so both legs sit behind the discovery probe with the openbao kinds: a cluster that does not serve `rabbitmqclusters.rabbitmq.com` starts without them, and `crdWatchGate` restarts the operator once the CRD appears |
 | `NovaCompute` | `Watches()` | Per-CR fan-out via `novaComputeToControlPlaneMapper`, matching the Nova namespace and the Nova name a pool's `spec.novaRef` names. Pools are user-authored and only read, for the clusters the compute contract is mirrored to, so they carry no owner reference. The predicate admits a pool being created, deleted or starting to be deleted, the events that change the mirror targets. The leg sits behind the discovery probe with the other nova-operator kinds |
+| `NeutronMetadataAgent` | `Watches()` | Per-CR fan-out via `neutronMetadataAgentToControlPlaneMapper`, waking every ControlPlane with `services.nova` and `services.neutron` whose OVN central namespace is the agent's namespace. Agents are user-authored and only read, for the clusters the metadata shared secret is copied to, so they carry no owner reference. `neutronMetadataAgentDeliveryPredicate` admits an agent being created, deleted or starting to be deleted, and a change of `spec.novaMetadata.sharedSecretRef.name`; status writes and generic events are dropped. The leg sits behind the discovery probe with the other neutron-operator kinds |
 | `OVNCentral` | `Watches()` | Per-CR fan-out via `ovnCentralToControlPlaneMapper`. The central is deployed outside the plane and only named by `spec.services.neutron.ovn.centralRef`, so it carries no owner reference an `Owns()` could match; the leg re-runs `reconcileOVN` when the central's status moves instead of waiting for the periodic requeue. The ovn-operator is installed only for a plane that runs a network service, so the leg sits behind the discovery probe with the other sibling-operator kinds |
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
@@ -278,6 +279,7 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `placement.openstack.c5c3.io` | `placements` | get, list, watch, create, update, patch, delete |
 | `barbican.openstack.c5c3.io` | `barbicans`, `barbicansecretstores` | get, list, watch, create, update, patch, delete |
 | `neutron.openstack.c5c3.io` | `neutrons` | get, list, watch, create, update, patch, delete |
+| `neutron.openstack.c5c3.io` | `neutronmetadataagents` | get, list, watch |
 | `cinder.openstack.c5c3.io` | `cinders`, `cinderbackends`, `cinderbackupbackends` | get, list, watch, create, update, patch, delete |
 | `nova.openstack.c5c3.io` | `novas` | get, list, watch, create, update, patch, delete |
 | `ovn.openstack.c5c3.io` | `ovncentrals` | get, list, watch |
@@ -2512,11 +2514,11 @@ unowned, and the finalizer sweeps it by those labels.
 
 | Aspect | Value |
 | --- | --- |
-| File | `reconcile_nova.go`, `reconcile_service_messaging.go`, `reconcile_nova_dbcredentials.go`, `reconcile_nova_metadata_secret.go`, `reconcile_nova_remote_compute.go`, `reconcile_nova_hypervisor_operator.go` |
+| File | `reconcile_nova.go`, `reconcile_service_messaging.go`, `reconcile_nova_dbcredentials.go`, `reconcile_nova_metadata_secret.go`, `reconcile_nova_remote_compute.go`, `reconcile_nova_hypervisor_operator.go`, `reconcile_nova_metadata_agent.go` |
 | Condition | `NovaReady` |
 | Gate | `KeystoneReady == True` (Nova validates every token against the Keystone child), `PlacementReady == True` (the conductor claims every instance's resources in Placement before it boots) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)). Neutron and Glance are required at admission but gate nothing here, and Cinder and Barbican are optional siblings |
-| Projects / Owns | one `Nova` child named `{controlplane.Name}-nova` (`novaNameSuffix`) in `cp.NovaNamespace()`; the bus delivery beside it, a `{controlplane.Name}-nova-messaging` Secret (key `transport_url`) and, only while the shared bus declares `tls`, a `{controlplane.Name}-nova-messaging-ca` Secret (key `ca.crt`); only while `services.nova.remoteCompute` is set, a `{controlplane.Name}-nova-remote-messaging` Secret (key `transport_url`) carrying the handed external bus URL; the `{controlplane.Name}-nova` `KeystoneService` registration; the generated metadata shared secret, an ESO `Password` generator and an `ExternalSecret` both named `{controlplane.Name}-nova-metadata-secret`, unless `services.nova.metadataSharedSecretRef` names one instead; and, on a managed database only, **two** per-ControlPlane DB-credential chains in the same namespace. In **Dynamic** mode (the managed-shared default) each chain carries a ServiceAccount (`nova-api-db-creds` / `nova-cell-db-creds`), an mTLS client Certificate (`{controlplane.Name}-nova-api-db-openbao-client` / `{controlplane.Name}-nova-db-openbao-client`), a `VaultDynamicSecret` generator reading `database/mariadb/creds/nova-api-{nova-namespace}` (auth role `nova-api-db`) or `database/mariadb/creds/nova-cell-{nova-namespace}` (auth role `nova-cell-db`), and a generator-backed `ExternalSecret` (`{controlplane.Name}-nova-api-db-credentials` / `{controlplane.Name}-nova-db-credentials`); in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/nova/{nova-namespace}/{controlplane.Name}/api-db` or `…/db` (properties `username`, `password`); while `services.nova.hypervisorOperator` is set, the account-only `{controlplane.Name}-nova-hypervisor-operator` `KeystoneService` registration and the `{controlplane.Name}-nova-hypervisor-operator-auth` Secret beside the child, plus a copy of that Secret on every compute-config mirror target. Only when `spec.services.nova` is set |
-| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on `KeystoneReady` or `PlacementReady`; `infraRequeueAfter` = **15s** while the bus material has not landed, while the backing services or the bus do not resolve, while a compute-config mirror cannot be served, while the child is not Ready, and while the hypervisor operator's password has not landed or a target does not resolve; `korcRequeueAfter` = **10s** while the `nova` or the hypervisor operator's account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while either Dynamic DB credential has not landed |
+| Projects / Owns | one `Nova` child named `{controlplane.Name}-nova` (`novaNameSuffix`) in `cp.NovaNamespace()`; the bus delivery beside it, a `{controlplane.Name}-nova-messaging` Secret (key `transport_url`) and, only while the shared bus declares `tls`, a `{controlplane.Name}-nova-messaging-ca` Secret (key `ca.crt`); only while `services.nova.remoteCompute` is set, a `{controlplane.Name}-nova-remote-messaging` Secret (key `transport_url`) carrying the handed external bus URL; the `{controlplane.Name}-nova` `KeystoneService` registration; the generated metadata shared secret, an ESO `Password` generator and an `ExternalSecret` both named `{controlplane.Name}-nova-metadata-secret`, unless `services.nova.metadataSharedSecretRef` names one instead; and, on a managed database only, **two** per-ControlPlane DB-credential chains in the same namespace. In **Dynamic** mode (the managed-shared default) each chain carries a ServiceAccount (`nova-api-db-creds` / `nova-cell-db-creds`), an mTLS client Certificate (`{controlplane.Name}-nova-api-db-openbao-client` / `{controlplane.Name}-nova-db-openbao-client`), a `VaultDynamicSecret` generator reading `database/mariadb/creds/nova-api-{nova-namespace}` (auth role `nova-api-db`) or `database/mariadb/creds/nova-cell-{nova-namespace}` (auth role `nova-cell-db`), and a generator-backed `ExternalSecret` (`{controlplane.Name}-nova-api-db-credentials` / `{controlplane.Name}-nova-db-credentials`); in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/nova/{nova-namespace}/{controlplane.Name}/api-db` or `…/db` (properties `username`, `password`); while `services.nova.hypervisorOperator` is set, the account-only `{controlplane.Name}-nova-hypervisor-operator` `KeystoneService` registration and the `{controlplane.Name}-nova-hypervisor-operator-auth` Secret beside the child, plus a copy of that Secret on every compute-config mirror target; and a `{controlplane.Name}-nova-metadata-agent-secret` Secret (key `shared_secret`) in the OVN central's namespace on every cluster a `NeutronMetadataAgent` of the plane names it on, never deleted by the plane. Only when `spec.services.nova` is set |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on `KeystoneReady` or `PlacementReady`; `infraRequeueAfter` = **15s** while the bus material has not landed, while the backing services or the bus do not resolve, while a compute-config mirror cannot be served, while the child is not Ready, while the hypervisor operator's password has not landed or a target does not resolve, and while the compute contract carries no metadata shared secret for an agent's copy or an agent's cluster does not resolve; `korcRequeueAfter` = **10s** while the `nova` or the hypervisor operator's account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while either Dynamic DB credential has not landed |
 
 `reconcileNova` runs in a fixed order: the not-managed branch first, then a
 nil-safety fail-safe on the resolved database, cache and shared bus (a
@@ -2528,7 +2530,8 @@ finally the child itself through `ProjectChild`. Past the apply, and only once
 the child reports Ready for the generation the apply produced, it reaps a
 released messaging CA mirror and a generated metadata shared secret the child no
 longer names, delivers the compute contract to every mirror target, runs the
-hypervisor-operator leg against the same targets, and folds the registration's
+hypervisor-operator leg against the same targets, copies the metadata shared
+secret to the metadata agents on target clusters, and folds the registration's
 readiness into `NovaReady`.
 
 The API chain is ensured before the cell chain. Its schema is the one the cell
@@ -2717,6 +2720,40 @@ starts no Secret informer on a compute cluster. See
 [ServiceNovaHypervisorOperatorSpec](controlplane-crd.md#servicenovahypervisoroperatorspec)
 for what the account and the Secret are for.
 
+**The metadata-agent leg.** `reconcileNovaMetadataAgentSecrets` runs after the
+hypervisor-operator leg and before the registration fold, so it runs only once
+the Nova child is Ready. `novaMetadataAgentTargets` lists the
+`NeutronMetadataAgent`s in `cp.NeutronOVNCentralNamespace()`, which is where
+every agent answering for this plane's ports lives: an agent's `chassisRef` is
+namespace-local, a chassis's `centralRef` is too, and one OVNCentral serves one
+ControlPlane. An agent qualifies while it is not being deleted, has a
+`targetClusterRef`, and names `{controlplane.Name}-nova-metadata-agent-secret`
+in `spec.novaMetadata.sharedSecretRef`; the result is one target per distinct
+cluster, sorted, in the central's namespace. The Nova's own cluster is not
+dropped, because the copy's name differs from every Secret the plane writes
+there. Without `services.neutron` nothing is listed, and a cluster that does not
+serve the kind yields no target. With no target the leg reads and writes
+nothing. Otherwise it reads `{controlplane.Name}-nova-compute-config` in the
+Nova namespace through the client `childrenClientFor` returns, takes its
+`metadata_proxy_shared_secret`, and writes the copy onto each target through
+`ensureUnownedOrOwned`: type `Opaque`, the single key `shared_secret`, the
+ControlPlane's ownership labels and
+`neutron.openstack.c5c3.io/metadata-shared-secret-mirror: "true"`. The contract's
+bus URL and service password never reach the agent's privileged namespace, and
+a rotated value is rewritten on the next pass. A target that fails holds back
+none sorted after it: each of those still receives its copy, and `NovaReady`
+reports the first failed write, or else the first cluster that did not resolve.
+A `NeutronMetadataAgent` watch wakes the plane, narrowed to agents arriving,
+leaving or re-pointing their shared secret.
+
+The plane never deletes a copy: `deleteOrphanedNova` leaves it alone, and each
+agent's teardown reaps the copy on its own cluster once no other live agent
+there names it (see
+[On a compute cluster](../neutron/neutron-metadata-agent-crd.md#on-a-compute-cluster)).
+A plane pass already in flight when an agent starts deleting can rewrite a copy
+that teardown just reaped. The compute-contract mirror has the same race, and
+the next agent teardown in that namespace on that cluster reaps the copy.
+
 Unsetting `spec.services.nova` deletes nothing on its own. With
 `c5c3.io/allow-nova-deletion: "true"`, `deleteOrphanedNova` releases the `Nova`
 child, both DB-credential chains (each `ExternalSecret`, its `VaultDynamicSecret`,
@@ -2726,7 +2763,8 @@ its CA mirror, and the remote bus URL), the hypervisor operator's registration
 and auth Secret, and finally the `KeystoneService` registration, whose finalizer
 is what tears the compute catalog rows, the service user and its project down.
 The auth Secret's copies on compute clusters are each `NovaCompute`'s own
-teardown to reap. The materialised metadata Secret
+teardown to reap, and the metadata shared-secret copies each
+`NeutronMetadataAgent`'s. The materialised metadata Secret
 carries ESO's own owner reference, so it comes down with its ExternalSecret. Each
 object is only removed while this ControlPlane still owns it, so a foreign object
 colliding on a name is left alone.
@@ -2769,7 +2807,10 @@ unowned, and the finalizer sweeps it by those labels.
 | listing the NovaComputes, reading the compute contract, or writing a mirror fails | False | `NovaComputeConfigError` | returns the error |
 | `hypervisorOperator` set, the account provisioned, but its consumer Secret absent or without a `password` | False | `WaitingForHypervisorOperatorCredentials` | requeue 15s; no auth Secret is written yet |
 | reading the consumer Secret, writing the auth Secret or a copy, or deleting any of them after the block was cleared fails | False | `HypervisorOperatorError` | returns the error; a failed copy names the namespace and the cluster |
-| Nova child Ready, every mirror target served, the hypervisor operator's Secret delivered while its block is set, and its registration Ready | True | `NovaReady` | — |
+| an agent asks for the metadata shared-secret copy, but `{controlplane.Name}-nova-compute-config` is absent or carries no `metadata_proxy_shared_secret` | False | `WaitingForComputeConfig` | requeue 15s; the absent-contract message names the central's namespace whose agents sign with the value |
+| the Nova's cluster or an agent's cluster does not resolve for the copy | False | `TargetClusterUnavailable` | requeue 15s; the resolver's own message, for an agent's cluster prefixed with the namespace and the cluster, one per cluster that did not resolve |
+| listing the agents, reading the contract, or writing a copy fails, a foreign same-named Secret included | False | `NovaMetadataAgentSecretError` | returns the error; every failed copy names its namespace and cluster, and the message also lists the agent clusters that did not resolve |
+| Nova child Ready, every mirror target served, the hypervisor operator's Secret delivered while its block is set, every requested metadata shared-secret copy written, and its registration Ready | True | `NovaReady` | — |
 
 ### reconcileKORC
 
@@ -4285,6 +4326,7 @@ cross-namespace teardown assertions.
 | `reconcile_nova_dbcredentials_test.go` | The two Nova DB-credential targets: names, OpenBao roles and paths, and the one effective mode both carry |
 | `reconcile_nova_metadata_secret_test.go` | The generated metadata shared secret: the `Password` generator, the non-refreshing ExternalSecret and its `shared_secret` rewrite, the resolved reference, the pair a reference to the generated Secret keeps, and the reap once `metadataSharedSecretRef` names another Secret, on the target cluster as well as at home |
 | `reconcile_nova_hypervisor_operator_test.go` | The hypervisor operator's account: the registration and its name budget, the relayed registration wait, the password wait and read failure, the seven-key auth Secret, one copy per compute cluster, a failed or unresolvable target, a foreign auth Secret refused beside the Nova and on a compute cluster, a Nova in a dedicated namespace or on a target cluster, rotation, and the prune with its ownership and mirror-label gates, its uncached reads and the placed Nova's `ExternalSecret` |
+| `reconcile_nova_metadata_agent_test.go` | The metadata shared-secret copy for agents on target clusters: the targets one per cluster in the central's namespace and the agents left out, the neutron-less plane and the unserved kind, the single-key copy with its labels, one copy per cluster, a placed Nova's contract read on its own cluster, no target no write, the waits on the contract and its key, a contract read error, a failed agent list, an unresolvable Nova or agent cluster, a failed write and a foreign Secret, a failing cluster that holds back no other, rotation, and `NovaReady` waiting on the copy in `reconcileNova` |
 | `builtin_registrations_test.go` | The shared registration leg: the projected child, the gate, the credential mirror, the reclaim of foreign spec fields, and the per-service roles |
 | `reconcile_credentialrotation_test.go` | Nudge model, one-per-namespace resolution, bootstrap, deferred scheduled fields, target enum |
 | `credential_invariant_test.go` | Security invariants (restricted mint, app-credential Secret not on any workload) |
@@ -4365,6 +4407,8 @@ operators/c5c3/
     │   │                                        spec.remoteCompute, and its reap
     │   ├── reconcile_nova_hypervisor_operator.go The hypervisor operator's account: registration,
     │   │                                        auth Secret, its copies, prune
+    │   ├── reconcile_nova_metadata_agent.go    The metadata shared-secret copy for the agents
+    │   │                                        on target clusters, its watch mapper and predicate
     │   ├── reconcile_korc.go                   reconcileKORC (AC mint/re-mint, drift detection)
     │   ├── reconcile_admincredential.go        reconcileAdminCredential (assemble + push + re-push
     │   │                                        nudges, semantic clouds.yaml gate)
@@ -4418,6 +4462,7 @@ operators/c5c3/
     │   ├── reconcile_nova_metadata_secret_test.go Nova metadata shared-secret tests
     │   ├── reconcile_nova_remote_compute_test.go Nova remote bus delivery tests
     │   ├── reconcile_nova_hypervisor_operator_test.go Hypervisor-operator account tests
+    │   ├── reconcile_nova_metadata_agent_test.go Metadata-agent shared-secret copy tests
     │   ├── reconcile_korc_test.go              K-ORC mint/re-mint tests
     │   ├── reconcile_admincredential_test.go   AdminCredential tests
     │   ├── reconcile_catalog_test.go           Catalog (managed-mode) tests

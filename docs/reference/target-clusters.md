@@ -104,13 +104,14 @@ on the management cluster, as equally privileged until an authorization model
 lands.
 :::
 
-Three grants therefore need locking down on the management cluster:
+Four grants therefore need locking down on the management cluster:
 
 | Grant | Why |
 | --- | --- |
 | `create`/`update` on Secrets in `c5c3-clusters` | A labelled Secret here registers a cluster. Whoever can write one decides which clusters the operator holds credentials for |
 | `create` on `keystones`, `barbicans`, `glances`, `horizons`, `placements`, `cinders`, `novas`, `controlplanes` | A CR author picks the cluster its children land on, from every name registered. A ControlPlane picks one per service |
 | `create` on `novacomputes` | Root on every node the author's `spec.nodeSelector` and `spec.tolerations` reach: the pool runs a privileged, host-network `nova-compute` as uid 0, with `/dev` and `/var/lib/nova` mounted, from the image `spec.image` names. That holds on any registered cluster, and on the management cluster when `targetClusterRef` is unset. A pool of a ControlPlane's Nova naming a cluster also makes the ControlPlane copy the compute contract there, the bus `transport_url` with the RabbitMQ password and the service password among it, whether or not the pool selects a node |
+| `create`/`update` on `neutronmetadataagents` in a ControlPlane's OVN central namespace | Root on the chassis's nodes: the agent runs privileged on their host network. An agent that names a target cluster and `{controlplane.Name}-nova-metadata-agent-secret` in `spec.novaMetadata.sharedSecretRef` also makes the ControlPlane copy the metadata shared secret onto the cluster it names, into the same namespace there |
 
 An install that needs no target clusters carries none of the cross-cluster
 exposure: a namespace-scoped install clears `--clusters-namespace` (see below),
@@ -327,6 +328,19 @@ A `NeutronMetadataAgent`'s namespace needs the same entry. Its
 bidirectional `/run/netns` mount, which is why the kind is projected into the
 namespace of the `OVNChassis` it attaches to: one entry covers both node-level
 workloads, and the `Neutron` API needs none.
+
+On a compute cluster that namespace also receives the Secret the agent signs
+instance requests with. For an agent that names
+`{controlplane.Name}-nova-metadata-agent-secret`, the ControlPlane writes that
+Secret there with the single key `shared_secret` and the label
+`neutron.openstack.c5c3.io/metadata-shared-secret-mirror: "true"`, and the
+teardown of the last agent there that names it deletes it (see
+[On a compute cluster](./neutron/neutron-metadata-agent-crd.md#on-a-compute-cluster)).
+The c5c3 operator's credentials for that cluster therefore have to write
+Secrets in the namespace. A registration scoped by `namespaces` with
+namespace-scoped RBAC has to cover it; a refused write reports
+`NovaMetadataAgentSecretError` on the ControlPlane's `NovaReady`. The CA bundle the agent verifies the metadata
+Gateway with is not delivered; place it in the namespace yourself.
 
 A `NovaCompute`'s namespace needs it too. Its `nova-compute` DaemonSet runs
 privileged as root on the host network, with a bidirectional `/var/lib/nova`
@@ -827,6 +841,7 @@ What a placed service takes with it, and what stays behind:
 | The mirrored `ExternalSecret` a placed built-in service reads, and the Secret ESO materializes from it | The service's cluster |
 | The metadata shared secret's `Password` generator and `ExternalSecret`, and the Secret ESO materializes from it | The service's cluster |
 | The hypervisor operator's auth Secret, `<cp>-nova-hypervisor-operator-auth` (while `services.nova.hypervisorOperator` is set) | The Nova's cluster, and a copy on every compute cluster a `NovaCompute` of the Nova runs on |
+| The metadata shared-secret copy, `<cp>-nova-metadata-agent-secret` | Every cluster a `NeutronMetadataAgent` in the OVN central's namespace names it on, in that namespace |
 | The namespace a service is placed in | Both |
 
 The namespace is on both because both sides need it: the projected CR lives in it
