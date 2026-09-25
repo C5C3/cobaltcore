@@ -198,6 +198,10 @@ func startControlPlaneEnvTest(
 				// moves the tenant-store provisioning set at watch latency here too.
 				Watches(&c5c3v1alpha1.KeystoneService{},
 					handler.EnqueueRequestsFromMapFunc(keystoneServiceToControlPlaneMapper)).
+				// Mirror the SizingProfile watch SetupWithManager registers, so an
+				// edited or deleted profile re-resolves the sizing at watch latency.
+				Watches(&c5c3v1alpha1.SizingProfile{},
+					handler.EnqueueRequestsFromMapFunc(r.sizingProfileToControlPlaneMapper)).
 				WithOptions(controller.Options{SkipNameValidation: ptr.To(true)}).
 				Complete(r); err != nil {
 				return err

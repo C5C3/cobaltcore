@@ -77,6 +77,10 @@ const ControlPlaneSecretNameIndexKey = "spec.korc.adminCredential.passwordSecret
 // rather than inline string literals so a rename is caught by the compiler and
 // the no-inline-literals drift guard.
 const (
+	// conditionTypeSizingReady reports whether spec.sizing resolves: False when
+	// the SizingProfile spec.sizing.profileRef names is gone or unreadable, which
+	// stops the pass and leaves the children as last projected.
+	conditionTypeSizingReady         = "SizingReady"
 	conditionTypeNamespacesReady     = "NamespacesReady"
 	conditionTypeInfrastructureReady = "InfrastructureReady"
 	conditionTypeESOTenantStoreReady = "ESOTenantStoreReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
@@ -134,6 +138,7 @@ const controlPlaneORCFinalizer = "c5c3.io/orc-teardown"
 // subConditionTypes lists the condition types set by individual sub-reconcilers.
 // The Ready condition is True only when all of these are True.
 var subConditionTypes = []string{
+	conditionTypeSizingReady,
 	conditionTypeNamespacesReady,
 	conditionTypeInfrastructureReady,
 	conditionTypeESOTenantStoreReady,
@@ -548,8 +553,8 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Run the sub-reconcilers in two phases via the shared table-driven chain.
 	//
-	// The blocking prefix — Namespaces → Infrastructure → ESOTenantStore →
-	// DBCredentials → AdminPassword → Keystone — runs through RunPipeline and
+	// The blocking prefix — Sizing → Namespaces → Infrastructure → ESOTenantStore
+	// → DBCredentials → AdminPassword → Keystone — runs through RunPipeline and
 	// short-circuits at the first non-zero result or error, because each step
 	// genuinely feeds the next: a later step applying before its predecessor
 	// converged would fail or wedge.
@@ -591,7 +596,14 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// keystone-operator's SecretsReady gate needs the admin-password
 	// ExternalSecret to exist before the projected Keystone child references it.
 	pipeline := []commonreconcile.Step{
-		// Namespaces runs FIRST: every later sub-reconciler projects into a
+		// Sizing runs FIRST: every later sub-reconciler projects its children
+		// from the resolved sizing, so a SizingProfile that cannot be read stops
+		// the pass before anything is projected, and the children keep their last
+		// projected sizing. A built-in profile needs no API read.
+		{Name: "Sizing", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileSizing(ctx, &cp)
+		}},
+		// Namespaces runs next: every later sub-reconciler projects into a
 		// service namespace, and applying into one that does not exist fails with
 		// an error naming neither the ControlPlane nor the assignment behind it.
 		// A ControlPlane without namespace assignments (the default) short-circuits
@@ -1450,7 +1462,15 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		// status-only writes, which cannot move the provisioning set.
 		Watches(&c5c3v1alpha1.KeystoneService{}, commonmulticluster.LocalRequests(
 			keystoneServiceToControlPlaneMapper,
-		), mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders)
+		), mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders).
+		// A SizingProfile is cluster-scoped and only referenced by
+		// spec.sizing.profileRef, so it carries no owner reference an Owns() could
+		// match. The mapper re-drives every ControlPlane that references an edited
+		// or deleted profile. The watch is unconditional: the CRD ships in the c5c3
+		// chart.
+		Watches(&c5c3v1alpha1.SizingProfile{}, commonmulticluster.LocalRequests(
+			r.sizingProfileToControlPlaneMapper,
+		), engageLocal, engageNoProviders)
 
 	// The same children, once more, on the clusters a ControlPlane can place a
 	// service on. Neither the Owns legs nor the cross-namespace ones above reach
