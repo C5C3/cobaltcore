@@ -22,6 +22,7 @@ import (
 // falls back to instrumentation.ConditionTypeUnknown ("UNKNOWN") rather than
 // an empty label so the drift surfaces in alerts.
 var subReconcilerConditionTypes = map[string]string{
+	"Sizing":          conditionTypeSizingReady,
 	"Namespaces":      conditionTypeNamespacesReady,
 	"Infrastructure":  conditionTypeInfrastructureReady,
 	"ESOTenantStore":  conditionTypeESOTenantStoreReady,
