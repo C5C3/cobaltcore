@@ -753,3 +753,44 @@ func TestHorizonValidateCreate_EmptyTargetClusterRefNameRejected(t *testing.T) {
 	g.Expect(err.Error()).To(gomega.ContainSubstring("targetClusterRef.name"))
 	g.Expect(err.Error()).To(gomega.ContainSubstring("target cluster name must be set"))
 }
+
+// --- Node placement validation ---
+
+func TestHorizonValidate_NodePlacementRejected(t *testing.T) {
+	for _, block := range []struct {
+		name       string
+		deployment func(o *Horizon) *commonv1.DeploymentSpec
+		path       string
+	}{
+		{name: "spec.deployment", deployment: func(o *Horizon) *commonv1.DeploymentSpec { return &o.Spec.Deployment }, path: "spec.deployment"},
+	} {
+		for _, tc := range []struct {
+			name   string
+			mutate func(d *commonv1.DeploymentSpec)
+			want   string
+		}{
+			{
+				name:   "node selector key",
+				mutate: func(d *commonv1.DeploymentSpec) { d.NodeSelector = map[string]string{"bad key": "x"} },
+				want:   block.path + ".nodeSelector: Invalid value",
+			},
+			{
+				name: "toleration without key or Exists",
+				mutate: func(d *commonv1.DeploymentSpec) {
+					d.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpEqual}}
+				},
+				want: block.path + ".tolerations[0].operator: Invalid value",
+			},
+		} {
+			t.Run(block.name+"/"+tc.name, func(t *testing.T) {
+				g := gomega.NewWithT(t)
+				o := validHorizon()
+				tc.mutate(block.deployment(o))
+
+				_, err := (&HorizonWebhook{}).ValidateCreate(context.Background(), o)
+				g.Expect(err).To(gomega.HaveOccurred())
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+			})
+		}
+	}
+}

@@ -477,6 +477,9 @@ func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon, extra field.E
 			specPath.Child("deployment", "priorityClassName"), *h.Spec.Deployment.PriorityClassName)...)
 	}
 
+	// Node selector grammar and tolerations of the dashboard Deployment.
+	allErrs = append(allErrs, validation.NodePlacement(specPath.Child("deployment"), &h.Spec.Deployment.NodePlacementSpec)...)
+
 	// Validate that custom TopologySpreadConstraints use the correct
 	// LabelSelector matching the Deployment's selector labels.
 	if h.Spec.Deployment.TopologySpreadConstraints != nil {
