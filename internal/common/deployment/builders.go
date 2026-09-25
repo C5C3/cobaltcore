@@ -181,6 +181,19 @@ func PriorityClassName(spec *commonv1.DeploymentSpec) string {
 	return ""
 }
 
+// ApplyNodePlacement sets NodeSelector, Tolerations and Affinity on ps from a
+// deep copy of p, so a later write to the pod spec never reaches the CR. A nil
+// ps or p leaves ps unchanged; unset fields of p render nil.
+func ApplyNodePlacement(ps *corev1.PodSpec, p *commonv1.NodePlacementSpec) {
+	if ps == nil || p == nil {
+		return
+	}
+	c := p.DeepCopy()
+	ps.NodeSelector = c.NodeSelector
+	ps.Tolerations = c.Tolerations
+	ps.Affinity = c.Affinity
+}
+
 // TerminationGracePeriodSeconds returns the PodSpec
 // TerminationGracePeriodSeconds value. When
 // spec.TerminationGracePeriodSeconds is nil (existing CR, pre-upgrade), it
