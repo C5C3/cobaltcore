@@ -14,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -232,16 +231,7 @@ func validateNovaComputeNodeSelector(fldPath *field.Path, selector map[string]st
 	if len(selector) == 0 {
 		return field.ErrorList{field.Required(fldPath, "nodeSelector must carry at least one label")}
 	}
-	var errs field.ErrorList
-	for key, value := range selector {
-		for _, msg := range k8svalidation.IsQualifiedName(key) {
-			errs = append(errs, field.Invalid(fldPath, key, msg))
-		}
-		for _, msg := range k8svalidation.IsValidLabelValue(value) {
-			errs = append(errs, field.Invalid(fldPath.Key(key), value, msg))
-		}
-	}
-	return errs
+	return validation.NodeSelectorLabels(fldPath, selector)
 }
 
 // validateNovaComputeTolerations rejects a toleration that keeps the pod on a

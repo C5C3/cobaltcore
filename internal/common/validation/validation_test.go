@@ -13,10 +13,12 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -234,6 +236,188 @@ func TestPriorityClassExists(t *testing.T) {
 	// and an empty name both skip the lookup rather than failing closed.
 	g.Expect(PriorityClassExists(context.Background(), nil, testPath, "critical")).To(gomega.BeEmpty())
 	g.Expect(PriorityClassExists(context.Background(), c, testPath, "")).To(gomega.BeEmpty())
+}
+
+func TestNodeSelectorLabels(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	g.Expect(NodeSelectorLabels(testPath, nil)).To(gomega.BeEmpty())
+	g.Expect(NodeSelectorLabels(testPath, map[string]string{})).To(gomega.BeEmpty())
+	g.Expect(NodeSelectorLabels(testPath, map[string]string{"kubernetes.io/os": "linux"})).To(gomega.BeEmpty())
+
+	errs := NodeSelectorLabels(testPath, map[string]string{"bad key": "x"})
+	g.Expect(errs).To(gomega.HaveLen(1))
+	g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+	g.Expect(errs[0].Field).To(gomega.Equal(testPath.String()))
+
+	errs = NodeSelectorLabels(testPath, map[string]string{"a": "-bad-"})
+	g.Expect(errs).To(gomega.HaveLen(1))
+	g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+	g.Expect(errs[0].Field).To(gomega.Equal(testPath.Key("a").String()))
+}
+
+func TestTolerations(t *testing.T) {
+	path := field.NewPath("spec", "deployment", "tolerations")
+	accepted := []struct {
+		name       string
+		toleration corev1.Toleration
+	}{
+		{"key with Exists", corev1.Toleration{Key: "a", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
+		{"empty key with Exists matches all", corev1.Toleration{Operator: corev1.TolerationOpExists}},
+		{"Equal with NoExecute and seconds", corev1.Toleration{Key: "a", Operator: corev1.TolerationOpEqual, Value: "b", Effect: corev1.TaintEffectNoExecute, TolerationSeconds: ptr.To(int64(30))}},
+		{"Gt with a numeric value", corev1.Toleration{Key: "a", Operator: corev1.TolerationOpGt, Value: "5"}},
+		{"Lt with a negative value", corev1.Toleration{Key: "a", Operator: corev1.TolerationOpLt, Value: "-3"}},
+		{"no operator means Equal", corev1.Toleration{Key: "a", Value: "b"}},
+	}
+	for _, tc := range accepted {
+		t.Run("accepts "+tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(Tolerations(path, []corev1.Toleration{tc.toleration})).To(gomega.BeEmpty())
+		})
+	}
+
+	rejected := []struct {
+		name       string
+		toleration corev1.Toleration
+		wantField  string
+		wantType   field.ErrorType
+	}{
+		{"invalid key", corev1.Toleration{Key: "bad key", Operator: corev1.TolerationOpExists}, "[0].key", field.ErrorTypeInvalid},
+		{"empty key with Equal", corev1.Toleration{Operator: corev1.TolerationOpEqual}, "[0].operator", field.ErrorTypeInvalid},
+		{"Exists with a value", corev1.Toleration{Key: "a", Operator: corev1.TolerationOpExists, Value: "b"}, "[0].operator", field.ErrorTypeInvalid},
+		{"unknown operator", corev1.Toleration{Key: "a", Operator: "Foo"}, "[0].operator", field.ErrorTypeNotSupported},
+		{"unknown effect", corev1.Toleration{Key: "a", Operator: corev1.TolerationOpExists, Effect: "Bad"}, "[0].effect", field.ErrorTypeNotSupported},
+		{"seconds without NoExecute", corev1.Toleration{Key: "a", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule, TolerationSeconds: ptr.To(int64(30))}, "[0].effect", field.ErrorTypeInvalid},
+		{"invalid Equal value", corev1.Toleration{Key: "a", Operator: corev1.TolerationOpEqual, Value: "-bad-"}, "[0].value", field.ErrorTypeInvalid},
+		{"Gt with a non-numeric value", corev1.Toleration{Key: "a", Operator: corev1.TolerationOpGt, Value: "high"}, "[0].value", field.ErrorTypeInvalid},
+		{"Lt with an empty value", corev1.Toleration{Key: "a", Operator: corev1.TolerationOpLt}, "[0].value", field.ErrorTypeInvalid},
+	}
+	for _, tc := range rejected {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := Tolerations(path, []corev1.Toleration{tc.toleration})
+			g.Expect(errs).To(gomega.HaveLen(1), "%v", errs)
+			g.Expect(errs[0].Field).To(gomega.Equal(path.String() + tc.wantField))
+			g.Expect(errs[0].Type).To(gomega.Equal(tc.wantType))
+		})
+	}
+}
+
+func TestNodePlacement(t *testing.T) {
+	g := gomega.NewWithT(t)
+	path := field.NewPath("spec", "deployment")
+
+	g.Expect(NodePlacement(path, nil)).To(gomega.BeEmpty())
+	g.Expect(NodePlacement(path, &commonv1.NodePlacementSpec{})).To(gomega.BeEmpty())
+
+	errs := NodePlacement(path, &commonv1.NodePlacementSpec{
+		NodeSelector: map[string]string{"bad key": "x"},
+		Tolerations:  []corev1.Toleration{{Operator: corev1.TolerationOpEqual}},
+		// Affinity is left to the API server: an empty term passes here.
+		Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{}},
+	})
+	g.Expect(errs).To(gomega.HaveLen(2))
+	g.Expect(errs[0].Field).To(gomega.Equal("spec.deployment.nodeSelector"))
+	g.Expect(errs[1].Field).To(gomega.Equal("spec.deployment.tolerations[0].operator"))
+}
+
+func TestRequestsWithinLimits(t *testing.T) {
+	g := gomega.NewWithT(t)
+	path := field.NewPath("spec", "jobs", "resources")
+
+	g.Expect(RequestsWithinLimits(path, nil)).To(gomega.BeEmpty())
+	// A request without a limit of the same resource is not compared.
+	g.Expect(RequestsWithinLimits(path, &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+	})).To(gomega.BeEmpty())
+
+	errs := RequestsWithinLimits(path, &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+	})
+	g.Expect(errs).To(gomega.HaveLen(1))
+	g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+	g.Expect(errs[0].Field).To(gomega.Equal("spec.jobs.resources.requests.cpu"))
+	g.Expect(errs[0].Detail).To(gomega.Equal("cpu request must not exceed limit (1)"))
+}
+
+func TestJob(t *testing.T) {
+	path := field.NewPath("spec", "jobs")
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
+		WithObjects(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: "low"}}).
+		Build()
+	unknown := &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("typo")}}
+
+	t.Run("nil spec", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		g.Expect(Job(context.Background(), c, path, nil)).To(gomega.BeEmpty())
+	})
+
+	t.Run("known class and empty opt-out", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		g.Expect(Job(context.Background(), c, path, &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("low")}})).To(gomega.BeEmpty())
+		g.Expect(Job(context.Background(), c, path, &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("")}})).To(gomega.BeEmpty())
+	})
+
+	t.Run("unknown class", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := Job(context.Background(), c, path, unknown)
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeNotFound))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.jobs.priorityClassName"))
+	})
+
+	t.Run("nil client skips the lookup", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		g.Expect(Job(context.Background(), nil, path, unknown)).To(gomega.BeEmpty())
+	})
+
+	t.Run("lookup error", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		failing := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+					return errors.New("apiserver unavailable")
+				},
+			}).Build()
+		errs := Job(context.Background(), failing, path, unknown)
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInternal))
+	})
+
+	t.Run("resources and placement", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := Job(context.Background(), c, path, &commonv1.JobSpec{
+			JobBaseSpec: commonv1.JobBaseSpec{Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			}},
+			NodePlacementSpec: commonv1.NodePlacementSpec{NodeSelector: map[string]string{"bad key": "x"}},
+		})
+		g.Expect(errs).To(gomega.HaveLen(2))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.jobs.resources.requests.memory"))
+		g.Expect(errs[1].Field).To(gomega.Equal("spec.jobs.nodeSelector"))
+	})
+}
+
+func TestJobBase(t *testing.T) {
+	g := gomega.NewWithT(t)
+	path := field.NewPath("spec", "jobs")
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()
+
+	g.Expect(JobBase(context.Background(), c, path, nil)).To(gomega.BeEmpty())
+
+	errs := JobBase(context.Background(), c, path, &commonv1.JobBaseSpec{
+		PriorityClassName: ptr.To("typo"),
+		Resources: &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+		},
+	})
+	g.Expect(errs).To(gomega.HaveLen(2))
+	g.Expect(errs[0].Field).To(gomega.Equal("spec.jobs.resources.requests.cpu"))
+	g.Expect(errs[1].Type).To(gomega.Equal(field.ErrorTypeNotFound))
 }
 
 func TestSecretStoreRef(t *testing.T) {

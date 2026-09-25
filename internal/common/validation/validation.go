@@ -23,6 +23,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/robfig/cron/v3"
@@ -31,6 +32,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -284,6 +286,146 @@ func PriorityClassExists(ctx context.Context, c client.Reader, fldPath *field.Pa
 		)}
 	}
 	return nil
+}
+
+// NodeSelectorLabels checks the label grammar of a node selector the schema
+// cannot express on a map: every key must be a qualified name, reported at
+// fldPath, and every value a valid label value, reported at fldPath.Key(key).
+// A nil or empty selector returns none. Keys are checked in sorted order, so
+// the error list is stable.
+func NodeSelectorLabels(fldPath *field.Path, selector map[string]string) field.ErrorList {
+	var errs field.ErrorList
+	for _, key := range slices.Sorted(maps.Keys(selector)) {
+		for _, msg := range k8svalidation.IsQualifiedName(key) {
+			errs = append(errs, field.Invalid(fldPath, key, msg))
+		}
+		for _, msg := range k8svalidation.IsValidLabelValue(selector[key]) {
+			errs = append(errs, field.Invalid(fldPath.Key(key), selector[key], msg))
+		}
+	}
+	return errs
+}
+
+// tolerationOperators are the operators a toleration may carry; "" means
+// Equal. Lt and Gt compare a numeric taint value, so their value must be an
+// integer. Whether the cluster enables them (the TaintTolerationComparisonOperators
+// feature gate) is left to the API server.
+var tolerationOperators = []corev1.TolerationOperator{
+	"", corev1.TolerationOpEqual, corev1.TolerationOpExists, corev1.TolerationOpLt, corev1.TolerationOpGt,
+}
+
+// taintEffects are the effects a toleration may name; an empty effect matches
+// every effect.
+var taintEffects = []corev1.TaintEffect{
+	corev1.TaintEffectNoSchedule, corev1.TaintEffectPreferNoSchedule, corev1.TaintEffectNoExecute,
+}
+
+// Tolerations checks tolerations with the rules of the API server's own
+// toleration validation, so a CR the webhook admits never renders a pod
+// template the API server refuses:
+//
+//   - a non-empty key must be a qualified name ([i].key);
+//   - an empty key requires the Exists operator ([i].operator);
+//   - tolerationSeconds requires the NoExecute effect ([i].effect);
+//   - Exists requires an empty value ([i].operator);
+//   - Equal, or no operator, requires a valid label value ([i].value);
+//   - Lt and Gt require an integer value ([i].value);
+//   - the operator must be Equal, Exists, Lt or Gt, and the effect empty or
+//     NoSchedule, PreferNoSchedule or NoExecute (field.NotSupported).
+func Tolerations(fldPath *field.Path, tolerations []corev1.Toleration) field.ErrorList {
+	var errs field.ErrorList
+	for i, t := range tolerations {
+		idxPath := fldPath.Index(i)
+		if t.Key != "" {
+			for _, msg := range k8svalidation.IsQualifiedName(t.Key) {
+				errs = append(errs, field.Invalid(idxPath.Child("key"), t.Key, msg))
+			}
+		}
+		if t.Key == "" && t.Operator != corev1.TolerationOpExists {
+			errs = append(errs, field.Invalid(idxPath.Child("operator"), t.Operator,
+				"operator must be Exists when `key` is empty, which means \"match all values and all keys\""))
+		}
+		if t.TolerationSeconds != nil && t.Effect != corev1.TaintEffectNoExecute {
+			errs = append(errs, field.Invalid(idxPath.Child("effect"), t.Effect,
+				"effect must be 'NoExecute' when `tolerationSeconds` is set"))
+		}
+		switch {
+		case !slices.Contains(tolerationOperators, t.Operator):
+			errs = append(errs, field.NotSupported(idxPath.Child("operator"), t.Operator, tolerationOperators[1:]))
+		case t.Operator == corev1.TolerationOpExists && t.Value != "":
+			errs = append(errs, field.Invalid(idxPath.Child("operator"), t.Operator,
+				"value must be empty when `operator` is 'Exists'"))
+		case t.Operator == "" || t.Operator == corev1.TolerationOpEqual:
+			for _, msg := range k8svalidation.IsValidLabelValue(t.Value) {
+				errs = append(errs, field.Invalid(idxPath.Child("value"), t.Value, msg))
+			}
+		case t.Operator == corev1.TolerationOpLt || t.Operator == corev1.TolerationOpGt:
+			if _, err := strconv.ParseInt(t.Value, 10, 64); err != nil {
+				errs = append(errs, field.Invalid(idxPath.Child("value"), t.Value,
+					"value must be an integer when `operator` is 'Lt' or 'Gt'"))
+			}
+		}
+		if t.Effect != "" && !slices.Contains(taintEffects, t.Effect) {
+			errs = append(errs, field.NotSupported(idxPath.Child("effect"), t.Effect, taintEffects))
+		}
+	}
+	return errs
+}
+
+// NodePlacement checks the node selector and the tolerations of p. A nil p
+// returns none. The affinity is left to the API server, which validates the
+// rendered pod template.
+func NodePlacement(fldPath *field.Path, p *commonv1.NodePlacementSpec) field.ErrorList {
+	if p == nil {
+		return nil
+	}
+	errs := NodeSelectorLabels(fldPath.Child("nodeSelector"), p.NodeSelector)
+	return append(errs, Tolerations(fldPath.Child("tolerations"), p.Tolerations)...)
+}
+
+// RequestsWithinLimits rejects a request that exceeds the limit rr sets for
+// the same resource, at fldPath.requests.<name>. A nil rr returns none.
+// Resources are checked in sorted order, so the error list is stable.
+func RequestsWithinLimits(fldPath *field.Path, rr *corev1.ResourceRequirements) field.ErrorList {
+	if rr == nil {
+		return nil
+	}
+	var errs field.ErrorList
+	for _, name := range slices.Sorted(maps.Keys(rr.Requests)) {
+		request := rr.Requests[name]
+		if limit, hasLimit := rr.Limits[name]; hasLimit && request.Cmp(limit) > 0 {
+			errs = append(errs, field.Invalid(
+				fldPath.Child("requests", string(name)),
+				request.String(),
+				fmt.Sprintf("%s request must not exceed limit (%s)", name, limit.String()),
+			))
+		}
+	}
+	return errs
+}
+
+// Job checks a CR's spec.jobs block: requests within limits, an existing
+// priority class (PriorityClassExists), and the node placement. A nil spec
+// returns none.
+func Job(ctx context.Context, c client.Reader, fldPath *field.Path, spec *commonv1.JobSpec) field.ErrorList {
+	if spec == nil {
+		return nil
+	}
+	errs := JobBase(ctx, c, fldPath, &spec.JobBaseSpec)
+	return append(errs, NodePlacement(fldPath, &spec.NodePlacementSpec)...)
+}
+
+// JobBase checks a spec.jobs block without placement: requests within limits
+// and an existing priority class. A nil spec returns none.
+func JobBase(ctx context.Context, c client.Reader, fldPath *field.Path, spec *commonv1.JobBaseSpec) field.ErrorList {
+	if spec == nil {
+		return nil
+	}
+	errs := RequestsWithinLimits(fldPath.Child("resources"), spec.Resources)
+	if spec.PriorityClassName != nil {
+		errs = append(errs, PriorityClassExists(ctx, c, fldPath.Child("priorityClassName"), *spec.PriorityClassName)...)
+	}
+	return errs
 }
 
 // AttachedSiblings lists list in self's namespace through reader and returns
