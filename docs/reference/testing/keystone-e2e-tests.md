@@ -105,7 +105,8 @@ Deployment rollout, bootstrap Job).
 | [graceful-shutdown](#graceful-shutdown) | `keystone-graceful-shutdown` | Deployment configured with `terminationGracePeriodSeconds=30`, preStop sleep hook, startup probe |
 | [healthcheck](#healthcheck) | `keystone-healthcheck` | Post-Deployment HTTP health check gates `KeystoneAPIReady=True` with reason `APIHealthy` before aggregate `Ready` flips |
 | [policy-validation](#policy-validation) | `keystone-policy-validation` | `PolicyValidReady` gates the Deployment; validation Job lifecycle on `policyOverrides` add/remove |
-| [priority-class](#priority-class) | `keystone-pc` | `spec.deployment.priorityClassName` propagation: unset → empty, set → applied, patched empty → removed |
+| [priority-class](#priority-class) | `keystone-pc` | `spec.deployment.priorityClassName` propagation: unset → empty, set → applied to the Deployment, the db-sync Job and the fernet-rotate CronJob, `spec.jobs.priorityClassName: ""` → removed from the Jobs only, patched empty → removed |
+| [node-placement](#node-placement) | `keystone-np` | `spec.deployment` `nodeSelector`, `tolerations` and `affinity` on the Deployment; the db-sync Job and the fernet-rotate CronJob inherit the selector, the toleration and the node affinity, not the pod anti-affinity |
 | [schema-drift-detection](#schema-drift-detection) | `keystone-schema-drift` | `DatabaseReady=True` with message "revision verified"; schema-check Job runs and completes |
 | [semantic-invariants](#semantic-invariants) | `keystone-invariants` | `status.endpoint` URL format, `ownerReferences` fan-out, `observedGeneration` tracking, `lastTransitionTime` monotonicity, ConfigMap immutability |
 | [topology-spread](#topology-spread) | `keystone-tsc` | `spec.deployment.topologySpreadConstraints`: `nil` injects 2 defaults; non-empty slice passes through verbatim; `[]` disables all constraints |
@@ -128,7 +129,7 @@ Deployment rollout, bootstrap Job).
 | namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` still reconciles to Ready |
 | network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources |
 | prometheus-stack | — (operator-level) | `WITH_PROMETHEUS=true` opt-in addon: kube-prometheus-stack scrapes the operator end to end |
-| resources | `keystone-resources` | Render-time per-resource defaults on the Deployment and a running Pod (no CPU limit, Burstable), propagation of a patched `spec.deployment.resources`, and default memory that follows `spec.uwsgi.processes` once the block is removed |
+| resources | `keystone-resources` | Render-time per-resource defaults on the Deployment and a running Pod (no CPU limit, Burstable), the Job defaults on the db-sync Job template (100m CPU and 368Mi memory requests, a 368Mi memory limit, no CPU limit), propagation of a patched `spec.deployment.resources`, and default memory that follows `spec.uwsgi.processes` once the block is removed |
 | rolling-update-zero-downtime | `keystone-rolling-update` | Full graceful-termination chain keeps the API serving during an image-tag rolling update |
 | trust-flush | `keystone-trust-flush` | Trust-flush CronJob creation, schedule and suspend tracking `spec.trustFlush` |
 | trust-flush-default | `keystone-trust-flush-default` | Default-on posture: omitted `spec.trustFlush` materializes the hourly CronJob |
@@ -554,7 +555,10 @@ to `True/PolicyValidationNotRequired` and cleans up the Job.
 
 **Purpose:** Validates `spec.deployment.priorityClassName` propagation:
 a CR without the field yields an empty `priorityClassName` on the Deployment;
-patching with a valid class sets it; patching with empty string removes it.
+patching with a valid class sets it on the Deployment and, because `spec.jobs`
+is unset, on the Jobs and CronJobs too; `spec.jobs.priorityClassName: ""` opts
+the Jobs out while the Deployment keeps its class; patching `spec.deployment`
+with empty string removes it.
 
 **Steps:**
 
@@ -562,14 +566,39 @@ patching with a valid class sets it; patching with empty string removes it.
 | --- | --- | --- | --- |
 | 1 | Create PriorityClass | `apply` | `00-priority-class.yaml` (cluster-scoped) |
 | 2 | Apply Keystone CR without priorityClassName | `apply` | `01-keystone-cr.yaml` — Keystone CR `keystone-pc` |
-| 3 | Assert Ready and empty priorityClassName | `assert` + `script` | Deployment `keystone-pc-api` has empty `.spec.template.spec.priorityClassName` |
+| 3 | Assert Ready and empty priorityClassName | `assert` + `script` | Deployment `keystone-pc` has empty `.spec.template.spec.priorityClassName` |
 | 4 | Patch: set priorityClassName | `patch` | `02-patch-priority-class.yaml` — sets a valid class |
-| 5 | Assert priorityClassName applied | `script` | Deployment carries the patched class |
-| 6 | Patch: clear priorityClassName | `patch` | `03-patch-empty-priority-class.yaml` |
-| 7 | Assert priorityClassName cleared | `script` | Deployment back to empty |
+| 5 | Assert priorityClassName applied | `assert` | Deployment `keystone-pc`, Job `keystone-pc-db-sync` and CronJob `keystone-pc-fernet-rotate` carry `openstack-control-plane` |
+| 6 | Patch: opt the Jobs out | `patch` | `04-patch-jobs-empty-priority-class.yaml` — `spec.jobs.priorityClassName: ""` |
+| 7 | Assert the Jobs opted out | `assert` | Job `keystone-pc-db-sync` has no priority class; the Deployment keeps `openstack-control-plane` |
+| 8 | Patch: clear priorityClassName | `patch` | `03-patch-empty-priority-class.yaml` |
+| 9 | Assert priorityClassName cleared | `assert` | Deployment back to empty |
 
 **Fixtures:** `00-priority-class.yaml`, `01-keystone-cr.yaml`,
-`02-patch-priority-class.yaml`, `03-patch-empty-priority-class.yaml`
+`02-patch-priority-class.yaml`, `03-patch-empty-priority-class.yaml`,
+`04-patch-jobs-empty-priority-class.yaml`
+
+---
+
+### node-placement
+
+**File:** `tests/e2e/keystone/node-placement/chainsaw-test.yaml`
+
+**Purpose:** Validates that `spec.deployment.nodeSelector`, `tolerations` and
+`affinity` reach the Deployment pod template, and that the Jobs and CronJobs
+fall back to them while `spec.jobs` is unset: the node selector, the
+tolerations and the node affinity carry over, the pod anti-affinity does not.
+The CR selects `kubernetes.io/os: linux` and requires it through node affinity,
+so every kind node qualifies and the pods schedule.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR with node placement | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-np` with a node selector, a `c5c3.io/e2e-dedicated` toleration, a required node affinity and a preferred pod anti-affinity |
+| 2 | Assert Ready and the rendered placement | `assert` (5m) | Ready `AllReady`; Deployment `keystone-np` carries all three fields; Job `keystone-np-db-sync` carries the selector and the toleration, `(affinity.nodeAffinity != null): true` and `(affinity.podAntiAffinity == null): true`; CronJob `keystone-np-fernet-rotate` carries the selector |
+
+**Fixtures:** `00-keystone-cr.yaml`
 
 ---
 
@@ -990,6 +1019,9 @@ tests/e2e/keystone/
 │   ├── 00-keystone-cr.yaml             Keystone CR with ingress policy
 │   ├── 01-patch-update-ingress.yaml    Patch ingress rule
 │   └── 02-patch-disable-networkpolicy.yaml Patch to disable NetworkPolicy
+├── node-placement/
+│   ├── chainsaw-test.yaml              spec.deployment node placement, inherited by the Jobs
+│   └── 00-keystone-cr.yaml             Keystone CR with nodeSelector, tolerations and affinity
 ├── pod-security-restricted/
 │   ├── chainsaw-test.yaml              PSS-restricted admission gate
 │   ├── 00-namespace.yaml               PSS-labelled test namespace + plain Secrets
@@ -1009,7 +1041,8 @@ tests/e2e/keystone/
 │   ├── 00-priority-class.yaml          Cluster-scoped PriorityClass fixture
 │   ├── 01-keystone-cr.yaml             Keystone CR without priorityClassName
 │   ├── 02-patch-priority-class.yaml    Patch to set priorityClassName
-│   └── 03-patch-empty-priority-class.yaml Patch to clear priorityClassName
+│   ├── 03-patch-empty-priority-class.yaml Patch to clear priorityClassName
+│   └── 04-patch-jobs-empty-priority-class.yaml Patch opting the Jobs out
 ├── prometheus-stack/
 │   └── chainsaw-test.yaml              WITH_PROMETHEUS opt-in addon path
 ├── release-upgrade/

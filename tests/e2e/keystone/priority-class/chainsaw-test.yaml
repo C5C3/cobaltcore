@@ -5,8 +5,12 @@
 # Chainsaw E2E test for spec.priorityClassName.
 # Validates that:
 #   - A Keystone CR without priorityClassName has no priority class on the Deployment
-#   - Patching with a valid priorityClassName sets it on the Deployment
-#   - Patching with empty string removes it from the Deployment
+#   - Patching with a valid priorityClassName sets it on the Deployment, and the
+#     db-sync Job and the fernet-rotate CronJob follow it (spec.jobs falls back
+#     to spec.deployment)
+#   - spec.jobs.priorityClassName: "" opts the Jobs out while the Deployment
+#     keeps its class
+#   - Patching spec.deployment with empty string removes it from the Deployment
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -76,7 +80,7 @@ spec:
   - try:
     - patch:
         file: 02-patch-priority-class.yaml
-  # ── Step 5: Assert Deployment has the configured priority class ──────────
+  # ── Step 5: Assert Deployment, db-sync Job and CronJob carry the class ───
   - try:
     - assert:
         resource:
@@ -89,6 +93,32 @@ spec:
             template:
               spec:
                 priorityClassName: openstack-control-plane
+    # spec.jobs is unset, so the Jobs fall back to spec.deployment. The
+    # completed db-sync Job re-runs once, because its pod template changed.
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-pc-db-sync
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                priorityClassName: openstack-control-plane
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-pc-fernet-rotate
+            namespace: openstack
+          spec:
+            jobTemplate:
+              spec:
+                template:
+                  spec:
+                    priorityClassName: openstack-control-plane
     - assert:
         resource:
           apiVersion: apps/v1
@@ -115,11 +145,51 @@ spec:
         - yaml
     - events:
         namespace: openstack
-  # ── Step 6: Patch with empty priorityClassName ───────────────────────────
+  # ── Step 6: Opt the Jobs out with spec.jobs.priorityClassName: "" ───────
+  - try:
+    - patch:
+        file: 04-patch-jobs-empty-priority-class.yaml
+  # ── Step 7: Assert the db-sync Job has none, the Deployment keeps its own ─
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-pc-db-sync
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (priorityClassName == null || priorityClassName == ''): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-pc
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                priorityClassName: openstack-control-plane
+    catch:
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - jobs,cronjobs,deployments
+        - -n
+        - openstack
+        - -o
+        - yaml
+    - events:
+        namespace: openstack
+  # ── Step 8: Patch with empty priorityClassName ───────────────────────────
   - try:
     - patch:
         file: 03-patch-empty-priority-class.yaml
-  # ── Step 7: Assert Deployment has no priority class again ────────────────
+  # ── Step 9: Assert Deployment has no priority class again ────────────────
   - try:
     # A chainsaw assert (polls to the suite's 5m assert timeout), NOT a
     # script-based poll: the previous script slept up to 120s waiting for the

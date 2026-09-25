@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch that opts the Jobs and CronJobs out of the spec.deployment priority
+# class: an empty spec.jobs.priorityClassName renders none on them, while the
+# Deployment keeps openstack-control-plane.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-pc
+  namespace: openstack
+spec:
+  jobs:
+    priorityClassName: ""

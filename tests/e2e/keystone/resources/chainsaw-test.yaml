@@ -9,6 +9,8 @@
 #     memory limit, and no CPU limit
 #   - A running keystone Pod keeps no CPU limit and runs Burstable, so the
 #     openstack tenant's LimitRange adds no CPU limit either
+#   - The db-sync Job renders the Job defaults: a 100m CPU request, 368Mi
+#     memory as request and limit, and no CPU limit
 #   - Patching spec.resources updates the Deployment container resources
 #   - Removing spec.resources again and raising spec.uwsgi.processes to 4 moves
 #     the rendered memory to 800Mi, still with a 100m CPU request and no CPU
@@ -79,6 +81,27 @@ spec:
           status:
             phase: Running
             qosClass: Burstable
+    # The Job defaults, asserted on the Job template rather than on its Pod:
+    # the tenant LimitRange would fill a limit into a Pod that carried none.
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-resources-db-sync
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: db-sync
+                  resources:
+                    requests:
+                      cpu: 100m
+                      memory: 368Mi
+                    limits:
+                      memory: 368Mi
+                (length(containers[?name == 'db-sync'].resources.limits.cpu) == `0`): true
     catch:
     - script:
         content: |
