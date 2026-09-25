@@ -22,7 +22,8 @@ plain API-server shape.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` ∈ {1,2}). It governs install and upgrade schema tracking: `status.installedRelease` is promoted to this value after a successful db-sync. Kept separate from the image tag so digest-pinned images still resolve a schema. It selects no launch mode: placement runs the same uWSGI command and renders the same option names on every supported release |
-| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and 512Mi memory request and limit at the default `spec.apiServer.uwsgi` counts, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and 512Mi memory request and limit at the default `spec.apiServer.uwsgi` counts, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)) |
+| `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job and the db-expand, db-migrate and db-contract upgrade phases. A field left unset falls back to `spec.deployment`; unset resources default to a `100m` CPU request and `368Mi` memory as request and limit |
 | `image` | `ImageSpec` | yes | Container image. `tag` and `digest` are mutually exclusive and one of the two is required (shared CEL rule, re-checked by the webhook) |
 | `database` | `DatabaseSpec` | yes | MariaDB connection, rendered into `[placement_database]`. One of `clusterRef` (managed) or `host` (brownfield), never both; plus `database`, `secretRef`, and the optional `port`, `credentialsMode`, and `tls`. `credentialsMode` selects how the credential in `secretRef` is provisioned: `Static` (the default) keeps a long-lived password and has the operator manage the MariaDB `User`/`Grant` CRs, `Dynamic` takes short-lived engine-issued credentials and manages neither. `Dynamic` requires `clusterRef`. The mutual-exclusivity and Dynamic-requires-clusterRef rules are inherited from `commonv1.DatabaseSpec`, and so are `replicas` (default 3, minimum 1) and `storageSize` (default `100Gi`): both sit in the schema, but only the c5c3 operator's managed-mode projection reads them, so the Placement operator ignores whatever they say |
 | `cache` | `CacheSpec` | yes | Memcached backing the keystonemiddleware token cache, rendered as `[keystone_authtoken] memcached_servers`. One of `clusterRef` (managed) or `servers` (brownfield), never both. `backend` is webhook-defaulted to `dogpile.cache.pymemcache`. `replicas` (default 3) is inherited from `commonv1.CacheSpec` on the same terms as the database counterparts: schema-visible, honoured by the c5c3 operator's managed-mode projection, ignored here (`cache.ResolveServers` addresses the cluster by its `clusterRef` name alone) |
@@ -124,8 +125,11 @@ inside the drain window), the `httpKeepAliveTimeout` pairing, the
 `Recreate`-vs-`rollingUpdate` sanity check, autoscaling bounds (including the
 implicit `minReplicas` default from `deployment.replicas`), network-policy
 ingress, gateway hostname and `parentRef.name`, resource requests-vs-limits,
-PriorityClass existence, and topology-spread selectors (matching the `placement`
-and instance labels).
+PriorityClass existence, topology-spread selectors (matching the `placement`
+and instance labels), the `spec.deployment.nodeSelector` label grammar and
+`tolerations` (the API server's toleration rules), and the `spec.jobs` block
+(requests within limits, an existing priority class, and the same node selector
+and toleration rules).
 
 One check is placement's own. `spec.region` and the four `serviceUser` identity
 fields are each rejected for a newline or carriage return, because the renderer

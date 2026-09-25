@@ -13,7 +13,7 @@ chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and 512Mi memory request and limit for the fixed two uWSGI processes of one thread, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and 512Mi memory request and limit for the fixed two uWSGI processes of one thread, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). Horizon runs no Job, so it has no `spec.jobs` block |
 | `image` | `ImageSpec` | yes | Container image; exactly one of `tag` or `digest` (shared CEL rule) |
 | `cache` | `CacheSpec` | yes | Memcached backing the Django cache. Exactly one of `clusterRef` (managed) or `servers` (brownfield); `backend` is a Django cache backend path, defaulted to `django.core.cache.backends.memcached.PyMemcacheCache` |
 | `keystoneEndpoint` | `string` | yes | The Keystone endpoint URL (`OPENSTACK_KEYSTONE_URL`); must match `^https?://` and parse with a host. Consumed server-side by the dashboard pods, so it must be reachable from inside the cluster — for a colocated control plane use the cluster-local Service URL, not an externally routable address |
@@ -37,7 +37,9 @@ replicas floor, image tag/digest XOR, cache mutual exclusivity, the
 `keystoneEndpoint` URL shape, gateway hostname/parentRef, network-policy
 ingress, autoscaling bounds (including the implicit `minReplicas` default
 from `deployment.replicas`), logging enums, graceful-termination cross-field
-arithmetic, topology-spread selectors, and PriorityClass existence.
+arithmetic, topology-spread selectors, PriorityClass existence, and the
+`spec.deployment.nodeSelector` label grammar and `tolerations` (the API
+server's toleration rules).
 
 A CEL rule over `extraConfig` keys is not expressible (the API server cannot
 build CEL type information for preserve-unknown-fields map values), so the

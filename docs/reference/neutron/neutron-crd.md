@@ -46,7 +46,8 @@ of the fields below the plane fills and which it leaves to this CR.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `openStackRelease` | `string` (Pattern `^\d{4}\.[12]$`) | yes | none | The OpenStack release the operator deploys and drives. It governs install and upgrade release tracking: `status.installedRelease` is promoted to this value after a successful db-sync. The pattern admits the `YYYY.N` cadence with `N` in {1, 2}, the same class the validating webhook and `release.ParseRelease` accept, so a non-cadence minor is rejected at every layer. Kept separate from the image tag so a digest-pinned image still names a schema |
-| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the API Deployment: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and 512Mi memory request and limit at the default `spec.apiServer.uwsgi` counts, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the API Deployment: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and 512Mi memory request and limit at the default `spec.apiServer.uwsgi` counts, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). It is also the fallback of `spec.jobs` |
+| `jobs` | [`*commonv1.JobSpec`](../keystone/keystone-crd.md#jobspec) | no | `nil` | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, and the ovn-db-sync CronJob. A field left unset falls back to `spec.deployment`. Unset resources default to a `100m` CPU request and `368Mi` memory as request and limit; ovn-db-sync gets the request floor instead (see [OVNDBSyncSpec](#ovndbsyncspec)) |
 | `image` | [`commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | yes | none | The Neutron container image, run by the API pods, both worker Deployments, the migration Jobs, and the ovn-db-sync CronJob. `tag` and `digest` are mutually exclusive and one of the two is required. The field carries no immutability rule |
 | `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | yes | none | The MariaDB connection, rendered into the plain `[database]` section. One of `clusterRef` (managed) or `host` (brownfield), never both, plus `database`, `secretRef`, and the optional `port`, `credentialsMode` and `tls`. `credentialsMode: Dynamic` requires `clusterRef`. `replicas` and `storageSize` sit in the schema and are read by the ControlPlane's managed-mode projection alone, so this operator ignores them |
 | `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | yes | `backend: dogpile.cache.pymemcache` | The Memcached instance backing the keystonemiddleware token cache, rendered as `[keystone_authtoken] memcached_servers`. One of `clusterRef` (managed) or `servers` (brownfield), never both. Managed mode resolves to `<clusterRef.name>:11211`; `replicas` is honoured by the ControlPlane projection alone |
@@ -160,7 +161,7 @@ load the process that opens the connection past it answers HTTP 500.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the worker Deployments. `replicas` (default 3) sizes both, so the default is three periodic-worker pods and three OVN maintenance-worker pods. Each worker runs one single-threaded process, so a `resources` block that names neither CPU nor memory renders a 100m CPU request, no CPU limit, and 368Mi as memory request and limit (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)) |
+| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the worker Deployments. `replicas` (default 3) sizes both, so the default is three periodic-worker pods and three OVN maintenance-worker pods. Each worker runs one single-threaded process, so a `resources` block that names neither CPU nor memory renders a 100m CPU request, no CPU limit, and 368Mi as memory request and limit (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). The worker Deployments render its `nodeSelector`, `tolerations` and `affinity` too; the webhook does not validate this block yet ([#1100](https://github.com/C5C3/cobaltcore/issues/1100)) |
 
 Neither worker Deployment gets a Service, an HPA or a PodDisruptionBudget: no
 client dials them, their load is the maintenance queue, and an eviction costs a
@@ -199,6 +200,13 @@ utility walks both and reports, or repairs, the difference.
 | `schedule` | `string` | no | `0 * * * *`, resolved at reconcile time | The standard cron expression the CronJob runs on. Checked by the validating webhook, with no CRD pattern behind it: the accepted grammar includes descriptors such as `@daily`, which no regex expresses without also rejecting valid expressions |
 | `syncMode` | `string` (Enum `log`, `repair`) | no | `log` | What the utility does with the difference it finds |
 | `suspend` | `bool` | no | `false` | Pauses the CronJob without deleting it. The escape hatch for a maintenance window in which a repair-mode run would fight an operator editing the Northbound database by hand |
+
+The CronJob pod takes its priority class and node placement from
+[`spec.jobs`](../keystone/keystone-crd.md#jobspec), falling back to
+`spec.deployment`. Its resources resolve through the request floor rather than
+the Job defaults: a `100m` CPU and a `256Mi` memory request, and no limit. The
+utility loads both logical models, so its working set grows with them, and a
+default memory limit would OOM-kill the run once they outgrew it.
 
 ## Rendered defaults
 
@@ -450,6 +458,11 @@ Network policy, gateway, resources and scheduling:
 | `matchExpressions are not allowed; labelSelector must use matchLabels only` | A constraint selects with expressions |
 | `field.NotFound` on `spec.deployment.priorityClassName` | The named PriorityClass does not exist. The check is skipped when no lookup client is injected |
 | `failed to look up PriorityClass: %w` | The lookup itself failed |
+| `field.Invalid` on `spec.deployment.nodeSelector` | A key is not a qualified label name, or a value (reported at `nodeSelector[<key>]`) is not a valid label value |
+| `field.Invalid` / `field.NotSupported` on `spec.deployment.tolerations[i]` | A toleration the API server would refuse: an invalid key, an empty key without `Exists`, `Exists` with a value, an `Lt` or `Gt` value that is not an integer, `tolerationSeconds` without `NoExecute`, or an unknown operator or effect |
+| `%s request must not exceed limit (%s)` on `spec.jobs.resources` | A request in `spec.jobs.resources` above its own limit |
+| `field.NotFound` on `spec.jobs.priorityClassName` | The named PriorityClass does not exist. `""` opts out of the fallback and is not looked up |
+| `field.Invalid` on `spec.jobs.nodeSelector` / `spec.jobs.tolerations[i]` | The node selector and toleration rules above, applied to `spec.jobs` |
 
 Secret store, target cluster and logging:
 

@@ -31,6 +31,7 @@ and Age.
 | `southbound` | [`OVNDatabaseSpec`](#ovndatabasespec) | no | `{}` | The Southbound database, the one northd writes translated flows into and every chassis reads from. It is the busier of the two, which is why it can be fronted by a relay |
 | `northd` | [`OVNNorthdSpec`](#ovnnorthdspec) | no | `{}` | The `ovn-northd` daemon that compiles the Northbound model into Southbound flows |
 | `relay` | [`*OVNRelaySpec`](#ovnrelayspec) | no | `nil` | Fronts the Southbound database with `ovsdb-server` relays. Every chassis holds an open Southbound connection, so past a few hundred nodes the read load is what limits the cluster. When nil the chassis connect to the database directly |
+| `jobs` | [`*commonv1.JobSpec`](../keystone/keystone-crd.md#jobspec) | no | `nil` | Sizes, prioritizes and places the pods of the backup CronJob, its `backup` init container and the S3 `shifter` included. A field left unset falls back to `spec.northd.deployment`. Unset resources resolve to the request floor: a `100m` CPU and a `256Mi` memory request, no limit. See [Backup](#backup) |
 | `tls` | [`OVNTLSSpec`](#ovntlsspec) | yes | — | The cert-manager issuer every OVN certificate is requested from. Required: the databases carry the entire logical network model, so an unauthenticated listener would let any pod that reaches the port rewrite the network |
 | `backup` | [`*OVNBackupSpec`](#ovnbackupspec) | no | `nil` | Tunes the recurring database backup. A nil block still gets a CronJob; it only means every setting resolves to the operator default. See [Backup](#backup) |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the children are created on. The CR itself, its status and its finalizer stay on the management cluster. Immutable, enforced by two CEL transition rules and by the webhook. See [Target Clusters](../target-clusters.md) |
@@ -79,6 +80,23 @@ loss. Setting `resources` to values that fit the node and the LimitRange
 recovers the rollout, because a CPU or memory request or limit replaces the
 floor for that resource.
 
+#### Placement and priority
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `priorityClassName` | `*string` | no | `nil` | The priority class of the member pods. The webhook checks that the class exists. Unset or `""` renders none, and the cluster default applies |
+| `nodeSelector` | `map[string]string` | no | `nil` | Restricts the member pods to nodes that carry every listed label. The webhook checks the label grammar |
+| `tolerations` | `[]corev1.Toleration` | no | `nil` | Lets the member pods onto nodes with matching taints. The webhook applies the API server's toleration rules |
+| `affinity` | `*corev1.Affinity` | no | `nil` | Node affinity and pod (anti-)affinity rules for the member pods, rendered verbatim |
+
+The four fields let an operator pin OVN central to dedicated nodes as a whole.
+Unset fields render nothing, so a database whose CR sets none of them does not
+roll. Each member keeps its database on a claim, and node-local storage binds
+that claim to one node. A selector, toleration set or affinity that excludes
+the node a member's claim is bound to leaves that member `Pending`, and the
+rolling update stops there while the other members keep serving. Move the
+members off such storage before you narrow their placement.
+
 ### OVNStorageSpec
 
 Sizes a PersistentVolumeClaim. Shared by the two database members and by the
@@ -93,7 +111,7 @@ backup volume, which have the same two knobs.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | The pod-level knobs of the northd Deployment: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and 368Mi as memory request and limit at one thread, plus 32Mi per extra thread, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`. Three northd pods are one active instance and two standbys, so the count sizes failover |
+| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | The pod-level knobs of the northd Deployment: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and 368Mi as memory request and limit at one thread, plus 32Mi per extra thread, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). Three northd pods are one active instance and two standbys, so the count sizes failover. The block is also the fallback of `spec.jobs` |
 | `threads` | `int32` (Minimum=1, Maximum=16) | no | `1` | Parallel logical-flow computation threads. Past a handful the lock contention inside northd eats the gain, so the ceiling stays low |
 
 ### OVNRelaySpec
@@ -101,12 +119,16 @@ backup volume, which have the same two knobs.
 Relays are stateless caches, so they scale independently of the Raft cluster
 behind them. The block has no `deployment` field: there is nothing to drain and
 no rollout ordering to respect, so the operator applies the shared replica
-default and the render-time resource defaults to the two knobs below.
+default and the render-time resource defaults to the replica count and the
+resources, and renders the node placement fields verbatim.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `replicas` | `int32` (Minimum=1) | yes | — | The number of relay pods. Unlike the database replicas this is a plain scaling knob with no odd-count or immutability constraint |
 | `resources` | `*corev1.ResourceRequirements` | no | operator-resolved `100m` CPU request, `368Mi` memory request and limit | Requests and limits for the relay container. The operator resolves defaults per resource when it renders the pod: a CPU the block names neither as request nor as limit gets a 100m request and no limit, and a memory it names neither way gets 368Mi as both request and limit, the figure for one single-threaded process (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). Anything else the block sets is kept |
+| `nodeSelector` | `map[string]string` | no | `nil` | Restricts the relay pods to nodes that carry every listed label. The webhook checks the label grammar |
+| `tolerations` | `[]corev1.Toleration` | no | `nil` | Lets the relay pods onto nodes with matching taints. The webhook applies the API server's toleration rules |
+| `affinity` | `*corev1.Affinity` | no | `nil` | Node affinity and pod (anti-)affinity rules for the relay pods, rendered verbatim |
 
 ### OVNTLSSpec
 
@@ -213,6 +235,10 @@ The validating webhook accumulates every violation into one admission response.
 | `target cluster name must be set` | `spec.targetClusterRef` is present with an empty `name` |
 | `targetClusterRef is immutable (adding or removing it after creation is not permitted)` | An update adds or drops the ref. Both strand the children already created on the previously selected cluster |
 | `targetClusterRef is immutable (the children already exist on the previously named cluster)` | An update renames the ref |
+| `field.Invalid` on `nodeSelector` | A key is not a qualified label name, or a value (reported at `nodeSelector[<key>]`) is not a valid label value, on `spec.northbound`, `spec.southbound`, `spec.northd.deployment`, `spec.relay` or `spec.jobs` |
+| `field.Invalid` / `field.NotSupported` on `tolerations[i]` | A toleration the API server would refuse (an invalid key, an empty key without `Exists`, `Exists` with a value, an `Lt` or `Gt` value that is not an integer, `tolerationSeconds` without `NoExecute`, or an unknown operator or effect), on the same five blocks |
+| `field.NotFound` on `priorityClassName` | `spec.northbound.priorityClassName`, `spec.southbound.priorityClassName` or `spec.jobs.priorityClassName` names a PriorityClass that does not exist. Skipped when no lookup client is injected, and for `""` |
+| `%s request must not exceed limit (%s)` | A request in `spec.jobs.resources` above its own limit |
 
 The name bound is `MaxOVNCentralNameLength`, computed as `MaxCronJobNameLength`
 minus `len("-backup")`, which is 45 characters. It is enforced on create only.
@@ -233,10 +259,11 @@ window is a legitimate operational choice, so it stays a warning. The comparison
 runs against the resolved retention on both sides, so dropping `spec.backup`
 entirely does not read as a reduction to nothing.
 
-The shared deployment validators the service operators run (priority-class
-existence, topology-spread selectors, requests against limits) have no
-counterpart here. `spec.northd.deployment` is checked by its inherited CEL rule
-alone.
+Of the shared deployment validators the service operators run, only the node
+placement checks cover `spec.northd.deployment` and `spec.relay`. Their
+priority class, topology-spread selectors and requests against limits are
+checked by the inherited CEL rule alone. The two databases get the placement
+checks and the priority-class lookup.
 
 ## Status
 
@@ -377,6 +404,13 @@ finished. The shifter mounts the volume read-only: the retention window is the
 snapshot container's to enforce, and an upload that could delete would make a
 misconfigured prefix destructive. rclone is configured entirely through
 environment variables, with the access key read from `credentialsSecretRef`.
+
+Both containers carry the pod settings of [`spec.jobs`](../keystone/keystone-crd.md#jobspec),
+which falls back to `spec.northd.deployment` for the priority class and the node
+placement. Their resources resolve through the request floor: a `100m` CPU and
+a `256Mi` memory request and no limit. `ovsdb-client` holds each snapshot in
+memory, so the working set grows with the logical model, and a default limit
+would OOM-kill the run that outgrew it.
 
 ::: warning
 `spec.backup.s3.image` defaults to `ghcr.io/c5c3/backup-shifter:latest`

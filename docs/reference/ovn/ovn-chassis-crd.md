@@ -37,6 +37,7 @@ its registration in the old Southbound database.
 | `centralRef` | [`OVNCentralRef`](#ovncentralref) | yes | none | The `OVNCentral` whose Southbound database these chassis connect to and whose client Secret they mount. Immutable, enforced by a CEL transition rule and by the webhook |
 | `nodeSelector` | `map[string]string` (MinProperties=1) | yes | none | The nodes both DaemonSets land on. At least one label is required: an empty selector matches every node in the cluster, which would start `ovn-controller` on the control-plane nodes and on whatever joins later |
 | `tolerations` | `[]corev1.Toleration` | no | none | Lets the DaemonSet pods run on tainted nodes. Networking nodes are commonly tainted to keep ordinary workloads off them, and the chassis pods are what has to run there |
+| `jobs` | [`*commonv1.JobBaseSpec`](../keystone/keystone-crd.md#jobspec) | no | `nil` | Sizes and prioritizes the maintenance Jobs: `apply`, `evacuate` and `chassis-del`. It carries `resources` and `priorityClassName` only. Unset resources default to a `100m` CPU request and `368Mi` memory as request and limit, and an unset priority class renders none; there is no fallback Deployment. The Jobs take `spec.tolerations`. The block has no placement fields: the apply Job is pinned to its node, and a node selector that node does not match fails the pinned pod's kubelet admission |
 | `gateway` | [`*OVNGatewaySpec`](#ovngatewayspec) | no | `nil` | Marks the subset of the selected nodes that announce `enable-chassis-as-gw`, the flag that makes a chassis eligible to host a distributed router's gateway port. When nil no node in this CR is a gateway |
 | `bridgeMappings` | [`[]OVNBridgeMapping`](#ovnbridgemapping) | no | none | Maps each OpenStack physical network onto the local OVS bridge that reaches it. List-map keyed by `physicalNetwork`. Every node this CR selects gets the same mapping |
 | `encapType` | `string` (Enum `geneve`, `vxlan`) | no | `geneve` | The tunnel protocol between chassis. Geneve carries the variable-length option header OVN uses for its logical metadata; VXLAN has no room for it and so caps the logical topology. VXLAN exists for hardware that cannot terminate Geneve |
@@ -82,7 +83,7 @@ the local Open vSwitch database.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits for the container. When nil the operator renders none, unless a LimitRange in the namespace fills them in: what a datapath needs depends on the traffic the node carries, so no default fits most hardware |
+| `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits for the container and for the init container that prepares it: `host-prepare` in the OVS DaemonSet for `spec.ovs`, `apply-node` in the controller DaemonSet for `spec.controller`. An init container never runs beside the main containers, so this adds nothing to the pod's footprint. When nil the operator renders none on either, unless a LimitRange in the namespace fills them in: what a datapath needs depends on the traffic the node carries, so no default fits most hardware |
 
 ## Defaulting and validation
 
@@ -133,6 +134,8 @@ The validating webhook accumulates every violation into one admission response.
 | `target cluster name must be set` | `spec.targetClusterRef` is present with an empty `name` |
 | `targetClusterRef is immutable (adding or removing it after creation is not permitted)` | An update adds or drops the ref. Both strand the children already created on the previously selected cluster |
 | `targetClusterRef is immutable (the children already exist on the previously named cluster)` | An update renames the ref |
+| `%s request must not exceed limit (%s)` | A request in `spec.jobs.resources` above its own limit |
+| `field.NotFound` on `spec.jobs.priorityClassName` | The named PriorityClass does not exist. Skipped when no lookup client is injected, and for `""` |
 
 The percentage in `maxUnavailable` is scaled against 100, not against the node
 count, and rounded up the way the DaemonSet controller rounds it. The nodes a
