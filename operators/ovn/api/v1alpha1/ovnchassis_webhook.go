@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -76,8 +77,8 @@ func (w *OVNChassisWebhook) Default(_ context.Context, _ *OVNChassis) error {
 // validating webhook also sees the finalizer-removal update reconcileDelete
 // issues, so rejecting it would wedge that CR in Terminating with no field left
 // to edit to repair it.
-func (w *OVNChassisWebhook) ValidateCreate(_ context.Context, obj *OVNChassis) (admission.Warnings, error) {
-	return nil, w.validate(obj, validateOVNChassisNameLength(obj.Name))
+func (w *OVNChassisWebhook) ValidateCreate(ctx context.Context, obj *OVNChassis) (admission.Warnings, error) {
+	return nil, w.validate(ctx, obj, validateOVNChassisNameLength(obj.Name))
 }
 
 // validateOVNChassisNameLength bounds metadata.name by the child object with the
@@ -100,7 +101,18 @@ func validateOVNChassisNameLength(name string) field.ErrorList {
 // spec.targetClusterRef and spec.centralRef are compared across both revisions
 // here, the webhook-layer twin of the three transition CEL rules on
 // OVNChassisSpec.
-func (w *OVNChassisWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *OVNChassis) (admission.Warnings, error) {
+//
+// An update to a CR that is being deleted and leaves its spec alone is admitted
+// without validation. That is the finalizer removal reconcileDelete issues, and
+// the rules below can reject an unchanged spec that was admitted earlier, such
+// as a PriorityClass deleted since. Rejecting the removal would hold the CR in
+// Terminating. A deleting CR whose spec changes is still validated. Default
+// leaves the object untouched, so the two specs compare as sent.
+func (w *OVNChassisWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *OVNChassis) (admission.Warnings, error) {
+	if newObj.DeletionTimestamp != nil && equality.Semantic.DeepEqual(oldObj.Spec, newObj.Spec) {
+		return nil, nil
+	}
+
 	updateErrs := validation.TargetClusterRefImmutable(
 		field.NewPath("spec", "targetClusterRef"),
 		oldObj.Spec.TargetClusterRef,
@@ -118,19 +130,22 @@ func (w *OVNChassisWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *OV
 		))
 	}
 
-	return nil, w.validate(newObj, updateErrs)
+	return nil, w.validate(ctx, newObj, updateErrs)
 }
 
 // validate runs all validation rules against the OVNChassis spec, accumulating
 // every violation so users see the full list in one admission response. extra
 // carries the errors accumulated by the caller (on create the metadata.name
 // bound, on update the targetClusterRef and centralRef immutability checks) so
-// they aggregate into the single Invalid error alongside the rest.
-func (w *OVNChassisWebhook) validate(c *OVNChassis, extra field.ErrorList) error {
+// they aggregate into the single Invalid error alongside the rest. ctx is
+// required for the PriorityClass lookup of spec.jobs, which is skipped when no
+// reader is injected.
+func (w *OVNChassisWebhook) validate(ctx context.Context, c *OVNChassis, extra field.ErrorList) error {
 	specPath := field.NewPath("spec")
 
 	allErrs := validation.TargetClusterRef(specPath.Child("targetClusterRef"), c.Spec.TargetClusterRef)
 	allErrs = append(allErrs, validateImage(specPath.Child("image"), c.Spec.Image)...)
+	allErrs = append(allErrs, validation.JobBase(ctx, w.Client, specPath.Child("jobs"), c.Spec.Jobs)...)
 	allErrs = append(allErrs, validateBridgeMappings(specPath.Child("bridgeMappings"), c.Spec.BridgeMappings)...)
 	allErrs = append(allErrs, validateUpdateStrategy(specPath.Child("updateStrategy"), c.Spec.UpdateStrategy)...)
 

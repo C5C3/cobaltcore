@@ -14,7 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
@@ -344,4 +346,71 @@ func TestOVNChassisDefault_LeavesTheObjectUnchanged(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), obj)).To(gomega.Succeed())
 	g.Expect(obj).To(gomega.Equal(before))
+}
+
+// The finalizer removal reconcileDelete issues is an update, and the validating
+// webhook sees it. A spec.jobs.priorityClassName admitted earlier can name a
+// PriorityClass deleted since, and rejecting the removal would hold the CR in
+// Terminating. A deleting CR whose spec changes is still validated.
+func TestOVNChassisValidateUpdate_FinalizerRemovalOnADeletingCRSkipsValidation(t *testing.T) {
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+	w := &OVNChassisWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+
+	stale := validOVNChassis()
+	stale.Spec.Jobs = &commonv1.JobBaseSpec{PriorityClassName: ptr.To("deleted-class")}
+	stale.Finalizers = []string{"openstack.c5c3.io/remote-children"}
+	stale.DeletionTimestamp = ptr.To(metav1.Now())
+
+	released := stale.DeepCopy()
+	released.Finalizers = nil
+	_, err := w.ValidateUpdate(ctx, stale, released)
+	g.Expect(err).NotTo(gomega.HaveOccurred(),
+		"the finalizer removal must pass however the unchanged spec fares against today's rules")
+
+	edited := released.DeepCopy()
+	edited.Spec.NodeSelector = map[string]string{"node-role.kubernetes.io/compute": "true"}
+	_, err = w.ValidateUpdate(ctx, stale, edited)
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("spec.jobs.priorityClassName: Not found")),
+		"a spec edit on a deleting CR is validated like any other")
+}
+
+// spec.jobs carries no placement, so the webhook checks what it does carry: an
+// existing priority class and requests within limits.
+func TestOVNChassisValidate_Jobs(t *testing.T) {
+	w := &OVNChassisWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+	for _, tc := range []struct {
+		name string
+		jobs *commonv1.JobBaseSpec
+		want string
+	}{
+		{name: "empty block accepted", jobs: &commonv1.JobBaseSpec{}},
+		{
+			name: "unknown priority class",
+			jobs: &commonv1.JobBaseSpec{PriorityClassName: ptr.To("typo")},
+			want: "spec.jobs.priorityClassName: Not found",
+		},
+		{
+			name: "cpu request above limit",
+			jobs: &commonv1.JobBaseSpec{Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+				Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+			}},
+			want: "spec.jobs.resources.requests.cpu: Invalid value",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			o := validOVNChassis()
+			o.Spec.Jobs = tc.jobs
+
+			_, err := w.ValidateCreate(context.Background(), o)
+			if tc.want == "" {
+				g.Expect(err).NotTo(gomega.HaveOccurred())
+				return
+			}
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+		})
+	}
 }

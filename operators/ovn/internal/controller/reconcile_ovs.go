@@ -159,6 +159,9 @@ func buildOVSDaemonSet(cr *ovnv1alpha1.OVNChassis) *appsv1.DaemonSet {
 		Image:           image,
 		Command:         []string{"/bin/bash", path.Join(chassisScriptDir, hostPrepareScriptKey)},
 		SecurityContext: prepare,
+		// The init container finishes before ovs-vswitchd starts, so the
+		// pod's effective request stays the larger of the two.
+		Resources: chassisResources(cr.Spec.OVS),
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: modulesVolumeName, MountPath: modulesDir, ReadOnly: true},
 			{Name: runOVSVolumeName, MountPath: ovsRunDir},

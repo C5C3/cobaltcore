@@ -92,7 +92,12 @@ spec:
           value: "60000"
         image: ghcr.io/c5c3/ovn:26.03.2
         name: maintenance
-        resources: {}
+        resources:
+          limits:
+            memory: 368Mi
+          requests:
+            cpu: 100m
+            memory: 368Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -172,7 +177,12 @@ spec:
           value: 11111111-2222-3333-4444-555555555555
         image: ghcr.io/c5c3/ovn:26.03.2
         name: maintenance
-        resources: {}
+        resources:
+          limits:
+            memory: 368Mi
+          requests:
+            cpu: 100m
+            memory: 368Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -244,7 +254,12 @@ spec:
           value: 11111111-2222-3333-4444-555555555555
         image: ghcr.io/c5c3/ovn:26.03.2
         name: maintenance
-        resources: {}
+        resources:
+          limits:
+            memory: 368Mi
+          requests:
+            cpu: 100m
+            memory: 368Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

@@ -356,7 +356,10 @@ spec:
           value: "30000"
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
         name: apply-node
-        resources: {}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

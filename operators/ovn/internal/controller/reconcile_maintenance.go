@@ -28,6 +28,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
 
@@ -121,7 +122,9 @@ func maintenanceJobName(cr *ovnv1alpha1.OVNChassis, kind, node string) string {
 // whose local database it writes rather than wherever there is room. The
 // tolerations come from the CR either way: a NoExecute taint evicts a pinned pod
 // that does not tolerate it, and the two unpinned Jobs need a node that admits
-// them at all on a cluster whose networking nodes are tainted.
+// them at all on a cluster whose networking nodes are tainted. The resources
+// and the priority class come from spec.jobs; there is no node selector, which
+// a pinned pod on a node it does not match would fail kubelet admission with.
 func maintenanceJob(cr *ovnv1alpha1.OVNChassis, name, script string, env []corev1.EnvVar,
 	extraVolumes []corev1.Volume, extraMounts []corev1.VolumeMount, nodeName string, hostNetwork bool,
 ) *batchv1.Job {
@@ -144,8 +147,7 @@ func maintenanceJob(cr *ovnv1alpha1.OVNChassis, name, script string, env []corev
 		SecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		},
-		NodeName:    nodeName,
-		Tolerations: cr.Spec.Tolerations,
+		NodeName: nodeName,
 		Containers: []corev1.Container{{
 			Name:  componentMaintenance,
 			Image: effectiveImage(cr.Spec.Image).Reference(),
@@ -164,6 +166,13 @@ func maintenanceJob(cr *ovnv1alpha1.OVNChassis, name, script string, env []corev
 		podSpec.HostNetwork = true
 		podSpec.DNSPolicy = corev1.DNSClusterFirstWithHostNet
 	}
+	var jobs *commonv1.JobSpec
+	if cr.Spec.Jobs != nil {
+		jobs = &commonv1.JobSpec{JobBaseSpec: *cr.Spec.Jobs}
+	}
+	settings := job.ResolvePodSettings(jobs, nil)
+	settings.Placement.Tolerations = cr.Spec.Tolerations
+	settings.Apply(&podSpec)
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
