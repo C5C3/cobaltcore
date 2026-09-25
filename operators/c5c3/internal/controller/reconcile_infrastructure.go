@@ -7,15 +7,21 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -66,9 +72,10 @@ func childNamespace(cp *c5c3v1alpha1.ControlPlane) string {
 // site-specific hardening to the platform team.
 const (
 	// infraMariaDBStorageSizeDefault is the zero-value fallback applied when
-	// spec.infrastructure.database.storageSize is unset (""). The CRD default is
-	// 100Gi, so this only fires when validation was bypassed (e.g. a fake-client
-	// unit test that builds the CR directly); it keeps the projection admissible
+	// spec.infrastructure.database.storageSize is unset ("") and the sizing names
+	// no size. The defaulting webhook writes the resolved size at admission, so
+	// this only fires when validation was bypassed (e.g. a fake-client unit test
+	// that builds the CR directly); it keeps the projection admissible
 	// (the mariadb-operator requires a non-empty size) and matches the production
 	// baseline rather than requesting a zero-sized volume. It shares
 	// commonv1.DatabaseStorageSizeDefault with the ControlPlane webhook's
@@ -76,16 +83,20 @@ const (
 	// on what "" means.
 	infraMariaDBStorageSizeDefault = commonv1.DatabaseStorageSizeDefault
 	// infraMariaDBReplicasDefault is the zero-value floor applied when
-	// spec.infrastructure.database.replicas is unset (0). The CRD default is 3,
-	// so this only fires when validation was bypassed; it keeps the projection
+	// spec.infrastructure.database.replicas is unset (0) and the sizing names no
+	// count. The defaulting webhook writes the resolved count at admission, so
+	// this only fires when validation was bypassed; it keeps the projection
 	// admissible (replicas >= 1) rather than creating a zero-replica MariaDB.
-	infraMariaDBReplicasDefault = int32(3)
+	infraMariaDBReplicasDefault = commonv1.DefaultReplicas
+	// infraMemcachedReplicasDefault is the zero-value floor applied when a
+	// cache's replicas is unset (0) and the sizing names no count, which only a
+	// teardown pass or a bypassed webhook produces.
+	infraMemcachedReplicasDefault = commonv1.DefaultReplicas
 	// infraRabbitMQReplicasDefault is the zero-value floor applied when
-	// spec.infrastructure.messaging.replicas is unset (0). The CRD default is 3
-	// and its minimum is 1, so this only fires when validation was bypassed; it
-	// keeps the projection admissible (replicas >= 1) rather than creating a
-	// zero-replica broker.
-	infraRabbitMQReplicasDefault = int32(3)
+	// spec.infrastructure.messaging.replicas is unset (0) and the sizing names no
+	// count; it keeps the projection admissible (replicas >= 1) rather than
+	// creating a zero-replica broker.
+	infraRabbitMQReplicasDefault = commonv1.DefaultReplicas
 )
 
 // memcachedGVK is the GroupVersionKind of the Memcached CR projected in managed
@@ -110,10 +121,10 @@ var memcachedGVK = schema.GroupVersionKind{
 // instead.
 //
 // The gate exists because the decrement needs no deliberate act to reach the
-// reconciler: replicas carries a schema default of 3, so a GitOps commit that
-// merely DROPS the line off a ControlPlane running 5 reads as a no-op in review,
-// is defaulted back to 3 by the apiserver, and arrives here as desired=3 against
-// a live broker at 5. Mirrors keystoneDeletionAllowedAnnotation: destroying
+// reconciler: an unset replicas resolves to the sizing (3 under Standard), so a
+// GitOps commit that merely DROPS the line off a ControlPlane running 5, or
+// switches its sizing profile, reads as a no-op in review and arrives here as
+// desired=3 against a live broker at 5. Mirrors keystoneDeletionAllowedAnnotation: destroying
 // irreplaceable state is opt-in, never a side effect of an ordinary spec edit.
 const messagingRecreateAllowedAnnotation = "c5c3.io/allow-messaging-recreate"
 
@@ -199,7 +210,11 @@ func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp
 	// per-service dedicated one alike, so a service's dedicated database is as
 	// load-bearing for InfrastructureReady (and therefore for the projection gate
 	// on the consuming service) as the shared cluster is.
-	instances := r.managedInfraInstances(cp)
+	sizing, err := r.effectiveSizing(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving sizing: %w", err)
+	}
+	instances := r.managedInfraInstances(cp, sizing)
 
 	// A backing service is provisioned on the cluster of the service it belongs
 	// to, so each instance is written with its own namespace's children client.
@@ -335,8 +350,16 @@ type infraInstance struct {
 // projecting a different desired topology, and each write would re-enqueue the
 // ControlPlane into a self-sustaining loop of conflicting writes. First
 // resolution wins.
-func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlPlane) []infraInstance {
+//
+// sizing is the ControlPlane's effective sizing; every managed instance of a
+// class takes that class's sizing. The teardown caller passes the zero sizing,
+// since it only reads the instances' names.
+func (r *ControlPlaneReconciler) managedInfraInstances(
+	cp *c5c3v1alpha1.ControlPlane, sizing c5c3v1alpha1.SizingSpec,
+) []infraInstance {
 	var instances []infraInstance
+	dbSizing := databaseSizing(sizing)
+	busSizing := messagingSizing(sizing)
 
 	seen := map[string]struct{}{}
 	claim := func(kind, namespace, name string) bool {
@@ -363,7 +386,7 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 			errorReason: "MariaDBError",
 			waitReason:  "WaitingForDatabase",
 			ensure: func(ctx context.Context, c client.Client) (bool, error) {
-				return r.ensureMariaDB(ctx, c, cp, db, namespace)
+				return r.ensureMariaDB(ctx, c, cp, db, dbSizing, namespace)
 			},
 		})
 	}
@@ -382,7 +405,7 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 			errorReason: "MemcachedError",
 			waitReason:  "WaitingForCache",
 			ensure: func(ctx context.Context, c client.Client) (bool, error) {
-				return r.ensureMemcached(ctx, c, cp, cache, namespace)
+				return r.ensureMemcached(ctx, c, cp, cache, sizing.Cache, namespace)
 			},
 		})
 	}
@@ -401,7 +424,7 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 			errorReason: "RabbitMQError",
 			waitReason:  "WaitingForMessaging",
 			ensure: func(ctx context.Context, c client.Client) (bool, error) {
-				return r.ensureRabbitMQ(ctx, c, cp, m, namespace)
+				return r.ensureRabbitMQ(ctx, c, cp, m, busSizing, namespace)
 			},
 		})
 	}
@@ -489,6 +512,28 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 	}
 
 	return instances
+}
+
+// databaseSizing returns the database sizing of s with the top-level placement
+// folded in (resolvePlacement), so ensureMariaDB reads one block. A nil
+// s.Database, which only the zero sizing carries, returns nil.
+func databaseSizing(s c5c3v1alpha1.SizingSpec) *c5c3v1alpha1.DatabaseSizingSpec {
+	if s.Database == nil {
+		return nil
+	}
+	d := s.Database.DeepCopy()
+	d.NodeSelector, d.Tolerations, d.PriorityClassName = resolvePlacement(s.PodPlacementSpec, d.PodPlacementSpec)
+	return d
+}
+
+// messagingSizing is databaseSizing for the message bus.
+func messagingSizing(s c5c3v1alpha1.SizingSpec) *c5c3v1alpha1.ScaledSizingSpec {
+	if s.Messaging == nil {
+		return nil
+	}
+	m := s.Messaging.DeepCopy()
+	m.NodeSelector, m.Tolerations, m.PriorityClassName = resolvePlacement(s.PodPlacementSpec, m.PodPlacementSpec)
+	return m
 }
 
 // The declaredAt-* helpers name the spec path the instance a service resolves to
@@ -618,35 +663,55 @@ func novaCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 // cannot resolve the owner's UID), so the child is stamped with the ownership
 // labels and the finalizer-driven teardown deletes it explicitly.
 //
+// sizing is the database sizing of the ControlPlane's effective sizing, with the
+// top-level placement already folded in (databaseSizing). It supplies the
+// replica count and the volume size db leaves unset, and the container
+// resources, node selector, tolerations and priority class the MariaDB runs
+// with. A nil sizing projects none of them.
+//
 // It stays read-modify-write (not Server-Side Apply): the write is gated on the
-// LIVE object's ownership — an owned CR has its topology re-projected, while an
-// externally-provisioned CR sharing the name is adopted read-only and never has
-// ownership claimed. That adoption-vs-projection decision reads live state, so it
-// cannot be expressed as a pure projection of cp.Spec.
-func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, db *commonv1.DatabaseSpec, namespace string) (bool, error) {
+// LIVE object's ownership — an owned CR has its topology and sizing
+// re-projected, while an externally-provisioned CR sharing the name is adopted
+// read-only and never has ownership claimed. That adoption-vs-projection
+// decision reads live state, so it cannot be expressed as a pure projection of
+// cp.Spec.
+func (r *ControlPlaneReconciler) ensureMariaDB(
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+	db *commonv1.DatabaseSpec, sizing *c5c3v1alpha1.DatabaseSizingSpec, namespace string,
+) (bool, error) {
 	key := types.NamespacedName{
 		Name:      db.ClusterRef.Name,
 		Namespace: namespace,
 	}
 	// Derive the projected topology from the ControlPlane spec. A single replica
 	// yields a single-instance MariaDB with Galera off, so a single-node kind can
-	// schedule the fresh-create path; any multi-replica count (the default is 3)
-	// enables the Galera clustering the production baseline uses. Floor a
-	// zero/negative value (only reachable when CRD validation was bypassed) to
-	// the default.
+	// schedule the fresh-create path; any multi-replica count (Standard's 3)
+	// enables the Galera clustering the production baseline uses. The defaulting
+	// webhook writes the resolved count into db at admission; a zero value (only
+	// reachable when it was bypassed) falls back to the sizing, then to the
+	// default.
 	replicas := db.Replicas
+	if replicas < 1 && sizing != nil && sizing.Replicas != nil {
+		replicas = *sizing.Replicas
+	}
 	if replicas < 1 {
 		replicas = infraMariaDBReplicasDefault
 	}
 	galeraEnabled := replicas > 1
 
-	// Derive the projected volume size from the spec, falling back to the
-	// production baseline when the field is empty (only reachable when the CRD
-	// default was bypassed). Storage is immutable on the mariadb-operator CR, so
-	// this value is honoured on fresh create only and never re-projected below.
+	// Derive the projected volume size the same way. Storage is immutable on the
+	// mariadb-operator CR, so this value is honoured on fresh create only and
+	// never re-projected below.
 	storageSize := db.StorageSize
+	if storageSize == "" && sizing != nil {
+		storageSize = sizing.StorageSize
+	}
 	if storageSize == "" {
 		storageSize = infraMariaDBStorageSizeDefault
+	}
+	var pod c5c3v1alpha1.PinnedSizingSpec
+	if sizing != nil {
+		pod = sizing.PinnedSizingSpec
 	}
 
 	mariadb := &mariadbv1alpha1.MariaDB{}
@@ -663,6 +728,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, c client.Cli
 		mariadb.Spec.Replicas = replicas
 		mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: galeraEnabled}
 		mariadb.Spec.Storage = mariadbv1alpha1.Storage{Size: &size}
+		applyMariaDBPod(mariadb, pod)
 		if serr := claimChildOwnership(c, cp, mariadb, r.Scheme); serr != nil {
 			return false, fmt.Errorf("claiming ownership of MariaDB %q: %w", key.Name, serr)
 		}
@@ -675,15 +741,17 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, c client.Cli
 		// A MariaDB with this clusterRef name already exists. Two sub-cases:
 		//
 		//  1. It is OWNED by this ControlPlane (we created it on an earlier pass):
-		//     re-assert the spec-derived projection — spec.replicas and the derived
-		//     Galera topology — so external drift on the owned cluster is corrected
-		//     back to the declared topology. spec.infrastructure.database.replicas
-		//     is itself immutable after creation (the ControlPlane validating
-		//     webhook rejects a change), so this never scales down or toggles Galera
-		//     in response to a user edit — only in response to drift. spec.storage
-		//     is deliberately NOT re-projected even when owned: the mariadb-operator
-		//     webhook rejects changing spec.storage.* on an existing CR, so storage
-		//     stays as first created.
+		//     re-assert the spec-derived projection — spec.replicas, the derived
+		//     Galera topology, and the resources and placement of the sizing — so
+		//     external drift on the owned cluster is corrected back to the declared
+		//     state, and a sizing change reaches the running database.
+		//     spec.infrastructure.database.replicas is itself immutable after
+		//     creation (the ControlPlane validating webhook rejects a change), so
+		//     this never scales down or toggles Galera in response to a user edit —
+		//     only in response to drift. spec.storage is deliberately NOT
+		//     re-projected even when owned: the mariadb-operator webhook rejects
+		//     changing spec.storage.* on an existing CR, so storage stays as first
+		//     created.
 		//
 		//  2. It is NOT owned (e.g. the infrastructure stack provisions
 		//     "openstack-db" under the same name): adopt it as-is and reconcile only
@@ -696,17 +764,51 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, c client.Cli
 		// namespace carries the ownership labels instead of an owner reference.
 		if isControlPlaneChild(mariadb, cp) {
 			currentGalera := mariadb.Spec.Galera != nil && mariadb.Spec.Galera.Enabled
-			if mariadb.Spec.Replicas != replicas || currentGalera != galeraEnabled {
+			if mariadb.Spec.Replicas != replicas || currentGalera != galeraEnabled || !mariaDBPodMatches(mariadb, pod) {
 				mariadb.Spec.Replicas = replicas
 				mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: galeraEnabled}
+				applyMariaDBPod(mariadb, pod)
 				if uerr := c.Update(ctx, mariadb); uerr != nil {
-					return false, fmt.Errorf("updating owned MariaDB %q topology: %w", key.Name, uerr)
+					return false, fmt.Errorf("updating owned MariaDB %q: %w", key.Name, uerr)
 				}
 			}
 		}
 	}
 
 	return conditions.IsReady(mariadb.Status.Conditions), nil
+}
+
+// applyMariaDBPod writes the container resources and the placement of p onto
+// m, copying every value so m never aliases the sizing the other instances of
+// the pass share.
+func applyMariaDBPod(m *mariadbv1alpha1.MariaDB, p c5c3v1alpha1.PinnedSizingSpec) {
+	m.Spec.Resources = nil
+	if p.Resources != nil {
+		m.Spec.Resources = &mariadbv1alpha1.ResourceRequirements{
+			Requests: p.Resources.Requests.DeepCopy(),
+			Limits:   p.Resources.Limits.DeepCopy(),
+		}
+	}
+	m.Spec.NodeSelector = maps.Clone(p.NodeSelector)
+	m.Spec.Tolerations = slices.Clone(p.Tolerations)
+	m.Spec.PriorityClassName = nil
+	if p.PriorityClassName != nil {
+		m.Spec.PriorityClassName = ptr.To(*p.PriorityClassName)
+	}
+}
+
+// mariaDBPodMatches reports whether m already carries p. The comparison is
+// semantic, so quantities compare by value and a nil map or list equals an
+// empty one.
+func mariaDBPodMatches(m *mariadbv1alpha1.MariaDB, p c5c3v1alpha1.PinnedSizingSpec) bool {
+	var want *mariadbv1alpha1.ResourceRequirements
+	if p.Resources != nil {
+		want = &mariadbv1alpha1.ResourceRequirements{Requests: p.Resources.Requests, Limits: p.Resources.Limits}
+	}
+	return equality.Semantic.DeepEqual(m.Spec.Resources, want) &&
+		equality.Semantic.DeepEqual(m.Spec.NodeSelector, p.NodeSelector) &&
+		equality.Semantic.DeepEqual(m.Spec.Tolerations, p.Tolerations) &&
+		equality.Semantic.DeepEqual(m.Spec.PriorityClassName, p.PriorityClassName)
 }
 
 // ensureMemcached create-or-updates the owned Memcached CR named after
@@ -720,15 +822,46 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, c client.Cli
 // object's ownership through isControlPlaneChild, the same test ensureMariaDB
 // uses. Owned means the controller owner reference, or the ownership labels in
 // any namespace, the form a child in a service namespace or on a target cluster
-// is created with. An owned CR has spec.replicas re-projected, while an
-// externally provisioned CR carrying neither is adopted read-only and never has
-// ownership claimed. It is also unstructured, which apply.EnsureObject's
-// typed-struct path does not cover.
-func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, cache *commonv1.CacheSpec, namespace string) (bool, error) {
+// is created with. An owned CR has spec.replicas and spec.resources
+// re-projected, while an externally provisioned CR carrying neither is adopted
+// read-only and never has ownership claimed. It is also unstructured, which
+// apply.EnsureObject's typed-struct path does not cover.
+//
+// sizing is the cache sizing of the ControlPlane's effective sizing. It
+// supplies the replica count cache leaves unset, and spec.resources, which is
+// removed when the sizing sets none. The Memcached CRD has no node selector,
+// tolerations or priority class, so the cache takes no placement.
+func (r *ControlPlaneReconciler) ensureMemcached(
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+	cache *commonv1.CacheSpec, sizing *c5c3v1alpha1.CacheSizingSpec, namespace string,
+) (bool, error) {
 	key := types.NamespacedName{
 		Name:      cache.ClusterRef.Name,
 		Namespace: namespace,
 	}
+	// An unset count (0) takes the sizing's count on every pass, so a profile
+	// change scales an owned cache. When the sizing names none either, which
+	// only a teardown pass or a bypassed webhook produces, fall back to the
+	// default rather than scaling the cache away.
+	replicas := cache.Replicas
+	if replicas < 1 && sizing != nil && sizing.Replicas != nil {
+		replicas = *sizing.Replicas
+	}
+	if replicas < 1 {
+		replicas = infraMemcachedReplicasDefault
+	}
+	var resources *corev1.ResourceRequirements
+	if sizing != nil {
+		resources = sizing.Resources
+	}
+	project := func(u *unstructured.Unstructured) error {
+		// int32 must be widened to int64 for unstructured nested-field storage.
+		if serr := unstructured.SetNestedField(u.Object, int64(replicas), "spec", "replicas"); serr != nil {
+			return fmt.Errorf("setting Memcached %q spec.replicas: %w", key.Name, serr)
+		}
+		return setUnstructuredResources(u, resources)
+	}
+
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(memcachedGVK)
 	err := c.Get(ctx, key, u)
@@ -736,9 +869,8 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.C
 	case apierrors.IsNotFound(err):
 		u.SetName(key.Name)
 		u.SetNamespace(key.Namespace)
-		// int32 must be widened to int64 for unstructured nested-field storage.
-		if serr := unstructured.SetNestedField(u.Object, int64(cache.Replicas), "spec", "replicas"); serr != nil {
-			return false, fmt.Errorf("setting spec.replicas: %w", serr)
+		if perr := project(u); perr != nil {
+			return false, perr
 		}
 		if serr := claimChildOwnership(c, cp, u, r.Scheme); serr != nil {
 			return false, fmt.Errorf("claiming ownership of Memcached %q: %w", key.Name, serr)
@@ -750,8 +882,8 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.C
 		return false, fmt.Errorf("getting Memcached %q: %w", key.Name, err)
 	default:
 		// An existing Memcached. If this ControlPlane OWNS it (we created it on an
-		// earlier pass), reconcile spec.replicas so a ControlPlane spec change
-		// (the declared instance's cache.replicas) actually scales the cache we own
+		// earlier pass), reconcile spec.replicas and spec.resources so a
+		// ControlPlane spec or sizing change actually resizes the cache we own
 		// instead of being ignored after first creation. The re-projection runs in
 		// both directions and needs no opt-in: scaling a cache drops cached entries
 		// and no data. If it is a pre-existing / externally-provisioned instance
@@ -762,17 +894,20 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.C
 		// namespace or on a target cluster carries the ownership labels instead of
 		// an owner reference.
 		if isControlPlaneChild(u, cp) {
-			desired := int64(cache.Replicas)
 			current, found, gerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
 			if gerr != nil {
 				return false, fmt.Errorf("reading Memcached %q spec.replicas: %w", key.Name, gerr)
 			}
-			if !found || current != desired {
-				if serr := unstructured.SetNestedField(u.Object, desired, "spec", "replicas"); serr != nil {
-					return false, fmt.Errorf("setting Memcached %q spec.replicas: %w", key.Name, serr)
+			resourcesMatch, rerr := unstructuredResourcesMatch(u, resources, nil)
+			if rerr != nil {
+				return false, fmt.Errorf("reading Memcached %q spec.resources: %w", key.Name, rerr)
+			}
+			if !found || current != int64(replicas) || !resourcesMatch {
+				if perr := project(u); perr != nil {
+					return false, perr
 				}
 				if uerr := c.Update(ctx, u); uerr != nil {
-					return false, fmt.Errorf("updating owned Memcached %q replicas: %w", key.Name, uerr)
+					return false, fmt.Errorf("updating owned Memcached %q: %w", key.Name, uerr)
 				}
 			}
 		}
@@ -786,10 +921,17 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.C
 // shared spec.infrastructure.messaging block; the bus has no per-service
 // dedicated variant, because it is shared across services by nature.
 //
-// Only spec.replicas is projected. Image, resources, persistence and tls stay at
-// the RabbitMQ Cluster Operator's defaults, or at whatever the platform set on an
-// adopted CR: they are site-specific hardening outside the aggregate's knowledge,
-// the posture ensureMariaDB already takes on TLS and issuerRefs.
+// spec.replicas, spec.resources, spec.tolerations and the node selector and
+// priority class of the broker pods are projected from sizing, the messaging
+// sizing of the ControlPlane's effective sizing with the top-level placement
+// folded in (messagingSizing). The RabbitmqCluster spec has no node selector or
+// priority class of its own, so both go through the StatefulSet override at
+// spec.override.statefulSet.spec.template.spec, which is removed when neither
+// resolves. Unset resources leave the operator's default (1 CPU and 2Gi
+// requested, 2 CPU and 2Gi limit). Image, persistence and tls stay at the
+// RabbitMQ Cluster Operator's defaults, or at whatever the platform set on an
+// adopted CR: they are site-specific hardening outside the aggregate's
+// knowledge, the posture ensureMariaDB already takes on TLS and issuerRefs.
 //
 // Readiness follows the operator's AllReplicasReady condition. The RabbitMQ
 // Cluster Operator sets no Ready condition at all, so unstructuredReady would
@@ -804,9 +946,9 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.C
 // Like ensureMemcached it is unstructured (this repository takes no dependency
 // on the RabbitMQ Cluster Operator's Go module, see
 // messaging.RabbitmqClusterGVK) and read-modify-write: the write is gated on the
-// LIVE object's ownership, so an owned CR has its replica count re-projected
-// while an externally-provisioned CR sharing the name is adopted read-only and
-// never has ownership claimed.
+// LIVE object's ownership, so an owned CR has its replica count and sizing
+// re-projected while an externally-provisioned CR sharing the name is adopted
+// read-only and never has ownership claimed.
 //
 // Unlike ensureMemcached the re-projection is not symmetric. Growing an owned
 // cluster is an in-place Update; SHRINKING one is a delete-and-recreate, because
@@ -817,10 +959,17 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.C
 // exceeds, so it is GATED on messagingRecreateAllowedAnnotation: an unauthorised
 // shrink is refused with an error naming the annotation, and the broker keeps
 // running at its current size.
-func (r *ControlPlaneReconciler) ensureRabbitMQ(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, m *commonv1.MessagingSpec, namespace string) (bool, error) {
-	// Floor a zero/negative count (only reachable when CRD validation was
-	// bypassed) to the default rather than creating a broker with no pods.
+func (r *ControlPlaneReconciler) ensureRabbitMQ(
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+	m *commonv1.MessagingSpec, sizing *c5c3v1alpha1.ScaledSizingSpec, namespace string,
+) (bool, error) {
+	// An unset count follows the sizing on every pass, so a profile change grows
+	// an owned bus (a shrink stays gated below). Zero falls back to the default
+	// rather than creating a broker with no pods.
 	replicas := m.Replicas
+	if replicas < 1 && sizing != nil && sizing.Replicas != nil {
+		replicas = *sizing.Replicas
+	}
 	if replicas < 1 {
 		replicas = infraRabbitMQReplicasDefault
 	}
@@ -829,6 +978,15 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(ctx context.Context, c client.Cl
 		Name:      m.ClusterRef.Name,
 		Namespace: namespace,
 	}
+	pod := rabbitMQPodSizing(sizing)
+	project := func(u *unstructured.Unstructured) error {
+		// int32 must be widened to int64 for unstructured nested-field storage.
+		if serr := unstructured.SetNestedField(u.Object, int64(replicas), "spec", "replicas"); serr != nil {
+			return fmt.Errorf("setting RabbitmqCluster %q spec.replicas: %w", key.Name, serr)
+		}
+		return pod.applyTo(u)
+	}
+
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 	err := c.Get(ctx, key, u)
@@ -836,9 +994,8 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(ctx context.Context, c client.Cl
 	case apierrors.IsNotFound(err):
 		u.SetName(key.Name)
 		u.SetNamespace(key.Namespace)
-		// int32 must be widened to int64 for unstructured nested-field storage.
-		if serr := unstructured.SetNestedField(u.Object, int64(replicas), "spec", "replicas"); serr != nil {
-			return false, fmt.Errorf("setting spec.replicas: %w", serr)
+		if perr := project(u); perr != nil {
+			return false, perr
 		}
 		if serr := claimChildOwnership(c, cp, u, r.Scheme); serr != nil {
 			return false, fmt.Errorf("claiming ownership of RabbitmqCluster %q: %w", key.Name, serr)
@@ -860,9 +1017,9 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(ctx context.Context, c client.Cl
 		}
 
 		// An existing RabbitmqCluster. If this ControlPlane OWNS it (we created it
-		// on an earlier pass), reconcile spec.replicas so a change to the declared
-		// messaging.replicas scales the broker we own instead of being ignored after
-		// first creation. A pre-existing / externally-provisioned one (NOT owned) is
+		// on an earlier pass), reconcile spec.replicas and the sizing so a change to
+		// the declared messaging.replicas or the sizing reaches the broker we own
+		// instead of being ignored after first creation. A pre-existing / externally-provisioned one (NOT owned) is
 		// adopted as-is, never reshaped and never claimed for GC, on the rationale
 		// ensureMemcached states. managedInfraInstances enumerates the bus only at
 		// childNamespace(cp) on the local client, so claimChildOwnership always
@@ -887,9 +1044,10 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(ctx context.Context, c client.Cl
 			// cluster that is going away.
 			//
 			// That recreate destroys every queue and message on the bus, and an
-			// unintended decrement is cheap to write — replicas defaults to 3, so
-			// dropping the line off a ControlPlane running 5 arrives here as a
-			// scale-down nobody typed. So it is REFUSED unless the ControlPlane
+			// unintended decrement is cheap to write — an unset replicas resolves to
+			// the sizing, so dropping the line off a ControlPlane running 5, or
+			// switching it to a smaller profile, arrives here as a scale-down nobody
+			// typed. So it is REFUSED unless the ControlPlane
 			// carries messagingRecreateAllowedAnnotation: the broker keeps running at
 			// its current size and the divergence surfaces as InfrastructureReady
 			// False with reason RabbitMQError, naming the annotation that authorises
@@ -908,18 +1066,180 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(ctx context.Context, c client.Cl
 				}
 				return false, nil
 			}
-			if !found || current != desired {
-				if serr := unstructured.SetNestedField(u.Object, desired, "spec", "replicas"); serr != nil {
-					return false, fmt.Errorf("setting RabbitmqCluster %q spec.replicas: %w", key.Name, serr)
+			podMatches, perr := pod.matches(u)
+			if perr != nil {
+				return false, fmt.Errorf("reading RabbitmqCluster %q sizing: %w", key.Name, perr)
+			}
+			if !found || current != desired || !podMatches {
+				if perr := project(u); perr != nil {
+					return false, perr
 				}
 				if uerr := c.Update(ctx, u); uerr != nil {
-					return false, fmt.Errorf("updating owned RabbitmqCluster %q replicas: %w", key.Name, uerr)
+					return false, fmt.Errorf("updating owned RabbitmqCluster %q: %w", key.Name, uerr)
 				}
 			}
 		}
 	}
 
 	return unstructuredConditionTrue(u, "AllReplicasReady"), nil
+}
+
+// rabbitMQDefaultResources is the spec.resources the RabbitmqCluster CRD
+// defaults an unset field to (cluster-operator v2.23.0, the tag
+// deploy/flux-system/sources/rabbitmq-cluster-operator.yaml pins). A bus the
+// sizing sets no resources for carries it, so it counts as matching rather
+// than being removed, and defaulted back, on every pass. Keep it and the
+// figures docs/reference/c5c3/controlplane-crd.md repeats in lockstep with a
+// pin bump that changes the CRD default.
+func rabbitMQDefaultResources() *corev1.ResourceRequirements {
+	return &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("1"),
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("2"),
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+		},
+	}
+}
+
+// rabbitMQPod is the pod-level sizing ensureRabbitMQ projects onto a
+// RabbitmqCluster.
+type rabbitMQPod struct {
+	resources   *corev1.ResourceRequirements
+	tolerations []corev1.Toleration
+	// podSpec is spec.override.statefulSet.spec.template.spec, or nil when
+	// neither a node selector nor a priority class resolves. The upstream schema
+	// requires containers there, so it always carries an empty list.
+	podSpec map[string]interface{}
+}
+
+func rabbitMQPodSizing(s *c5c3v1alpha1.ScaledSizingSpec) rabbitMQPod {
+	if s == nil {
+		return rabbitMQPod{}
+	}
+	p := rabbitMQPod{resources: s.Resources, tolerations: s.Tolerations}
+	if len(s.NodeSelector) > 0 || s.PriorityClassName != nil {
+		p.podSpec = map[string]interface{}{"containers": []interface{}{}}
+		if len(s.NodeSelector) > 0 {
+			nodeSelector := make(map[string]interface{}, len(s.NodeSelector))
+			for k, v := range s.NodeSelector {
+				nodeSelector[k] = v
+			}
+			p.podSpec["nodeSelector"] = nodeSelector
+		}
+		if s.PriorityClassName != nil {
+			p.podSpec["priorityClassName"] = *s.PriorityClassName
+		}
+	}
+	return p
+}
+
+// applyTo writes p onto u, removing every field p leaves unset.
+func (p rabbitMQPod) applyTo(u *unstructured.Unstructured) error {
+	if err := setUnstructuredResources(u, p.resources); err != nil {
+		return err
+	}
+	if len(p.tolerations) == 0 {
+		unstructured.RemoveNestedField(u.Object, "spec", "tolerations")
+	} else {
+		tolerations := make([]interface{}, 0, len(p.tolerations))
+		for i := range p.tolerations {
+			t, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&p.tolerations[i])
+			if err != nil {
+				return fmt.Errorf("converting toleration %d: %w", i, err)
+			}
+			tolerations = append(tolerations, t)
+		}
+		if err := unstructured.SetNestedSlice(u.Object, tolerations, "spec", "tolerations"); err != nil {
+			return fmt.Errorf("setting spec.tolerations: %w", err)
+		}
+	}
+	if p.podSpec == nil {
+		unstructured.RemoveNestedField(u.Object, "spec", "override", "statefulSet")
+		return nil
+	}
+	if err := unstructured.SetNestedMap(u.Object, p.podSpec,
+		"spec", "override", "statefulSet", "spec", "template", "spec"); err != nil {
+		return fmt.Errorf("setting spec.override.statefulSet.spec.template.spec: %w", err)
+	}
+	return nil
+}
+
+// matches reports whether u already carries p. Unset resources match the
+// operator's default as well as an absent field.
+func (p rabbitMQPod) matches(u *unstructured.Unstructured) (bool, error) {
+	resourcesMatch, err := unstructuredResourcesMatch(u, p.resources, rabbitMQDefaultResources())
+	if err != nil || !resourcesMatch {
+		return false, err
+	}
+	var live []corev1.Toleration
+	if raw, found, _ := unstructured.NestedSlice(u.Object, "spec", "tolerations"); found {
+		for i, t := range raw {
+			m, ok := t.(map[string]interface{})
+			if !ok {
+				return false, fmt.Errorf("spec.tolerations[%d] is not an object", i)
+			}
+			var tol corev1.Toleration
+			if cerr := runtime.DefaultUnstructuredConverter.FromUnstructured(m, &tol); cerr != nil {
+				return false, fmt.Errorf("decoding spec.tolerations[%d]: %w", i, cerr)
+			}
+			live = append(live, tol)
+		}
+	}
+	if !equality.Semantic.DeepEqual(live, p.tolerations) {
+		return false, nil
+	}
+	podSpec, found, err := unstructured.NestedMap(u.Object, "spec", "override", "statefulSet", "spec", "template", "spec")
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		podSpec = nil
+	}
+	return equality.Semantic.DeepEqual(podSpec, p.podSpec), nil
+}
+
+// setUnstructuredResources writes rr at spec.resources on u, or removes the
+// field when rr is nil.
+func setUnstructuredResources(u *unstructured.Unstructured, rr *corev1.ResourceRequirements) error {
+	if rr == nil {
+		unstructured.RemoveNestedField(u.Object, "spec", "resources")
+		return nil
+	}
+	m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(rr)
+	if err != nil {
+		return fmt.Errorf("converting resources: %w", err)
+	}
+	if err := unstructured.SetNestedMap(u.Object, m, "spec", "resources"); err != nil {
+		return fmt.Errorf("setting spec.resources: %w", err)
+	}
+	return nil
+}
+
+// unstructuredResourcesMatch reports whether spec.resources on u equals want
+// by value. A nil want matches an absent field, and also fallback when
+// fallback is non-nil: the value the target's schema defaults an unset field
+// to.
+func unstructuredResourcesMatch(
+	u *unstructured.Unstructured, want, fallback *corev1.ResourceRequirements,
+) (bool, error) {
+	raw, found, err := unstructured.NestedMap(u.Object, "spec", "resources")
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return want == nil, nil
+	}
+	live := &corev1.ResourceRequirements{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(raw, live); err != nil {
+		return false, err
+	}
+	if want == nil {
+		return fallback != nil && equality.Semantic.DeepEqual(live, fallback), nil
+	}
+	return equality.Semantic.DeepEqual(live, want), nil
 }
 
 // unstructuredReady reports whether an unstructured object carries a

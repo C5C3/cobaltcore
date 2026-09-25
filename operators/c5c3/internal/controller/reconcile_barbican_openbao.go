@@ -561,6 +561,10 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 	if err != nil {
 		return nil, err
 	}
+	sizing, err := r.effectiveSizing(ctx, cp)
+	if err != nil {
+		return nil, fmt.Errorf("resolving sizing: %w", err)
+	}
 
 	instance := &openbaov1alpha1.OpenBaoCluster{}
 	err = c.Get(ctx, key, instance)
@@ -568,7 +572,7 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 	case apierrors.IsNotFound(err):
 		instance.Name = key.Name
 		instance.Namespace = key.Namespace
-		instance.Spec = r.barbicanOpenBaoClusterSpec(cp, apiServerIPs)
+		instance.Spec = r.barbicanOpenBaoClusterSpec(cp, apiServerIPs, sizing.SecretStore)
 		instance.Spec.Storage = openbaov1alpha1.StorageConfig{Size: barbicanOpenBaoStorageSize}
 		if oerr := claimChildOwnership(c, cp, instance, r.Scheme); oerr != nil {
 			return nil, fmt.Errorf("claiming ownership of OpenBaoCluster %q: %w", key.Name, oerr)
@@ -582,7 +586,7 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 		if aerr := refuseForeignAdoption(c, cp, instance, r.Scheme); aerr != nil {
 			return nil, aerr
 		}
-		desired := r.barbicanOpenBaoClusterSpec(cp, apiServerIPs)
+		desired := r.barbicanOpenBaoClusterSpec(cp, apiServerIPs, sizing.SecretStore)
 		desired.Storage = instance.Spec.Storage
 		if !equality.Semantic.DeepEqual(instance.Spec, desired) {
 			instance.Spec = desired
@@ -595,7 +599,11 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 }
 
 // barbicanOpenBaoClusterSpec derives the instance's spec from the ControlPlane. It
-// omits spec.storage, which the caller sets on fresh create alone.
+// omits spec.storage, which the caller sets on fresh create alone. The voter
+// containers take their resources from secretStore, the spec.sizing.secretStore
+// block of the effective sizing; a nil block or resources leaves the
+// openbao-operator's own default. The replica count stays one whatever the
+// sizing says, and the voters are placed by the openbao-operator itself.
 //
 // The posture is deliberately the Development profile: a single replica and a
 // static seal whose key lives in a Secret beside the instance. The Hardened
@@ -608,13 +616,18 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 // the previous instance's data-<instance>-0 PVC — raft storage initialised under a
 // seal key that no longer exists — and never unseals.
 func (r *ControlPlaneReconciler) barbicanOpenBaoClusterSpec(
-	cp *c5c3v1alpha1.ControlPlane, apiServerIPs []string,
+	cp *c5c3v1alpha1.ControlPlane, apiServerIPs []string, secretStore *c5c3v1alpha1.ContainerSizingSpec,
 ) openbaov1alpha1.OpenBaoClusterSpec {
 	name, namespace := barbicanOpenBaoName(cp), cp.BarbicanNamespace()
+	var resources *corev1.ResourceRequirements
+	if secretStore != nil {
+		resources = secretStore.Resources.DeepCopy()
+	}
 	return openbaov1alpha1.OpenBaoClusterSpec{
-		Profile:  openbaov1alpha1.ProfileDevelopment,
-		Version:  defaultOpenBaoVersion,
-		Replicas: 1,
+		Profile:   openbaov1alpha1.ProfileDevelopment,
+		Version:   defaultOpenBaoVersion,
+		Replicas:  1,
+		Resources: resources,
 		TLS: openbaov1alpha1.TLSConfig{
 			Enabled: true,
 			// External consumes the two fixed-name cert-manager Secrets. The

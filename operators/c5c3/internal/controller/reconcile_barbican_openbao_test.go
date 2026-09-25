@@ -252,6 +252,33 @@ func TestEnsureBarbicanOpenBao_ProjectsInstanceSpec(t *testing.T) {
 	g.Expect(isControlPlaneChild(instance, cp)).To(BeTrue())
 }
 
+// TestEnsureBarbicanOpenBao_SecretStoreSizing pins spec.sizing.secretStore: the
+// voter resources follow it, the replica count stays one under every profile,
+// and Standard, which sizes no secret store, leaves the operator default.
+func TestEnsureBarbicanOpenBao_SecretStoreSizing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanOpenBaoControlPlane()
+	cp.Spec.Sizing = &c5c3v1alpha1.ControlPlaneSizingSpec{Profile: c5c3v1alpha1.SizingProfileMinimal}
+	r := barbicanOpenBaoReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.ensureBarbicanOpenBao(ctx, r.Client, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	instance := getBarbicanOpenBaoCluster(t, r, cp)
+	g.Expect(instance.Spec.Replicas).To(Equal(int32(1)))
+	g.Expect(instance.Spec.Resources).NotTo(BeNil())
+	g.Expect(instance.Spec.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(instance.Spec.Resources.Limits.Memory().String()).To(Equal("256Mi"))
+
+	// Switching to Standard re-projects the owned instance without resources.
+	cp.Spec.Sizing = nil
+	_, err = r.ensureBarbicanOpenBao(ctx, r.Client, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	instance = getBarbicanOpenBaoCluster(t, r, cp)
+	g.Expect(instance.Spec.Replicas).To(Equal(int32(1)))
+	g.Expect(instance.Spec.Resources).To(BeNil())
+}
+
 // TestEnsureBarbicanOpenBao_PinsIngressPeers asserts the NetworkPolicy allowlist
 // names exactly two sources and neither of them with a wildcard namespace
 // selector. A wildcard peer would admit any pod carrying the label from any
