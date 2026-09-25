@@ -94,7 +94,12 @@ CHART_PATH="${CHART_PATH%/}"
 # ---------------------------------------------------------------------------
 # 1. Install CRDs (idempotent — kubectl apply succeeds if already present)
 # ---------------------------------------------------------------------------
-kubectl apply -f "${CHART_PATH}/crds/"
+# Server-side apply: client-side apply stores the whole object in the
+# last-applied-configuration annotation, which the API server caps at 262,144
+# bytes. The Nova and Cinder CRDs exceed it, and client-side apply then fails
+# with "metadata.annotations: Too long". --force-conflicts takes over fields a
+# previous client-side apply or a Helm install owns.
+kubectl apply --server-side --force-conflicts -f "${CHART_PATH}/crds/"
 kubectl wait crd --all --for condition=Established --timeout=60s
 
 # ---------------------------------------------------------------------------

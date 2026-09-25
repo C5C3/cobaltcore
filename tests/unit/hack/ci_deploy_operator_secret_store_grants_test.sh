@@ -71,8 +71,8 @@ STUB
 
 # make_chart <dir>
 # Materialises a minimal stub chart under <dir>: a crds/ directory (the deploy
-# script runs `kubectl apply -f <chart>/crds/`), so the run never touches the
-# real chart tree.
+# script runs `kubectl apply --server-side --force-conflicts -f <chart>/crds/`),
+# so the run never touches the real chart tree.
 make_chart() {
   local dir="$1"
   mkdir -p "$dir/crds"
