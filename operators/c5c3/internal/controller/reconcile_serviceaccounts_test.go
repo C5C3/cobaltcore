@@ -416,6 +416,39 @@ func TestReconcileServiceAccounts_NotifierNeedsBothBlocks(t *testing.T) {
 		"the notifier is projected beside the network registration it belongs to")
 }
 
+// TestProjectedBuiltinRegistrations_HypervisorOperatorFollowsNova pins the
+// hypervisor operator's account into the aggregate exactly while
+// spec.services.nova.hypervisorOperator is set, and right after nova's own
+// registration.
+func TestProjectedBuiltinRegistrations_HypervisorOperatorFollowsNova(t *testing.T) {
+	g := NewGomegaWithT(t)
+	entries := func(cp *c5c3v1alpha1.ControlPlane) []string {
+		var out []string
+		for _, entry := range projectedBuiltinRegistrations(cp) {
+			out = append(out, entry.display+"="+entry.desired.Name)
+		}
+		return out
+	}
+
+	cp := korcControlPlane()
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{}
+	g.Expect(entries(cp)).To(Equal([]string{"nova=" + novaName(cp)}),
+		"without the block no hypervisor-operator account is aggregated")
+
+	cp.Spec.Services.Nova.HypervisorOperator = &c5c3v1alpha1.ServiceNovaHypervisorOperatorSpec{}
+	g.Expect(entries(cp)).To(Equal([]string{
+		"nova=" + novaName(cp),
+		"nova-hypervisor-operator=" + novaHypervisorOperatorRegistrationName(cp),
+	}), "the block adds the account right after nova's own registration")
+
+	cp.Spec.Services.Cinder = &c5c3v1alpha1.ServiceCinderSpec{}
+	got := entries(cp)
+	g.Expect(got[len(got)-2:]).To(Equal([]string{
+		"nova=" + novaName(cp),
+		"nova-hypervisor-operator=" + novaHypervisorOperatorRegistrationName(cp),
+	}), "the account stays last, behind every other service's registration")
+}
+
 // TestServiceAccountRoleSlug covers the slug normalization and its case-sensitive
 // collision resistance. The slug names the Role import and RoleAssignment CRs a
 // KeystoneService registration projects per declared role

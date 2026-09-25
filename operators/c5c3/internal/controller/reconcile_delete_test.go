@@ -4438,6 +4438,7 @@ func TestProjectedRegistrationKeys_IncludesCinder(t *testing.T) {
 		{Name: "cp-neutron-nova", Namespace: "openstack"},
 		{Name: "cp-cinder", Namespace: "openstack"},
 		{Name: "cp-nova", Namespace: "openstack"},
+		{Name: "cp-nova-hypervisor-operator", Namespace: "openstack"},
 	}))
 
 	placed := cp.DeepCopy()
@@ -4451,12 +4452,14 @@ func TestProjectedRegistrationKeys_IncludesCinder(t *testing.T) {
 }
 
 // TestProjectedRegistrationKeys_IncludesNovaAndTheNotifier pins the teardown
-// sweep on the compute registration and on the account-only notifier beside the
-// network one. Both keys are enumerated whether or not the spec still declares
-// the services: dropping a block preserves its registration, and a preserved
-// registration still has to come down with the plane. A placed service moves its
-// key to the namespace it was assigned, and the notifier follows the network
-// service rather than the compute one, because that is where it lives.
+// sweep on the compute registration, on the account-only notifier beside the
+// network one, and on the account-only hypervisor-operator registration beside
+// the compute one. The keys are enumerated whether or not the spec still
+// declares the services or the hypervisorOperator block: dropping a block
+// preserves its registration, and a preserved registration still has to come
+// down with the plane. A placed service moves its keys to the namespace it was
+// assigned, and the notifier follows the network service rather than the
+// compute one, because that is where it lives.
 func TestProjectedRegistrationKeys_IncludesNovaAndTheNotifier(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -4466,7 +4469,8 @@ func TestProjectedRegistrationKeys_IncludesNovaAndTheNotifier(t *testing.T) {
 
 	g.Expect(projectedRegistrationKeys(cp)).To(ContainElements(
 		client.ObjectKey{Name: "cp-neutron-nova", Namespace: "openstack"},
-		client.ObjectKey{Name: "cp-nova", Namespace: "openstack"}),
+		client.ObjectKey{Name: "cp-nova", Namespace: "openstack"},
+		client.ObjectKey{Name: "cp-nova-hypervisor-operator", Namespace: "openstack"}),
 		"an undeclared compute service still has its registrations swept")
 
 	placed := cp.DeepCopy()
@@ -4479,6 +4483,7 @@ func TestProjectedRegistrationKeys_IncludesNovaAndTheNotifier(t *testing.T) {
 
 	g.Expect(projectedRegistrationKeys(placed)).To(ContainElements(
 		client.ObjectKey{Name: "cp-neutron-nova", Namespace: "network"},
-		client.ObjectKey{Name: "cp-nova", Namespace: "compute"}),
-		"the notifier is swept from the network namespace, the compute registration from its own")
+		client.ObjectKey{Name: "cp-nova", Namespace: "compute"},
+		client.ObjectKey{Name: "cp-nova-hypervisor-operator", Namespace: "compute"}),
+		"the notifier is swept from the network namespace, the compute registrations from their own")
 }

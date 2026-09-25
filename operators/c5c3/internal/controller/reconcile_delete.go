@@ -1503,9 +1503,10 @@ func (r *ControlPlaneReconciler) deleteRegistrationsBeforeTeardown(
 
 // projectedRegistrationKeys returns the keys of the KeystoneService registrations
 // this ControlPlane projects for its built-in services, plus the account-only
-// compute-notifier registration that sits beside the network service's own. The
-// teardown sweep and the force-release of a stalled registration's children walk
-// the same list.
+// compute-notifier registration that sits beside the network service's own and
+// the account-only hypervisor-operator registration beside the compute
+// service's. The teardown sweep and the force-release of a stalled
+// registration's children walk the same list.
 //
 // The names are enumerated whether or not the spec still declares the service:
 // dropping a services.<svc> block without the deletion opt-in PRESERVES the
@@ -1524,6 +1525,7 @@ func projectedRegistrationKeys(cp *c5c3v1alpha1.ControlPlane) []client.ObjectKey
 		{Name: neutronNovaNotifierName(cp), Namespace: cp.NeutronNamespace()},
 		{Name: cinderName(cp), Namespace: cp.CinderNamespace()},
 		{Name: novaName(cp), Namespace: cp.NovaNamespace()},
+		{Name: novaHypervisorOperatorRegistrationName(cp), Namespace: cp.NovaNamespace()},
 	}
 }
 
