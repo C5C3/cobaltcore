@@ -23,6 +23,7 @@ import (
 
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
@@ -343,6 +344,42 @@ func TestReconcileAgent_FullPassReachesReady(t *testing.T) {
 		}
 	}
 	g.Expect(mounted).To(Equal(configMaps.Items[0].Name))
+}
+
+// A rotated shared secret rolls the agent pods. The kubelet resolves the env
+// var it reaches the process through only when a container starts, so without
+// a changed pod template every running agent would keep signing with the old
+// value and Nova would reject each request it proxies.
+func TestReconcileAgent_RotatedSharedSecretRollsThePods(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := withNovaMetadata(agentSharedSecretDefaultKey)
+	r := newAgentTestReconciler(cr,
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: testAgentSharedSecretName, Namespace: testNamespace},
+			Data:       map[string][]byte{agentSharedSecretDefaultKey: []byte("first")},
+		},
+		readyOVNChassis(testOVNChassisName, testNamespace, testOVNCentralName), agentCentral())
+	stamp := func() string {
+		var ds appsv1.DaemonSet
+		g.Expect(r.Get(ctx, agentDaemonSetKey, &ds)).To(Succeed())
+		return ds.Spec.Template.Annotations[metadataSecretHashAnnotation]
+	}
+
+	_, err := r.Reconcile(ctx, agentRequest)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(stamp()).To(Equal(secrets.AdminPasswordDigest("first")))
+
+	rotated := &corev1.Secret{}
+	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: testAgentSharedSecretName}, rotated)).
+		To(Succeed())
+	rotated.Data[agentSharedSecretDefaultKey] = []byte("second")
+	g.Expect(r.Update(ctx, rotated)).To(Succeed())
+
+	_, err = r.Reconcile(ctx, agentRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(stamp()).To(Equal(secrets.AdminPasswordDigest("second")))
 }
 
 // The first gate stops the pass at the entry point rather than at the step list.

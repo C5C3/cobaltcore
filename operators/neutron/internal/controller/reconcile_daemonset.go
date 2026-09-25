@@ -76,6 +76,13 @@ const metadataProxySocketPath = neutronStatePath + "/metadata_proxy"
 // #nosec G101 -- an oslo.config env override key, not a credential.
 const metadataProxySharedSecretEnvVarName = "OS_DEFAULT__METADATA_PROXY_SHARED_SECRET"
 
+// metadataSecretHashAnnotation carries the digest of that shared secret on the
+// pod template. The env var is resolved only when a container starts, so a
+// rotated value rolls the pods through this stamp, named after the one the Nova
+// metadata pods carry for the other side of the signature.
+// #nosec G101 -- annotation key naming a digest, not a credential.
+const metadataSecretHashAnnotation = "neutron.c5c3.io/metadata-secret-hash"
+
 // waitForChassisScript blocks until the OVNChassis on this node has registered
 // itself: its apply-node init container writes external_ids:system-id into the
 // local Open vSwitch database, and until that row exists the agent has no
@@ -92,10 +99,11 @@ const waitForChassisScript = `until ovsdb-client --timeout=5 transact unix:/run/
 // reconcileDaemonSet projects the metadata-agent DaemonSet onto the chassis's
 // nodes and mirrors its node counters into status.
 func (r *NeutronMetadataAgentReconciler) reconcileDaemonSet(ctx context.Context, children client.Client,
-	cr *neutronv1alpha1.NeutronMetadataAgent, chassis resolvedChassis, configMapName, transportDigest string,
+	cr *neutronv1alpha1.NeutronMetadataAgent, chassis resolvedChassis,
+	configMapName, transportDigest, sharedSecretDigest string,
 ) (ctrl.Result, error) {
 	live, ready, err := deployment.EnsureDaemonSet(ctx, children, r.Scheme, cr,
-		buildAgentDaemonSet(cr, chassis, configMapName, transportDigest))
+		buildAgentDaemonSet(cr, chassis, configMapName, transportDigest, sharedSecretDigest))
 	if err != nil {
 		err = fmt.Errorf("ensuring metadata-agent DaemonSet: %w", err)
 		agentSkeleton.MarkFailed(cr, conditionTypeDaemonSetReady, conditionReasonDaemonSetError, err)
@@ -142,14 +150,20 @@ func (r *NeutronMetadataAgentReconciler) reconcileDaemonSet(ctx context.Context,
 // serving the proxies it already created, and restarting it would drop them for
 // the fault the readiness probe already reports.
 func buildAgentDaemonSet(cr *neutronv1alpha1.NeutronMetadataAgent, chassis resolvedChassis,
-	configMapName, transportDigest string,
+	configMapName, transportDigest, sharedSecretDigest string,
 ) *appsv1.DaemonSet {
 	image := cr.Spec.Image.Reference()
 	resources := effectiveAgentResources(cr)
 
-	var podAnnotations map[string]string
+	podAnnotations := map[string]string{}
 	if transportDigest != "" {
-		podAnnotations = map[string]string{transportURLHashAnnotation: transportDigest}
+		podAnnotations[transportURLHashAnnotation] = transportDigest
+	}
+	if sharedSecretDigest != "" {
+		podAnnotations[metadataSecretHashAnnotation] = sharedSecretDigest
+	}
+	if len(podAnnotations) == 0 {
+		podAnnotations = nil
 	}
 
 	initContainers := []corev1.Container{{
