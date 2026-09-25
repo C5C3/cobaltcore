@@ -37,7 +37,7 @@ see [Target Clusters](../target-clusters.md).
 | `image` | [`commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | yes | none | The Neutron container image the agent runs from. Required with no operator-resolved fallback: the agent is deployed next to an `OVNChassis` whose image this operator does not resolve, so there is no tested pairing to fall back on |
 | `chassisRef` | [`OVNChassisRef`](#ovnchassisref) | yes | none | The `OVNChassis` this agent runs alongside. It supplies the node selector, the tolerations and, through that chassis's `OVNCentral`, the Southbound address and the client Secret. Immutable, enforced by a CEL transition rule and by the webhook |
 | `messaging` | [`commonv1.MessagingSpec`](../c5c3/controlplane-crd.md#messagingspec) pointer | no | `nil` | The RabbitMQ connection. Optional, because the agent opens no RPC and no notification connection of its own. It exists so a deployment can give the agent the same bus configuration the API pods carry: `config.init` calls `n_rpc.init` unconditionally, which parses oslo.messaging's default `rabbit://` URL without dialing it. When set, the agent gets the same `OS_DEFAULT__TRANSPORT_URL` override the API pods get, and the `[oslo_messaging_rabbit]` section is rendered |
-| `novaMetadata` | [`NovaMetadataSpec`](#novametadataspec) pointer | no | `nil` | The Nova metadata API the agent proxies to. A nil block renders none of the three keys and the oslo defaults apply, which is what an agent standing beside a control plane that runs no compute service wants |
+| `novaMetadata` | [`NovaMetadataSpec`](#novametadataspec) pointer | no | `nil` | The Nova metadata API the agent proxies to. A nil block renders none of its four keys and the oslo defaults apply, which is what an agent standing beside a control plane that runs no compute service wants |
 | `metadataWorkers` | `*int32` (Minimum=0) | no | operator-resolved `4` | Rendered as `[DEFAULT] metadata_workers`. In 2026.1 it sizes the thread pool the agent serves metadata requests from, and `0` serves them one at a time in the main process, which is upstream's ML2/OVN default. 2025.2 ignores the option and starts one thread per request. The count does not follow the node's CPU count. The default is resolved when the config is rendered and never written into the CR |
 | `resources` | `corev1.ResourceRequirements` | no | `{}` | Requests and limits for the init container and the agent container, applied to both. The operator never writes defaults into this field; it resolves them per resource when it renders the pod: a CPU the block names neither as request nor as limit gets a 100m request and no limit, and a memory it names neither way gets 368Mi as both request and limit (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). A resource the block names is used as written, and anything else it sets is kept. A CR that names none still lands in the Burstable QoS class instead of BestEffort. Before the per-resource rule, the operator rendered a block that named anything as written, so a block that names only CPU gains a memory request and limit on the upgrade |
 | `logging` | [`*LoggingSpec`](../keystone/keystone-crd.md#loggingspec) | no | `text` / `INFO` / `debug: false` | oslo.log derivation: `format` (`text` or `json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook. The `json` format ships a `logging.conf` in the config ConfigMap and points `[DEFAULT] log_config_append` at it |
@@ -64,16 +64,63 @@ shared secret both sides carry.
 | `host` | `string` | no | `""` (the oslo default) | The address of the Nova metadata API, rendered as `[DEFAULT] nova_metadata_host`. An empty value omits the key |
 | `port` | `int32` (Minimum=1, Maximum=65535) | no | `8775`, filled by the defaulting webhook | The port the Nova metadata API listens on, rendered as `[DEFAULT] nova_metadata_port`. 8775 is `nova-api-metadata`'s own default |
 | `protocol` | `string` (Enum=`http`;`https`) | no | `http`, filled by the defaulting webhook | The scheme the agent forwards the instance's request with. `https` is rendered as `[DEFAULT] nova_metadata_protocol`; `http` is `nova_metadata_protocol`'s own default and omits the key, so the webhook filling it into an agent stored before the field existed does not change that agent's config and roll its DaemonSet. `http` is what an agent reaching a co-located metadata API uses. A compute cluster reached through the gateway is addressed over TLS, so an agent proxying to one sets `https` |
-| `sharedSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | no | `nil`; `key` webhook-defaulted to `shared_secret` | The Secret holding the value the agent signs forwarded requests with. Nova rejects an unsigned request when it carries a secret of its own, so the two values have to match. The value reaches the process as `OS_DEFAULT__METADATA_PROXY_SHARED_SECRET` and never enters the rendered ConfigMap. The Secret a ControlPlane generates for its compute service (`{controlplane.Name}-nova-metadata-secret`) carries the value under `shared_secret`, so naming that Secret alone is enough |
+| `sharedSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | no | `nil`; `key` webhook-defaulted to `shared_secret` | The Secret holding the value the agent signs forwarded requests with. Nova rejects an unsigned request when it carries a secret of its own, so the two values have to match. The value reaches the process as `OS_DEFAULT__METADATA_PROXY_SHARED_SECRET` and never enters the rendered ConfigMap. The Secret a ControlPlane generates for its compute service (`{controlplane.Name}-nova-metadata-secret`) carries the value under `shared_secret`, so naming that Secret alone is enough. An agent on a compute cluster names the copy the ControlPlane delivers there instead, `{controlplane.Name}-nova-metadata-agent-secret` (see [On a compute cluster](#on-a-compute-cluster)) |
+| `caBundleSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | no | `nil`; `key` webhook-defaulted to `ca.crt` | A Secret in the agent's namespace, on the cluster its pods run on, holding the PEM bundle that signs the Nova metadata API's certificate: for an agent on a compute cluster, the issuer of the metadata Gateway listener's certificate. The operator mounts it into the agent container and renders its path as `[DEFAULT] auth_ca_cert = /etc/nova-metadata-ca/ca.crt`. Requires `protocol: https`. Without it, an `https` agent verifies the certificate against the image's default CA bundle |
+
+### On a compute cluster
+
+An agent whose pods run on a compute cluster reaches the Nova metadata API of
+its ControlPlane through the metadata Gateway
+(`services.nova.metadataGateway`). Its own spec wires it:
+
+```yaml
+spec:
+  targetClusterRef:
+    name: compute-a
+  novaMetadata:
+    host: nova-metadata.example.com   # services.nova.metadataGateway.hostname
+    port: 443                         # the Gateway listener's port
+    protocol: https
+    caBundleSecretRef:
+      name: nova-metadata-ca          # signs the listener's certificate
+    sharedSecretRef:
+      name: controlplane-nova-metadata-agent-secret   # {controlplane.Name}-nova-metadata-agent-secret
+```
+
+The agent lives in the ControlPlane's OVN central namespace: its `chassisRef`
+is namespace-local, and so is that chassis's `centralRef`. For every cluster an
+agent there names `{controlplane.Name}-nova-metadata-agent-secret` on, the
+ControlPlane writes that Secret into the same namespace on that cluster (see
+[The generated metadata shared secret](../c5c3/controlplane-crd.md#the-generated-metadata-shared-secret)).
+It carries a single key, `shared_secret`, the value the compute contract carries
+as `metadata_proxy_shared_secret`, so neither the bus URL nor the service
+password of the contract reaches the privileged namespace. Beside the
+ControlPlane's ownership labels it carries
+`neutron.openstack.c5c3.io/metadata-shared-secret-mirror: "true"`
+(`MetadataSharedSecretMirrorLabel`). A local agent gets no copy; in the Nova
+namespace it names the generated Secret directly.
+
+The ControlPlane never deletes a copy. The teardown of a placed agent does,
+before it releases its finalizer: it lists the labelled Secrets in its
+namespace on its cluster and deletes each one that no other live agent in that
+namespace on the same cluster names in `sharedSecretRef`, with a Normal
+`MetadataSharedSecretMirrorReaped` event per deletion. A Secret without the
+label is left alone. An agent re-pointed at another Secret leaves its copy
+behind until the next agent teardown in that namespace on that cluster.
+
+The CA bundle is not delivered. The ControlPlane names only the Gateway's
+`parentRef` and hostname and does not manage its certificate, so the deployment
+places the bundle in the agent's namespace, for example with trust-manager.
 
 ## Defaulting and validation
 
 The mutating webhook does three things. It materializes `spec.logging` and its
 baseline (`text` / `INFO` / `debug: false`) so no reconciler dereferences a nil
 pointer. Inside a present `spec.novaMetadata` it fills a zero `port` with 8775,
-an empty `protocol` with `http`, and an empty `sharedSecretRef.key` with
-`shared_secret`. A nil `spec.novaMetadata` stays nil, because the agent then
-renders none of those keys.
+an empty `protocol` with `http`, an empty `sharedSecretRef.key` with
+`shared_secret`, and an empty `caBundleSecretRef.key` with `ca.crt`. A nil
+`spec.novaMetadata` stays nil, because the agent then renders none of those
+keys.
 
 Three defaults are resolved at reconcile time and never written into the stored
 CR: the container resources fall back to the shared `DeploymentSpec` values, a
@@ -90,6 +137,7 @@ These hold even when the webhook is down.
 | `chassisRef is immutable` | A third transition rule on the same spec. An agent re-pointed at another chassis lands on another set of nodes, whose local Open vSwitch databases carry none of the ports it was answering for |
 | `exactly one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec` on `spec.image` |
 | `exactly one of clusterRef or secretRef must be set` | Inherited from `commonv1.MessagingSpec` on `spec.messaging` |
+| `caBundleSecretRef requires protocol https` | A CEL rule on `NovaMetadataSpec`, `!has(self.caBundleSecretRef) \|\| (has(self.protocol) && self.protocol == 'https')`. The agent verifies the Nova metadata API's certificate only over TLS, so a bundle beside `http` would be mounted and never read |
 
 The three transition rules are evaluated on UPDATE only. Beside them the schema
 carries the ordinary field markers: the `^\d{4}\.[12]$` pattern on
@@ -115,6 +163,8 @@ The name bound, the chassis and the Nova metadata block:
 | `port must be between 1 and 65535` | `spec.novaMetadata.port` outside the range. The defaulting webhook fills a zero with 8775, so this fires only for an object that bypassed it |
 | `protocol must be http or https` | `spec.novaMetadata.protocol` is neither. An empty value is admitted and left to the defaulting webhook, which fills `http`, and to the renderer, which omits the key for `http` and an empty value alike; the enum marker refuses anything else at the schema layer already |
 | `sharedSecretRef.name must be set when spec.novaMetadata.sharedSecretRef is configured` | The ref is present with an empty `name` |
+| `caBundleSecretRef.name must be set when spec.novaMetadata.caBundleSecretRef is configured` | The CA ref is present with an empty `name` |
+| `caBundleSecretRef requires protocol https: the agent verifies the Nova metadata API's certificate only over TLS` | The CA ref is present and `spec.novaMetadata.protocol` is not `https`, including an empty protocol. The webhook-layer twin of the CEL rule |
 | `metadataWorkers must be non-negative` | `spec.metadataWorkers` is set below 0, mirroring the `Minimum=0` marker |
 
 Image, messaging and the target cluster, through the shared helpers:
@@ -198,7 +248,7 @@ metadata keys the API never writes. Six of its entries are refused in
 
 Every other entry in the registry is honored and reported: `[DEFAULT]`
 `state_path`, `debug`, `nova_metadata_host`, `nova_metadata_port`,
-`nova_metadata_protocol` and `metadata_workers`, the
+`nova_metadata_protocol`, `auth_ca_cert` and `metadata_workers`, the
 `[oslo_messaging_notifications] driver`, the five `[oslo_messaging_rabbit]`
 keys, and `[oslo_concurrency] lock_path`. The broker keys are registered
 unconditionally although they render only while `spec.messaging` is set: the
@@ -211,6 +261,15 @@ it there reports `ExtraConfigHealthy=False` with an `ExtraConfigOwnedKeyOverride
 Warning event after the upgrade, although its rendered config does not change.
 Move the value to `spec.novaMetadata.protocol` and drop the entry from
 `spec.extraConfig`.
+
+`auth_ca_cert` joined the registry the same way, with
+`spec.novaMetadata.caBundleSecretRef`. Before that an `extraConfig` value named
+a file the pod does not carry. An agent that sets it there keeps its value,
+because `extraConfig` is merged last, and reports `ExtraConfigHealthy=False`
+with an `ExtraConfigOwnedKeyOverride` Warning event. Move the bundle into a
+Secret, name it in `spec.novaMetadata.caBundleSecretRef` and drop the entry
+from `spec.extraConfig`. `nova_metadata_insecure` has no typed field and stays
+an ordinary `spec.extraConfig` key.
 
 `metadata_workers` joined the registry the same way, with
 `spec.metadataWorkers`. An agent that sets it in `spec.extraConfig` keeps its
@@ -246,8 +305,9 @@ set on every pass: the agent runs no optional step. The aggregate `Ready` is
 | `ChassisReady` | False | `CentralReadError` | Reading the `OVNCentral` failed |
 | `ChassisReady` | False | `CentralNotReady` | The central has published no Southbound address or no client Secret name yet |
 | `ChassisReady` | False | `TargetClusterUnavailable` | `spec.targetClusterRef` names a cluster that does not resolve. This is the pipeline's first gate, so the failure lands on the condition the rest of the graph waits behind. A deleting CR waiting for its target cluster to come back reports the same reason here |
-| `SecretsReady` | True | `SecretsAvailable` | Every credential the agent needs is there. A CR that sets neither `spec.novaMetadata.sharedSecretRef` nor `spec.messaging` reaches this without reading anything |
+| `SecretsReady` | True | `SecretsAvailable` | Every credential the agent needs is there. A CR that sets none of `spec.novaMetadata.sharedSecretRef`, `spec.novaMetadata.caBundleSecretRef` and `spec.messaging` reaches this without reading anything |
 | `SecretsReady` | False | `WaitingForNovaSharedSecret` | The Secret named by `spec.novaMetadata.sharedSecretRef` is missing, or carries no value under the configured key. The message distinguishes a missing ExternalSecret from one that has not synced and from a Secret missing keys |
+| `SecretsReady` | False | `WaitingForNovaMetadataCA` | The Secret named by `spec.novaMetadata.caBundleSecretRef` is missing, or carries no value under the configured key, which the message names. It is gated after the shared secret. The Config and DaemonSet steps wait, so no pod is started with a volume that never mounts |
 | `SecretsReady` | False | `WaitingForMessagingCredentials` | The managed `RabbitmqCluster` has published no default-user Secret yet, or the brownfield Secret carries no transport URL |
 | `SecretsReady` | False | `ConfigError` | Rendering or pruning the config ConfigMap failed. Config artefacts gate the same downstream step as the credentials, so they share this condition and there is no separate one for them |
 | `DaemonSetReady` | True | `DaemonSetReady` | The DaemonSet runs a ready pod on every node it schedules. The message counts the nodes |
@@ -298,6 +358,13 @@ arriving on the node's own interfaces. Two host paths are mounted, both
 | --- | --- | --- |
 | `/run/openvswitch` | read-write, on the init container and the agent container | The local Open vSwitch database socket the chassis pods create. It is what the agent reads its node's port bindings from, and an emptyDir would leave it reading nothing |
 | `/run/netns` | read-write with `Bidirectional` mount propagation | The network namespaces the agent creates. Bidirectional propagation is what makes them visible to the node, which is how the datapath reaches the proxies running inside them |
+
+With `spec.novaMetadata.caBundleSecretRef` set, the agent container mounts the
+named Secret read-only at `/etc/nova-metadata-ca`, mode `0444`, projecting the
+configured key as `ca.crt`; the init container makes no https request and gets
+no mount. The path lies outside the read-only `/etc/neutron` config mount.
+Neutron opens the file on every proxied request and the volume has no
+`subPath`, so a rotated bundle reaches the running pods without a rollout.
 
 The agent container runs privileged and pinned to uid 0, with
 `runAsNonRoot: false`. It creates network namespaces, moves interfaces into them

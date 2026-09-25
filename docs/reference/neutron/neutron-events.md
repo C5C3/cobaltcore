@@ -199,13 +199,14 @@ operator restart looks like a deregistration until the provider has synced.
 
 ### Metadata Agent Controller
 
-`neutronmetadataagent-controller` records two reasons, both of them shared with
-the Neutron controller and both listed above:
+`neutronmetadataagent-controller` records three reasons. The first two are
+shared with the Neutron controller and listed above:
 
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
 | `ExtraConfigOwnedKeyOverride` | Warning | `spec.extraConfig` overrides one or more keys of `MetadataAgentOwnedConfigKeys` | `spec.extraConfig overrides operator-owned keys: [oslo_concurrency] lock_path (the operator mounts a writable volume at this path; another path names a directory the container cannot write)` |
 | `RemoteChildrenAbandoned` | Warning | A placed agent is deleted while its target cluster no longer resolves | `Target cluster is no longer registered; releasing the remote-children finalizer without deleting the objects on it labelled as owned by this NeutronMetadataAgent` |
+| `MetadataSharedSecretMirrorReaped` | Normal | A placed agent is deleted and no other live agent in its namespace on its cluster names a metadata shared-secret copy the ControlPlane delivered there. One event per deleted copy | `Deleted the metadata shared-secret mirror controlplane-nova-metadata-agent-secret: no other NeutronMetadataAgent on this cluster names it` |
 
 Nothing else in that pipeline raises an event. The chassis, the credentials and
 the DaemonSet all report through their conditions, since each of their states is
@@ -315,6 +316,9 @@ NeutronMetadataAgentReconciler.Reconcile()
   │
   ├── deletion, target cluster unresolvable past the abandon window
   │     └─ Warning RemoteChildrenAbandoned  (finalizer released, children left behind)
+  │
+  ├── deletion of a placed agent, reapMetadataSharedSecretMirrors()
+  │     └─ labelled copy no other agent there names → Normal MetadataSharedSecretMirrorReaped
   │
   └── reconcileAgentConfig()
         └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
