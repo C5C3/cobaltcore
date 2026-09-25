@@ -165,10 +165,6 @@ func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName
 					Containers: []corev1.Container{{
 						Name:  "validator",
 						Image: keystone.Spec.Image.Reference(),
-						// TODO Wire spec.Resources (or a smaller Job-specific default) to
-						// this container. Currently runs as BestEffort QoS. See
-						// commonv1.WithResourceDefaults for the defaults the keystone
-						// container gets (#1099 wires Jobs).
 						Command: []string{
 							"oslopolicy-validator",
 							"--namespace", "keystone",
@@ -205,6 +201,7 @@ func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName
 			j.Spec.Template.Spec.Containers[0].VolumeMounts, domMount,
 		)
 	}
+	keystoneJobPod(keystone).Apply(&j.Spec.Template.Spec)
 	return j
 }
 

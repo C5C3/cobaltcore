@@ -12,7 +12,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -381,7 +380,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName,
 	// client-secret, metadata, or passphrase change rolls the Deployment.
 	if federationActive {
 		deploy.Spec.Template.Spec.Containers = append(deploy.Spec.Template.Spec.Containers,
-			buildFederationProxyContainer(fed))
+			buildFederationProxyContainer(fed, commonv1.WithSidecarResourceDefaults(federationProxyResources(keystone))))
 		deploy.Spec.Template.Spec.Volumes = append(deploy.Spec.Template.Spec.Volumes,
 			buildFederationVolumes(fed)...)
 	}
@@ -453,27 +452,18 @@ func keystoneStartupProbe(federationActive bool) *corev1.Probe {
 	return probe
 }
 
-// buildFederationProxyContainer builds the mod_auth_openidc sidecar. The
-// resources are fixed modest constants (a reverse proxy for an identity API);
-// a spec knob is deferred until a deployment demonstrates the need. The
+// buildFederationProxyContainer builds the mod_auth_openidc sidecar with the
+// resources the caller resolved from spec.federation.proxyResources. The
 // readiness probe fetches /v3 THROUGH the proxy so a pod only enters the
 // Service when the whole proxy→uWSGI chain answers; startup/liveness stay
 // plain TCP so Apache is only restarted when it is genuinely dead.
-func buildFederationProxyContainer(fed *federationProjection) corev1.Container {
+func buildFederationProxyContainer(fed *federationProjection, resources corev1.ResourceRequirements) corev1.Container {
 	return corev1.Container{
 		Name:            "federation-proxy",
 		Image:           fed.ProxyImage.Reference(),
 		SecurityContext: deployment.RestrictedSecurityContext(),
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("25m"),
-				corev1.ResourceMemory: resource.MustParse("64Mi"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
-			},
-		},
-		Command: []string{"apache2", "-DFOREGROUND", "-f", "/etc/keystone-federation-proxy/httpd-base.conf"},
+		Resources:       resources,
+		Command:         []string{"apache2", "-DFOREGROUND", "-f", "/etc/keystone-federation-proxy/httpd-base.conf"},
 		Ports: []corev1.ContainerPort{{
 			Name:          "proxy",
 			ContainerPort: federationProxyPort,
@@ -651,13 +641,6 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec, federationActive bool) []st
 		WSGIFilePath:  "/var/lib/openstack/bin/keystone-wsgi-public",
 		TrailingArgs:  []string{"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"},
 	})
-}
-
-// priorityClassName returns the priority class name for the Keystone API pods.
-// If spec.PriorityClassName is set, that value is used. Otherwise, an empty
-// string is returned, leaving the cluster default in effect.
-func priorityClassName(keystone *keystonev1alpha1.Keystone) string {
-	return deployment.PriorityClassName(&keystone.Spec.Deployment)
 }
 
 // buildKeystoneService builds the Keystone API Service. The Service port

@@ -2590,12 +2590,53 @@ func TestProbeTimeouts(t *testing.T) {
 	// Sidecar: readiness goes through Apache and uWSGI and gets 5s; the TCP
 	// startup/liveness probes fork no process and keep the default, with
 	// their periods untouched.
-	proxy := buildFederationProxyContainer(testDeployFederationProjection())
+	proxy := buildFederationProxyContainer(testDeployFederationProjection(), corev1.ResourceRequirements{})
 	g.Expect(proxy.ReadinessProbe.TimeoutSeconds).To(Equal(int32(5)))
 	g.Expect(proxy.StartupProbe.TimeoutSeconds).To(Equal(int32(0)))
 	g.Expect(proxy.StartupProbe.PeriodSeconds).To(Equal(int32(2)))
 	g.Expect(proxy.LivenessProbe.TimeoutSeconds).To(Equal(int32(0)))
 	g.Expect(proxy.LivenessProbe.PeriodSeconds).To(Equal(int32(20)))
+}
+
+// The federation-proxy sidecar renders the sidecar defaults when
+// spec.federation.proxyResources is unset, and a block that names only a
+// memory limit keeps it, gains no memory request, and gets the 25m CPU
+// request.
+func TestBuildKeystoneDeployment_FederationProxyResources(t *testing.T) {
+	proxyResources := func(ks *keystonev1alpha1.Keystone) corev1.ResourceRequirements {
+		deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "", testDeployFederationProjection())
+		for _, c := range deploy.Spec.Template.Spec.Containers {
+			if c.Name == "federation-proxy" {
+				return c.Resources
+			}
+		}
+		t.Fatal("no federation-proxy container rendered")
+		return corev1.ResourceRequirements{}
+	}
+
+	t.Run("defaults", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ks := deployTestKeystone()
+		ks.Spec.Federation = nil
+
+		g.Expect(proxyResources(ks)).To(Equal(corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
+			Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+		}))
+	})
+
+	t.Run("limit only", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ks := deployTestKeystone()
+		ks.Spec.Federation = &keystonev1alpha1.FederationSpec{ProxyResources: &corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+		}}
+
+		g.Expect(proxyResources(ks)).To(Equal(corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m")},
+			Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+		}))
+	})
 }
 
 // TestBuildKeystoneDeployment_SAMLOnlyMountsMellonNotMetadata verifies a

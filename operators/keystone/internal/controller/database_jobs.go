@@ -46,9 +46,15 @@ func buildGrant(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Grant {
 	return database.BuildGrant(keystoneProvisionParams(keystone))
 }
 
+// keystoneJobPod resolves the pod settings every Keystone Job and CronJob
+// renders: spec.jobs, with spec.deployment as the fallback.
+func keystoneJobPod(keystone *keystonev1alpha1.Keystone) job.PodSettings {
+	return job.ResolvePodSettings(keystone.Spec.Jobs, &keystone.Spec.Deployment)
+}
+
 // keystoneJobSetParams derives the shared migration-Job inputs from the Keystone
 // CR: the config mount, the DB-connection env override, the db-tls and per-domain
-// volumes, the priority class, and the keystone-manage db_sync / schema-check
+// volumes, the Job pod settings, and the keystone-manage db_sync / schema-check
 // commands. The steady-state sync flow (database.ReconcileSyncJobs) and the
 // upgrade-phase builders (buildDBJob) both consume it, so every db_sync variant
 // runs the identical pod spec.
@@ -83,7 +89,7 @@ func keystoneJobSetParams(keystone *keystonev1alpha1.Keystone, configMapName, do
 		Env:               []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
 		ExtraVolumes:      extraVolumes,
 		ExtraVolumeMounts: extraMounts,
-		Pod:               job.PodSettings{PriorityClassName: priorityClassName(keystone)},
+		Pod:               keystoneJobPod(keystone),
 		SyncCommand:       []string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"},
 		// Read-only schema verification via keystone-manage db_sync --check.
 		// Exit codes: 0 = up-to-date, 1..4 = needs expand/migrate/contract. This
@@ -105,11 +111,6 @@ func keystoneJobSetParams(keystone *keystonev1alpha1.Keystone, configMapName, do
 // db_sync / schema-check jobs use the CR's Image.Reference() (which honors a
 // pinned digest), while the upgrade phases pass a specific "repo:tag" so they
 // can pin the old/new release image independently of spec.image.
-//
-// TODO: Wire spec.Resources (or a smaller Job-specific default) to the
-// container. Currently runs as BestEffort QoS. See
-// commonv1.WithResourceDefaults for the defaults the keystone container gets
-// (#1099 wires Jobs).
 func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, image, nameSuffix string, command []string) *batchv1.Job {
 	return database.BuildJob(keystoneJobSetParams(keystone, configMapName, domainsSecretName), image, nameSuffix, command, 4)
 }

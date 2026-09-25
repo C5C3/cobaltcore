@@ -229,7 +229,7 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName, domai
 		volumeMounts = append(volumeMounts, mount)
 	}
 
-	return &batchv1.Job{
+	j := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-bootstrap", keystone.Name),
 			Namespace: keystone.Namespace,
@@ -249,15 +249,10 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName, domai
 					},
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy:     corev1.RestartPolicyNever,
-					PriorityClassName: priorityClassName(keystone),
+					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{{
-						Name:  "bootstrap",
-						Image: keystone.Spec.Image.Reference(),
-						// TODO Wire spec.Resources (or a smaller Job-specific default) to
-						// this container. Currently runs as BestEffort QoS. See
-						// commonv1.WithResourceDefaults for the defaults the keystone
-						// container gets (#1099 wires Jobs).
+						Name:    "bootstrap",
+						Image:   keystone.Spec.Image.Reference(),
 						Command: []string{"/bin/sh", "-eu", "-c", bootstrapScript},
 						Env: []corev1.EnvVar{
 							{
@@ -292,4 +287,6 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName, domai
 			},
 		},
 	}
+	keystoneJobPod(keystone).Apply(&j.Spec.Template.Spec)
+	return j
 }
