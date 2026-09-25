@@ -255,6 +255,8 @@ jobs:
               - 'tests/e2e/c5c3/full-controlplane-keystone/**'
               - 'tests/e2e/c5c3/keystone-service/**'
               - 'tests/e2e/c5c3/keystone-service-foreign-namespace/**'
+              # The full-chain suite applies this overlay's fixtures.yaml.
+              - 'deploy/kind/hypervisor-operator-fixtures/**'
             tests_controlplane_sso:
               - 'tests/e2e-controlplane-sso/**'
             tests_external_keystone:

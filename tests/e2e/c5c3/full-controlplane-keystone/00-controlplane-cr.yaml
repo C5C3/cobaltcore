@@ -180,12 +180,15 @@ spec:
     # API, the metadata API and the console proxy in-cluster, the way its peers
     # are reached. The metadata shared secret is left to the plane, which
     # generates one and hands the same reference to the Nova child and to the
-    # metadata agent 05-neutronmetadataagent-cr.yaml applies.
+    # metadata agent 05-neutronmetadataagent-cr.yaml applies. hypervisorOperator
+    # provisions the account openstack-hypervisor-operator runs as and its auth
+    # Secret, which 07-hypervisor-operator-verify-job.yaml authenticates with.
     nova:
       replicas: 1
       metadataReplicas: 1
       schedulerReplicas: 1
       conductorReplicas: 1
+      hypervisorOperator: {}
   globalPolicyOverrides:
     rules:
       "identity:list_users": "role:admin"

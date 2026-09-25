@@ -200,6 +200,10 @@ test_filter_covers_the_machinery_and_the_suites() {
     "$block" "tests/e2e/c5c3/keystone-service/**"
   assert_contains "the filter lists the foreign-namespace registration suite" \
     "$block" "tests/e2e/c5c3/keystone-service-foreign-namespace/**"
+  # The full-chain suite applies the fixtures of this overlay, so an edit to it
+  # has to schedule that suite and not only the canary.
+  assert_contains "the filter lists the hypervisor-operator fixture overlay" \
+    "$block" "deploy/kind/hypervisor-operator-fixtures/**"
   # The operator code and the shared scripts reach this job through the c5c3
   # filter and the canary respectively, not through the suite filter. Listing
   # them here again is what made every Go change schedule three 240-minute jobs.
