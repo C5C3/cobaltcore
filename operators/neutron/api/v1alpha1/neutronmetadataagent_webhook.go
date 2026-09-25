@@ -31,6 +31,9 @@ const (
 	// defaultSharedSecretKey is the Secret key spec.novaMetadata.sharedSecretRef
 	// is defaulted to.
 	defaultSharedSecretKey = "shared_secret"
+	// DefaultMetadataWorkers is the [DEFAULT] metadata_workers value rendered
+	// when spec.metadataWorkers is unset.
+	DefaultMetadataWorkers int32 = 4
 )
 
 // NeutronMetadataAgentWebhook implements defaulting and validation webhooks for
@@ -210,6 +213,15 @@ func (w *NeutronMetadataAgentWebhook) validate(a *NeutronMetadataAgent, extra fi
 				"sharedSecretRef.name must be set when spec.novaMetadata.sharedSecretRef is configured",
 			))
 		}
+	}
+
+	// Defense-in-depth twin of the Minimum=0 marker on spec.metadataWorkers,
+	// for an object that bypassed schema validation.
+	if a.Spec.MetadataWorkers != nil && *a.Spec.MetadataWorkers < 0 {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("metadataWorkers"), *a.Spec.MetadataWorkers,
+			"metadataWorkers must be non-negative",
+		))
 	}
 
 	// The two typed fields below reach the verbatim INI renderer: chassisRef.name

@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -96,6 +97,10 @@ func agentOperatorDefaults(cr *neutronv1alpha1.NeutronMetadataAgent, chassis res
 			// oslo.log gates several extra-verbose code paths on the debug flag
 			// specifically, independent of the root logger level.
 			"debug": fmt.Sprintf("%t", *logging.Debug),
+			// Rendered for both releases although 2025.2 ignores the option, so a
+			// release bump does not change the config for it and roll the
+			// DaemonSet on every compute node.
+			"metadata_workers": fmt.Sprintf("%d", ptr.Deref(cr.Spec.MetadataWorkers, neutronv1alpha1.DefaultMetadataWorkers)),
 		},
 		// The local database the agent watches its node's port bindings in.
 		"ovs": {

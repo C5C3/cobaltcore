@@ -99,6 +99,16 @@ type NeutronMetadataAgentSpec struct {
 	// +optional
 	NovaMetadata *NovaMetadataSpec `json:"novaMetadata,omitempty"`
 
+	// MetadataWorkers is rendered as [DEFAULT] metadata_workers. It defaults to
+	// 4, resolved when the config is rendered and never written into the CR. In
+	// 2026.1 the value sizes the thread pool the agent serves metadata requests
+	// from, and 0 serves them one at a time in the main process, which is
+	// upstream's ML2/OVN default. 2025.2 ignores the option and starts one thread
+	// per request. The count does not follow the node's CPU count.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MetadataWorkers *int32 `json:"metadataWorkers,omitempty"`
+
 	// Resources defines the CPU and memory requests and limits for the agent
 	// container and its wait-for-chassis init container. The operator never
 	// writes defaults into this field; it resolves them when it renders the

@@ -167,6 +167,11 @@ func (in *NeutronMetadataAgentSpec) DeepCopyInto(out *NeutronMetadataAgentSpec) 
 		*out = new(NovaMetadataSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.MetadataWorkers != nil {
+		in, out := &in.MetadataWorkers, &out.MetadataWorkers
+		*out = new(int32)
+		**out = **in
+	}
 	in.Resources.DeepCopyInto(&out.Resources)
 	if in.Logging != nil {
 		in, out := &in.Logging, &out.Logging

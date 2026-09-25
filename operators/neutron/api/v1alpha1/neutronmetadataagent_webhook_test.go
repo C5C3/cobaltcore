@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
@@ -136,6 +137,14 @@ func TestNeutronMetadataAgentValidateCreate_AcceptedShapes(t *testing.T) {
 				o.Spec.Image.Tag = ""
 				o.Spec.Image.Digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 			},
+		},
+		{
+			name:   "zero metadataWorkers serves requests in the main process",
+			mutate: func(o *NeutronMetadataAgent) { o.Spec.MetadataWorkers = ptr.To(int32(0)) },
+		},
+		{
+			name:   "unset metadataWorkers",
+			mutate: func(o *NeutronMetadataAgent) { o.Spec.MetadataWorkers = nil },
 		},
 	}
 
@@ -277,6 +286,11 @@ func TestNeutronMetadataAgentValidateCreate_RejectionTable(t *testing.T) {
 				}
 			},
 			wantSub: "extraConfig key and value must not contain a newline or carriage return",
+		},
+		{
+			name:    "negative metadataWorkers rejected",
+			mutate:  func(o *NeutronMetadataAgent) { o.Spec.MetadataWorkers = ptr.To(int32(-1)) },
+			wantSub: "spec.metadataWorkers: Invalid value: -1: metadataWorkers must be non-negative",
 		},
 	}
 

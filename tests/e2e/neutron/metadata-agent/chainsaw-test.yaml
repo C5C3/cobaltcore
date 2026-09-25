@@ -12,8 +12,8 @@
 #     node's system-id in the local Open vSwitch database over the socket the
 #     chassis pods create, and the agent container is ready without a restart
 #   - the rendered neutron_ovn_metadata_agent.ini points the agent at that local
-#     database and at the Southbound address the OVNCentral published, and
-#     carries no transport_url line
+#     database and at the Southbound address the OVNCentral published, pins
+#     metadata_workers = 4, and carries no transport_url line
 #
 # That last assertion is what #904 owes this suite: an agent with spec.messaging
 # unset opens no broker connection, and the decision that the transport URL
@@ -269,6 +269,9 @@ spec:
   # not a default the operator invented; and transport_url must not appear at
   # all — the agent names no bus, and even one that did would receive the URL as
   # an env override rather than in a ConfigMap every pod mounts.
+  #
+  # The CR sets no spec.metadataWorkers, so the file carries the operator
+  # default, metadata_workers = 4.
   - try:
     - script:
         content: |
@@ -283,11 +286,12 @@ spec:
             -o 'jsonpath={.status.southbound.internalDbAddress}')
           test -n "$SB"
           grep -Fxq "ovn_sb_connection = ${SB}" /tmp/neutron-agent.ini
+          grep -Fxq 'metadata_workers = 4' /tmp/neutron-agent.ini
           if grep -q '^transport_url' /tmp/neutron-agent.ini; then
             echo "ERROR: neutron_ovn_metadata_agent.ini carries a transport_url line"
             exit 1
           fi
-          echo "OK: $CM reads the local database and ${SB}, and renders no transport_url"
+          echo "OK: $CM reads the local database and ${SB}, pins metadata_workers = 4, and renders no transport_url"
     catch:
     - script:
         content: |

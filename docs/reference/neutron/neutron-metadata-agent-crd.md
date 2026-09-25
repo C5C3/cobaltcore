@@ -38,6 +38,7 @@ see [Target Clusters](../target-clusters.md).
 | `chassisRef` | [`OVNChassisRef`](#ovnchassisref) | yes | none | The `OVNChassis` this agent runs alongside. It supplies the node selector, the tolerations and, through that chassis's `OVNCentral`, the Southbound address and the client Secret. Immutable, enforced by a CEL transition rule and by the webhook |
 | `messaging` | [`commonv1.MessagingSpec`](../c5c3/controlplane-crd.md#messagingspec) pointer | no | `nil` | The RabbitMQ connection. Optional, because the agent opens no RPC and no notification connection of its own. It exists so a deployment can give the agent the same bus configuration the API pods carry: `config.init` calls `n_rpc.init` unconditionally, which parses oslo.messaging's default `rabbit://` URL without dialing it. When set, the agent gets the same `OS_DEFAULT__TRANSPORT_URL` override the API pods get, and the `[oslo_messaging_rabbit]` section is rendered |
 | `novaMetadata` | [`NovaMetadataSpec`](#novametadataspec) pointer | no | `nil` | The Nova metadata API the agent proxies to. A nil block renders none of the three keys and the oslo defaults apply, which is what an agent standing beside a control plane that runs no compute service wants |
+| `metadataWorkers` | `*int32` (Minimum=0) | no | operator-resolved `4` | Rendered as `[DEFAULT] metadata_workers`. In 2026.1 it sizes the thread pool the agent serves metadata requests from, and `0` serves them one at a time in the main process, which is upstream's ML2/OVN default. 2025.2 ignores the option and starts one thread per request. The count does not follow the node's CPU count. The default is resolved when the config is rendered and never written into the CR |
 | `resources` | `corev1.ResourceRequirements` | no | `{}` | Requests and limits for the init container and the agent container, applied to both. The operator never writes defaults into this field; it resolves them per resource when it renders the pod: a CPU the block names neither as request nor as limit gets a 100m request and no limit, and a memory it names neither way gets 368Mi as both request and limit (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). A resource the block names is used as written, and anything else it sets is kept. A CR that names none still lands in the Burstable QoS class instead of BestEffort. Before the per-resource rule, the operator rendered a block that named anything as written, so a block that names only CPU gains a memory request and limit on the upgrade |
 | `logging` | [`*LoggingSpec`](../keystone/keystone-crd.md#loggingspec) | no | `text` / `INFO` / `debug: false` | oslo.log derivation: `format` (`text` or `json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook. The `json` format ships a `logging.conf` in the config ConfigMap and points `[DEFAULT] log_config_append` at it |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSet, the config ConfigMaps and the transport-URL Secret are created on. The CR itself, its status and its finalizer stay on the management cluster. Immutable, enforced by two CEL transition rules and by the webhook. It has to name the same cluster the referenced `OVNChassis` names |
@@ -74,9 +75,10 @@ an empty `protocol` with `http`, and an empty `sharedSecretRef.key` with
 `shared_secret`. A nil `spec.novaMetadata` stays nil, because the agent then
 renders none of those keys.
 
-Two defaults are resolved at reconcile time and never written into the stored
-CR: the container resources fall back to the shared `DeploymentSpec` values, and
-a `spec.messaging.secretRef` without a `key` reads `transport_url`.
+Three defaults are resolved at reconcile time and never written into the stored
+CR: the container resources fall back to the shared `DeploymentSpec` values, a
+`spec.messaging.secretRef` without a `key` reads `transport_url`, and an unset
+`spec.metadataWorkers` renders `metadata_workers = 4` (`DefaultMetadataWorkers`).
 
 ### Schema-layer rules
 
@@ -92,8 +94,9 @@ These hold even when the webhook is down.
 The three transition rules are evaluated on UPDATE only. Beside them the schema
 carries the ordinary field markers: the `^\d{4}\.[12]$` pattern on
 `spec.openStackRelease`, `MinLength=1` on `spec.chassisRef.name`, the
-`Minimum=1` / `Maximum=65535` pair on `spec.novaMetadata.port`, and the
-`http`/`https` enum on `spec.novaMetadata.protocol`.
+`Minimum=1` / `Maximum=65535` pair on `spec.novaMetadata.port`, the
+`http`/`https` enum on `spec.novaMetadata.protocol`, and `Minimum=0` on
+`spec.metadataWorkers`.
 
 ### Webhook rules
 
@@ -112,6 +115,7 @@ The name bound, the chassis and the Nova metadata block:
 | `port must be between 1 and 65535` | `spec.novaMetadata.port` outside the range. The defaulting webhook fills a zero with 8775, so this fires only for an object that bypassed it |
 | `protocol must be http or https` | `spec.novaMetadata.protocol` is neither. An empty value is admitted and left to the defaulting webhook, which fills `http`, and to the renderer, which omits the key for `http` and an empty value alike; the enum marker refuses anything else at the schema layer already |
 | `sharedSecretRef.name must be set when spec.novaMetadata.sharedSecretRef is configured` | The ref is present with an empty `name` |
+| `metadataWorkers must be non-negative` | `spec.metadataWorkers` is set below 0, mirroring the `Minimum=0` marker |
 
 Image, messaging and the target cluster, through the shared helpers:
 
@@ -193,8 +197,8 @@ metadata keys the API never writes. Six of its entries are refused in
 | `[ovn] ovn_sb_ca_cert` | operator-computed | The CA bundle verifies the database endpoint; another path either fails the handshake or trusts a server the operator did not provision |
 
 Every other entry in the registry is honored and reported: `[DEFAULT]`
-`state_path`, `debug`, `nova_metadata_host`, `nova_metadata_port` and
-`nova_metadata_protocol`, the
+`state_path`, `debug`, `nova_metadata_host`, `nova_metadata_port`,
+`nova_metadata_protocol` and `metadata_workers`, the
 `[oslo_messaging_notifications] driver`, the five `[oslo_messaging_rabbit]`
 keys, and `[oslo_concurrency] lock_path`. The broker keys are registered
 unconditionally although they render only while `spec.messaging` is set: the
@@ -207,6 +211,13 @@ it there reports `ExtraConfigHealthy=False` with an `ExtraConfigOwnedKeyOverride
 Warning event after the upgrade, although its rendered config does not change.
 Move the value to `spec.novaMetadata.protocol` and drop the entry from
 `spec.extraConfig`.
+
+`metadata_workers` joined the registry the same way, with
+`spec.metadataWorkers`. An agent that sets it in `spec.extraConfig` keeps its
+value, because `extraConfig` is merged last, and reports
+`ExtraConfigHealthy=False` naming `[DEFAULT] metadata_workers`. Move the value to
+`spec.metadataWorkers` and drop the entry from `spec.extraConfig` to clear the
+condition.
 
 ## Status
 
