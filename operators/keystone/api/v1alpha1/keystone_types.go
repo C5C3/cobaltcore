@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/naming"
@@ -57,11 +58,23 @@ type KeystoneList struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.targetClusterRef) || !has(oldSelf.targetClusterRef) || self.targetClusterRef.name == oldSelf.targetClusterRef.name",message="targetClusterRef is immutable"
 type KeystoneSpec struct {
 	// Deployment groups the pod-level knobs for the Keystone API Deployment
-	// (replicas, resources, rollout strategy, graceful-termination timings, and
-	// scheduling constraints). Future affinity/tolerations/nodeSelector knobs
-	// land here too, keeping the spec root legible.
+	// (replicas, resources, rollout strategy, graceful-termination timings,
+	// scheduling constraints, and node placement), keeping the spec root
+	// legible.
 	// +optional
 	Deployment DeploymentSpec `json:"deployment,omitempty"`
+
+	// Jobs sizes, prioritizes and places the pods of every Keystone Job and
+	// CronJob: db-sync, schema-check, the db-expand, db-migrate and db-contract
+	// upgrade phases, bootstrap, policy-validation, the fernet-rotate and
+	// credential-rotate CronJobs (their copy-keys init container included),
+	// trust-flush, and the admin-password rotation. A field left unset falls
+	// back to spec.deployment: the priority class, the node selector, the
+	// tolerations, and the node affinity (never the pod (anti-)affinity). An
+	// empty value opts out of the fallback. Unset resources default to a 100m
+	// CPU request and 368Mi memory as request and limit.
+	// +optional
+	Jobs *commonv1.JobSpec `json:"jobs,omitempty"`
 
 	// Image defines the Keystone container image reference.
 	//
@@ -335,6 +348,14 @@ type FederationSpec struct {
 	// hidden default is assumed.
 	// +optional
 	ProxyImage *commonv1.ImageSpec `json:"proxyImage,omitempty"`
+
+	// ProxyResources defines the CPU and memory requests and limits of the
+	// federation-proxy sidecar, resolved per resource: a CPU the block names
+	// neither as request nor as limit gets a 25m request and no limit, and a
+	// memory it names neither way gets 256Mi as both request and limit. A
+	// resource the block names is used as written.
+	// +optional
+	ProxyResources *corev1.ResourceRequirements `json:"proxyResources,omitempty"`
 
 	// TrustedDashboards lists the dashboard origins Keystone will POST a
 	// WebSSO token back to after a successful federated login. Keystone
