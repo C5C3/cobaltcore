@@ -336,11 +336,20 @@ evict the one pod the HPA may leave running; above one it keeps
 | --- | --- | --- | --- | --- |
 | `minReplicas` | `*int32` | No | `spec.deployment.replicas` | Lower bound for the number of replicas. Minimum: 1. Defaults to `spec.deployment.replicas` when unset, allowing the HPA to scale down to the static replica count. The PodDisruptionBudget follows this bound: `maxUnavailable: 1` at one, `minAvailable: 1` above. |
 | `maxReplicas` | `int32` | Yes | — | Upper bound for the number of replicas. Minimum: 1. |
-| `targetCPUUtilization` | `*int32` | No\* | — | Target average CPU utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. |
-| `targetMemoryUtilization` | `*int32` | No\* | — | Target average memory utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. |
+| `targetCPUUtilization` | `*int32` | No\* | — | Target average CPU utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. While it is set, the webhook rejects a zero or negative CPU request on the API pod's containers. |
+| `targetMemoryUtilization` | `*int32` | No\* | — | Target average memory utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. While it is set, the webhook rejects a zero or negative memory request on the API pod's containers. |
 
 \* At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required
 (enforced by CEL XValidation).
+
+The HPA measures a utilization target against the summed requests of every
+container in the API pod: the `keystone` container and, while `spec.federation`
+is set, the federation proxy sidecar. While a target is set, the webhook
+rejects a zero or negative request for the resource it measures, in
+`spec.deployment.resources` or `spec.federation.proxyResources`. A block that
+names only a limit is checked on the limit, because the API server copies it
+into the request. A block that names neither passes: the operator's
+render-time default fills a positive request.
 
 ### HPA Resource Mapping
 
@@ -1528,6 +1537,8 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Autoscaling CPU utilization range | `spec.autoscaling.targetCPUUtilization` | `field.Invalid` | Value outside `1..100` when set. |
 | Autoscaling memory utilization range | `spec.autoscaling.targetMemoryUtilization` | `field.Invalid` | Value outside `1..100` when set. |
 | Autoscaling no metric targets | `spec.autoscaling` | `field.Required` | Neither `targetCPUUtilization` nor `targetMemoryUtilization` is set. Defense-in-depth alongside the CEL XValidation rule. |
+| Autoscaling target over a zero request | `spec.deployment.resources.requests.<cpu\|memory>`, or `limits.<cpu\|memory>` when no request is named | `field.Invalid` | A zero or negative request, or a zero or negative limit the API server would copy into the request, for the resource a set `targetCPUUtilization` or `targetMemoryUtilization` measures. The HPA divides the pods' usage by the sum of their containers' requests, so a zero request fails the metric or inflates it. A block that names neither passes, because the render-time default fills a positive request. Webhook-only: a `resource.Quantity` floor has no marker. |
+| Autoscaling target over a zero proxy request | `spec.federation.proxyResources.requests.<cpu\|memory>`, or `limits.<cpu\|memory>` | `field.Invalid` | The same rule for the federation proxy sidecar, which joins the API pod while `spec.federation` is set. |
 | NetworkPolicy ingress required | `spec.networkPolicy.ingress` | `field.Required` | `networkPolicy` is set but `ingress` is empty. Defense-in-depth alongside the CEL XValidation rule. |
 | uWSGI processes minimum | `spec.uwsgi.processes` | `field.Invalid` | `processes < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | uWSGI threads minimum | `spec.uwsgi.threads` | `field.Invalid` | `threads < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
@@ -1716,6 +1727,7 @@ is pinned by a Chainsaw step.
 | `deployment-nodeselector-invalid-key-rejected` | `27-deployment-nodeselector-invalid-key.yaml` | `spec.deployment.nodeSelector` label grammar (webhook) | Error containing "spec.deployment.nodeSelector" and "Invalid value" |
 | `jobs-resources-request-above-limit-rejected` | `28-jobs-resources-request-above-limit.yaml` | `spec.jobs.resources` request within limit (webhook) | Error containing "spec.jobs.resources.requests.memory", "Invalid value" and "memory request must not exceed limit" |
 | `deployment-toleration-empty-key-equal-rejected` | `29-deployment-toleration-empty-key-equal.yaml` | `spec.deployment.tolerations` empty key requires `Exists` (webhook) | Error containing "spec.deployment.tolerations[0].operator", "Invalid value" and "operator must be Exists when" |
+| `autoscaling-cpu-request-zero-rejected` | `30-autoscaling-cpu-request-zero.yaml` | `spec.deployment.resources` positive CPU request under a CPU target (webhook) | Error containing "spec.deployment.resources.requests.cpu" and "cpu request must be greater than zero" |
 
 Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
 so each is applied as an UPDATE of the base CR and is rejected by the

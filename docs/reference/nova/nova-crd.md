@@ -272,7 +272,8 @@ rule as a `Required` error on `spec.messaging.tls`, the `https` scheme of
 `spec.remoteCompute.keystoneEndpoint`, the cache and messaging rules,
 the secret-store-ref shape, the replica floor of every block, the worker floors,
 the autoscaling bounds including the implicit `minReplicas` default from
-`spec.api.deployment.replicas`, the network-policy ingress source, and the
+`spec.api.deployment.replicas` and a non-zero `spec.api.deployment.resources`
+request for each utilization target, the network-policy ingress source, and the
 hostname and `parentRef.name` of all three gateway blocks, and the non-empty
 `spec.remoteCompute.transportURLSecretRef.name`) and adds the rules CEL cannot
 express: the URL shape of every endpoint field, `spec.remoteCompute.keystoneEndpoint`

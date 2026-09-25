@@ -444,6 +444,8 @@ Autoscaling:
 | `targetCPUUtilization must be between 1 and 100` | The target is outside the range |
 | `targetMemoryUtilization must be between 1 and 100` | The target is outside the range |
 | `at least one of targetCPUUtilization or targetMemoryUtilization must be set` | An autoscaling block with no target |
+| `%s request must be greater than zero while %s is set: the HorizontalPodAutoscaler divides the pods' usage by the sum of their containers' requests` | A zero or negative request in `spec.deployment.resources` for the resource a set target measures, reported at `requests.<cpu\|memory>`. The arguments are the resource and the target field |
+| `%s limit must be greater than zero while %s is set: without a request the API server copies the limit into the request, and the HorizontalPodAutoscaler divides the pods' usage by the sum of their containers' requests` | `spec.deployment.resources` names no request for the resource a set target measures, and its limit is zero or negative, reported at `limits.<cpu\|memory>`. The arguments are the resource and the target field |
 
 Network policy, gateway, resources and scheduling:
 

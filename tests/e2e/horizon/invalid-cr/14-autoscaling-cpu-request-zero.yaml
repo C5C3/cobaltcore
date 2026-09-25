@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.deployment.resources.requests.cpu names a CPU request of zero while
+# spec.autoscaling sets targetCPUUtilization. The HorizontalPodAutoscaler
+# divides the pods' usage by the sum of their containers' requests, so a zero
+# request fails the metric or inflates it. A resource.Quantity floor has no
+# marker, so the validating webhook (validation.AutoscalingTargetRequests)
+# answers.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-invalid-autoscaling-request
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+    resources:
+      requests:
+        cpu: "0"
+  image:
+    repository: ghcr.io/c5c3/horizon
+    tag: "2025.2"
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  secretKeyRef:
+    name: horizon-secret-key
+    key: secret-key
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilization: 80

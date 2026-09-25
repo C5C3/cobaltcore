@@ -40,7 +40,7 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # Number of fixtures emitted by _generate.py. Bumping this value requires
 # adding the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 22
+_EXPECTED_FIXTURE_COUNT = 23
 
 # MaxCinderNameLength in operators/cinder/api/v1alpha1/cinder_webhook.go: the
 # 52-character CronJob cap less the 9 characters of "-db-purge".

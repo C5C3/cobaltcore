@@ -675,6 +675,8 @@ security context. Its resources come from `maintenanceResources`: by default a
 rule always leaves a CPU request, and that request is not cosmetic: the HPA emits a
 pod-scoped `Resource` metric, so one container without a CPU request makes the
 metric unavailable for the whole pod and silently freezes `spec.autoscaling`.
+For the same reason the webhook rejects a `maintenanceResources` CPU request of
+zero while `spec.autoscaling.targetCPUUtilization` is set.
 The sidecar carries no environment either: both CLIs read the mounted config
 directory and touch only the cache directory and its sqlite metadata, so they
 open neither the database nor `glance_store`, and they make no network calls,
@@ -854,10 +856,12 @@ counterpart), the graceful-termination cross-field arithmetic
 (`preStopSleepSeconds < terminationGracePeriodSeconds`, and `harakiri` strictly
 inside the drain window), the `Recreate`-vs-`rollingUpdate` sanity check,
 autoscaling bounds (including the implicit `minReplicas` default from
-`deployment.replicas`), network-policy ingress, gateway hostname/parentRef, the
-three `importFiltering` allow/deny pairings together with the scheme enum, host
-length, port range, and 64-item cap of each list, the `dbPurge.retentionDays`
-floor and the `dbPurge.schedule` cron grammar,
+`deployment.replicas`, and a non-zero request for each utilization target in
+`spec.deployment.resources` and, while `spec.imageCache` is set,
+`spec.imageCache.maintenanceResources`), network-policy ingress, gateway
+hostname/parentRef, the three `importFiltering` allow/deny pairings together
+with the scheme enum, host length, port range, and 64-item cap of each list,
+the `dbPurge.retentionDays` floor and the `dbPurge.schedule` cron grammar,
 resource requests-vs-limits, PriorityClass existence, topology-spread selectors
 (matching the `glance` / instance labels), the `spec.deployment.nodeSelector`
 label grammar and `tolerations` (the API server's toleration rules), the

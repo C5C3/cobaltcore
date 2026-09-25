@@ -668,6 +668,16 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 		}
 	}
 
+	// An HPA utilization target is measured against the summed requests of
+	// every container in the API pod, so a zero request under a target either
+	// fails the metric or inflates it. The render-time default fills a positive
+	// request when the block names none.
+	allErrs = append(allErrs, validation.AutoscalingTargetRequests(specPath.Child("deployment", "resources"), g.Spec.Deployment.Resources, g.Spec.Autoscaling)...)
+	if g.Spec.ImageCache != nil {
+		allErrs = append(allErrs, validation.AutoscalingTargetRequests(
+			specPath.Child("imageCache", "maintenanceResources"), g.Spec.ImageCache.MaintenanceResources, g.Spec.Autoscaling)...)
+	}
+
 	// Defense-in-depth networkPolicy ingress check alongside the
 	// +kubebuilder:validation:XValidation CEL rule on NetworkPolicySpec.
 	if g.Spec.NetworkPolicy != nil && len(g.Spec.NetworkPolicy.Ingress) == 0 {

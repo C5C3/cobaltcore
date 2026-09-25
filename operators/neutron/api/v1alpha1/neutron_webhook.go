@@ -537,6 +537,12 @@ func (w *NeutronWebhook) validate(
 		}
 	}
 
+	// An HPA utilization target is measured against the summed requests of
+	// every container in the API pod, so a zero request under a target either
+	// fails the metric or inflates it. The render-time default fills a positive
+	// request when the block names none.
+	allErrs = append(allErrs, validation.AutoscalingTargetRequests(specPath.Child("deployment", "resources"), n.Spec.Deployment.Resources, n.Spec.Autoscaling)...)
+
 	// Defense-in-depth networkPolicy ingress check alongside the
 	// +kubebuilder:validation:XValidation CEL rule on NetworkPolicySpec.
 	if n.Spec.NetworkPolicy != nil && len(n.Spec.NetworkPolicy.Ingress) == 0 {

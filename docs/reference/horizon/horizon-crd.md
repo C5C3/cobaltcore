@@ -36,7 +36,8 @@ defaults, materializes the PyMemcacheCache backend, and defaults
 replicas floor, image tag/digest XOR, cache mutual exclusivity, the
 `keystoneEndpoint` URL shape, gateway hostname/parentRef, network-policy
 ingress, autoscaling bounds (including the implicit `minReplicas` default
-from `deployment.replicas`), logging enums, graceful-termination cross-field
+from `deployment.replicas`, and a non-zero `spec.deployment.resources` request
+for each utilization target), logging enums, graceful-termination cross-field
 arithmetic, topology-spread selectors, PriorityClass existence, and the
 `spec.deployment.nodeSelector` label grammar and `tolerations` (the API
 server's toleration rules).

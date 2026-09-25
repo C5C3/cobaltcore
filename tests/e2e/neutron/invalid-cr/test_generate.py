@@ -40,7 +40,7 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # Number of fixtures emitted by _generate.py. Bumping this value requires
 # adding the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 18
+_EXPECTED_FIXTURE_COUNT = 19
 
 # MaxNeutronNameLength in operators/neutron/api/v1alpha1/neutron_types.go: the
 # 52-character CronJob cap less the 12 characters of "-ovn-db-sync".

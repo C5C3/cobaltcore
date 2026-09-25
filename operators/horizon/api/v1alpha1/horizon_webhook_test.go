@@ -13,6 +13,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -793,4 +794,34 @@ func TestHorizonValidate_NodePlacementRejected(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestHorizonValidate_AutoscalingTargetNeedsAPositiveRequest pins the HPA
+// request check: the HorizontalPodAutoscaler divides the pods' usage by the
+// sum of their containers' requests, so a zero CPU request under a CPU target
+// is rejected at its field path, and the same CR without it is admitted.
+func TestHorizonValidate_AutoscalingTargetNeedsAPositiveRequest(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+	withTarget := func() *Horizon {
+		o := validHorizon()
+		o.Spec.Autoscaling = &AutoscalingSpec{
+			MinReplicas:          ptr.To(int32(1)),
+			MaxReplicas:          5,
+			TargetCPUUtilization: ptr.To(int32(80)),
+		}
+		return o
+	}
+
+	o := withTarget()
+	o.Spec.Deployment.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("0")},
+	}
+	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.deployment.resources.requests.cpu"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("cpu request must be greater than zero"))
+
+	_, err = w.ValidateCreate(context.Background(), withTarget())
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 }

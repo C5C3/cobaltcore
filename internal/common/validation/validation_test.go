@@ -342,6 +342,94 @@ func TestRequestsWithinLimits(t *testing.T) {
 	g.Expect(errs[0].Detail).To(gomega.Equal("cpu request must not exceed limit (1)"))
 }
 
+func TestAutoscalingTargetRequests(t *testing.T) {
+	path := field.NewPath("spec", "deployment", "resources")
+	cpuTarget := &commonv1.AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: ptr.To(int32(80))}
+	memTarget := &commonv1.AutoscalingSpec{MaxReplicas: 5, TargetMemoryUtilization: ptr.To(int32(70))}
+	bothTargets := &commonv1.AutoscalingSpec{
+		MaxReplicas:             5,
+		TargetCPUUtilization:    ptr.To(int32(80)),
+		TargetMemoryUtilization: ptr.To(int32(70)),
+	}
+	list := func(name corev1.ResourceName, q string) corev1.ResourceList {
+		return corev1.ResourceList{name: resource.MustParse(q)}
+	}
+
+	accepted := []struct {
+		name string
+		rr   *corev1.ResourceRequirements
+		a    *commonv1.AutoscalingSpec
+	}{
+		{name: "nil autoscaling", rr: &corev1.ResourceRequirements{Requests: list(corev1.ResourceCPU, "0")}},
+		{name: "nil resources", a: cpuTarget},
+		{name: "empty resources", rr: &corev1.ResourceRequirements{}, a: bothTargets},
+		{name: "positive cpu request", rr: &corev1.ResourceRequirements{Requests: list(corev1.ResourceCPU, "100m")}, a: cpuTarget},
+		{name: "positive cpu limit without request", rr: &corev1.ResourceRequirements{Limits: list(corev1.ResourceCPU, "1")}, a: cpuTarget},
+		{name: "zero cpu request with only a memory target", rr: &corev1.ResourceRequirements{Requests: list(corev1.ResourceCPU, "0")}, a: memTarget},
+		{
+			name: "positive cpu request beside a zero limit",
+			rr:   &corev1.ResourceRequirements{Requests: list(corev1.ResourceCPU, "100m"), Limits: list(corev1.ResourceCPU, "0")},
+			a:    cpuTarget,
+		},
+	}
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(AutoscalingTargetRequests(path, tc.rr, tc.a)).To(gomega.BeEmpty())
+		})
+	}
+
+	t.Run("zero cpu request with a cpu target", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetRequests(path, &corev1.ResourceRequirements{Requests: list(corev1.ResourceCPU, "0")}, cpuTarget)
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.deployment.resources.requests.cpu"))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("cpu request must be greater than zero while targetCPUUtilization is set"))
+	})
+
+	t.Run("negative cpu request is rejected like zero", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetRequests(path, &corev1.ResourceRequirements{Requests: list(corev1.ResourceCPU, "-1")}, cpuTarget)
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.deployment.resources.requests.cpu"))
+	})
+
+	t.Run("zero memory limit without a request", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetRequests(path, &corev1.ResourceRequirements{Limits: list(corev1.ResourceMemory, "0")}, memTarget)
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.deployment.resources.limits.memory"))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring(
+			"memory limit must be greater than zero while targetMemoryUtilization is set: " +
+				"without a request the API server copies the limit into the request"))
+	})
+
+	// The API server copies a limit into a missing request only, so an explicit
+	// zero request stays zero beside any limit: the request decides alone.
+	t.Run("zero cpu request beside a positive limit", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetRequests(path, &corev1.ResourceRequirements{
+			Requests: list(corev1.ResourceCPU, "0"),
+			Limits:   list(corev1.ResourceCPU, "1"),
+		}, cpuTarget)
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.deployment.resources.requests.cpu"))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("cpu request must be greater than zero while targetCPUUtilization is set"))
+	})
+
+	t.Run("zero requests with both targets report cpu first", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetRequests(path, &corev1.ResourceRequirements{Requests: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("0"),
+			corev1.ResourceCPU:    resource.MustParse("0"),
+		}}, bothTargets)
+		g.Expect(errs).To(gomega.HaveLen(2))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.deployment.resources.requests.cpu"))
+		g.Expect(errs[1].Field).To(gomega.Equal("spec.deployment.resources.requests.memory"))
+	})
+}
+
 func TestJob(t *testing.T) {
 	path := field.NewPath("spec", "jobs")
 	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).

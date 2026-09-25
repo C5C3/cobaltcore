@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.api.deployment.resources.requests.cpu names a CPU request of zero while
+# spec.autoscaling sets targetCPUUtilization. The HorizontalPodAutoscaler
+# divides the pods' usage by the sum of their containers' requests, so a zero
+# request fails the metric or inflates it. A resource.Quantity floor has no
+# marker, so the validating webhook (validation.AutoscalingTargetRequests)
+# answers.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-invalid-autoscaling-request
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: openstack-rabbitmq
+  api:
+    deployment:
+      resources:
+        requests:
+          cpu: "0"
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilization: 80
