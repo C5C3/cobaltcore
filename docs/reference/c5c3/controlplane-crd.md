@@ -1202,7 +1202,7 @@ per-field External-mode forbid-rules.
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Nova API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the API is reachable in-cluster only. A configured gateway needs a non-empty `hostname` that is a usable DNS name (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Nova endpoint URL (e.g. `https://nova.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public compute catalog Endpoint, the URL every client resolves to boot, list, and delete its instances; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the ControlPlane appends `/v2.1` when it registers the row), and be at most 512 characters; a single trailing slash is tolerated and `novaCatalogURL` trims it before appending `/v2.1`. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every compute call carries the caller's scoped Keystone token to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 | `metadataGateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected metadata API on a hostname of its own (`nova-metadata.<domain>`), the listener a Neutron metadata agent dials from the compute cluster it runs on. It is separate from `gateway` because the two endpoints serve different callers: users reach the API, and only the metadata agents reach this one. When `nil` the metadata API is reachable in-cluster only, which is enough while the computes share the cluster the control plane runs on. It enters no catalog row. Its `path` must be empty or `/`, because the agent addresses the metadata API by scheme, host and port alone, and its `hostname` must not share a Gateway listener with `gateway` or `consoleProxy.gateway` (see [Three gateways, one catalog row](#three-gateways-one-catalog-row)). |
-| `metadataSharedSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` (the ControlPlane generates the value) | References a Secret holding the value the Neutron metadata agent signs proxied requests with, rendered as `[neutron] metadata_proxy_shared_secret` on the compute service and carried by every agent that proxies to it. Leaving it `nil` has the ControlPlane generate the secret and hand it to the child (see [The generated metadata shared secret](#the-generated-metadata-shared-secret)). Supply one when the value has to be seeded from outside this ControlPlane's reach: a metadata request signed with a value only one side knows is rejected, so both sides have to resolve the same Secret. Naming the generated Secret `{controlplane.Name}-nova-metadata-secret` itself keeps it generated. The shared type rejects an empty `name`. |
+| `metadataSharedSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` (the ControlPlane generates the value) | References a Secret holding the value the Neutron metadata agent signs proxied requests with, rendered as `[neutron] metadata_proxy_shared_secret` on the compute service and carried by every agent that proxies to it. Leaving it `nil` has the ControlPlane generate the secret and hand it to the child (see [The generated metadata shared secret](#the-generated-metadata-shared-secret)). Supply one when the value has to be seeded from outside this ControlPlane's reach: a metadata request signed with a value only one side knows is rejected, so both sides have to resolve the same Secret. Naming the generated Secret `{controlplane.Name}-nova-metadata-secret` itself keeps it generated. Whichever Secret it names, an agent on a compute cluster reads the value from the copy `{controlplane.Name}-nova-metadata-agent-secret` the ControlPlane delivers there. The shared type rejects an empty `name`. |
 | `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Nova on one mode while another service stays on the other. It applies to **both** database blocks the compute service holds: the Nova CRD rejects a child whose `apiDatabase` and `database` carry different modes, so one value covers both. Empty (the default) **inherits** the shared mode, and is not materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Nova declares a [dedicated](#novadedicatedbackingservicesspec) database (dedicated is `Static`-only) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
 | `dbArchive` | [`*ServiceNovaDBArchiveSpec`](#servicenovadbarchivespec) | No | `nil` | Tunes the recurring archive of the compute service's soft-deleted rows, projected onto the child's `spec.dbArchive`. A nil block resolves exactly like an empty one, so the archive runs on every projected Nova. |
 | `hypervisorOperator` | [`*ServiceNovaHypervisorOperatorSpec`](#servicenovahypervisoroperatorspec) | No | `nil` | Opt-in marker with no fields. `{}` provisions the Keystone account openstack-hypervisor-operator authenticates as (user `hypervisor-operator`, role `admin`) and delivers its credentials as `{controlplane.Name}-nova-hypervisor-operator-auth` beside the Nova and on every compute cluster a `NovaCompute` of it runs on. Removing the block deletes the account. |
@@ -1502,8 +1502,8 @@ value only one of them knows leaves every call to `169.254.169.254` rejected.
 The ControlPlane sees both sides, so it generates the value rather than asking
 for one. An ESO `Password` generator mints 32 symbol-free characters, and an
 `ExternalSecret` named `{controlplane.Name}-nova-metadata-secret` materialises
-them under the key `shared_secret`; the operator writes two references and never
-reads the value. The generator writes its value under `password`, and one
+them under the key `shared_secret`; generating the value takes two references
+and no read of it. The generator writes its value under `password`, and one
 `rewrite` rule on the ExternalSecret renames it: `shared_secret` is the key both
 consumers default their reference to, the Nova child's
 `spec.metadata.sharedSecretRef` and the `NeutronMetadataAgent`'s
@@ -1531,6 +1531,42 @@ meantime unable to start. Naming the generated Secret itself keeps the pair. The
 reference is resolved at projection time rather than materialized into the spec,
 so removing it reverts the child to the generated value instead of pinning the
 last one.
+
+A metadata agent on a compute cluster cannot read a Secret in the Nova
+namespace, so the ControlPlane delivers the value to it. Every
+`NeutronMetadataAgent` of this plane lives in the OVN central's namespace
+(`services.neutron.ovn.centralRef`), because its `chassisRef` and that chassis's
+`centralRef` are namespace-local. For each cluster on which an agent there has a
+`targetClusterRef`, is not being deleted, and names
+`{controlplane.Name}-nova-metadata-agent-secret` in
+`spec.novaMetadata.sharedSecretRef`, the ControlPlane writes that Secret into
+the same namespace on that cluster:
+
+```yaml
+spec:
+  targetClusterRef:
+    name: compute-a
+  novaMetadata:
+    sharedSecretRef:
+      name: openstack-nova-metadata-agent-secret   # {controlplane.Name}-nova-metadata-agent-secret
+```
+
+The copy carries one key, `shared_secret`, which the agent's webhook defaults
+`sharedSecretRef.key` to. Its value is read out of the compute contract's
+`metadata_proxy_shared_secret`, so every copy has one source whichever Secret
+`metadataSharedSecretRef` names; it is the one path on which the operator reads
+the value. The contract's bus URL and service password stay out of the agent's
+privileged namespace. The copy carries the ControlPlane's ownership labels and
+`neutron.openstack.c5c3.io/metadata-shared-secret-mirror: "true"`. A same-named
+Secret the ControlPlane did not write stays untouched and holds `NovaReady` on
+`NovaMetadataAgentSecretError`. A changed value is rewritten on the next Nova
+pass.
+
+The ControlPlane never deletes a copy. The teardown of the last agent on a
+cluster that names it does, before the agent's finalizer is released (see
+[On a compute cluster](../neutron/neutron-metadata-agent-crd.md#on-a-compute-cluster)).
+A local agent gets no copy: it carries no finalizer that would reap one, and in
+the Nova namespace it names the generated Secret directly.
 
 ### Name bound and replica pinning
 
@@ -3305,13 +3341,15 @@ before it projects the child, so everything the child references exists by the
 time the nova operator resolves it. Past the child's readiness it delivers the
 compute contract to every mirror target and, while `hypervisorOperator` is set,
 provisions the [hypervisor operator's account](#servicenovahypervisoroperatorspec)
-and delivers its auth Secret to the same targets. Nova
+and delivers its auth Secret to the same targets. It then copies the metadata
+shared secret to every cluster a `NeutronMetadataAgent` of the plane asks for
+it on (see [The generated metadata shared secret](#the-generated-metadata-shared-secret)). Nova
 is **forbidden in External mode**, so it is only ever managed against a
 Managed-mode Keystone.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `NovaReady` | The projected Nova CR reports Ready, every compute-config mirror target is served, the hypervisor operator's auth Secret is delivered to every target while `hypervisorOperator` is set, and its registration reports Ready. |
+| `True` | `NovaReady` | The projected Nova CR reports Ready, every compute-config mirror target is served, the hypervisor operator's auth Secret is delivered to every target while `hypervisorOperator` is set, every metadata agent that asks for the shared-secret copy has it on its cluster, and its registration reports Ready. |
 | `True` | `NovaNotManaged` | `spec.services.nova` is unset: no compute service is managed, so the aggregate `Ready` is not blocked. Any previously-projected Nova child (with its two DB-credential chains, the generated metadata shared secret, the three messaging Secrets, the registration, and the hypervisor operator's registration and auth Secret) is **preserved** unless the `c5c3.io/allow-nova-deletion: "true"` annotation opts in to its deletion. Both dynamic DB-credential generators, their ServiceAccounts, and their client Certificates are torn down **either way**. |
 | `False` | `WaitingForKeystone` | `KeystoneReady` is not `True`; Nova projection deferred. Requeue 5s. |
 | `False` | `WaitingForPlacement` | `PlacementReady` is not `True`; Nova projection deferred. A ControlPlane that manages no placement service reports that condition `True` under its own not-managed reason, so this gate reads the condition rather than the block. Requeue 5s. |
@@ -3320,7 +3358,7 @@ Managed-mode Keystone.
 | `False` | `NovaMessagingError` | Error resolving the shared transport URL, writing either messaging Secret into the Nova namespace, or removing the stale CA mirror after the `tls` block was dropped. |
 | `False` | `WaitingForRemoteMessaging` | `services.nova.remoteCompute` is set but the handed Secret, or its key, is missing or empty. The message is prefixed `services.nova.remoteCompute.transportURLSecretRef:`. No child is written this pass, so the child never names a Secret that is not there. Requeue 15s. |
 | `False` | `NovaRemoteMessagingError` | The handed URL is not a `rabbit://` URL (the message names the scheme, never the URL), or writing `{controlplane.Name}-nova-remote-messaging` into the Nova namespace failed, or deleting it after `services.nova.remoteCompute` was removed failed. |
-| `False` | `TargetClusterUnavailable` | The cluster the Nova namespace lives on did not resolve, so the messaging Secrets, the registration's credential mirror, the DB-credential objects, the metadata generator pair, a compute-config mirror, or the hypervisor operator's auth Secret or one of its copies cannot be written there. The resolver's own message is relayed. Requeue 15s from the bus delivery, the metadata secret and the compute-config mirror, 10s from the registration mirror and the DB credentials. |
+| `False` | `TargetClusterUnavailable` | The cluster the Nova namespace lives on did not resolve, so the messaging Secrets, the registration's credential mirror, the DB-credential objects, the metadata generator pair, a compute-config mirror, or the hypervisor operator's auth Secret or one of its copies cannot be written there. The same reason covers the cluster of a metadata agent that asks for the shared-secret copy; the message then names the namespace and the cluster of every such cluster that did not resolve. The resolver's own message is relayed. Requeue 15s from the bus delivery, the metadata secret and the compute-config mirror, 10s from the registration mirror and the DB credentials. |
 | `False` | `WaitingForServiceRegistration` | The projected `KeystoneService` registration has not provisioned the `nova` account yet; projection deferred until its Keystone user and password exist. The message relays the registration's own failing sub-condition, so a collision on the `nova` user or its catalog row reads here verbatim. The hypervisor operator's registration relays the same way once the child is Ready, naming `{controlplane.Name}-nova-hypervisor-operator`. |
 | `False` | `ServiceRegistrationError` | Kubernetes-level error writing, reading, or mirroring the `KeystoneService` registration child; a refused adoption of a same-named foreign CR is among them. |
 | `False` | `ServiceRegistrationFieldsReclaimed` | The pass reset a spec field another field manager had written on the registration child (an `adopt` consent, a `rotation` block, or an extra catalog endpoint). The condition names the same fields as the `Warning` event and stands until a pass reads an untampered child. |
@@ -3333,9 +3371,10 @@ Managed-mode Keystone.
 | `False` | `WaitingForNova` | The Nova CR is ensured but not yet Ready. Requeue 15s. |
 | `False` | `NovaProjectionRejected` | The Nova API server rejected the projected Nova spec (HTTP 422): the projection violates a CRD/webhook rule. Reconcile the ControlPlane spec to a valid projection to recover. |
 | `False` | `NovaError` | Error create-or-updating the Nova CR. |
-| `False` | `WaitingForComputeConfig` | The child is Ready but the compute contract Secret the nova operator publishes has not appeared yet, so a mirror target cannot be served. The message names the Secret waited for: `{controlplane.Name}-nova-compute-config`, or `{controlplane.Name}-nova-remote-compute-config` while `services.nova.remoteCompute` is set, which the nova operator writes only once the delivered remote URL resolves. Requeue 15s. |
+| `False` | `WaitingForComputeConfig` | The child is Ready but the compute contract Secret the nova operator publishes has not appeared yet, so a mirror target cannot be served. The message names the Secret waited for: `{controlplane.Name}-nova-compute-config`, or `{controlplane.Name}-nova-remote-compute-config` while `services.nova.remoteCompute` is set, which the nova operator writes only once the delivered remote URL resolves. The metadata-agent leg reaches the same reason while `{controlplane.Name}-nova-compute-config` is absent (the message names the central's namespace whose agents sign with its shared secret) or carries no `metadata_proxy_shared_secret` yet. Requeue 15s. |
 | `False` | `NovaComputeConfigError` | Error listing the NovaComputes, reading the published compute contract, or writing its mirror into a target namespace. |
 | `False` | `WaitingForHypervisorOperatorCredentials` | `hypervisorOperator` is set and the account is provisioned, but its consumer Secret `{controlplane.Name}-nova-hypervisor-operator-credentials` is absent from the Nova namespace or carries no `password` yet. Requeue 15s. |
+| `False` | `NovaMetadataAgentSecretError` | Error listing the `NeutronMetadataAgent`s in the OVN central's namespace, reading the compute contract for the shared secret, or writing the copy `{controlplane.Name}-nova-metadata-agent-secret` onto an agent's cluster; a same-named Secret the ControlPlane did not write is among them. The message names the namespace and the cluster of every copy that failed, and of every agent cluster that did not resolve. |
 | `False` | `HypervisorOperatorError` | Error reading that consumer Secret, writing the auth Secret `{controlplane.Name}-nova-hypervisor-operator-auth` or one of its copies (the message names the namespace and the cluster), or deleting the registration, the Secret or a copy after the block was cleared. |
 
 The compute-config reasons only appear once a [NovaCompute](../nova/novacompute-crd.md)
