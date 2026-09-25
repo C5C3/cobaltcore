@@ -12,6 +12,7 @@ import (
 	"github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	apitypes "k8s.io/apimachinery/pkg/types"
@@ -20,21 +21,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 func migrationParams() MigrationJobParams {
 	return MigrationJobParams{
-		Name:              "keystone-db-sync",
-		Namespace:         "openstack",
-		Image:             "keystone:2025.2",
-		ContainerName:     "db-sync",
-		Command:           []string{"keystone-manage", "db_sync"},
-		ConfigMapName:     "keystone-config",
-		ConfigMountPath:   "/etc/keystone/keystone.conf.d/",
-		Env:               []corev1.EnvVar{{Name: "OS_DATABASE__CONNECTION", Value: "mysql://x"}},
-		PriorityClassName: "high",
-		BackoffLimit:      4,
-		SecurityContext:   &corev1.SecurityContext{RunAsNonRoot: ptr.To(true)},
+		Name:            "keystone-db-sync",
+		Namespace:       "openstack",
+		Image:           "keystone:2025.2",
+		ContainerName:   "db-sync",
+		Command:         []string{"keystone-manage", "db_sync"},
+		ConfigMapName:   "keystone-config",
+		ConfigMountPath: "/etc/keystone/keystone.conf.d/",
+		Env:             []corev1.EnvVar{{Name: "OS_DATABASE__CONNECTION", Value: "mysql://x"}},
+		Pod:             PodSettings{PriorityClassName: "high"},
+		BackoffLimit:    4,
+		SecurityContext: &corev1.SecurityContext{RunAsNonRoot: ptr.To(true)},
 	}
 }
 
@@ -99,6 +102,25 @@ func TestBuildMigrationJob_ExtrasAppendedAndOverrides(t *testing.T) {
 	g.Expect(mounts).To(gomega.HaveLen(3))
 	g.Expect(mounts[1].Name).To(gomega.Equal("tls"))
 	g.Expect(mounts[2].Name).To(gomega.Equal("domains"))
+}
+
+// The pod settings land on the Job last: the container carries the resources,
+// the pod the priority class and the placement.
+func TestBuildMigrationJob_AppliesPodSettings(t *testing.T) {
+	g := gomega.NewWithT(t)
+	p := migrationParams()
+	p.Pod = PodSettings{
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+		},
+		PriorityClassName: "low",
+		Placement:         commonv1.NodePlacementSpec{NodeSelector: map[string]string{"pool": "jobs"}},
+	}
+
+	spec := BuildMigrationJob(p).Spec.Template.Spec
+	g.Expect(spec.PriorityClassName).To(gomega.Equal("low"))
+	g.Expect(spec.NodeSelector).To(gomega.Equal(map[string]string{"pool": "jobs"}))
+	g.Expect(spec.Containers[0].Resources).To(gomega.Equal(p.Pod.Resources))
 }
 
 func TestJobUIDAnnotationKey(t *testing.T) {

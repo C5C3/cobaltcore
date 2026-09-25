@@ -54,8 +54,9 @@ type JobSetParams struct {
 	// (for example a DB-TLS keypair or per-domain config).
 	ExtraVolumes      []corev1.Volume
 	ExtraVolumeMounts []corev1.VolumeMount
-	// PriorityClassName sets the Pod priority class; empty leaves it unset.
-	PriorityClassName string
+	// Pod is the resolved pod settings (resources, priority class, node
+	// placement) of every Job the set builds; the zero value renders none.
+	Pod job.PodSettings
 	// SyncCommand is the schema-migration command SyncJob runs (for example
 	// keystone-manage db_sync or glance-manage db sync).
 	SyncCommand []string
@@ -88,7 +89,7 @@ func BuildJob(p JobSetParams, image, nameSuffix string, command []string, backof
 		Env:               p.Env,
 		ExtraVolumes:      p.ExtraVolumes,
 		ExtraVolumeMounts: p.ExtraVolumeMounts,
-		PriorityClassName: p.PriorityClassName,
+		Pod:               p.Pod,
 		BackoffLimit:      backoffLimit,
 		SecurityContext:   deployment.RestrictedSecurityContext(),
 	})
