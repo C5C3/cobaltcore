@@ -307,9 +307,15 @@ func cinderWorkloadEnv(cinder *cinderv1alpha1.Cinder) []corev1.EnvVar {
 	return env
 }
 
+// cinderJobPod resolves the pod settings of every Cinder Job and CronJob:
+// spec.jobs, with spec.api.deployment as the fallback.
+func cinderJobPod(cinder *cinderv1alpha1.Cinder) job.PodSettings {
+	return job.ResolvePodSettings(cinder.Spec.Jobs, &cinder.Spec.API.Deployment)
+}
+
 // cinderJobSetParams derives the shared migration-Job inputs from the Cinder CR:
-// the config mount, the db-tls keypair, the workload environment, and the
-// cinder-manage db sync command. The steady-state sync flow
+// the config mount, the db-tls keypair, the workload environment, the Job pod
+// settings, and the cinder-manage db sync command. The steady-state sync flow
 // (database.ReconcileSyncJobs) and the upgrade-phase builders
 // (upgradeFlowParams.BuildPhaseJob) both consume it, so a seeded Job carries the
 // same pod spec as the desired one.
@@ -338,6 +344,7 @@ func cinderJobSetParams(cinder *cinderv1alpha1.Cinder, configMapName string) dat
 		Env:               cinderWorkloadEnv(cinder),
 		ExtraVolumes:      extraVolumes,
 		ExtraVolumeMounts: extraMounts,
+		Pod:               cinderJobPod(cinder),
 		SyncCommand:       cinderDBSyncCommand,
 		// No schema-check: cinder-manage db sync is an idempotent alembic upgrade
 		// to head, so a second read-only Job would assert nothing the sync itself

@@ -395,6 +395,11 @@ func (in *CinderSpec) DeepCopyInto(out *CinderSpec) {
 	in.Scheduler.DeepCopyInto(&out.Scheduler)
 	in.Volume.DeepCopyInto(&out.Volume)
 	in.Backup.DeepCopyInto(&out.Backup)
+	if in.Jobs != nil {
+		in, out := &in.Jobs, &out.Jobs
+		*out = new(types.JobSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.ServiceUser != nil {
 		in, out := &in.ServiceUser, &out.ServiceUser
 		*out = new(ServiceUserSpec)

@@ -143,6 +143,17 @@ type CinderSpec struct {
 	// +optional
 	Backup CinderBackupSpec `json:"backup,omitempty"`
 
+	// Jobs sizes, prioritizes and places the pods of the db-sync Job, the
+	// db-expand, db-migrate and db-contract upgrade phases, the db-purge
+	// CronJob, and the Jobs that remove a volume service. A field left unset
+	// falls back to spec.api.deployment: the priority class, the node
+	// selector, the tolerations, and the node affinity (never the pod
+	// (anti-)affinity). An empty value opts out of the fallback. Unset
+	// resources default to a 100m CPU request and 368Mi memory as request and
+	// limit.
+	// +optional
+	Jobs *commonv1.JobSpec `json:"jobs,omitempty"`
+
 	// KeystoneEndpoint is the Keystone endpoint URL Cinder authenticates
 	// against. It renders as [keystone_authtoken] auth_url in cinder.conf.
 	// Cinder connects to this URL server-side (token validation on every API

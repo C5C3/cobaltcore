@@ -592,6 +592,7 @@ func buildServiceRemoveJob(cinder *cinderv1alpha1.Cinder, name string, art confi
 		Env:                     cinderWorkloadEnv(cinder),
 		ExtraVolumes:            extraVolumes,
 		ExtraVolumeMounts:       extraMounts,
+		Pod:                     cinderJobPod(cinder),
 		BackoffLimit:            serviceRemoveJobBackoffLimit,
 		TTLSecondsAfterFinished: ptr.To(serviceRemoveJobTTL),
 		SecurityContext:         deployment.RestrictedSecurityContext(),

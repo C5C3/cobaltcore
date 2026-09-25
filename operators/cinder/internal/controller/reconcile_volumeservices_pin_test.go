@@ -241,7 +241,12 @@ spec:
               name: cinder-service-user
         image: ghcr.io/c5c3/cinder:2026.1
         name: service-remove
-        resources: {}
+        resources:
+          limits:
+            memory: 368Mi
+          requests:
+            cpu: 100m
+            memory: 368Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

@@ -14,7 +14,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
@@ -920,5 +922,128 @@ func TestCinderValidateDelete_AlwaysAccepts(t *testing.T) {
 
 	warnings, err := w.ValidateDelete(context.Background(), validCinder())
 	g.Expect(warnings).To(gomega.BeNil())
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// --- Node placement and spec.jobs validation ---
+
+func TestCinderValidate_NodePlacementRejected(t *testing.T) {
+	for _, block := range []struct {
+		name       string
+		deployment func(o *Cinder) *commonv1.DeploymentSpec
+		path       string
+	}{
+		{name: "spec.api.deployment", deployment: func(o *Cinder) *commonv1.DeploymentSpec { return &o.Spec.API.Deployment }, path: "spec.api.deployment"},
+		{name: "spec.scheduler.deployment", deployment: func(o *Cinder) *commonv1.DeploymentSpec { return &o.Spec.Scheduler.Deployment }, path: "spec.scheduler.deployment"},
+		{name: "spec.volume.deployment", deployment: func(o *Cinder) *commonv1.DeploymentSpec { return &o.Spec.Volume.Deployment }, path: "spec.volume.deployment"},
+		{name: "spec.backup.deployment", deployment: func(o *Cinder) *commonv1.DeploymentSpec { return &o.Spec.Backup.Deployment }, path: "spec.backup.deployment"},
+	} {
+		for _, tc := range []struct {
+			name   string
+			mutate func(d *commonv1.DeploymentSpec)
+			want   string
+		}{
+			{
+				name:   "node selector key",
+				mutate: func(d *commonv1.DeploymentSpec) { d.NodeSelector = map[string]string{"bad key": "x"} },
+				want:   block.path + ".nodeSelector: Invalid value",
+			},
+			{
+				name: "toleration without key or Exists",
+				mutate: func(d *commonv1.DeploymentSpec) {
+					d.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpEqual}}
+				},
+				want: block.path + ".tolerations[0].operator: Invalid value",
+			},
+		} {
+			t.Run(block.name+"/"+tc.name, func(t *testing.T) {
+				g := gomega.NewWithT(t)
+				o := validCinder()
+				tc.mutate(block.deployment(o))
+
+				_, err := (&CinderWebhook{}).ValidateCreate(context.Background(), o)
+				g.Expect(err).To(gomega.HaveOccurred())
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+			})
+		}
+	}
+}
+
+func TestCinderValidate_JobsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		jobs *commonv1.JobSpec
+		want string
+	}{
+		{
+			name: "unknown priority class",
+			jobs: &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("typo")}},
+			want: "spec.jobs.priorityClassName: Not found",
+		},
+		{
+			name: "memory request above limit",
+			jobs: &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			}}},
+			want: "spec.jobs.resources.requests.memory: Invalid value",
+		},
+		{
+			name: "node selector key",
+			jobs: &commonv1.JobSpec{NodePlacementSpec: commonv1.NodePlacementSpec{NodeSelector: map[string]string{"bad key": "x"}}},
+			want: "spec.jobs.nodeSelector: Invalid value",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &CinderWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+			o := validCinder()
+			o.Spec.Jobs = tc.jobs
+
+			_, err := w.ValidateCreate(context.Background(), o)
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+		})
+	}
+}
+
+// The finalizer removal reconcileDelete issues is an update, and it passes the
+// defaulting webhook before the validating one. A spec.jobs.priorityClassName
+// admitted earlier can name a PriorityClass deleted since, and rejecting the
+// removal would hold the CR in Terminating. The stored spec is left undefaulted,
+// so a default the defaulter fills on the removal alone must not count as a
+// spec change either. A deleting CR whose spec changes is still validated.
+func TestCinderValidateUpdate_FinalizerRemovalOnADeletingCRSkipsValidation(t *testing.T) {
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+	w := &CinderWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+
+	stale := validCinder()
+	stale.Spec.Jobs = &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("deleted-class")}}
+	stale.Finalizers = []string{"cinder.openstack.c5c3.io/finalizer"}
+	stale.DeletionTimestamp = ptr.To(metav1.Now())
+
+	released := stale.DeepCopy()
+	released.Finalizers = nil
+	g.Expect(w.Default(ctx, released)).To(gomega.Succeed())
+
+	_, err := w.ValidateUpdate(ctx, stale, released)
+	g.Expect(err).NotTo(gomega.HaveOccurred(),
+		"the finalizer removal must pass however the unchanged spec fares against today's rules")
+
+	edited := released.DeepCopy()
+	edited.Spec.API.Deployment.Replicas = 5
+	_, err = w.ValidateUpdate(ctx, stale, edited)
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("spec.jobs.priorityClassName: Not found")),
+		"a spec edit on a deleting CR is validated like any other")
+}
+
+func TestCinderValidate_EmptyJobsAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &CinderWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+	o := validCinder()
+	o.Spec.Jobs = &commonv1.JobSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), o)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
