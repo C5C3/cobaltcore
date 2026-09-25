@@ -17,10 +17,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
 
@@ -303,7 +305,7 @@ func TestRaftResources_UnsetBlockGetsTheRequestFloor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewWithT(t)
 
-			got := raftResources(tc.spec)
+			got := commonv1.WithRequestFloor(tc.spec)
 
 			g.Expect(got.Requests).To(HaveLen(2))
 			g.Expect(got.Requests.Cpu().String()).To(Equal("100m"))
@@ -351,7 +353,7 @@ func TestRaftResources_FillsEachUnnamedResource(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewWithT(t)
 
-			g.Expect(raftResources(tc.spec)).To(Equal(tc.want))
+			g.Expect(commonv1.WithRequestFloor(tc.spec)).To(Equal(tc.want))
 		})
 	}
 }
@@ -377,7 +379,7 @@ func TestRaftResources_BlockNamingCPUAndMemoryIsUsedAsWritten(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewWithT(t)
 
-			g.Expect(raftResources(tc.spec)).To(Equal(*tc.spec))
+			g.Expect(commonv1.WithRequestFloor(tc.spec)).To(Equal(*tc.spec))
 		})
 	}
 }
@@ -404,7 +406,7 @@ func TestRaftResources_BlockWithoutCPUOrMemoryGetsTheFloorBesideIt(t *testing.T)
 			g := NewWithT(t)
 			want := tc.spec.DeepCopy()
 
-			got := raftResources(tc.spec)
+			got := commonv1.WithRequestFloor(tc.spec)
 
 			g.Expect(got.Requests.Cpu().String()).To(Equal("100m"))
 			g.Expect(got.Requests.Memory().String()).To(Equal("256Mi"))
@@ -423,7 +425,7 @@ func TestRaftResources_ClaimsAloneStillGetTheFloor(t *testing.T) {
 	g := NewWithT(t)
 	claims := []corev1.ResourceClaim{{Name: "gpu"}}
 
-	got := raftResources(&corev1.ResourceRequirements{Claims: claims})
+	got := commonv1.WithRequestFloor(&corev1.ResourceRequirements{Claims: claims})
 
 	g.Expect(got.Requests.Cpu().String()).To(Equal("100m"))
 	g.Expect(got.Requests.Memory().String()).To(Equal("256Mi"))
@@ -439,14 +441,14 @@ func TestRaftResources_ReturnsACopy(t *testing.T) {
 	spec := &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
 	}
-	got := raftResources(spec)
+	got := commonv1.WithRequestFloor(spec)
 	got.Requests[corev1.ResourceMemory] = resource.MustParse("2Gi")
 	g.Expect(spec.Requests.Memory().String()).To(Equal("512Mi"), "the CR's block must stay untouched")
 
-	floor := raftResources(nil)
+	floor := commonv1.WithRequestFloor(nil)
 	floor.Requests[corev1.ResourceCPU] = resource.MustParse("4")
 	floor.Requests[corev1.ResourceMemory] = resource.MustParse("8Gi")
-	next := raftResources(nil)
+	next := commonv1.WithRequestFloor(nil)
 	g.Expect(next.Requests.Cpu().String()).To(Equal("100m"))
 	g.Expect(next.Requests.Memory().String()).To(Equal("256Mi"))
 }
@@ -468,4 +470,45 @@ func TestRaftStatefulSet_MembersRequestTheFloorWhenTheCRSetsNone(t *testing.T) {
 
 	g.Expect(cr.Spec.Northbound.Resources).To(BeNil(), "the floor must not be written into the CR")
 	g.Expect(cr.Spec.Southbound.Resources).To(BeNil(), "the floor must not be written into the CR")
+}
+
+// Each database block's placement and priority class reach its own Raft
+// StatefulSet only.
+func TestRaftStatefulSet_RendersPlacementAndPriority(t *testing.T) {
+	g := NewWithT(t)
+	cr := testOVNCentral()
+	cr.Spec.Northbound.PriorityClassName = ptr.To("ovn-critical")
+	cr.Spec.Northbound.NodePlacementSpec = commonv1.NodePlacementSpec{
+		NodeSelector: map[string]string{"ovn-central": "true"},
+		Tolerations:  []corev1.Toleration{{Key: "ovn", Operator: corev1.TolerationOpExists}},
+		Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{},
+		}},
+	}
+
+	nb := raftStatefulSet(cr, northboundDB(cr)).Spec.Template.Spec
+	g.Expect(nb.PriorityClassName).To(Equal("ovn-critical"))
+	g.Expect(nb.NodeSelector).To(Equal(cr.Spec.Northbound.NodeSelector))
+	g.Expect(nb.Tolerations).To(Equal(cr.Spec.Northbound.Tolerations))
+	g.Expect(nb.Affinity).To(Equal(cr.Spec.Northbound.Affinity))
+
+	sb := raftStatefulSet(cr, southboundDB(cr)).Spec.Template.Spec
+	g.Expect(sb.PriorityClassName).To(BeEmpty())
+	g.Expect(sb.NodeSelector).To(BeNil())
+}
+
+// Unset fields render nothing, and an empty priority class renders none, so a
+// StatefulSet whose CR sets neither does not roll.
+func TestRaftStatefulSet_RendersNoneWhenUnset(t *testing.T) {
+	g := NewWithT(t)
+	cr := testOVNCentral()
+	cr.Spec.Southbound.PriorityClassName = ptr.To("")
+
+	for _, db := range []raftDB{northboundDB(cr), southboundDB(cr)} {
+		spec := raftStatefulSet(cr, db).Spec.Template.Spec
+		g.Expect(spec.PriorityClassName).To(BeEmpty(), db.suffix)
+		g.Expect(spec.NodeSelector).To(BeNil(), db.suffix)
+		g.Expect(spec.Tolerations).To(BeNil(), db.suffix)
+		g.Expect(spec.Affinity).To(BeNil(), db.suffix)
+	}
 }

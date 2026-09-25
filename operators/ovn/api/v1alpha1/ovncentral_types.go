@@ -85,6 +85,17 @@ type OVNCentralSpec struct {
 	// +optional
 	Relay *OVNRelaySpec `json:"relay,omitempty"`
 
+	// Jobs sizes, prioritizes and places the pods of the backup CronJob, the
+	// backup init container and the S3 shifter included. A field left unset
+	// falls back to spec.northd.deployment: the priority class, the node
+	// selector, the tolerations, and the node affinity (never the pod
+	// (anti-)affinity). An empty value opts out of the fallback. Unset
+	// resources resolve to the request floor, a 100m CPU and a 256Mi memory
+	// request and no limit, because ovsdb-client snapshots both databases and
+	// its working set grows with the logical model.
+	// +optional
+	Jobs *commonv1.JobSpec `json:"jobs,omitempty"`
+
 	// TLS names the cert-manager issuer the operator requests every OVN
 	// certificate from. It is required: the OVN databases carry the entire
 	// logical network model, so an unauthenticated listener would let any pod
@@ -208,6 +219,21 @@ type OVNDatabaseSpec struct {
 	// LimitRange fills in, and the member pod is rejected.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// PriorityClassName sets the priority class of the Raft member pods. When
+	// unset or empty no priority class is configured and the cluster default
+	// applies.
+	// +optional
+	PriorityClassName *string `json:"priorityClassName,omitempty"`
+
+	// NodePlacementSpec adds nodeSelector, tolerations and affinity, which the
+	// operator renders onto the member pod template verbatim. Each member keeps
+	// its database on a PersistentVolumeClaim, and a node-local volume binds
+	// that claim to one node: a selector, toleration set or affinity that
+	// excludes the node a member's claim is bound to leaves that member
+	// Pending, and the rolling update stops there while the other members keep
+	// serving.
+	commonv1.NodePlacementSpec `json:",inline"`
 }
 
 // OVNStorageSpec sizes a PersistentVolumeClaim. It is shared by the two database
@@ -264,6 +290,10 @@ type OVNRelaySpec struct {
 	// request and limit. Anything else the block sets is kept.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// NodePlacementSpec adds nodeSelector, tolerations and affinity, which the
+	// operator renders onto the relay pod template verbatim.
+	commonv1.NodePlacementSpec `json:",inline"`
 }
 
 // OVNTLSSpec names the cert-manager issuer every OVN certificate is requested

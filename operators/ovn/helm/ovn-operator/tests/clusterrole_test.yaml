@@ -208,6 +208,20 @@ tests:
               - update
               - watch
 
+  - it: should grant read-only on priorityclasses for webhook validation
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - scheduling.k8s.io
+            resources:
+              - priorityclasses
+            verbs:
+              - get
+              - list
+              - watch
+
   - it: should grant full CRUD on leases for leader election
     asserts:
       - contains:

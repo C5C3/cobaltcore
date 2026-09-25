@@ -13,7 +13,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
@@ -348,4 +350,133 @@ func TestOVNCentralDefault_LeavesTheObjectUnchanged(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), obj)).To(gomega.Succeed())
 	g.Expect(obj).To(gomega.Equal(before))
+}
+
+// --- Node placement, priority class and spec.jobs validation ---
+
+// Every OVN central workload that carries a placement rejects a node selector
+// the API server would refuse, at the path of the block that set it.
+func TestOVNCentralValidate_NodePlacementRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		placement func(o *OVNCentral) *commonv1.NodePlacementSpec
+		path      string
+	}{
+		{"northd deployment", func(o *OVNCentral) *commonv1.NodePlacementSpec {
+			return &o.Spec.Northd.Deployment.NodePlacementSpec
+		}, "spec.northd.deployment"},
+		{"relay", func(o *OVNCentral) *commonv1.NodePlacementSpec {
+			o.Spec.Relay = &OVNRelaySpec{Replicas: 1}
+			return &o.Spec.Relay.NodePlacementSpec
+		}, "spec.relay"},
+		{"northbound", func(o *OVNCentral) *commonv1.NodePlacementSpec { return &o.Spec.Northbound.NodePlacementSpec }, "spec.northbound"},
+		{"southbound", func(o *OVNCentral) *commonv1.NodePlacementSpec { return &o.Spec.Southbound.NodePlacementSpec }, "spec.southbound"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			o := validOVNCentral()
+			p := tc.placement(o)
+			p.NodeSelector = map[string]string{"bad key": "x"}
+			p.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpEqual}}
+
+			_, err := (&OVNCentralWebhook{}).ValidateCreate(context.Background(), o)
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.path + ".nodeSelector: Invalid value"))
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.path + ".tolerations[0].operator: Invalid value"))
+		})
+	}
+}
+
+func TestOVNCentralValidate_DatabasePriorityClassNotFound(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &OVNCentralWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+	o := validOVNCentral()
+	o.Spec.Northbound.PriorityClassName = ptr.To("typo")
+
+	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.northbound.priorityClassName: Not found"))
+
+	// Without a reader the lookup is skipped, and an empty class is no lookup.
+	_, err = (&OVNCentralWebhook{}).ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	o.Spec.Northbound.PriorityClassName = ptr.To("")
+	_, err = w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+func TestOVNCentralValidate_JobsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		jobs *commonv1.JobSpec
+		want string
+	}{
+		{
+			name: "unknown priority class",
+			jobs: &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("typo")}},
+			want: "spec.jobs.priorityClassName: Not found",
+		},
+		{
+			name: "memory request above limit",
+			jobs: &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			}}},
+			want: "spec.jobs.resources.requests.memory: Invalid value",
+		},
+		{
+			name: "node selector key",
+			jobs: &commonv1.JobSpec{NodePlacementSpec: commonv1.NodePlacementSpec{NodeSelector: map[string]string{"bad key": "x"}}},
+			want: "spec.jobs.nodeSelector: Invalid value",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &OVNCentralWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+			o := validOVNCentral()
+			o.Spec.Jobs = tc.jobs
+
+			_, err := w.ValidateCreate(context.Background(), o)
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+		})
+	}
+}
+
+// The finalizer removal reconcileDelete issues is an update, and the validating
+// webhook sees it. A priorityClassName admitted earlier can name a PriorityClass
+// deleted since, and rejecting the removal would hold the CR in Terminating. A
+// deleting CR whose spec changes is still validated.
+func TestOVNCentralValidateUpdate_FinalizerRemovalOnADeletingCRSkipsValidation(t *testing.T) {
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+	w := &OVNCentralWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+
+	stale := validOVNCentral()
+	stale.Spec.Southbound.PriorityClassName = ptr.To("deleted-class")
+	stale.Spec.Jobs = &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("deleted-class")}}
+	stale.Finalizers = []string{"openstack.c5c3.io/remote-children"}
+	stale.DeletionTimestamp = ptr.To(metav1.Now())
+
+	released := stale.DeepCopy()
+	released.Finalizers = nil
+	_, err := w.ValidateUpdate(ctx, stale, released)
+	g.Expect(err).NotTo(gomega.HaveOccurred(),
+		"the finalizer removal must pass however the unchanged spec fares against today's rules")
+
+	edited := released.DeepCopy()
+	edited.Spec.Northd.Deployment.Replicas = 3
+	_, err = w.ValidateUpdate(ctx, stale, edited)
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("spec.jobs.priorityClassName: Not found")),
+		"a spec edit on a deleting CR is validated like any other")
+}
+
+func TestOVNCentralValidate_EmptyJobsAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &OVNCentralWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+	o := validOVNCentral()
+	o.Spec.Jobs = &commonv1.JobSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 }

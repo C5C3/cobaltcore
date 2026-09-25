@@ -134,6 +134,7 @@ type OVNChassisReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments;daemonsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
 
 // Reconcile is the main reconciliation loop for the OVNChassis CR. It fetches
 // the CR, drives the teardown of a terminating one, ensures the remote-children

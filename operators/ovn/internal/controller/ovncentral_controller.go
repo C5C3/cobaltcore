@@ -204,6 +204,9 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // The operator issues the OVN client and server certificates through
 // cert-manager and reads back the Secrets they write.
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
+// The validating webhooks look up every priorityClassName the two CR kinds
+// reference, through the uncached API reader that runs as this ServiceAccount.
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
 
 // Reconcile is the main reconciliation loop for the OVNCentral CR. It fetches
 // the CR, drives the teardown of a terminating one, ensures the remote-children

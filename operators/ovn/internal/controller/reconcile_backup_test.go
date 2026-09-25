@@ -15,6 +15,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -29,6 +30,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 	ovnmetrics "github.com/c5c3/cobaltcore/operators/ovn/internal/metrics"
 )
@@ -573,4 +575,50 @@ func TestReconcileBackup_CronJobApplyFailureIsBackupError(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonBackupError))
+}
+
+// The backup pod carries the request floor on every container, the S3 shifter
+// included, and takes the northd Deployment's priority class while spec.jobs
+// leaves it unset.
+func TestBackupCronJob_PodSettings(t *testing.T) {
+	floor := corev1.ResourceRequirements{Requests: corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("100m"),
+		corev1.ResourceMemory: resource.MustParse("256Mi"),
+	}}
+
+	t.Run("snapshot only", func(t *testing.T) {
+		g := NewWithT(t)
+		spec := backupCronJob(pinBackupOVNCentral(), effectiveBackup(pinBackupOVNCentral())).Spec.JobTemplate.Spec.Template.Spec
+
+		g.Expect(spec.InitContainers).To(BeEmpty())
+		g.Expect(spec.Containers).To(HaveLen(1))
+		g.Expect(spec.Containers[0].Name).To(Equal("backup"))
+		g.Expect(spec.Containers[0].Resources).To(Equal(floor))
+		g.Expect(spec.PriorityClassName).To(BeEmpty())
+	})
+
+	t.Run("with s3", func(t *testing.T) {
+		g := NewWithT(t)
+		cr := pinS3BackupOVNCentral()
+		spec := backupCronJob(cr, effectiveBackup(cr)).Spec.JobTemplate.Spec.Template.Spec
+
+		g.Expect(spec.InitContainers).To(HaveLen(1))
+		g.Expect(spec.InitContainers[0].Name).To(Equal("backup"))
+		g.Expect(spec.InitContainers[0].Resources).To(Equal(floor))
+		g.Expect(spec.Containers).To(HaveLen(1))
+		g.Expect(spec.Containers[0].Name).To(Equal("shifter"))
+		g.Expect(spec.Containers[0].Resources).To(Equal(floor))
+	})
+
+	t.Run("northd priority class fallback and spec.jobs override", func(t *testing.T) {
+		g := NewWithT(t)
+		cr := pinBackupOVNCentral()
+		cr.Spec.Northd.Deployment.PriorityClassName = ptr.To("high")
+		spec := backupCronJob(cr, effectiveBackup(cr)).Spec.JobTemplate.Spec.Template.Spec
+		g.Expect(spec.PriorityClassName).To(Equal("high"))
+
+		cr.Spec.Jobs = &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("low")}}
+		spec = backupCronJob(cr, effectiveBackup(cr)).Spec.JobTemplate.Spec.Template.Spec
+		g.Expect(spec.PriorityClassName).To(Equal("low"))
+	})
 }
