@@ -81,7 +81,7 @@ const (
 	computeConfigFragmentKey = "nova-compute.conf"
 	transportURLKey          = "transport_url"
 	passwordKey              = "password"
-	metadataSharedSecretKey  = "metadata_proxy_shared_secret" // #nosec G101 -- Secret data key, not a credential.
+	metadataSharedSecretKey  = novav1alpha1.ComputeConfigMetadataSharedSecretKey
 	cellNameKey              = "cell_name"
 	caBundleKey              = "ca.crt"
 )

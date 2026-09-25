@@ -36,6 +36,13 @@ const ComputeConfigMirrorLabel = "nova.openstack.c5c3.io/compute-config-mirror"
 // #nosec G101 -- Secret name suffix, not a credential.
 const HypervisorOperatorAuthSecretSuffix = "-hypervisor-operator-auth"
 
+// ComputeConfigMetadataSharedSecretKey is the data key of the compute contract
+// that carries the Nova metadata shared secret. The ControlPlane reads it to
+// deliver the value to the NeutronMetadataAgents on its target clusters.
+//
+// #nosec G101 -- Secret data key, not a credential.
+const ComputeConfigMetadataSharedSecretKey = "metadata_proxy_shared_secret"
+
 // NovaComputeNodePhase is where one node stands in the pool's lifecycle.
 // +kubebuilder:validation:Enum=Pending;Active;Draining;Releasing;Conflict
 type NovaComputeNodePhase string
