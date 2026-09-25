@@ -1,0 +1,206 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for sizing a ControlPlane from a cluster-scoped
+# SizingProfile.
+#
+# The suite creates a SizingProfile of base Minimal and a ControlPlane that
+# references it, and asserts on a live cluster that:
+#
+#   - the managed backing services take the resolved sizing: the dedicated
+#     MariaDB runs one replica with Minimal's 1Gi memory limit, and the
+#     dedicated Memcached takes Minimal's 128Mi memory limit;
+#   - the ControlPlane reports SizingReady=True;
+#   - an edit of the profile reaches the Memcached it sizes within 60 s,
+#     through the watch the ControlPlane controller keeps on SizingProfiles;
+#   - deleting the profile turns SizingReady False with reason
+#     SizingProfileNotFound.
+#
+# ── Ephemeral namespace and a per-run profile ────────────────────────────────
+# The suite follows dedicated-backing-services: it runs in chainsaw's ephemeral
+# namespace, since the webhook permits one ControlPlane per namespace, and it
+# asserts the backing-service CRs rather than a live Keystone, which would need
+# OpenBao seeded for that namespace. A SizingProfile is cluster-scoped, so the
+# script names it sizing-$NAMESPACE and deletes it on every exit path, after
+# the ControlPlane that references it.
+#
+# ── Presence guard + single consolidated script ──────────────────────────────
+# Mirrors the sibling c5c3 suites: the stack this test spans is not installed
+# by every E2E cluster, and the suite runs under execution.failFast
+# (tests/e2e/chainsaw-config.yaml). A runtime presence guard probes for the
+# CRDs and exits 0 with a SKIP line when they are absent;
+# E2E_REQUIRE_CONTROLPLANE_STACK=true flips the guard from SKIP to a hard
+# failure. Because chainsaw has no step-level skip, the guard and all
+# assertions live in ONE script step.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: sizing-profile
+spec:
+  # No fixed spec.namespace: chainsaw runs this Test in its own ephemeral
+  # namespace and injects it as $NAMESPACE (see the note above).
+  timeouts:
+    assert: 5m
+    exec: 15m
+  steps:
+  - try:
+    - script:
+        # Budget: every wait is bounded at 180 s or less and the teardown at
+        # 180 s, so 12m leaves headroom on a cold single-node cluster.
+        timeout: 12m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS="${NAMESPACE}"
+          CP_NAME=cp
+          PROFILE="sizing-${NAMESPACE}"
+          DEDICATED_DB=cp-keystone-db
+          DEDICATED_CACHE=cp-keystone-cache
+
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          skip_or_fail() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the ControlPlane"
+              echo "       stack is required on this job, so this is a hard failure."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            exit 0
+          }
+
+          # ── Presence guard ────────────────────────────────────────────────
+          # The watched set of dedicated-backing-services plus the
+          # SizingProfile kind this suite exercises.
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            sizingprofiles.c5c3.io \
+            mariadbs.k8s.mariadb.com \
+            memcacheds.memcached.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            keystoneidentitybackends.keystone.openstack.c5c3.io \
+            horizons.horizon.openstack.c5c3.io \
+            glances.glance.openstack.c5c3.io \
+            glancebackends.glance.openstack.c5c3.io \
+            placements.placement.openstack.c5c3.io \
+            applicationcredentials.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            users.openstack.k-orc.cloud \
+            domains.openstack.k-orc.cloud \
+            regions.openstack.k-orc.cloud \
+            projects.openstack.k-orc.cloud; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            skip_or_fail "required CRDs not present:${missing}; the c5c3-operator needs every CRD its controller watches (plus the MariaDB/Memcached operators) on this cluster."
+          fi
+          echo "OK: every CRD the ControlPlane controller watches is present —"
+          echo "    running the sizing-profile assertions in namespace ${CP_NS}."
+
+          # ── Cleanup on every exit path ────────────────────────────────────
+          # The ControlPlane goes first: it references the profile, and the
+          # profile is cluster-scoped, so the namespace teardown never reaps it.
+          cleanup() {
+            kubectl delete controlplane "${CP_NAME}" -n "${CP_NS}" --ignore-not-found --wait --timeout=180s || true
+            kubectl delete sizingprofile "${PROFILE}" --ignore-not-found --wait --timeout=60s || true
+          }
+          trap cleanup EXIT
+
+          # ── Helpers ───────────────────────────────────────────────────────
+          assert_eq() { # <description> <expected> <actual>
+            if [ "$2" != "$3" ]; then
+              echo "ERROR: $1 — expected '$2', got '$3'"
+              exit 1
+            fi
+            echo "OK: $1 ('$3')"
+          }
+
+          # wait_jsonpath polls a jsonpath of one namespaced object until it
+          # reads the expected value.
+          wait_jsonpath() { # <description> <resource> <name> <namespace> <jsonpath> <expected> <timeoutSeconds>
+            local desc="$1" res="$2" name="$3" ns="$4" path="$5" want="$6" timeout="$7" deadline got
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              got="$(kubectl get "${res}" "${name}" -n "${ns}" -o "jsonpath=${path}" 2>/dev/null || true)"
+              if [ "${got}" = "${want}" ]; then
+                echo "OK: ${desc} ('${got}')"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${desc} — expected '${want}' within ${timeout}s, last '${got:-<none>}'"
+                exit 1
+              fi
+              sleep 5
+            done
+          }
+
+          # ── Apply the SizingProfile, then the ControlPlane ────────────────
+          kubectl apply -f - <<EOF_PROFILE
+          apiVersion: c5c3.io/v1alpha1
+          kind: SizingProfile
+          metadata:
+            name: ${PROFILE}
+          spec:
+            base: Minimal
+          EOF_PROFILE
+          # Chainsaw runs scripts with the test directory as CWD. The fixture
+          # carries no namespace, so it lands in the ephemeral one.
+          sed "s/__PROFILE__/${PROFILE}/" 00-controlplane-cr.yaml | kubectl apply -n "${CP_NS}" -f -
+
+          # ── The defaulting webhook froze the profile's database sizing ────
+          assert_eq "dedicated database replicas materialized from the profile" "1" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o 'jsonpath={.spec.services.keystone.dedicatedBackingServices.database.replicas}')"
+          assert_eq "dedicated database storageSize materialized from the profile" "512Mi" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o 'jsonpath={.spec.services.keystone.dedicatedBackingServices.database.storageSize}')"
+
+          # ── The backing services take the resolved sizing ─────────────────
+          wait_jsonpath "SizingReady is True" controlplane "${CP_NAME}" "${CP_NS}" \
+            "{.status.conditions[?(@.type=='SizingReady')].status}" True 180
+          wait_jsonpath "dedicated MariaDB runs one replica" mariadb "${DEDICATED_DB}" "${CP_NS}" \
+            '{.spec.replicas}' 1 180
+          wait_jsonpath "dedicated MariaDB takes Minimal's memory limit" mariadb "${DEDICATED_DB}" "${CP_NS}" \
+            '{.spec.resources.limits.memory}' 1Gi 30
+          wait_jsonpath "dedicated Memcached takes Minimal's memory limit" memcached "${DEDICATED_CACHE}" "${CP_NS}" \
+            '{.spec.resources.limits.memory}' 128Mi 180
+
+          # ── An edit of the profile reaches the Memcached it sizes ─────────
+          kubectl patch sizingprofile "${PROFILE}" --type=merge \
+            -p '{"spec":{"cache":{"resources":{"limits":{"memory":"192Mi"}}}}}'
+          wait_jsonpath "the profile edit reaches the Memcached" memcached "${DEDICATED_CACHE}" "${CP_NS}" \
+            '{.spec.resources.limits.memory}' 192Mi 60
+
+          # ── Deleting the profile turns SizingReady False ──────────────────
+          kubectl delete sizingprofile "${PROFILE}" --wait --timeout=60s
+          wait_jsonpath "SizingReady reason is SizingProfileNotFound" controlplane "${CP_NAME}" "${CP_NS}" \
+            "{.status.conditions[?(@.type=='SizingReady')].reason}" SizingProfileNotFound 120
+          assert_eq "SizingReady is False" "False" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='SizingReady')].status}")"
+          echo "OK: the ControlPlane follows its SizingProfile and reports its loss."
+    catch:
+    - script:
+        shell: bash
+        content: |
+          echo "=== ControlPlane spec + status.conditions ==="
+          kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== SizingProfile ==="
+          kubectl get sizingprofile "sizing-${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== Dedicated MariaDB and Memcached ==="
+          kubectl get mariadb cp-keystone-db -n "${NAMESPACE}" -o yaml 2>&1 || true
+          kubectl get memcached cp-keystone-cache -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== c5c3-operator logs (last 100 lines) ==="
+          OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
+            -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
+          kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers 2>&1 || true
+          echo "=== Events (last 30) ==="
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

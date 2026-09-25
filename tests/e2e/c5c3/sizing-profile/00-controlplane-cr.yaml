@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane fixture for the sizing-profile E2E test.
+#
+# It carries NO metadata.namespace: chainsaw runs the suite in its own ephemeral
+# namespace and the test applies this CR into it with `kubectl apply -n`, since
+# the ControlPlane webhook permits one ControlPlane per namespace.
+#
+# spec.sizing.profileRef.name is the placeholder __PROFILE__, which the script
+# replaces with the name of the cluster-scoped SizingProfile it creates for
+# this run (sizing-<namespace>), so parallel runs never share a profile.
+#
+# The SHARED block is brownfield and provisions nothing, as in the
+# dedicated-backing-services suite. Keystone takes a dedicated managed database
+# and cache that state no replica count and no volume size: both come from the
+# referenced SizingProfile, whose base is Minimal.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: shared-db.invalid
+      port: 3306
+      database: openstack
+      secretRef:
+        name: shared-db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+        - shared-memcached.invalid:11211
+  services:
+    keystone:
+      dedicatedBackingServices:
+        database:
+          clusterRef:
+            name: cp-keystone-db
+          credentialsMode: Static
+          database: keystone
+          secretRef:
+            name: keystone-db
+        cache:
+          clusterRef:
+            name: cp-keystone-cache
+          backend: dogpile.cache.pymemcache
+  sizing:
+    profileRef:
+      name: __PROFILE__
