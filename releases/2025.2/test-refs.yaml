@@ -14,8 +14,8 @@
 # synchronous 400 that glance ≥ 31.x's DNS-based URI filtering returns for
 # unresolvable hosts; tempest 45.x still demands the legacy async failure.
 tempest: "46.3.0"
-barbican-tempest-plugin: "4.5.0"
-keystone-tempest-plugin: "0.21.0"
+barbican-tempest-plugin: "4.6.0"
+keystone-tempest-plugin: "0.22.0"
 # neutron-tempest-plugin is branchless like tempest and the keystone plugin, but
 # 3.1.0 and later require testtools>=2.8.4 and this release's
 # upper-constraints.txt pins testtools===2.7.2, so 3.0.0 is the newest version
@@ -26,4 +26,4 @@ neutron-tempest-plugin: "3.0.0"
 # cinder-tempest-plugin is branchless like the plugins above, and it needs only
 # pbr, oslo.config, oslo.serialization and tempest>=40.0.0, so nothing in a
 # release's upper-constraints.txt narrows it: both releases pin the same version.
-cinder-tempest-plugin: "1.22.0"
+cinder-tempest-plugin: "1.23.0"
