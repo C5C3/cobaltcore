@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -495,6 +496,34 @@ func TestReconcileNodes_ScriptsConfigMapCarriesSixKeys(t *testing.T) {
 		g.Expect(cm.Data).To(HaveKey(key))
 		g.Expect(cm.Data[key]).To(HavePrefix("#!/bin/bash\n"), key)
 	}
+}
+
+// run-vswitchd.sh pins the revalidator count after the database is
+// initialised and before the daemon starts, so ovs-vswitchd reads the pinned
+// value on its first pass rather than starting with the CPU-derived one.
+func TestReconcileNodes_RunVswitchdPinsTheRevalidatorThreads(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := testOVNChassis()
+	r := newTestOVNChassisReconciler(t, cr, chassisNode(testNodeA, selectedLabels()))
+
+	_, _, err := r.reconcileNodes(ctx, r.Client, cr)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cm corev1.ConfigMap
+	g.Expect(r.Get(ctx, chassisKey(testOVNChassisName+"-chassis-scripts"), &cm)).To(Succeed())
+	script := cm.Data[runVswitchdScriptKey]
+	pin := `ovs-vsctl --no-wait set open . other_config:n-revalidator-threads="${OVS_REVALIDATOR_THREADS}"`
+	g.Expect(script).To(ContainSubstring(pin))
+	g.Expect(script).To(HavePrefix("#!/bin/bash\nset -eu\n"),
+		"set -eu stops the container before the exec when the init or the pin fails")
+
+	initAt := strings.Index(script, "ovs-vsctl --no-wait init")
+	pinAt := strings.Index(script, pin)
+	execAt := strings.Index(script, "exec ovs-vswitchd")
+	g.Expect(initAt).To(BeNumerically(">=", 0))
+	g.Expect(pinAt).To(BeNumerically(">", initAt), "the pin needs the initialised Open_vSwitch row")
+	g.Expect(execAt).To(BeNumerically(">", pinAt), "the daemon must start with the pinned count")
 }
 
 // ovsdb-server runs as the unprivileged openstack user and locks

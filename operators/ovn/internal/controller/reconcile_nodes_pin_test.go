@@ -153,6 +153,9 @@ const pinChassisScriptsConfigMapGolden = `data:
     set -eu
     until ovs-vsctl --timeout=5 --no-wait show >/dev/null 2>&1; do sleep 1; done
     ovs-vsctl --no-wait init
+    if [ -n "${OVS_REVALIDATOR_THREADS:-}" ]; then
+      ovs-vsctl --no-wait set open . other_config:n-revalidator-threads="${OVS_REVALIDATOR_THREADS}"
+    fi
     exec ovs-vswitchd unix:/run/openvswitch/db.sock --pidfile=/run/openvswitch/ovs-vswitchd.pid --unixctl=/run/openvswitch/ovs-vswitchd.ctl
 metadata:
   labels:

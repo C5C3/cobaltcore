@@ -18,6 +18,10 @@ import (
 // the 63-character cap Kubernetes puts on an object name.
 const MaxOVNChassisNameLength = 42
 
+// DefaultRevalidatorThreads is the ovs-vswitchd revalidator thread count
+// rendered when spec.ovs.revalidatorThreads is unset.
+const DefaultRevalidatorThreads int32 = 2
+
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:path=ovnchassis
 // +kubebuilder:subresource:status
@@ -141,11 +145,12 @@ type OVNChassisSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	RemoteProbeIntervalMs int32 `json:"remoteProbeIntervalMs,omitempty"`
 
-	// OVS tunes the ovs-vswitchd container. When nil the operator renders no
-	// requests or limits for the container. The local ovsdb-server container
-	// beside it takes none from any field.
+	// OVS tunes the ovs-vswitchd container: its resources and its revalidator
+	// thread count. When nil the operator renders no requests or limits for the
+	// container and pins DefaultRevalidatorThreads revalidators. The local
+	// ovsdb-server container beside it takes none from any field.
 	// +optional
-	OVS *OVNChassisContainerSpec `json:"ovs,omitempty"`
+	OVS *OVNChassisOVSSpec `json:"ovs,omitempty"`
 
 	// Controller tunes the ovn-controller container. When nil the operator
 	// renders no requests or limits for the container.
@@ -213,6 +218,25 @@ type OVNChassisUpdateStrategy struct {
 	// effective. When nil the operator renders 1.
 	// +optional
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
+}
+
+// OVNChassisOVSSpec tunes the ovs-vswitchd container of the OVS DaemonSet.
+type OVNChassisOVSSpec struct {
+	// OVNChassisContainerSpec carries the container's resources.
+	OVNChassisContainerSpec `json:",inline"`
+
+	// RevalidatorThreads is the number of revalidator threads ovs-vswitchd
+	// runs. It defaults to 2 and is set as other_config:n-revalidator-threads
+	// in the node's Open_vSwitch table before the daemon starts. Unset, OVS
+	// starts one revalidator per four handler threads plus one, which is one
+	// per four CPUs plus one, so the pod's footprint would follow the node it
+	// lands on. The handler threads cannot be pinned: under the kernel
+	// datapath's per-CPU upcall dispatch OVS starts one per core in the
+	// process's CPU affinity and overrides other_config:n-handler-threads, so
+	// only a cpuset bounds them.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	RevalidatorThreads *int32 `json:"revalidatorThreads,omitempty"`
 }
 
 // OVNChassisContainerSpec tunes one chassis container: ovs-vswitchd in the OVS

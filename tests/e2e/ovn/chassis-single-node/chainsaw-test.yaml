@@ -13,6 +13,9 @@
 #     the aggregate Ready=True with reason AllReady
 #   - status.nodes carries the node with the UUID system-id the chassis
 #     deletion Job would later address
+#   - ovs-vswitchd runs the pinned revalidator count: the Open_vSwitch table
+#     carries other_config:n-revalidator-threads "2", and the daemon runs
+#     exactly two revalidator threads
 #   - ovn-controller really registered: the Southbound database holds one
 #     Chassis row for the node and one Geneve tunnel endpoint for it
 #
@@ -259,7 +262,42 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 6: Assert the chassis registered in the Southbound database ───
+  # ── Step 6: Assert ovs-vswitchd runs the pinned revalidator count ─────
+  # run-vswitchd.sh writes OVS_REVALIDATOR_THREADS into the Open_vSwitch table
+  # before the daemon starts. On a 4-CPU runner OVS would also start two
+  # revalidators unpinned (one per four handlers, plus one), so the table value
+  # is what proves the pin, and the thread count proves ovs-vswitchd applied
+  # it. The daemon logs the applied count at INFO ("setting
+  # n-revalidator-threads to <m>"), which the catch prints.
+  - try:
+    - script:
+        content: |
+          set -eu
+          POD="$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=ovn-chassis,app.kubernetes.io/component=ovs -o name)"
+          test -n "$POD"
+          PINNED="$(kubectl exec -n "$NAMESPACE" "$POD" -c ovs-vswitchd -- \
+            ovs-vsctl get open . other_config:n-revalidator-threads)"
+          if [ "$PINNED" != '"2"' ]; then
+            echo "FAIL: other_config:n-revalidator-threads is ${PINNED}, want \"2\""
+            exit 1
+          fi
+          THREADS="$(kubectl exec -n "$NAMESPACE" "$POD" -c ovs-vswitchd -- bash -c \
+            'cat /proc/"$(cat /run/openvswitch/ovs-vswitchd.pid)"/task/*/comm | grep -c "^revalidator" || true')"
+          if [ "$THREADS" != 2 ]; then
+            echo "FAIL: ovs-vswitchd runs ${THREADS} revalidator threads, want 2"
+            exit 1
+          fi
+          echo "OK: n-revalidator-threads ${PINNED}, ${THREADS} revalidator threads"
+    catch:
+    - script:
+        content: |
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-chassis,app.kubernetes.io/component=ovs -o name 2>/dev/null); do
+            echo "--- $pod ovs-vswitchd ---"
+            kubectl logs -n $NAMESPACE "$pod" -c ovs-vswitchd --tail=80 2>&1 | grep -E "n-revalidator-threads|n-handler-threads" || true
+            kubectl exec -n $NAMESPACE "$pod" -c ovs-vswitchd -- ovs-vsctl get open . other_config 2>&1 || true
+          done
+  # ── Step 7: Assert the chassis registered in the Southbound database ───
   # The probe runs the OVN client tools inside the OVN image, with the client
   # certificate the OVNCentral published. It reads its verdict from the pod log
   # after a terminal phase rather than from an attached stream: `kubectl run -i`

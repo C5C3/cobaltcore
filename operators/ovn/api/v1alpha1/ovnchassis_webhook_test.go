@@ -63,9 +63,9 @@ func TestOVNChassisValidateCreate_AcceptedShapes(t *testing.T) {
 				o.Spec.EncapType = "vxlan"
 				o.Spec.UpdateStrategy = OVNChassisUpdateStrategy{Type: "OnDelete"}
 				o.Spec.RemoteProbeIntervalMs = 0
-				o.Spec.OVS = &OVNChassisContainerSpec{Resources: &corev1.ResourceRequirements{
+				o.Spec.OVS = &OVNChassisOVSSpec{OVNChassisContainerSpec: OVNChassisContainerSpec{Resources: &corev1.ResourceRequirements{
 					Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
-				}}
+				}}}
 				o.Spec.Controller = &OVNChassisContainerSpec{Resources: &corev1.ResourceRequirements{
 					Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
 				}}
@@ -79,6 +79,18 @@ func TestOVNChassisValidateCreate_AcceptedShapes(t *testing.T) {
 					Type:           "RollingUpdate",
 					MaxUnavailable: ptr.To(intstr.FromString("10%")),
 				}
+			},
+		},
+		{
+			name: "one revalidator thread",
+			mutate: func(o *OVNChassis) {
+				o.Spec.OVS = &OVNChassisOVSSpec{RevalidatorThreads: ptr.To(int32(1))}
+			},
+		},
+		{
+			name: "ovs block without a revalidator count",
+			mutate: func(o *OVNChassis) {
+				o.Spec.OVS = &OVNChassisOVSSpec{RevalidatorThreads: nil}
 			},
 		},
 	}
@@ -217,6 +229,13 @@ func TestOVNChassisValidateCreate_Rejections(t *testing.T) {
 				o.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{}
 			},
 			wantMsg: "target cluster name must be set",
+		},
+		{
+			name: "revalidatorThreads is zero",
+			mutate: func(o *OVNChassis) {
+				o.Spec.OVS = &OVNChassisOVSSpec{RevalidatorThreads: ptr.To(int32(0))}
+			},
+			wantMsg: "spec.ovs.revalidatorThreads: Invalid value: 0: revalidatorThreads must be at least 1",
 		},
 	}
 

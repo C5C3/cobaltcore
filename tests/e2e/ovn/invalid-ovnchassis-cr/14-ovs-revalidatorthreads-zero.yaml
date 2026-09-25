@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.ovs.revalidatorThreads of 0 violates the Minimum=1 marker: ovs-vswitchd
+# needs at least one revalidator to expire datapath flows. The schema answers
+# before the validating webhook, which carries the same rule as its twin.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  ovs:
+    revalidatorThreads: 0

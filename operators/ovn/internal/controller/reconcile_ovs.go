@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -161,7 +162,7 @@ func buildOVSDaemonSet(cr *ovnv1alpha1.OVNChassis) *appsv1.DaemonSet {
 		SecurityContext: prepare,
 		// The init container finishes before ovs-vswitchd starts, so the
 		// pod's effective request stays the larger of the two.
-		Resources: chassisResources(cr.Spec.OVS),
+		Resources: chassisResources(ovsContainerSpec(cr)),
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: modulesVolumeName, MountPath: modulesDir, ReadOnly: true},
 			{Name: runOVSVolumeName, MountPath: ovsRunDir},
@@ -214,8 +215,14 @@ func buildOVSDaemonSet(cr *ovnv1alpha1.OVNChassis) *appsv1.DaemonSet {
 			// polling threads, and without the capability every start logs the
 			// failure and runs at ordinary priority.
 			SecurityContext: rootCapabilitySecurityContext("NET_ADMIN", "SYS_NICE"),
-			Resources:       chassisResources(cr.Spec.OVS),
+			Resources:       chassisResources(ovsContainerSpec(cr)),
 			Command:         []string{"/bin/bash", path.Join(chassisScriptDir, runVswitchdScriptKey)},
+			// run-vswitchd.sh writes the count into the Open_vSwitch table before
+			// the daemon starts; see runVswitchdScript.
+			Env: []corev1.EnvVar{{
+				Name:  "OVS_REVALIDATOR_THREADS",
+				Value: strconv.Itoa(int(effectiveRevalidatorThreads(cr))),
+			}},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{
 					Exec: &corev1.ExecAction{
@@ -352,6 +359,26 @@ func chassisResources(spec *ovnv1alpha1.OVNChassisContainerSpec) corev1.Resource
 		return corev1.ResourceRequirements{}
 	}
 	return *spec.Resources
+}
+
+// ovsContainerSpec returns the container block of spec.ovs, or nil when the
+// block is unset, so chassisResources renders the same for a nil block as for a
+// block that names no resources.
+func ovsContainerSpec(cr *ovnv1alpha1.OVNChassis) *ovnv1alpha1.OVNChassisContainerSpec {
+	if cr.Spec.OVS == nil {
+		return nil
+	}
+	return &cr.Spec.OVS.OVNChassisContainerSpec
+}
+
+// effectiveRevalidatorThreads resolves spec.ovs.revalidatorThreads, falling
+// back to DefaultRevalidatorThreads for an unset block or field. The default is
+// resolved at render time and never written into the CR.
+func effectiveRevalidatorThreads(cr *ovnv1alpha1.OVNChassis) int32 {
+	if cr.Spec.OVS == nil || cr.Spec.OVS.RevalidatorThreads == nil {
+		return ovnv1alpha1.DefaultRevalidatorThreads
+	}
+	return *cr.Spec.OVS.RevalidatorThreads
 }
 
 // rootCapabilitySecurityContext is the posture of a container that programs the

@@ -12,9 +12,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -199,5 +201,79 @@ func TestBuildOVSDaemonSet_DatapathContainersJoinTheDatabaseGroup(t *testing.T) 
 		g.Expect(c.SecurityContext.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")), c.Name)
 		g.Expect(c.SecurityContext.Capabilities.Add).NotTo(
 			ContainElement(corev1.Capability("DAC_OVERRIDE")), c.Name)
+	}
+}
+
+// ovsContainer returns the named container or init container of the OVS
+// DaemonSet's pod template.
+func ovsContainer(t *testing.T, ds *appsv1.DaemonSet, name string) corev1.Container {
+	t.Helper()
+	spec := ds.Spec.Template.Spec
+	for _, c := range append(spec.InitContainers, spec.Containers...) {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("container %q not rendered", name)
+	return corev1.Container{}
+}
+
+// ovs-vswitchd receives the revalidator count it pins through its
+// environment. An unset block or field renders the default of 2, so the count
+// no longer follows the node's CPUs.
+func TestBuildOVSDaemonSet_PinsTheRevalidatorThreads(t *testing.T) {
+	resources := &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+	}
+	for _, tc := range []struct {
+		name string
+		ovs  *ovnv1alpha1.OVNChassisOVSSpec
+		want string
+	}{
+		{name: "nil block", ovs: nil, want: "2"},
+		{
+			name: "block with only resources",
+			ovs:  &ovnv1alpha1.OVNChassisOVSSpec{OVNChassisContainerSpec: ovnv1alpha1.OVNChassisContainerSpec{Resources: resources}},
+			want: "2",
+		},
+		{name: "unset field", ovs: &ovnv1alpha1.OVNChassisOVSSpec{RevalidatorThreads: nil}, want: "2"},
+		{name: "explicit count", ovs: &ovnv1alpha1.OVNChassisOVSSpec{RevalidatorThreads: ptr.To(int32(8))}, want: "8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			cr := testOVNChassis()
+			cr.Spec.OVS = tc.ovs
+
+			c := ovsContainer(t, buildOVSDaemonSet(cr), "ovs-vswitchd")
+
+			g.Expect(c.Env).To(Equal([]corev1.EnvVar{{Name: "OVS_REVALIDATOR_THREADS", Value: tc.want}}))
+			g.Expect(cr.Spec.OVS).To(Equal(tc.ovs), "the default must not be written into the CR")
+		})
+	}
+}
+
+// spec.ovs.resources reaches both containers it tunes, host-prepare and
+// ovs-vswitchd, and an unset block renders none on either.
+func TestBuildOVSDaemonSet_OVSResourcesReachBothContainers(t *testing.T) {
+	g := NewWithT(t)
+	resources := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("200m")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+	}
+
+	cr := testOVNChassis()
+	cr.Spec.OVS = &ovnv1alpha1.OVNChassisOVSSpec{
+		OVNChassisContainerSpec: ovnv1alpha1.OVNChassisContainerSpec{Resources: &resources},
+		RevalidatorThreads:      ptr.To(int32(4)),
+	}
+	ds := buildOVSDaemonSet(cr)
+	for _, name := range []string{"host-prepare", "ovs-vswitchd"} {
+		g.Expect(ovsContainer(t, ds, name).Resources).To(Equal(resources), name)
+	}
+
+	cr.Spec.OVS = nil
+	ds = buildOVSDaemonSet(cr)
+	for _, name := range []string{"host-prepare", "ovs-vswitchd"} {
+		g.Expect(ovsContainer(t, ds, name).Resources).To(Equal(corev1.ResourceRequirements{}), name)
 	}
 }

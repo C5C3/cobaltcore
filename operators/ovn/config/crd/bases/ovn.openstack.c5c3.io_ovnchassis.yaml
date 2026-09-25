@@ -355,9 +355,10 @@ spec:
                 type: object
               ovs:
                 description: |-
-                  OVS tunes the ovs-vswitchd container. When nil the operator renders no
-                  requests or limits for the container. The local ovsdb-server container
-                  beside it takes none from any field.
+                  OVS tunes the ovs-vswitchd container: its resources and its revalidator
+                  thread count. When nil the operator renders no requests or limits for the
+                  container and pins DefaultRevalidatorThreads revalidators. The local
+                  ovsdb-server container beside it takes none from any field.
                 properties:
                   resources:
                     description: |-
@@ -424,6 +425,20 @@ spec:
                           More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                         type: object
                     type: object
+                  revalidatorThreads:
+                    description: |-
+                      RevalidatorThreads is the number of revalidator threads ovs-vswitchd
+                      runs. It defaults to 2 and is set as other_config:n-revalidator-threads
+                      in the node's Open_vSwitch table before the daemon starts. Unset, OVS
+                      starts one revalidator per four handler threads plus one, which is one
+                      per four CPUs plus one, so the pod's footprint would follow the node it
+                      lands on. The handler threads cannot be pinned: under the kernel
+                      datapath's per-CPU upcall dispatch OVS starts one per core in the
+                      process's CPU affinity and overrides other_config:n-handler-threads, so
+                      only a cpuset bounds them.
+                    format: int32
+                    minimum: 1
+                    type: integer
                 type: object
               remoteProbeIntervalMs:
                 default: 60000

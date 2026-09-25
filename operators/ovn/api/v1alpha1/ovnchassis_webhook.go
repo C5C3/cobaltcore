@@ -169,6 +169,15 @@ func (w *OVNChassisWebhook) validate(ctx context.Context, c *OVNChassis, extra f
 		))
 	}
 
+	// Defense-in-depth mirror of the +kubebuilder:validation:Minimum=1 marker:
+	// ovs-vswitchd needs at least one revalidator to expire datapath flows.
+	if c.Spec.OVS != nil && c.Spec.OVS.RevalidatorThreads != nil && *c.Spec.OVS.RevalidatorThreads < 1 {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("ovs", "revalidatorThreads"), *c.Spec.OVS.RevalidatorThreads,
+			"revalidatorThreads must be at least 1",
+		))
+	}
+
 	allErrs = append(allErrs, extra...)
 
 	if len(allErrs) > 0 {

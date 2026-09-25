@@ -243,7 +243,7 @@ func TestChassisInitContainers_RenderTheirContainersResources(t *testing.T) {
 	ovs := corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("200m")}}
 	controller := corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}}
 	set := testOVNChassis()
-	set.Spec.OVS = &ovnv1alpha1.OVNChassisContainerSpec{Resources: &ovs}
+	set.Spec.OVS = &ovnv1alpha1.OVNChassisOVSSpec{OVNChassisContainerSpec: ovnv1alpha1.OVNChassisContainerSpec{Resources: &ovs}}
 	set.Spec.Controller = &ovnv1alpha1.OVNChassisContainerSpec{Resources: &controller}
 	g.Expect(initResources(buildOVSDaemonSet(set), "host-prepare")).To(Equal(ovs))
 	g.Expect(initResources(buildControllerDaemonSet(set, testResolvedCentral()), "apply-node")).To(Equal(controller))
