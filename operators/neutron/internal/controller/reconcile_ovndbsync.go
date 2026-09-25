@@ -235,12 +235,17 @@ func newestTerminalJob(cronJob *batchv1.CronJob, jobs []batchv1.Job) *batchv1.Jo
 // reports what the Neutron database and the OVN Northbound database disagree on;
 // in repair mode it deletes the Northbound objects Neutron does not know about
 // and creates the ones it is missing.
+//
+// The pod resolves spec.jobs with the request floor rather than the Job
+// defaults: the utility loads both logical models, so its working set grows
+// with them, and a default memory limit would OOM-kill the run once they
+// outgrew it.
 func buildOVNDBSyncCronJob(neutron *neutronv1alpha1.Neutron, configMapName string) *batchv1.CronJob {
 	sync := effectiveOVNDBSync(neutron.Spec.OVNDBSync)
 	volumes, mounts := neutronWorkloadVolumes(neutron, configMapName)
 	labels := componentLabels(neutron, componentOVNDBSync)
 
-	return &batchv1.CronJob{
+	cronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      ovnDBSyncCronJobName(neutron),
 			Namespace: neutron.Namespace,
@@ -290,4 +295,7 @@ func buildOVNDBSyncCronJob(neutron *neutronv1alpha1.Neutron, configMapName strin
 			},
 		},
 	}
+	job.ResolvePodSettingsWithRequestFloor(neutron.Spec.Jobs, &neutron.Spec.Deployment).
+		Apply(&cronJob.Spec.JobTemplate.Spec.Template.Spec)
+	return cronJob
 }

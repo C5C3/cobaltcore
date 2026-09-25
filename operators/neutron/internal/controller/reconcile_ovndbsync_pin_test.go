@@ -70,7 +70,10 @@ spec:
                   name: neutron-transport-url
             image: ghcr.io/c5c3/neutron:2026.1
             name: ovn-db-sync
-            resources: {}
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
               capabilities:
@@ -160,7 +163,10 @@ spec:
                   name: neutron-transport-url
             image: ghcr.io/c5c3/neutron:2026.1
             name: ovn-db-sync
-            resources: {}
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
               capabilities:
@@ -250,7 +256,10 @@ spec:
                   name: neutron-transport-url
             image: ghcr.io/c5c3/neutron:2026.1
             name: ovn-db-sync
-            resources: {}
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
               capabilities:
