@@ -2,19 +2,21 @@ apiVersion: v2
 name: neutron-operator
 description: A Helm chart for deploying the Neutron network service and metadata agent operator
 type: application
-version: 0.2.0
+version: 0.3.0
 appVersion: "0.1.0"
 # The shared naming/label helpers and the Deployment skeleton live in the
 # operator-library library chart so they are defined once for all operator
 # charts. It is vendored into charts/ at package time (helm dependency build).
 dependencies:
   - name: operator-library
-    version: 0.8.0
+    version: 0.9.0
     repository: "file://../../../shared/helm/operator-library"
 # Helm validates values against values.schema.json automatically.
 annotations:
   artifacthub.io/prerelease: "true"
   artifacthub.io/changes: |
+    - kind: added
+      description: nodeSelector, tolerations and priorityClassName values place and prioritize the operator pods (operator-library 0.9.0)
     - kind: changed
       description: Shared NetworkPolicy, ClusterRole and Role templates moved into the operator-library chart (0.8.0); chart-specific behaviour goes through the operator-library.chart.* hooks
     - kind: changed
