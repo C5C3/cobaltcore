@@ -41,6 +41,22 @@ func (r *ControlPlaneReconciler) referencedSizingProfile(
 	return profile, nil
 }
 
+// effectiveSizing returns the sizing cp projects: its built-in base profile,
+// overlaid by the SizingProfile it references, overlaid by its own
+// spec.sizing values (c5c3v1alpha1.ResolveSizing). A built-in profile needs
+// no API read. Every consumer calls it for itself rather than reading a value
+// the Sizing step stored, because the members of a parallel group keep only
+// the conditions and metadata they write.
+func (r *ControlPlaneReconciler) effectiveSizing(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) (c5c3v1alpha1.SizingSpec, error) {
+	profile, err := r.referencedSizingProfile(ctx, cp)
+	if err != nil {
+		return c5c3v1alpha1.SizingSpec{}, err
+	}
+	return c5c3v1alpha1.ResolveSizing(cp, profile), nil
+}
+
 // reconcileSizing resolves the ControlPlane's sizing and reports it in
 // SizingReady. It runs first in the pipeline: every later step projects a
 // child from the resolved sizing, so a sizing that cannot be resolved stops

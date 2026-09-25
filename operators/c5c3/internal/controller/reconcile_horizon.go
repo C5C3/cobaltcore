@@ -189,6 +189,15 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		},
 	}
 
+	sizing, err := r.effectiveSizing(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving sizing: %w", err)
+	}
+	var hzAPI *c5c3v1alpha1.HorizonAPISizingSpec
+	if sizing.Horizon != nil {
+		hzAPI = sizing.Horizon.API
+	}
+
 	// This projection is deliberately read-modify-write (controllerutil.
 	// CreateOrUpdate) rather than the shared Server-Side Apply ProjectChild: the
 	// mutate closure READS the fetched child's spec.websso/spec.multiDomain and
@@ -249,17 +258,24 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		// tears the HTTPRoute down.
 		horizon.Spec.Gateway = cp.Spec.Services.Horizon.Gateway.DeepCopy()
 
-		// Resolve replicas to the shared operator default, then let an override
-		// win. Assigning unconditionally — unlike a set-only-when-present branch
-		// — means clearing spec.services.horizon.replicas reverts the child to
-		// the default instead of leaving the previously-projected value pinned
-		// on the fetched child (a lost update). commonv1.DefaultReplicas is the
-		// same constant the Horizon defaulting webhook applies, so the projected
-		// value matches the webhook-defaulted value and no reconcile churn results.
-		horizon.Spec.Deployment.Replicas = commonv1.DefaultReplicas
-		if cp.Spec.Services.Horizon.Replicas != nil {
-			horizon.Spec.Deployment.Replicas = *cp.Spec.Services.Horizon.Replicas
+		// Project the resolved spec.sizing.horizon.api onto the dashboard
+		// Deployment and the autoscaling block. Every field is assigned on the
+		// fetched child whether set or not, so clearing a value on the
+		// ControlPlane reverts the child instead of leaving the previously
+		// projected value pinned (a lost update). The replica fallback,
+		// commonv1.DefaultReplicas, is the constant the Horizon defaulting
+		// webhook applies, so no reconcile churn results. What stays unprojected
+		// is the child's own: network policy, logging, the graceful-termination
+		// timings, the rollout strategy and affinity.
+		var deployment *c5c3v1alpha1.DeploymentSizingSpec
+		var autoscaling *commonv1.AutoscalingSpec
+		if hzAPI != nil {
+			deployment = &hzAPI.DeploymentSizingSpec
+			autoscaling = hzAPI.Autoscaling
 		}
+		projectDeployment(&horizon.Spec.Deployment, sizing.PodPlacementSpec, deployment,
+			commonv1.DefaultReplicas, horizonv1alpha1.APIPodSelector(horizon.Name))
+		horizon.Spec.Autoscaling = autoscaling.DeepCopy()
 
 		// Project the dashboard's extraConfig verbatim. Horizon is flat Django
 		// settings, not INI, so the global INI block never applies — only the

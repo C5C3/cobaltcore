@@ -1299,13 +1299,13 @@ func TestReconcileGlance_ReplicasDefaultAndOverride(t *testing.T) {
 
 	// Override wins, and clearing it reverts to the default (assigned
 	// unconditionally, not left pinned).
-	cp.Spec.Services.Glance.Replicas = ptr.To(int32(5))
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Glance: &c5c3v1alpha1.APIServiceSizingSpec{API: apiReplicas(5)}})
 	_, err = r.reconcileGlance(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	gl = getProjectedGlance(t, r.Client, cp)
 	g.Expect(gl.Spec.Deployment.Replicas).To(Equal(int32(5)))
 
-	cp.Spec.Services.Glance.Replicas = nil
+	cp.Spec.Sizing = nil
 	_, err = r.reconcileGlance(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	gl = getProjectedGlance(t, r.Client, cp)
@@ -2340,4 +2340,52 @@ func TestReconcileGlance_MirrorStoreLookupFailurePropagates(t *testing.T) {
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+}
+
+// TestReconcileGlance_NoSizingProjectsTodaysChild pins the no-roll guarantee.
+func TestReconcileGlance_NoSizingProjectsTodaysChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	gl := getProjectedGlance(t, r.Client, cp)
+	expectUnsized(g, gl.Spec.Deployment, commonv1.DefaultReplicas)
+	g.Expect(gl.Spec.APIServer).To(BeNil())
+	g.Expect(gl.Spec.Autoscaling).To(BeNil())
+	g.Expect(gl.Spec.Jobs).To(BeNil())
+}
+
+// TestReconcileGlance_SizingProjectsByLaunchMode projects Minimal: from 2026.1
+// the process and thread counts land in spec.apiServer.uwsgi, below it the
+// process count lands in spec.apiServer.workers and no uwsgi block is written.
+func TestReconcileGlance_SizingProjectsByLaunchMode(t *testing.T) {
+	for _, tc := range []struct {
+		release string
+		want    *glancev1alpha1.APIServerSpec
+	}{
+		{release: "2026.1", want: &glancev1alpha1.APIServerSpec{UWSGI: &commonv1.UWSGISpec{Processes: 1, Threads: 1}}},
+		{release: "2025.2", want: &glancev1alpha1.APIServerSpec{Workers: ptr.To[int32](1)}},
+	} {
+		t.Run(tc.release, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cp.Spec.OpenStackRelease = tc.release
+			api := apiReplicas(2)
+			api.SpreadConstraints = hostSpread()
+			cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{Glance: &c5c3v1alpha1.APIServiceSizingSpec{API: api}})
+			r := newGlanceTestReconciler(t, cp)
+
+			_, err := r.reconcileGlance(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+			gl := getProjectedGlance(t, r.Client, cp)
+			g.Expect(gl.Spec.APIServer).To(Equal(tc.want))
+			g.Expect(gl.Spec.Deployment.Replicas).To(Equal(int32(2)))
+			g.Expect(gl.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+			g.Expect(gl.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
+				Equal(glancev1alpha1.APIPodSelector(gl.Name)))
+			g.Expect(gl.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
+		})
+	}
 }

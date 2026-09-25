@@ -987,7 +987,7 @@ func TestReconcilePlacement_GatewayNilClears(t *testing.T) {
 func TestReconcilePlacement_ReplicasOverrideAndRevert(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := placementControlPlane()
-	cp.Spec.Services.Placement.Replicas = ptr.To(int32(5))
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Placement: &c5c3v1alpha1.APIServiceSizingSpec{API: apiReplicas(5)}})
 	r := newPlacementTestReconciler(t, cp)
 	ctx := context.Background()
 
@@ -995,7 +995,7 @@ func TestReconcilePlacement_ReplicasOverrideAndRevert(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedPlacement(t, r.Client, cp).Spec.Deployment.Replicas).To(Equal(int32(5)))
 
-	cp.Spec.Services.Placement.Replicas = nil
+	cp.Spec.Sizing = nil
 	_, err = r.reconcilePlacement(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedPlacement(t, r.Client, cp).Spec.Deployment.Replicas).To(Equal(commonv1.DefaultReplicas),
@@ -1547,4 +1547,57 @@ func TestReconcilePlacement_MirrorStoreLookupFailurePropagates(t *testing.T) {
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+}
+
+// TestReconcilePlacement_NoSizingProjectsTodaysChild pins the no-roll
+// guarantee.
+func TestReconcilePlacement_NoSizingProjectsTodaysChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	r := newPlacementTestReconciler(t, cp)
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	pl := getProjectedPlacement(t, r.Client, cp)
+	expectUnsized(g, pl.Spec.Deployment, commonv1.DefaultReplicas)
+	g.Expect(pl.Spec.APIServer).To(BeNil())
+	g.Expect(pl.Spec.Autoscaling).To(BeNil())
+	g.Expect(pl.Spec.Jobs).To(BeNil())
+}
+
+// TestReconcilePlacement_SizingProjectsAndClears projects Minimal plus
+// overrides onto the child, then clears spec.sizing and finds every value
+// reverted.
+func TestReconcilePlacement_SizingProjectsAndClears(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	api := apiReplicas(2)
+	api.SpreadConstraints = hostSpread()
+	api.Autoscaling = &commonv1.AutoscalingSpec{MaxReplicas: 6, TargetCPUUtilization: ptr.To[int32](80)}
+	cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{Placement: &c5c3v1alpha1.APIServiceSizingSpec{
+		API:  api,
+		Jobs: &c5c3v1alpha1.JobSizingSpec{PriorityClassName: ptr.To("batch")},
+	}})
+	r := newPlacementTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcilePlacement(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	pl := getProjectedPlacement(t, r.Client, cp)
+	g.Expect(pl.Spec.Deployment.Replicas).To(Equal(int32(2)))
+	g.Expect(pl.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(pl.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
+		Equal(placementv1alpha1.APIPodSelector(pl.Name)))
+	g.Expect(pl.Spec.APIServer).To(Equal(&placementv1alpha1.APIServerSpec{UWSGI: &commonv1.UWSGISpec{Processes: 1, Threads: 1}}))
+	g.Expect(pl.Spec.Autoscaling.MaxReplicas).To(Equal(int32(6)))
+	g.Expect(pl.Spec.Jobs.PriorityClassName).To(Equal(ptr.To("batch")))
+
+	cp.Spec.Sizing = nil
+	_, err = r.reconcilePlacement(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	pl = getProjectedPlacement(t, r.Client, cp)
+	expectUnsized(g, pl.Spec.Deployment, commonv1.DefaultReplicas)
+	g.Expect(pl.Spec.APIServer).To(BeNil())
+	g.Expect(pl.Spec.Autoscaling).To(BeNil())
+	g.Expect(pl.Spec.Jobs).To(BeNil())
 }

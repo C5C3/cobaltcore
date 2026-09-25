@@ -481,18 +481,30 @@ func (r *ControlPlaneReconciler) reconcileBarbican(ctx context.Context, cp *c5c3
 	// down.
 	barbican.Spec.Gateway = cp.Spec.Services.Barbican.Gateway.DeepCopy()
 
-	// Resolve replicas to the shared operator default, then let an override win.
-	// Assigning unconditionally means clearing services.barbican.replicas reverts
-	// the child to the default instead of leaving the previously-projected value
-	// pinned on the fetched child.
-	barbican.Spec.Deployment.Replicas = commonv1.DefaultReplicas
-	if cp.Spec.Services.Barbican.Replicas != nil {
-		barbican.Spec.Deployment.Replicas = *cp.Spec.Services.Barbican.Replicas
+	// Project the resolved spec.sizing.barbican onto the API Deployment, the
+	// uWSGI and autoscaling blocks and the Job pods. spec.apiServer is set only
+	// when the sizing names a process or thread count, so the child-side uWSGI
+	// defaults apply otherwise.
+	sizing, err := r.effectiveSizing(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving sizing: %w", err)
 	}
+	var bnSizing c5c3v1alpha1.APIServiceSizingSpec
+	if sizing.Barbican != nil {
+		bnSizing = *sizing.Barbican
+	}
+	uwsgi, autoscaling := projectAPI(&barbican.Spec.Deployment, sizing.PodPlacementSpec, bnSizing.API,
+		barbicanv1alpha1.APIPodSelector(barbican.Name))
+	if uwsgi != nil {
+		barbican.Spec.APIServer = &barbicanv1alpha1.APIServerSpec{UWSGI: uwsgi}
+	}
+	barbican.Spec.Autoscaling = autoscaling
+	barbican.Spec.Jobs = projectJobs(bnSizing.Jobs)
 
-	// spec.apiServer and spec.dbClean are deliberately NOT set: the child-side uWSGI
-	// parameters and the clean-up retention/schedule the barbican-operator resolves
-	// at reconcile time stay authoritative, so both keep tracking the operator
+	// spec.dbClean stays unprojected with the rest of the child's own settings
+	// (network policy, logging, the graceful-termination timings, the rollout
+	// strategy, affinity): the clean-up retention and schedule the
+	// barbican-operator resolves at reconcile time keep tracking the operator
 	// defaults instead of being frozen into the projection.
 
 	res, err := commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp,
