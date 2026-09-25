@@ -303,5 +303,6 @@ func dbPurgeCronJob(cinder *cinderv1alpha1.Cinder, art configArtifacts) *batchv1
 		podSpec.Volumes = append(podSpec.Volumes, tlsVol)
 		podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, tlsMount)
 	}
+	cinderJobPod(cinder).Apply(&cronJob.Spec.JobTemplate.Spec.Template.Spec)
 	return cronJob
 }

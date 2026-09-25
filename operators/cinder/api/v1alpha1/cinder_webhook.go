@@ -10,6 +10,7 @@ import (
 	"net/url"
 
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -247,7 +248,26 @@ func validateNameLength(name string) field.ErrorList {
 //
 // spec.targetClusterRef is compared across both revisions here, the webhook-layer
 // twin of the two transition CEL rules on CinderSpec.
+//
+// An update to a CR that is being deleted and leaves its spec alone is admitted
+// without validation. That is the finalizer removal reconcileDelete issues, and
+// the rules below can reject an unchanged spec that was admitted earlier, such
+// as a PriorityClass deleted since. Rejecting the removal would hold the CR in
+// Terminating. A deleting CR whose spec changes is still validated. The
+// defaulting webhook has already run on newObj, so a copy of the stored object is
+// defaulted the same way before the two specs are compared: a default an operator
+// release added after the CR was last written is no spec change.
 func (w *CinderWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Cinder) (admission.Warnings, error) {
+	if newObj.DeletionTimestamp != nil {
+		stored := oldObj.DeepCopy()
+		if err := w.Default(ctx, stored); err != nil {
+			return nil, fmt.Errorf("defaulting the stored Cinder: %w", err)
+		}
+		if equality.Semantic.DeepEqual(stored.Spec, newObj.Spec) {
+			return nil, nil
+		}
+	}
+
 	var warnings admission.Warnings
 	var updateErrs field.ErrorList
 	if extraConfigCatalogInputsChanged(
@@ -333,6 +353,10 @@ func (w *CinderWebhook) validate(ctx context.Context, c *Cinder, extra field.Err
 	}
 	allErrs = append(allErrs, validateUWSGIHarakiri(
 		specPath.Child("api", "uwsgi"), c.Spec.API.UWSGI, &c.Spec.API.Deployment)...)
+
+	// The spec.jobs block: requests within limits, an existing priority
+	// class, and its own placement.
+	allErrs = append(allErrs, validation.Job(ctx, w.Client, specPath.Child("jobs"), c.Spec.Jobs)...)
 
 	// Defense-in-depth twins of the four single-writer CEL rules on CinderSpec.
 	allErrs = append(allErrs, validateSingletonDeployment(
@@ -622,6 +646,9 @@ func (w *CinderWebhook) validateDeploymentBlock(
 		errs = append(errs, validation.PriorityClassExists(ctx, w.Client,
 			fldPath.Child("priorityClassName"), *d.PriorityClassName)...)
 	}
+
+	// Node selector grammar and tolerations of the Deployment.
+	errs = append(errs, validation.NodePlacement(fldPath, &d.NodePlacementSpec)...)
 
 	// Validate that custom TopologySpreadConstraints use the correct
 	// LabelSelector matching the Deployment's selector labels.
