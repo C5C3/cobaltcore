@@ -909,6 +909,21 @@ jobs:
                 exit 1
               fi
             fi
+            # Renders the placement keys, which proves every chart's generated
+            # schema admits nodeSelector, tolerations and priorityClassName,
+            # then checks that they reach the Deployment's pod spec: a chart
+            # with its own deployment.yaml would accept the keys and drop them.
+            # The helm call stays alone on its line because the cinder and nova
+            # matrix tests read each scenario's flags from it.
+            echo "--- Scenario 6: node placement ---"
+            out=$(
+              helm template test "$chart" --set priorityClassName=cobaltcore-platform --set nodeSelector.role=platform --set tolerations[0].key=role --set tolerations[0].operator=Equal --set tolerations[0].value=platform --set tolerations[0].effect=NoSchedule
+            )
+            placed=$(yq 'select(.kind == "Deployment") | .spec.template.spec | .priorityClassName + " " + .nodeSelector.role + " " + .tolerations[0].key' <<<"$out")
+            if [ "$placed" != "cobaltcore-platform platform role" ]; then
+              echo "::error::$chart does not render the placement keys into its Deployment (got: $placed)"
+              exit 1
+            fi
           done
       - name: Helm unittest
         run: |
