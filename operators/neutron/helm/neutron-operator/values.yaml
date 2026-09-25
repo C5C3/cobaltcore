@@ -22,6 +22,16 @@ resources:
     cpu: 10m
     memory: 64Mi
 
+# Pod spec nodeSelector of the operator pods; empty renders none.
+nodeSelector: {}
+
+# Pod spec tolerations of the operator pods; empty renders none.
+tolerations: []
+
+# Pod spec priorityClassName of the operator pods; empty renders none. The
+# PriorityClass must exist before the pods are created.
+priorityClassName: ""
+
 rbac:
   # Namespace-scoped Role/RoleBinding instead of ClusterRole/ClusterRoleBinding
   # is NOT supported by this chart, and setting it to true fails the render.

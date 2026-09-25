@@ -128,6 +128,64 @@
         }
       }
     },
+    "nodeSelector": {
+      "description": "Node labels the operator pods must match (pod spec nodeSelector)",
+      "allOf": [
+        {
+          "$ref": "#/definitions/stringMap"
+        }
+      ],
+      "default": {}
+    },
+    "tolerations": {
+      "type": "array",
+      "description": "Taints the operator pods tolerate (pod spec tolerations); empty renders none",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Taint key the toleration matches; empty with operator Exists matches every taint"
+          },
+          "operator": {
+            "type": "string",
+            "description": "How key and value are compared; Lt and Gt need the API server's TaintTolerationComparisonOperators feature gate",
+            "enum": [
+              "Equal",
+              "Exists",
+              "Lt",
+              "Gt"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "description": "Taint value the toleration matches"
+          },
+          "effect": {
+            "type": "string",
+            "description": "Taint effect the toleration matches; empty matches every effect",
+            "enum": [
+              "",
+              "NoSchedule",
+              "PreferNoSchedule",
+              "NoExecute"
+            ]
+          },
+          "tolerationSeconds": {
+            "type": "integer",
+            "description": "Seconds a NoExecute toleration keeps the pod bound after the taint appears"
+          }
+        }
+      },
+      "default": []
+    },
+    "priorityClassName": {
+      "type": "string",
+      "maxLength": 253,
+      "default": "",
+      "description": "PriorityClass of the operator pods; empty renders none"
+    },
     "rbac": {
       "type": "object",
       "description": "RBAC configuration for the operator",
