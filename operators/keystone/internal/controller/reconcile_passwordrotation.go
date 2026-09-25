@@ -352,7 +352,7 @@ func adminPasswordRotationCronJob(keystone *keystonev1alpha1.Keystone, scriptCon
 	pr := keystone.Spec.PasswordRotation
 	image := keystone.Spec.Image.Reference()
 
-	return &batchv1.CronJob{
+	cronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      adminPasswordRotateCronJobName(keystone),
 			Namespace: keystone.Namespace,
@@ -370,7 +370,6 @@ func adminPasswordRotationCronJob(keystone *keystonev1alpha1.Keystone, scriptCon
 						Spec: corev1.PodSpec{
 							ServiceAccountName: adminPasswordRotateSAName(keystone),
 							RestartPolicy:      corev1.RestartPolicyOnFailure,
-							PriorityClassName:  priorityClassName(keystone),
 							Containers: []corev1.Container{{
 								Name:            "admin-password-rotate",
 								Image:           image,
@@ -404,6 +403,8 @@ func adminPasswordRotationCronJob(keystone *keystonev1alpha1.Keystone, scriptCon
 			},
 		},
 	}
+	keystoneJobPod(keystone).Apply(&cronJob.Spec.JobTemplate.Spec.Template.Spec)
+	return cronJob
 }
 
 // validateAdminPasswordRotationOutput enforces the rotation-output

@@ -153,6 +153,16 @@ func federationProxyImage(keystone *keystonev1alpha1.Keystone) *commonv1.ImageSp
 	return keystone.Spec.Federation.ProxyImage
 }
 
+// federationProxyResources returns spec.federation.proxyResources, nil when
+// spec.federation is nil. The caller resolves the sidecar defaults per
+// resource.
+func federationProxyResources(keystone *keystonev1alpha1.Keystone) *corev1.ResourceRequirements {
+	if keystone.Spec.Federation == nil {
+		return nil
+	}
+	return keystone.Spec.Federation.ProxyResources
+}
+
 // issuerToMetadataBasename converts an issuer URL into mod_auth_openidc's
 // OIDCMetadataDir file basename: scheme stripped, trailing slash trimmed,
 // every non-unreserved byte RFC3986 percent-escaped with uppercase hex —

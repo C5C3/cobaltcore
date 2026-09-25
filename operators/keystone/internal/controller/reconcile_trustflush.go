@@ -124,8 +124,7 @@ func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName, domai
 							Labels: componentLabels(keystone, "trust-flush"),
 						},
 						Spec: corev1.PodSpec{
-							PriorityClassName: priorityClassName(keystone),
-							RestartPolicy:     corev1.RestartPolicyOnFailure,
+							RestartPolicy: corev1.RestartPolicyOnFailure,
 							Containers: []corev1.Container{{
 								Name:            "trust-flush",
 								Image:           image,
@@ -175,5 +174,6 @@ func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName, domai
 	cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts = append(
 		cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts, extraMounts...,
 	)
+	keystoneJobPod(keystone).Apply(&cronJob.Spec.JobTemplate.Spec.Template.Spec)
 	return cronJob
 }

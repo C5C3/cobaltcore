@@ -17,11 +17,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -3134,4 +3136,71 @@ func TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated(t *testing
 
 	// The lingering Job carries no TTL (: TTL removed to stop the loop).
 	g.Expect(retained.Spec.TTLSecondsAfterFinished).To(BeNil())
+}
+
+// TestKeystoneJobs_PodSettings pins the pod settings of all 11 Keystone Jobs
+// and CronJobs: by default every container (the copy-keys init container
+// included) renders the Job defaults and no priority class; with
+// spec.deployment.priorityClassName every pod follows it, policy-validation
+// included; spec.jobs.priorityClassName overrides it for the Jobs while the
+// Deployment keeps its own.
+func TestKeystoneJobs_PodSettings(t *testing.T) {
+	const cm, domains = "keystone-config-abc123", ""
+	podSpecs := func(ks *keystonev1alpha1.Keystone) map[string]corev1.PodSpec {
+		ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{Schedule: "0 * * * *"}
+		ks.Spec.PasswordRotation = &keystonev1alpha1.PasswordRotationSpec{Schedule: "0 0 1 * *"}
+		cronPod := func(cj *batchv1.CronJob) corev1.PodSpec { return cj.Spec.JobTemplate.Spec.Template.Spec }
+		return map[string]corev1.PodSpec{
+			"db-sync":                 buildDBSyncJob(ks, cm, domains).Spec.Template.Spec,
+			"schema-check":            buildSchemaCheckJob(ks, cm, domains).Spec.Template.Spec,
+			"db-expand":               buildExpandJob(ks, cm, domains, "2026.1").Spec.Template.Spec,
+			"db-migrate":              buildMigrateJob(ks, cm, domains, "2026.1").Spec.Template.Spec,
+			"db-contract":             buildContractJob(ks, cm, domains, "2026.1").Spec.Template.Spec,
+			"bootstrap":               buildBootstrapJob(ks, cm, domains, "keystone-fernet-keys", "hash").Spec.Template.Spec,
+			"policy-validation":       buildPolicyValidationJob(ks, cm, domains).Spec.Template.Spec,
+			"fernet-rotate":           cronPod(fernetRotationCronJob(ks, cm, "keystone-scripts", domains)),
+			"credential-rotate":       cronPod(credentialRotationCronJob(ks, cm, "keystone-scripts", domains)),
+			"trust-flush":             cronPod(trustFlushCronJob(ks, cm, domains)),
+			"admin-password-rotation": cronPod(adminPasswordRotationCronJob(ks, "keystone-scripts")),
+		}
+	}
+	defaults := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
+	}
+
+	for _, tc := range []struct {
+		name       string
+		deployment *string
+		jobs       *string
+		want       string
+	}{
+		{name: "defaults"},
+		{name: "API Deployment priority class", deployment: ptr.To("high"), want: "high"},
+		{name: "spec.jobs priority class", deployment: ptr.To("high"), jobs: ptr.To("low"), want: "low"},
+		{name: "spec.jobs opts out", deployment: ptr.To("high"), jobs: ptr.To(""), want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			ks.Spec.Deployment.PriorityClassName = tc.deployment
+			if tc.jobs != nil {
+				ks.Spec.Jobs = &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: tc.jobs}}
+			}
+
+			specs := podSpecs(ks)
+			g.Expect(specs).To(HaveLen(11))
+			for name, spec := range specs {
+				g.Expect(spec.PriorityClassName).To(Equal(tc.want), name)
+				for _, c := range append(spec.InitContainers, spec.Containers...) {
+					g.Expect(c.Resources).To(Equal(defaults), "%s/%s", name, c.Name)
+				}
+			}
+			g.Expect(specs["fernet-rotate"].InitContainers).To(HaveLen(1), "copy-keys")
+			if tc.deployment != nil {
+				deploy := buildKeystoneDeployment(ks, cm, "", "", nil)
+				g.Expect(deploy.Spec.Template.Spec.PriorityClassName).To(Equal(*tc.deployment))
+			}
+		})
+	}
 }

@@ -84,7 +84,6 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 	podSpec := corev1.PodSpec{
 		ServiceAccountName: name,
 		RestartPolicy:      corev1.RestartPolicyOnFailure,
-		PriorityClassName:  priorityClassName(keystone),
 		// FSGroup makes the kubelet group-own mounted Secret volumes by
 		// the openstack GID so DefaultMode 0o400 still lets the openstack
 		// UID read the keys via the group bit. Without it, kubelet would
@@ -108,12 +107,8 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 			},
 		}},
 		Containers: []corev1.Container{{
-			Name:  p.keyKind + "-rotate",
-			Image: image,
-			// TODO: Wire spec.Resources (or a smaller Job-specific default) to
-			// this container. Currently runs as BestEffort QoS. See
-			// commonv1.WithResourceDefaults for the defaults the keystone
-			// container gets (#1099 wires Jobs).
+			Name:            p.keyKind + "-rotate",
+			Image:           image,
 			Command:         []string{"/scripts/" + p.keyKind + "_rotate.sh"},
 			SecurityContext: deployment.RestrictedSecurityContext(),
 			Env: []corev1.EnvVar{
@@ -192,9 +187,11 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 		},
 	}
 	// Append the per-domain identity-backend volume/mount when a backend is
-	// projected, then wrap the pod spec in the shared CronJob boilerplate.
+	// projected, apply the Job pod settings (the copy-keys init container
+	// included), then wrap the pod spec in the shared CronJob boilerplate.
 	podSpec.Volumes = append(podSpec.Volumes, extraVolumes...)
 	podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, extraMounts...)
+	keystoneJobPod(keystone).Apply(&podSpec)
 
 	return rotation.BuildCronJob(rotation.CronJobParams{
 		Name:      name,
