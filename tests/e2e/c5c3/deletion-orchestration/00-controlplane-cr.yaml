@@ -37,7 +37,7 @@ spec:
       database: keystone
       secretRef:
         name: keystone-db
-      # Pin a test-sized volume instead of the 100Gi CRD default.
+      # Pin a test-sized volume instead of the Standard profile's 100Gi.
       storageSize: 512Mi
     cache:
       clusterRef:
@@ -45,8 +45,7 @@ spec:
       backend: dogpile.cache.pymemcache
       replicas: 3
   services:
-    keystone:
-      replicas: 1
+    keystone: {}
     # Barbican with a DEDICATED secret store, so the teardown has the widest
     # ensemble to reclaim: the child, its BarbicanSecretStore, the OpenBao
     # instance the c5c3-operator provisions for it, the raft PVC behind that
@@ -54,9 +53,15 @@ spec:
     # namespace deletion collects. Each of those is asserted GONE after the
     # ControlPlane is deleted.
     barbican:
-      replicas: 1
       secretStore:
         dedicated: {}
+  sizing:
+    keystone:
+      api:
+        replicas: 1
+    barbican:
+      api:
+        replicas: 1
   korc:
     adminCredential:
       cloudCredentialsRef:

@@ -55,17 +55,14 @@ spec:
       replicas: 1
   services:
     keystone:
-      replicas: 1
       namespace:
         name: "@KEYSTONE_NS@"
         lifecycle: Managed
     horizon:
-      replicas: 1
       namespace:
         name: "@HORIZON_NS@"
         lifecycle: External
     glance:
-      replicas: 1
       namespace:
         name: "@GLANCE_NS@"
         lifecycle: Managed
@@ -80,10 +77,22 @@ spec:
             credentialsSecretRef:
               name: garage-s3-credentials
     placement:
-      replicas: 1
       namespace:
         name: "@PLACEMENT_NS@"
         lifecycle: Managed
+  sizing:
+    keystone:
+      api:
+        replicas: 1
+    horizon:
+      api:
+        replicas: 1
+    glance:
+      api:
+        replicas: 1
+    placement:
+      api:
+        replicas: 1
   korc:
     adminCredential:
       cloudCredentialsRef:

@@ -61,7 +61,6 @@ spec:
       replicas: 1
   services:
     keystone:
-      replicas: 1
       gateway:
         hostname: keystone.127-0-0-1.nip.io
         parentRef:
@@ -71,7 +70,6 @@ spec:
         repository: ghcr.io/c5c3/keystone-federation-proxy
         tag: dev
     horizon:
-      replicas: 1
       gateway:
         hostname: horizon.127-0-0-1.nip.io
         parentRef:
@@ -84,6 +82,13 @@ spec:
       secretKeyRef:
         name: controlplane-sso-horizon-secret-key
         key: secret-key
+  sizing:
+    keystone:
+      api:
+        replicas: 1
+    horizon:
+      api:
+        replicas: 1
   korc:
     adminCredential:
       cloudCredentialsRef:
