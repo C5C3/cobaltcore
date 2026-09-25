@@ -5,6 +5,7 @@
 package types
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/onsi/gomega"
@@ -82,4 +83,47 @@ func TestLoggingSpecDefault_PreservesExplicitValues(t *testing.T) {
 	g.Expect(l.Format).To(gomega.Equal("json"))
 	g.Expect(l.Level).To(gomega.Equal("DEBUG"))
 	g.Expect(l.Debug).To(gomega.HaveValue(gomega.BeTrue()))
+}
+
+// The placement fields sit inline in spec.deployment, beside replicas, so the
+// CR paths are spec.deployment.nodeSelector, .tolerations and .affinity.
+func TestDeploymentSpec_NodePlacementIsInline(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	raw, err := json.Marshal(DeploymentSpec{
+		Replicas: 1,
+		NodePlacementSpec: NodePlacementSpec{
+			NodeSelector: map[string]string{"a": "b"},
+			Tolerations:  []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+			Affinity:     &corev1.Affinity{},
+		},
+	})
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var got map[string]any
+	g.Expect(json.Unmarshal(raw, &got)).To(gomega.Succeed())
+	g.Expect(got).To(gomega.HaveKey("nodeSelector"))
+	g.Expect(got).To(gomega.HaveKey("tolerations"))
+	g.Expect(got).To(gomega.HaveKey("affinity"))
+	g.Expect(got).NotTo(gomega.HaveKey("NodePlacementSpec"))
+}
+
+// A JobSpec is one flat block, and an empty one marshals to {}: every field is
+// omitempty, so a server-side apply that sets none of them owns none.
+func TestJobSpec_IsFlat(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	raw, err := json.Marshal(JobSpec{
+		JobBaseSpec: JobBaseSpec{
+			Resources:         &corev1.ResourceRequirements{},
+			PriorityClassName: ptr.To(""),
+		},
+		NodePlacementSpec: NodePlacementSpec{NodeSelector: map[string]string{"a": "b"}, Affinity: &corev1.Affinity{}},
+	})
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(string(raw)).To(gomega.MatchJSON(`{"resources":{},"priorityClassName":"","nodeSelector":{"a":"b"},"affinity":{}}`))
+
+	empty, err := json.Marshal(JobSpec{})
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(string(empty)).To(gomega.MatchJSON(`{}`))
 }

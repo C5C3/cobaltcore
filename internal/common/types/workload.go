@@ -49,9 +49,70 @@ var defaultCPURequest = resource.MustParse("100m")
 // OVN Raft request floor.
 func DefaultCPURequest() resource.Quantity { return defaultCPURequest.DeepCopy() }
 
+// NodePlacementSpec groups the fields that pick the nodes a pod may run on.
+// Each field is a nil-able map, slice or pointer with omitempty, so a CR that
+// sets none of them renders none and a server-side apply that omits them
+// neither writes nor owns them.
+type NodePlacementSpec struct {
+	// NodeSelector restricts the pods to nodes that carry every listed label.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations let the pods onto nodes with matching taints.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// Affinity holds node affinity and pod (anti-)affinity rules, applied
+	// beside the topology spread constraints.
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+}
+
+// JobBaseSpec sizes and prioritizes the pods of a CR's Jobs and CronJobs.
+type JobBaseSpec struct {
+	// Resources defines the CPU and memory requests and limits of every
+	// container and init container of the CR's Job and CronJob pods. The
+	// operator resolves them per resource when it renders the pod: a CPU the
+	// block names neither as request nor as limit gets a 100m request and no
+	// limit, and a memory the block names neither way gets 368Mi as both
+	// request and limit. Jobs that size with their data rather than with a
+	// process count (the OVN backup and Neutron's ovn-db-sync) get a 100m CPU
+	// and 256Mi memory request and no limit instead. A resource the block
+	// names is used as written.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// PriorityClassName sets the priority class of the Job and CronJob pods.
+	// When unset, the pods take the priority class of the CR's API
+	// Deployment, if any. An empty string opts out of that fallback and
+	// renders no priority class.
+	// +optional
+	PriorityClassName *string `json:"priorityClassName,omitempty"`
+}
+
+// JobSpec is JobBaseSpec plus node placement. It configures every Job and
+// CronJob pod of a CR, and each field it leaves unset falls back to the CR's
+// API Deployment:
+//
+//   - Resources has no fallback; the operator defaults it per resource (see
+//     JobBaseSpec.Resources).
+//   - PriorityClassName: nil takes the Deployment's priorityClassName, and ""
+//     opts out.
+//   - NodeSelector and Tolerations: nil copies the Deployment's value, and an
+//     empty map or list opts out.
+//   - Affinity: nil copies only the Deployment's nodeAffinity, because the
+//     pod (anti-)affinity terms target the API pods; an empty affinity opts
+//     out.
+//
+// An empty value opts out of the fallback, the same way an empty
+// topologySpreadConstraints list disables the Deployment's default spread.
+type JobSpec struct {
+	JobBaseSpec       `json:",inline"`
+	NodePlacementSpec `json:",inline"`
+}
+
 // DeploymentSpec groups the pod-level knobs for the service API Deployment.
-// Grouping them under spec.deployment keeps the CR spec root legible as
-// further scheduling knobs (affinity/tolerations/nodeSelector) are added.
+// Grouping them under spec.deployment keeps the CR spec root legible.
 //
 // The drain-window CEL rule mirrors the validating webhook: when one or both of
 // the nil-preserving pointers is unset, the rule substitutes the same effective
@@ -133,6 +194,10 @@ type DeploymentSpec struct {
 	// When unset, no priority class is configured and the cluster default applies.
 	// +optional
 	PriorityClassName *string `json:"priorityClassName,omitempty"`
+
+	// NodePlacementSpec adds nodeSelector, tolerations and affinity, which the
+	// operator renders onto the pod template verbatim.
+	NodePlacementSpec `json:",inline"`
 }
 
 // Default sets the shared-type defaults on a DeploymentSpec in place: a

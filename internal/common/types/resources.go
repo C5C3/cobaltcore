@@ -64,18 +64,42 @@ func MemoryForProcesses(perProcess resource.Quantity, processes, threads int32) 
 //
 // A zero memory falls back to MemoryForProcesses(DefaultMemoryPerProcess(), 1, 1).
 func WithResourceDefaults(rr *corev1.ResourceRequirements, memory resource.Quantity) corev1.ResourceRequirements {
+	if memory.IsZero() {
+		memory = MemoryForProcesses(DefaultMemoryPerProcess(), 1, 1)
+	}
+	return withDefaults(rr, DefaultCPURequest(), memory)
+}
+
+// Sidecar sizing constants: the figures WithSidecarResourceDefaults gives a
+// fixed-budget sidecar (the Keystone federation proxy, the Glance cache
+// maintenance loop). They are exposed only through that function, which hands
+// out copies.
+var (
+	sidecarCPURequest = resource.MustParse("25m")
+	sidecarMemory     = resource.MustParse("256Mi")
+)
+
+// WithSidecarResourceDefaults applies the per-resource rule of
+// WithResourceDefaults to a copy of rr (nil is empty) with the sidecar
+// figures: a CPU the block names neither way gets a 25m request and no limit,
+// and a memory the block names neither way gets 256Mi as both request and
+// limit. Anything the block names is kept as written.
+func WithSidecarResourceDefaults(rr *corev1.ResourceRequirements) corev1.ResourceRequirements {
+	return withDefaults(rr, sidecarCPURequest.DeepCopy(), sidecarMemory.DeepCopy())
+}
+
+// withDefaults is the per-resource rule WithResourceDefaults documents, with
+// the CPU request and the memory figure given.
+func withDefaults(rr *corev1.ResourceRequirements, cpu, memory resource.Quantity) corev1.ResourceRequirements {
 	var out corev1.ResourceRequirements
 	if rr != nil {
 		out = *rr.DeepCopy()
-	}
-	if memory.IsZero() {
-		memory = MemoryForProcesses(DefaultMemoryPerProcess(), 1, 1)
 	}
 	if !NamesResource(out, corev1.ResourceCPU) {
 		if out.Requests == nil {
 			out.Requests = corev1.ResourceList{}
 		}
-		out.Requests[corev1.ResourceCPU] = DefaultCPURequest()
+		out.Requests[corev1.ResourceCPU] = cpu
 	}
 	if !NamesResource(out, corev1.ResourceMemory) {
 		if out.Requests == nil {
@@ -86,6 +110,50 @@ func WithResourceDefaults(rr *corev1.ResourceRequirements, memory resource.Quant
 		}
 		out.Requests[corev1.ResourceMemory] = memory.DeepCopy()
 		out.Limits[corev1.ResourceMemory] = memory.DeepCopy()
+	}
+	return out
+}
+
+// memoryRequestFloor is the memory request WithRequestFloor gives a block that
+// names no memory. WithRequestFloor hands out copies only.
+var memoryRequestFloor = resource.MustParse("256Mi")
+
+// WithRequestFloor resolves the requests of a container whose working set
+// grows with its data rather than with a process count (an OVN Raft member,
+// the OVN backup, Neutron's ovn-db-sync), per resource, on a copy of rr (nil
+// is empty). A CPU the block names neither as request nor as limit gets a
+// request of DefaultCPURequest(), a memory it names neither way gets a 256Mi
+// request, and neither gets a limit. Anything else the block sets is kept, so
+// a block that names both CPU and memory is used as written. The floor is
+// never written into the CR, so an unset field keeps following the floor
+// across upgrades.
+//
+// The floor sets no limit because the working set grows with the logical
+// model: a request does not cap that growth, and a default limit would
+// OOM-kill the container that outgrew it. A request is never added beside a
+// user-set limit of the same resource: the API server defaults an unset
+// request to its limit, and an added request would silently lower it. Other
+// resources, such as an ephemeral-storage limit, decide neither the QoS class
+// nor a CPU or memory request, so they keep the floor beside them.
+func WithRequestFloor(rr *corev1.ResourceRequirements) corev1.ResourceRequirements {
+	var out corev1.ResourceRequirements
+	if rr != nil {
+		out = *rr.DeepCopy()
+	}
+	for _, floor := range []struct {
+		name     corev1.ResourceName
+		quantity resource.Quantity
+	}{
+		{name: corev1.ResourceCPU, quantity: DefaultCPURequest()},
+		{name: corev1.ResourceMemory, quantity: memoryRequestFloor.DeepCopy()},
+	} {
+		if NamesResource(out, floor.name) {
+			continue
+		}
+		if out.Requests == nil {
+			out.Requests = corev1.ResourceList{}
+		}
+		out.Requests[floor.name] = floor.quantity
 	}
 	return out
 }
