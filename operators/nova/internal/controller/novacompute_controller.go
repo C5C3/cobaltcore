@@ -113,7 +113,7 @@ var novaComputeSkeleton = commonreconcile.Skeleton[*novav1alpha1.NovaCompute, no
 // namespace on the target cluster it names, and the kinds the deletion sweep
 // selects by ownership label. The contract Secret the pods mount is not listed:
 // the Nova publishes it, or the ControlPlane mirrors it, and the teardown reaps
-// a mirror on its own (see reapComputeConfigMirror).
+// the ControlPlane's mirrors on its own (see reapComputeClusterMirrors).
 var NovaComputeRemoteChildKinds = []schema.GroupVersionKind{
 	appsv1.SchemeGroupVersion.WithKind("DaemonSet"),
 	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
@@ -325,9 +325,9 @@ func (r *NovaComputeReconciler) pipelineSteps(children client.Client, cr *novav1
 // drain finalizer by hand is the escape.
 //
 // Once that is done, or at once when the Nova is gone or the target cluster
-// was abandoned, the remote children are swept, the compute-contract mirror is
-// reaped when no other pool on the cluster needs it, and the drain finalizer
-// is released.
+// was abandoned, the remote children are swept, the compute-contract and
+// hypervisor-operator auth mirrors are reaped when no other pool on the
+// cluster needs them, and the drain finalizer is released.
 func (r *NovaComputeReconciler) reconcileDelete(ctx context.Context, cr *novav1alpha1.NovaCompute) (ctrl.Result, error) {
 	children, wait := commonmulticluster.ResolveChildrenClientForDeletion(
 		ctx, r.Resolver, r.Client, cr.Spec.TargetClusterRef, *cr.DeletionTimestamp)
@@ -369,7 +369,7 @@ func (r *NovaComputeReconciler) reconcileDelete(ctx context.Context, cr *novav1a
 		return ctrl.Result{}, err
 	}
 	if children != nil {
-		if err := r.reapComputeConfigMirror(ctx, children, cr); err != nil {
+		if err := r.reapComputeClusterMirrors(ctx, children, cr); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -411,19 +411,21 @@ func (r *NovaComputeReconciler) novaExists(ctx context.Context, cr *novav1alpha1
 	return true, nil
 }
 
-// reapComputeConfigMirror deletes the compute-contract Secret the ControlPlane
-// mirrored into this pool's namespace, once no other pool of the same Nova on
-// the same cluster needs it. A pool being deleted still needs it while it
-// holds a node: the pod draining that node mounts the Secret, and the pool's
-// own teardown cannot get past its PoolConfig step without it. The
-// ControlPlane mirrors for pools that are not being deleted only, so a mirror
-// reaped too early is not put back.
+// reapComputeClusterMirrors deletes the Secrets the ControlPlane mirrored into
+// this pool's namespace, once no other pool of the same Nova on the same
+// cluster needs them: the compute contract, and the hypervisor operator's auth
+// Secret when the ControlPlane provisions that account. A pool being deleted
+// still needs the contract while it holds a node: the pod draining that node
+// mounts the Secret, and the pool's own teardown cannot get past its
+// PoolConfig step without it. The ControlPlane mirrors for pools that are not
+// being deleted only, so a mirror reaped too early is not put back.
 //
-// The Secret carries the Nova's name and nothing else to identify it
-// ("<nova>-compute-config"), so the reap works after the Nova is gone. A
-// Secret without ComputeConfigMirrorLabel is left alone: it is the Nova's own,
-// or one a person copied by hand.
-func (r *NovaComputeReconciler) reapComputeConfigMirror(ctx context.Context, children client.Client,
+// Both Secrets carry the Nova's name and nothing else to identify them
+// ("<nova>-compute-config", "<nova>-hypervisor-operator-auth"), so the reap
+// works after the Nova is gone. A Secret without ComputeConfigMirrorLabel is
+// left alone: it is the Nova's own, or one a person copied by hand. Each
+// deleted Secret gets an event of its own.
+func (r *NovaComputeReconciler) reapComputeClusterMirrors(ctx context.Context, children client.Client,
 	cr *novav1alpha1.NovaCompute,
 ) error {
 	siblings, err := novaComputesOfNova(ctx, r.Client, cr.Namespace, cr.Spec.NovaRef.Name)
@@ -438,23 +440,28 @@ func (r *NovaComputeReconciler) reapComputeConfigMirror(ctx context.Context, chi
 		}
 	}
 
-	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: cr.Namespace, Name: cr.Spec.NovaRef.Name + "-" + componentComputeConfig}
-	if err := commonmulticluster.LiveReader(children).Get(ctx, key, secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
+	for _, mirror := range []struct{ name, what string }{
+		{cr.Spec.NovaRef.Name + "-" + componentComputeConfig, "compute-contract mirror"},
+		{cr.Spec.NovaRef.Name + novav1alpha1.HypervisorOperatorAuthSecretSuffix, "hypervisor-operator auth mirror"},
+	} {
+		secret := &corev1.Secret{}
+		key := types.NamespacedName{Namespace: cr.Namespace, Name: mirror.name}
+		if err := commonmulticluster.LiveReader(children).Get(ctx, key, secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("getting %s %s: %w", mirror.what, key, err)
 		}
-		return fmt.Errorf("getting compute-contract Secret %s: %w", key, err)
+		if secret.Labels[novav1alpha1.ComputeConfigMirrorLabel] != "true" {
+			continue
+		}
+		if err := children.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("deleting %s %s: %w", mirror.what, key, err)
+		}
+		r.Recorder.Eventf(cr, corev1.EventTypeNormal, eventReasonComputeConfigMirrorReaped,
+			"Deleted the %s %s: no other NovaCompute of Nova %s uses it on this cluster",
+			mirror.what, key.Name, cr.Spec.NovaRef.Name)
 	}
-	if secret.Labels[novav1alpha1.ComputeConfigMirrorLabel] != "true" {
-		return nil
-	}
-	if err := children.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("deleting compute-contract mirror %s: %w", key, err)
-	}
-	r.Recorder.Eventf(cr, corev1.EventTypeNormal, eventReasonComputeConfigMirrorReaped,
-		"Deleted the compute-contract mirror %s: no other NovaCompute of Nova %s uses it on this cluster",
-		key.Name, cr.Spec.NovaRef.Name)
 	return nil
 }
 
