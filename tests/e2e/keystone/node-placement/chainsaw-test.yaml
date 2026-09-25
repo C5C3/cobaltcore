@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for spec.deployment node placement.
+# Validates that:
+#   - A Keystone CR with spec.deployment.nodeSelector, tolerations and affinity
+#     that every kind node satisfies reaches Ready
+#   - The Deployment pod template carries all three fields
+#   - With spec.jobs unset, the db-sync Job carries the selector, the
+#     toleration and the node affinity, but not the pod anti-affinity, which
+#     targets the API pods
+#   - The fernet-rotate CronJob carries the selector
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-node-placement
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with node placement ────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and the rendered placement ──────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-np
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-np
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                nodeSelector:
+                  kubernetes.io/os: linux
+                tolerations:
+                - key: c5c3.io/e2e-dedicated
+                  operator: Exists
+                  effect: NoSchedule
+                (affinity.nodeAffinity != null): true
+                (affinity.podAntiAffinity != null): true
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-np-db-sync
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                nodeSelector:
+                  kubernetes.io/os: linux
+                tolerations:
+                - key: c5c3.io/e2e-dedicated
+                  operator: Exists
+                  effect: NoSchedule
+                (affinity.nodeAffinity != null): true
+                (affinity.podAntiAffinity == null): true
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-np-fernet-rotate
+            namespace: openstack
+          spec:
+            jobTemplate:
+              spec:
+                template:
+                  spec:
+                    nodeSelector:
+                      kubernetes.io/os: linux
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Deployment, Job and CronJob placement ==="
+          kubectl get deployment keystone-np -n $NAMESPACE -o jsonpath='{.spec.template.spec.nodeSelector}{"\n"}{.spec.template.spec.tolerations}{"\n"}{.spec.template.spec.affinity}' 2>&1 || true
+          echo ""
+          kubectl get job keystone-np-db-sync -n $NAMESPACE -o jsonpath='{.spec.template.spec.nodeSelector}{"\n"}{.spec.template.spec.tolerations}{"\n"}{.spec.template.spec.affinity}' 2>&1 || true
+          echo ""
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
