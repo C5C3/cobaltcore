@@ -456,5 +456,6 @@ func dbCleanCronJob(barbican *barbicanv1alpha1.Barbican, configSecretName string
 		podSpec.Volumes = append(podSpec.Volumes, tlsVol)
 		podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, tlsMount)
 	}
+	barbicanJobPod(barbican).Apply(&cronJob.Spec.JobTemplate.Spec.Template.Spec)
 	return cronJob
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -177,7 +178,26 @@ func validateNameLength(name string) field.ErrorList {
 //
 // spec.targetClusterRef is compared across both revisions here, the webhook-layer
 // twin of the two transition CEL rules on BarbicanSpec.
+//
+// An update to a CR that is being deleted and leaves its spec alone is admitted
+// without validation. That is the finalizer removal reconcileDelete issues, and
+// the rules below can reject an unchanged spec that was admitted earlier, such
+// as a PriorityClass deleted since. Rejecting the removal would hold the CR in
+// Terminating. A deleting CR whose spec changes is still validated. The
+// defaulting webhook has already run on newObj, so a copy of the stored object is
+// defaulted the same way before the two specs are compared: a default an operator
+// release added after the CR was last written is no spec change.
 func (w *BarbicanWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Barbican) (admission.Warnings, error) {
+	if newObj.DeletionTimestamp != nil {
+		stored := oldObj.DeepCopy()
+		if err := w.Default(ctx, stored); err != nil {
+			return nil, fmt.Errorf("defaulting the stored Barbican: %w", err)
+		}
+		if equality.Semantic.DeepEqual(stored.Spec, newObj.Spec) {
+			return nil, nil
+		}
+	}
+
 	var warnings admission.Warnings
 	var updateErrs field.ErrorList
 	if extraConfigCatalogInputsChanged(oldObj, newObj) {
@@ -635,6 +655,12 @@ func (w *BarbicanWebhook) validate(ctx context.Context, b *Barbican, extra field
 		allErrs = append(allErrs, validation.PriorityClassExists(ctx, w.Client,
 			specPath.Child("deployment", "priorityClassName"), *b.Spec.Deployment.PriorityClassName)...)
 	}
+
+	// Node selector grammar and tolerations of the API Deployment, and the
+	// spec.jobs block: requests within limits, an existing priority class,
+	// and its own placement.
+	allErrs = append(allErrs, validation.NodePlacement(specPath.Child("deployment"), &b.Spec.Deployment.NodePlacementSpec)...)
+	allErrs = append(allErrs, validation.Job(ctx, w.Client, specPath.Child("jobs"), b.Spec.Jobs)...)
 
 	// Validate that custom TopologySpreadConstraints use the correct LabelSelector
 	// matching the Deployment's selector labels.
