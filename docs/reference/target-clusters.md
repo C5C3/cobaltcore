@@ -826,6 +826,7 @@ What a placed service takes with it, and what stays behind:
 | A registration's service-account delivery objects: source Secret, `PushSecret`, `ExternalSecret`, and the Secret ESO materializes from it | The management cluster |
 | The mirrored `ExternalSecret` a placed built-in service reads, and the Secret ESO materializes from it | The service's cluster |
 | The metadata shared secret's `Password` generator and `ExternalSecret`, and the Secret ESO materializes from it | The service's cluster |
+| The hypervisor operator's auth Secret, `<cp>-nova-hypervisor-operator-auth` (while `services.nova.hypervisorOperator` is set) | The Nova's cluster, and a copy on every compute cluster a `NovaCompute` of the Nova runs on |
 | The namespace a service is placed in | Both |
 
 The namespace is on both because both sides need it: the projected CR lives in it

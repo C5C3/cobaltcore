@@ -510,8 +510,9 @@ pool holds no node, only the `NovaRef` and `Aggregates` steps run, so a pass
 from a stale copy of the CR cannot recreate what the sweep removed. When the
 Nova is gone, or the target cluster was abandoned, that part is skipped. Then
 the remote children (the DaemonSet and the ConfigMaps) are swept, the
-ControlPlane's contract mirror is reaped when no other pool of the Nova on the
-cluster is live or still holds a node, and the finalizers are released.
+ControlPlane's contract mirror and the hypervisor operator's auth mirror are
+reaped when no other pool of the Nova on the cluster is live or still holds a
+node, and the finalizers are released.
 
 ### Watches
 
