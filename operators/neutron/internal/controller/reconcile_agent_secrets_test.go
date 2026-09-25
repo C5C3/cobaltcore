@@ -19,6 +19,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
@@ -60,11 +61,12 @@ func TestReconcileAgentSecrets_NoOptionalBlocksIsAvailable(t *testing.T) {
 	cr := validAgent()
 	r := newAgentTestReconciler(cr)
 
-	res, digest, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+	res, digest, sharedSecretDigest, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(digest).To(BeEmpty())
+	g.Expect(sharedSecretDigest).To(BeEmpty())
 
 	cond := agentCondition(cr, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -114,7 +116,7 @@ func TestReconcileAgentSecrets_WaitsForTheNovaSharedSecret(t *testing.T) {
 			}
 			r := newAgentTestReconciler(objs...)
 
-			res, digest, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+			res, digest, _, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
 
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -139,12 +141,34 @@ func TestReconcileAgentSecrets_EmptyKeyFallsBackToTheDefault(t *testing.T) {
 	}
 	r := newAgentTestReconciler(cr, secret)
 
-	res, _, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+	res, _, _, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(agentCondition(cr, "SecretsReady").Reason).To(Equal("SecretsAvailable"))
 	g.Expect(agentSharedSecretKey(cr)).To(Equal(agentSharedSecretDefaultKey))
+}
+
+// The shared secret reaches the process as an env var too, so its digest is
+// what rolls the pods when the value rotates. It is taken from the key the pod
+// sources, not from the Secret as a whole.
+func TestReconcileAgentSecrets_SharedSecretDigest(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := withNovaMetadata("metadata_proxy_shared_secret")
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: testAgentSharedSecretName, Namespace: testNamespace},
+		Data: map[string][]byte{
+			"metadata_proxy_shared_secret": []byte("s3cr3t"),
+			agentSharedSecretDefaultKey:    []byte("unrelated"),
+		},
+	}
+	r := newAgentTestReconciler(cr, secret)
+
+	res, _, sharedSecretDigest, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(sharedSecretDigest).To(Equal(secrets.AdminPasswordDigest("s3cr3t")))
 }
 
 // A broker that has not published its default user yet holds the pipeline under
@@ -156,7 +180,7 @@ func TestReconcileAgentSecrets_WaitsForTheTransportURL(t *testing.T) {
 	cr := withManagedMessaging()
 	r := newAgentTestReconciler(cr, rabbitmqCluster(testRabbitmqClusterName, testNamespace))
 
-	res, digest, err := r.reconcileAgentSecrets(ctx, r.Client, cr)
+	res, digest, _, err := r.reconcileAgentSecrets(ctx, r.Client, cr)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -186,7 +210,7 @@ func TestReconcileAgentSecrets_DigestFromBothMessagingModes(t *testing.T) {
 		g.Expect(simulators.SimulateRabbitmqClusterReady(ctx, c,
 			client.ObjectKeyFromObject(cluster), testRabbitmqUserSecret)).To(Succeed())
 
-		res, digest, err := r.reconcileAgentSecrets(ctx, r.Client, cr)
+		res, digest, _, err := r.reconcileAgentSecrets(ctx, r.Client, cr)
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(res.IsZero()).To(BeTrue())
@@ -198,7 +222,7 @@ func TestReconcileAgentSecrets_DigestFromBothMessagingModes(t *testing.T) {
 		g.Expect(r.Get(ctx, key, &derived)).To(Succeed())
 		g.Expect(string(derived.Data[commonv1.DefaultTransportURLSecretKey])).To(HavePrefix("rabbit://"))
 
-		_, second, err := r.reconcileAgentSecrets(ctx, r.Client, cr)
+		_, second, _, err := r.reconcileAgentSecrets(ctx, r.Client, cr)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(second).To(Equal(digest), "an unchanged credential must not roll the pods")
 	})
@@ -217,7 +241,7 @@ func TestReconcileAgentSecrets_DigestFromBothMessagingModes(t *testing.T) {
 		}
 		r := newAgentTestReconciler(cr, upstream)
 
-		res, digest, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+		res, digest, _, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(res.IsZero()).To(BeTrue())
@@ -244,7 +268,7 @@ func TestReconcileAgentSecrets_FlowErrorPropagates(t *testing.T) {
 		}).Build()
 	r := &NeutronMetadataAgentReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
 
-	res, digest, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+	res, digest, _, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
 
 	g.Expect(err).To(MatchError(ContainSubstring("reading RabbitmqCluster " + testNamespace + "/" + testRabbitmqClusterName)))
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -271,7 +295,7 @@ func TestReconcileAgentSecrets_SharedSecretGateErrorPropagates(t *testing.T) {
 		}).Build()
 	r := &NeutronMetadataAgentReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
 
-	res, digest, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+	res, digest, _, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
 
 	g.Expect(apierrors.IsServiceUnavailable(err)).To(BeTrue())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -324,7 +348,7 @@ func TestReconcileAgentSecrets_WaitsForTheNovaMetadataCA(t *testing.T) {
 			}
 			r := newAgentTestReconciler(objs...)
 
-			res, digest, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+			res, digest, _, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
 
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -350,7 +374,7 @@ func TestReconcileAgentSecrets_CAEmptyKeyGatesOnCACrt(t *testing.T) {
 	}
 	r := newAgentTestReconciler(cr, shared, ca)
 
-	res, _, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+	res, _, _, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -376,7 +400,7 @@ func TestReconcileAgentSecrets_CAGateErrorPropagates(t *testing.T) {
 		}).Build()
 	r := &NeutronMetadataAgentReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
 
-	res, digest, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+	res, digest, _, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
 
 	g.Expect(apierrors.IsServiceUnavailable(err)).To(BeTrue())
 	g.Expect(res.IsZero()).To(BeTrue())

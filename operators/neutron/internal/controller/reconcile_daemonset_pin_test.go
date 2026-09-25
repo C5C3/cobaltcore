@@ -551,7 +551,7 @@ func TestPinAgentDaemonSet(t *testing.T) {
 			g := NewWithT(t)
 
 			got, err := yaml.Marshal(buildAgentDaemonSet(tc.cr(), pinAgentChassis(),
-				pinAgentConfigMapName, tc.digest))
+				pinAgentConfigMapName, tc.digest, ""))
 
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(string(got)).To(Equal(tc.golden),

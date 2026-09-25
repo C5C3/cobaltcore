@@ -33,9 +33,11 @@ const agentSharedSecretDefaultKey = "shared_secret"
 const agentCABundleDefaultKey = "ca.crt"
 
 // reconcileAgentSecrets gates on the credentials the agent pods consume and
-// returns the SHA-256 digest of the transport URL, which the DaemonSet step
-// stamps into a pod-template annotation so a rotated broker credential rolls the
-// pods: the URL is env-var-consumed, so it only takes effect on a pod restart.
+// returns the SHA-256 digests of the transport URL and of the Nova metadata
+// shared secret, in that order. The DaemonSet step stamps each into a
+// pod-template annotation so a rotated broker credential or shared secret rolls
+// the pods: both are env-var-consumed, so they only take effect on a pod
+// restart.
 //
 // Both blocks it gates on are optional. An agent without spec.novaMetadata
 // proxies nowhere, and one without spec.messaging opens no broker connection, so
@@ -47,7 +49,7 @@ const agentCABundleDefaultKey = "ca.crt"
 // materialised beside the pods that consume them.
 func (r *NeutronMetadataAgentReconciler) reconcileAgentSecrets(ctx context.Context, children client.Client,
 	cr *neutronv1alpha1.NeutronMetadataAgent,
-) (ctrl.Result, string, error) {
+) (ctrl.Result, string, string, error) {
 	var gates []secrets.CredentialGateSpec
 	if ref := agentSharedSecretRef(cr); ref != nil {
 		// The secret the agent signs forwarded requests with. Nova rejects an
@@ -78,11 +80,24 @@ func (r *NeutronMetadataAgentReconciler) reconcileAgentSecrets(ctx context.Conte
 	if len(gates) > 0 {
 		ready, err := secrets.GateCredentials(ctx, children, gates, &cr.Status.Conditions, cr.Generation, "SecretsReady")
 		if err != nil {
-			return ctrl.Result{}, "", err
+			return ctrl.Result{}, "", "", err
 		}
 		if !ready {
-			return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, "", nil
+			return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, "", "", nil
 		}
+	}
+
+	// A rotated shared secret has to reach the running pods too: the agent
+	// would keep signing with the old value, and Nova would reject every
+	// request it proxies.
+	var sharedSecretDigest string
+	if ref := agentSharedSecretRef(cr); ref != nil {
+		value, err := secrets.GetSecretValue(ctx, children,
+			client.ObjectKey{Namespace: cr.Namespace, Name: ref.Name}, agentSharedSecretKey(cr))
+		if err != nil {
+			return ctrl.Result{}, "", "", fmt.Errorf("reading the Nova metadata shared secret value: %w", err)
+		}
+		sharedSecretDigest = secrets.AdminPasswordDigest(value)
 	}
 
 	var digest string
@@ -105,7 +120,7 @@ func (r *NeutronMetadataAgentReconciler) reconcileAgentSecrets(ctx context.Conte
 			RequeueAfter:  commonreconcile.RequeueSecretPolling,
 		})
 		if err != nil || !result.IsZero() {
-			return result, "", err
+			return result, "", "", err
 		}
 		digest = transportDigest
 	}
@@ -116,7 +131,7 @@ func (r *NeutronMetadataAgentReconciler) reconcileAgentSecrets(ctx context.Conte
 		ObservedGeneration: cr.Generation,
 		Reason:             "SecretsAvailable",
 	})
-	return ctrl.Result{}, digest, nil
+	return ctrl.Result{}, digest, sharedSecretDigest, nil
 }
 
 // agentSharedSecretRef returns the Secret reference holding the Nova metadata

@@ -372,8 +372,8 @@ func (r *NeutronMetadataAgentReconciler) Reconcile(ctx context.Context, req ctrl
 // and the DaemonSet mounts the Secrets, and the config before the DaemonSet that
 // mounts it.
 //
-// chassis, the transport digest and the ConfigMap name are threaded from the
-// steps that produce them to the steps that consume them. A closure keeps that
+// chassis, the two digests and the ConfigMap name are threaded from the steps
+// that produce them to the steps that consume them. A closure keeps that
 // hand-off inside the pipeline instead of on the reconciler, where it would be
 // state shared by every CR the controller reconciles concurrently.
 //
@@ -383,8 +383,8 @@ func (r *NeutronMetadataAgentReconciler) pipelineSteps(children client.Client,
 	cr *neutronv1alpha1.NeutronMetadataAgent,
 ) []commonreconcile.Step {
 	var (
-		chassis                        resolvedChassis
-		transportDigest, configMapName string
+		chassis                                            resolvedChassis
+		transportDigest, sharedSecretDigest, configMapName string
 	)
 
 	return []commonreconcile.Step{
@@ -395,7 +395,7 @@ func (r *NeutronMetadataAgentReconciler) pipelineSteps(children client.Client,
 			return res, err
 		}},
 		{Name: "Secrets", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
-			res, transportDigest, err = r.reconcileAgentSecrets(ctx, children, cr)
+			res, transportDigest, sharedSecretDigest, err = r.reconcileAgentSecrets(ctx, children, cr)
 			return res, err
 		}},
 		{Name: "Config", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
@@ -403,7 +403,7 @@ func (r *NeutronMetadataAgentReconciler) pipelineSteps(children client.Client,
 			return res, err
 		}},
 		{Name: "DaemonSet", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDaemonSet(ctx, children, cr, chassis, configMapName, transportDigest)
+			return r.reconcileDaemonSet(ctx, children, cr, chassis, configMapName, transportDigest, sharedSecretDigest)
 		}},
 	}
 }

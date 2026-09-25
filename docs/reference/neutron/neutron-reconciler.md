@@ -102,7 +102,7 @@ Chassis ──► Secrets ──► Config ──► DaemonSet
 | Step | What it does | Condition |
 | --- | --- | --- |
 | Chassis | Resolves the `OVNChassis` into its node selector and tolerations, and that chassis's `OVNCentral` into the Southbound address and the client Secret name | `ChassisReady` |
-| Secrets | Gates on the Nova metadata shared secret and the Nova metadata CA bundle and, under `spec.messaging`, materialises `{name}-transport-url` and digests it | `SecretsReady` |
+| Secrets | Gates on the Nova metadata shared secret and the Nova metadata CA bundle, digests the shared secret, and, under `spec.messaging`, materialises `{name}-transport-url` and digests it | `SecretsReady` |
 | Config | Renders `neutron_ovn_metadata_agent.ini` into an immutable content-addressed ConfigMap and prunes the history to three. Reports failures through `SecretsReady` | `SecretsReady` |
 | DaemonSet | Projects the `{name}-metadata-agent` DaemonSet onto the chassis's nodes, mirrors its node counters into status, and stamps `status.installedImage` | `DaemonSetReady` |
 
@@ -111,10 +111,10 @@ address and that central's client Secret parameterise every later step, so an
 agent whose chassis has not resolved projects nothing at all. The credentials
 come next, because the rendered file is a function of the messaging block and the
 DaemonSet mounts the Secrets, and the config before the DaemonSet that mounts it.
-The resolved chassis, the transport digest and the ConfigMap name are threaded
-from the steps that produce them to the steps that consume them through a
-closure, so the hand-off stays inside one pass and not on the reconciler, where
-it would be shared by every CR reconciled concurrently.
+The resolved chassis, the two digests and the ConfigMap name are threaded from
+the steps that produce them to the steps that consume them through a closure,
+so the hand-off stays inside one pass and not on the reconciler, where it would
+be shared by every CR reconciled concurrently.
 
 ## Conditions
 
@@ -724,7 +724,8 @@ that does not exist at admission time.
 **File:** `operators/neutron/internal/controller/reconcile_agent_secrets.go`
 
 **Purpose:** Gate on the credentials the agent pods consume and return the
-transport URL's digest for the DaemonSet's pod-template annotation. Both blocks
+digests of the transport URL and the shared secret for the DaemonSet's
+pod-template annotations. Both blocks
 it gates on are optional: an agent without `spec.novaMetadata` proxies nowhere,
 and one without `spec.messaging` opens no broker connection, so a CR that sets
 neither reaches `SecretsAvailable` without reading anything. Inside
@@ -733,7 +734,9 @@ and the CA bundle `caBundleSecretRef` names second, each only while it is
 referenced. The shared secret
 reaches the process as `OS_DEFAULT__METADATA_PROXY_SHARED_SECRET` and the
 transport URL as `OS_DEFAULT__TRANSPORT_URL`, so neither enters the ConfigMap
-every agent pod mounts.
+every agent pod mounts. The kubelet resolves both only when a container starts,
+so the DaemonSet carries their digests as `neutron.c5c3.io/metadata-secret-hash`
+and `neutron.c5c3.io/transport-url-hash`, and a rotated value rolls the pods.
 
 **Condition Contract:**
 

@@ -59,7 +59,7 @@ func TestReconcileDaemonSet_EmptySelectionIsReady(t *testing.T) {
 	cr := validAgent()
 	r := newAgentTestReconciler(cr)
 
-	res, err := r.reconcileDaemonSet(ctx, r.Client, cr, resolvedForAgentConfig(), "agent-config", "")
+	res, err := r.reconcileDaemonSet(ctx, r.Client, cr, resolvedForAgentConfig(), "agent-config", "", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue(), "a rolled-out DaemonSet is not polled")
@@ -84,7 +84,7 @@ func TestReconcileDaemonSet_ProgressingMirrorsTheCounters(t *testing.T) {
 	cr := validAgent()
 	r := newAgentTestReconciler(cr, rollingOutAgentDaemonSet(t, cr))
 
-	res, err := r.reconcileDaemonSet(ctx, r.Client, cr, resolvedForAgentConfig(), "agent-config", "")
+	res, err := r.reconcileDaemonSet(ctx, r.Client, cr, resolvedForAgentConfig(), "agent-config", "", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
@@ -108,12 +108,12 @@ func TestReconcileDaemonSet_ReadyRecordsTheInstalledImage(t *testing.T) {
 	cr := validAgent()
 	r := newAgentTestReconciler(cr, rollingOutAgentDaemonSet(t, cr))
 
-	_, err := r.reconcileDaemonSet(ctx, r.Client, cr, resolvedForAgentConfig(), "agent-config", "")
+	_, err := r.reconcileDaemonSet(ctx, r.Client, cr, resolvedForAgentConfig(), "agent-config", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(cr.Status.InstalledImage).To(BeEmpty(), "the rollout has reached two of three nodes")
 	g.Expect(simulators.MarkDaemonSetReady(ctx, r.Client, agentDaemonSetKey)).To(Succeed())
 
-	res, err := r.reconcileDaemonSet(ctx, r.Client, cr, resolvedForAgentConfig(), "agent-config", "")
+	res, err := r.reconcileDaemonSet(ctx, r.Client, cr, resolvedForAgentConfig(), "agent-config", "", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -144,7 +144,7 @@ func TestReconcileDaemonSet_ApplyErrorIsWrapped(t *testing.T) {
 	r := &NeutronMetadataAgentReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
 
 	res, err := r.reconcileDaemonSet(context.Background(), r.Client, cr,
-		resolvedForAgentConfig(), "agent-config", "")
+		resolvedForAgentConfig(), "agent-config", "", "")
 
 	g.Expect(err).To(MatchError(boom), "the client error must stay unwrappable")
 	g.Expect(err).To(MatchError(ContainSubstring("ensuring metadata-agent DaemonSet:")))
@@ -166,7 +166,7 @@ func TestBuildAgentDaemonSet_RunsOnTheChassisNodes(t *testing.T) {
 	chassis.nodeSelector = map[string]string{"openstack.c5c3.io/gateway": "true"}
 	chassis.tolerations = []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}}
 
-	ds := buildAgentDaemonSet(validAgent(), chassis, "agent-config", "")
+	ds := buildAgentDaemonSet(validAgent(), chassis, "agent-config", "", "")
 
 	g.Expect(ds.Spec.Template.Spec.NodeSelector).To(Equal(chassis.nodeSelector))
 	g.Expect(ds.Spec.Template.Spec.Tolerations).To(Equal(chassis.tolerations))
@@ -181,7 +181,7 @@ func TestBuildAgentDaemonSet_RunsOnTheChassisNodes(t *testing.T) {
 func TestBuildAgentDaemonSet_ContainerPostures(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	ds := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "")
+	ds := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "", "")
 
 	init := ds.Spec.Template.Spec.InitContainers[0]
 	g.Expect(init.Name).To(Equal("wait-for-chassis"))
@@ -212,7 +212,7 @@ func TestBuildAgentDaemonSet_ContainerPostures(t *testing.T) {
 func TestBuildAgentDaemonSet_NetnsMountIsBidirectional(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	ds := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "")
+	ds := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "", "")
 
 	var netns *corev1.VolumeMount
 	for i, mount := range ds.Spec.Template.Spec.Containers[0].VolumeMounts {
@@ -233,7 +233,7 @@ func TestBuildAgentDaemonSet_MountsTheCentralsClientSecret(t *testing.T) {
 	chassis := resolvedForAgentConfig()
 	chassis.clientSecretName = "some-other-client"
 
-	ds := buildAgentDaemonSet(validAgent(), chassis, "rendered-config", "")
+	ds := buildAgentDaemonSet(validAgent(), chassis, "rendered-config", "", "")
 
 	var secretName, configMapName string
 	for _, volume := range ds.Spec.Template.Spec.Volumes {
@@ -286,7 +286,7 @@ func TestBuildAgentDaemonSet_MountsTheNovaMetadataCA(t *testing.T) {
 			cr.Spec.NovaMetadata.Protocol = "https"
 			cr.Spec.NovaMetadata.CABundleSecretRef = &commonv1.SecretRefSpec{Name: "nova-metadata-ca", Key: tc.key}
 
-			ds := buildAgentDaemonSet(cr, resolvedForAgentConfig(), "rendered-config", "")
+			ds := buildAgentDaemonSet(cr, resolvedForAgentConfig(), "rendered-config", "", "")
 
 			volume := caVolume(ds)
 			g.Expect(volume).NotTo(BeNil())
@@ -311,7 +311,7 @@ func TestBuildAgentDaemonSet_MountsTheNovaMetadataCA(t *testing.T) {
 		cr := withNovaMetadata("shared_secret")
 		cr.Spec.NovaMetadata.Protocol = "https"
 
-		ds := buildAgentDaemonSet(cr, resolvedForAgentConfig(), "rendered-config", "")
+		ds := buildAgentDaemonSet(cr, resolvedForAgentConfig(), "rendered-config", "", "")
 
 		g.Expect(caVolume(ds)).To(BeNil())
 		g.Expect(caMounts(ds.Spec.Template.Spec.Containers[0])).To(BeEmpty())
@@ -359,11 +359,24 @@ func TestAgentEnv_FollowsTheOptionalBlocks(t *testing.T) {
 func TestBuildAgentDaemonSet_TransportDigestAnnotation(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	without := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "")
+	without := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "", "")
 	g.Expect(without.Spec.Template.Annotations).To(BeEmpty())
 
-	with := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "deadbeef")
+	with := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "deadbeef", "")
 	g.Expect(with.Spec.Template.Annotations).To(HaveKeyWithValue(transportURLHashAnnotation, "deadbeef"))
+}
+
+// The shared secret is env-var-consumed as well, so its digest rolls the pods
+// when the value rotates, under a key of its own beside the transport URL's.
+func TestBuildAgentDaemonSet_SharedSecretDigestAnnotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ds := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "deadbeef", "cafe")
+
+	g.Expect(ds.Spec.Template.Annotations).To(Equal(map[string]string{
+		transportURLHashAnnotation:   "deadbeef",
+		metadataSecretHashAnnotation: "cafe",
+	}))
 }
 
 // A CR that names no resources still lands in the Burstable QoS class: an
@@ -413,7 +426,7 @@ func TestAgentSelectorLabels_NarrowByComponent(t *testing.T) {
 func TestBuildAgentDaemonSet_RendersResourceDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	ds := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "")
+	ds := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "", "")
 
 	g.Expect(ds.Spec.Template.Spec.InitContainers).To(HaveLen(1))
 	g.Expect(ds.Spec.Template.Spec.InitContainers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))

@@ -1560,7 +1560,7 @@ privileged namespace. The copy carries the ControlPlane's ownership labels and
 `neutron.openstack.c5c3.io/metadata-shared-secret-mirror: "true"`. A same-named
 Secret the ControlPlane did not write stays untouched and holds `NovaReady` on
 `NovaMetadataAgentSecretError`. A changed value is rewritten on the next Nova
-pass.
+pass, and the agent rolls its pods onto it.
 
 The ControlPlane never deletes a copy. The teardown of the last agent on a
 cluster that names it does, before the agent's finalizer is released (see
