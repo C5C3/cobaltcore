@@ -204,11 +204,11 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   replicas:
-                    default: 3
                     description: |-
                       Replicas is the number of Memcached pod replicas in the referenced cluster
                       (managed mode). Used to generate the correct number of StatefulSet pod
-                      endpoints. Only used when ClusterRef is set.
+                      endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+                      takes the value from its sizing (Standard: 3).
                     format: int32
                     minimum: 1
                     type: integer
@@ -292,7 +292,6 @@ spec:
                     minimum: 1
                     type: integer
                   replicas:
-                    default: 3
                     description: |-
                       Replicas is the number of managed MariaDB replicas provisioned in
                       fresh-create mode. It mirrors CacheSpec.Replicas: only the c5c3 operator's
@@ -301,7 +300,8 @@ spec:
                       so a constrained cluster such as a single-node kind can schedule the
                       fresh-create path. Operators that adopt an existing MariaDB (the c5c3 adopted-infra path,
                       and every service operator) ignore it. Only meaningful when ClusterRef is
-                      set.
+                      set. When unset, the ControlPlane takes the value from its sizing
+                      (Standard: 3).
                     format: int32
                     minimum: 1
                     type: integer
@@ -324,17 +324,17 @@ spec:
                     - name
                     type: object
                   storageSize:
-                    default: 100Gi
                     description: |-
                       StorageSize is the persistent-volume size requested for each managed
                       MariaDB replica in fresh-create mode. Like Replicas, only the c5c3
                       operator's managed-mode projection honours it (it is written to the owned
                       MariaDB's spec.storage.size); operators that adopt an existing MariaDB
-                      (the c5c3 adopted-infra path, and every service operator) ignore it. The default 100Gi
-                      mirrors the production baseline (deploy/flux-system/infrastructure/
-                      mariadb.yaml); a constrained cluster such as a single-node kind can pin a
-                      far smaller value (e.g. 512Mi) so CI does not request a 100Gi volume it
-                      never fills. Immutable after creation: the mariadb-operator rejects
+                      (the c5c3 adopted-infra path, and every service operator) ignore it. When
+                      unset, the ControlPlane takes the value from its sizing (Standard: 100Gi,
+                      the production baseline of deploy/flux-system/infrastructure/mariadb.yaml);
+                      a constrained cluster such as a single-node kind can pin a far smaller
+                      value (e.g. 512Mi) so CI does not request a 100Gi volume it never fills.
+                      Immutable after creation: the mariadb-operator rejects
                       changing spec.storage.size on a live CR, so the ControlPlane validating
                       webhook freezes it too. Only meaningful when ClusterRef is set. The pattern
                       admits binary IEC units (Mi/Gi/Ti) matching the Kubernetes quantity grammar
@@ -3012,12 +3012,12 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   replicas:
-                    default: 3
                     description: |-
                       Replicas is the number of RabbitMQ pods in the referenced cluster (managed
                       mode). It mirrors CacheSpec.Replicas: only the managed-mode projection
                       honours it, so a constrained cluster such as a single-node kind can pin a
-                      single pod. Ignored in brownfield mode.
+                      single pod. Ignored in brownfield mode. When unset, the ControlPlane takes
+                      the value from its sizing (Standard: 3).
                     format: int32
                     minimum: 1
                     type: integer

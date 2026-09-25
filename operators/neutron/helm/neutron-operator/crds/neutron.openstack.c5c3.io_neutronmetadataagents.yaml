@@ -220,12 +220,12 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   replicas:
-                    default: 3
                     description: |-
                       Replicas is the number of RabbitMQ pods in the referenced cluster (managed
                       mode). It mirrors CacheSpec.Replicas: only the managed-mode projection
                       honours it, so a constrained cluster such as a single-node kind can pin a
-                      single pod. Ignored in brownfield mode.
+                      single pod. Ignored in brownfield mode. When unset, the ControlPlane takes
+                      the value from its sizing (Standard: 3).
                     format: int32
                     minimum: 1
                     type: integer

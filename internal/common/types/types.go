@@ -24,13 +24,11 @@ const DefaultCacheBackend = "dogpile.cache.pymemcache"
 const DefaultTransportURLSecretKey = "transport_url"
 
 // DatabaseStorageSizeDefault is the per-replica managed-MariaDB volume size
-// materialized when DatabaseSpec.StorageSize is left empty. It is the single Go
-// source of truth shared by the c5c3 fresh-create projection (the fallback in
-// reconcile_infrastructure.go) and the ControlPlane validating webhook (the
-// one-time migration normalization for pre-existing CRs), so the two cannot
-// drift. Keep it in lockstep with the +kubebuilder:default marker on
-// DatabaseSpec.StorageSize below — kubebuilder markers cannot reference Go
-// constants, so the leaf marker keeps the literal in sync separately.
+// of the ControlPlane's Standard sizing profile. It is the single Go source of
+// truth shared by that profile, the c5c3 fresh-create projection (the fallback
+// in reconcile_infrastructure.go) and the ControlPlane validating webhook (the
+// one-time migration normalization for pre-existing CRs), so they cannot
+// drift.
 const DatabaseStorageSizeDefault = "100Gi"
 
 // Database credential modes select how the service DB credential referenced by
@@ -156,26 +154,26 @@ type DatabaseSpec struct {
 	// so a constrained cluster such as a single-node kind can schedule the
 	// fresh-create path. Operators that adopt an existing MariaDB (the c5c3 adopted-infra path,
 	// and every service operator) ignore it. Only meaningful when ClusterRef is
-	// set.
+	// set. When unset, the ControlPlane takes the value from its sizing
+	// (Standard: 3).
 	// +optional
-	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=1
 	Replicas int32 `json:"replicas,omitempty"`
 	// StorageSize is the persistent-volume size requested for each managed
 	// MariaDB replica in fresh-create mode. Like Replicas, only the c5c3
 	// operator's managed-mode projection honours it (it is written to the owned
 	// MariaDB's spec.storage.size); operators that adopt an existing MariaDB
-	// (the c5c3 adopted-infra path, and every service operator) ignore it. The default 100Gi
-	// mirrors the production baseline (deploy/flux-system/infrastructure/
-	// mariadb.yaml); a constrained cluster such as a single-node kind can pin a
-	// far smaller value (e.g. 512Mi) so CI does not request a 100Gi volume it
-	// never fills. Immutable after creation: the mariadb-operator rejects
+	// (the c5c3 adopted-infra path, and every service operator) ignore it. When
+	// unset, the ControlPlane takes the value from its sizing (Standard: 100Gi,
+	// the production baseline of deploy/flux-system/infrastructure/mariadb.yaml);
+	// a constrained cluster such as a single-node kind can pin a far smaller
+	// value (e.g. 512Mi) so CI does not request a 100Gi volume it never fills.
+	// Immutable after creation: the mariadb-operator rejects
 	// changing spec.storage.size on a live CR, so the ControlPlane validating
 	// webhook freezes it too. Only meaningful when ClusterRef is set. The pattern
 	// admits binary IEC units (Mi/Gi/Ti) matching the Kubernetes quantity grammar
 	// the operator parses with resource.ParseQuantity.
 	// +optional
-	// +kubebuilder:default="100Gi"
 	// +kubebuilder:validation:Pattern=`^[0-9]+(Mi|Gi|Ti)$`
 	StorageSize string `json:"storageSize,omitempty"`
 }
@@ -255,9 +253,9 @@ type CacheSpec struct {
 	Servers []string `json:"servers,omitempty"`
 	// Replicas is the number of Memcached pod replicas in the referenced cluster
 	// (managed mode). Used to generate the correct number of StatefulSet pod
-	// endpoints. Only used when ClusterRef is set.
+	// endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+	// takes the value from its sizing (Standard: 3).
 	// +optional
-	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=1
 	Replicas int32 `json:"replicas,omitempty"`
 }
@@ -280,9 +278,9 @@ type MessagingSpec struct {
 	// Replicas is the number of RabbitMQ pods in the referenced cluster (managed
 	// mode). It mirrors CacheSpec.Replicas: only the managed-mode projection
 	// honours it, so a constrained cluster such as a single-node kind can pin a
-	// single pod. Ignored in brownfield mode.
+	// single pod. Ignored in brownfield mode. When unset, the ControlPlane takes
+	// the value from its sizing (Standard: 3).
 	// +optional
-	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=1
 	Replicas int32 `json:"replicas,omitempty"`
 	// TLS configures the client trust for the broker connection. The pointer keeps
