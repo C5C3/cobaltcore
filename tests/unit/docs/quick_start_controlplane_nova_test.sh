@@ -71,7 +71,7 @@ test_condition_chain() {
   assert_file_contains_fixed "the aggregate counts all $want sub-conditions" \
     "$QUICK_START_DOC" \
     "all $want sub-conditions"
-  chain="$(grep -m1 '^NamespacesReady →' "$QUICK_START_DOC")"
+  chain="$(grep -m1 '^SizingReady →' "$QUICK_START_DOC")"
   assert_eq "the Step 5 chain names all $want sub-conditions" \
     "$want" "$(( $(grep -o '→' <<<"$chain" | wc -l) + 1 ))"
 }

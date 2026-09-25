@@ -47,13 +47,14 @@ full projection contract.
 
 ## Scale replicas
 
-Set the Keystone replica count on the `ControlPlane` CR; the operator projects it
-onto the `controlplane-keystone` child and Kubernetes handles the rollout.
+Set the Keystone API replica count under `spec.sizing` on the `ControlPlane` CR;
+the operator projects it onto the `controlplane-keystone` child and Kubernetes
+handles the rollout.
 
 ```bash
 kubectl patch controlplane controlplane -n openstack \
   --type merge \
-  -p '{"spec":{"services":{"keystone":{"replicas":5}}}}'
+  -p '{"spec":{"sizing":{"keystone":{"api":{"replicas":5}}}}}'
 ```
 
 Watch the rollout on the projected child:
@@ -69,11 +70,10 @@ the last healthy pod; at `replicas == 1` it sets `maxUnavailable=1` instead,
 allowing eviction so a node drain cannot deadlock on a
 single-replica child.
 
-::: tip Load-driven autoscaling is standalone-only
-The `ControlPlane` CRD does not expose `spec.autoscaling`, so on a ControlPlane
-deployment there is no HPA knob. Scale by setting
-`spec.services.keystone.replicas`. Load-driven autoscaling with a
-`HorizontalPodAutoscaler` is available only on a standalone Keystone CR. See
+::: tip Load-driven autoscaling
+`spec.sizing.keystone.api.autoscaling` projects a `HorizontalPodAutoscaler` onto
+the Keystone child, which then scales between its bounds on load. The HPA needs
+metrics-server, so no sizing profile sets it. See
 [Advanced Configuration: Autoscaling (HPA)](./advanced-configuration.md#autoscaling-hpa).
 :::
 

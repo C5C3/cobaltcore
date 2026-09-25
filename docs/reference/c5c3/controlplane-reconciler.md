@@ -144,6 +144,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `NovaCompute` | `Watches()` | Per-CR fan-out via `novaComputeToControlPlaneMapper`, matching the Nova namespace and the Nova name a pool's `spec.novaRef` names. Pools are user-authored and only read, for the clusters the compute contract is mirrored to, so they carry no owner reference. The predicate admits a pool being created, deleted or starting to be deleted, the events that change the mirror targets. The leg sits behind the discovery probe with the other nova-operator kinds |
 | `NeutronMetadataAgent` | `Watches()` | Per-CR fan-out via `neutronMetadataAgentToControlPlaneMapper`, waking every ControlPlane with `services.nova` and `services.neutron` whose OVN central namespace is the agent's namespace. Agents are user-authored and only read, for the clusters the metadata shared secret is copied to, so they carry no owner reference. `neutronMetadataAgentDeliveryPredicate` admits an agent being created, deleted or starting to be deleted, and a change of `spec.novaMetadata.sharedSecretRef.name`; status writes and generic events are dropped. The leg sits behind the discovery probe with the other neutron-operator kinds |
 | `OVNCentral` | `Watches()` | Per-CR fan-out via `ovnCentralToControlPlaneMapper`. The central is deployed outside the plane and only named by `spec.services.neutron.ovn.centralRef`, so it carries no owner reference an `Owns()` could match; the leg re-runs `reconcileOVN` when the central's status moves instead of waiting for the periodic requeue. The ovn-operator is installed only for a plane that runs a network service, so the leg sits behind the discovery probe with the other sibling-operator kinds |
+| `SizingProfile` | `Watches()` | Per-CR fan-out via `sizingProfileToControlPlaneMapper`, which lists every ControlPlane and enqueues those whose `spec.sizing.profileRef.name` names the event's profile. The kind is cluster-scoped and only referenced, so it carries no owner reference an `Owns()` could match. The watch is unconditional, because the CRD ships in the c5c3 chart; a List error is logged and drops the event. |
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
@@ -271,7 +272,8 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `c5c3.io` | `controlplanes/finalizers` | update |
 | `c5c3.io` | `credentialrotations` | get, list, watch, create, update, patch, delete |
 | `c5c3.io` | `credentialrotations/status` | get, update, patch |
-| `c5c3.io` | `secretaggregates` | get, list, watch |
+| `c5c3.io` | `secretaggregates`, `sizingprofiles` | get, list, watch |
+| `scheduling.k8s.io` | `priorityclasses` | get |
 | `k8s.mariadb.com` | `mariadbs` | get, list, watch, create, update, patch, delete |
 | `memcached.c5c3.io` | `memcacheds` | get, list, watch, create, update, patch, delete |
 | `rabbitmq.com` | `rabbitmqclusters` | get, list, watch, create, update, patch, delete |
@@ -293,6 +295,11 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `generators.external-secrets.io` | `vaultdynamicsecrets`, `passwords` | get, list, watch, create, update, patch, delete |
 | `core` | `secrets` | get, list, watch, create, update, patch, delete |
 | `core` | `events` | create, patch |
+
+The `sizingprofiles` grant serves the `Sizing` step's read of the referenced
+profile and the watch on the kind. The ControlPlane and `SizingProfile` webhooks
+run under the same identity and look up the PriorityClasses a sizing names, which
+is what the `priorityclasses` grant is for.
 
 The `patch` grant on the K-ORC status subresources lets the reconcilers clear a
 latched K-ORC transport error from a child's status
@@ -365,6 +372,12 @@ grants. The markers therefore add `core/namespaces` with
 │  (Ready=False / DuplicateControlPlane, requeue 30s; see Multi-instance)             │
 │         │                                                                           │
 │         ▼                                                                           │
+│  ┌──────────────────────────┐                                                       │
+│  │ reconcileSizing          │  Resolve spec.sizing (built-in + SizingProfile)       │
+│  │  (gate: none)            │  Sets: SizingReady                                    │
+│  └────────┬─────────────────┘  Error (stops the pass) when the profile is missing   │
+│           │                                                                         │
+│           ▼                                                                         │
 │  ┌──────────────────────────┐                                                       │
 │  │ reconcileNamespaces      │  Ensure the namespaces services are placed in         │
 │  │  (gate: none)            │  Sets: NamespacesReady                                │
@@ -506,8 +519,8 @@ The chain runs in **two phases** over the shared scaffolding in
 uses). Every step is a `commonreconcile.Step`, and the whole table is driven by
 one `commonreconcile.RunPipeline` call:
 
-**Phase 1 — the blocking prefix.** Namespaces → Infrastructure → ESOTenantStore
-→ DBCredentials → AdminPassword → Keystone run as six named, short-circuiting
+**Phase 1 — the blocking prefix.** Sizing → Namespaces → Infrastructure →
+ESOTenantStore → DBCredentials → AdminPassword → Keystone run as seven named, short-circuiting
 `Step` entries. `RunPipeline` returns the pass at the **first non-zero result or
 error**, because each step genuinely feeds the next — a later step applying
 before its predecessor converged would fail or wedge. Each named step is wrapped
@@ -546,6 +559,9 @@ AdminPassword and Keystone behind it.
 
 ```go
 pipeline := []commonreconcile.Step{
+    {Name: "Sizing", Fn: func(ctx context.Context) (ctrl.Result, error) {
+        return r.reconcileSizing(ctx, &cp)
+    }},
     {Name: "Namespaces", Fn: func(ctx context.Context) (ctrl.Result, error) {
         return r.reconcileNamespaces(ctx, &cp)
     }},
@@ -640,7 +656,7 @@ The aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, BarbicanReady, OVNReady, NeutronReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady, RegistrationTenantStoresReady
+SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, BarbicanReady, OVNReady, NeutronReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady, RegistrationTenantStoresReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -902,6 +918,39 @@ requires `spec.messaging`; Neutron, Cinder and Nova are the three such services.
 satellite shares with its `cinderRef` in the `<cinder>-<backend>-service-remove`
 Job name a detach spawns.
 
+### reconcileSizing
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_sizing.go` |
+| Condition | `SizingReady` |
+| Gate | none; the first step of the pipeline |
+| Projects / Owns | nothing; resolves `spec.sizing` |
+| Requeue | none; a failure returns the error, which stops the pass and requeues with backoff |
+
+`reconcileSizing` reads the `SizingProfile` that `spec.sizing.profileRef` names
+through the cached client (the kind is watched) and reports the resolved base. A
+built-in profile needs no read.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `SizingResolved` | `sizing resolved from built-in profile "<base>"`, or `sizing resolved from SizingProfile "<name>" (base "<base>")`. |
+| `False` | `SizingProfileNotFound` | The profile is gone: `SizingProfile "<name>" not found; the children keep their last projected sizing`. The step returns the wrapped NotFound error of the read. |
+| `False` | `SizingProfileError` | Any other read error; the step returns it. |
+
+Returning the error follows the `InvalidRotationInterval` precedent in
+`reconcileKeystone`: no later step runs, so no child is projected from a sizing
+that could not be resolved, and each keeps what it was last projected with.
+
+Every consumer resolves the sizing for itself through `effectiveSizing`
+(`c5c3v1alpha1.ResolveSizing` over the read profile) rather than reading a value
+this step stored, because the members of a parallel group keep only the
+conditions and metadata they write. `sizing_projection.go` holds the rules they
+share: the replica fallback, the placement fallback to the top-level
+`spec.sizing` values, the spread completion with the child's pod selector, and
+the uWSGI, Job and Glance launch-mode helpers. See
+[SizingSpec → Projection](./controlplane-crd.md#projection).
+
 ### reconcileNamespaces
 
 | Aspect | Value |
@@ -984,6 +1033,25 @@ it is stamped with the ownership labels and cleaned up by the finalizer instead;
 a same-namespace child keeps its controller owner reference. The dashboard's cache
 is enumerated only when the dashboard is **declared**, so a ControlPlane that
 places Keystone apart never provisions a phantom cache for an absent Horizon.
+
+**Sizing.** `reconcileInfrastructure` resolves the sizing (`effectiveSizing`) and
+passes it to `managedInfraInstances`; every managed instance of a class takes
+that class's block, with the top-level `spec.sizing` placement folded in for the
+database and the bus. `ensureMariaDB` takes an unset `replicas` / `storageSize`
+from `spec.sizing.database` (the webhook normally stored them at admission) and
+writes `spec.resources`, `spec.nodeSelector`, `spec.tolerations` and
+`spec.priorityClassName`; an owned MariaDB is re-asserted with one `Update` when
+any of them differs (`updating owned MariaDB "<name>"` on failure), and an adopted
+one is never written. `ensureMemcached` takes an unset `replicas` from
+`spec.sizing.cache` on every pass, floors a zero count to 3, and writes or removes
+`spec.resources`; the Memcached CRD has no placement. `ensureRabbitMQ` takes an
+unset `replicas` from `spec.sizing.messaging`, writes `spec.resources` and
+`spec.tolerations`, and writes the node selector and priority class through
+`spec.override.statefulSet.spec.template.spec` (`containers: []` included, which
+the upstream schema requires); unset resources that equal the operator's
+default count as matching, so a `Standard` bus is not rewritten on every pass.
+The shrink gate on `c5c3.io/allow-messaging-recreate` is unchanged. The teardown
+enumerates the instances with the zero sizing, since it only reads their names.
 
 **The message bus stays home.** `addMessaging` is called once, at
 `childNamespace(cp)` with the declared-at path `spec.infrastructure.messaging`,
@@ -1410,7 +1478,12 @@ the ControlPlane provisioned:
   user-declared `cp.Spec.KORC.AdminCredential.PasswordSecretRef` verbatim (so
   Keystone and K-ORC agree on the admin-password source) — and the region is
   `cp.Spec.Region`.
-- **Replicas:** copied from `spec.services.keystone.replicas` when set.
+- **Sizing:** `spec.sizing.keystone` (resolved) projects onto
+  `spec.deployment` (replicas, falling back to `commonv1.DefaultReplicas`;
+  resources; node selector, tolerations and priority class with the top-level
+  fallback; spread completed with `keystonev1alpha1.APIPodSelector`),
+  `spec.uwsgi`, `spec.autoscaling`, `spec.jobs`, and
+  `spec.federation.proxyResources`. Every field is assigned on every pass.
 - **Federation:** `spec.federation.proxyImage` is the
   `spec.services.keystone.federationProxyImage` override when set, else
   `ghcr.io/c5c3/keystone-federation-proxy:latest`;
@@ -1508,9 +1581,11 @@ services:
   **must** set its own so each dashboard reads distinct `SECRET_KEY` material.
 - **Gateway:** a DeepCopy of `spec.services.horizon.gateway`; a nil source clears
   the projected gateway so removing the block tears the HTTPRoute down.
-- **Replicas:** `commonv1.DefaultReplicas`, overridden by
-  `spec.services.horizon.replicas` when set (assigned unconditionally so clearing
-  the field reverts the child to the default instead of pinning a lost update).
+- **Sizing:** `spec.sizing.horizon.api` projects onto `spec.deployment`
+  (replicas falling back to `commonv1.DefaultReplicas`, resources, placement,
+  spread) and `spec.autoscaling`, inside the `CreateOrUpdate` closure. Every field
+  is assigned unconditionally, so clearing a value reverts the fetched child
+  instead of pinning a lost update.
 - **WebSSO:** projected from the **Ready** OIDC `KeystoneIdentityBackend` CRs
   attached to the Keystone child (see
   [Identity-backend watch](#identity-backend-watch)). One choice per Ready
@@ -1777,9 +1852,11 @@ reusing the ControlPlane's own specs so Glance points at the same backing servic
   `backends[]` line takes effect immediately and is not gated.
 - **Gateway / Replicas / SecretStoreRef / Region:** `gateway` is a DeepCopy of
   `spec.services.glance.gateway` (a nil source clears it, tearing the HTTPRoute
-  down); `replicas` defaults to `commonv1.DefaultReplicas`, overridden by
-  `spec.services.glance.replicas`; the resolved store selection and `spec.region`
-  are projected through. `spec.apiServer` is deliberately **not** set.
+  down); `spec.sizing.glance` projects onto `spec.deployment` (replicas falling
+  back to `commonv1.DefaultReplicas`), `spec.autoscaling` and `spec.jobs`, and its
+  process and thread counts onto `spec.apiServer` by launch mode (`uwsgi` from
+  2026.1, the process count as `workers` below it); the resolved store selection
+  and `spec.region` are projected through.
 
 A child placed outside the ControlPlane's namespace (`services.glance.namespace`)
 carries no owner reference — it is stamped with the ownership labels and applied
@@ -1878,10 +1955,11 @@ points at the same backing services:
   instead of pinning the last projected value.
 - **Gateway / Replicas / SecretStoreRef / Region:** `gateway` is a DeepCopy of
   `spec.services.placement.gateway` (a nil source clears it, tearing the
-  HTTPRoute down); `replicas` defaults to `commonv1.DefaultReplicas`, overridden
-  by `spec.services.placement.replicas`; the resolved store selection and
-  `spec.region` are projected through. `spec.apiServer` is deliberately **not**
-  set, so the child-side uWSGI defaults stay authoritative.
+  HTTPRoute down); `spec.sizing.placement` projects onto `spec.deployment`
+  (replicas falling back to `commonv1.DefaultReplicas`), `spec.autoscaling`,
+  `spec.jobs`, and `spec.apiServer.uwsgi` (only when a process or thread count is
+  set, so the child-side uWSGI defaults apply otherwise); the resolved store
+  selection and `spec.region` are projected through.
 
 The DB-credential objects are ensured **before** the child, so the Secret it
 references exists when the placement operator resolves it. They are ensured for a
@@ -1998,11 +2076,11 @@ Horizon, Glance, and Placement siblings:
   instead of pinning the last projected value.
 - **Gateway / Replicas / SecretStoreRef / Region:** `gateway` is a DeepCopy of
   `spec.services.barbican.gateway` (a nil source clears it, tearing the HTTPRoute
-  down); `replicas` defaults to `commonv1.DefaultReplicas`, overridden by
-  `spec.services.barbican.replicas`; the resolved store selection and
-  `spec.region` are projected through. `spec.apiServer` and `spec.dbClean` are
-  not set, so the child-side uWSGI parameters and clean-up schedule keep tracking
-  the barbican operator's defaults.
+  down); `spec.sizing.barbican` projects onto `spec.deployment` (replicas
+  falling back to `commonv1.DefaultReplicas`), `spec.autoscaling`, `spec.jobs`,
+  and `spec.apiServer.uwsgi` (only when a count is set); the resolved store
+  selection and `spec.region` are projected through. `spec.dbClean` is not set,
+  so the clean-up schedule keeps tracking the barbican operator's defaults.
 
 The DB-credential objects are ensured **before** the child, so the Secret it
 references exists when the barbican operator resolves it. In `Dynamic` mode the
@@ -2311,12 +2389,13 @@ the same backing services:
   instead of pinning the last projected value.
 - **Gateway / Replicas / SecretStoreRef / Region:** `gateway` is a DeepCopy of
   `spec.services.neutron.gateway` (a nil source clears it, tearing the HTTPRoute
-  down); `deployment.replicas` and `workers.deployment.replicas` both default to
-  `commonv1.DefaultReplicas` and are overridden by `services.neutron.replicas`
-  and `services.neutron.workerReplicas`; the resolved store selection and
-  `spec.region` are projected through. `spec.apiServer`, `spec.ovnDBSync`,
-  `spec.networkPolicy`, `spec.autoscaling` and `spec.logging` are **not** set, so
-  the child-side defaults stay authoritative.
+  down); `spec.sizing.neutron` projects onto `spec.deployment`,
+  `spec.workers.deployment` (replicas, resources and placement, no spread; both
+  replica counts fall back to `commonv1.DefaultReplicas`), `spec.apiServer.uwsgi`
+  (only when a count is set), `spec.autoscaling` and `spec.jobs`; the resolved
+  store selection and `spec.region` are projected through. `spec.ovnDBSync`,
+  `spec.networkPolicy` and `spec.logging` are **not** set, so the child-side
+  defaults stay authoritative.
 
 Unsetting `spec.services.neutron` deletes nothing on its own. With
 `c5c3.io/allow-neutron-deletion: "true"`, `deleteOrphanedNeutron` releases, in
@@ -2456,16 +2535,19 @@ services:
   that follows a sibling block being declared re-renders the child with it.
 - **Gateway / Replicas / SecretStoreRef / Region:** `gateway` is a DeepCopy of
   `spec.services.cinder.gateway` (a nil source clears it, tearing the HTTPRoute
-  down); `api.deployment.replicas` defaults to `commonv1.DefaultReplicas` and is
-  overridden by `services.cinder.replicas`; the resolved store selection and
-  `spec.region` are projected through. The scheduler, volume and backup
-  `deployment.replicas` are pinned to `1`: all three blocks are struct values, so
+  down); `spec.sizing.cinder` projects onto `spec.api.deployment` (replicas
+  falling back to `commonv1.DefaultReplicas`), `spec.api.uwsgi`,
+  `spec.autoscaling`, `spec.scheduler.deployment` (falling back to one replica),
+  the resources and placement of `spec.volume.deployment` and
+  `spec.backup.deployment`, and `spec.jobs`; the resolved store selection and
+  `spec.region` are projected through. The volume and backup
+  `deployment.replicas` are pinned to `1`, and the scheduler's is written
+  explicitly: all three blocks are struct values, so
   the API server materializes the shared default of three onto the wire before the
   cinder operator's own defaulting webhook runs, and the Cinder CRD's CEL rules
   admit only `1` on the volume and backup blocks. `spec.dbPurge`,
-  `spec.networkPolicy`, `spec.autoscaling`, `spec.logging`, `spec.api.uwsgi` and
-  `spec.policyOverrides` are **not** set, so the child-side defaults stay
-  authoritative.
+  `spec.networkPolicy`, `spec.logging` and `spec.policyOverrides` are **not**
+  set, so the child-side defaults stay authoritative.
 
 Unsetting `spec.services.cinder` deletes nothing on its own. With
 `c5c3.io/allow-cinder-deletion: "true"`, `deleteOrphanedCinder` releases, in
@@ -2622,21 +2704,23 @@ services:
   `KeystoneService` registration provisions, its `username`, the `service-nova`
   project, and both domains from the ControlPlane's effective admin domain, with
   the password read from the consumer Secret that registration delivers.
-- **Metadata:** `metadata.deployment.replicas` is written explicitly (`1`, or
-  `services.nova.metadataReplicas`), `metadata.gateway` is a DeepCopy of
+- **Metadata:** `metadata.deployment` is projected from
+  `spec.sizing.nova.metadata` with the replica count written explicitly (falling
+  back to `1`), `metadata.uwsgi` from its process and thread counts,
+  `metadata.gateway` is a DeepCopy of
   `services.nova.metadataGateway`, and `metadata.sharedSecretRef` is **resolved**
   rather than materialised: the Secret `services.nova.metadataSharedSecretRef`
   names when the ControlPlane supplies one, and otherwise the generated
   `{controlplane.Name}-nova-metadata-secret` under the key `shared_secret`. Removing a
   user-supplied reference therefore reverts the child to the generated value
   instead of pinning the last one.
-- **Console proxy:** three shapes, and the empty one is deliberate. An absent
-  `services.nova.consoleProxy` projects the **zero** block, which leaves both the
-  switch and the deployment absent on the wire and lets the nova defaulting
-  webhook enable the proxy at one replica. A disabled proxy projects the switch
-  and nothing else, because the Nova CRD rejects a `spec.consoleProxy.deployment`
-  written on a disabled proxy. An enabled one carries the sizing and the listener
-  it was given.
+- **Console proxy:** three shapes. An absent `services.nova.consoleProxy` leaves
+  the switch absent on the wire, so the nova defaulting webhook enables the proxy,
+  and carries the `deployment` sized from `spec.sizing.nova.consoleProxy` (one
+  replica under `Standard`, the value that webhook would materialize). A disabled
+  proxy projects the switch and nothing else, because the Nova CRD rejects a
+  `spec.consoleProxy.deployment` written on a disabled proxy. An enabled one
+  carries the switch, the sized `deployment` and the listener it was given.
 - **Endpoints:** `endpoints.cinder.enabled` follows `services.cinder` and
   `endpoints.barbican.enabled` follows `services.barbican`, so a plane that runs
   block storage lets Nova attach volumes and one that runs a key manager lets it
@@ -2652,13 +2736,13 @@ services:
   operator resolves exactly like an empty one.
 - **Gateway / Replicas / SecretStoreRef / Region:** `gateway` is a DeepCopy of
   `spec.services.nova.gateway` (a nil source clears it, tearing the HTTPRoute
-  down); `api.deployment.replicas` defaults to `commonv1.DefaultReplicas` and is
-  overridden by `services.nova.replicas`, while the scheduler and conductor
-  counts are written explicitly as `1` unless overridden, for the reason the
-  metadata count is; the resolved store selection and `spec.region` are projected
-  through. `spec.networkPolicy`, `spec.autoscaling`, `spec.logging`,
-  `spec.api.uwsgi` and `spec.metadata.uwsgi` are **not** set, so the child-side
-  defaults stay authoritative.
+  down); `spec.sizing.nova` projects onto `spec.api.deployment` (replicas
+  falling back to `commonv1.DefaultReplicas`), `spec.api.uwsgi`,
+  `spec.autoscaling` and `spec.jobs`, while the scheduler and conductor
+  Deployments are written explicitly (falling back to `1`, for the reason the
+  metadata count is) together with their `workers`; the resolved store selection
+  and `spec.region` are projected through. `spec.networkPolicy` and
+  `spec.logging` are **not** set, so the child-side defaults stay authoritative.
 
 **The compute-config mirror.** The nova operator publishes the compute contract,
 the `nova.conf` fragment and bus credentials a nova-compute needs to join this
@@ -4215,6 +4299,7 @@ The `condition_type` label is resolved from the package-private
 
 | `sub_reconciler` | `condition_type` |
 | --- | --- |
+| `Sizing` | `SizingReady` |
 | `Namespaces` | `NamespacesReady` |
 | `Infrastructure` | `InfrastructureReady` |
 | `ESOTenantStore` | `ESOTenantStoreReady` |
@@ -4312,7 +4397,9 @@ cross-namespace teardown assertions.
 | File | Coverage |
 | --- | --- |
 | `controlplane_controller_test.go` | `Reconcile` orchestration, sequential early-return, Ready aggregation, `updateStatus` error-join, idempotency |
-| `reconcile_infrastructure_test.go` | Managed/brownfield MariaDB + Memcached, unstructured readiness, condition contract, `ObservedGeneration` |
+| `reconcile_sizing_test.go` | `reconcileSizing` for a built-in profile (no read), an existing, a missing and an unreadable `SizingProfile`; the pipeline stop; `sizingProfileToControlPlaneMapper` |
+| `sizing_projection_test.go` | The shared projection helpers: spread completion against the child's selector, the placement fallback, the replica default, uWSGI, Jobs, and the Glance launch mode |
+| `reconcile_infrastructure_test.go` | Managed/brownfield MariaDB + Memcached, unstructured readiness, condition contract, `ObservedGeneration`, the backing-service sizing of `ensureMariaDB` / `ensureMemcached` / `ensureRabbitMQ` |
 | `reconcile_dbcredentials_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |
 | `reconcile_adminpassword_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |
 | `reconcile_keystone_test.go` | Keystone projection, infra gate, image/rotation/policy projection, condition contract, `ObservedGeneration` |
@@ -4344,6 +4431,11 @@ operators/c5c3/
 ├── main.go                                     Scheme registration + bootstrap wiring, leaderElectionID
 ├── api/v1alpha1/
 │   ├── controlplane_types.go                   ControlPlane CRD types
+│   ├── sizing_types.go                         SizingSpec, ControlPlaneSizingSpec, SizingProfile CRD types
+│   ├── sizing_profiles.go                      BuiltinSizing: the Minimal and Standard profiles
+│   ├── sizing_merge.go                         MergeSizing, ResolveSizing, EffectiveSizingBase
+│   ├── sizing_validation.go                    validateSizingSpec, validateResolvedSizing, inert warnings
+│   ├── sizingprofile_webhook.go                SizingProfileWebhook (validating + defaulting)
 │   ├── credentialrotation_types.go             CredentialRotation CRD types
 │   ├── secretaggregate_types.go                SecretAggregate CRD types
 │   ├── controlplane_webhook.go                 ControlPlaneWebhook (validating + defaulting)
@@ -4361,6 +4453,9 @@ operators/c5c3/
     │   ├── identity_backends.go                KeystoneIdentityBackend listing + WebSSO/MultiDomain
     │   │                                        projection helpers
     │   ├── instrumentation.go                  instrumenter + drift-guard map
+    │   ├── reconcile_sizing.go                 reconcileSizing (SizingReady), effectiveSizing,
+    │   │                                       sizingProfileToControlPlaneMapper
+    │   ├── sizing_projection.go                shared projection of spec.sizing onto the children
     │   ├── korc_cloudsyaml.go                  clouds.yaml document builders (app-credential + password bootstrap)
     │   ├── korc_eso.go                         PushSecret + clouds.yaml ExternalSecret builders/ensure
     │   ├── korc_imports.go                     admin Domain/User import projection

@@ -136,12 +136,17 @@ spec:
         digest: sha256:<digest>   # pin a digest for production
 ```
 
+The sidecar's CPU and memory come from
+`spec.sizing.keystone.federationProxy.resources` on the same CR, which the
+operator projects onto the child's `spec.federation.proxyResources`.
+
 ::: warning Do not set `spec.federation.proxyImage` on the projected child
-Editing `spec.federation.proxyImage` (or any `spec.federation` field) on the
-`controlplane-keystone` child directly is reverted on the next reconcile: the
-c5c3-operator re-asserts the whole `spec.federation` block from the ControlPlane.
-Set the override via `spec.services.keystone.federationProxyImage` on the
-`ControlPlane` CR instead.
+Editing `spec.federation.proxyImage` (or any `spec.federation` field, including
+`proxyResources`) on the `controlplane-keystone` child directly is reverted on
+the next reconcile: the c5c3-operator re-asserts the whole `spec.federation`
+block from the ControlPlane. Set the override via
+`spec.services.keystone.federationProxyImage` or
+`spec.sizing.keystone.federationProxy` on the `ControlPlane` CR instead.
 :::
 
 The projected image is inert until an OIDC backend attaches.

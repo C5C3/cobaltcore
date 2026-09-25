@@ -16,9 +16,10 @@ materializes this aggregate into the individual per-service CRs — see the
 [ControlPlane Reconciler reference](./controlplane-reconciler.md) for the
 reconciliation flow.
 
-The c5c3 API group also ships two companion kinds: `CredentialRotation`
-(a one-shot credential-rotation request) and `SecretAggregate` (types-only at
-this level; the reconciler is deferred). All three are documented here.
+The c5c3 API group also ships three companion kinds: `SizingProfile` (a
+cluster-scoped sizing profile a ControlPlane references), `CredentialRotation`
+(a one-shot credential-rotation request), and `SecretAggregate` (types-only at
+this level; the reconciler is deferred). All four are documented here.
 
 The API surface is intentionally **smaller** than the
 [Keystone CRD](../keystone/keystone-crd.md): the ControlPlane curates a subset
@@ -31,11 +32,12 @@ re-exposing every service field through the aggregate.
 | --- | --- |
 | Group | `c5c3.io` |
 | Version | `v1alpha1` |
-| Scope | Namespaced |
+| Scope | Namespaced (`SizingProfile`: Cluster) |
 
 | Kind | List Kind |
 | --- | --- |
 | `ControlPlane` | `ControlPlaneList` |
+| `SizingProfile` | `SizingProfileList` |
 | `CredentialRotation` | `CredentialRotationList` |
 | `SecretAggregate` | `SecretAggregateList` |
 
@@ -47,8 +49,8 @@ import c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 
 **Scheme registration:**
 
-The `init()` functions in `controlplane_types.go`, `credentialrotation_types.go`,
-and `secretaggregate_types.go` each register their kind (and List kind) with the
+The `init()` functions in `controlplane_types.go`, `sizing_types.go`,
+`credentialrotation_types.go`, and `secretaggregate_types.go` each register their kind (and List kind) with the
 shared `SchemeBuilder`. The operator entrypoint registers the group with the
 manager's scheme through `internal/common/bootstrap` (which calls
 `AddToScheme`), so every kind in the group is available to the manager:
@@ -104,7 +106,6 @@ spec:
         name: memcached
   services:
     keystone:
-      replicas: 3
       rotationInterval: 168h
       gateway:
         parentRef:
@@ -112,6 +113,10 @@ spec:
         hostname: keystone.example.com
         path: /
       publicEndpoint: https://keystone.example.com/v3
+  sizing:
+    keystone:
+      api:
+        replicas: 3
   korc:
     adminCredential:
       cloudCredentialsRef:
@@ -204,6 +209,7 @@ status:
 | `regionDescription` | `string` | No | `""` | Description pushed into the Keystone region the ControlPlane adopts as a managed K-ORC `Region` (`{controlplane.Name}-region`). Empty keeps Keystone's description empty: K-ORC applies the spec value on every resync, so a description set by hand in Keystone is overwritten either way. A non-empty value is pushed once the region is adopted (the `Region` CR reports `status.id`); edits take effect on the next reconcile. **Mutable.** Bounded at 255 characters, K-ORC's bound on `RegionResourceSpec.Description`. **Forbidden in External mode** (webhook): no `Region` CR is adopted against a pre-existing installation. **Upgrading an existing control plane:** the `Region` CR drives the Keystone description whether or not this field is set, so the first reconcile after the upgrade **clears** a description an admin set by hand (`openstack region set ... --description`). Copy that value into `spec.regionDescription` before rolling out this version if you want to keep it; the reconciler emits a **Warning** `RegionDescriptionCleared` event on the ControlPlane when it adopts the region with this field empty on a control plane whose catalog was already registered — the upgrade case. A fresh install, whose region has no description to lose, stays silent. |
 | `infrastructure` | [`*InfrastructureSpec`](#infrastructurespec) | Conditional | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. **Required** when `services.keystone.mode` is `Managed` (or unset, or `services.keystone` unset) — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted, and the validating webhook rejects a non-External ControlPlane without it. **Forbidden** in **External** mode (an External ControlPlane provisions no backing services; phase 2 relaxes this to optional). The mode-conditional required/forbidden rule is webhook-enforced because CEL cannot span `spec.infrastructure` and `spec.services.keystone`; see [InfrastructureSpec](#infrastructurespec) and [Validation Rules](#validation-rules). |
 | `services` | [`ServicesSpec`](#servicesspec) | Yes | — | Per-service configuration projected into the individual service CRs. |
+| `sizing` | [`*ControlPlaneSizingSpec`](#sizingspec) | No | `nil` (the `Standard` profile) | Sizes and places every component the ControlPlane creates: the service API, worker, and Job pods, the Keystone federation proxy, and the managed backing services. A built-in profile (`Minimal` or `Standard`), overlaid by a referenced cluster-scoped [`SizingProfile`](#sizingprofile), overlaid by the values set here. Unset resolves to `Standard`, which projects the same children as before the field existed. **Forbidden in External mode** (webhook). See [SizingSpec](#sizingspec). |
 | `globalPolicyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
 | `globalExtraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections (`section` → `key` → `value`) applied to every INI-configured service the control plane declares (Keystone, Glance, Placement, and Barbican today). Merged **key by key** with each service's own `extraConfig`: sections are unioned, the per-service value wins per key, and a global key with no per-service counterpart stays effective, before the merged result is projected onto that service's child. **Never** applies to Horizon, which renders flat Django settings rather than INI. Legal but **inert** in External mode, the same posture as `globalPolicyOverrides`. Admission validates the merged result per declared INI service against that service's option catalog and operator-owned-key registry — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
 | `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (defaults to the shared cluster store `openbao-cluster-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone, Horizon, Glance, Placement, and Barbican children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, defaults to the shared cluster-scoped `ClusterSecretStore` named `openbao-cluster-store`, so existing deployments are unchanged; set `{kind: SecretStore, name: <store>}` to reach OpenBao as a per-tenant identity resolved in the ControlPlane's own namespace. See [SecretStoreRefSpec](#secretstorerefspec). |
@@ -275,18 +281,21 @@ verbatim, so the aggregate and the projected service agree on the backing
 services.
 
 The managed-mode MariaDB topology is derived from
-`spec.infrastructure.database.replicas` (default `3`, minimum `1`): the default
-projects a production-shaped Galera HA cluster (3 replicas, `galera.enabled`,
-`100Gi` storage), while `database.replicas: 1` projects a single-instance,
-non-Galera MariaDB so the fresh-create path schedules on a constrained cluster
-such as a single-node kind. `cache.replicas` (also default `3`) drives the
-Memcached replica count. Both are only honoured in managed mode;
-storage stays at `100Gi` regardless of the replica count, and a ControlPlane
-that adopts a pre-existing MariaDB/Memcached leaves its topology untouched.
-Unlike `database.replicas`, which is immutable after creation, `cache.replicas`
-stays mutable: a change is re-projected in place, in both directions, onto every
-Memcached the ControlPlane owns, whether in its own namespace, in a service
-namespace, or on a target cluster.
+`spec.infrastructure.database.replicas` (minimum `1`). An unset value is taken
+from the ControlPlane's [sizing](#sizingspec) at admission and stored: `3` under
+the `Standard` profile, a production-shaped Galera HA cluster with
+`galera.enabled`, and `1` under `Minimal`, a single-instance, non-Galera MariaDB
+that schedules on a constrained cluster such as a single-node kind.
+`database.storageSize` is resolved the same way (`100Gi` under `Standard`,
+`512Mi` under `Minimal`). `cache.replicas` drives the Memcached replica count;
+an unset value follows the sizing on every pass (`3` under `Standard`). Both are
+only honoured in managed mode, and a ControlPlane that adopts a pre-existing
+MariaDB/Memcached leaves its topology untouched. Unlike `database.replicas`,
+which is immutable after creation, `cache.replicas` stays mutable: a change is
+re-projected in place, in both directions, onto every Memcached the ControlPlane
+owns, whether in its own namespace, in a service namespace, or on a target
+cluster. The container resources and placement of the managed instances come
+from `spec.sizing.database`, `.cache`, and `.messaging`.
 
 > **`database.secretRef` is operator-owned in managed mode.** The
 > `DatabaseSpec` is projected onto the Keystone CR verbatim **except** for its
@@ -341,7 +350,7 @@ first consumer exists. See
 | --- | --- | --- | --- | --- |
 | `clusterRef` | `*corev1.LocalObjectReference` | Conditional (XOR with `secretRef`) | `openstack-rabbitmq` (webhook, only when `secretRef` is unset) | Managed mode. Names the `RabbitmqCluster` CR the reconciler owns in the ControlPlane's namespace. |
 | `secretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | Conditional (XOR with `clusterRef`) | `key: transport_url` | Brownfield mode. Names a Secret holding the complete `rabbit://user:password@host:port/` transport URL under `key`. The Secret is read, never written. |
-| `replicas` | `int32` | No | `3` (schema default, `Minimum` 1) | Number of RabbitMQ pods in the managed cluster. Projected onto the owned CR's `spec.replicas` and re-projected when the value changes, so the broker scales with the field. Growing is an in-place update; **shrinking is a delete-and-recreate**, because the RabbitMQ Cluster Operator refuses an in-place scale-down — the reconciler deletes the owned `RabbitmqCluster` and creates it again at the declared count, which loses the broker's volumes and everything on them. Because the field carries a schema default, an edit that merely drops the line off a larger broker arrives as a scale-down nobody typed, so the recreate is **opt-in**: without the `c5c3.io/allow-messaging-recreate: "true"` annotation on the ControlPlane the reconciler refuses the shrink, leaves the broker running at its current size, and reports `InfrastructureReady=False` / `RabbitMQError` naming the annotation. Ignored in brownfield mode. Pin it to `1` at creation on a constrained cluster such as a single-node kind. |
+| `replicas` | `int32` | No | the sizing's `messaging.replicas` (`3` under `Standard`, `Minimum` 1) | Number of RabbitMQ pods in the managed cluster. An unset value follows `spec.sizing` on every pass. Projected onto the owned CR's `spec.replicas` and re-projected when the value or the sizing changes, so the broker scales with the field. Growing is an in-place update; **shrinking is a delete-and-recreate**, because the RabbitMQ Cluster Operator refuses an in-place scale-down — the reconciler deletes the owned `RabbitmqCluster` and creates it again at the declared count, which loses the broker's volumes and everything on them. Because an unset value resolves to the sizing, an edit that merely drops the line off a larger broker, or switches it to a smaller profile, arrives as a scale-down nobody typed, so the recreate is **opt-in**: without the `c5c3.io/allow-messaging-recreate: "true"` annotation on the ControlPlane the reconciler refuses the shrink, leaves the broker running at its current size, and reports `InfrastructureReady=False` / `RabbitMQError` naming the annotation. Ignored in brownfield mode. Pin it to `1` at creation on a constrained cluster such as a single-node kind. |
 | `tls` | [`*MessagingTLSSpec`](#messagingtlsspec) | No | `nil` (plaintext) | Client trust for the broker connection. **Brownfield mode only**: a managed `RabbitmqCluster` is provisioned without a TLS listener, so the webhook rejects `tls` beside a `clusterRef`. |
 
 **Defaulting.** The block is never materialized; only its leaves are filled, and
@@ -360,8 +369,9 @@ too. The validating webhook mirrors it at `spec.infrastructure.messaging` and
 adds three checks: a brownfield `secretRef.name` and a
 `tls.caBundleSecretRef.name` cannot be empty (`field.Required`), and a `tls`
 block beside a managed `clusterRef` is rejected outright — the reconciler
-projects only `spec.replicas` onto the owned cluster, so a managed broker comes
-up on the RabbitMQ Cluster Operator's default, plaintext listener. External
+projects the replica count and the sizing but no listener onto the owned
+cluster, so a managed broker comes up on the RabbitMQ Cluster Operator's
+default, plaintext listener. External
 keystone mode forbids `spec.infrastructure` as a whole, and with it the messaging
 block. On update the block is a **one-way add in both modes**: it can be
 declared on a live ControlPlane and never removed again — the brownfield removal
@@ -475,9 +485,9 @@ managed-vs-brownfield split of the infrastructure specs at the service level:
 | `mode: Managed` (or unset) | The reconciler deploys and owns a full Keystone workload — today's behavior, byte-identical. |
 | `mode: External` | Service-less: identity is managed against a pre-existing, externally-operated Keystone at [`external.authURL`](#externalkeystonespec) and no Keystone workload is deployed. |
 
-In **External** mode every managed-only field below (`replicas`, `image`,
+In **External** mode every managed-only field below (`image`,
 `policyOverrides`, `extraConfig`, `rotationInterval`, `gateway`,
-`publicEndpoint`) is **forbidden** and the typed
+`publicEndpoint`) is **forbidden**, as is `spec.sizing`, and the typed
 [`external`](#externalkeystonespec) block is **required**. These intra-struct
 rules are enforced by type-level CEL `XValidation` rules (so they hold at the
 CRD schema layer even when the
@@ -488,7 +498,6 @@ validating webhook is bypassed) and mirrored by the validating webhook; see
 | --- | --- | --- | --- | --- |
 | `mode` | `string` (`Managed` \| `External`) | No | `Managed` | Selects whether the Keystone service is **Managed** (the reconciler deploys and owns a full Keystone workload) or **External** (identity is managed against a pre-existing Keystone at `external.authURL` and no workload is deployed). Defaulted to `Managed` by both the `+kubebuilder:default` marker and the defaulting webhook. In External mode the [`external`](#externalkeystonespec) block is required and every managed-only field below is forbidden. |
 | `external` | [`*ExternalKeystoneSpec`](#externalkeystonespec) | Conditional | `nil` | Connection parameters for an externally-operated Keystone. **Required** when `mode` is `External`, **forbidden** otherwise (CEL + webhook enforced). |
-| `replicas` | `*int32` | No | `nil` (Keystone operator default, 3) | Overrides the number of Keystone API replicas. When `nil`, the reconciler leaves `replicas` unset on the projected Keystone CR, so the Keystone operator applies its own default. Minimum: 1. **Forbidden in External mode.** |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Keystone container image. When `nil`, the reconciler derives the image as `ghcr.io/c5c3/keystone:{spec.openStackRelease}`. When set, the whole image reference is used verbatim. |
 | `policyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | Per-service oslo.policy overrides for Keystone. When set, these take precedence over `spec.globalPolicyOverrides` for the Keystone service. |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the Keystone service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the Keystone child's `spec.extraConfig`. **Forbidden in External mode** (CEL + webhook, message `services.keystone.extraConfig is forbidden when services.keystone.mode is External`): no Keystone workload is deployed, so there is no config to render. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
@@ -518,7 +527,6 @@ its fields carry per-field External-mode forbid-rules.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `replicas` | `*int32` | No | `nil` | Overrides the number of dashboard replicas. When `nil` the reconciler applies the Horizon operator's own default (3). Minimum 1. |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Horizon container image. When `nil` the reconciler derives `ghcr.io/c5c3/horizon:{spec.openStackRelease}`. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected dashboard externally via a Gateway API HTTPRoute. When `nil` the dashboard is reachable in-cluster only. |
 | `secretKeyRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` | Overrides the Secret holding the Django `SECRET_KEY` the dashboard replicas share. When `nil` the reconciler defaults to the kind-infrastructure shim Secret `horizon-secret-key`, which is pinned to the **default** ControlPlane identity — multi-ControlPlane deployments MUST set this explicitly. |
@@ -557,7 +565,6 @@ carry per-field External-mode forbid-rules.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `replicas` | `*int32` | No | `nil` | Overrides the number of Glance API replicas. When `nil` the reconciler applies the Glance operator's own default (3). Minimum 1. |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Glance container image. When `nil` the reconciler derives `ghcr.io/c5c3/glance:{spec.openStackRelease}`. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Glance API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Glance API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Glance image endpoint URL (e.g. `https://glance.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public image catalog Endpoint; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment — the Glance API is served at the root), and be at most 512 characters. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ) — see [Validation Rules](#validation-rules). When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
@@ -635,7 +642,6 @@ carry per-field External-mode forbid-rules.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `replicas` | `*int32` | No | `nil` | Overrides the number of Placement API replicas. When `nil` the reconciler applies the Placement operator's own default (3). Minimum 1. |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Placement container image. When `nil` the reconciler derives `ghcr.io/c5c3/placement:{spec.openStackRelease}`. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Placement API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Placement API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty, enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Placement endpoint URL (e.g. `https://placement.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public placement catalog Endpoint, the URL every compute service resolves to place its allocations; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the Placement API is served at the root and clients append the API path to the catalog URL), and be at most 512 characters; a single trailing slash is tolerated. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every allocation call carries the caller's scoped Keystone token to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
@@ -691,7 +697,6 @@ fields carry per-field External-mode forbid-rules.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `replicas` | `*int32` | No | `nil` | Overrides the number of Barbican API replicas. When `nil` the reconciler projects the shared default of 3 (`commonv1.DefaultReplicas`). Minimum 1. |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Barbican container image. When `nil` the reconciler derives `ghcr.io/c5c3/barbican:{spec.openStackRelease}`. When set, the validating webhook mirrors the `commonv1.ImageSpec` tag/digest XOR, so an override naming neither or both is rejected at admission. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Barbican API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Barbican API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty and a usable DNS name, enforced at admission by the validating webhook. |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Barbican endpoint URL (e.g. `https://barbican.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public key-manager catalog Endpoint, the URL every client resolves to store and read its secret material; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the Barbican API is served at the root and clients append the API path to the catalog URL), and be at most 512 characters; a single trailing slash is tolerated. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every call carries the caller's scoped Keystone token and the secret payload to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
@@ -829,8 +834,8 @@ policies, autoscaling, and logging stay authoritative.
 
 Two fields have no counterpart on the other services. `ovn` is required, because
 the ML2/OVN mechanism driver writes every network, subnet, and port into an OVN
-Northbound database. `workerReplicas` sizes the RPC worker Deployments the child
-runs beside its API.
+Northbound database. The RPC worker Deployments the child runs beside its API are
+sized by `spec.sizing.neutron.workers`.
 
 Forbidden entirely when `services.keystone.mode` is `External` (Neutron needs its
 own External-mode design), so, like `ServicePlacementSpec`, none of its fields
@@ -838,8 +843,6 @@ carry per-field External-mode forbid-rules.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `replicas` | `*int32` | No | `nil` | Overrides the number of Neutron API replicas. When `nil` the reconciler applies the neutron operator's own default (3). Minimum 1. |
-| `workerReplicas` | `*int32` | No | `nil` | Overrides the replica count of the two RPC worker Deployments the child runs beside its API, the periodic workers and the OVN maintenance worker. Projected onto the child's `spec.workers.deployment.replicas`, which sizes both. When `nil` the reconciler applies the neutron operator's own default (3), so six worker pods. The knob exists because a single-node devstack cannot carry six idle worker pods beside the rest of the control plane. Minimum 1. |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Neutron container image. When `nil` the reconciler derives `ghcr.io/c5c3/neutron:{spec.openStackRelease}`. When set, the validating webhook mirrors the `commonv1.ImageSpec` tag/digest XOR, so an override naming neither or both is rejected at admission. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Neutron API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Neutron API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty and a usable DNS name, enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Neutron endpoint URL (e.g. `https://neutron.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public network catalog Endpoint, the URL every client resolves to create its networks, subnets, and ports; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the Neutron API is served at the root and clients append the API path to the catalog URL), and be at most 512 characters; a single trailing slash is tolerated. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every network call carries the caller's scoped Keystone token to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
@@ -995,7 +998,6 @@ per-field External-mode forbid-rules.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `replicas` | `*int32` | No | `nil` | Overrides the number of Cinder API replicas. When `nil` the reconciler applies the cinder operator's own default (3). It sizes the API Deployment alone; the scheduler, volume, and backup Deployments are pinned to one replica by the projection (see below). Minimum 1. |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Cinder container image. When `nil` the reconciler derives `ghcr.io/c5c3/cinder:{spec.openStackRelease}`. When set, the validating webhook mirrors the `commonv1.ImageSpec` tag/digest XOR, so an override naming neither or both is rejected at admission. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Cinder API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Cinder API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty and a usable DNS name, enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Cinder endpoint URL (e.g. `https://cinder.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public block-storage catalog Endpoint, the URL every client resolves to create its volumes, snapshots, and backups; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the ControlPlane appends `/v3` when it registers the row), and be at most 512 characters; a single trailing slash is tolerated and the reconciler trims it before appending `/v3`, so the row never carries `//v3`. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every volume call carries the caller's scoped Keystone token to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
@@ -1064,8 +1066,9 @@ ControlPlane name may therefore be at most **36** characters while
 `services.cinder` is set. The rule runs on create and on the update that newly
 enables Cinder.
 
-The projection writes `replicas: 1` onto the child's scheduler, volume, and backup
-Deployment blocks. All three are struct values rather than pointers, so
+The projection writes the replica count onto the child's scheduler, volume, and
+backup Deployment blocks: `1` for the volume and backup blocks always, and for the
+scheduler unless `spec.sizing.cinder.scheduler.replicas` says otherwise. All three are struct values rather than pointers, so
 `deployment: {}` reaches the API server whatever the projection assigns, and the
 shared `DeploymentSpec` default of three lands on the wire before the cinder
 operator's own defaulting webhook runs. The volume and backup blocks are the ones
@@ -1193,10 +1196,6 @@ per-field External-mode forbid-rules.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `replicas` | `*int32` | No | `nil` | Overrides the number of Nova API replicas. When `nil` the projection writes `commonv1.DefaultReplicas` (3). It sizes the API Deployment alone; the metadata, scheduler, conductor, and console-proxy Deployments carry counts of their own. Minimum 1. |
-| `metadataReplicas` | `*int32` | No | `nil` | Overrides the replica count of the `nova-metadata-api` Deployment, the process that answers an instance's calls to `169.254.169.254`. When `nil` the projection writes `1`. The metadata API holds nothing between requests, so raising it costs only the pods. Minimum 1. |
-| `schedulerReplicas` | `*int32` | No | `nil` | Overrides the replica count of the `nova-scheduler` Deployment, the process that picks a host for every instance the conductor asks it about. When `nil` the projection writes `1`. Schedulers are peers that read the same host state out of Placement. Minimum 1. |
-| `conductorReplicas` | `*int32` | No | `nil` | Overrides the replica count of the `nova-conductor` Deployment, the only process that reaches the cell database on behalf of a compute node. When `nil` the projection writes `1`. Minimum 1. |
 | `consoleProxy` | [`*ServiceNovaConsoleProxySpec`](#servicenovaconsoleproxyspec) | No | `nil` | The `nova-novncproxy` Deployment that bridges a browser's noVNC session to the VNC server of the hypervisor an instance runs on. Omitting the block leaves the proxy enabled at the nova operator's own defaults. |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Nova container image. When `nil` the reconciler derives `ghcr.io/c5c3/nova:{spec.openStackRelease}`. When set, the validating webhook mirrors the `commonv1.ImageSpec` tag/digest XOR, so an override naming neither or both is rejected at admission. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Nova API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the API is reachable in-cluster only. A configured gateway needs a non-empty `hostname` that is a usable DNS name (see [Validation Rules](#validation-rules)). |
@@ -1213,18 +1212,18 @@ per-field External-mode forbid-rules.
 
 ### ServiceNovaConsoleProxySpec
 
-The ControlPlane's view of the console proxy. A disabled proxy has no Deployment
-to size and no listener to expose, and the Nova CRD rejects a
-`spec.consoleProxy.deployment` written on a disabled proxy, so a `replicas` or
-`gateway` value set beside `enabled: false` has nowhere to land. A CEL rule on
-this type refuses that combination at admission
-(`replicas and gateway must not be set when consoleProxy.enabled is false`)
-rather than parking the projected child on a rule of its own.
+The ControlPlane's view of the console proxy. A disabled proxy has no listener
+to expose, so a `gateway` set beside `enabled: false` has nowhere to land. A CEL
+rule on this type refuses that combination at admission
+(`gateway must not be set when consoleProxy.enabled is false`) rather than
+parking the projected child on a rule of its own. The proxy is sized by
+`spec.sizing.nova.consoleProxy`, which the validating webhook forbids beside a
+disabled proxy for the same reason: the Nova CRD rejects a
+`spec.consoleProxy.deployment` written on a disabled proxy.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `enabled` | `*bool` | No | `nil` (projected as `true`) | Projects the console proxy. An omitted `consoleProxy` block leaves the switch absent on the wire and the nova defaulting webhook enables the proxy; a block present with `enabled` unset is projected as `true` outright. Setting it to `false` deletes the proxy Deployment, its Service, and its HTTPRoute. |
-| `replicas` | `*int32` | No | `nil` (projected as `1` inside an enabled block) | Sizes the console-proxy Deployment. With the whole `consoleProxy` block omitted nothing is written and the nova defaulting webhook resolves its own default, also 1. Minimum 1. Forbidden while the proxy is disabled. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the console proxy externally. It takes a hostname of its own rather than a path under the API's: the noVNC client opens a WebSocket against the host the console URL names, and the API hands that URL to the browser. The `path` must be empty or `/`, since the console page and its WebSocket both open on the root of the hostname. Forbidden while the proxy is disabled. |
 
 ### ServiceNovaRemoteComputeSpec
@@ -1578,16 +1577,259 @@ therefore be at most **36** characters while `services.nova` is set. The rule
 runs on create and on the update that newly enables Nova.
 
 The projection writes the metadata, scheduler, and conductor replica counts
-explicitly, and writes `1` rather than the shared default of three. All three
+explicitly, and falls back to `1` rather than the shared default of three when
+`spec.sizing.nova` sets none. All three
 `deployment` blocks are struct values, so `deployment: {}` reaches the API server
 whatever the projection assigns and the shared `DeploymentSpec` default of three
 lands on the wire before the nova operator's own defaulting webhook runs. That
 webhook only reaches an absent block, so leaving these alone silently runs three
 metadata APIs, three schedulers, and three conductors where the nova operator's
 standalone default is one of each. The API count keeps the shared default of
-three, and the console proxy is projected as the zero block when
-`services.nova.consoleProxy` is absent, which is what lets the nova defaulting
-webhook enable it at one replica.
+three. When `services.nova.consoleProxy` is absent the switch stays absent on the
+wire, which is what lets the nova defaulting webhook enable the proxy, while the
+sized `deployment` block rides beside it (one replica under `Standard`).
+
+---
+
+## SizingSpec
+
+`spec.sizing` sizes and places every component the ControlPlane creates: the
+API, worker, and Job pods of the eight services, the Keystone federation proxy
+sidecar, and the managed MariaDB, Memcached, RabbitMQ, and dedicated OpenBao.
+The effective sizing of a ControlPlane is a built-in profile (`Minimal` or
+`Standard`), overlaid by the [`SizingProfile`](#sizingprofile) it references,
+overlaid by its own `spec.sizing` values, one value at a time
+([merge rules](#merge-rules)).
+
+A ControlPlane that sets no `spec.sizing` resolves to `Standard`, which repeats
+the replica counts and the database volume size the ControlPlane has always
+projected and sets nothing else, so every other value stays with the child
+operators' render-time defaults and the backing-service operators' defaults.
+`spec.sizing` is **forbidden in External mode**, where no workload is deployed.
+
+The resolved sizing is reported by the [`SizingReady`](#sizingready) condition.
+A `SizingProfile` read on every pass goes through the operator's cache, since
+the controller watches the kind; a built-in profile needs no read at all.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `profile` | `string` (`Minimal` \| `Standard`) | `""` (Standard, unless `profileRef` is set) | Selects a built-in profile as the base. Mutually exclusive with `profileRef` (CEL: `profile and profileRef are mutually exclusive`). |
+| `profileRef.name` | `string` | — | Names a cluster-scoped [`SizingProfile`](#sizingprofile), whose `base` then becomes the base. MinLength 1, MaxLength 253. Admission rejects a name no `SizingProfile` answers to, on create and when the name changes. |
+| `nodeSelector`, `tolerations`, `priorityClassName` | map, list, `*string` | — | The fallback placement of every component that sets none of its own. They are not merged into the components; the projection reads them when a component leaves the field unset. |
+| `database` | `DatabaseSizingSpec` | — | Every managed MariaDB: `replicas` (Minimum 1), `storageSize` (Pattern `^[0-9]+(Mi\|Gi\|Ti)$`), `resources`, and placement. |
+| `cache` | `CacheSizingSpec` | — | Every managed Memcached: `replicas` (Minimum 1) and `resources`. |
+| `messaging` | `ScaledSizingSpec` | — | The managed RabbitmqCluster: `replicas` (Minimum 1), `resources`, and placement. |
+| `secretStore` | `ContainerSizingSpec` | — | The voters of Barbican's dedicated OpenBao: `resources`. |
+| `keystone` | `api`, `jobs`, `federationProxy` | — | The Keystone API Deployment, its Job pods, and the federation proxy sidecar (`resources`). |
+| `horizon` | `api` | — | The dashboard Deployment. |
+| `glance`, `placement`, `barbican` | `api`, `jobs` | — | The API Deployment and the Job pods. |
+| `neutron` | `api`, `workers`, `jobs` | — | The API Deployment, both RPC worker Deployments (`replicas`, `resources`, placement; no spread), and the Job pods. |
+| `cinder` | `api`, `scheduler`, `volume`, `backup`, `jobs` | — | The API and scheduler Deployments, every volume Deployment and the backup Deployment (`resources` and placement; their replica count stays one), and the Job pods. |
+| `nova` | `api`, `metadata`, `scheduler`, `conductor`, `consoleProxy`, `jobs` | — | The five process Deployments and the Job pods. `consoleProxy` is forbidden while `services.nova.consoleProxy.enabled` is `false`. |
+
+The component blocks are built from these shapes:
+
+| Shape | Fields |
+| --- | --- |
+| `api` (Keystone, Glance, Placement, Barbican, Neutron, Cinder, Nova) | `replicas`, `resources`, `nodeSelector`, `tolerations`, `priorityClassName`, `spreadConstraints`, `processes`, `threads`, `autoscaling` |
+| `horizon.api` | the `api` fields without `processes` and `threads` |
+| `nova.metadata` | the `api` fields without `autoscaling` |
+| `nova.scheduler`, `nova.conductor` | `replicas`, `resources`, placement, `spreadConstraints`, `workers` |
+| `cinder.scheduler`, `nova.consoleProxy` | `replicas`, `resources`, placement, `spreadConstraints` |
+| `jobs` | `resources`, `priorityClassName` |
+| `spreadConstraints[]` | `maxSkew` (Minimum 1), `topologyKey` (MinLength 1), `whenUnsatisfiable` (`DoNotSchedule` \| `ScheduleAnyway`) |
+
+`processes`, `threads`, and `workers` have Minimum 1. `autoscaling` is the shared
+[`AutoscalingSpec`](../keystone/keystone-crd.md#autoscalingspec). A spread entry
+carries no label selector: the ControlPlane completes it with the pod selector
+of the component's Deployment, which each service's api package exports
+(`APIPodSelector`, and `SchedulerPodSelector`, `MetadataPodSelector`,
+`ConductorPodSelector`, `ConsoleProxyPodSelector` for the other components).
+Neither the ControlPlane nor a `SizingProfile` exposes node or pod affinity.
+
+### Built-in profiles
+
+`BuiltinSizing` returns a fresh copy of a profile on every call; an empty or
+unknown name returns `Standard`. "none" means the profile sets nothing, so the
+child operator's own default applies. Neither profile sets placement, spread,
+autoscaling, or a priority class. The `Minimal` figures are estimates.
+
+| Component | Standard | Minimal |
+| --- | --- | --- |
+| `keystone.api`, `glance.api`, `placement.api`, `barbican.api`, `neutron.api`, `cinder.api`, `nova.api` | replicas 3 | replicas 1, processes 1, threads 1, requests.cpu 50m |
+| `horizon.api` | replicas 3 | replicas 1, requests.cpu 50m |
+| `neutron.workers` | replicas 3 | replicas 1, requests.cpu 50m |
+| `cinder.scheduler` | replicas 1 | replicas 1, requests.cpu 50m |
+| `cinder.volume`, `cinder.backup` | none | requests.cpu 50m |
+| `nova.metadata` | replicas 1 | replicas 1, processes 1, threads 1, requests.cpu 50m |
+| `nova.scheduler`, `nova.conductor` | replicas 1 | replicas 1, workers 1, requests.cpu 50m |
+| `nova.consoleProxy` | replicas 1 | replicas 1, requests.cpu 50m |
+| `<service>.jobs` | none | requests.cpu 50m |
+| `database` | replicas 3, storageSize 100Gi | replicas 1, storageSize 512Mi, requests cpu 100m / memory 1Gi, limits memory 1Gi |
+| `cache` | replicas 3 | replicas 1, requests cpu 50m / memory 128Mi, limits memory 128Mi |
+| `messaging` | replicas 3 | replicas 1, requests cpu 100m / memory 512Mi, limits memory 512Mi |
+| `secretStore` | none | requests cpu 50m / memory 256Mi, limits memory 256Mi |
+
+A profile sizes service pods by counts and CPU requests only. Service memory
+stays with the child's per-process formula, so a lower process count lowers the
+memory the child renders.
+
+### Merge rules
+
+`MergeSizing(base, override)` overlays one sizing on another, field by field,
+and returns a new value that aliases neither input:
+
+- `replicas`, `processes`, `threads`, `workers`, `priorityClassName`, and
+  `storageSize`: a set override wins.
+- `resources`: every request and every limit the override names replaces or adds
+  the base entry of that resource name; the override's `claims` replace the
+  base's when set.
+- `nodeSelector`, `tolerations`, and `spreadConstraints`: a non-empty override
+  replaces the base, and an empty one inherits. The defaulting webhook's JSON
+  round trip drops an empty map or list, so an empty value cannot mean "clear".
+- `autoscaling`: a set override replaces the whole block, since its bounds and
+  targets only make sense together.
+- A component block: a nil override keeps the base, a nil base takes the
+  override, and two set blocks merge recursively.
+
+`ResolveSizing` applies the built-in base, then the referenced `SizingProfile`,
+then the ControlPlane's own values. A `profileRef` whose profile cannot be read
+resolves the ControlPlane's values over `Standard`.
+
+### Projection
+
+Every Deployment component writes its replica count (falling back to the count
+the ControlPlane always projected), its resources, and its node selector,
+tolerations, and priority class, each falling back to the top-level value when
+the component sets none. A resolved priority class of `""` projects none, which
+is how a component opts out of the top-level class. Spread entries are completed
+with the child's pod selector. Every field is assigned on every pass, so
+clearing a value on the ControlPlane clears it on the child. Affinity, the
+rollout strategy, and the graceful-termination timings are never written.
+
+| `spec.sizing.` component | Child fields written |
+| --- | --- |
+| `keystone.api` | `spec.deployment.*`, `spec.uwsgi`, `spec.autoscaling` |
+| `keystone.jobs` / `keystone.federationProxy` | `spec.jobs` / `spec.federation.proxyResources` |
+| `horizon.api` | `spec.deployment.*`, `spec.autoscaling` |
+| `glance.api` | `spec.deployment.*`, `spec.autoscaling`; `processes` and `threads` as `spec.apiServer.uwsgi` from 2026.1, `processes` as `spec.apiServer.workers` below it (threads are not written there) |
+| `placement.api`, `barbican.api`, `neutron.api` | `spec.deployment.*`, `spec.apiServer.uwsgi` (only when a count is set), `spec.autoscaling` |
+| `neutron.workers` | `spec.workers.deployment`: replicas, resources, placement |
+| `cinder.api` / `cinder.scheduler` | `spec.api.deployment.*`, `spec.api.uwsgi`, `spec.autoscaling` / `spec.scheduler.deployment.*` |
+| `cinder.volume`, `cinder.backup` | `spec.volume.deployment` / `spec.backup.deployment`: resources and placement; the replica count stays 1 |
+| `nova.api` / `nova.metadata` | `spec.api.deployment.*`, `spec.api.uwsgi`, `spec.autoscaling` / `spec.metadata.deployment.*`, `spec.metadata.uwsgi` |
+| `nova.scheduler`, `nova.conductor` | `spec.<component>.deployment.*`, `spec.<component>.workers` |
+| `nova.consoleProxy` | `spec.consoleProxy.deployment.*` whenever the proxy is enabled, including the default of an absent `services.nova.consoleProxy` |
+| `<service>.jobs` | `spec.jobs` (resources and priority class; the child falls back to its API Deployment for the rest) |
+| `database` | every managed MariaDB: `spec.replicas` and `spec.storage.size` when the block leaves them unset, `spec.resources`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName` |
+| `cache` | every managed Memcached: `spec.replicas` when the block leaves it unset, `spec.resources` (removed when unset). The Memcached CRD has no placement. |
+| `messaging` | the managed RabbitmqCluster: `spec.replicas` when the block leaves it unset, `spec.resources`, `spec.tolerations`, and the node selector and priority class through `spec.override.statefulSet.spec.template.spec`. Unset resources leave the operator's default (1 CPU and 2Gi requested, 2 CPU and 2Gi limit). |
+| `secretStore` | the dedicated OpenBaoCluster's `spec.resources`; the replica count stays 1 |
+
+The managed database's replica count and volume size cannot change after
+creation, so the defaulting webhook writes the resolved values into
+`spec.infrastructure.database` and every declared dedicated database block at
+admission (see [Defaulting Webhook](#defaulting-webhook)). Cache and bus replica
+counts are resolved on every pass and follow a profile change: an owned cache
+scales in both directions, an owned bus grows in place, and a bus shrink still
+needs the `c5c3.io/allow-messaging-recreate` annotation.
+
+### Upgrade behavior
+
+- A ControlPlane that names no profile renders identical children, and its
+  backing services keep their operators' defaults.
+- The service replica fields moved into `spec.sizing`: the `replicas` of every
+  service block, Neutron's `workerReplicas`, Nova's `metadataReplicas`,
+  `schedulerReplicas` and `conductorReplicas`, and the `replicas` of Nova's
+  `consoleProxy` block no longer exist. A stored ControlPlane
+  that set one loses it on the next read (schema pruning) and falls back to
+  Standard's count; re-apply it with the value under `spec.sizing`.
+- Stored database `replicas` and `storageSize` values stay as they are, whether
+  set explicitly or materialized by the old CRD default. A later profile switch
+  never changes them.
+- `cache.replicas` (of `spec.infrastructure.cache` and of every
+  `dedicatedBackingServices.cache` block) and `messaging.replicas` materialized
+  as `3` by the old CRD default stay stored too, and an explicit count wins over
+  the sizing. Remove them from the ControlPlane for the caches and the bus to
+  follow the profile.
+- A re-apply that omits `spec.infrastructure.database.replicas` or `storageSize`
+  (for example a server-side apply from GitOps that never owned the field) drops
+  the stored value, and the defaulting webhook refills it from the current
+  profile. After a profile switch that value differs from the running database
+  and the update is rejected as a change of a frozen field. Pin both values on a
+  live ControlPlane before switching its profile.
+
+### CRD size and server-side apply
+
+`spec.sizing` repeats its shapes at every component, which takes the ControlPlane
+CRD past the 262,144-byte limit of the `kubectl.kubernetes.io/last-applied-configuration`
+annotation. A client-side `kubectl apply` of the CRD therefore fails. The install
+paths apply it server-side: Helm through Flux, and `hack/ci-deploy-operator.sh`
+with `kubectl apply --server-side`. Apply it the same way when installing the CRD
+by hand.
+
+---
+
+## SizingProfile
+
+A `SizingProfile` is a cluster-scoped, site-defined sizing profile: a built-in
+base overlaid by the values in its spec, in the same `SizingSpec` shape
+`spec.sizing` carries. A ControlPlane selects it with `spec.sizing.profileRef`
+and follows every later edit of it: the controller watches the kind and
+re-reconciles every ControlPlane whose `profileRef.name` names an edited or
+deleted profile.
+
+```yaml
+apiVersion: c5c3.io/v1alpha1
+kind: SizingProfile
+metadata:
+  name: site-small
+spec:
+  base: Minimal
+  cache:
+    resources:
+      limits:
+        memory: 192Mi
+  keystone:
+    api:
+      replicas: 2
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `base` | `string` (`Minimal` \| `Standard`) | `Standard` | The built-in profile this profile's values override. Defaulted by both the CRD marker and the defaulting webhook. |
+| (inline) | `SizingSpec` | — | The values that override the base, with the fields and rules of [SizingSpec](#sizingspec). |
+
+**Printer columns:** `Base` (`.spec.base`) and `Age` (`.metadata.creationTimestamp`).
+
+**Webhook.** `SizingProfileWebhook` serves `/mutate-c5c3-io-v1alpha1-sizingprofile`
+(`msizingprofile.kb.io`) and `/validate-c5c3-io-v1alpha1-sizingprofile`
+(`vsizingprofile.kb.io`) on create and update, reading through the manager's
+uncached API reader:
+
+- `Default` sets an empty `spec.base` to `Standard`.
+- Create checks the values with the same rules as `spec.sizing` (requests within
+  limits, label keys of node selectors and tolerations, the Galera quorum, the
+  96Mi Memcached floor, the spread-entry markers), the `base` enum, and that
+  every named PriorityClass exists. It then resolves the sizing of every
+  ControlPlane that already references the profile against its values, as an
+  update does: a restored profile meets ControlPlanes whose `spec.sizing` edits
+  were admitted without the merged checks while it was missing.
+- Update runs the same checks, looks up only the PriorityClasses the old object
+  did not name, and, when the spec changed, resolves the sizing of every
+  ControlPlane that references the profile against the new values. A merged value that fails (a request above a
+  limit, an autoscaling target against a zero request, a `maxReplicas` below the
+  replica count) rejects the create or edit with an error naming
+  `ControlPlane <namespace>/<name>`. A failed List of ControlPlanes rejects it
+  with an internal error (`listing ControlPlanes`).
+- Delete is not validated. A referenced profile can be deleted; the ControlPlanes
+  that reference it report `SizingReady=False` with reason
+  `SizingProfileNotFound`, stop their pass, and keep their children as last
+  projected until the profile returns or the reference changes. Until then an
+  update of `spec.sizing` skips the merged-sizing checks, so restoring the
+  profile can be rejected for a ControlPlane edited meanwhile, and an update
+  that adds a managed dedicated database must set its `replicas` and
+  `storageSize` explicitly.
 
 ---
 
@@ -1630,6 +1872,10 @@ spec:
           backend: dogpile.cache.pymemcache
           replicas: 1
 ```
+
+A `replicas` or `storageSize` a dedicated database leaves unset is taken from the
+ControlPlane's [sizing](#sizingspec) at admission, like the shared block's, and a
+dedicated cache's unset `replicas` follows the sizing on every pass.
 
 **Omitting the block is the default and keeps today's behavior**: the service
 shares the ControlPlane-wide instances. A class left unset inside a declared
@@ -1681,7 +1927,7 @@ same path as a shared instance:
 
 | Guarantee | How it holds for a dedicated instance |
 | --- | --- |
-| Provisioning | `reconcileInfrastructure` ensures a `MariaDB` / `Memcached` child CR per managed instance a service **resolves to**, shared and dedicated alike, sized from **that instance's** `replicas` / `storageSize`. Opting out is a genuine opt-out: a shared instance every service has left has no consumer, so it is not provisioned. When every declared database consumer — Keystone, Glance, Placement, Barbican — takes a dedicated database, the shared cluster is never created — it would otherwise be an orphan (3 Galera replicas, 100Gi by default) that nothing talks to and readiness still waits for. |
+| Provisioning | `reconcileInfrastructure` ensures a `MariaDB` / `Memcached` child CR per managed instance a service **resolves to**, shared and dedicated alike, sized from **that instance's** `replicas` / `storageSize` and from its class's `spec.sizing` block. Opting out is a genuine opt-out: a shared instance every service has left has no consumer, so it is not provisioned. When every declared database consumer — Keystone, Glance, Placement, Barbican — takes a dedicated database, the shared cluster is never created — it would otherwise be an orphan (3 Galera replicas, 100Gi by default) that nothing talks to and readiness still waits for. |
 | Ownership and teardown | In the ControlPlane's own namespace the child carries a controller owner reference to the ControlPlane with `blockOwnerDeletion`, so it is garbage-collected with the ControlPlane. In a service namespace or on a target cluster it carries the ownership labels `c5c3.io/controlplane-name` / `c5c3.io/controlplane-namespace` instead, and the finalizer-driven teardown deletes it (see [Ownership and garbage collection](#ownership-and-garbage-collection), and for a target cluster [Ownership and teardown on the target](../target-clusters.md#ownership-and-teardown-on-the-target)). A pre-existing CR under the same name that carries neither is **adopted read-only** and never GC-claimed. |
 | Readiness gating | `InfrastructureReady` is `True` only once **every** managed instance is Ready. A service whose dedicated database is still converging holds the condition `False`, so its projection is deferred — it waits for the database it actually talks to, not just for the shared cluster. |
 | Credentials | The service child's `spec.database` is projected from the dedicated spec, so credential provisioning and rotation follow the instance the service connects to (see [Credential modes](#credential-modes) below). |
@@ -2394,10 +2640,16 @@ Keystone discipline:
 | `spec.korc.adminCredential.applicationCredential.accessRules[].path` | Pattern `^/` |
 | `spec.korc.adminCredential.bootstrapResources[].kind` | Enum: `Project`, `Role` |
 | `spec.korc.adminCredential.applicationCredential.rotation.mode` | Enum: `PasswordDriven`, `Scheduled`, `Manual` |
-| `spec.services.keystone.replicas` | Minimum: 1 |
-| `spec.infrastructure.database.replicas` | Minimum: 1, schema default `3`. The webhook additionally rejects exactly `2` (Galera quorum — see below). |
-| `spec.infrastructure.cache.replicas` | Minimum: 1, schema default `3` |
-| `spec.infrastructure.messaging.replicas` | Minimum: 1, schema default `3` |
+| `spec.infrastructure.database.replicas` | Minimum: 1, no schema default (the defaulting webhook fills it from the sizing). The webhook additionally rejects exactly `2` (Galera quorum — see below). |
+| `spec.infrastructure.database.storageSize` | Pattern `^[0-9]+(Mi\|Gi\|Ti)$`, no schema default (the defaulting webhook fills it from the sizing) |
+| `spec.infrastructure.cache.replicas` | Minimum: 1, no schema default (an unset value follows the sizing) |
+| `spec.infrastructure.messaging.replicas` | Minimum: 1, no schema default (an unset value follows the sizing) |
+| `spec.sizing` (CEL) | `!(has(self.profile) && has(self.profileRef))` → "profile and profileRef are mutually exclusive" |
+| `spec.sizing.profile`, `SizingProfile spec.base` | Enum: `Minimal`, `Standard`; `spec.base` has schema default `Standard` |
+| `spec.sizing.profileRef.name` | MinLength 1; MaxLength 253 |
+| `spec.sizing` and `SizingProfile spec`: every `replicas`, `processes`, `threads`, `workers` | Minimum: 1 |
+| `spec.sizing.database.storageSize`, `SizingProfile spec.database.storageSize` | Pattern `^[0-9]+(Mi\|Gi\|Ti)$` |
+| `spec.sizing` and `SizingProfile spec`: every `spreadConstraints[]` | `maxSkew` Minimum 1; `topologyKey` MinLength 1; `whenUnsatisfiable` Enum `DoNotSchedule`, `ScheduleAnyway` |
 | `CredentialRotation spec.target` | Enum: `adminApplicationCredential`, `serviceAccountPassword` |
 | `CredentialRotation spec.keystoneService` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`; MinLength 1; MaxLength 253 |
 | `CredentialRotation` (CEL) | `target == 'serviceAccountPassword'` ⇒ `has(self.keystoneService)` → "keystoneService is required when target is serviceAccountPassword" |
@@ -2413,8 +2665,7 @@ Keystone discipline:
 | `spec.globalPolicyOverrides`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` → "policy rule value must not be empty" |
 | `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ `has(self.external)` → "external is required when services.keystone.mode is External" |
 | `spec.services.keystone` (CEL) | `has(self.external)` ⇒ `mode == 'External'` → "external may only be set when services.keystone.mode is External" |
-| `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ each managed-only field (`replicas`, `image`, `policyOverrides`, `extraConfig`, `rotationInterval`, `gateway`, `publicEndpoint`, `federationProxyImage`, `databaseCredentialsMode`, `targetClusterRef`, `caBundleSecretRef`) absent → "services.keystone.\<field\> is forbidden when services.keystone.mode is External" (one rule per field) |
-| `spec.services.glance.replicas` | Minimum: 1 |
+| `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ each managed-only field (`image`, `policyOverrides`, `extraConfig`, `rotationInterval`, `gateway`, `publicEndpoint`, `federationProxyImage`, `databaseCredentialsMode`, `targetClusterRef`, `caBundleSecretRef`) absent → "services.keystone.\<field\> is forbidden when services.keystone.mode is External" (one rule per field) |
 | `spec.services.glance.databaseCredentialsMode` | Enum: `Static`, `Dynamic` |
 | `spec.services.glance.gateway.hostname` | MinLength 1 (shared `GatewaySpec` marker) |
 | `spec.services.glance.publicEndpoint` | Pattern `^https?://`; MaxLength 512 (mirrors `services.keystone.publicEndpoint`; the value feeds the K-ORC image Endpoint URL) |
@@ -2436,12 +2687,10 @@ Keystone discipline:
 | `spec.services.glance.importPlugins.conversion.outputFormat` | Enum: `qcow2`, `raw`, `vmdk` |
 | `spec.services.glance.importPlugins.injectMetadata.properties` | Required; MinProperties 1; MaxProperties 64; CEL: `self.all(k, size(k) <= 255 && size(self[k]) <= 255)` → "each injected property name and value must be at most 255 characters" (the CEL rule is the only marker that reaches the map's halves) |
 | `spec.services.glance.importPlugins.injectMetadata.ignoreUserRoles` | MaxItems 64; item MinLength 1; item MaxLength 255 |
-| `spec.services.nova.replicas`, `.metadataReplicas`, `.schedulerReplicas`, `.conductorReplicas` | Minimum: 1 |
 | `spec.services.nova.publicEndpoint` | Pattern `^https?://`; MaxLength 512 (mirrors `services.keystone.publicEndpoint`; the value feeds the K-ORC compute Endpoint URL) |
 | `spec.services.nova.databaseCredentialsMode` | Enum: `Static`, `Dynamic` |
 | `spec.services.nova.gateway.hostname`, `.metadataGateway.hostname`, `.consoleProxy.gateway.hostname` | MinLength 1 (shared `GatewaySpec` marker) |
-| `spec.services.nova.consoleProxy.replicas` | Minimum: 1 |
-| `spec.services.nova.consoleProxy` (CEL) | `!has(self.enabled) \|\| self.enabled \|\| (!has(self.replicas) && !has(self.gateway))` → "replicas and gateway must not be set when consoleProxy.enabled is false" |
+| `spec.services.nova.consoleProxy` (CEL) | `!has(self.enabled) \|\| self.enabled \|\| !has(self.gateway)` → "gateway must not be set when consoleProxy.enabled is false" |
 | `spec.services.nova.dbArchive.maxRows`, `.retentionDays` | Minimum: 1 |
 | `spec.services.nova.dbArchive.sleep` | Minimum: 0 |
 | `spec.services.nova.dedicatedBackingServices` (CEL) | `has(self.database) \|\| has(self.cache)` → "dedicatedBackingServices must declare at least one backing-service class (database, cache)" |
@@ -2462,8 +2711,21 @@ short-circuit on the first error.
 | Messaging mutual exclusivity | `spec.infrastructure.messaging` | `field.Invalid` | The block is present with both `clusterRef` and `secretRef` set, or with neither. Defense-in-depth alongside the CEL `XValidation` rule on `commonv1.MessagingSpec`; a nil block has nothing to validate, since messaging is opt-in. |
 | Messaging brownfield Secret name required | `spec.infrastructure.messaging.secretRef.name` | `field.Required` | A brownfield `secretRef` with an empty `name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
 | Messaging CA bundle name required | `spec.infrastructure.messaging.tls.caBundleSecretRef.name` | `field.Required` | A `tls` block with an empty `caBundleSecretRef.name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
-| Messaging TLS is brownfield-only | `spec.infrastructure.messaging.tls` | `field.Invalid` | A `tls` block beside a managed `clusterRef`. `ensureRabbitMQ` projects `spec.replicas` and nothing else, so the owned `RabbitmqCluster` comes up on the operator's default, plaintext listener and the requested client trust would never be honoured. **Webhook-only**: the shared `commonv1.MessagingSpec` must not carry a c5c3-specific CEL rule the keystone operator would inherit. |
+| Messaging TLS is brownfield-only | `spec.infrastructure.messaging.tls` | `field.Invalid` | A `tls` block beside a managed `clusterRef`. `ensureRabbitMQ` projects the replica count and the sizing but no listener, so the owned `RabbitmqCluster` comes up on the operator's default, plaintext listener and the requested client trust would never be honoured. **Webhook-only**: the shared `commonv1.MessagingSpec` must not carry a c5c3-specific CEL rule the keystone operator would inherit. |
 | Database replicas quorum | `spec.infrastructure.database.replicas` | `field.Invalid` | Value is exactly `2`. The managed-mode projection turns any `replicas > 1` into a Galera cluster, and a two-node Galera cluster cannot hold a majority — a single pod disruption then loses quorum. Replicas must be 1 (standalone) or >=3. The CRD marker enforces only `Minimum=1` (the shared `commonv1.DatabaseSpec` must not carry a c5c3-specific CEL rule the keystone operator, which ignores `replicas`, would inherit), so this check is **webhook-only**; a zero value (defaulting bypassed) is left to the reconciler's floor. |
+| Sizing forbidden in External mode | `spec.sizing` | `field.Forbidden` | `spec.sizing` is set while `services.keystone.mode` is `External`. Message: `forbidden when services.keystone.mode is External (no workload is deployed)`. **Webhook-only.** |
+| Sizing requests within limits | `spec.sizing[.<component>].resources.requests.<resource>` | `field.Invalid` | A request exceeds the limit of the same resource. Checked on the values as written and, on create and on an update that changes `spec.sizing`, on the merged sizing, where a profile's request can meet the ControlPlane's limit. An error the written values already produced is not repeated for the merged ones. The merged checks (this row and the two below) are skipped while the `SizingProfile` `spec.sizing.profileRef` names does not exist, because the merge is unknown; restoring the profile runs them (see [SizingProfile](#sizingprofile)). **Webhook-only.** |
+| Sizing autoscaling target against a zero request | `spec.sizing.<service>.api.resources.{requests,limits}.<resource>`, `spec.sizing.keystone.federationProxy.resources.*` | `field.Invalid` | On the merged sizing, an `autoscaling` utilization target meets a zero or negative request (or, without a request, limit) of the same resource. The Keystone federation proxy runs in the API pods, so its resources meet Keystone's target too. **Webhook-only.** |
+| Sizing autoscaling maxReplicas below replicas | `spec.sizing.<service>.api.autoscaling.maxReplicas` | `field.Invalid` | On the merged sizing, an `autoscaling` block without `minReplicas` has a `maxReplicas` below the component's replica count (`3` when the sizing names none). The HPA minimum defaults to that count, so the service's webhook would reject the projected child. Message: `maxReplicas must be >= replicas (<n>) when minReplicas is not set, because minReplicas defaults to replicas`. **Webhook-only.** |
+| Sizing node selector and tolerations | `spec.sizing[.<component>].nodeSelector`, `.tolerations` | `field.Invalid` / `field.NotSupported` | A node-selector key that is no qualified name or a value that is no label value, or a toleration the API server's own toleration validation refuses. **Webhook-only.** |
+| Sizing database quorum | `spec.sizing.database.replicas` | `field.Invalid` | Value is exactly `2`, with the message of the database quorum rule above. **Webhook-only.** |
+| Sizing storage size | `spec.sizing.database.storageSize` | `field.Invalid` | Value does not match `^[0-9]+(Mi\|Gi\|Ti)$`. Twin of the CRD pattern. |
+| Sizing cache memory floor | `spec.sizing.cache.resources.limits.memory` | `field.Invalid` | A limit below `96Mi`. Message: `memory limit must be at least 96Mi: the Memcached operator requires maxMemoryMB (64) plus 32Mi`. **Webhook-only.** |
+| Sizing spread entries | `spec.sizing.<component>.spreadConstraints[i].{maxSkew,topologyKey,whenUnsatisfiable}` | `field.Invalid` / `field.Required` / `field.NotSupported` | `maxSkew` below 1, an empty `topologyKey`, or a `whenUnsatisfiable` outside `DoNotSchedule`, `ScheduleAnyway`. Twins of the CRD markers. |
+| Console-proxy sizing while disabled | `spec.sizing.nova.consoleProxy` | `field.Forbidden` | The block is set while `services.nova.consoleProxy.enabled` is `false`. Message: `must not be set when services.nova.consoleProxy.enabled is false`. **Webhook-only.** |
+| SizingProfile exists | `spec.sizing.profileRef.name` | `field.NotFound` / `field.InternalError` | No `SizingProfile` of that name exists (`NotFound`), or reading it failed (`InternalError`). A missing profile is reported on create and on an update that changes the name, so a ControlPlane whose profile was deleted later can still be updated, finalizer removal included. A failed read is reported on create and on every update that changes `spec.sizing`. **Webhook-only.** |
+| New dedicated database sizing resolved | `spec.services.<service>.dedicatedBackingServices.database.{replicas,storageSize}` | `field.Required` | On update, a managed dedicated database the old revision did not declare still has `replicas` or `storageSize` unset, because the SizingProfile `spec.sizing.profileRef` names does not exist. Both values freeze at creation, so restore the profile or set them explicitly. **Webhook-only.** |
+| Sizing priority classes exist | every `priorityClassName` in `spec.sizing` | `field.NotFound` / `field.InternalError` | A named `PriorityClass` does not exist. On update only the names the old `spec.sizing` did not carry are looked up, so a class deleted after admission does not block an unrelated edit. **Webhook-only.** |
 | Admin password Secret required | `spec.korc.adminCredential.passwordSecretRef.name` | `field.Required` | `name` is empty — without it the reconciler cannot (re-)mint the admin application credential. **Webhook-only**. |
 | Gateway hostname required | `spec.services.keystone.gateway.hostname` | `field.Required` | A `gateway` is configured but its `hostname` is empty. Mirrors the `+kubebuilder:validation:MinLength=1` marker on `commonv1.GatewaySpec.Hostname`; without it the reconciler derives an empty `https:///v3` public endpoint. |
 | Empty policy rule name | `spec.globalPolicyOverrides.rules[<key>]`, `spec.services.keystone.policyOverrides.rules[<key>]` | `field.Required` | A rule name (map key) is the empty string. Enforced via the shared `policy.ValidatePolicyRules`, mirrored by the CEL rule on `commonv1.PolicySpec`. |
@@ -2471,7 +2733,7 @@ short-circuit on the first error.
 | External block required | `spec.services.keystone.external` | `field.Required` | `mode: External` but `external` unset. Defense-in-depth mirror of the CEL rule. |
 | External authURL required/URL | `spec.services.keystone.external.authURL` | `field.Required` / `field.Invalid` | In External mode, `authURL` empty (Required), or not matching `^https?://[^\s/]+` / failing a full `net/url` parse / exceeding 2048 characters (Invalid). Mirrors the CRD required/pattern/maxLength markers. |
 | External caBundle name required | `spec.services.keystone.external.caBundleSecretRef.name` | `field.Required` | `caBundleSecretRef` set with an empty `name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
-| Managed-only field forbidden in External mode | `spec.services.keystone.{replicas,image,policyOverrides,extraConfig,rotationInterval,gateway,publicEndpoint,federationProxyImage}` | `field.Forbidden` | The field is set while `mode: External`. Defense-in-depth mirror of the per-field CEL rules. |
+| Managed-only field forbidden in External mode | `spec.services.keystone.{image,policyOverrides,extraConfig,rotationInterval,gateway,publicEndpoint,federationProxyImage}` | `field.Forbidden` | The field is set while `mode: External`. Defense-in-depth mirror of the per-field CEL rules. |
 | Keystone credentials-mode override forbidden in External mode | `spec.services.keystone.databaseCredentialsMode` | `field.Forbidden` | The per-service override is set while `mode: External` — no managed database is provisioned, so there is no credentials mode to override. Defense-in-depth mirror of the per-field CEL rule. |
 | Dynamic credentials-mode override on a dedicated database | `spec.services.{keystone,glance,placement,barbican,neutron,cinder,nova}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while that service declares a dedicated database: the override retargets the shared database the service does not use, and a dedicated database is `Static`-only (set `dedicatedBackingServices.database.credentialsMode` instead). `Static` stays admitted. **Cross-field, webhook-only.** |
 | Dynamic credentials-mode override on a brownfield shared database | `spec.services.{keystone,glance,placement,barbican,neutron,cinder,nova}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while the shared database is brownfield (`clusterRef` unset): the dynamic engine issues per-tenant DB users only against a cluster the operator provisions. **Cross-field, webhook-only.** |
@@ -2828,7 +3090,7 @@ migration feature can relax it.
 | Database mode immutable | `spec.infrastructure.database` | `clusterRef` nil-ness changed (managed ↔ brownfield) |
 | Database clusterRef.name immutable | `spec.infrastructure.database.clusterRef.name` | Both managed, but the name changed |
 | Database name immutable | `spec.infrastructure.database.database` | The database name changed |
-| Database replicas immutable | `spec.infrastructure.database.replicas` | The value changed. `replicas` is projected into the managed MariaDB child's replica count and derived Galera topology, so a live edit would drive a destructive Update on the owned cluster (toggling Galera off or scaling a running Galera cluster down); the topology can only be changed safely by recreating the control plane. |
+| Database replicas immutable | `spec.infrastructure.database.replicas` | The value changed. `replicas` is projected into the managed MariaDB child's replica count and derived Galera topology, so a live edit would drive a destructive Update on the owned cluster (toggling Galera off or scaling a running Galera cluster down); the topology can only be changed safely by recreating the control plane. A stored `0`, which only a ControlPlane an older operator admitted against a CRD without the `3` default carries, compares as `3`, the count that operator provisioned, so it migrates once to an explicit `3`. |
 | Cache mode immutable | `spec.infrastructure.cache` | `clusterRef` nil-ness changed (managed ↔ brownfield) |
 | Cache clusterRef.name immutable | `spec.infrastructure.cache.clusterRef.name` | Both managed, but the name changed |
 | Messaging removal rejected | `spec.infrastructure.messaging` | A block was declared on the old revision and is absent on the new one, in **either** mode: "spec.infrastructure.messaging cannot be removed once declared: …". Adding the block is allowed; the brownfield removal is rejected because admitting it would launder the mode freeze below into a two-step flip. |
@@ -2863,7 +3125,8 @@ func (w *ControlPlaneWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error
 ```
 
 Registers both webhooks with the manager using
-`builder.WebhookManagedBy[*ControlPlane]`. The generated webhook paths are
+`builder.WebhookManagedBy[*ControlPlane]`. The `SizingProfile` kind has webhooks
+of its own, `SizingProfileWebhook` (see [SizingProfile](#sizingprofile)). The generated webhook paths are
 `/mutate-c5c3-io-v1alpha1-controlplane` (mutating) and
 `/validate-c5c3-io-v1alpha1-controlplane` (validating); both use
 `failurePolicy=fail`, `sideEffects=None`, and `admissionReviewVersions=v1`.
@@ -2917,6 +3180,19 @@ with an empty mode), then branches on the mode:
   brownfield discriminator (`database.host` / `cache.servers`) is unset, so the
   database/cache XOR validation still passes for a brownfield CR.
 
+**Database sizing is resolved at admission.** Outside External mode the webhook
+resolves the ControlPlane's [sizing](#sizingspec), reading the `SizingProfile`
+`spec.sizing.profileRef` names through `Client`, and writes the resolved
+`database.replicas` and `database.storageSize` into a zero `replicas` and an
+empty `storageSize` of `spec.infrastructure.database` and of every declared
+dedicated database block. An explicit value is never overwritten. Both fields
+are immutable after creation, so storing the resolved values keeps the
+immutability check comparing stored values. When the referenced profile does not
+exist both fields stay unset and the validating webhook reports the reference;
+any other read error rejects the request with `reading SizingProfile "<name>"`.
+Cache and messaging replicas are never written: the reconciler resolves them on
+every pass.
+
 **Messaging is opt-in and never materialized.** The webhook does not construct
 `spec.infrastructure.messaging`, so a ControlPlane that omits it is admitted with
 no message bus at all. When the block is present, `defaultMessagingLeaves` fills
@@ -2942,6 +3218,8 @@ markers' documented values where a marker also exists.
 | `spec.infrastructure.database.clusterRef.name` | `host == ""` (managed mode) | `"openstack-db"` | Webhook-only, brownfield-guarded |
 | `spec.infrastructure.cache.backend` | `== ""` | `"dogpile.cache.pymemcache"` | Webhook-only |
 | `spec.infrastructure.cache.clusterRef.name` | `len(servers) == 0` (managed mode) | `"openstack-memcached"` | Webhook-only, brownfield-guarded |
+| `spec.infrastructure.database.replicas`, and the same field of every dedicated database | `== 0`, non-External mode | the resolved sizing's `database.replicas` (`3` under `Standard`) | Webhook-only |
+| `spec.infrastructure.database.storageSize`, and the same field of every dedicated database | `== ""`, non-External mode | the resolved sizing's `database.storageSize` (`100Gi` under `Standard`) | Webhook-only |
 | `spec.infrastructure.messaging.clusterRef.name` | messaging block present, `secretRef == nil` (managed mode) | `"openstack-rabbitmq"` | Webhook-only, brownfield-guarded |
 | `spec.infrastructure.messaging.secretRef.key` | messaging block present, `secretRef` set, `key == ""` | `"transport_url"` | Webhook-only |
 | `spec.infrastructure.messaging.tls.caBundleSecretRef.key` | messaging block present, `tls` set, `key == ""` | `"ca.crt"` | Webhook-only |
@@ -3037,6 +3315,12 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
   error naming the incumbent when one already exists. The check runs only on
   CREATE so an existing CR stays mutable; `ValidateUpdate` validates the new
   object only.
+- Both also run the sizing checks that read the cluster (see the `SizingProfile
+  exists`, `Sizing priority classes exist`, and merged-sizing rows of
+  [Validating-webhook rules](#validating-webhook-rules)), and both return one
+  warning per `spec.sizing.<service>` block whose `spec.services.<service>` is
+  unset: `spec.sizing.<service> is set but spec.services.<service> is not; the
+  values are inert`.
 - `ValidateDelete` always returns `nil, nil`. It exists only to satisfy the
   `admission.Validator` interface and is **never invoked** — the validating
   webhook does not register the `delete` verb, so **deletion is unconditionally
@@ -3046,7 +3330,7 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by eighteen sub-reconcilers, each owning one
+The ControlPlane status is driven by twenty sub-reconcilers, each owning one
 condition type, plus an aggregate `Ready` condition. The condition-type
 constants in `controlplane_controller.go` (`subConditionTypes`) are the single
 source of truth; call sites reference the constants rather than inline literals.
@@ -3064,12 +3348,16 @@ and `reconcileBarbican` on `KeystoneReady` and on the `AccountReady` of the
 `AdminCredentialReady`):
 
 ```
-NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady
+SizingReady → NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady
   → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady
   → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady
   → BarbicanReady → OVNReady → NeutronReady → CinderReady
   → ServiceAccountsReady → RegistrationTenantStoresReady
 ```
+
+`SizingReady` runs first because every later stage projects its children from
+the resolved sizing: a `SizingProfile` that cannot be read stops the pass before
+anything is projected.
 
 `ESOTenantStoreReady` runs ahead of every store-consuming stage because it
 provisions the per-tenant `SecretStore` they route their ExternalSecrets and
@@ -3095,6 +3383,18 @@ one-per-namespace webhook guard or bypassed it), every CR except the oldest is
 parked with `Ready=False` reason `DuplicateControlPlane` naming the incumbent,
 and none of its sub-reconcilers run. For the full flow, see the
 [ControlPlane Reconciler reference](./controlplane-reconciler.md).
+
+### SizingReady
+
+Set by `reconcileSizing`, the first stage of the chain. A stage that fails
+returns its error, so no later stage runs and the children keep the sizing they
+were last projected with.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `SizingResolved` | The sizing resolved. Message: `sizing resolved from built-in profile "<base>"`, or `sizing resolved from SizingProfile "<name>" (base "<base>")` for a `profileRef`. |
+| `False` | `SizingProfileNotFound` | The `SizingProfile` `spec.sizing.profileRef` names does not exist, typically because it was deleted after admission. Message: `SizingProfile "<name>" not found; the children keep their last projected sizing`. |
+| `False` | `SizingProfileError` | Reading the `SizingProfile` failed with any other error; the message carries it. |
 
 ### InfrastructureReady
 
@@ -3545,7 +3845,7 @@ Set by `setReadyCondition`.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `AllReady` | All nineteen sub-conditions are `True`. |
+| `True` | `AllReady` | All twenty sub-conditions are `True`. |
 | `False` | `NotAllReady` | One or more sub-conditions are not `True`. |
 
 ---

@@ -149,7 +149,6 @@ kubectl edit controlplane controlplane -n openstack
 spec:
   services:
     barbican:
-      replicas: 1
       secretStore:
         external:
           url: https://openbao-instance.openstack.svc:8200
@@ -159,6 +158,10 @@ spec:
             name: openbao-instance-ca
           # kvMountpoint defaults to "barbican"; a stock secret/ mount sets it
           # explicitly. Get it right the first time (see below).
+  sizing:
+    barbican:
+      api:
+        replicas: 1
 ```
 
 On a ControlPlane that already ran the dedicated mode, this edit changes the

@@ -59,8 +59,10 @@ operator — use **brownfield mode** with explicit connection parameters on the
 Brownfield is a **creation-time** decision. The validating webhook freezes
 infrastructure presence and the database/cache mode (managed `clusterRef` vs
 brownfield `host`/`servers`), the database name, replicas, and storageSize after
-the ControlPlane is created, so you cannot flip a managed control plane to
-brownfield in place — set `spec.infrastructure` when you first apply the CR:
+the ControlPlane is created (a replicas or storageSize left unset is taken from
+the ControlPlane's sizing at creation and frozen with it), so you cannot flip a
+managed control plane to brownfield in place — set `spec.infrastructure` when
+you first apply the CR:
 
 ```yaml
 apiVersion: c5c3.io/v1alpha1
@@ -264,32 +266,36 @@ full Keystone CR reference.
 
 | Feature | Keystone CR field | ControlPlane path | Reference |
 |---------|-------------------|-------------------|-----------|
-| Replica count | `spec.deployment.replicas` | `spec.services.keystone.replicas` | [Day 2 — Scale](./day-2-operations.md#scale-replicas) |
+| Replica count | `spec.deployment.replicas` | `spec.sizing.keystone.api.replicas` | [Day 2 — Scale](./day-2-operations.md#scale-replicas) |
 | Release / image | `spec.image` | `spec.openStackRelease` (tag) + `spec.services.keystone.image` (override) | [Day 2 — Upgrade](./day-2-operations.md#upgrade-the-openstack-release) |
 | Policy overrides | `spec.policyOverrides` | `spec.services.keystone.policyOverrides` (+ `spec.globalPolicyOverrides`) | [PolicySpec](../reference/keystone/keystone-crd.md#policyspec) |
 | Federation proxy image | `spec.federation.proxyImage` | `spec.services.keystone.federationProxyImage` | [Attach an OIDC Federation Backend](./keystone/oidc-federation.md) |
 | Public endpoint / gateway | `spec.bootstrap.publicEndpoint`, `spec.gateway` | `spec.services.keystone.publicEndpoint`, `spec.services.keystone.gateway` | [BootstrapSpec](../reference/keystone/keystone-crd.md#bootstrapspec) |
 | Fernet / credential-key schedule | `spec.fernet`, `spec.credentialKeys` | `spec.services.keystone.rotationInterval` (schedule only) | [Day 2 — Rotate Fernet keys](./day-2-operations.md#rotate-fernet-keys-manually) |
 | Database TLS/mTLS | `spec.database.tls` | `spec.infrastructure.database.tls` | [Enable Keystone Database TLS/mTLS](./keystone/enable-keystone-database-tls.md) |
-| Autoscaling (HPA) | `spec.autoscaling` | not exposed — standalone-only | [Autoscaling (HPA)](#autoscaling-hpa) |
+| Autoscaling (HPA) | `spec.autoscaling` | `spec.sizing.keystone.api.autoscaling` | [Autoscaling (HPA)](#autoscaling-hpa) |
 | Network policy | `spec.networkPolicy` | not exposed — standalone-only | [Network policy](#network-policy) |
 | Free-form config (`extraConfig`) | `spec.extraConfig` | `spec.services.<svc>.extraConfig` (+ `spec.globalExtraConfig`) | [Free-form service configuration](#free-form-service-configuration) |
 | Scheduled admin-password rotation | `spec.passwordRotation` | not exposed — standalone-only | [Schedule Admin Password Rotation](./keystone/keystone-admin-password-scheduled-rotation.md) |
-| uWSGI tuning | `spec.uwsgi` | not exposed — standalone-only | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
+| uWSGI tuning | `spec.uwsgi` | `spec.sizing.keystone.api.processes`, `.threads` (the other uWSGI knobs are standalone-only) | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
 | Logging | `spec.logging` | not exposed — standalone-only | [LoggingSpec](../reference/keystone/keystone-crd.md#loggingspec) |
 | Trust flush | `spec.trustFlush` | not exposed — standalone-only | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |
 | Middleware | `spec.middleware` | not exposed — standalone-only | [MiddlewareSpec](../reference/keystone/keystone-crd.md#middlewarespec) |
 | Plugins | `spec.plugins` | not exposed — standalone-only | [PluginSpec](../reference/keystone/keystone-crd.md#pluginspec) |
 | Rollout strategy | `spec.deployment.strategy` | not exposed — standalone-only | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
 | Graceful termination | `spec.deployment.terminationGracePeriodSeconds`, `spec.deployment.preStopSleepSeconds` | not exposed — standalone-only | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
-| Topology spread | `spec.deployment.topologySpreadConstraints` | not exposed — standalone-only | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |
-| Priority class | `spec.deployment.priorityClassName` | not exposed — standalone-only | [PriorityClassName](../reference/keystone/keystone-crd.md#priorityclassname) |
-| Resource requests/limits | `spec.deployment.resources` | not exposed — standalone-only | [KeystoneSpec](../reference/keystone/keystone-crd.md#keystonespec) |
-| Node placement | `spec.deployment.nodeSelector`, `spec.deployment.tolerations`, `spec.deployment.affinity` | not exposed — standalone-only | [NodePlacementSpec](../reference/keystone/keystone-crd.md#nodeplacementspec) |
-| Job and CronJob pods | `spec.jobs` | not exposed — standalone-only | [JobSpec](../reference/keystone/keystone-crd.md#jobspec) |
+| Topology spread | `spec.deployment.topologySpreadConstraints` | `spec.sizing.keystone.api.spreadConstraints` (the ControlPlane adds the pod selector) | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |
+| Priority class | `spec.deployment.priorityClassName` | `spec.sizing.keystone.api.priorityClassName` (+ `spec.sizing.priorityClassName`) | [PriorityClassName](../reference/keystone/keystone-crd.md#priorityclassname) |
+| Resource requests/limits | `spec.deployment.resources` | `spec.sizing.keystone.api.resources` | [KeystoneSpec](../reference/keystone/keystone-crd.md#keystonespec) |
+| Node placement | `spec.deployment.nodeSelector`, `spec.deployment.tolerations`, `spec.deployment.affinity` | `spec.sizing.keystone.api.nodeSelector`, `.tolerations` (+ `spec.sizing.nodeSelector`, `.tolerations`); affinity not exposed — standalone-only | [NodePlacementSpec](../reference/keystone/keystone-crd.md#nodeplacementspec) |
+| Job and CronJob pods | `spec.jobs` | `spec.sizing.keystone.jobs` (resources and priority class) | [JobSpec](../reference/keystone/keystone-crd.md#jobspec) |
 
-The "not exposed — standalone-only" knobs are not projectable through the
-`ControlPlane` CRD today; set them on a Keystone CR you own, as shown in the
+The `spec.sizing` paths size every service the same way (`spec.sizing.<svc>.api`
+and the service's other components), starting from a built-in `Minimal` or
+`Standard` profile or a site `SizingProfile`; see
+[SizingSpec](../reference/c5c3/controlplane-crd.md#sizingspec). The "not exposed —
+standalone-only" knobs are not projectable through the `ControlPlane` CRD today;
+set them on a Keystone CR you own, as shown in the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section.
 
 ---
@@ -298,12 +304,13 @@ The "not exposed — standalone-only" knobs are not projectable through the
 
 On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
 devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
-projecting it. The recipes below apply to that CR. Two of them —
-`spec.autoscaling` and `spec.networkPolicy` — are **not exposed on the
-`ControlPlane` CRD today**, so a standalone Keystone is the only place they can be
-set. `spec.extraConfig` is exposed on the ControlPlane, through
-[Free-form service configuration](#free-form-service-configuration); the recipe
-below is the standalone equivalent.
+projecting it. The recipes below apply to that CR. One of them,
+`spec.networkPolicy`, is **not exposed on the `ControlPlane` CRD today**, so a
+standalone Keystone is the only place it can be set. `spec.extraConfig` is
+exposed on the ControlPlane, through
+[Free-form service configuration](#free-form-service-configuration), and
+`spec.autoscaling` through `spec.sizing.keystone.api.autoscaling`; the recipes
+below are the standalone equivalents.
 
 ### Brownfield database
 
@@ -350,8 +357,9 @@ or `host` is set — never both — for both `database` and `cache`.
 
 ### Autoscaling (HPA)
 
-`spec.autoscaling` is not exposed on the `ControlPlane` CRD today, so autoscaling
-is standalone-only. Replace hand-patching `spec.deployment.replicas` with a
+On a ControlPlane, set the same block as `spec.sizing.keystone.api.autoscaling`;
+the reconciler projects it onto the child's `spec.autoscaling`. On a standalone
+Keystone, replace hand-patching `spec.deployment.replicas` with a
 `HorizontalPodAutoscaler` managed by the operator. When `spec.autoscaling` is
 present, the HPA owns the Deployment's replica count.
 
