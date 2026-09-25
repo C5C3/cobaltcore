@@ -21,7 +21,8 @@ stores are **not** part of this spec — they attach out-of-band through
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` ∈ {1,2}). Governs the API launch mode (eventlet below `2026.1`, uWSGI from `2026.1`) and install/upgrade schema tracking. Kept separate from the image tag so digest-pinned images still resolve a schema and launch mode |
-| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and memory sized at 400Mi per process, 1Gi as request and limit at the defaults of both launch modes, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and memory sized at 400Mi per process, 1Gi as request and limit at the defaults of both launch modes, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)) |
+| `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, and the db-purge CronJob. A field left unset falls back to `spec.deployment`; unset resources default to a `100m` CPU request and `368Mi` memory as request and limit |
 | `image` | `ImageSpec` | yes | Container image; exactly one of `tag` or `digest` (shared CEL rule, re-checked by the webhook) |
 | `database` | `DatabaseSpec` | yes | MariaDB connection. Exactly one of `clusterRef` (managed) or `host` (brownfield); `credentialsMode` (`Static` \| `Dynamic`, where `Dynamic` requires `clusterRef`), `secretRef`, and optional `tls`. Mutual-exclusivity and the Dynamic-requires-clusterRef rule are inherited from `commonv1.DatabaseSpec` |
 | `cache` | `CacheSpec` | yes | Memcached backing the Glance image cache. Exactly one of `clusterRef` (managed) or `servers` (brownfield) |
@@ -34,7 +35,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `importPlugins` | [`*ImportPluginsSpec`](#importpluginsspec) | no | Selects the image-import plugins Glance runs, rendered as `[image_import_opts] image_import_plugins` plus the section each enabled plugin reads. Presence of a sub-block enables that plugin, nil enables none; the rendered order is fixed (`image_decompression`, `image_conversion`, `inject_image_metadata`) and is not an input. Every default resolves at render time, so an unset field keeps tracking the operator default |
 | `dbPurge` | [`*DBPurgeSpec`](#dbpurgespec) | no | Recurring database purge that hard-deletes rows Glance only ever soft-deletes. The operator resolves the effective settings at reconcile time, so a nil block and an empty struct behave alike: 30-day retention, daily at `1 0 * * *`, task rows only, not suspended |
 | `staging` | [`*StagingSpec`](#stagingspec) | no | Bounds the node-local scratch space an image import may consume. The operator resolves the effective limit at reconcile time, so a nil block, an empty struct, and a set block leaving `sizeLimit` unset all behave alike: `10Gi` on each of the two scratch volumes. `unbounded: true` opts out of the bound entirely |
-| `imageCache` | [`*ImageCacheSpec`](#imagecachespec) | no | Turns on the per-replica local image cache: presence of the block enables it, nil disables it. `sizeLimit` bounds the cache `emptyDir` (default `10Gi`, floor `1Mi`) and `maintenanceInterval` sets the pruner/cleaner cadence (default `5m`, floor `1m`). Both resolve at render time, so an unset field keeps tracking the operator default |
+| `imageCache` | [`*ImageCacheSpec`](#imagecachespec) | no | Turns on the per-replica local image cache: presence of the block enables it, nil disables it. `sizeLimit` bounds the cache `emptyDir` (default `10Gi`, floor `1Mi`), `maintenanceInterval` sets the pruner/cleaner cadence (default `5m`, floor `1m`), and `maintenanceResources` sizes the maintenance sidecar (default `25m` CPU request, `256Mi` memory request and limit). All three resolve at render time, so an unset field keeps tracking the operator default |
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 9292; requires `hostname` and `parentRef.name` |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 9292 from the listed sources; egress auto-derived (DNS, database, cache, and the attached backends' S3 hosts). At least one ingress source is required (fail-closed) |
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds and CPU/memory utilization targets |
@@ -577,8 +578,9 @@ the block existed.
 | --- | --- | --- | --- | --- |
 | `sizeLimit` | `*resource.Quantity` | no | `10Gi` | The `emptyDir.sizeLimit` stamped on the per-replica `image-cache` volume, mounted at `/var/lib/glance/image-cache` in the `glance-api` container. Must be at least `1Mi` |
 | `maintenanceInterval` | `*metav1.Duration` | no | `5m` | How often the `cache-maintenance` sidecar runs `glance-cache-pruner` and `glance-cache-cleaner`. Must be at least `1m` |
+| `maintenanceResources` | `*corev1.ResourceRequirements` | no | `25m` CPU request, `256Mi` memory request and limit | CPU and memory of the `cache-maintenance` sidecar, resolved per resource: a CPU the block leaves out gets the `25m` request and no limit, a memory it leaves out gets `256Mi` as request and limit. A resource the block names is used as written. A request must not exceed its limit |
 
-Both fields resolve at reconcile time, the contract
+All three fields resolve at reconcile time, the contract
 [ImportFilteringSpec](#importfilteringspec), [DBPurgeSpec](#dbpurgespec) and
 [StagingSpec](#stagingspec) already follow: the defaulting webhook writes nothing
 back into the CR, so an empty block and a set block leaving one field unset both
@@ -668,8 +670,9 @@ already carries such a middleware is unaffected.
 **The pod gains a volume and a container.** An `image-cache` `emptyDir` bounded
 by the resolved `sizeLimit`, mounted read-write into `glance-api`, and a second
 container named `cache-maintenance` running the same image under the restricted
-security context, with fixed requests of `25m` CPU and `64Mi` memory and a
-`256Mi` memory limit. Those requests are not cosmetic: the HPA emits a
+security context. Its resources come from `maintenanceResources`: by default a
+`25m` CPU request and `256Mi` as memory request and limit. The per-resource
+rule always leaves a CPU request, and that request is not cosmetic: the HPA emits a
 pod-scoped `Resource` metric, so one container without a CPU request makes the
 metric unavailable for the whole pod and silently freezes `spec.autoscaling`.
 The sidecar carries no environment either: both CLIs read the mounted config
@@ -856,7 +859,11 @@ three `importFiltering` allow/deny pairings together with the scheme enum, host
 length, port range, and 64-item cap of each list, the `dbPurge.retentionDays`
 floor and the `dbPurge.schedule` cron grammar,
 resource requests-vs-limits, PriorityClass existence, topology-spread selectors
-(matching the `glance` / instance labels), and the `extraConfig` guards (a
+(matching the `glance` / instance labels), the `spec.deployment.nodeSelector`
+label grammar and `tolerations` (the API server's toleration rules), the
+`spec.jobs` block (requests within limits, an existing priority class, and the
+same node selector and toleration rules), `imageCache.maintenanceResources`
+requests within limits, and the `extraConfig` guards (a
 preserve-unknown-fields map CEL cannot constrain): empty section/key names, a
 newline or carriage return in any section name, key, or value, and the rejected
 overrides of `[keystone_authtoken] password` (owned via

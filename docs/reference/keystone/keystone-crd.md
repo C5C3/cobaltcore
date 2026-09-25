@@ -149,7 +149,8 @@ status:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | [`DeploymentSpec`](#deploymentspec) | No | See below | Pod-level knobs for the Keystone API Deployment (replicas, resources, rollout strategy, graceful-termination timings, scheduling constraints). Grouping keeps the spec root legible as future affinity/tolerations/nodeSelector knobs are added. |
+| `deployment` | [`DeploymentSpec`](#deploymentspec) | No | See below | Pod-level knobs for the Keystone API Deployment (replicas, resources, rollout strategy, graceful-termination timings, scheduling constraints, node placement). Grouping them keeps the spec root legible. |
+| `jobs` | [`*JobSpec`](#jobspec) | No | `nil` | Sizes, prioritizes and places the pods of every Keystone Job and CronJob: db-sync, schema-check, the db-expand, db-migrate and db-contract upgrade phases, bootstrap, policy-validation, the fernet-rotate and credential-rotate CronJobs (their `copy-keys` init container included), trust-flush, and the admin-password rotation. A field left unset falls back to `spec.deployment`; see [the Job pod rule](#jobspec). |
 | `image` | [`ImageSpec`](#imagespec) | Yes | — | Keystone container image reference. |
 | `database` | [`DatabaseSpec`](#databasespec) | Yes | — | MariaDB connection configuration. Includes the optional [`tls`](#databasetlsspec) sub-block that opts in to TLS / mTLS for the connection; when `nil`, the connection is plaintext TCP — preserving the previous behavior for all existing CRs. |
 | `cache` | [`CacheSpec`](#cachespec) | Yes | — | Memcached cache configuration. |
@@ -157,7 +158,7 @@ status:
 | `credentialKeys` | [`CredentialKeysSpec`](#credentialkeysspec) | No | See below | Credential-key rotation configuration. Drives the per-CR CronJob that rotates and `credential_migrate`s the credential keys used for encrypting application credentials. |
 | `passwordRotation` | [`*PasswordRotationSpec`](#passwordrotationspec) | No | `nil` (feature off) | Optionally enables scheduled rotation of the admin password. Day-2 rotation lives at the spec root beside the fernet/credential key rotation config. Nil leaves the feature off and the PasswordRotation sub-reconciler is a clean no-op. |
 | `trustFlush` | [`*TrustFlushSpec`](#trustflushspec) | No | `{schedule: "0 * * * *", suspend: false}` (materialized by the defaulting webhook) | Trust flush CronJob configuration. Default-on: when the field is omitted, the defaulting webhook populates an hourly schedule so `keystone-manage trust_flush` runs by default; there is no nil-back path on a webhook-enabled cluster (a `kubectl patch ... 'spec/trustFlush'='null'` round-trips through admission and is re-materialized). To pause without deleting the CronJob, set `suspend: true` — the resource and `TrustFlushReady=True` condition are preserved. |
-| `federation` | [`*FederationSpec`](#federationspec) | No | `nil` | Federation sidecar knobs (the proxy image). Federation activates by attaching an OIDC [`KeystoneIdentityBackend`](./identity-backend-crd.md), not by this block. |
+| `federation` | [`*FederationSpec`](#federationspec) | No | `nil` | Federation sidecar knobs (the proxy image and its resources). Federation activates by attaching an OIDC [`KeystoneIdentityBackend`](./identity-backend-crd.md), not by this block. |
 | `bootstrap` | [`BootstrapSpec`](#bootstrapspec) | Yes | — | Initial Keystone bootstrap parameters. |
 | `middleware` | `[]MiddlewareSpec` | No | `nil` | WSGI middleware filters for api-paste.ini. |
 | `plugins` | `[]PluginSpec` | No | `nil` | Service plugins/drivers to configure. |
@@ -184,6 +185,9 @@ Groups the pod-level knobs for the Keystone API Deployment under `spec.deploymen
 | `terminationGracePeriodSeconds` | `*int64` | No | `nil` | Grace period (seconds) granted to Keystone API pods between SIGTERM and SIGKILL during rolling updates. When `nil`, the reconciler applies `30` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `10`. Must be strictly greater than `preStopSleepSeconds`. Drives the PodSpec `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields). |
 | `preStopSleepSeconds` | `*int64` | No | `nil` | Sleep duration (seconds) of the preStop lifecycle hook, covering the window between EndpointSlice removal and kube-proxy/ingress propagation. When `nil`, the reconciler applies `5` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `0`. Must be strictly less than `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields). |
 | `strategy` | [`*appsv1.DeploymentStrategy`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/#DeploymentSpec) | No | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | Overrides the Deployment rollout strategy. When `nil`, the reconciler injects `RollingUpdate` with `maxUnavailable=0` and `maxSurge=1` so available capacity never drops below `spec.deployment.replicas` during an image-tag patch. Set to customize surge/unavailable counts or switch to `Recreate`. |
+| `nodeSelector` | `map[string]string` | No | `nil` | Restricts the Keystone API pods to nodes that carry every listed label. Rendered onto the pod template verbatim. The webhook checks the label grammar. See [NodePlacementSpec](#nodeplacementspec). |
+| `tolerations` | [`[]corev1.Toleration`](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/) | No | `nil` | Lets the pods onto nodes with matching taints. Rendered verbatim. The webhook applies the API server's toleration rules. |
+| `affinity` | [`*corev1.Affinity`](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity) | No | `nil` | Node affinity and pod (anti-)affinity rules, applied beside the topology spread constraints. Rendered verbatim; the API server validates it when the operator applies the Deployment. |
 
 ### Resource defaults
 
@@ -235,6 +239,20 @@ written. The per-resource rule adds the default for the resource the block
 leaves out, so a CPU-only block gains a memory request and limit, and its pods
 roll once on the upgrade. To keep the pod spec unchanged, set that resource in
 the block before you upgrade.
+
+Jobs, CronJobs and the fixed-budget sidecars follow the same per-resource rule
+with their own figures:
+
+| Container | Block | CPU request | Memory |
+| --- | --- | --- | --- |
+| Every container and init container of a Job or CronJob pod | [`spec.jobs.resources`](#jobspec) | `100m` | `368Mi` request and limit (one single-threaded process) |
+| The OVN backup and Neutron `ovn-db-sync` pods | `spec.jobs.resources` of those CRs | `100m` | `256Mi` request, no limit (the working set grows with the logical model) |
+| The `federation-proxy` sidecar | [`spec.federation.proxyResources`](#federationspec) | `25m` | `256Mi` request and limit |
+| The Glance `cache-maintenance` sidecar | `spec.imageCache.maintenanceResources` | `25m` | `256Mi` request and limit |
+
+No Job figure is measured yet. If a Job is OOM-killed at `368Mi`, raise
+`spec.jobs.resources.limits.memory`: the changed pod template re-runs the
+failed Job.
 
 ### CEL Validation Rules
 
@@ -672,6 +690,9 @@ ever sees the object.
 | Container image | `{spec.image.repository}:{spec.image.tag}` |
 | Container command | `["keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "trust_flush"]` + `args` |
 | Container securityContext | `restrictedSecurityContext()` (PSS Restricted) |
+| Container resources | `spec.jobs.resources`, resolved per resource (`100m` CPU request, `368Mi` memory request and limit by default); see [JobSpec](#jobspec) |
+| `spec.jobTemplate.spec.template.spec.priorityClassName` | `spec.jobs.priorityClassName`, else `spec.deployment.priorityClassName` |
+| `nodeSelector`, `tolerations`, `affinity` | `spec.jobs`, else `spec.deployment` (of the affinity, only `nodeAffinity`) |
 | `ownerReferences` | Points to the Keystone CR (controller: true) |
 
 ### Volume Mounts
@@ -1062,8 +1083,11 @@ spec:
 | `""` (empty string) | No priority class — explicit opt-out, useful when clearing a previously set value via `kubectl patch`. |
 | Non-empty string | Value is written to the Deployment PodSpec. The webhook performs a direct (uncached) cluster-scoped `Get` of the `PriorityClass` at admission time and rejects unknown names with `field.NotFound`. |
 
-The rotation CronJobs (Fernet, credential) reuse the same `priorityClassName`
-to stay co-scheduled with the API pods.
+Every Keystone Job and CronJob takes `spec.jobs.priorityClassName` when it is
+set, `""` included, and falls back to `spec.deployment.priorityClassName`
+otherwise. With `spec.jobs` unset, the Jobs and the rotation CronJobs follow the
+API pods; `spec.jobs.priorityClassName` runs them below the API. See
+[JobSpec](#jobspec).
 
 ---
 
@@ -1081,6 +1105,7 @@ runs.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `proxyImage` | `*ImageSpec` | No | `nil` | The Apache/`mod_auth_openidc` sidecar image. Standalone Keystone installations must set it (mirroring the required `spec.image`); the managed ControlPlane path projects the `ghcr.io/c5c3/keystone-federation-proxy` default. When a federation backend is attached and no proxy image is configured, the backends stay pending with a `FederationProxyImageMissing` Warning — no hidden default is assumed. The webhook rejects a set `proxyImage` without a repository. |
+| `proxyResources` | `*corev1.ResourceRequirements` | No | `nil` | CPU and memory requests and limits of the `federation-proxy` sidecar, resolved per resource like [`spec.deployment.resources`](#resource-defaults): a CPU the block leaves out gets a `25m` request and no limit, a memory it leaves out gets `256Mi` as request and limit. The webhook rejects a request above its limit. |
 | `trustedDashboards` | `[]string` | No | `nil` | Dashboard origins Keystone will POST a WebSSO token back to after a successful federated login. Keystone matches the origin the dashboard sends **verbatim**, so each entry must reproduce it exactly — scheme, host, non-default port, and the trailing slash (e.g. `https://horizon.example.com/auth/websso/`). Rendered as repeated `[federation] trusted_dashboard` lines, one per origin (an oslo `MultiStrOpt`). Unlike `proxyImage` it is independent of an attached backend: the `[federation]` section renders as soon as an origin is declared. The managed ControlPlane path projects its Horizon child's origin; standalone installations set it directly. Max 8 entries, each matching `^https?://[^\s]*$` — the pattern is anchored at both ends because entries render into `keystone.conf` unescaped, and RE2 anchors `^` at start-of-text, so a prefix-only pattern would let an embedded newline inject a second INI option. The webhook rejects duplicates and rejects declaring `trusted_dashboard` in both this field and `spec.extraConfig` (extraConfig wins the merge, which would silently drop the typed list). An `http://` origin is accepted but raises an **admission warning**: Keystone POSTs the unscoped WebSSO token — a bearer token good for the user's full API privileges — to this origin, so cleartext hands it to any on-path observer. |
 
 LDAP/AD-backed domains are **not** part of this block: they ship as
@@ -1331,6 +1356,65 @@ by both the Keystone operator and the c5c3 ControlPlane. See
 HTTPRoute reconciler behavior, and
 [`GatewayParentRefSpec`](#gatewayparentrefspec) for the parent-reference fields.
 
+### NodePlacementSpec
+
+Groups the fields that pick the nodes a pod may run on. `DeploymentSpec`
+embeds it inline, so the fields sit directly under `spec.deployment` (and
+under every other block that embeds `DeploymentSpec`, such as Cinder's
+`spec.api.deployment`). `JobSpec` embeds it too. The operator renders each field
+onto the pod template verbatim; an unset field renders nothing, so a
+Deployment whose CR sets none of them does not roll.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `nodeSelector` | `map[string]string` | No | `nil` | Restricts the pods to nodes that carry every listed label. The webhook requires a qualified label name as each key and a valid label value as each value. |
+| `tolerations` | `[]corev1.Toleration` | No | `nil` | Lets the pods onto nodes with matching taints. The webhook applies the API server's toleration rules (see [Validation Rules](#validation-rules)). |
+| `affinity` | `*corev1.Affinity` | No | `nil` | Node affinity and pod (anti-)affinity rules, applied beside the topology spread constraints. The webhook does not check it; the API server validates the rendered pod template, and a refused Job surfaces as `DatabaseReady=False` with reason `DBSyncFailed`. |
+
+### JobSpec
+
+`spec.jobs` sizes, prioritizes and places the pods of every Job and CronJob of
+a CR. There is one block per CR, not one per Job. It carries `resources`,
+`priorityClassName` and the three [`NodePlacementSpec`](#nodeplacementspec)
+fields. Each field is optional and the whole block defaults to `nil`, so a
+ControlPlane server-side apply that omits it neither writes nor owns it.
+
+The Job pod rule:
+
+| Setting | Taken from `spec.jobs` when | Otherwise |
+| --- | --- | --- |
+| `resources` | always | Per resource: a `100m` CPU request and no CPU limit, and `368Mi` as memory request and limit. A block that names a resource keeps it as written. |
+| `priorityClassName` | the field is set, `""` included (explicit opt-out) | the fallback Deployment's `priorityClassName`, else none |
+| `nodeSelector` | the field is set, `{}` included (opt-out) | a copy of the fallback Deployment's `nodeSelector` |
+| `tolerations` | the field is set, `[]` included (opt-out) | a copy of the fallback Deployment's `tolerations` |
+| `affinity` | the field is set, `{}` included (opt-out) | the fallback Deployment's `nodeAffinity` alone, when it has one; its pod (anti-)affinity terms target the API pods and do not carry over |
+
+An empty value opts out of the fallback, the way an empty
+`topologySpreadConstraints` list disables the Deployment's default spread.
+The resources land on every container and init container of the pod, Keystone's
+`copy-keys` included. An init container never runs beside the main containers,
+so this adds nothing to the pod's footprint.
+
+Two Jobs size with their data rather than with a process count and resolve
+`resources` through the request floor instead: the OVN backup and Neutron's
+`ovn-db-sync`. They get a `100m` CPU and a `256Mi` memory request and no limit.
+
+The fallback Deployment per CR:
+
+| CR | Fallback |
+| --- | --- |
+| Keystone, Barbican, Glance, Placement, Neutron | `spec.deployment` |
+| Cinder, Nova | `spec.api.deployment` |
+| OVNCentral | `spec.northd.deployment` |
+| OVNChassis | none (`spec.jobs` is a `JobBaseSpec` without placement) |
+
+A Job run through the operator's run-once logic (db-sync, schema-check, the
+upgrade phases, Keystone's policy-validation) re-runs when its pod template
+changes. A change of `spec.jobs`, or of a fallback field on the API
+Deployment, therefore runs those Jobs again once. This is also how a Job that
+was OOM-killed recovers after its memory is raised. CronJobs are updated in
+place, and the next run picks the change up.
+
 ---
 
 ## Webhooks
@@ -1456,6 +1540,16 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | TopologySpread labelSelector required | `spec.deployment.topologySpreadConstraints[i].labelSelector` | `field.Required` | Entry has no `labelSelector`. |
 | TopologySpread matchLabels mismatch | `spec.deployment.topologySpreadConstraints[i].labelSelector` | `field.Invalid` | `matchLabels` does not exactly equal `{app.kubernetes.io/name: keystone, app.kubernetes.io/instance: {CR name}}`. |
 | TopologySpread matchExpressions forbidden | `spec.deployment.topologySpreadConstraints[i].labelSelector.matchExpressions` | `field.Invalid` | `matchExpressions` is non-empty. Only exact `matchLabels` are allowed. |
+| Node selector key | `spec.deployment.nodeSelector` | `field.Invalid` | A key is not a qualified label name (for example `bad key`). Shared validator `validation.NodeSelectorLabels`. |
+| Node selector value | `spec.deployment.nodeSelector[<key>]` | `field.Invalid` | A value is not a valid label value (for example `-bad-`). |
+| Toleration key | `spec.deployment.tolerations[i].key` | `field.Invalid` | A non-empty key is not a qualified label name. |
+| Toleration operator | `spec.deployment.tolerations[i].operator` | `field.Invalid` / `field.NotSupported` | An empty key without `Exists`, `Exists` with a value, or an operator other than `Equal`, `Exists`, `Lt` and `Gt`. The rules follow the API server's toleration validation. |
+| Toleration value | `spec.deployment.tolerations[i].value` | `field.Invalid` | An `Equal` (or empty) operator with a value that is not a valid label value, or an `Lt` or `Gt` operator with a value that is not an integer. |
+| Toleration effect | `spec.deployment.tolerations[i].effect` | `field.Invalid` / `field.NotSupported` | `tolerationSeconds` without `NoExecute`, or an effect other than `NoSchedule`, `PreferNoSchedule` and `NoExecute`. |
+| Jobs request exceeds limit | `spec.jobs.resources.requests.<resource>` | `field.Invalid` | A request exceeds the limit of the same resource. |
+| Jobs PriorityClass existence | `spec.jobs.priorityClassName` | `field.NotFound` / `field.InternalError` | Same lookup as `spec.deployment.priorityClassName`; `""` is the opt-out and is not looked up. |
+| Jobs node placement | `spec.jobs.nodeSelector`, `spec.jobs.tolerations[i]` | as above | The node selector and toleration rules above, applied to `spec.jobs`. |
+| Federation proxy request exceeds limit | `spec.federation.proxyResources.requests.<resource>` | `field.Invalid` | A request of the `federation-proxy` sidecar exceeds its limit. |
 
 **Error format:** All validation errors are returned as a structured
 `apierrors.StatusError` with `GroupKind{Group: "keystone.openstack.c5c3.io", Kind: "Keystone"}`,

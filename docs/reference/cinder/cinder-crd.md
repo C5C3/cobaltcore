@@ -34,6 +34,7 @@ part of this spec. Volume backends attach through
 | `scheduler` | [`CinderSchedulerSpec`](#cinderschedulerspec) | no | The scheduler Deployment's pod-level block |
 | `volume` | [`CinderVolumeSpec`](#cindervolumespec) | no | The pod-level block every `cinder-volume` Deployment runs with |
 | `backup` | [`CinderBackupSpec`](#cinderbackupspec) | no | The backup Deployment's pod-level block |
+| `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, the db-purge CronJob, and the volume-service removal Jobs. A field left unset falls back to `spec.api.deployment`; unset resources default to a `100m` CPU request and `368Mi` memory as request and limit |
 | `keystoneEndpoint` | `string` | no | The Keystone auth URL rendered as `[keystone_authtoken] auth_url`; pattern `^https?://`, and the webhook also requires a parseable URL with a host. Cinder validates a token on every request server-side, so it must be reachable from inside the cluster. Required together with `serviceUser` (CEL rule); omitting both deploys the service without the Keystone integration, which renders `auth_strategy = noauth` |
 | `keystonePublicEndpoint` | `string` | no | The browser-facing Keystone base URL rendered as `www_authenticate_uri`, the address a 401 points unauthenticated clients at. When empty the operator falls back to `keystoneEndpoint` at render time (`EffectiveKeystonePublicEndpoint`), correct only when the internal and public URLs coincide |
 | `serviceUser` | [`ServiceUserSpec`](#serviceuserspec) | no | The Keystone service account and the Secret holding its password. Required exactly when `keystoneEndpoint` is set |
@@ -57,14 +58,14 @@ The API is the only Deployment that scales horizontally.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 3` | Pod-level knobs: `replicas`, `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and memory sized from `spec.api.uwsgi`, 512Mi as request and limit at its defaults, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds` (30), `preStopSleepSeconds` (5), `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | `DeploymentSpec` | no | `replicas: 3` | Pod-level knobs: `replicas`, `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and memory sized from `spec.api.uwsgi`, 512Mi as request and limit at its defaults, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds` (30), `preStopSleepSeconds` (5), `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). It is also the fallback of `spec.jobs` |
 | `uwsgi` | `UWSGISpec` | no | materialized | uWSGI parameters: `processes` (2), `threads` (1), `httpKeepAlive` (true), `harakiri` and `httpKeepAliveTimeout` (both omitted when unset). The defaulting webhook materializes the block, so the API always runs with the documented values |
 
 ### CinderSchedulerSpec
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 1` | The same pod-level knobs. `cinder-scheduler` runs one single-threaded process, so a block that names no memory renders 368Mi as memory request and limit. Schedulers are peers that hold no state between requests, so the count may be raised; every pod registers under the one `{name}-scheduler` identity |
+| `deployment` | `DeploymentSpec` | no | `replicas: 1` | The same pod-level knobs, node placement included. `cinder-scheduler` runs one single-threaded process, so a block that names no memory renders 368Mi as memory request and limit. Schedulers are peers that hold no state between requests, so the count may be raised; every pod registers under the one `{name}-scheduler` identity |
 
 The one-replica default is applied by the defaulting webhook and reaches the
 absent block only. `commonv1.DeploymentSpec.Replicas` carries
@@ -75,7 +76,7 @@ carries a `deployment` object at all, before any mutating webhook runs.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `strategy.type: Recreate` | The pod-level knobs every `cinder-volume` Deployment shares. The operator projects one Deployment per attached backend and applies this block to all of them, which is why `topologySpreadConstraints` is rejected here (see [Defaulting and validation](#defaulting-and-validation)). Each `cinder-volume` runs one single-threaded process, so a block that names no memory renders 368Mi as memory request and limit |
+| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `strategy.type: Recreate` | The pod-level knobs every `cinder-volume` Deployment shares, node placement included. The operator projects one Deployment per attached backend and applies this block to all of them, which is why `topologySpreadConstraints` is rejected here (see [Defaulting and validation](#defaulting-and-validation)). Each `cinder-volume` runs one single-threaded process, so a block that names no memory renders 368Mi as memory request and limit |
 
 Two CEL rules on `CinderSpec` pin this block: `replicas` must be `1` and
 `strategy.type` must be `Recreate`. A `cinder-volume` owns its backend through a
@@ -90,7 +91,7 @@ beside whatever else it sets, or admission rejects it.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `strategy.type: Recreate`, memory `2Gi` | The pod-level knobs of the backup Deployment |
+| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `strategy.type: Recreate`, memory `2Gi` | The pod-level knobs of the backup Deployment, node placement included |
 
 The same two CEL rules apply, with the same consequence for a present block.
 When the block names no memory, the reconciler renders a fixed `2Gi` as memory
@@ -214,8 +215,10 @@ of every endpoint field, the cron grammar of `spec.dbPurge.schedule`, the
 logging enums including the per-logger-level map, the graceful-termination
 arithmetic (`preStopSleepSeconds < terminationGracePeriodSeconds`, and
 `harakiri` strictly inside the drain window), the request-versus-limit ordering,
-the PriorityClass lookup, the topology-spread selector, and the `extraConfig`
-guards.
+the PriorityClass lookup, the topology-spread selector, the node selector
+label grammar and the toleration rules on each of the four `deployment` blocks,
+the `spec.jobs` block (requests within limits, an existing priority class, and
+its node placement), and the `extraConfig` guards.
 
 Each block's topology-spread selector is measured against the pod selector of the
 Deployment that block configures: `app.kubernetes.io/component` narrows the API,

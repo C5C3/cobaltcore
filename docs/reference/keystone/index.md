@@ -38,9 +38,11 @@ in-depth reference doc for that area.
 - **Comprehensive spec.** Image, database, cache, fernet, credentialKeys,
   passwordRotation, trustFlush, bootstrap, federation, middleware, plugins,
   policy overrides, autoscaling, networkPolicy, gateway, uwsgi, logging,
-  free-form `extraConfig`, and a `deployment` block grouping the pod-level knobs
+  free-form `extraConfig`, a `deployment` block grouping the pod-level knobs
   (replicas, resources, rollout `strategy`, graceful-termination timings,
-  topologySpreadConstraints, priorityClassName).
+  topologySpreadConstraints, priorityClassName, nodeSelector, tolerations,
+  affinity), and a `jobs` block that sizes, prioritizes and places every Job
+  and CronJob.
 - **Status with sub-conditions.** Fifteen typed sub-conditions plus
   `installedRelease`, `targetRelease`, `upgradePhase`, and `endpoint` —
   surfaced via `kubectl get keystones` printer columns.

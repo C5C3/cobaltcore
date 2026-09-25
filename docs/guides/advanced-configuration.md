@@ -285,6 +285,8 @@ full Keystone CR reference.
 | Topology spread | `spec.deployment.topologySpreadConstraints` | not exposed — standalone-only | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |
 | Priority class | `spec.deployment.priorityClassName` | not exposed — standalone-only | [PriorityClassName](../reference/keystone/keystone-crd.md#priorityclassname) |
 | Resource requests/limits | `spec.deployment.resources` | not exposed — standalone-only | [KeystoneSpec](../reference/keystone/keystone-crd.md#keystonespec) |
+| Node placement | `spec.deployment.nodeSelector`, `spec.deployment.tolerations`, `spec.deployment.affinity` | not exposed — standalone-only | [NodePlacementSpec](../reference/keystone/keystone-crd.md#nodeplacementspec) |
+| Job and CronJob pods | `spec.jobs` | not exposed — standalone-only | [JobSpec](../reference/keystone/keystone-crd.md#jobspec) |
 
 The "not exposed — standalone-only" knobs are not projectable through the
 `ControlPlane` CRD today; set them on a Keystone CR you own, as shown in the
