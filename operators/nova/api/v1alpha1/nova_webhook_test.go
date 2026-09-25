@@ -1821,3 +1821,25 @@ func TestNovaValidate_AutoscalingTargetNeedsAPositiveRequest(t *testing.T) {
 	_, err = w.ValidateCreate(context.Background(), withTarget())
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
+
+// TestPodSelectors pins each exported selector to the labels the pods of its
+// Deployment carry, the maps the spread checks compare against.
+func TestPodSelectors(t *testing.T) {
+	g := gomega.NewWithT(t)
+	base := func(component string) map[string]string {
+		return map[string]string{
+			"app.kubernetes.io/name":      "nova",
+			"app.kubernetes.io/instance":  "x",
+			"app.kubernetes.io/component": component,
+		}
+	}
+	g.Expect(APIPodSelector("x")).To(gomega.Equal(base("api")))
+	g.Expect(MetadataPodSelector("x")).To(gomega.Equal(base("metadata")))
+	g.Expect(SchedulerPodSelector("x")).To(gomega.Equal(base("scheduler")))
+	g.Expect(ConductorPodSelector("x")).To(gomega.Equal(base("conductor")))
+	g.Expect(ConsoleProxyPodSelector("x")).To(gomega.Equal(base("novncproxy")))
+	// Each call returns a fresh map, so a caller cannot alias another's.
+	a := ConductorPodSelector("x")
+	a["extra"] = "x"
+	g.Expect(ConductorPodSelector("x")).NotTo(gomega.HaveKey("extra"))
+}

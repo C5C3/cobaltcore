@@ -2582,3 +2582,17 @@ func TestGlanceValidate_AutoscalingTargetNeedsAPositiveRequest(t *testing.T) {
 	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.imageCache.maintenanceResources.requests.cpu"))
 	g.Expect(err.Error()).To(gomega.ContainSubstring("cpu request must be greater than zero"))
 }
+
+// TestAPIPodSelector pins the exported selector to the labels the API
+// Deployment's pods carry, the map the spread check compares against.
+func TestAPIPodSelector(t *testing.T) {
+	g := gomega.NewWithT(t)
+	g.Expect(APIPodSelector("x")).To(gomega.Equal(map[string]string{
+		"app.kubernetes.io/name":     "glance",
+		"app.kubernetes.io/instance": "x",
+	}))
+	// Each call returns a fresh map, so a caller cannot alias another's.
+	a := APIPodSelector("x")
+	a["extra"] = "x"
+	g.Expect(APIPodSelector("x")).NotTo(gomega.HaveKey("extra"))
+}

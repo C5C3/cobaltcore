@@ -601,10 +601,7 @@ func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra fie
 		allErrs = append(allErrs, validation.TopologySpreadSelector(
 			specPath.Child("deployment", "topologySpreadConstraints"),
 			p.Spec.Deployment.TopologySpreadConstraints,
-			map[string]string{
-				naming.LabelKeyName:     "placement",
-				naming.LabelKeyInstance: p.Name,
-			},
+			APIPodSelector(p.Name),
 		)...)
 	}
 
@@ -720,4 +717,12 @@ func extraConfigCatalogInputsChanged(oldObj, newObj *Placement) bool {
 		return true
 	}
 	return !reflect.DeepEqual(oldObj.Spec.ExtraConfig, newObj.Spec.ExtraConfig)
+}
+
+// APIPodSelector returns the pod selector of the API Deployment of the
+// Placement named name, which the labelSelector of every custom topology spread
+// constraint must equal. The ControlPlane reads it to complete the spread
+// constraints it projects.
+func APIPodSelector(name string) map[string]string {
+	return naming.SelectorLabels("placement", name)
 }

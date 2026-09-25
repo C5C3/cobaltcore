@@ -860,10 +860,7 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 		allErrs = append(allErrs, validation.TopologySpreadSelector(
 			specPath.Child("deployment", "topologySpreadConstraints"),
 			g.Spec.Deployment.TopologySpreadConstraints,
-			map[string]string{
-				naming.LabelKeyName:     "glance",
-				naming.LabelKeyInstance: g.Name,
-			},
+			APIPodSelector(g.Name),
 		)...)
 	}
 
@@ -1631,4 +1628,12 @@ func extraConfigCatalogInputsChanged(oldObj, newObj *Glance) bool {
 		}
 	}
 	return false
+}
+
+// APIPodSelector returns the pod selector of the API Deployment of the
+// Glance named name, which the labelSelector of every custom topology spread
+// constraint must equal. The ControlPlane reads it to complete the spread
+// constraints it projects.
+func APIPodSelector(name string) map[string]string {
+	return naming.SelectorLabels("glance", name)
 }

@@ -674,10 +674,7 @@ func (w *BarbicanWebhook) validate(ctx context.Context, b *Barbican, extra field
 		allErrs = append(allErrs, validation.TopologySpreadSelector(
 			specPath.Child("deployment", "topologySpreadConstraints"),
 			b.Spec.Deployment.TopologySpreadConstraints,
-			map[string]string{
-				naming.LabelKeyName:     "barbican",
-				naming.LabelKeyInstance: b.Name,
-			},
+			APIPodSelector(b.Name),
 		)...)
 	}
 
@@ -903,4 +900,12 @@ func extraConfigCatalogInputsChanged(oldObj, newObj *Barbican) bool {
 		return true
 	}
 	return !reflect.DeepEqual(oldObj.Spec.ExtraConfig, newObj.Spec.ExtraConfig)
+}
+
+// APIPodSelector returns the pod selector of the API Deployment of the
+// Barbican named name, which the labelSelector of every custom topology spread
+// constraint must equal. The ControlPlane reads it to complete the spread
+// constraints it projects.
+func APIPodSelector(name string) map[string]string {
+	return naming.SelectorLabels("barbican", name)
 }

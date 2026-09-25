@@ -879,3 +879,17 @@ func TestBarbicanValidate_AutoscalingTargetNeedsAPositiveRequest(t *testing.T) {
 	_, err = w.ValidateCreate(context.Background(), withTarget())
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
+
+// TestAPIPodSelector pins the exported selector to the labels the API
+// Deployment's pods carry, the map the spread check compares against.
+func TestAPIPodSelector(t *testing.T) {
+	g := gomega.NewWithT(t)
+	g.Expect(APIPodSelector("x")).To(gomega.Equal(map[string]string{
+		"app.kubernetes.io/name":     "barbican",
+		"app.kubernetes.io/instance": "x",
+	}))
+	// Each call returns a fresh map, so a caller cannot alias another's.
+	a := APIPodSelector("x")
+	a["extra"] = "x"
+	g.Expect(APIPodSelector("x")).NotTo(gomega.HaveKey("extra"))
+}
