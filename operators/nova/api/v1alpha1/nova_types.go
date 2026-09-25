@@ -191,6 +191,16 @@ type NovaSpec struct {
 	// +optional
 	ConsoleProxy NovaConsoleProxySpec `json:"consoleProxy,omitempty"`
 
+	// Jobs sizes, prioritizes and places the pods of the db-sync Job (which
+	// also runs the cell_v2 steps), the db-expand, db-migrate and db-contract
+	// upgrade phases, and the db-archive CronJob. A field left unset falls
+	// back to spec.api.deployment: the priority class, the node selector, the
+	// tolerations, and the node affinity (never the pod (anti-)affinity). An
+	// empty value opts out of the fallback. Unset resources default to a 100m
+	// CPU request and 368Mi memory as request and limit.
+	// +optional
+	Jobs *commonv1.JobSpec `json:"jobs,omitempty"`
+
 	// KeystoneEndpoint is the Keystone endpoint URL Nova authenticates against.
 	// It renders as [keystone_authtoken] auth_url in nova.conf and as the
 	// auth_url of every client section Nova calls other services through. Nova

@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -1224,4 +1225,67 @@ func TestRecordUpgradePhaseTerminal(t *testing.T) {
 
 		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(HaveLen(1))
 	})
+}
+
+// TestNovaJobs_PodSettings pins the pod settings of the db-sync Job, the upgrade phases and the db-archive CronJob: unset, every
+// container renders the Job resources and no priority class or placement; the
+// API Deployment's priority class and node selector carry over; spec.jobs
+// overrides both.
+func TestNovaJobs_PodSettings(t *testing.T) {
+	podSpecs := func(o *novav1alpha1.Nova) map[string]corev1.PodSpec {
+		return map[string]corev1.PodSpec{
+			"db-sync":    database.SyncJob(novaJobSetParams(o, testConfigMapName)).Spec.Template.Spec,
+			"db-expand":  database.BuildJob(novaJobSetParams(o, testConfigMapName), o.Spec.Image.Reference(), "db-expand", nil, 4).Spec.Template.Spec,
+			"db-archive": dbArchiveCronJob(o, workloadArtifacts()).Spec.JobTemplate.Spec.Template.Spec,
+		}
+	}
+	defaults := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
+	}
+
+	for _, tc := range []struct {
+		name         string
+		mutate       func(o *novav1alpha1.Nova)
+		wantPriority string
+		wantSelector map[string]string
+	}{
+		{name: "defaults", mutate: func(*novav1alpha1.Nova) {}},
+		{
+			name: "API Deployment fallback",
+			mutate: func(o *novav1alpha1.Nova) {
+				o.Spec.API.Deployment.PriorityClassName = ptr.To("high")
+				o.Spec.API.Deployment.NodeSelector = map[string]string{"a": "b"}
+			},
+			wantPriority: "high",
+			wantSelector: map[string]string{"a": "b"},
+		},
+		{
+			name: "spec.jobs override",
+			mutate: func(o *novav1alpha1.Nova) {
+				o.Spec.API.Deployment.PriorityClassName = ptr.To("high")
+				o.Spec.API.Deployment.NodeSelector = map[string]string{"a": "b"}
+				o.Spec.Jobs = &commonv1.JobSpec{
+					JobBaseSpec:       commonv1.JobBaseSpec{PriorityClassName: ptr.To("low")},
+					NodePlacementSpec: commonv1.NodePlacementSpec{NodeSelector: map[string]string{"pool": "jobs"}},
+				}
+			},
+			wantPriority: "low",
+			wantSelector: map[string]string{"pool": "jobs"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			o := defaulted(validNova())
+			tc.mutate(o)
+
+			for name, spec := range podSpecs(o) {
+				g.Expect(spec.PriorityClassName).To(Equal(tc.wantPriority), name)
+				g.Expect(spec.NodeSelector).To(Equal(tc.wantSelector), name)
+				for _, c := range append(spec.InitContainers, spec.Containers...) {
+					g.Expect(c.Resources).To(Equal(defaults), "%s/%s", name, c.Name)
+				}
+			}
+		})
+	}
 }

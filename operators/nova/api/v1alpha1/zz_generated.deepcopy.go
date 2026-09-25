@@ -547,6 +547,11 @@ func (in *NovaSpec) DeepCopyInto(out *NovaSpec) {
 	in.Scheduler.DeepCopyInto(&out.Scheduler)
 	in.Conductor.DeepCopyInto(&out.Conductor)
 	in.ConsoleProxy.DeepCopyInto(&out.ConsoleProxy)
+	if in.Jobs != nil {
+		in, out := &in.Jobs, &out.Jobs
+		*out = new(types.JobSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.RemoteCompute != nil {
 		in, out := &in.RemoteCompute, &out.RemoteCompute
 		*out = new(NovaRemoteComputeSpec)

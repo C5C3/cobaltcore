@@ -128,7 +128,8 @@ type NovaComputeSpec struct {
 	UpdateStrategy NovaComputeUpdateStrategy `json:"updateStrategy,omitempty"`
 
 	// Resources defines the CPU and memory requests and limits of the
-	// nova-compute container. When nil the container carries none.
+	// nova-compute container and of its wait-for-chassis init container. When
+	// nil both carry none.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
