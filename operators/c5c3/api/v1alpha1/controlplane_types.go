@@ -125,6 +125,17 @@ type ControlPlaneSpec struct {
 	// individual service CRs.
 	Services ServicesSpec `json:"services"`
 
+	// Sizing sizes and places every component the ControlPlane creates: the
+	// API, worker and Job pods of the services, the Keystone federation proxy,
+	// and the managed MariaDB, Memcached, RabbitMQ and dedicated OpenBao. The
+	// effective sizing is a built-in profile (Standard unless named), overlaid
+	// by the SizingProfile profileRef names, overlaid by the values set here.
+	// Unset resolves to Standard, which projects the same children as a
+	// ControlPlane without the block. Forbidden when services.keystone.mode is
+	// External.
+	// +optional
+	Sizing *ControlPlaneSizingSpec `json:"sizing,omitempty"`
+
 	// GlobalPolicyOverrides defines oslo.policy overrides applied across every
 	// service in the control plane. Named to parallel
 	// services.keystone.policyOverrides, whose per-service rules take precedence
