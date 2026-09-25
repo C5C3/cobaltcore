@@ -164,3 +164,13 @@ spec:
             ($error != null): true
             (contains($error, 'spec.metadataWorkers')): true
             (contains($error, 'should be greater than or equal to 0')): true
+  # spec.novaMetadata.caBundleSecretRef beside protocol: http must be rejected by
+  # the CEL rule on NovaMetadataSpec, which answers before the webhook twin.
+  - try:
+    - apply:
+        file: 12-novametadata-cabundle-without-https.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.novaMetadata')): true
+            (contains($error, 'caBundleSecretRef requires protocol https')): true

@@ -300,6 +300,31 @@ spec:
                   is not onboarded onto this operator, so a nil block renders nothing and the
                   oslo defaults apply.
                 properties:
+                  caBundleSecretRef:
+                    description: |-
+                      CABundleSecretRef references a Secret in the agent's namespace, on the
+                      cluster its pods run on, that holds the PEM bundle signing the Nova
+                      metadata API's certificate: the issuer of the metadata Gateway listener
+                      for an agent on a compute cluster. The operator mounts it into the agent
+                      container and renders its path as [DEFAULT] auth_ca_cert. The key is
+                      webhook-defaulted to "ca.crt". Without it, an "https" agent verifies the
+                      certificate against the image's default CA bundle.
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        description: |-
+                          Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                          subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                          fixes every consumer at once — a service operator adminPasswordSecretRef /
+                          database.secretRef / messaging / TLS cert refs and the c5c3
+                          passwordSecretRef — so an empty name no longer slips through "required".
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                    required:
+                    - name
+                    type: object
                   host:
                     description: |-
                       Host is the address of the Nova metadata API. When empty the oslo default
@@ -347,6 +372,10 @@ spec:
                     - name
                     type: object
                 type: object
+                x-kubernetes-validations:
+                - message: caBundleSecretRef requires protocol https
+                  rule: '!has(self.caBundleSecretRef) || (has(self.protocol) && self.protocol
+                    == ''https'')'
               openStackRelease:
                 description: |-
                   OpenStackRelease names the OpenStack release this agent runs. It selects the
