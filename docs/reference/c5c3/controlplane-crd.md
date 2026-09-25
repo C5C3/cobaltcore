@@ -446,7 +446,7 @@ services are added as fields as the operator grows.
 | `barbican` | [`*ServiceBarbicanSpec`](#servicebarbicanspec) | No | `nil` | Configuration for the Barbican key manager projected by the reconciler. Optional: when unset, this ControlPlane manages no key manager and `BarbicanReady` is reported as not-managed (`BarbicanNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Barbican validates every token against the ControlPlane's Keystone child) and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. **Forbidden in External mode**: Barbican needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Barbican child by default; set the `c5c3.io/allow-barbican-deletion: "true"` annotation to opt in to deleting the child (with its `BarbicanSecretStore`, its DB-credential ExternalSecret, and the key-manager catalog CRs) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. Destroying a **dedicated** OpenBao instance and the secrets in it takes a second annotation on top, `c5c3.io/allow-barbican-secret-store-data-deletion: "true"`; see [ServiceBarbicanSecretStoreSpec](#servicebarbicansecretstorespec). |
 | `neutron` | [`*ServiceNeutronSpec`](#serviceneutronspec) | No | `nil` | Configuration for the Neutron network service projected by the reconciler. Optional: when unset, this ControlPlane manages no network service and `NeutronReady` is reported as not-managed (`NeutronNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Neutron validates every token against the ControlPlane's Keystone child), on **`OVNReady`** (the ML2/OVN mechanism driver writes every network into the referenced central's Northbound database), and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. It also **requires `spec.infrastructure.messaging`**: the Neutron CRD requires `spec.messaging`, and the child's transport URL is derived from the shared bus, so the webhook rejects a `neutron` block declared without one. **Forbidden in External mode**: Neutron needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Neutron child by default; set the `c5c3.io/allow-neutron-deletion: "true"` annotation to opt in to deleting the child (with its DB-credential ExternalSecret, the two messaging Secrets, and the network catalog registration) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. The referenced `OVNCentral` is never deleted: the ControlPlane only reads it. |
 | `cinder` | [`*ServiceCinderSpec`](#servicecinderspec) | No | `nil` | Configuration for the Cinder block-storage service projected by the reconciler. Optional: when unset, this ControlPlane manages no block-storage service and `CinderReady` is reported as not-managed (`CinderNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Cinder validates every token against the ControlPlane's Keystone child) and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. It also **requires `spec.infrastructure.messaging`**: the Cinder CRD requires `spec.messaging`, and the child's transport URL is derived from the shared bus, so the webhook rejects a `cinder` block declared without one. **Forbidden in External mode**: Cinder needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Cinder child by default; set the `c5c3.io/allow-cinder-deletion: "true"` annotation to opt in to deleting the child (with its `CinderBackend` and `CinderBackupBackend` satellites, its DB-credential ExternalSecret, the two messaging Secrets, and the block-storage catalog registration) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. |
-| `nova` | [`*ServiceNovaSpec`](#servicenovaspec) | No | `nil` | Configuration for the Nova compute service projected by the reconciler. Optional: when unset, this ControlPlane manages no compute service and `NovaReady` is reported as not-managed (`NovaNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Nova validates every token against the ControlPlane's Keystone child), on **`PlacementReady`** (the conductor claims every instance's resources in Placement before it boots), and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. Three sibling blocks are **required** beside it, `services.placement`, `services.neutron` and `services.glance`, and so is **`spec.infrastructure.messaging`**: the Nova CRD requires `spec.messaging`, and the child's transport URL is derived from the shared bus. **Forbidden in External mode**: Nova needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Nova child by default; set the `c5c3.io/allow-nova-deletion: "true"` annotation to opt in to deleting the child (with its two DB-credential ExternalSecrets, the generated metadata shared secret, the two messaging Secrets, and the compute catalog registration) on unset. Both dynamic DB-credential generators are torn down on unset regardless of the annotation. |
+| `nova` | [`*ServiceNovaSpec`](#servicenovaspec) | No | `nil` | Configuration for the Nova compute service projected by the reconciler. Optional: when unset, this ControlPlane manages no compute service and `NovaReady` is reported as not-managed (`NovaNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Nova validates every token against the ControlPlane's Keystone child), on **`PlacementReady`** (the conductor claims every instance's resources in Placement before it boots), and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. Three sibling blocks are **required** beside it, `services.placement`, `services.neutron` and `services.glance`, and so is **`spec.infrastructure.messaging`**: the Nova CRD requires `spec.messaging`, and the child's transport URL is derived from the shared bus. **Forbidden in External mode**: Nova needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Nova child by default; set the `c5c3.io/allow-nova-deletion: "true"` annotation to opt in to deleting the child (with its two DB-credential ExternalSecrets, the generated metadata shared secret, the three messaging Secrets, the compute catalog registration, and the [hypervisor operator's](#servicenovahypervisoroperatorspec) registration and auth Secret) on unset. Both dynamic DB-credential generators are torn down on unset regardless of the annotation. |
 
 ---
 
@@ -1174,7 +1174,7 @@ and operator policy) rather than set here. `spec.networkPolicy`,
 are not projected, so the nova operator's own network policies, autoscaling,
 logging, and uWSGI parameters stay authoritative.
 
-Eight fields have no counterpart on the other services. Three are replica counts,
+Nine fields have no counterpart on the other services. Three are replica counts,
 because the compute service runs a metadata API, a scheduler, and a conductor in
 Deployments beside its API. Two are the metadata pair, `metadataGateway` and
 `metadataSharedSecretRef`: the metadata API is the one endpoint dialed from a
@@ -1184,7 +1184,8 @@ dials it signs every request with a secret both sides have to hold.
 bridge to the hypervisors no other service runs, and `dbArchive` tunes the
 archive of the rows Nova soft-deletes instead of removing. `remoteCompute` hands
 over the one address of the compute contract the ControlPlane cannot derive: the
-bus's external listener.
+bus's external listener. `hypervisorOperator` provisions the Keystone account
+openstack-hypervisor-operator runs as on the compute clusters.
 
 Forbidden entirely when `services.keystone.mode` is `External` (Nova needs its
 own External-mode design), so, like `ServiceCinderSpec`, none of its fields carry
@@ -1204,6 +1205,7 @@ per-field External-mode forbid-rules.
 | `metadataSharedSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` (the ControlPlane generates the value) | References a Secret holding the value the Neutron metadata agent signs proxied requests with, rendered as `[neutron] metadata_proxy_shared_secret` on the compute service and carried by every agent that proxies to it. Leaving it `nil` has the ControlPlane generate the secret and hand it to the child (see [The generated metadata shared secret](#the-generated-metadata-shared-secret)). Supply one when the value has to be seeded from outside this ControlPlane's reach: a metadata request signed with a value only one side knows is rejected, so both sides have to resolve the same Secret. Naming the generated Secret `{controlplane.Name}-nova-metadata-secret` itself keeps it generated. The shared type rejects an empty `name`. |
 | `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Nova on one mode while another service stays on the other. It applies to **both** database blocks the compute service holds: the Nova CRD rejects a child whose `apiDatabase` and `database` carry different modes, so one value covers both. Empty (the default) **inherits** the shared mode, and is not materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Nova declares a [dedicated](#novadedicatedbackingservicesspec) database (dedicated is `Static`-only) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
 | `dbArchive` | [`*ServiceNovaDBArchiveSpec`](#servicenovadbarchivespec) | No | `nil` | Tunes the recurring archive of the compute service's soft-deleted rows, projected onto the child's `spec.dbArchive`. A nil block resolves exactly like an empty one, so the archive runs on every projected Nova. |
+| `hypervisorOperator` | [`*ServiceNovaHypervisorOperatorSpec`](#servicenovahypervisoroperatorspec) | No | `nil` | Opt-in marker with no fields. `{}` provisions the Keystone account openstack-hypervisor-operator authenticates as (user `hypervisor-operator`, role `admin`) and delivers its credentials as `{controlplane.Name}-nova-hypervisor-operator-auth` beside the Nova and on every compute cluster a `NovaCompute` of it runs on. Removing the block deletes the account. |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the compute service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the child's `spec.extraConfig`, which carries the `nova.conf` sections. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block. See [ExtraConfig admission checks](#extraconfig-admission-checks). |
 | `dedicatedBackingServices` | [`*NovaDedicatedBackingServicesSpec`](#novadedicatedbackingservicesspec) | No | `nil` (shares the ControlPlane-wide instances) | Opts Nova **out** of the shared `spec.infrastructure` instances and gives it a `database` and/or `cache` of its own. Nova consumes both classes, so it can take either or both dedicated; a declared block must name at least one. |
 | `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the compute service, and the databases, cache, secret store, and credential material that follow it, in a namespace of its own. Create-only: the validating webhook freezes the block after creation. See [Service Namespaces](#service-namespaces). |
@@ -1281,6 +1283,117 @@ the Nova CRD's `DBArchiveSpec`, projected onto the child's `spec.dbArchive`.
 | `sleep` | `*int32` | No | `nil` (the nova operator's own default, 1) | How many seconds the run waits between batches. Zero runs the batches back to back, which finishes sooner at the cost of the database serving the API at the same time. Minimum 0. |
 | `retentionDays` | `*int32` | No | `nil` (no `--before`, every soft-deleted row eligible) | Keeps the most recent deletions out of the archive: the run passes `--before` with today's date minus this many days, so a row soft-deleted inside the window stays in the live table. The window also gates the `task_log` table, whose rows are never soft-deleted, so `--task-log` is passed only together with `--before`. Minimum 1. |
 | `suspend` | `bool` | No | `false` | Pauses the archive CronJob without deleting it. It is the escape hatch for a brownfield deployment onboarding onto this operator: the first run works through a backlog that has never been archived, so an operator who wants to stage that can suspend the CronJob, pick a retention window covering the deployment's full history, and step it down. |
+
+### ServiceNovaHypervisorOperatorSpec
+
+An opt-in marker with no fields. `hypervisorOperator: {}` has the ControlPlane
+provision the Keystone account
+[openstack-hypervisor-operator](https://github.com/cobaltcore-dev/openstack-hypervisor-operator)
+authenticates as, and deliver its credentials to every cluster the hypervisor
+operator may run on. The ControlPlane does not deploy the hypervisor operator
+itself.
+
+**The account.** The Nova leg projects the account-only `KeystoneService`
+`{controlplane.Name}-nova-hypervisor-operator` in the Nova namespace: user
+`hypervisor-operator` in project `service-hypervisor-operator`, which the
+registration creates in the ControlPlane's admin domain, holding the `admin`
+role alone. Nova 32.0.0 checks `rule:context_is_admin` on `os-services`,
+`os-hypervisors`, `os-aggregates` and `servers:index:get_all_tenants`, and no
+narrower default role satisfies it.
+Placement's resource-provider, trait and allocation rules accept `admin` or
+`service`, so `service` would add nothing. The project of its own keeps the
+account's credential and audit trail apart from nova-compute's in
+`service-nova`. The registration is projected only once the Nova child is
+Ready, so while the block is set
+[`ServiceAccountsReady`](#serviceaccountsready) waits on the compute service's
+rollout too.
+
+**The auth Secret.** Once the account is provisioned, the ControlPlane writes
+`{controlplane.Name}-nova-hypervisor-operator-auth` (type `Opaque`) into the
+Nova namespace on the Nova's cluster. Each key feeds one value of the
+hypervisor operator's Helm chart:
+
+| Key | Value | Chart value |
+| --- | --- | --- |
+| `auth_url` | The public Keystone URL once `services.keystone` is published (`publicEndpoint` or `gateway`), the in-cluster one before | `controllerManager.manager.env.osAuthUrl` |
+| `username` | `hypervisor-operator` | `controllerManager.manager.env.osUsername` |
+| `user_domain_name` | The admin domain, `spec.korc.adminCredential.domainName` (`Default` when unset) | `controllerManager.manager.env.osUserDomainName` |
+| `project_name` | `service-hypervisor-operator` | `controllerManager.manager.env.osProjectName` |
+| `project_domain_name` | The admin domain, as above | `controllerManager.manager.env.osProjectDomainName` |
+| `region_name` | `spec.region` (`RegionOne` when unset) | `controllerManager.manager.env.osRegionName` |
+| `password` | Key `password` of the registration's consumer Secret `{controlplane.Name}-nova-hypervisor-operator-credentials` | `secret.servicePassword` |
+
+**Delivery to compute clusters.** Every cluster a
+[`NovaCompute`](../nova/novacompute-crd.md) of the Nova runs on, other than the
+Nova's own, receives a copy in the Nova namespace: the same targets the compute
+contract is mirrored to (see [`NovaReady`](#novaready)). The copy carries
+`nova.openstack.c5c3.io/compute-config-mirror: "true"`, and the last pool of
+the Nova on a cluster deletes it together with the contract mirror when it is
+torn down. A hypervisor operator on the Nova's own cluster reads the source
+Secret, which carries no such label.
+
+**Rotation.** The ControlPlane watches the consumer Secret, so a
+[`CredentialRotation`](#resource-shape-—-credentialrotation) of the account
+rewrites the auth Secret and every copy on the next pass. The hypervisor
+operator reads its password once, at start, so a rotation also needs an
+upgrade of its Helm release. A Flux `valuesFrom` on the copied Secret does
+that on its own interval; a value set by hand has to be set again by hand.
+
+::: warning The auth Secret carries a cloud-admin password
+The account holds `admin`, and Nova and Placement read that role
+cloud-wide. Anyone who can read the auth Secret, on the Nova's cluster or on
+any compute cluster it is copied to, can act as a cloud administrator. Grant
+read access to Secrets in the Nova namespace on those clusters accordingly.
+:::
+
+**Removal.** Clearing the block deletes the registration, whose finalizer
+removes the user and the project from Keystone, then the source Secret and
+every copy that carries the mirror label. For a Nova on a target cluster it
+also deletes the `ExternalSecret` that materialized the account's credentials
+there. A same-named object this ControlPlane did not create is left alone.
+Unsetting the whole `services.nova` block preserves the registration and the
+source Secret unless `c5c3.io/allow-nova-deletion: "true"` opts in; the copies
+on compute clusters then go with each `NovaCompute`'s own teardown.
+
+**Reachability.** A hypervisor operator on another cluster dials the public
+catalog rows of Keystone, Nova, Placement, Glance and Neutron, and of Cinder
+for its smoke test, so those services need a `publicEndpoint` or a `gateway`
+that cluster resolves. The ControlPlane does not enforce this: a hypervisor
+operator on the management cluster reaches the in-cluster rows, and admission
+cannot tell where it runs.
+
+**One region.** The hypervisor operator chooses an endpoint by service type
+alone: it takes the first public `compute` and `placement` row of any region
+and never reads `region_name` for them. The catalog a ControlPlane builds has
+exactly one public row of each, in `spec.region`. A second public `compute` or
+`placement` row is unsupported for the hypervisor operator, whether it comes
+from a `KeystoneService` with `serviceType: compute` or `placement`, from a row
+written by hand, or from another region. With such a row the hypervisor
+operator may talk to the wrong service without reporting it. The
+full-ControlPlane e2e suite checks that the account's token carries exactly one
+row of each.
+
+**The test project.** At start the hypervisor operator authenticates a second
+time as the same user, scoped to project `test` in domain `cc3test`, and exits
+when that fails, whether or not its smoke test is skipped. The smoke test then
+boots flavor ID `1` from image `cirros-kvm` onto a volume of type `premium`, on
+the first non-shared network that scope lists. The ControlPlane declares none of
+these. `deploy/kind/hypervisor-operator-fixtures/` is an example that declares
+them as K-ORC resources, with the role assignment the user needs on `test`.
+Apply it only to a cloud that has none of its managed objects yet. K-ORC adopts
+an existing object with the name of a managed resource instead of creating one.
+On a cloud that already has a `cc3test` domain or a `premium` volume type,
+the overlay's documented teardown therefore deletes them: `cc3test` with every
+project, user and group in it, and `premium` unless a volume still uses it.
+
+K-ORC caches one client per `clouds.yaml` for half the token lifetime (about
+30 minutes at Keystone defaults), together with the service catalog of the
+token it authenticated with. Within that time of the ControlPlane's bring-up,
+the cached catalog has no `compute`, `network` or `block-storage` row yet, and
+the overlay's flavor, volume type, network and subnet report `No suitable
+endpoint could be found in the service catalog` until the entry expires. Restart
+K-ORC (`kubectl rollout restart deployment/orc-controller-manager -n
+orc-system`) before applying the overlay, as its header describes.
 
 ### NovaDedicatedBackingServicesSpec
 
@@ -3189,15 +3302,17 @@ in (and, while `services.nova.remoteCompute` is set, the handed external bus URL
 as `{controlplane.Name}-nova-remote-messaging`), ensures the two DB credentials
 the `nova_api` and cell schemas take, and generates the metadata shared secret
 before it projects the child, so everything the child references exists by the
-time the nova operator resolves it. Past the
-child's readiness it delivers the compute contract to every mirror target. Nova
+time the nova operator resolves it. Past the child's readiness it delivers the
+compute contract to every mirror target and, while `hypervisorOperator` is set,
+provisions the [hypervisor operator's account](#servicenovahypervisoroperatorspec)
+and delivers its auth Secret to the same targets. Nova
 is **forbidden in External mode**, so it is only ever managed against a
 Managed-mode Keystone.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `NovaReady` | The projected Nova CR reports Ready, every compute-config mirror target is served, and its registration reports Ready. |
-| `True` | `NovaNotManaged` | `spec.services.nova` is unset: no compute service is managed, so the aggregate `Ready` is not blocked. Any previously-projected Nova child (with its two DB-credential chains, the generated metadata shared secret, the three messaging Secrets, and the registration) is **preserved** unless the `c5c3.io/allow-nova-deletion: "true"` annotation opts in to its deletion. Both dynamic DB-credential generators, their ServiceAccounts, and their client Certificates are torn down **either way**. |
+| `True` | `NovaReady` | The projected Nova CR reports Ready, every compute-config mirror target is served, the hypervisor operator's auth Secret is delivered to every target while `hypervisorOperator` is set, and its registration reports Ready. |
+| `True` | `NovaNotManaged` | `spec.services.nova` is unset: no compute service is managed, so the aggregate `Ready` is not blocked. Any previously-projected Nova child (with its two DB-credential chains, the generated metadata shared secret, the three messaging Secrets, the registration, and the hypervisor operator's registration and auth Secret) is **preserved** unless the `c5c3.io/allow-nova-deletion: "true"` annotation opts in to its deletion. Both dynamic DB-credential generators, their ServiceAccounts, and their client Certificates are torn down **either way**. |
 | `False` | `WaitingForKeystone` | `KeystoneReady` is not `True`; Nova projection deferred. Requeue 5s. |
 | `False` | `WaitingForPlacement` | `PlacementReady` is not `True`; Nova projection deferred. A ControlPlane that manages no placement service reports that condition `True` under its own not-managed reason, so this gate reads the condition rather than the block. Requeue 5s. |
 | `False` | `WaitingForMessagingCredentials` | The shared bus has not delivered its transport URL yet: the `RabbitmqCluster`, its default-user Secret, or the brownfield Secret is missing. Nothing is written, so the child never sees a partial URL. Requeue 15s. |
@@ -3205,8 +3320,8 @@ Managed-mode Keystone.
 | `False` | `NovaMessagingError` | Error resolving the shared transport URL, writing either messaging Secret into the Nova namespace, or removing the stale CA mirror after the `tls` block was dropped. |
 | `False` | `WaitingForRemoteMessaging` | `services.nova.remoteCompute` is set but the handed Secret, or its key, is missing or empty. The message is prefixed `services.nova.remoteCompute.transportURLSecretRef:`. No child is written this pass, so the child never names a Secret that is not there. Requeue 15s. |
 | `False` | `NovaRemoteMessagingError` | The handed URL is not a `rabbit://` URL (the message names the scheme, never the URL), or writing `{controlplane.Name}-nova-remote-messaging` into the Nova namespace failed, or deleting it after `services.nova.remoteCompute` was removed failed. |
-| `False` | `TargetClusterUnavailable` | The cluster the Nova namespace lives on did not resolve, so the messaging Secrets, the registration's credential mirror, the DB-credential objects, the metadata generator pair, or a compute-config mirror cannot be written there. The resolver's own message is relayed. Requeue 15s from the bus delivery, the metadata secret and the compute-config mirror, 10s from the registration mirror and the DB credentials. |
-| `False` | `WaitingForServiceRegistration` | The projected `KeystoneService` registration has not provisioned the `nova` account yet; projection deferred until its Keystone user and password exist. The message relays the registration's own failing sub-condition, so a collision on the `nova` user or its catalog row reads here verbatim. |
+| `False` | `TargetClusterUnavailable` | The cluster the Nova namespace lives on did not resolve, so the messaging Secrets, the registration's credential mirror, the DB-credential objects, the metadata generator pair, a compute-config mirror, or the hypervisor operator's auth Secret or one of its copies cannot be written there. The resolver's own message is relayed. Requeue 15s from the bus delivery, the metadata secret and the compute-config mirror, 10s from the registration mirror and the DB credentials. |
+| `False` | `WaitingForServiceRegistration` | The projected `KeystoneService` registration has not provisioned the `nova` account yet; projection deferred until its Keystone user and password exist. The message relays the registration's own failing sub-condition, so a collision on the `nova` user or its catalog row reads here verbatim. The hypervisor operator's registration relays the same way once the child is Ready, naming `{controlplane.Name}-nova-hypervisor-operator`. |
 | `False` | `ServiceRegistrationError` | Kubernetes-level error writing, reading, or mirroring the `KeystoneService` registration child; a refused adoption of a same-named foreign CR is among them. |
 | `False` | `ServiceRegistrationFieldsReclaimed` | The pass reset a spec field another field manager had written on the registration child (an `adopt` consent, a `rotation` block, or an extra catalog endpoint). The condition names the same fields as the `Warning` event and stands until a pass reads an untampered child. |
 | `False` | `SecretStoreNotReady` | The compute service is placed on a target cluster whose secret store is not ready, so the registration's consumer credentials cannot be materialised there. Requeue 10s. |
@@ -3220,6 +3335,8 @@ Managed-mode Keystone.
 | `False` | `NovaError` | Error create-or-updating the Nova CR. |
 | `False` | `WaitingForComputeConfig` | The child is Ready but the compute contract Secret the nova operator publishes has not appeared yet, so a mirror target cannot be served. The message names the Secret waited for: `{controlplane.Name}-nova-compute-config`, or `{controlplane.Name}-nova-remote-compute-config` while `services.nova.remoteCompute` is set, which the nova operator writes only once the delivered remote URL resolves. Requeue 15s. |
 | `False` | `NovaComputeConfigError` | Error listing the NovaComputes, reading the published compute contract, or writing its mirror into a target namespace. |
+| `False` | `WaitingForHypervisorOperatorCredentials` | `hypervisorOperator` is set and the account is provisioned, but its consumer Secret `{controlplane.Name}-nova-hypervisor-operator-credentials` is absent from the Nova namespace or carries no `password` yet. Requeue 15s. |
+| `False` | `HypervisorOperatorError` | Error reading that consumer Secret, writing the auth Secret `{controlplane.Name}-nova-hypervisor-operator-auth` or one of its copies (the message names the namespace and the cluster), or deleting the registration, the Secret or a copy after the block was cleared. |
 
 The compute-config reasons only appear once a [NovaCompute](../nova/novacompute-crd.md)
 of the plane's Nova runs on a cluster other than the Nova's own. The mirror
@@ -3227,7 +3344,8 @@ targets are one per such cluster, in the Nova namespace: pools sharing a cluster
 share a target, a pool being deleted is left out, and a cluster that does not
 serve the NovaCompute kind has no pools and so no target. The mirror carries
 `nova.openstack.c5c3.io/compute-config-mirror: "true"`, and the last pool of the
-Nova on a cluster reaps it when it is torn down.
+Nova on a cluster reaps it when it is torn down. The hypervisor operator's auth
+Secret goes to the same targets under the same label and is reaped with it.
 
 A registration that is provisioned but not yet fully `Ready` relays its own first
 failing sub-condition's reason onto `NovaReady`, the same way its peers do.
@@ -3324,10 +3442,16 @@ registers are gated by that CR's own `CatalogReady`, not by this condition.
 ### ServiceAccountsReady
 
 Set by `reconcileServiceAccounts`. It **aggregates** the readiness of the
-`KeystoneService` registrations the built-in service legs project — one per
-declared `services.glance` / `.placement` / `.barbican` — into the one condition
-operators alert on. It projects nothing itself and needs no gate of its own: it
-only reads the children those legs wrote earlier in the same pass.
+`KeystoneService` registrations the built-in service legs project into the one
+condition operators alert on: one per declared `services.glance`, `.placement`,
+`.barbican`, `.neutron`, `.cinder` and `.nova`, plus the account-only
+`{controlplane.Name}-neutron-nova` while both `neutron` and `nova` are declared,
+and `{controlplane.Name}-nova-hypervisor-operator` while
+`services.nova.hypervisorOperator` is set. It projects nothing itself and needs
+no gate of its own: it only reads the children those legs wrote earlier in the
+same pass. The Nova leg applies the hypervisor operator's registration only
+once the Nova child is Ready, so with that block set the condition waits
+through the compute service's rollout.
 
 The relayed reason is the failing registration's **own** first failing
 sub-condition, not an aggregate placeholder, so any reason a `KeystoneService`

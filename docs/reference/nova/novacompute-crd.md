@@ -393,11 +393,15 @@ kubectl patch novacompute <name> -n <namespace> --type=merge \
 ```
 
 When the Nova is gone, or the target cluster was abandoned, the teardown skips
-the Nova side. The last pool of a Nova on a cluster also deletes the Secret
-`<nova>-compute-config` in its namespace when it carries the label
+the Nova side. The last pool of a Nova on a cluster also deletes two Secrets in
+its namespace, each only when it carries the label
 `nova.openstack.c5c3.io/compute-config-mirror: "true"`, the mark of the
-ControlPlane's mirror. A pool being deleted that still holds a node counts as
-one left: its draining pod mounts the Secret.
+ControlPlane's mirror: the compute contract `<nova>-compute-config`, and
+`<nova>-hypervisor-operator-auth`, the credentials the ControlPlane copies there
+for openstack-hypervisor-operator. Each deleted Secret gets a
+`ComputeConfigMirrorReaped` event of its own, and an absent one is skipped. A
+pool being deleted that still holds a node counts as one left: its draining pod
+mounts the contract.
 
 ## Example
 

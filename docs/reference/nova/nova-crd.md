@@ -595,7 +595,9 @@ as its `--config-file` and `compute-pool.conf` beside it, and takes
 its own namespace on the cluster its pods run on. For a Nova a ControlPlane
 projects, the ControlPlane copies the Secret there under the same name, labelled
 `nova.openstack.c5c3.io/compute-config-mirror: "true"`, and the last pool of
-the Nova on that cluster deletes the copy when it is torn down. A Secret without
+the Nova on that cluster deletes the copy when it is torn down. The
+hypervisor operator's auth Secret `<nova>-hypervisor-operator-auth`, which the
+ControlPlane copies to the same places, is reaped the same way. A Secret without
 that label (the Nova's own, or one copied by hand) is never reaped.
 
 ### The remote contract

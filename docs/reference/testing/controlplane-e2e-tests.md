@@ -137,8 +137,9 @@ paths any other chassis or metadata agent would share.
    (`…-glance`, `…-placement`, `…-barbican`, `…-neutron`), each carrying that
    service's catalog entry and its service account: a managed User and Project,
    an unmanaged K-ORC Role import, and a managed RoleAssignment. Every child
-   reports `Ready=AllReady`, and the ControlPlane's `ServiceAccountsReady`
-   aggregates them as `ServiceAccountsProvisioned`.
+   reports `Ready=AllReady`. The ControlPlane's `ServiceAccountsReady` is
+   awaited later, in link 5m: it also aggregates the hypervisor operator's
+   registration, which the Nova leg projects only once the Nova child is Ready.
 
 5c. **Glance child** — owned Glance CR (`controlplane-keystone-glance`) with
    database/cache clusterRefs, an engine-issued (Dynamic) DB credential, the
@@ -236,7 +237,10 @@ paths any other chassis or metadata agent would share.
    value materialised under `shared_secret`), the compute contract Secret
    `controlplane-keystone-nova-compute-config` the child publishes on
    `status.computeConfigSecretRef`, and the four replica counts the ControlPlane
-   sizes.
+   sizes. With `NovaReady=True` the hypervisor operator's account
+   (`hypervisorOperator: {}` in the fixture) has been provisioned too, so
+   `ServiceAccountsReady` is awaited here, as `ServiceAccountsProvisioned` over
+   every registration.
 
 5n. **Compute catalog** — owned K-ORC compute Service plus an internal and a
    public Endpoint. With no gateway in this fixture both advertise the in-cluster
@@ -337,6 +341,37 @@ paths any other chassis or metadata agent would share.
    must carry no `network-changed … returned with failed status`, which is what a
    notifier account too narrow to resolve the instance would leave behind.
 
+7d. **The hypervisor operator's account** — openstack-hypervisor-operator does
+   not run in kind, so the suite proves what it needs from the control plane
+   instead. The auth Secret `controlplane-keystone-nova-hypervisor-operator-auth`
+   has to carry exactly the seven keys of the hypervisor operator's chart values;
+   the script reads and prints the key names only, never the values, because
+   the Secret carries a cloud-admin password. It then restarts K-ORC: the client
+   K-ORC cached for the plane's `clouds.yaml` still holds the service catalog of
+   a token issued before the `compute`, `network` and `block-storage` rows
+   existed, and keeps it for up to 30 minutes. With a fresh cache it applies
+   `fixtures.yaml` of the example overlay
+   `deploy/kind/hypervisor-operator-fixtures/` (not its `image.yaml`, so CI
+   downloads no cirros image) and waits up to 10 minutes for every K-ORC
+   resource in that file to report `Available`.
+   `07-hypervisor-operator-verify-job.yaml` follows, a Job that
+   authenticates as the hypervisor operator's user from the auth Secret and
+   prints one line per block, which the suite greps:
+   - `OK: hvo catalog`: the account's token, and one scoped to `test@cc3test`,
+     each carry exactly one public `compute` and one public `placement` row.
+   - `OK: hvo compute services`: it enables and forces up the fake compute's
+     service, lists its hypervisor and the servers on it across projects.
+   - `OK: hvo aggregates`: it creates an aggregate, adds and removes the host,
+     and deletes the aggregate.
+   - `OK: hvo placement`: it reads the host's resource provider and its traits,
+     then creates a trait and sets it on a scratch provider, which it deletes.
+   - `OK: hvo test scope`: in `test@cc3test` it issues a token and finds flavor
+     `1`, the public volume type `premium` and the non-shared network
+     `hvo-smoke-test`.
+
+   Neither live nor cold migration is called: the suite has one compute, and
+   both check the same admin rule the services and aggregates blocks prove.
+
 The block-storage service widens this suite's presence guard. Beyond the CRDs
 and operators its peers need, it requires a running cinder-operator, a
 `shared-rabbitmq` broker reporting `AllReplicasReady`, and an `nfs-server`
@@ -354,10 +389,14 @@ nova-operator, and the chassis its server's port binds on needs the
 The suite budgets 65 minutes for the consolidated script, 5 for its diagnostic
 `catch`, and one timeout per `finally` script: 5 minutes to delete the verify
 Job, 2 to release the broker vhost, and 5 for the compute leg's own footprint.
-That last one deletes the fake compute, the metadata agent and the chassis in
-reverse order of the apply and then takes the `openstack.c5c3.io/chassis` label
-off every node, because none of the three is owned by the ControlPlane and a
-label left standing advertises a chassis role nothing serves. With the shared
+That last one first deletes the hypervisor-operator Job and the K-ORC fixtures,
+while the ControlPlane's credential K-ORC deletes them through still works. It
+disables the `cc3test` domain before that delete, since Keystone refuses to
+delete an enabled domain and K-ORC does not disable one first. It then deletes
+the fake compute, the metadata agent and the chassis in reverse order of the
+apply and takes the `openstack.c5c3.io/chassis` label off every node, because
+none of the three is owned by the ControlPlane and a label left standing
+advertises a chassis role nothing serves. With the shared
 3-minute cleanup budget the suite's ceiling is
 `65 + 5 + 5 + 2 + 5 + 3 = 85` minutes. Every one of those timeouts is pinned
 rather than inherited: chainsaw applies the suite's `exec` budget to each script
@@ -832,7 +871,8 @@ tests/e2e/c5c3/
 │   ├── 03-ovncentral-cr.yaml           Standalone OVNCentral the ControlPlane references
 │   ├── 04-ovnchassis-cr.yaml           OVNChassis on the labelled node, which binds the server's port
 │   ├── 05-neutronmetadataagent-cr.yaml Metadata agent on that chassis, gated on the generated secret
-│   └── 06-fake-compute.yaml            nova-compute built out of the published compute contract
+│   ├── 06-fake-compute.yaml            nova-compute built out of the published compute contract
+│   └── 07-hypervisor-operator-verify-job.yaml  Calls as the hypervisor operator's user
 ├── invalid-cr/
 │   ├── chainsaw-test.yaml              ControlPlane admission rejections
 │   ├── _generate.py                    Canonical scaffold + generator for the fixtures

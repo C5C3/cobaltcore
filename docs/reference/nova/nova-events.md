@@ -169,7 +169,7 @@ Emitted on a NovaCompute CR while it runs a node pool. For the pipeline see
 | `AggregateCreated` | Normal | The pool created a host aggregate it needs | `Created host aggregate az1 in availability zone az1` |
 | `AggregateDeleted` | Normal | A marked aggregate no pool of the Nova needs held no host and was deleted | `Deleted host aggregate az1: no NovaCompute of Nova nova needs it` |
 | `AggregateKept` | Warning | A marked aggregate no pool of the Nova needs held no host but carried metadata the operator did not set, so it was kept | `Kept empty host aggregate az1: it carries metadata the operator did not set (filter_tenant_id)` |
-| `ComputeConfigMirrorReaped` | Normal | The last pool of a Nova on a cluster deleted the ControlPlane's contract mirror there | `Deleted the compute-contract mirror nova-compute-config: no other NovaCompute of Nova nova uses it on this cluster` |
+| `ComputeConfigMirrorReaped` | Normal | The last pool of a Nova on a cluster deleted one of the ControlPlane's mirrors there, the compute contract or the hypervisor operator's auth Secret; one event per deleted Secret | `Deleted the compute-contract mirror nova-compute-config: no other NovaCompute of Nova nova uses it on this cluster`, `Deleted the hypervisor-operator auth mirror nova-hypervisor-operator-auth: no other NovaCompute of Nova nova uses it on this cluster` |
 | `NodeConflict` | Warning | A selected node is held by another NovaCompute of the same Nova; fires once per new conflict | `Node node-1 is held by NovaCompute pool-a; this pool runs no pod on it` |
 | `ExtraConfigOwnedKeyOverride` | Warning | `spec.extraConfig` overrides a reported `[libvirt]` key | `spec.extraConfig overrides operator-owned keys: [libvirt] virt_type` |
 
@@ -178,7 +178,7 @@ Emitted on a NovaCompute CR while it runs a node pool. For the pipeline see
 `ComputeServiceDeleted`); `reconcileNovaComputeAggregates` in
 `reconcile_novacompute_aggregates.go` (`AggregateCreated`, `AggregateDeleted`,
 `AggregateKept`);
-`reapComputeConfigMirror` in `novacompute_controller.go`
+`reapComputeClusterMirrors` in `novacompute_controller.go`
 (`ComputeConfigMirrorReaped`); `reconcileNovaComputeNodes` in
 `reconcile_novacompute_nodes.go` (`NodeConflict`);
 `config.RecordExtraConfigHealth`, called from `reconcileNovaComputeConfig`
@@ -289,7 +289,7 @@ NovaReconciler.Reconcile()
 NovaComputeReconciler.Reconcile()
   │
   ├── reconcileDelete() (deletionTimestamp set)
-  │     ├─ last pool on the cluster    → Normal  ComputeConfigMirrorReaped
+  │     ├─ last pool on the cluster    → Normal  ComputeConfigMirrorReaped (one per mirror)
   │     └─ target cluster gone         → Warning RemoteChildrenAbandoned
   │
   ├── reconcileNovaComputeNodes()
