@@ -10,6 +10,7 @@ import (
 	"net/url"
 
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -28,6 +29,12 @@ import (
 // .caBundleSecretRef is defaulted to, the name cert-manager gives the CA bundle
 // in every Secret it issues.
 const defaultMessagingCABundleKey = "ca.crt"
+
+// neutronAppName is the app.kubernetes.io/name label value every Neutron-owned
+// object carries. It is duplicated from the controller package (which builds the
+// objects) because the api package cannot import the controller; the
+// topology-spread selector check composes the API Deployment's selector from it.
+const neutronAppName = "neutron"
 
 // NeutronWebhook implements defaulting and validation webhooks for the Neutron
 // CRD. Client is injected at startup for cluster-scoped resource lookups (e.g.
@@ -65,7 +72,7 @@ func (w *NeutronWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 // explicitly present, except spec.logging which is materialized so downstream
 // reconciler code never sees a nil pointer.
 func (w *NeutronWebhook) Default(_ context.Context, obj *Neutron) error {
-	// Shared-type defaults (replicas, container resources) are applied by the
+	// Shared-type defaults (replicas) are applied by the
 	// commonv1.DeploymentSpec Default method so they cannot drift across
 	// operators. Both Deployments get them: the API pods and the RPC workers are
 	// sized independently.
@@ -155,10 +162,9 @@ func (w *NeutronWebhook) Default(_ context.Context, obj *Neutron) error {
 //
 // The metadata.name bound is enforced here rather than in validate(), which
 // update shares: the name is immutable, so on update the rule could only ever
-// fire against an object a pre-upgrade operator already admitted — and the
-// validating webhook also sees the finalizer-removal update reconcileDelete
-// issues, so rejecting it would wedge that CR in Terminating with no field left
-// to edit to repair it.
+// fire against an object a pre-upgrade operator already admitted, and it would
+// refuse every update to that CR with no field left to edit to repair it. (The
+// finalizer removal on delete skips validation altogether; see ValidateUpdate.)
 func (w *NeutronWebhook) ValidateCreate(ctx context.Context, obj *Neutron) (admission.Warnings, error) {
 	warnings, createErrs := validateExtraConfigOptions(
 		field.NewPath("spec"), obj.Spec.OpenStackRelease, obj.Spec.ExtraConfig, OwnedConfigKeys)
@@ -196,7 +202,27 @@ func validateNeutronNameLength(name string) field.ErrorList {
 // A Rejected extraConfig key the update carries over unchanged is reported as a
 // warning rather than refused (see validateExtraConfigShape), so a CR admitted
 // before the operator started owning that key stays updatable.
+//
+// An update to a CR that is being deleted and leaves its spec alone is admitted
+// without validation. That is the finalizer removal reconcileDelete issues, and
+// the rules below can reject an unchanged spec that was admitted earlier: a
+// PriorityClass deleted since, or a topology-spread selector that predates the
+// requirement of the API component. Rejecting the removal would hold the CR in
+// Terminating. A deleting CR whose spec changes is still validated. The
+// defaulting webhook has already run on newObj, so a copy of the stored object is
+// defaulted the same way before the two specs are compared: a default an operator
+// release added after the CR was last written is no spec change.
 func (w *NeutronWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Neutron) (admission.Warnings, error) {
+	if newObj.DeletionTimestamp != nil {
+		stored := oldObj.DeepCopy()
+		if err := w.Default(ctx, stored); err != nil {
+			return nil, fmt.Errorf("defaulting the stored Neutron: %w", err)
+		}
+		if equality.Semantic.DeepEqual(stored.Spec, newObj.Spec) {
+			return nil, nil
+		}
+	}
+
 	var warnings admission.Warnings
 	var updateErrs field.ErrorList
 	if extraConfigCatalogInputsChanged(
@@ -563,16 +589,16 @@ func (w *NeutronWebhook) validate(
 			specPath.Child("deployment", "priorityClassName"), *n.Spec.Deployment.PriorityClassName)...)
 	}
 
-	// Validate that custom TopologySpreadConstraints use the correct LabelSelector
-	// matching the Deployment's selector labels.
+	// Validate that custom TopologySpreadConstraints name the API Deployment's
+	// pod selector: the shared selector labels narrowed by
+	// app.kubernetes.io/component=api. The pods of the two worker Deployments and
+	// of the ovn-db-sync CronJob share the name and instance labels, so a
+	// selector without the component key would count them too.
 	if n.Spec.Deployment.TopologySpreadConstraints != nil {
 		allErrs = append(allErrs, validation.TopologySpreadSelector(
 			specPath.Child("deployment", "topologySpreadConstraints"),
 			n.Spec.Deployment.TopologySpreadConstraints,
-			map[string]string{
-				naming.LabelKeyName:     "neutron",
-				naming.LabelKeyInstance: n.Name,
-			},
+			naming.APISelectorLabels(neutronAppName, n.Name),
 		)...)
 	}
 

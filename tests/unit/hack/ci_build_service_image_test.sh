@@ -20,7 +20,12 @@
 #   - a github.com that rejects the clone is retried and then handed over to
 #     opendev.org at the same ref;
 #   - when no source serves the ref the build fails with a ::error:: before
-#     docker runs.
+#     docker runs;
+#   - IMAGE builds a derived image from its service's source: the image names
+#     the extra-packages key, the Dockerfile directory and the tag, the
+#     service the source ref, the clone and the build-context name; an unset
+#     IMAGE renders the service image as before, and a malformed one fails
+#     before anything runs.
 #
 # Follows the project-native bash test pattern (tests/lib/assertions.sh),
 # mirroring tests/unit/hack/ci_build_ovn_image_test.sh.
@@ -46,6 +51,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 STUB_DIR="$TMP_DIR/bin"
 GIT_LOG="$TMP_DIR/git.log"
 DOCKER_LOG="$TMP_DIR/docker.log"
+YQ_LOG="$TMP_DIR/yq.log"
 
 # scripts/apply-constraint-overrides.sh resolves releases/<release>/ against
 # the working directory, so the builder runs in a throwaway tree carrying the
@@ -102,9 +108,11 @@ echo "docker $*" >>"$DOCKER_LOG"
 exit 0
 STUB
 
-  # yq: one source ref for every service, and no extra packages.
+  # yq: one source ref for every service, and no extra packages. Every query
+  # is recorded, so a test can tell which key a lookup went to.
   cat >"$STUB_DIR/yq" <<'STUB'
 #!/bin/bash
+echo "yq $*" >>"$YQ_LOG"
 case "$*" in
   *pip_extras*|*pip_packages*|*apt_packages*) echo "" ;;
   *) echo "21.0.0" ;;
@@ -122,24 +130,31 @@ STUB
 }
 
 # run_build [VAR=value ...]
-# Runs the builder for barbican with the stubs first on PATH and fresh logs.
-# GITHUB_TOKEN, GIT_CONFIG_* and GIT_STUB_FAIL start out unset; the arguments
-# are exported on top of that. Stores the combined stdout/stderr in OUTPUT,
-# the exit status in RC, and the recorded git and docker calls in GIT_CALLS
-# and DOCKER_CALLS.
+# Runs the builder with the stubs first on PATH and fresh logs, for barbican
+# unless an OPERATOR=... argument names another service. GITHUB_TOKEN,
+# GIT_CONFIG_*, GIT_STUB_FAIL and IMAGE start out unset; the arguments are
+# exported on top of that. Stores the combined stdout/stderr in OUTPUT, the
+# exit status in RC, and the recorded git, docker and yq calls in GIT_CALLS,
+# DOCKER_CALLS and YQ_CALLS.
 run_build() {
   RC=0
-  rm -f "$GIT_LOG" "$DOCKER_LOG"
+  rm -f "$GIT_LOG" "$DOCKER_LOG" "$YQ_LOG"
   OUTPUT="$(
     cd "$WORK_DIR" || exit 99
-    unset GITHUB_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_STUB_FAIL
+    unset GITHUB_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_STUB_FAIL IMAGE
+    export OPERATOR=barbican
     for assignment in "$@"; do
       export "${assignment?}"
     done
-    OPERATOR=barbican IMAGE_PREFIX=ghcr.io/c5c3 \
-      PATH="$STUB_DIR:$PATH" GIT_LOG="$GIT_LOG" DOCKER_LOG="$DOCKER_LOG" \
+    IMAGE_PREFIX=ghcr.io/c5c3 \
+      PATH="$STUB_DIR:$PATH" GIT_LOG="$GIT_LOG" DOCKER_LOG="$DOCKER_LOG" YQ_LOG="$YQ_LOG" \
       bash "$BUILD_SH" 2>&1
   )" || RC=$?
+
+  YQ_CALLS=""
+  if [ -f "$YQ_LOG" ]; then
+    YQ_CALLS="$(cat "$YQ_LOG")"
+  fi
 
   GIT_CALLS=""
   if [ -f "$GIT_LOG" ]; then
@@ -282,6 +297,58 @@ test_no_source_fails_before_docker() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 6: IMAGE builds a derived image from its service's source
+# ---------------------------------------------------------------------------
+test_image_builds_a_derived_image() {
+  echo "Test: IMAGE=nova-compute OPERATOR=nova builds nova-compute from nova's source"
+
+  run_build OPERATOR=nova IMAGE=nova-compute
+
+  assert_eq "builder exits 0" "0" "$RC"
+  assert_contains "the source ref is nova's" "$YQ_CALLS" '."nova"'
+  assert_contains "the extra packages are nova-compute's" "$YQ_CALLS" '."nova-compute".pip_packages'
+  assert_contains "the apt packages are nova-compute's" "$YQ_CALLS" '."nova-compute".apt_packages'
+  assert_not_contains "no package lookup goes to nova's key" "$YQ_CALLS" '."nova".pip_packages'
+  assert_contains "the clone is nova's" "$(clone_calls)" "https://github.com/openstack/nova.git"
+  assert_contains "the image is tagged nova-compute" "$DOCKER_CALLS" \
+    "docker build -t ghcr.io/c5c3/nova-compute:2025.2"
+  assert_contains "the source is handed over as the nova build context" "$DOCKER_CALLS" "--build-context nova="
+  assert_contains "the Dockerfile is images/nova-compute/" "$DOCKER_CALLS" "/images/nova-compute/"
+}
+
+# ---------------------------------------------------------------------------
+# Test 7: an unset IMAGE renders the service image as before
+# ---------------------------------------------------------------------------
+test_unset_image_keeps_the_operator_command() {
+  echo "Test: without IMAGE the service image is built under the service's name"
+
+  run_build
+
+  local build
+  build="$(printf '%s\n' "$DOCKER_CALLS" | grep '^docker build -t ghcr.io/c5c3/barbican' || true)"
+
+  assert_eq "builder exits 0" "0" "$RC"
+  assert_contains "the extra packages are the service's" "$YQ_CALLS" '."barbican".pip_packages'
+  assert_contains "the source is the barbican build context" "$build" "--build-context barbican="
+  assert_contains "the Dockerfile is images/barbican/" "$build" "/images/barbican/"
+}
+
+# ---------------------------------------------------------------------------
+# Test 8: a malformed IMAGE fails before anything runs
+# ---------------------------------------------------------------------------
+test_bad_image_name_fails() {
+  echo "Test: IMAGE=Bad_Name fails with the name error before git or docker run"
+
+  run_build IMAGE=Bad_Name
+
+  assert_nonzero_exit "builder fails" "$RC"
+  assert_contains "the error names the rule and the value" "$OUTPUT" \
+    "::error::IMAGE must be lowercase alphanumeric (with hyphens), got 'Bad_Name'"
+  assert_eq "git never runs" "" "$GIT_CALLS"
+  assert_eq "docker never runs" "" "$DOCKER_CALLS"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_anonymous_without_token
@@ -289,6 +356,9 @@ test_token_becomes_scoped_auth_header
 test_existing_config_entries_are_kept
 test_github_rejection_falls_back_to_opendev
 test_no_source_fails_before_docker
+test_image_builds_a_derived_image
+test_unset_image_keeps_the_operator_command
+test_bad_image_name_fails
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

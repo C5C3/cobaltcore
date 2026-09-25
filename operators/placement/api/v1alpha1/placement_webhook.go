@@ -11,9 +11,7 @@ import (
 	"reflect"
 
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -27,18 +25,6 @@ import (
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/validation"
 	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
-)
-
-// Placement-specific container memory defaults, replacing the shared 256Mi/512Mi
-// baseline. The API container runs commonv1.DefaultUWSGIProcesses preforked
-// workers, each carrying its own interpreter, SQLAlchemy session pool and oslo
-// stack, so the container footprint is a multiple of a single worker's rather
-// than one interpreter's. 512Mi request / 1Gi limit keeps that multiple inside
-// the limit and matches the budget the sibling glance-api container gets. CPU
-// keeps the shared defaults.
-var (
-	defaultPlacementMemoryRequest = resource.MustParse("512Mi")
-	defaultPlacementMemoryLimit   = resource.MustParse("1Gi")
 )
 
 // PlacementWebhook implements defaulting and validation webhooks for the
@@ -77,27 +63,8 @@ func (w *PlacementWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 // filled when explicitly present, except spec.logging which is materialized so
 // downstream reconciler code never sees a nil pointer.
 func (w *PlacementWebhook) Default(_ context.Context, obj *Placement) error {
-	// Fill spec.deployment.resources with the placement-specific memory defaults
-	// before the shared DeploymentSpec defaults run — Deployment.Default() would
-	// otherwise inject the shared 256Mi/512Mi baseline. Same nil-or-empty
-	// condition as the shared method so an explicit user value is never
-	// clobbered.
-	if obj.Spec.Deployment.Resources == nil ||
-		(len(obj.Spec.Deployment.Resources.Requests) == 0 && len(obj.Spec.Deployment.Resources.Limits) == 0) {
-		obj.Spec.Deployment.Resources = &corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: defaultPlacementMemoryRequest.DeepCopy(),
-				corev1.ResourceCPU:    commonv1.DefaultCPURequest(),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: defaultPlacementMemoryLimit.DeepCopy(),
-				corev1.ResourceCPU:    commonv1.DefaultCPULimit(),
-			},
-		}
-	}
-	// Shared-type defaults (replicas, remaining container resources) are applied
-	// by the commonv1.DeploymentSpec Default method so they cannot drift across
-	// operators.
+	// Shared-type defaults (replicas) are applied by the commonv1.DeploymentSpec
+	// Default method so they cannot drift across operators.
 	obj.Spec.Deployment.Default()
 	if obj.Spec.Cache.Backend == "" {
 		obj.Spec.Cache.Backend = commonv1.DefaultCacheBackend

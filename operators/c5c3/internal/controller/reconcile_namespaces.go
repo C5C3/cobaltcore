@@ -324,7 +324,10 @@ func refuseForeignAdoption(c client.Client, cp *c5c3v1alpha1.ControlPlane, live 
 // (the cross-namespace case, where no owner reference is possible). It is the
 // single ownership test every write and every delete gates on, so an
 // externally-provisioned object sharing a name with one of our children is never
-// reshaped and never deleted.
+// reshaped and never deleted. The managed RabbitmqCluster is the exception:
+// ensureRabbitMQ and deleteManagedMessagingBeforeRelease gate on IsControlledBy
+// alone, because the bus is only ever created owner-referenced and deleting it,
+// which a shrink does too, is destructive.
 func isControlPlaneChild(obj client.Object, cp *c5c3v1alpha1.ControlPlane) bool {
 	if metav1.IsControlledBy(obj, cp) {
 		return true

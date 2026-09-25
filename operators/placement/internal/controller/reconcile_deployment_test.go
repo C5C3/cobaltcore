@@ -23,6 +23,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
@@ -227,9 +228,9 @@ func TestBuildPlacementDeployment_CustomServiceUserKey(t *testing.T) {
 	g.Expect(pw.ValueFrom.SecretKeyRef.Key).To(Equal("service-password"))
 }
 
-// TestBuildPlacementDeployment_ProbesAndSecurityContext pins both probes on the
-// version document, the absence of a startup probe, and the restricted security
-// context the API container runs under.
+// TestBuildPlacementDeployment_ProbesAndSecurityContext pins the readiness and
+// liveness probes on the version document and the restricted security context
+// the API container runs under.
 func TestBuildPlacementDeployment_ProbesAndSecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -251,13 +252,30 @@ func TestBuildPlacementDeployment_ProbesAndSecurityContext(t *testing.T) {
 	g.Expect(c.LivenessProbe.HTTPGet.Path).To(Equal("/"))
 	g.Expect(c.LivenessProbe.HTTPGet.Port.IntVal).To(Equal(placementAPIPort))
 
-	// No startup probe: the readiness probe's own delay covers the WSGI app
-	// coming up, and adding one would gate liveness behind a second timing knob.
-	g.Expect(c.StartupProbe).To(BeNil())
-
 	g.Expect(c.SecurityContext).To(Equal(deployment.RestrictedSecurityContext()))
 	g.Expect(deploy.Spec.Template.Spec.SecurityContext).NotTo(BeNil())
 	g.Expect(deploy.Spec.Template.Spec.SecurityContext.FSGroup).To(HaveValue(Equal(deployment.OpenStackUID)))
+}
+
+// TestBuildPlacementDeployment_StartupProbeCoversColdStart covers the cold start
+// of the API. Before it answers, every uWSGI worker imports placement and syncs
+// the traits and resource classes against the database, which took 41 to 45
+// seconds in a kind pod at 120m CPU. The liveness probe alone restarts the
+// container 55 seconds after it started, so the startup probe holds it back.
+func TestBuildPlacementDeployment_StartupProbeCoversColdStart(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildPlacementDeployment(testPlacement(), testConfigMapName, "", "")
+	probe := deploy.Spec.Template.Spec.Containers[0].StartupProbe
+
+	g.Expect(probe).NotTo(BeNil())
+	g.Expect(probe.HTTPGet).NotTo(BeNil())
+	g.Expect(probe.HTTPGet.Path).To(Equal("/"))
+	g.Expect(probe.HTTPGet.Port.IntVal).To(Equal(placementAPIPort))
+	g.Expect(probe.FailureThreshold*probe.PeriodSeconds).To(BeNumerically(">=", 300),
+		"startup budget in seconds")
+	g.Expect(probe.TimeoutSeconds).To(BeNumerically(">", 1),
+		"a loading WSGI app holds a GET past the kubelet's 1s default")
 }
 
 // TestBuildPlacementDeployment_ConfigVolume pins that the rendered ConfigMap is
@@ -622,4 +640,39 @@ func TestReconcileDeployment_SelectorChangeRecreatesDeployment(t *testing.T) {
 	var deploy appsv1.Deployment
 	err = r.Get(ctx, types.NamespacedName{Namespace: "default", Name: "test-placement"}, &deploy)
 	g.Expect(err).To(HaveOccurred(), "the incompatible Deployment must be deleted for re-creation")
+}
+
+// TestBuildPlacementDeployment_RendersResourceDefaults verifies that a CR whose
+// spec.deployment.resources names nothing renders a 100m CPU request, no CPU
+// limit, and a memory request and limit sized from spec.apiServer.uwsgi: 512Mi
+// at the default counts of an absent spec.apiServer, 800Mi at four processes,
+// and 928Mi at four processes of two threads.
+func TestBuildPlacementDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		apiServer *placementv1alpha1.APIServerSpec
+		want      string
+	}{
+		{name: "default uWSGI counts", want: "512Mi"},
+		{
+			name:      "four processes",
+			apiServer: &placementv1alpha1.APIServerSpec{UWSGI: &placementv1alpha1.UWSGISpec{Processes: 4}},
+			want:      "800Mi",
+		},
+		{
+			name:      "four processes of two threads",
+			apiServer: &placementv1alpha1.APIServerSpec{UWSGI: &placementv1alpha1.UWSGISpec{Processes: 4, Threads: 2}},
+			want:      "928Mi",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			placement := testPlacement()
+			placement.Spec.APIServer = tc.apiServer
+
+			deploy := buildPlacementDeployment(placement, testConfigMapName, "", "")
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults(tc.want)))
+		})
+	}
 }

@@ -18,7 +18,11 @@ vendor/
 operators/keystone/keystone
 operators/c5c3/c5c3
 
-# Go workspace — go.work.sum is tracked for reproducibility.
+# Go workspace checksums, untracked. The go command appends to go.work.sum
+# whenever a workspace build needs a checksum no member go.sum holds, so the
+# content depends on the command that ran, and Renovate writes the file only
+# when it vendors. Tracked, it failed verify-codegen on every Go module bump.
+go.work.sum
 
 # IDE
 .idea/

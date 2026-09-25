@@ -32,12 +32,16 @@ The v1 operator resolves the onboarding decisions as follows:
   placement's `_get_config_files` never reads `sys.argv`, so a value passed
   there would reach nothing. See
   [Container Images](../ci-cd/container-images.md#placement).
-- **Probes target `GET /`.** Readiness and liveness both GET `/`, the
+- **Probes target `GET /`.** Startup, readiness and liveness all GET `/`, the
   version-discovery document, which placement answers without a token and
-  without opening the database. The oslo healthcheck middleware Glance probes at
-  `/healthcheck` has nowhere to be wired here: placement composes its middleware
-  stack in code and reads no paste pipeline, so the operator renders no
-  `api-paste.ini` and the CRD carries no `middleware` field.
+  without opening the database. The startup probe allows 300 seconds (30 probes
+  10 seconds apart, each with an 8-second timeout) before the liveness probe
+  takes over. A cold start therefore does not restart the container, even when
+  a CPU limit set on the container or a contended node slows the imports or the
+  boot-time sync of traits and resource classes against the database runs long. The oslo healthcheck middleware
+  Glance probes at `/healthcheck` has nowhere to be wired here: placement
+  composes its middleware stack in code and reads no paste pipeline, so the
+  operator renders no `api-paste.ini` and the CRD carries no `middleware` field.
 - **No upgrade phase machine.** The CR has no `upgradePhase` status field. A
   release bump runs the one `{name}-db-sync` Job, which chains
   `placement-manage db sync`, `placement-manage db online_data_migrations`, and

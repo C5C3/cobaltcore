@@ -6,8 +6,9 @@
 # Verifies:
 #   (1) Fresh deployment at 2026.1 reaches Ready with installedRelease=2026.1
 #   (2) Upgrading to 2026.1 -> 2026.2 wedges in the Expanding phase, because the
-#       2026.2 image is not pre-loaded into kind (db-expand Pod ImagePullBackOff)
-#   (3) Reverting spec.image.tag to 2026.1 aborts the upgrade: upgradePhase and
+#       stuck patch points spec.image.repository at registry.invalid (db-expand
+#       Pod ImagePullBackOff whether or not a 2026.2 image exists)
+#   (3) Reverting spec.image to 2026.1 aborts the upgrade: upgradePhase and
 #       targetRelease clear, the db-expand/db-migrate/db-contract Jobs are
 #       deleted, an UpgradeAborted event fires, and the CR returns to Ready
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -58,7 +59,7 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
-  # ── Step 3: Patch image tag to 2026.2 to start the upgrade ────────────
+  # ── Step 3: Patch image to 2026.2 (unresolvable registry) ─────────────
   - try:
     - patch:
         file: 01-patch-stuck-upgrade.yaml
@@ -112,7 +113,7 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
-  # ── Step 5: Revert image tag to 2026.1 to abort the upgrade ───────────
+  # ── Step 5: Revert image to 2026.1 to abort the upgrade ───────────────
   - try:
     - patch:
         file: 02-patch-abort.yaml

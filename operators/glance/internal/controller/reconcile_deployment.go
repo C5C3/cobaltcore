@@ -363,6 +363,7 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 		PodAnnotations: glancePodAnnotations(dsnDigest, authtokenDigest),
 		Deployment:     &glance.Spec.Deployment,
 		Autoscaling:    glance.Spec.Autoscaling,
+		DefaultMemory:  glanceAPIMemory(glance),
 		Container: deployment.ContainerParams{
 			Name:    "glance-api",
 			Image:   glance.Spec.Image.Reference(),
@@ -375,10 +376,22 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 				Name:          "glance-api",
 				ContainerPort: glanceAPIPort,
 			}},
-			// Readiness AND liveness hit the same /healthcheck endpoint (served by
-			// the oslo healthcheck middleware without touching the database) on the
-			// API port, identical in both launch modes. Glance has no startup probe:
-			// the readiness probe's own delay covers the WSGI app coming up.
+			// All three probes GET /healthcheck on the API port, served by the oslo
+			// healthcheck middleware without touching the database, identical in both
+			// launch modes. The startup probe carries the cold-start window: every
+			// worker imports glance, which under a CPU limit set on the container or
+			// on a contended node took 66 to 90 seconds under uWSGI (measured in a
+			// kind pod at 120m CPU), while the liveness probe alone restarts the
+			// container 55 seconds after it started. The timings are the sibling
+			// operators': 30x10s of startup budget, and an 8s timeout because a
+			// cold-starting WSGI app can hold even a plain HTTP GET past the kubelet's
+			// 1s default.
+			StartupProbe: &corev1.Probe{
+				ProbeHandler:     glanceHealthcheckProbeHandler(),
+				FailureThreshold: 30,
+				PeriodSeconds:    10,
+				TimeoutSeconds:   8,
+			},
 			LivenessProbe: &corev1.Probe{
 				ProbeHandler:        glanceHealthcheckProbeHandler(),
 				InitialDelaySeconds: 15,
@@ -648,8 +661,8 @@ func glancePodAnnotations(dsnDigest, authtokenDigest string) map[string]string {
 	return annotations
 }
 
-// glanceHealthcheckProbeHandler returns the shared readiness/liveness probe
-// handler: an HTTP GET of /healthcheck on the API port.
+// glanceHealthcheckProbeHandler returns the shared startup/readiness/liveness
+// probe handler: an HTTP GET of /healthcheck on the API port.
 func glanceHealthcheckProbeHandler() corev1.ProbeHandler {
 	return corev1.ProbeHandler{
 		HTTPGet: &corev1.HTTPGetAction{
@@ -666,18 +679,55 @@ func glanceHealthcheckProbeHandler() corev1.ProbeHandler {
 // roots so the rendered config and the projected backends stores apply
 // identically.
 func glanceLaunchCommand(glance *glancev1alpha1.Glance) []string {
-	if glanceUsesUWSGI(glance) {
+	if glanceReleaseUsesUWSGI(glance.Spec.OpenStackRelease) {
 		return glanceUWSGICommand(glance.Spec.APIServer)
 	}
 	return []string{"glance-api", "--config-dir", glanceConfigDir, "--config-dir", glanceBackendsConfigDir}
 }
 
-// glanceUsesUWSGI reports whether the Glance API launches under uWSGI (release
-// 2026.1 or later) rather than the eventlet glance-api server. An unparseable
-// release (a CR that bypassed the CRD pattern) falls back to the eventlet launch
-// mode, the pre-2026.1 default.
-func glanceUsesUWSGI(glance *glancev1alpha1.Glance) bool {
-	rel, err := release.ParseRelease(glance.Spec.OpenStackRelease)
+// glanceMemoryPerProcess is the memory one Glance API process adds on top of
+// the shared base, in place of the shared per-process figure. The glance-api
+// container carries the S3 store driver (boto3/botocore), which raises both the
+// per-process import footprint and the per-request allocation churn: two
+// workers already idle near 360Mi and, under concurrent image traffic, overrun
+// a 512Mi limit within a minute, an OOM-kill crash loop the gateway surfaces as
+// waves of 503s.
+var glanceMemoryPerProcess = resource.MustParse("400Mi")
+
+// glanceAPIMemory returns the memory the API container gets as request and
+// limit when spec.deployment.resources names no memory. It is sized from the
+// processes and threads glanceAPIConcurrency resolves for spec.openStackRelease.
+func glanceAPIMemory(glance *glancev1alpha1.Glance) resource.Quantity {
+	processes, threads := glanceAPIConcurrency(glance, glance.Spec.OpenStackRelease)
+	return commonv1.MemoryForProcesses(glanceMemoryPerProcess, processes, threads)
+}
+
+// glanceAPIConcurrency resolves the processes, and the threads in each, that an
+// API container of the given OpenStack release runs. Under uWSGI (2026.1+)
+// they come from spec.apiServer.uwsgi with the command's default resolution,
+// and spec.apiServer.workers is inert. Under eventlet (below 2026.1, or an empty
+// or unparseable release) they are effectiveEventletWorkers processes of one
+// thread each, and spec.apiServer.uwsgi is inert. The memory default and the
+// connection cap both size from it, so the two cannot disagree on the launch
+// mode.
+func glanceAPIConcurrency(glance *glancev1alpha1.Glance, openStackRelease string) (processes, threads int32) {
+	if !glanceReleaseUsesUWSGI(openStackRelease) {
+		return effectiveEventletWorkers(glance), 1
+	}
+	var uwsgi *glancev1alpha1.UWSGISpec
+	if glance.Spec.APIServer != nil {
+		uwsgi = glance.Spec.APIServer.UWSGI
+	}
+	return deployment.EffectiveUWSGIConcurrency(uwsgi)
+}
+
+// glanceReleaseUsesUWSGI reports whether a Glance API of the given OpenStack
+// release launches under uWSGI: true from 2026.1 onward, false below it and for
+// an empty or unparseable release, which launch the eventlet glance-api server.
+// It takes a release string rather than the CR so the connection-cap sizing can
+// ask about status.installedRelease and status.targetRelease as well.
+func glanceReleaseUsesUWSGI(openStackRelease string) bool {
+	rel, err := release.ParseRelease(openStackRelease)
 	if err != nil {
 		return false
 	}

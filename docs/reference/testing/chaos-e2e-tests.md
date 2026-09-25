@@ -917,6 +917,10 @@ rabbitmq-cluster-operator logs from `rabbitmq-system`, and the NetworkChaos dump
   `terminationGracePeriodSeconds` of 604800 (seven days, so its preStop drain can
   finish), and the operator's own delete path is what labels the pod `skipPreStopChecks`
   and releases the finalizer. `tests/e2e/c5c3/messaging/` documents the same teardown.
+  The delete uses foreground propagation: with background propagation the operator's
+  deletion path can re-create the broker under the same name
+  (rabbitmq/cluster-operator#1864). The Cinder and Nova broker suites tear their bus
+  down the same way.
 - The RabbitmqCluster fixture sets `replicas: 1` and leaves image, resources and
   persistence at the operator's defaults, the way the ControlPlane projection
   (`ensureRabbitMQ`) leaves them.

@@ -11,6 +11,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -29,8 +30,10 @@ import (
 )
 
 // neutronAppName is the app.kubernetes.io/name label value applied to every
-// Neutron-owned sub-resource. It matches the literal the validating webhook uses
-// for its TopologySpreadConstraints selector check, so the two never drift.
+// Neutron-owned sub-resource. The api package keeps its own neutronAppName
+// constant with the same value, from which the validating webhook composes its
+// topology-spread selector with naming.APISelectorLabels.
+// TestTopologySpreadSelectorMatchesTheAPIDeployment fails if the two drift.
 const neutronAppName = "neutron"
 
 // neutronAPIPort is the TCP port neutron-server serves its API on, the upstream
@@ -234,6 +237,19 @@ func neutronDeploymentRolledOut(deploy *appsv1.Deployment) bool {
 		deploy.Status.Replicas == desired
 }
 
+// neutronAPIMemory returns the memory the API container gets as request and
+// limit when spec.deployment.resources names no memory. It is sized from the
+// uWSGI process and thread count the container runs; spec.apiServer is
+// optional, so a nil block yields the uWSGI defaults.
+func neutronAPIMemory(neutron *neutronv1alpha1.Neutron) resource.Quantity {
+	var uwsgi *neutronv1alpha1.UWSGISpec
+	if neutron.Spec.APIServer != nil {
+		uwsgi = neutron.Spec.APIServer.UWSGI
+	}
+	processes, threads := deployment.EffectiveUWSGIConcurrency(uwsgi)
+	return commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), processes, threads)
+}
+
 // buildNeutronDeployment constructs the desired Neutron API Deployment. The
 // rendered config ConfigMap mounts read-only as the whole neutronConfigMountPath
 // directory, shadowing the image's own /etc/neutron; the OVN client identity and
@@ -252,6 +268,7 @@ func buildNeutronDeployment(neutron *neutronv1alpha1.Neutron,
 		PodAnnotations: neutronPodAnnotations(dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest),
 		Deployment:     &neutron.Spec.Deployment,
 		Autoscaling:    neutron.Spec.Autoscaling,
+		DefaultMemory:  neutronAPIMemory(neutron),
 		Container: deployment.ContainerParams{
 			Name:    "neutron-api",
 			Image:   neutron.Spec.Image.Reference(),
@@ -264,11 +281,12 @@ func buildNeutronDeployment(neutron *neutronv1alpha1.Neutron,
 			// All three probes GET the API root, which serves the version document
 			// without a token and without touching the database. The startup probe
 			// carries the cold-start window: every uWSGI worker imports the whole
-			// plugin stack under the container's CPU limit, which stretches past the
-			// liveness budget once spec.apiServer.uwsgi.processes rises above the
-			// default. The timings are the sibling operators': 30x10s of startup
-			// budget, and an 8s timeout because a cold-starting WSGI app can hold even
-			// a plain HTTP GET past the kubelet's 1s default.
+			// plugin stack, which under a CPU limit set on the container or on a
+			// contended node stretches past the liveness budget once
+			// spec.apiServer.uwsgi.processes rises above the default. The timings are
+			// the sibling operators': 30x10s of startup budget, and an 8s timeout
+			// because a cold-starting WSGI app can hold even a plain HTTP GET past the
+			// kubelet's 1s default.
 			StartupProbe: &corev1.Probe{
 				ProbeHandler:     neutronAPIProbeHandler(),
 				FailureThreshold: 30,

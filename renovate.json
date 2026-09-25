@@ -4,7 +4,7 @@
     "config:recommended"
   ],
   "platformAutomerge": false,
-  "postUpdateOptions": ["gomodTidy"],
+  "postUpdateOptions": ["gomodTidy", "gomodTidyAll"],
   "nix": {
     "enabled": true,
     "lockFileMaintenance": {
@@ -299,6 +299,20 @@
       "datasourceTemplate": "github-releases",
       "packageNameTemplate": "mvdan/gofumpt",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^Makefile$/"
+      ],
+      "matchStrings": [
+        "ENVTEST_K8S_VERSION\\s*\\?=\\s*(?<currentValue>\\d+\\.\\d+)\\s"
+      ],
+      "depNameTemplate": "envtest",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "kubernetes-sigs/controller-tools",
+      "extractVersionTemplate": "^envtest-v(?<version>\\d+\\.\\d+)\\.\\d+$",
+      "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)$"
     },
     {
       "customType": "regex",

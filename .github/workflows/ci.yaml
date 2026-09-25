@@ -95,6 +95,7 @@ jobs:
       build-e2e-images: ${{ steps.result.outputs.build-e2e-images }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
+      e2e-operator-legs: ${{ steps.e2e-operator-legs.outputs.legs }}
       test-targets: ${{ steps.result.outputs.test-targets }}
       tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
       cleanup-e2e-packages: ${{ steps.cleanup-matrix.outputs.cleanup-e2e-packages }}
@@ -156,6 +157,7 @@ jobs:
               - 'patches/cinder/**'
             image_nova:
               - 'images/nova/**'
+              - 'images/nova-compute/**'
               - 'patches/nova/**'
             # ovn ships the OVS/OVN daemons the CRs project and the rclone
             # shifter the OVNCentral backup CronJob uploads with. Neither is a
@@ -177,7 +179,6 @@ jobs:
             go_common:
               - 'internal/**'
               - 'go.work'
-              - 'go.work.sum'
               - 'operators/Dockerfile'
               - '.golangci.yml'
             # Every service image and both Tempest images are built from this.
@@ -296,10 +297,17 @@ jobs:
               - '.github/actions/setup-test-deps/**'
               - '.github/actions/load-e2e-images/**'
               - '.github/actions/registry-login/**'
-            # OpenBao is the one piece of the substrate with an operator that
+            # OpenBao is one piece of the substrate with an operator that
             # exercises it directly, so barbican joins the canary for it.
             e2e_openbao:
               - 'deploy/openbao/**'
+            # K-ORC is the other: only the jobs that run hack/ci-deploy-korc.sh
+            # deploy its pinned commit and image, so the c5c3 leg (the
+            # cheapest of them) joins the canary for a change to the pin.
+            e2e_korc:
+              - 'deploy/flux-system/sources/k-orc.yaml'
+              - 'deploy/flux-system/releases/k-orc.yaml'
+              - 'hack/ci-deploy-korc.sh'
             ci_plumbing:
               - '.github/workflows/ci.yaml'
               - '.github/actions/**'
@@ -420,6 +428,7 @@ jobs:
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
           FILTER_e2e_shared: ${{ steps.filter.outputs.e2e_shared }}
           FILTER_e2e_openbao: ${{ steps.filter.outputs.e2e_openbao }}
+          FILTER_e2e_korc: ${{ steps.filter.outputs.e2e_korc }}
           FILTER_ci_plumbing: ${{ steps.filter.outputs.ci_plumbing }}
           FILTER_actionlint: ${{ steps.filter.outputs.actionlint }}
           FILTER_makefile: ${{ steps.filter.outputs.makefile }}
@@ -445,6 +454,20 @@ jobs:
       - name: Generate cleanup package matrix
         id: cleanup-matrix
         run: hack/ci-generate-cleanup-matrix.sh
+
+      # The e2e-operator job runs one leg per operator in e2e-operators, except
+      # nova, whose suites run as two shards on two kind clusters (see "Run E2E
+      # tests" there). The publish jobs read e2e-operators and must see nova
+      # once, so the shards live in an output of their own.
+      - name: Shard the e2e-operator matrix
+        id: e2e-operator-legs
+        env:
+          E2E_OPERATORS: ${{ steps.result.outputs.e2e-operators }}
+        run: |
+          legs=$(jq -c '{include: [.operator[] | if . == "nova"
+            then {operator: ., shard: "1"}, {operator: ., shard: "2"}
+            else {operator: .} end]}' <<<"${E2E_OPERATORS}")
+          echo "legs=${legs}" >>"$GITHUB_OUTPUT"
 
   lint:
     needs: [changes]
@@ -1150,18 +1173,20 @@ jobs:
       # ci-service-image-releases.sh (the single source of truth, also used by
       # ci-generate-build-matrix.sh). Orchestration operators without a service
       # image — e.g. c5c3, which deploys K-ORC via an upstream Helm chart —
-      # yield no releases and so never appear here.
+      # yield no releases and so never appear here. A line with a third field
+      # builds a derived image (nova-compute) from the service's source.
       - name: Build service images
         env:
           # Authenticates the source clones from github.com; see the script.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          while read -r svc release; do
+          while read -r svc release image; do
             [ -n "$svc" ] || continue
-            echo "::group::Building ${svc}:${release}"
-            OPERATOR="${svc}" IMAGE_PREFIX="${IMAGE_PREFIX}" RELEASE="${release}" \
-              DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-${svc}-${release}" \
-              DOCKER_BUILD_CACHE_TO="type=gha,mode=max,scope=e2e-${svc}-${release}" \
+            image="${image:-$svc}"
+            echo "::group::Building ${image}:${release}"
+            OPERATOR="${svc}" IMAGE="${image}" IMAGE_PREFIX="${IMAGE_PREFIX}" RELEASE="${release}" \
+              DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-${image}-${release}" \
+              DOCKER_BUILD_CACHE_TO="type=gha,mode=max,scope=e2e-${image}-${release}" \
               hack/ci-build-service-image.sh
             echo "::endgroup::"
           done <<<"$BUILD_SERVICE_IMAGES"
@@ -1246,9 +1271,9 @@ jobs:
           for op in $BUILD_OPERATORS; do
             push_image "${IMAGE_PREFIX}/${op}-operator:dev"
           done
-          while read -r svc release; do
+          while read -r svc release image; do
             [ -n "$svc" ] || continue
-            push_image "${IMAGE_PREFIX}/${svc}:${release}"
+            push_image "${IMAGE_PREFIX}/${image:-$svc}:${release}"
           done <<<"$BUILD_SERVICE_IMAGES"
           for release in $BUILD_TEMPEST_RELEASES; do
             push_image "${IMAGE_PREFIX}/tempest:${release}"
@@ -1281,17 +1306,24 @@ jobs:
     # 90-minute wall cancelled it with three full-tier suites unfinished. A wall
     # that arrives first kills chainsaw outright: no catch block runs and no
     # JUnit report is written, so the job says nothing about which suite it
-    # stopped in. 150 is the estimate for the whole leg (about 125 minutes)
-    # plus headroom; confirm it against the first green run of this leg and
-    # re-derive if it overruns. The other legs keep 68; the neutron leg, with
-    # one sibling, took 41 minutes on 2026-09-17.
+    # stopped in. Under a 150-minute wall the leg took 125 to 137 minutes,
+    # until compute-node-pool, 27 minutes that no other suite runs beside,
+    # pushed it past 150 on 2026-09-24 with one suite unfinished. It now runs
+    # as two shards (the matrix below), each with the bring-up and about half
+    # the suites: about 80 to 95 minutes, so 150 is the wall per shard with
+    # headroom for a slow runner. Move a suite between the shards, or
+    # re-derive, if one overruns. The other legs keep 68; the neutron leg,
+    # with one sibling, took 41 minutes on 2026-09-17.
     timeout-minutes: ${{ matrix.operator == 'nova' && 150 || 68 }}
     permissions:
       contents: read
       packages: read
+    # e2e-operators with the nova leg split into shards 1 and 2 (see "Shard
+    # the e2e-operator matrix" in the changes job). A leg without a shard is
+    # named as before, e2e-operator (<operator>).
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.changes.outputs.e2e-operators) }}
+      matrix: ${{ fromJson(needs.changes.outputs.e2e-operator-legs) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -1351,6 +1383,11 @@ jobs:
               for release in $(OPERATOR="${sibling}" hack/ci-service-image-releases.sh); do
                 refs="${refs}"$'\n'"${IMAGE_PREFIX}/${sibling}:${release}"
               done
+            done
+            # The compute-node-pool suite runs a NovaCompute, whose pods run
+            # the nova-compute image of each nova release.
+            for release in $(OPERATOR=nova hack/ci-service-image-releases.sh); do
+              refs="${refs}"$'\n'"${IMAGE_PREFIX}/nova-compute:${release}"
             done
             refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
             # The catalog, seed and verify Jobs of the functional Nova suites
@@ -1415,12 +1452,13 @@ jobs:
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # The ovn and neutron chassis DaemonSets open a Geneve tunnel from the
       # kind node, which needs the openvswitch and geneve modules loaded on the
-      # host. Empty on every other leg, where deploy-infra.sh keeps its default
-      # of not touching the host's modules.
+      # host, and the nova leg's compute-node-pool suite runs a chassis on the
+      # node its nova-compute waits for. Empty on every other leg, where
+      # deploy-infra.sh keeps its default of not touching the host's modules.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
-          WITH_OVN_KERNEL_MODULES: ${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron') && 'true' || '' }}
+          WITH_OVN_KERNEL_MODULES: ${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron' || matrix.operator == 'nova') && 'true' || '' }}
           # The cinder suites mount their volumes as inline CSI volumes from
           # the kind NFS export, and each one takes its own vhost on the
           # shared broker. Every Nova process dials the bus, and the
@@ -1456,7 +1494,8 @@ jobs:
       # spec.serviceUser are required on the CRD, and a booted server needs a
       # Placement allocation, a Glance image and a Neutron port. The OVN
       # control plane comes with the neutron-operator's need for a live
-      # OVNCentral; no chassis runs here.
+      # OVNCentral, and the compute-node-pool suite runs a single-node
+      # OVNChassis beside it for the nova-compute of its NovaCompute.
       - name: Deploy keystone-operator
         if: matrix.operator == 'nova'
         run: hack/ci-deploy-operator.sh
@@ -1528,6 +1567,7 @@ jobs:
       - name: Run E2E tests
         env:
           OPERATOR: ${{ matrix.operator }}
+          SHARD: ${{ matrix.shard }}
         run: |
           mkdir -p _output/reports
           # Operator-chart-level tests (e.g. network-policy-egress)
@@ -1537,6 +1577,32 @@ jobs:
           test_dirs=("tests/e2e/${OPERATOR}/")
           if [ -d "tests/e2e/${OPERATOR}-operator/" ]; then
             test_dirs+=("tests/e2e/${OPERATOR}-operator/")
+          fi
+          # The nova leg runs as two shards. Shard 2 runs the suites named
+          # below, shard 1 every other suite of both directories, so a new
+          # suite lands in shard 1 without an edit here. The split follows the
+          # durations measured on 2026-09-24: each shard takes three of the six
+          # suites that run 24 to 30 minutes, compute-node-pool among shard 2's,
+          # and shard 1 takes gateway-quick-start-smoke and scale, the two other
+          # suites that run alone (concurrent: false). The NovaCompute suites
+          # stay together in shard 2. The suites are passed as directories
+          # because chainsaw's include/exclude regex filters are no-ops.
+          if [ "${OPERATOR}" = "nova" ]; then
+            shard_two="compute-node-pool invalid-novacompute-cr basic-deployment-2026-1 release-upgrade healthcheck deletion-cleanup pod-security-restricted"
+            test_dirs=()
+            for dir in tests/e2e/nova/*/ tests/e2e/nova-operator/*/; do
+              case " ${shard_two} " in
+                *" $(basename "${dir}") "*) shard=2 ;;
+                *) shard=1 ;;
+              esac
+              if [ "${shard}" = "${SHARD}" ]; then
+                test_dirs+=("${dir}")
+              fi
+            done
+            if [ "${#test_dirs[@]}" -eq 0 ]; then
+              echo "::error::no nova suite belongs to shard '${SHARD}'"
+              exit 1
+            fi
           fi
           # Every neutron suite carries its own OVNCentral beside the Neutron
           # API, its two worker Deployments and a db-sync Job, so four of them
@@ -1583,11 +1649,13 @@ jobs:
           for op in keystone placement glance ovn neutron; do
             OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           done
+      # Two artifacts of one run cannot share a name, so each nova shard adds
+      # its number: e2e-nova-1-junit-report and e2e-nova-2-junit-report.
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-${{ matrix.operator }}-junit-report
+          name: e2e-${{ matrix.operator }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}-junit-report
           path: _output/reports/
           retention-days: 14
       # Last step of the job, so the dump above still had a cluster to read;
@@ -1740,11 +1808,12 @@ jobs:
     # independently gated (see continue-on-error below) and so the suites run
     # in parallel.
     #
-    # test_dirs lists the per-suite test directories explicitly. chainsaw
-    # v0.2.14 accepts --{include,exclude}-test-regex flags but does not apply
-    # them in the runner (the config field is set but never read), so regex
-    # filtering is a no-op and a new test directory must be added to the
-    # appropriate suite below when introduced.
+    # test_dirs lists the per-suite test directories explicitly, so a new test
+    # directory must be added to the appropriate suite below when introduced.
+    # (chainsaw's --{include,exclude}-test-regex flags were no-ops up to
+    # v0.2.14; the pinned release applies them, but they match the Go test
+    # name chainsaw/<metadata.name>, not a directory, and a bare name selects
+    # nothing and still exits 0, so the explicit list stays.)
     strategy:
       fail-fast: false
       matrix:

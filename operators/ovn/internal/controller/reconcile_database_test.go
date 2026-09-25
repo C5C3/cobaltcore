@@ -13,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -280,4 +281,191 @@ func TestRaftStatefulSet_PreStopAsksTheDatabaseToExit(t *testing.T) {
 		g.Expect(sts.Spec.Template.Spec.TerminationGracePeriodSeconds).
 			To(HaveValue(BeNumerically(">", 0)), db.suffix)
 	}
+}
+
+// A block that asks for nothing gets the shared request floor and no limit, so
+// each member runs Burstable instead of BestEffort. Empty maps count as unset,
+// the same way DeploymentSpec.Default reads them.
+func TestRaftResources_UnsetBlockGetsTheRequestFloor(t *testing.T) {
+	cases := []struct {
+		name string
+		spec *corev1.ResourceRequirements
+	}{
+		{name: "nil", spec: nil},
+		{name: "empty block", spec: &corev1.ResourceRequirements{}},
+		{name: "empty maps", spec: &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{},
+			Limits:   corev1.ResourceList{},
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			got := raftResources(tc.spec)
+
+			g.Expect(got.Requests).To(HaveLen(2))
+			g.Expect(got.Requests.Cpu().String()).To(Equal("100m"))
+			g.Expect(got.Requests.Memory().String()).To(Equal("256Mi"))
+			g.Expect(got.Limits).To(BeEmpty(), "the floor sets no limit")
+		})
+	}
+}
+
+// Each of CPU and memory is filled on its own. A limit alone must stay alone:
+// the API server defaults an unset request to its limit, and a floor request
+// added beside it would silently lower the request.
+func TestRaftResources_FillsEachUnnamedResource(t *testing.T) {
+	q := resource.MustParse
+	cases := []struct {
+		name string
+		spec *corev1.ResourceRequirements
+		want corev1.ResourceRequirements
+	}{
+		{
+			name: "CPU request only gains the memory request",
+			spec: &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: q("1")}},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("1"), corev1.ResourceMemory: q("256Mi")},
+			},
+		},
+		{
+			name: "memory limit only gains the CPU request",
+			spec: &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: q("1Gi")}},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("100m")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: q("1Gi")},
+			},
+		},
+		{
+			name: "memory request only gains the CPU request",
+			spec: &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: q("512Mi")}},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: q("512Mi"), corev1.ResourceCPU: q("100m")},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			g.Expect(raftResources(tc.spec)).To(Equal(tc.want))
+		})
+	}
+}
+
+// A block that names both CPU and memory, as request or as limit, gets nothing
+// added.
+func TestRaftResources_BlockNamingCPUAndMemoryIsUsedAsWritten(t *testing.T) {
+	q := resource.MustParse
+	cases := []struct {
+		name string
+		spec *corev1.ResourceRequirements
+	}{
+		{name: "requests", spec: &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: q("250m"), corev1.ResourceMemory: q("1Gi")},
+		}},
+		{name: "CPU request and memory limit", spec: &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: q("250m")},
+			Limits:   corev1.ResourceList{corev1.ResourceMemory: q("2Gi")},
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			g.Expect(raftResources(tc.spec)).To(Equal(*tc.spec))
+		})
+	}
+}
+
+// The QoS class is computed from CPU and memory alone, so a block that names
+// only other resources would still run the member BestEffort. It gets the floor
+// beside what it sets, and the CR's block stays untouched.
+func TestRaftResources_BlockWithoutCPUOrMemoryGetsTheFloorBesideIt(t *testing.T) {
+	cases := []struct {
+		name string
+		spec *corev1.ResourceRequirements
+	}{
+		{name: "ephemeral-storage limit only", spec: &corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("2Gi")},
+		}},
+		{name: "hugepages request and limit", spec: &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{"hugepages-2Mi": resource.MustParse("1Gi")},
+			Limits:   corev1.ResourceList{"hugepages-2Mi": resource.MustParse("1Gi")},
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			want := tc.spec.DeepCopy()
+
+			got := raftResources(tc.spec)
+
+			g.Expect(got.Requests.Cpu().String()).To(Equal("100m"))
+			g.Expect(got.Requests.Memory().String()).To(Equal("256Mi"))
+			for name, q := range want.Requests {
+				g.Expect(got.Requests).To(HaveKeyWithValue(name, q), "the block's own requests are kept")
+			}
+			g.Expect(got.Limits).To(Equal(want.Limits), "the floor adds no limit")
+			g.Expect(tc.spec).To(Equal(want), "the CR's block must stay untouched")
+		})
+	}
+}
+
+// Claims name a DRA claim and neither request nor limit a resource, so a block
+// that carries only claims still gets the floor, and keeps its claims.
+func TestRaftResources_ClaimsAloneStillGetTheFloor(t *testing.T) {
+	g := NewWithT(t)
+	claims := []corev1.ResourceClaim{{Name: "gpu"}}
+
+	got := raftResources(&corev1.ResourceRequirements{Claims: claims})
+
+	g.Expect(got.Requests.Cpu().String()).To(Equal("100m"))
+	g.Expect(got.Requests.Memory().String()).To(Equal("256Mi"))
+	g.Expect(got.Limits).To(BeEmpty())
+	g.Expect(got.Claims).To(Equal(claims))
+}
+
+// The rendered block is the operator's to change: writing to it must reach
+// neither the CR it was read from nor the floor the next member gets.
+func TestRaftResources_ReturnsACopy(t *testing.T) {
+	g := NewWithT(t)
+
+	spec := &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+	}
+	got := raftResources(spec)
+	got.Requests[corev1.ResourceMemory] = resource.MustParse("2Gi")
+	g.Expect(spec.Requests.Memory().String()).To(Equal("512Mi"), "the CR's block must stay untouched")
+
+	floor := raftResources(nil)
+	floor.Requests[corev1.ResourceCPU] = resource.MustParse("4")
+	floor.Requests[corev1.ResourceMemory] = resource.MustParse("8Gi")
+	next := raftResources(nil)
+	g.Expect(next.Requests.Cpu().String()).To(Equal("100m"))
+	g.Expect(next.Requests.Memory().String()).To(Equal("256Mi"))
+}
+
+// The shared fixture leaves resources unset on both databases, so both render
+// their members with the floor, and the floor is resolved without writing it
+// back into the CR.
+func TestRaftStatefulSet_MembersRequestTheFloorWhenTheCRSetsNone(t *testing.T) {
+	g := NewWithT(t)
+	cr := testOVNCentral()
+
+	for _, db := range []raftDB{northboundDB(cr), southboundDB(cr)} {
+		c := raftStatefulSet(cr, db).Spec.Template.Spec.Containers[0]
+		g.Expect(c.Name).To(Equal("ovsdb"))
+		g.Expect(c.Resources.Requests.Cpu().String()).To(Equal("100m"), db.suffix)
+		g.Expect(c.Resources.Requests.Memory().String()).To(Equal("256Mi"), db.suffix)
+		g.Expect(c.Resources.Limits).To(BeEmpty(), db.suffix)
+	}
+
+	g.Expect(cr.Spec.Northbound.Resources).To(BeNil(), "the floor must not be written into the CR")
+	g.Expect(cr.Spec.Southbound.Resources).To(BeNil(), "the floor must not be written into the CR")
 }

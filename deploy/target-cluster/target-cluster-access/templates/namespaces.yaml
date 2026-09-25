@@ -24,8 +24,9 @@ metadata:
     {{- include "target-cluster-access.labels" $ | nindent 4 }}
 {{- if has $namespace $.Values.privilegedNamespaces }}
     # OVS and ovn-controller run with hostNetwork, hostPath and added
-    # capabilities. Where the cluster's PodSecurity admission defaults to
-    # baseline or restricted, their pods are rejected without this label.
+    # capabilities, and nova-compute privileged as root. Where the cluster's
+    # PodSecurity admission defaults to baseline or restricted, their pods are
+    # rejected without this label.
     pod-security.kubernetes.io/enforce: privileged
 {{- end }}
 {{- end }}

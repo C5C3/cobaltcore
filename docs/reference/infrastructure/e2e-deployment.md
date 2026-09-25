@@ -261,9 +261,10 @@ strategic merge patches to reduce resource requirements for a single-node kind c
 
 The memory request takes the single database out of the BestEffort class, which
 the kernel OOM killer drains first when parallel e2e suites exhaust a 4-vCPU
-runner; every operator workload already requests 256Mi. The CPU fields stay
-unset on purpose: a 500m request left pods Pending on the keystone leg (#970),
-and a limit would throttle the liveness probe the overlay relaxes.
+runner; every service workload already requests between 368Mi and 2Gi of
+memory, and no service container carries a default CPU limit. The CPU fields
+stay unset on purpose: a 500m request left pods Pending on the keystone leg
+(#970), and a limit would throttle the liveness probe the overlay relaxes.
 
 **Memcached CR (`openstack-memcached`):**
 

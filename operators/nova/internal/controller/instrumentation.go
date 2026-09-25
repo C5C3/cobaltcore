@@ -18,8 +18,9 @@ import (
 // condition_type it drives. The instrumenter consults this map to attribute
 // errors to the correct Ready sub-condition.
 //
-// The mapping is guarded in both directions: every value MUST be a member of
-// subConditionTypes and every pipeline step name MUST be a key here. If a
+// The map serves both kinds. The mapping is guarded in both directions: every
+// value MUST be a member of subConditionTypes or novaComputeSubConditionTypes,
+// and every step name of either pipeline MUST be a key here. If a
 // sub_reconciler name reaches the instrumenter without a key, the helper falls
 // back to instrumentation.ConditionTypeUnknown ("UNKNOWN") rather than an empty
 // label so the drift surfaces in alerts.
@@ -54,6 +55,15 @@ var subReconcilerConditionTypes = map[string]string{
 	"HealthCheck":         conditionTypeNovaAPIReady,
 	"HPA":                 "HPAReady",
 	"NetworkPolicy":       conditionTypeNetworkPolicyReady,
+
+	// The NovaCompute pipeline. No name clashes with a Nova step, so one map
+	// serves both kinds.
+	stepNovaRef:    conditionTypeNovaReady,
+	stepNodes:      conditionTypeNodesReady,
+	stepPoolConfig: conditionTypeConfigReady,
+	stepDaemonSet:  conditionTypeDaemonSetReady,
+	stepAggregates: conditionTypeAggregatesReady,
+	stepServices:   conditionTypeServicesReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error

@@ -347,7 +347,7 @@ mechanics through this standalone flow.
 ## See also
 
 - [Keystone CRD — DatabaseTLSSpec](../../reference/keystone/keystone-crd.md#databasetlsspec) — authoritative field reference.
-- [Keystone CRD — Mode → connect-args mapping](../../reference/keystone/keystone-crd.md#mode--connect-args-mapping) — DSN parameters per mode.
+- [Keystone CRD — Mode → connect-args mapping](../../reference/keystone/keystone-crd.md#mode-connect-args-mapping) — DSN parameters per mode.
 - [ControlPlane CRD — InfrastructureSpec](../../reference/c5c3/controlplane-crd.md#infrastructurespec) — the `spec.infrastructure.database` block the reconciler projects.
 - [Infrastructure Manifests — OpenStack DB CA Issuer](../../reference/infrastructure/infrastructure-manifests.md#openstack-db-ca-issuer) — CA keypair and ClusterIssuer.
 - [Infrastructure Manifests — MariaDB Galera Cluster](../../reference/infrastructure/infrastructure-manifests.md#mariadb-galera-cluster) — server-side TLS configuration.

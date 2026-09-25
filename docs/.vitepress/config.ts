@@ -266,6 +266,7 @@ export default defineConfig({
             items: [
               { text: 'Overview', link: '/reference/nova/' },
               { text: 'CRD', link: '/reference/nova/nova-crd' },
+              { text: 'NovaCompute CRD', link: '/reference/nova/novacompute-crd' },
               { text: 'Controller Events', link: '/reference/nova/nova-events' },
               { text: 'Reconciler Architecture', link: '/reference/nova/nova-reconciler' },
               { text: 'Upgrade Flow', link: '/reference/nova/nova-upgrade-flow' },

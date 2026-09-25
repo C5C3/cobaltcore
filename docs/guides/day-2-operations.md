@@ -16,7 +16,9 @@ scaling, upgrading the OpenStack release, and rotating Fernet keys.
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the
+**[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand
+it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -61,7 +63,7 @@ kubectl rollout status deploy/controlplane-keystone -n openstack
 ```
 
 Scale down the same way. The keystone-operator maintains a `PodDisruptionBudget`
-named `controlplane-keystone`, sized from the child's replica count: at
+named `controlplane-keystone`, sized from the child's replica count. At
 `replicas > 1` it sets `minAvailable=1` so a voluntary disruption never drains
 the last healthy pod; at `replicas == 1` it sets `maxUnavailable=1` instead,
 allowing eviction so a node drain cannot deadlock on a
@@ -69,35 +71,40 @@ single-replica child.
 
 ::: tip Load-driven autoscaling is standalone-only
 The `ControlPlane` CRD does not expose `spec.autoscaling`, so on a ControlPlane
-deployment there is no HPA knob — scale by setting
+deployment there is no HPA knob. Scale by setting
 `spec.services.keystone.replicas`. Load-driven autoscaling with a
-`HorizontalPodAutoscaler` is available only on a standalone Keystone CR — see
-[Advanced Configuration — Autoscaling (HPA)](./advanced-configuration.md#autoscaling-hpa).
+`HorizontalPodAutoscaler` is available only on a standalone Keystone CR. See
+[Advanced Configuration: Autoscaling (HPA)](./advanced-configuration.md#autoscaling-hpa).
 :::
 
 ---
 
 ## Upgrade the OpenStack release
 
-Change `spec.openStackRelease` on the `ControlPlane` CR to a newer release. The
-operator projects the new image tag (`ghcr.io/c5c3/keystone:<release>`) onto the
-`controlplane-keystone` child, which triggers the keystone-operator's
-expand-migrate-contract pipeline. The API stays available throughout — old and
-new schemas coexist while data is migrated.
+::: warning Back up the database first
+Make a database backup before starting the upgrade. Recovery from a bad upgrade
+requires restoring the database because the schema migrations are not
+reversible.
+:::
 
 Before you patch, make the target-release images node-local. The devstack
-pre-loads only the `2025.2` Keystone image, and the projected Horizon child
-follows `spec.openStackRelease` too — so pull and `kind load` both the Keystone
-and Horizon images for the target release, or the rollout stalls on an image
-pull:
+preloads only the `2025.2` Keystone image, while all six enabled service children
+follow `spec.openStackRelease`. Pull and load the target release images into kind,
+or their rollouts stall on image pulls:
 
 ```bash
-docker pull ghcr.io/c5c3/keystone:2026.1
-kind load docker-image ghcr.io/c5c3/keystone:2026.1 --name cobaltcore
-
-docker pull ghcr.io/c5c3/horizon:2026.1
-kind load docker-image ghcr.io/c5c3/horizon:2026.1 --name cobaltcore
+RELEASE=2026.1
+for operator in barbican glance horizon keystone neutron placement; do
+  podman pull "ghcr.io/c5c3/${operator}:${RELEASE}"
+  kind load docker-image "ghcr.io/c5c3/${operator}:${RELEASE}" --name cobaltcore
+done
 ```
+
+Change `spec.openStackRelease` on the `ControlPlane` CR to the target release.
+The operator projects the new image tags onto the service children and triggers
+their release-specific upgrade flows. Keystone uses its
+expand-migrate-contract pipeline. Its API stays available throughout because
+old and new schemas coexist while data is migrated.
 
 ```bash
 kubectl patch controlplane controlplane -n openstack \
@@ -127,10 +134,10 @@ Expected timeline on the child:
 
 | Phase | What the operator does |
 |-------|------------------------|
-| `Expanding` | Runs `db_sync --expand` with the new image — adds columns/tables without dropping anything |
-| `Migrating` | Runs `db_sync --migrate` — copies/transforms data into new schema elements |
+| `Expanding` | Runs `db_sync --expand` with the new image, adding columns/tables without dropping anything |
+| `Migrating` | Runs `db_sync --migrate`, copying or transforming data into new schema elements |
 | `RollingUpdate` | Updates the Deployment to the new image and waits for rollout |
-| `Contracting` | Runs `db_sync --contract` — drops old columns/tables that are no longer read |
+| `Contracting` | Runs `db_sync --contract`, dropping old columns/tables that are no longer read |
 
 When all four complete successfully:
 
@@ -165,17 +172,17 @@ restored release. Plan cut-overs around a maintenance window and a tested backup
 
 The keystone-operator ships a `CronJob` on the projected child that rotates the
 Fernet keys on a schedule. You can trigger a rotation immediately without waiting
-for the cron job to fire — useful after a suspected key compromise.
+for the cron job to fire. This is useful after a suspected key compromise.
 
 On the ControlPlane path the schedule is set through
-`spec.services.keystone.rotationInterval` — a duration (e.g. `168h`) the operator
+`spec.services.keystone.rotationInterval`, a duration (e.g. `168h`) the operator
 converts to a cron expression and projects onto the child's
 `spec.fernet.rotationSchedule` and `spec.credentialKeys.rotationSchedule`. The
 `ControlPlane` CRD does not expose the `suspend` or `maxActiveKeys` knobs; pausing
 scheduled rotation or tuning the overlap window is standalone-only (see the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section).
 
-Rotation uses a split staging→production path: the CronJob writes the new key set
+Rotation uses a split staging-to-production path: the CronJob writes the new key set
 to a *staging* Secret, and the operator validates it and applies it to the
 production `controlplane-keystone-fernet-keys` Secret on its next reconcile. So
 the right signal that a manual rotation landed is the operator's event on the
@@ -199,11 +206,11 @@ kubectl -n openstack describe keystone controlplane-keystone | grep FernetKeysRo
 ### What to expect
 
 - The production Secret now holds a new primary key. Older keys stay until the
-  child's `maxActiveKeys` is exceeded — tokens issued before rotation remain
+  child's `maxActiveKeys` is exceeded, so tokens issued before rotation remain
   valid through the overlap window.
 - **No Deployment rollout happens.** Running pods pick up the new keys via the
-  in-place Secret projection (~60s) — their UIDs stay unchanged.
-- Credential keys rotate the same way and are **always managed**. Swap `fernet` →
+  in-place Secret projection (~60s). Their UIDs stay unchanged.
+- Credential keys rotate the same way and are **always managed**. Swap `fernet` for
   `credential` in the CronJob name:
 
   ```bash
@@ -218,7 +225,7 @@ recovery from a rejected rotation (`RotationRejected`), see
 
 ::: tip Cleanup
 Manual rotation Jobs are not garbage-collected automatically and accumulate if you run
-them often — delete them after verification:
+them often. Delete them after verification:
 
 ```bash
 kubectl -n openstack get jobs -o name \
@@ -245,8 +252,8 @@ kubectl patch keystone keystone -n openstack \
 kubectl rollout status deploy/keystone -n openstack
 ```
 
-For load-driven scaling use `spec.autoscaling` instead — see
-[Advanced Configuration — Autoscaling (HPA)](./advanced-configuration.md#autoscaling-hpa).
+For load-driven scaling use `spec.autoscaling` instead. See
+[Advanced Configuration: Autoscaling (HPA)](./advanced-configuration.md#autoscaling-hpa).
 
 **Upgrade** by patching `spec.image.tag`:
 
@@ -258,7 +265,7 @@ kubectl patch keystone keystone -n openstack \
 
 The same sequential-only constraint, the four-phase pipeline, and the
 forward-only recovery path apply. Make the target image node-local first, or the
-upgrade stalls at its first phase that needs it — `Expanding`, which runs
+upgrade stalls at its first phase that needs it, `Expanding`, which runs
 `db_sync --expand` with the new image:
 
 ```bash
@@ -289,13 +296,13 @@ scheduled rotation during an incident without deleting the CronJob, and
 
 ## Further reading
 
-- [Observability & Diagnostics](./observability.md) — reading conditions, events, and status fields while operations run
-- [Rotate Keystone Fernet and Credential Keys](./keystone/keystone-key-rotation.md) — the full staging→production rotation flow, validation contract, and recovery
-- [Rotate the Keystone Admin Password](./keystone/keystone-admin-password-rotation.md) — manual admin-password rotation at the OpenBao source
-- [Schedule Keystone Admin Password Rotation](./keystone/keystone-admin-password-scheduled-rotation.md) — CronJob-driven scheduled admin-password rotation
-- [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md) — state machine, job names, retry behavior
-- [Keystone Controller Events](../reference/keystone/keystone-events.md) — full event catalogue for upgrade, rotation, and scale events
-- [Advanced Configuration](./advanced-configuration.md) — brownfield DB, autoscaling, network policy, and more
+- [Observability & Diagnostics](./observability.md): reading conditions, events, and status fields while operations run
+- [Rotate Keystone Fernet and Credential Keys](./keystone/keystone-key-rotation.md): the full staging-to-production rotation flow, validation contract, and recovery
+- [Rotate the Keystone Admin Password](./keystone/keystone-admin-password-rotation.md): manual admin-password rotation at the OpenBao source
+- [Schedule Keystone Admin Password Rotation](./keystone/keystone-admin-password-scheduled-rotation.md): CronJob-driven scheduled admin-password rotation
+- [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md): state machine, job names, retry behavior
+- [Keystone Controller Events](../reference/keystone/keystone-events.md): full event catalogue for upgrade, rotation, and scale events
+- [Advanced Configuration](./advanced-configuration.md): brownfield DB, autoscaling, network policy, and more
 
 ## Tested by
 

@@ -36,7 +36,7 @@ GOFUMPT ?= $(LOCALBIN)/gofumpt
 
 # Kubernetes version for envtest binary downloads.
 # Pin to a specific version for reproducible integration tests across runs.
-ENVTEST_K8S_VERSION ?= 1.35
+ENVTEST_K8S_VERSION ?= 1.37
 
 # Image tag for docker-build. Uses deferred evaluation so $(OPERATOR) is resolved
 # at recipe expansion time.
@@ -477,6 +477,7 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/cinder/invalid-cinderbackend-cr/_generate.py --check
 	@python3 tests/e2e/cinder/invalid-cinderbackupbackend-cr/_generate.py --check
 	@python3 tests/e2e/nova/invalid-cr/_generate.py --check
+	@python3 tests/e2e/nova/invalid-novacompute-cr/_generate.py --check
 	@echo "Running invalid-CR fixture unit tests..."
 	@python3 tests/e2e/keystone/invalid-cr/test_generate.py
 	@python3 tests/e2e/keystone/invalid-identitybackend-cr/test_generate.py
@@ -496,6 +497,7 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/cinder/invalid-cinderbackend-cr/test_generate.py
 	@python3 tests/e2e/cinder/invalid-cinderbackupbackend-cr/test_generate.py
 	@python3 tests/e2e/nova/invalid-cr/test_generate.py
+	@python3 tests/e2e/nova/invalid-novacompute-cr/test_generate.py
 
 .PHONY: gen-option-catalogs
 # gen-option-catalogs regenerates the per-release option catalogs the

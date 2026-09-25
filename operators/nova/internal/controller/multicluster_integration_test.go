@@ -36,6 +36,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
@@ -52,6 +53,7 @@ import (
 	commonenvtest "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/nova/internal/computeapi/computeapitest"
 	"github.com/c5c3/cobaltcore/operators/nova/internal/testutil"
 )
 
@@ -118,6 +120,10 @@ func TestIntegration_Multicluster_NovaTargetCluster(t *testing.T) {
 
 	crdDir, webhookDir := multiclusterNovaPaths(t)
 
+	// poolAPI stands in for Keystone and the Nova API the NovaCompute steps
+	// call; the placed Nova's API is not served on the target either.
+	poolAPI := computeapitest.New()
+
 	var mcMgr mcmanager.Manager
 	mgmtClient, ctx, _ := commonenvtest.StartManagedEnvTest(t, commonenvtest.ManagedEnvTestConfig{
 		Name:              "Nova-multicluster",
@@ -149,7 +155,10 @@ func TestIntegration_Multicluster_NovaTargetCluster(t *testing.T) {
 			}
 			// The multicluster manager is the Resolver: it turns
 			// spec.targetClusterRef into the client the children are written with.
-			return registerNovaController(mgr, mcMgr, mcMgr)
+			if err := registerNovaController(mgr, mcMgr, mcMgr); err != nil {
+				return err
+			}
+			return registerNovaComputeController(mgr, mcMgr, mcMgr, poolAPI)
 		},
 	})
 
@@ -271,6 +280,98 @@ func TestIntegration_Multicluster_NovaTargetCluster(t *testing.T) {
 				multiclusterExpectAbsent(t, ctx, c, child.key, child.obj, child.what)
 			}
 		}
+	})
+
+	// --- NovaCompute: a node pool placed on the target beside the Nova it
+	// joins. The pool selects no node (the target has none), which still
+	// projects its DaemonSet and its config.
+	poolKey := types.NamespacedName{Name: "pool-mc", Namespace: targetNamespace}
+	poolDaemonSetKey := client.ObjectKey{Namespace: targetNamespace, Name: "pool-mc-nova-compute"}
+	var poolConfigMapName string
+
+	t.Run("a placed NovaCompute projects its DaemonSet onto the target cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		g.Expect(mgmtClient.Create(ctx, &novav1alpha1.NovaCompute{
+			ObjectMeta: metav1.ObjectMeta{Name: poolKey.Name, Namespace: poolKey.Namespace},
+			Spec: novav1alpha1.NovaComputeSpec{
+				NovaRef:          novav1alpha1.NovaRef{Name: integrationNovaName},
+				NodeSelector:     map[string]string{"openstack.c5c3.io/nova-compute-pool": "mc"},
+				TargetClusterRef: targetRef,
+			},
+		})).To(Succeed())
+
+		ds := &appsv1.DaemonSet{}
+		eventuallyExists(t, ctx, targetClient, poolDaemonSetKey, ds, "nova-compute DaemonSet", eventuallyLongTimeout)
+		poolConfigMapName = mountedPoolConfigMapName(&ds.Spec.Template.Spec)
+		g.Expect(poolConfigMapName).To(HavePrefix("pool-mc-config-"))
+
+		for _, child := range []remoteChild{
+			{key: poolDaemonSetKey, obj: &appsv1.DaemonSet{}, what: "nova-compute DaemonSet"},
+			{key: client.ObjectKey{Namespace: targetNamespace, Name: poolConfigMapName}, obj: &corev1.ConfigMap{}, what: "pool config ConfigMap"},
+		} {
+			multiclusterExpectRemoteOwnership(t, ctx, targetClient, child.key, child.obj, child.what,
+				"NovaCompute", poolKey.Name, targetNamespace)
+			multiclusterExpectAbsent(t, ctx, mgmtClient, child.key, child.obj, child.what)
+		}
+
+		pool := &novav1alpha1.NovaCompute{}
+		g.Expect(mgmtClient.Get(ctx, poolKey, pool)).To(Succeed())
+		g.Expect(pool.Finalizers).To(ConsistOf(novaComputeDrainFinalizer, commonmulticluster.RemoteChildrenFinalizer))
+	})
+
+	t.Run("a NovaCompute naming an unregistered cluster carries no finalizer", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		unresolved := types.NamespacedName{Name: "pool-unknown", Namespace: unknownNamespace}
+		g.Expect(mgmtClient.Create(ctx, &novav1alpha1.NovaCompute{
+			ObjectMeta: metav1.ObjectMeta{Name: unresolved.Name, Namespace: unresolved.Namespace},
+			Spec: novav1alpha1.NovaComputeSpec{
+				NovaRef:          novav1alpha1.NovaRef{Name: integrationNovaName},
+				NodeSelector:     map[string]string{"openstack.c5c3.io/nova-compute-pool": "mc"},
+				TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: unknownCluster},
+			},
+		})).To(Succeed())
+
+		g.Eventually(func(ig Gomega) {
+			got := &novav1alpha1.NovaCompute{}
+			ig.Expect(mgmtClient.Get(ctx, unresolved, got)).To(Succeed())
+			cond := meta.FindStatusCondition(got.Status.Conditions, conditionTypeNovaReady)
+			ig.Expect(cond).NotTo(BeNil())
+			ig.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+			ig.Expect(got.Finalizers).To(BeEmpty())
+		}, eventuallyTimeout, pollInterval).Should(Succeed())
+	})
+
+	t.Run("deleting the NovaCompute sweeps its children off the target", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		const poolSurvivor = "mc-pool-unrelated"
+		g.Expect(targetClient.Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: poolSurvivor, Namespace: targetNamespace},
+			Data:       map[string]string{"owner": "nobody"},
+		})).To(Succeed(), "seed an unlabelled ConfigMap beside the pool's children")
+
+		pool := &novav1alpha1.NovaCompute{}
+		g.Expect(mgmtClient.Get(ctx, poolKey, pool)).To(Succeed())
+		g.Expect(mgmtClient.Delete(ctx, pool)).To(Succeed())
+
+		g.Eventually(func() bool {
+			return apierrors.IsNotFound(mgmtClient.Get(ctx, poolKey, &novav1alpha1.NovaCompute{}))
+		}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
+			"the CR should leave etcd once the drain and the sweep are done")
+
+		g.Eventually(func(ig Gomega) {
+			expectSwept(ig, ctx, targetClient, remoteChild{key: poolDaemonSetKey, obj: &appsv1.DaemonSet{}, what: "nova-compute DaemonSet"})
+			expectSwept(ig, ctx, targetClient, remoteChild{
+				key: client.ObjectKey{Namespace: targetNamespace, Name: poolConfigMapName}, obj: &corev1.ConfigMap{}, what: "pool config ConfigMap",
+			})
+		}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+
+		g.Expect(targetClient.Get(ctx, client.ObjectKey{Namespace: targetNamespace, Name: poolSurvivor},
+			&corev1.ConfigMap{})).To(Succeed(), "an unlabelled ConfigMap should survive the sweep")
+		g.Expect(targetClient.Get(ctx, client.ObjectKey{Namespace: targetNamespace, Name: integrationNovaName + "-" + componentComputeConfig},
+			&corev1.Secret{})).To(Succeed(), "the Nova's own contract carries no mirror label and is kept")
 	})
 
 	t.Run("deleting the Nova sweeps its children off the target", func(t *testing.T) {
@@ -506,4 +607,15 @@ func multiclusterExpectAbsent(
 
 	err := c.Get(ctx, key, obj)
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "%s %s should not exist, got %v", what, key, err)
+}
+
+// mountedPoolConfigMapName returns the ConfigMap a NovaCompute pod spec mounts
+// its pool config from.
+func mountedPoolConfigMapName(spec *corev1.PodSpec) string {
+	for _, v := range spec.Volumes {
+		if v.Name == poolConfigVolume && v.ConfigMap != nil {
+			return v.ConfigMap.Name
+		}
+	}
+	return ""
 }

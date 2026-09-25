@@ -2,10 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package main is the entrypoint for the Nova operator. One binary serves the
-// Nova kind: the compute API with its metadata API, its scheduler, its conductor
-// and its console proxy, together with the compute contract a compute cluster
-// joins on.
+// Package main is the entrypoint for the Nova operator. One binary serves two
+// kinds: Nova, the compute API with its metadata API, its scheduler, its
+// conductor and its console proxy, together with the compute contract a compute
+// cluster joins on; and NovaCompute, which runs nova-compute on a node pool of
+// such a cluster.
 //
 // Hand-crafted like the keystone operator's main (see its DEVIATION note):
 // the manager setup follows kubebuilder v4 / controller-runtime v0.23+ patterns
@@ -66,10 +67,23 @@ func main() {
 			}).SetupWithManager(mcMgr); err != nil {
 				return err
 			}
+			// The node-pool satellite. Nodes and pods are read uncached, through
+			// the API reader, so a namespace-scoped install never starts a
+			// cluster-wide Node informer it cannot sync.
+			if err := (&controller.NovaComputeReconciler{
+				Client:                  mgr.GetClient(),
+				Scheme:                  mgr.GetScheme(),
+				Recorder:                mgr.GetEventRecorderFor("novacompute-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				APIReader:               mgr.GetAPIReader(),
+				MaxConcurrentReconciles: maxConcurrentReconciles,
+				Resolver:                mcMgr,
+			}).SetupWithManager(mcMgr); err != nil {
+				return err
+			}
 			if webhooks {
-				// One registration wires both the defaulting and the validating
-				// webhook: NovaWebhook implements admission.Defaulter and
-				// admission.Validator for the single Nova kind.
+				// One registration per kind wires both the defaulting and the
+				// validating webhook: NovaWebhook and NovaComputeWebhook each
+				// implement admission.Defaulter and admission.Validator.
 				//
 				// DECISION: the webhook reads through mgr.GetAPIReader()
 				// (direct, uncached) rather than mgr.GetClient(), so a
@@ -77,6 +91,11 @@ func main() {
 				// a stale informer cache and the cached client's lazy informer
 				// start does not happen inside the webhook timeout.
 				if err := (&novav1alpha1.NovaWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+					return err
+				}
+				// The NovaCompute webhook reads the referenced Nova for its
+				// extraConfig catalog check, through the same uncached reader.
+				if err := (&novav1alpha1.NovaComputeWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
 					return err
 				}
 			}

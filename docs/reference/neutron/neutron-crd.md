@@ -46,7 +46,7 @@ of the fields below the plane fills and which it leaves to this CR.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `openStackRelease` | `string` (Pattern `^\d{4}\.[12]$`) | yes | none | The OpenStack release the operator deploys and drives. It governs install and upgrade release tracking: `status.installedRelease` is promoted to this value after a successful db-sync. The pattern admits the `YYYY.N` cadence with `N` in {1, 2}, the same class the validating webhook and `release.ParseRelease` accept, so a non-cadence minor is rejected at every layer. Kept separate from the image tag so a digest-pinned image still names a schema |
-| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the API Deployment: `replicas` (default 3), `resources` (100m/500m CPU, 256Mi/512Mi memory), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the API Deployment: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and 512Mi memory request and limit at the default `spec.apiServer.uwsgi` counts, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
 | `image` | [`commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | yes | none | The Neutron container image, run by the API pods, both worker Deployments, the migration Jobs, and the ovn-db-sync CronJob. `tag` and `digest` are mutually exclusive and one of the two is required. The field carries no immutability rule |
 | `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | yes | none | The MariaDB connection, rendered into the plain `[database]` section. One of `clusterRef` (managed) or `host` (brownfield), never both, plus `database`, `secretRef`, and the optional `port`, `credentialsMode` and `tls`. `credentialsMode: Dynamic` requires `clusterRef`. `replicas` and `storageSize` sit in the schema and are read by the ControlPlane's managed-mode projection alone, so this operator ignores them |
 | `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | yes | `backend: dogpile.cache.pymemcache` | The Memcached instance backing the keystonemiddleware token cache, rendered as `[keystone_authtoken] memcached_servers`. One of `clusterRef` (managed) or `servers` (brownfield), never both. Managed mode resolves to `<clusterRef.name>:11211`; `replicas` is honoured by the ControlPlane projection alone |
@@ -160,7 +160,7 @@ load the process that opens the connection past it answers HTTP 500.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the worker Deployments. `replicas` (default 3) sizes both, so the default is three periodic-worker pods and three OVN maintenance-worker pods |
+| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the worker Deployments. `replicas` (default 3) sizes both, so the default is three periodic-worker pods and three OVN maintenance-worker pods. Each worker runs one single-threaded process, so a `resources` block that names neither CPU nor memory renders a 100m CPU request, no CPU limit, and 368Mi as memory request and limit (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)) |
 
 Neither worker Deployment gets a Service, an HPA or a PodDisruptionBudget: no
 client dials them, their load is the maintenance queue, and an eviction costs a
@@ -298,21 +298,21 @@ valid.
 
 ## Defaulting and validation
 
-The mutating webhook applies the shared `DeploymentSpec` defaults to both
-`spec.deployment` and `spec.workers.deployment` (replicas 3, 100m/500m CPU,
-256Mi/512Mi memory), materializes the cache backend
-`dogpile.cache.pymemcache`, materializes `spec.logging` and its baseline
-(`text` / `INFO` / `debug: false`) so no reconciler dereferences a nil pointer,
-and fills the `ServiceUserSpec` identity defaults (`neutron` / `service` /
-`Default` / `Default`, `secretRef.key` → `password`). Inside a **present**
-`spec.nova` it fills the notifier identity the same way (`neutron-nova` /
-`service` / `Default` / `Default`, `secretRef.key` → `password`); an absent block
-stays absent, because that is what keeps the port notifications off. It fills an
-empty
-`spec.ovn.centralRef.namespace` with the CR's own namespace. For the halves a CR
-carries it fills `spec.messaging.secretRef.key` with `transport_url` and
-`spec.messaging.tls.caBundleSecretRef.key` with `ca.crt`. When
-`spec.apiServer` is present it applies the shared uWSGI leaf defaults.
+The mutating webhook applies the shared `DeploymentSpec` default to both
+`spec.deployment` and `spec.workers.deployment` (replicas 3) and writes no
+`resources`, which the reconciler resolves when it renders each Deployment. It
+materializes the cache backend `dogpile.cache.pymemcache`, materializes
+`spec.logging` and its baseline (`text` / `INFO` / `debug: false`) so no
+reconciler dereferences a nil pointer, and fills the `ServiceUserSpec` identity
+defaults (`neutron` / `service` / `Default` / `Default`, `secretRef.key` →
+`password`). Inside a **present** `spec.nova` it fills the notifier identity the
+same way (`neutron-nova` / `service` / `Default` / `Default`, `secretRef.key` →
+`password`); an absent block stays absent, because that is what keeps the port
+notifications off. It fills an empty `spec.ovn.centralRef.namespace` with the
+CR's own namespace. For the halves a CR carries it fills
+`spec.messaging.secretRef.key` with `transport_url` and
+`spec.messaging.tls.caBundleSecretRef.key` with `ca.crt`. When `spec.apiServer`
+is present it applies the shared uWSGI leaf defaults.
 
 Two defaults are resolved at reconcile time and never written into the stored
 CR, so an unset field keeps tracking the operator default across upgrades:
@@ -321,9 +321,8 @@ CR, so an unset field keeps tracking the operator default across upgrades:
 `metadata.name` is bounded at 40 characters, `MaxNeutronNameLength`, computed as
 `MaxCronJobNameLength` (52) minus `len("-ovn-db-sync")`. The bound is enforced on
 create alone: `metadata.name` is immutable, so on update the rule could only
-fire against an object a pre-upgrade operator already admitted, and the
-validating webhook also sees the finalizer-removal update that completes a
-deletion, which would wedge the CR in `Terminating` with no field left to edit.
+fire against an object a pre-upgrade operator already admitted, and it would
+refuse every update to that CR with no field left to edit.
 
 ```text
 name must be at most %d characters: the ovn-db-sync CronJob appends %q and Kubernetes caps CronJob names at %d characters
@@ -331,6 +330,14 @@ name must be at most %d characters: the ovn-db-sync CronJob appends %q and Kuber
 
 The three arguments are the bound (40), the suffix (`-ovn-db-sync`), and
 `MaxCronJobNameLength` (52).
+
+An update to a CR that is being deleted and leaves the spec unchanged is
+admitted without validation. That is the finalizer removal the reconciler
+issues, and an unchanged spec admitted earlier can fail today's rules: a
+PriorityClass deleted since, or a topology-spread constraint that still names
+only the name and instance labels. Rejecting the removal would hold the CR in
+`Terminating`. An update that changes the spec of a deleting CR is still
+validated.
 
 ### Schema-layer rules
 
@@ -439,7 +446,7 @@ Network policy, gateway, resources and scheduling:
 | `parentRef.name must be set when spec.gateway is configured` | `spec.gateway.parentRef.name` is empty |
 | `%s request must not exceed limit (%s)` | A request in `spec.deployment.resources` above its own limit. The arguments are the resource name and the limit |
 | `labelSelector is required on each TopologySpreadConstraint` | A constraint in `spec.deployment.topologySpreadConstraints` carries none |
-| `labelSelector.matchLabels must equal the Deployment selector labels %v` | The selector does not match the `neutron` name label and the instance label |
+| `labelSelector.matchLabels must equal the Deployment selector labels %v` | The selector does not equal the API Deployment's pod selector: the `neutron` name label, the instance label, and `app.kubernetes.io/component: api`. A selector without the component label also matches the worker and ovn-db-sync pods and is rejected |
 | `matchExpressions are not allowed; labelSelector must use matchLabels only` | A constraint selects with expressions |
 | `field.NotFound` on `spec.deployment.priorityClassName` | The named PriorityClass does not exist. The check is skipped when no lookup client is injected |
 | `failed to look up PriorityClass: %w` | The lookup itself failed |

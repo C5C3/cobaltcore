@@ -28,9 +28,10 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   (Chaos Mesh CRs take time to release injected faults).
 - **CI is NOT auto-discovered.** The `e2e-chaos` job in
   `.github/workflows/ci.yaml` enumerates `test_dirs` explicitly per
-  matrix leg (chainsaw v0.2.14's include/exclude-regex flags are
-  no-ops). A new suite **must** be added to the `pod`, `network`, `ovn` or
-  `nova` leg there, or it never runs in CI.
+  matrix leg (chainsaw's include/exclude-regex flags match the test name
+  `chainsaw/<metadata.name>`, not a directory, so they are not used). A new
+  suite **must** be added to the `pod`, `network`, `ovn` or `nova` leg
+  there, or it never runs in CI.
 - **Runner split:** the `pod` leg is pinned to
   `blacksmith-4vcpu-ubuntu-2404` for now (it is the blocking leg and has not
   been stable on the self-hosted runners); the `network` leg runs on the

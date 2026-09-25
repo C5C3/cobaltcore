@@ -26,16 +26,14 @@ spec:
   openStackRelease: "2025.2"
   deployment:
     replicas: 1
-    # Mirror 00-keystone-cr.yaml: the operator's default 500m CPU limit
-    # throttles the glance-api pod to half a core, which is what pushed the
-    # keystone Tempest leg past its CI timeout. tempest.api.image is
-    # upload/download-heavy on the data path, so give it the same headroom.
+    # Mirror 00-keystone-cr.yaml: the operator sets no CPU limit, so this
+    # block exists for its memory. tempest.api.image is upload/download-heavy
+    # on the data path, so the glance-api pod keeps a 1Gi limit.
     resources:
       requests:
         cpu: 100m
         memory: 256Mi
       limits:
-        cpu: "2"
         memory: 1Gi
   image:
     repository: ghcr.io/c5c3/glance

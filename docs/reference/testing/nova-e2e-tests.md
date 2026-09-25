@@ -116,13 +116,22 @@ for it would flip `ExtraConfigHealthy`.
 The nova `e2e-operator` leg deploys five sibling operators through
 `hack/ci-deploy-operator.sh` before the nova-operator (keystone, placement,
 glance, ovn and neutron), each into its own `<op>-system` namespace, and passes
-`WITH_MESSAGING: true` to the infrastructure bring-up. Chainsaw runs with
+`WITH_MESSAGING: true` to the infrastructure bring-up, and
+`WITH_OVN_KERNEL_MODULES: true` for the single-node chassis `compute-node-pool`
+runs. Chainsaw runs with
 `--parallel 2` rather than the shared config's four, under a 150-minute wall
 instead of the 68 the other legs take: a full-stack Nova suite is a Keystone, an
 OVNCentral, a Neutron, a Placement, a Glance and the five Nova workloads. Beside
 the operator and service images the leg loads `tempest:2025.2`, which is where
-the catalog, seed and verify Jobs get their `openstack` client. See
-[CI Workflow](../ci-cd/ci-workflow.md#e2e-operator).
+the catalog, seed and verify Jobs get their `openstack` client, and
+`nova-compute` at both nova releases, the image a NovaCompute pool runs.
+
+The leg runs as two shards, each on a kind cluster of its own and under its own
+150-minute wall. Shard 2 runs `compute-node-pool`, `invalid-novacompute-cr`,
+`basic-deployment-2026-1`, `release-upgrade`, `healthcheck`, `deletion-cleanup`
+and `pod-security-restricted`. Shard 1 runs every other suite, so a new suite
+runs there until the `Run E2E tests` step in `.github/workflows/ci.yaml` names
+it for shard 2. See [CI Workflow](../ci-cd/ci-workflow.md#e2e-operator).
 
 ## Prerequisites
 
@@ -138,7 +147,7 @@ the catalog, seed and verify Jobs get their `openstack` client. See
 | Message broker | `shared-rabbitmq` RabbitmqCluster in `openstack` (`WITH_MESSAGING=true`) |
 | Gateway | `GatewayClass/envoy` and `Gateway/openstack-gw` with the `https-nova`, `https-nova-metadata` and `https-nova-console` listeners, for the two suites that curl them |
 | Service images | `ghcr.io/c5c3/nova:2025.2` for every suite, `ghcr.io/c5c3/nova:2026.1` for `basic-deployment-2026-1` and the target half of `release-upgrade`, and `ghcr.io/c5c3/tempest:2025.2` for the catalog, seed and verify Jobs |
-| Chainsaw | v0.2.15 |
+| Chainsaw | the `CHAINSAW_VERSION` pinned in `hack/install-test-deps.sh` |
 
 ## Running the Tests
 
@@ -184,11 +193,13 @@ whose bring-up and boot run in one script. `deletion-cleanup` also raises
 `timeouts.error` to 3 minutes, because a Nova brings eight MariaDB CRs rather
 than three.
 
-Three suites opt out of the defaults for a reason of their own. `scale` and
-`gateway-quick-start-smoke` set `concurrent: false`, the first because its peak
-of ten pods at the shared 100m request holds 1000m on the single kind node, the
-second because it and `console-proxy` claim the same console hostname on the one
-Gateway. `pod-security-restricted` sets `spec.namespace: ""` to opt out of
+Four suites opt out of the defaults for a reason of their own. `scale`,
+`gateway-quick-start-smoke` and `compute-node-pool` set `concurrent: false`, the
+first because its peak of ten pods at the shared 100m request holds 1000m on the
+single kind node, the second because it and `console-proxy` claim the same
+console hostname on the one Gateway, and the third because its chassis and
+nova-compute pods own host paths on the one node (see
+[tests/e2e/README.md](https://github.com/C5C3/cobaltcore/blob/main/tests/e2e/README.md)). `pod-security-restricted` sets `spec.namespace: ""` to opt out of
 Chainsaw's per-test namespace, which carries no PodSecurity labels, and applies
 a labelled namespace of its own.
 
@@ -208,8 +219,10 @@ a labelled namespace of its own.
 | [maintenance-endpoint-isolation](#maintenance-endpoint-isolation) | `nova-isolation` | A live db-archive pod is never an address of the API, metadata or console Service, and none of the three is left without backends |
 | [db-archive](#db-archive) | `nova-archive` | The archive CronJob fires on a minute schedule and moves the deleted server into the shadow tables, with no `DBArchiveJobFailed` event on the CR |
 | [release-upgrade](#release-upgrade) | `nova-upgrade` | Cross-release upgrade 2025.2 to 2026.1: phase progression, the three phase Jobs, the five Deployments, the cell mappings and the API on the new release |
+| [compute-node-pool](#compute-node-pool) | `nova-pool`, pools `pool-a` and `pool-b` | A NovaCompute on the fake driver: Ready, the node Active with its service up, the wait-for-chassis gate, both aggregates marked, a conflicting second pool, the drain of a node with a server on it, the release, and the teardown of the last pool |
 | [console-proxy](#console-proxy) | `nova-vnc` | The console URL the API publishes carries the gateway hostname, the token handshake through it reaches the instance console, and an invalid token is turned down |
 | [invalid-cr](#invalid-cr) | (rejected at admission) | `Nova` rejection corpus: the release pattern, the image and database and cache and messaging union rules, the messaging TLS rule, the archive and scheduler bounds, the two cross-database rules, the cell0 name rules, both `extraConfig` guards, the two name rules, the URL fields and the console gateway path. See [Nova CRD](../nova/nova-crd.md#chainsaw-e2e-tests) |
+| [invalid-novacompute-cr](#invalid-novacompute-cr) | (rejected at admission) | `NovaCompute` rejection corpus: the novaRef, selector, name and target rules, the offboarding toleration by key and as a wildcard, the cpuModels rule both ways, the two libvirt enums, a rejected extraConfig key, maxUnavailable under OnDelete and the image pin. See [NovaCompute CRD](../nova/novacompute-crd.md#defaulting-and-validation) |
 | [metrics](#metrics) | — (operator-level) | nova-operator chart renders and removes the ServiceMonitor |
 
 ---
@@ -560,6 +573,49 @@ reads Placement as an authenticated client.
 
 ---
 
+### compute-node-pool
+
+**File:** `tests/e2e/nova/compute-node-pool/chainsaw-test.yaml`
+
+**Purpose:** The lifecycle of a [NovaCompute](../nova/novacompute-crd.md) node
+pool against a real Nova. `pool-a` runs `nova-compute` on the kind node through
+the fake driver, which `spec.extraConfig` switches on (kind has no KVM), so the
+suite needs no nested virtualization. The stack is the full-stack tier of
+`basic-deployment` under the `nova-pool` prefix, plus a single-node OVNChassis
+for the gate the pod waits on.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Label the node | `script` | `openstack.c5c3.io/chassis=true`, `topology.kubernetes.io/zone=nova-pool-az1` and `openstack.c5c3.io/nova-compute-pool=a`, and the ConfigMap `nova-pool-verify` naming the node. The step cleanup removes all three labels |
+| 2 | Bring up the stack and the chassis | `script` (25m) | The vhost, `keystone-nova-pool`, the catalog Job, the four sibling CRs, the image seed, `nova-pool` up to `Ready`, and `nova-pool-chassis` up to `Ready`. The step cleanup tears the stack down |
+| 3 | Apply pool-a | `script`, `assert`, `script` | `Ready=True/AllReady`; `status.nodes[0]` is `Active` in `nova-pool-az1` with the service `enabled`/`up`; `installedImage` is `ghcr.io/c5c3/nova-compute:2025.2`; the pod runs that image privileged as uid 0 and its `wait-for-chassis` init container exited 0; the verify Job (`registered`) finds the service and both aggregates with the marker `c5c3.io:nova=openstack/nova-pool`. The step cleanup deletes the pools and strips the drain finalizer from a survivor |
+| 4 | A second pool on the same node | `script`, `assert` | `pool-b` selects the chassis label: `NodesReady=False/NodeConflict`, `status.nodes[0]` in `Conflict` with `pool-a`, no pod scheduled, and `pool-a` still Active. `pool-b` is then deleted, so `pool-a` is the last pool of the Nova |
+| 5, 6 | Map the host and boot a server | `script` (10m) | `../discover-hosts.sh nova-pool "$NAMESPACE" "$NODE"`, then `15-boot-server-job.yaml` boots `s1` with no availability zone (the hypervisor operator does not run on kind, so the host never joins `nova-pool-az1`) and checks it landed on the node. Sentinel `NOVA-POOL-BOOT-OK` |
+| 7 | Remove the pool label | `script`, `assert` | `status.nodes[0]` goes `Draining` with `instances: 1`, the service `disabled` with the reason `c5c3.io: leaving NovaCompute openstack/pool-a`, `ServicesReady=True/Draining`, and the pod still runs |
+| 8 | Delete the server | `script`, `assert`, `script` | `16-delete-server-job.yaml` stands in for the hypervisor operator's eviction. `status.nodes` empties, and the verify Job (`released`) finds the service and `nova-pool-az1` gone and `tenant_filter_tests` still in place |
+| 9 | Delete pool-a | `script`, `assert` | The pool leaves etcd, the verify Job (`torndown`) finds `tenant_filter_tests` gone, and `nova-pool-compute-config` stays, because it carries no mirror label |
+
+**Fixtures:** `00`–`10` as in `basic-deployment` under the `nova-pool` names,
+`11-ovnchassis-cr.yaml`, `12-novacompute-pool-a.yaml`,
+`13-novacompute-pool-b.yaml`, `14-verify-job.yaml`, `15-boot-server-job.yaml`,
+`16-delete-server-job.yaml`
+
+**Design notes:**
+
+- `concurrent: false`: the chassis and nova-compute pods own
+  `/run/openvswitch` and `/var/lib/nova` on the one node.
+- The pools are applied with `kubectl`, not as Chainsaw `apply` operations, and
+  torn down in a step `cleanup` that runs before the stack's. A pool that is
+  still draining would hold its finalizer for as long as Nova counts an
+  instance, so the cleanup removes it by hand after three minutes rather than
+  wedging the shared namespace.
+- One verify Job serves three checks: the ConfigMap `nova-pool-verify` names
+  the node and the state to expect. Sentinel `NOVA-POOL-VERIFY-OK`.
+
+---
+
 ### console-proxy
 
 **File:** `tests/e2e/nova/console-proxy/chainsaw-test.yaml`
@@ -649,6 +705,38 @@ is generated by `_generate.py`.
 `make verify-invalid-cr-fixtures` runs `_generate.py --check` and
 `test_generate.py`, so a hand-edited fixture fails the build before the
 cluster-bound job runs.
+
+---
+
+### invalid-novacompute-cr
+
+**File:** `tests/e2e/nova/invalid-novacompute-cr/chainsaw-test.yaml`
+
+**Purpose:** The `NovaCompute` rejection corpus, on the pattern of `invalid-cr`.
+The fixtures name a Nova that does not exist in the ephemeral namespace, which
+admission tolerates: the extraConfig catalog check is then skipped with a
+warning, so it never competes with the rule a fixture pins.
+
+**Steps:**
+
+| # | Fixture | Rejection asserted |
+| --- | --- | --- |
+| 1 | `00-novaref-name-empty.yaml` | `novaRef.name` … `should be at least 1 chars long` |
+| 2 | `01-nodeselector-empty.yaml` | `nodeSelector` … `should have at least 1 properties` |
+| 3 | `02-name-too-long.yaml` | `metadata.name` … `name must be at most 63 characters` |
+| 4 | `03-targetclusterref-empty-name.yaml` | `targetClusterRef.name` … `should be at least 1 chars long` |
+| 5 | `04-toleration-offboarding.yaml` | `spec.tolerations[0]` … `tolerates kvm.cloud.sap/offboarding:NoExecute` |
+| 6 | `05-toleration-wildcard.yaml` | `spec.tolerations[0]` … `tolerates kvm.cloud.sap/offboarding:NoExecute` |
+| 7 | `06-cpumodels-without-custom.yaml` | `spec.libvirt` … `cpuModels is required when cpuMode is custom and must be empty otherwise` |
+| 8 | `07-custom-without-cpumodels.yaml` | the same message |
+| 9 | `08-virttype-invalid.yaml` | `spec.libvirt.virtType` … `Unsupported value` |
+| 10 | `09-imagestype-rbd.yaml` | `spec.libvirt.imagesType` … `Unsupported value` |
+| 11 | `10-extraconfig-rejected-host.yaml` | `spec.extraConfig[DEFAULT][host]` … `must not be set in extraConfig` |
+| 12 | `11-maxunavailable-with-ondelete.yaml` | `updateStrategy.maxUnavailable` … `maxUnavailable applies to RollingUpdate only` |
+| 13 | `12-image-tag-and-digest.yaml` | `spec.image` … `exactly one of image.tag or image.digest must be set` |
+
+**Fixtures:** `_generate.py` and the 13 numbered fixtures above, checked by
+`make verify-invalid-cr-fixtures`.
 
 ---
 
@@ -798,8 +886,10 @@ grep -q 'NOVA-VERIFY-OK' <<<"$LOGS"
 ```
 
 The sentinels are per Job: `NOVA-VERIFY-OK` in the four suites that boot a
-server and `DELETE-OK` in the console-proxy teardown Job. Script steps that
-drive no Job print one of their own, `CONSOLE-OK` and `ISOLATION-OK`.
+server and `DELETE-OK` in the console-proxy teardown Job, and
+`NOVA-POOL-VERIFY-OK`, `NOVA-POOL-BOOT-OK` and `NOVA-POOL-DELETE-OK` in
+`compute-node-pool`. Script steps that drive no Job print one of their own,
+`CONSOLE-OK` and `ISOLATION-OK`.
 
 ## File Layout
 
@@ -836,6 +926,15 @@ tests/e2e/nova/
 │   ├── 10-nova-cr.yaml                Nova CR nova-basic-2026-1 on 2026.1
 │   ├── 11-fake-compute.yaml           Fake-driver compute for this suite
 │   └── 12-verify-job.yaml             Boot, resize and delete a server
+├── compute-node-pool/
+│   ├── chainsaw-test.yaml             A NovaCompute node pool from registration to teardown
+│   ├── 00-…-10-….yaml                 The basic-deployment stack under the nova-pool names
+│   ├── 11-ovnchassis-cr.yaml          OVNChassis nova-pool-chassis on the labelled node
+│   ├── 12-novacompute-pool-a.yaml     NovaCompute pool-a on the fake driver
+│   ├── 13-novacompute-pool-b.yaml     NovaCompute pool-b selecting the same node
+│   ├── 14-verify-job.yaml             The service and the aggregates (NOVA-POOL-VERIFY-OK)
+│   ├── 15-boot-server-job.yaml        Boot s1 onto the pool's node (NOVA-POOL-BOOT-OK)
+│   └── 16-delete-server-job.yaml      Delete s1 (NOVA-POOL-DELETE-OK)
 ├── console-proxy/
 │   ├── chainsaw-test.yaml             Console URL, token handshake and rejection
 │   ├── 00-keystone-cr.yaml            Keystone keystone-nova-vnc
@@ -891,6 +990,11 @@ tests/e2e/nova/
 │   ├── _generate.py                   Generator for the fixtures below
 │   ├── test_generate.py               Unit test of the generator
 │   └── 00-…-27-….yaml                 Twenty-eight rejection fixtures
+├── invalid-novacompute-cr/
+│   ├── chainsaw-test.yaml             NovaCompute rejection corpus
+│   ├── _generate.py                   Generator for the fixtures below
+│   ├── test_generate.py               Unit test of the generator
+│   └── 00-…-12-….yaml                 Thirteen rejection fixtures
 ├── maintenance-endpoint-isolation/
 │   ├── chainsaw-test.yaml             The archive pod stays out of the three EndpointSlices
 │   ├── 00-metadata-secret.yaml        The metadata shared secret

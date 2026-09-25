@@ -116,8 +116,9 @@ func (w *OVNCentralWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 // untouched: every OVNCentral default is either a +kubebuilder:default the API
 // server applies from the CRD schema, or a value the operator resolves at
 // reconcile time (the image, the two nodePort bases, the backup schedule and
-// retention) so an unset field keeps tracking the operator default across
-// upgrades instead of freezing today's value into the stored CR.
+// retention, and the database request floor) so an unset field keeps tracking
+// the operator default across upgrades instead of freezing today's value into
+// the stored CR.
 //
 // The mutating webhook is registered nonetheless, so a default that has to be
 // materialized later can be added without changing the deployed webhook

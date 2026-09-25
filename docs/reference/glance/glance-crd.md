@@ -21,7 +21,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` ∈ {1,2}). Governs the API launch mode (eventlet below `2026.1`, uWSGI from `2026.1`) and install/upgrade schema tracking. Kept separate from the image tag so digest-pinned images still resolve a schema and launch mode |
-| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (defaults: 512Mi request / 1Gi limit memory, 100m/500m CPU), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and memory sized at 400Mi per process, 1Gi as request and limit at the defaults of both launch modes, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
 | `image` | `ImageSpec` | yes | Container image; exactly one of `tag` or `digest` (shared CEL rule, re-checked by the webhook) |
 | `database` | `DatabaseSpec` | yes | MariaDB connection. Exactly one of `clusterRef` (managed) or `host` (brownfield); `credentialsMode` (`Static` \| `Dynamic`, where `Dynamic` requires `clusterRef`), `secretRef`, and optional `tls`. Mutual-exclusivity and the Dynamic-requires-clusterRef rule are inherited from `commonv1.DatabaseSpec` |
 | `cache` | `CacheSpec` | yes | Memcached backing the Glance image cache. Exactly one of `clusterRef` (managed) or `servers` (brownfield) |
@@ -70,6 +70,10 @@ either mode, the operator simply ignores the inert one.
 | --- | --- | --- | --- | --- |
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | no | release ≥ `2026.1` (uWSGI launch mode) | uWSGI application-server parameters; inert below `2026.1` |
 | `workers` | `*int32` (Minimum=1) | no | release < `2026.1` (eventlet launch mode) | The eventlet API worker count, rendered as `[DEFAULT] workers`; inert from `2026.1` |
+
+The process, thread and worker counts, together with the replica count, size
+the database user's `max_user_connections`; see
+[Connection cap](./glance-reconciler.md#connection-cap).
 
 ### UWSGISpec
 
@@ -502,9 +506,8 @@ reservation: the operator derives no `resources.requests.ephemeral-storage` from
 it, so co-scheduled replicas each get their own budget and the sum is bounded by
 the node's disk rather than by this field. Size nodes against `replicas × 2 ×
 sizeLimit` plus that overshoot. To make the scheduler account for it, add
-`ephemeral-storage` to `spec.deployment.resources.requests` — and spell out the
-CPU and memory values in the same block, because a `resources` block that is
-present at all suppresses the operator's resource defaults.
+`ephemeral-storage` to `spec.deployment.resources.requests`. The operator fills
+the CPU and memory defaults per resource, so they stay beside it.
 
 The kubelet enforces the bound; Glance never sees it and keeps writing. Once an
 `emptyDir` grows past its `sizeLimit`, local-storage eviction evicts the
@@ -734,19 +737,23 @@ kubectl get deploy glance -n openstack \
 
 ### Defaulting and validation
 
-The mutating webhook applies the shared `DeploymentSpec`/`LoggingSpec` defaults
-— with one glance-specific deviation: an unset `spec.deployment.resources` is
-filled with 512Mi memory request / 1Gi memory limit (CPU keeps the shared
-100m/500m), because the glance-api container carries the boto3-weighted S3
-store driver and overruns the shared 512Mi baseline under concurrent image
-traffic. It also materializes the `PyMemcacheCache` cache backend, fills the
-`ServiceUserSpec` identity defaults (`glance` / `service` / `Default` /
-`Default`, `secretRef.key` → `password`), and — only when
-`spec.apiServer.uwsgi` is present — the uWSGI sub-field defaults (`processes`
-2, `threads` 1, `httpKeepAlive` true). It leaves `spec.importFiltering`
-untouched: those lists are resolved when the config is rendered (see
-[ImportFilteringSpec](#importfilteringspec)), so materializing them here would
-freeze today's values into the stored CR.
+The mutating webhook applies the shared `DeploymentSpec`/`LoggingSpec` defaults,
+materializes the `PyMemcacheCache` cache backend, fills the `ServiceUserSpec`
+identity defaults (`glance` / `service` / `Default` / `Default`, `secretRef.key`
+→ `password`), and — only when `spec.apiServer.uwsgi` is present — the uWSGI
+sub-field defaults (`processes` 2, `threads` 1, `httpKeepAlive` true). It leaves
+`spec.importFiltering` untouched: those lists are resolved when the config is
+rendered (see [ImportFilteringSpec](#importfilteringspec)), so materializing
+them here would freeze today's values into the stored CR.
+
+The webhook writes no `spec.deployment.resources` either. The reconciler
+resolves them per resource when it renders the Deployment (see the
+[resource defaults](../keystone/keystone-crd.md#resource-defaults)) and sizes
+memory at 400Mi per process instead of the shared 144Mi. The glance-api
+container carries the boto3-weighted S3 store driver, whose two workers idle
+near 360Mi and overrun 512Mi under concurrent image traffic. Two uWSGI
+processes (2026.1 and later) and two eventlet workers (2025.2) both come to 1Gi
+as memory request and limit.
 
 The defaulting webhook leaves `spec.dbPurge` untouched for the same reason:
 its fields are resolved at reconcile time (see

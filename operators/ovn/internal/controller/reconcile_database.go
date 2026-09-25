@@ -24,6 +24,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
 
@@ -504,18 +505,60 @@ func raftStatefulSet(cr *ovnv1alpha1.OVNCentral, db raftDB) *appsv1.StatefulSet 
 	}
 }
 
+// raftMemoryRequestFloor is the memory request raftResources gives a Raft
+// member whose block names no memory. raftResources hands out copies only.
+var raftMemoryRequestFloor = resource.MustParse("256Mi")
+
+// raftResources resolves the requests and limits of a Raft member's ovsdb
+// container, per resource. A CPU the block names neither as request nor as
+// limit gets the shared 100m request, a memory it names neither way gets a
+// 256Mi request, and neither gets a limit. Anything else the block sets
+// is kept, so a block that names both CPU and memory is used as written. The
+// result is a copy: the floor is never written into the CR, so an unset field
+// keeps following the operator's floor across upgrades.
+//
+// It differs from chassisResources on purpose. A member without requests runs
+// BestEffort, which makes it the first pod the kubelet evicts under node memory
+// pressure and the first the OOM killer picks, and two lost members of three
+// stop the database taking writes. A member with a CPU request and no memory
+// request runs Burstable but still competes for memory unreserved. The floor
+// sets no limit because the database grows with the logical model: a request
+// does not cap that growth, and a default limit would OOM-kill the member that
+// outgrew it. A request is never added beside a user-set limit of the same
+// resource: the API server defaults an unset request to its limit, and an added
+// request would silently lower it. Other resources, such as an
+// ephemeral-storage limit, decide neither the class nor a CPU or memory
+// request, so they keep the floor beside them.
+func raftResources(spec *corev1.ResourceRequirements) corev1.ResourceRequirements {
+	var resources corev1.ResourceRequirements
+	if spec != nil {
+		resources = *spec.DeepCopy()
+	}
+	for _, floor := range []struct {
+		name     corev1.ResourceName
+		quantity resource.Quantity
+	}{
+		{name: corev1.ResourceCPU, quantity: commonv1.DefaultCPURequest()},
+		{name: corev1.ResourceMemory, quantity: raftMemoryRequestFloor.DeepCopy()},
+	} {
+		if commonv1.NamesResource(resources, floor.name) {
+			continue
+		}
+		if resources.Requests == nil {
+			resources.Requests = corev1.ResourceList{}
+		}
+		resources.Requests[floor.name] = floor.quantity
+	}
+	return resources
+}
+
 // ovsdbContainer builds the one container of a database pod.
 func ovsdbContainer(cr *ovnv1alpha1.OVNCentral, db raftDB) corev1.Container {
-	resources := corev1.ResourceRequirements{}
-	if db.spec.Resources != nil {
-		resources = *db.spec.Resources
-	}
-
 	return corev1.Container{
 		Name:      "ovsdb",
 		Image:     effectiveImage(cr.Spec.Image).Reference(),
 		Command:   []string{"/bin/bash", "-c", "exec " + path.Join(centralScriptDir, runScriptKey(db))},
-		Resources: resources,
+		Resources: raftResources(db.spec.Resources),
 		Env: []corev1.EnvVar{
 			{Name: "OVN_DBDIR", Value: ovnDataDir},
 			{Name: "ELECTION_TIMER_MS", Value: strconv.Itoa(int(db.spec.ElectionTimerMs))},

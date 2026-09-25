@@ -1039,7 +1039,7 @@ bao kv metadata delete kv-v2/bootstrap/keystone-admin
 For the end-to-end, multi-credential operator runbook (admin application
 credential + admin password + Fernet/credential keys, with the one-time copy
 commands and the full ACL re-apply set), see the c5c3 controlplane reconciler's
-[Migration: legacy flat paths → per-ControlPlane paths](../c5c3/controlplane-reconciler.md#migration-legacy-flat-paths--per-controlplane-paths).
+[Migration: legacy flat paths → per-ControlPlane paths](../c5c3/controlplane-reconciler.md#migration-legacy-flat-paths-per-controlplane-paths).
 
 ### DeletionPolicy=Delete Wiring Through ESO
 
@@ -1175,7 +1175,7 @@ The deletion handler proceeds as follows:
      namespace containing it, in Terminating forever.
 4. **Requeue while blocked.** If `done=false`, the handler records the
    `SecretsReady=False / OpenBaoFinalizerBlocked` condition (see
-   [SecretsReady=False / OpenBaoFinalizerBlocked](#secretsreadyfalse--openbaofinalizerblocked)),
+   [SecretsReady=False / OpenBaoFinalizerBlocked](#secretsready-false-openbaofinalizerblocked)),
    returns `ctrl.Result{RequeueAfter: RequeueSecretPolling}` (15s), and
    leaves the finalizer in place so the Keystone CR stays alive until ESO
    finishes.

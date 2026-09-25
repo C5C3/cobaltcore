@@ -102,13 +102,12 @@ func TestBuildHPA_ExplicitMinAndBothMetrics(t *testing.T) {
 	g.Expect(hpa.Spec.Metrics).To(gomega.HaveLen(2))
 }
 
-// The nil-spec fallbacks keep webhook-bypassed CRs safe: zero resources, the
-// shared graceful-termination defaults, and the surge-before-remove strategy.
+// The nil-spec fallbacks keep webhook-bypassed CRs safe: the shared
+// graceful-termination defaults and the surge-before-remove strategy.
 func TestPodKnobDefaults(t *testing.T) {
 	g := gomega.NewWithT(t)
 	spec := &commonv1.DeploymentSpec{}
 
-	g.Expect(ContainerResources(spec)).To(gomega.Equal(corev1.ResourceRequirements{}))
 	g.Expect(PriorityClassName(spec)).To(gomega.Equal(""))
 	g.Expect(TerminationGracePeriodSeconds(spec)).To(gomega.Equal(commonv1.DefaultTerminationGracePeriodSeconds))
 	g.Expect(PreStopSleepCommand(spec)).To(gomega.Equal([]string{"/bin/sh", "-c", "sleep 5"}))

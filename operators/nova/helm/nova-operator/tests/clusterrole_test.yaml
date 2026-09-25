@@ -10,8 +10,9 @@ suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
 tests:
-  # The operator reconciles Nova CRs but never creates or deletes them.
-  - it: should grant reconcile verbs (no create/delete) on novas
+  # The operator reconciles Nova and NovaCompute CRs but never creates or
+  # deletes them.
+  - it: should grant reconcile verbs (no create/delete) on novas and novacomputes
     asserts:
       - contains:
           path: rules
@@ -19,8 +20,44 @@ tests:
             apiGroups:
               - nova.openstack.c5c3.io
             resources:
+              - novacomputes
               - novas
             verbs:
+              - get
+              - list
+              - patch
+              - update
+              - watch
+
+  # A NovaCompute reads Nodes to resolve its pool, never writes them.
+  - it: should restrict nodes to get, list and watch
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ''
+            resources:
+              - nodes
+            verbs:
+              - get
+              - list
+              - watch
+
+  # The nova-compute pods of a node pool run in a DaemonSet the operator owns.
+  - it: should grant full CRUD on daemonsets and deployments
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - daemonsets
+              - deployments
+            verbs:
+              - create
+              - delete
               - get
               - list
               - patch

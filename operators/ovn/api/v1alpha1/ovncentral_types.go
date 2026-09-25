@@ -194,7 +194,18 @@ type OVNDatabaseSpec struct {
 	InactivityProbeMs int32 `json:"inactivityProbeMs,omitempty"`
 
 	// Resources defines the CPU and memory requests and limits for the
-	// ovsdb-server container. When nil the operator applies its own defaults.
+	// ovsdb-server container. The operator never writes defaults into this
+	// field; it resolves them when it renders the pod, per resource: a CPU the
+	// block names neither as request nor as limit gets a 100m request, and a
+	// memory it names neither way gets a 256Mi request, both without a limit, so
+	// each Raft member runs in the Burstable QoS class rather than BestEffort,
+	// the class the kubelet evicts first under node memory pressure. There is no
+	// default limit because the database grows with the number of logical ports:
+	// size the memory request, and any limit, from that count. A resource the
+	// block names is used as written, and anything else it sets is kept. In a
+	// namespace whose LimitRange sets a default limit below 100m CPU or 256Mi
+	// memory, set it explicitly: the floor's request would exceed the limit the
+	// LimitRange fills in, and the member pod is rejected.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
@@ -247,7 +258,10 @@ type OVNRelaySpec struct {
 	Replicas int32 `json:"replicas"`
 
 	// Resources defines the CPU and memory requests and limits for the relay
-	// container. When nil the operator applies its own defaults.
+	// container. The operator resolves defaults per resource when it renders the
+	// pod: a CPU the block names neither as request nor as limit gets a 100m
+	// request and no limit, and a memory it names neither way gets 368Mi as both
+	// request and limit. Anything else the block sets is kept.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }

@@ -123,11 +123,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            cpu: 500m
             memory: 512Mi
           requests:
             cpu: 100m
-            memory: 256Mi
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -139,6 +138,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 8776
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/cinder/cinder.conf.d
           name: config
@@ -289,11 +295,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            cpu: 500m
             memory: 512Mi
           requests:
             cpu: 100m
-            memory: 256Mi
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -305,6 +310,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 8776
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/cinder/cinder.conf.d
           name: config
@@ -452,11 +464,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            cpu: 500m
             memory: 512Mi
           requests:
             cpu: 100m
-            memory: 256Mi
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -468,6 +479,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 8776
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/cinder/cinder.conf.d
           name: config

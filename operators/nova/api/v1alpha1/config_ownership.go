@@ -215,3 +215,53 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "vnc", Key: "novncproxy_host", Rejected: true, OwnedBy: "operator-computed", Impact: "the proxy Service routes to this address; another one leaves the Service with a port nothing listens on while the pod stays Ready"},
 	{Section: "vnc", Key: "novncproxy_port", Rejected: true, OwnedBy: "operator-computed", Impact: "the proxy Service routes to this port; another one leaves the Service with a port nothing listens on while the pod stays Ready"},
 }
+
+// NovaComputeOwnedConfigKeys is the registry of keys the operator owns in the
+// compute-pool.conf a NovaCompute renders. It is a separate registry from
+// OwnedConfigKeys because the two kinds render different files, and most of
+// what a nova-compute needs reaches it another way: the compute contract
+// fragment (mounted beside the pool config), the pod environment, or the host
+// mounts.
+//
+// The Rejected entries are the ones the pod takes from its environment or its
+// mounts. An override of any of them is inert at runtime or names a socket or
+// directory the pod does not carry, and the password entries would copy the
+// service-user password into a ConfigMap. The [libvirt] entries are reported,
+// not rejected: each has a typed spec.libvirt field, and an override is honored
+// and surfaced through ExtraConfigHealthy.
+//
+// [DEFAULT] compute_driver and [vnc] server_listen are rendered as defaults and
+// are not owned: the e2e suites run the fake driver through spec.extraConfig,
+// and the listen address is a per-pool choice.
+var NovaComputeOwnedConfigKeys = []config.OwnedKey{
+	// [DEFAULT]
+	{Section: "DEFAULT", Key: "host", Rejected: true, OwnedBy: "spec.nodeName (downward API)", Impact: "the host is the node name, env-injected via OS_DEFAULT__HOST; the aggregates, the drain and openstack-hypervisor-operator all find the service by it"},
+	{Section: "DEFAULT", Key: "my_ip", Rejected: true, OwnedBy: "status.hostIP (downward API)", Impact: "the address is env-injected via OS_DEFAULT__MY_IP; a file override is ignored at runtime"},
+	{Section: "DEFAULT", Key: "transport_url", Rejected: true, OwnedBy: "the compute contract", Impact: "the transport URL is env-injected via OS_DEFAULT__TRANSPORT_URL; a file override is ignored at runtime and copies credential material into the rendered ConfigMap"},
+	{Section: "DEFAULT", Key: "state_path", Rejected: true, OwnedBy: "the /var/lib/nova host mount", Impact: "the instance disks and the node's compute_id live under this path on the host; another path is not mounted and loses both with the pod"},
+
+	// [oslo_concurrency]
+	{Section: "oslo_concurrency", Key: "lock_path", Rejected: true, OwnedBy: "the /var/lib/nova host mount", Impact: "the locks live on the host mount; another path names a directory the container cannot write"},
+
+	// [libvirt] — the connection is the socket the pod mounts; the four
+	// tuning keys are typed fields.
+	{Section: "libvirt", Key: "connection_uri", Rejected: true, OwnedBy: "the /run/libvirt host mount", Impact: "the pod reaches the node's libvirtd over the mounted socket; another URI addresses a daemon the pod cannot reach"},
+	{Section: "libvirt", Key: "virt_type", OwnedBy: "spec.libvirt.virtType"},
+	{Section: "libvirt", Key: "cpu_mode", OwnedBy: "spec.libvirt.cpuMode"},
+	{Section: "libvirt", Key: "cpu_models", OwnedBy: "spec.libvirt.cpuModels"},
+	{Section: "libvirt", Key: "images_type", OwnedBy: "spec.libvirt.imagesType"},
+
+	// [os_vif_ovs]
+	{Section: "os_vif_ovs", Key: "ovsdb_connection", Rejected: true, OwnedBy: "the /run/openvswitch host mount", Impact: "os-vif plugs instance ports over the mounted socket of the node's Open vSwitch; another address plugs them into a switch this node does not run"},
+
+	// [vnc]
+	{Section: "vnc", Key: "server_proxyclient_address", Rejected: true, OwnedBy: "status.hostIP (downward API)", Impact: "the address is env-injected via OS_VNC__SERVER_PROXYCLIENT_ADDRESS; a file override is ignored at runtime"},
+
+	// The passwords of the five sections the contract fragment authenticates
+	// with. All five are env-injected from the contract's password key.
+	{Section: "keystone_authtoken", Key: "password", Rejected: true, OwnedBy: "the compute contract", Impact: "the password is env-injected via OS_KEYSTONE_AUTHTOKEN__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered ConfigMap"},
+	{Section: "service_user", Key: "password", Rejected: true, OwnedBy: "the compute contract", Impact: "the password is env-injected via OS_SERVICE_USER__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered ConfigMap"},
+	{Section: "placement", Key: "password", Rejected: true, OwnedBy: "the compute contract", Impact: "the password is env-injected via OS_PLACEMENT__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered ConfigMap"},
+	{Section: "neutron", Key: "password", Rejected: true, OwnedBy: "the compute contract", Impact: "the password is env-injected via OS_NEUTRON__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered ConfigMap"},
+	{Section: "cinder", Key: "password", Rejected: true, OwnedBy: "the compute contract", Impact: "the password is env-injected via OS_CINDER__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered ConfigMap"},
+}

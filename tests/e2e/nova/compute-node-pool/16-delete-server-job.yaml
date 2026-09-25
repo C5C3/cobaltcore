@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Deletes the server s1 while its node drains. It stands in for the eviction
+# openstack-hypervisor-operator would run on a real compute cluster: the pool
+# never moves an instance itself, it waits until Nova counts none on the host
+# and then releases the pod and deletes the compute service.
+#
+# backoffLimit is 0 because the script is not idempotent: a retry would find no
+# server s1 and fail on the delete.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-pool-delete-server
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: delete-server
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-pool.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # wait_gone <kind> <name> <timeoutSeconds>: poll until a show of
+              # the object fails, which is how the client reports one that is
+              # gone. A delete is asynchronous, so a later check would race it.
+              wait_gone() {
+                wg_deadline=$(( $(date +%s) + $3 ))
+                while true; do
+                  if ! openstack "$1" show "$2" >/dev/null 2>&1; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${wg_deadline}" ]; then
+                    echo "ERROR: $1 $2 still present after $3s"
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+
+              openstack server delete s1
+              wait_gone server s1 120
+              echo "OK: server s1 deleted"
+
+              echo NOVA-POOL-DELETE-OK

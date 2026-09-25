@@ -80,7 +80,10 @@ reversible-but-noisy action worth a quick check-in, not a silent edit.
 - Apply mechanical fixes and confirmed judgment calls with direct edits.
 - When a page is renamed or moved, update in the same change: every
   inbound link, the VitePress sidebar/nav config, and any section index
-  that lists it. A rename that doesn't update its own inbound links just
+  that lists it. When a heading is reworded, its anchor changes too:
+  grep `docs/` for the old slug (VitePress slugs collapse separator runs
+  to one hyphen and prefix a leading digit with `_`) and update every
+  `#fragment` that pointed at it. A rename that doesn't update its own inbound links just
   trades one structural finding for another.
 - When condensing or rewording prose, preserve any warnings, exceptions,
   or version-specific caveats the original sentence carried — cutting
@@ -92,8 +95,17 @@ reversible-but-noisy action worth a quick check-in, not a silent edit.
 
 ### 4. Re-verify
 
-Re-run the check-doc-* skill(s) that produced the fixed findings, scoped
-to just the touched pages ("quick" depth), to confirm the fix didn't:
+Run the mechanical checks first; they are cheap and catch the most
+common regression of a docs edit, a heading rename that strands its
+inbound anchors:
+
+```bash
+bash .claude/skills/check-doc-structure/scripts/audit-doc-structure.sh
+```
+
+Then re-run the check-doc-* skill(s) that produced the fixed findings,
+scoped to just the touched pages ("quick" depth), to confirm the fix
+didn't:
 
 - introduce a new dead link or anchor (structure)
 - leave a sibling page's copy of the same fact now out of sync

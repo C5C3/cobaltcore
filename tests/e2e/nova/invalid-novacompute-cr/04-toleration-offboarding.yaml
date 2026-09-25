@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A toleration of kvm.cloud.sap/offboarding:NoExecute without
+# tolerationSeconds is rejected by the validating webhook alone.
+# openstack-hypervisor-operator deletes a node's compute service only once
+# every agent pod on the node that tolerates the taint indefinitely is gone,
+# and a nova-compute that stays registers the service again.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: pool
+spec:
+  novaRef:
+    name: nova
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: a
+  tolerations:
+  - key: kvm.cloud.sap/offboarding
+    operator: Exists
+    effect: NoExecute

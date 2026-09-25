@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -26,6 +27,7 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
@@ -207,6 +209,19 @@ func (r *PlacementReconciler) reconcileDeployment(ctx context.Context, children 
 	return ctrl.Result{}, nil
 }
 
+// placementAPIMemory returns the memory the API container gets as request and
+// limit when spec.deployment.resources names no memory. It is sized from the
+// uWSGI process and thread count the container runs; spec.apiServer is
+// optional, so a nil block yields the uWSGI defaults.
+func placementAPIMemory(placement *placementv1alpha1.Placement) resource.Quantity {
+	var uwsgi *placementv1alpha1.UWSGISpec
+	if placement.Spec.APIServer != nil {
+		uwsgi = placement.Spec.APIServer.UWSGI
+	}
+	processes, threads := deployment.EffectiveUWSGIConcurrency(uwsgi)
+	return commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), processes, threads)
+}
+
 // buildPlacementDeployment constructs the desired Placement API Deployment. The
 // rendered config ConfigMap mounts read-only as the whole
 // placementConfigMountPath directory, shadowing the image's own /etc/placement,
@@ -222,6 +237,7 @@ func buildPlacementDeployment(placement *placementv1alpha1.Placement, configMapN
 		PodAnnotations: placementPodAnnotations(dsnDigest, authtokenDigest),
 		Deployment:     &placement.Spec.Deployment,
 		Autoscaling:    placement.Spec.Autoscaling,
+		DefaultMemory:  placementAPIMemory(placement),
 		Container: deployment.ContainerParams{
 			Name:    "placement-api",
 			Image:   placement.Spec.Image.Reference(),
@@ -238,10 +254,24 @@ func buildPlacementDeployment(placement *placementv1alpha1.Placement, configMapN
 				Name:          "placement-api",
 				ContainerPort: placementAPIPort,
 			}},
-			// Readiness AND liveness hit "/", the version document placement serves
-			// without authentication and without touching the database. Placement
-			// has no startup probe: the readiness probe's own delay covers the WSGI
-			// app coming up.
+			// All three probes GET "/", the version document placement serves without
+			// authentication and without touching the database. The startup probe
+			// carries the cold-start window: before the app answers, every uWSGI
+			// worker imports placement and syncs the traits and resource classes
+			// against the database (loadapp calls update_database, which runs
+			// trait.ensure_sync and resource_class.ensure_sync). Under a CPU limit set
+			// on the container or on a contended node that took 41 to 45 seconds
+			// (measured in a kind pod at 120m CPU), while the liveness probe alone
+			// restarts the container 55 seconds after it started. The timings are the
+			// sibling operators': 30x10s of startup budget, and an 8s timeout because
+			// a cold-starting WSGI app can hold even a plain HTTP GET past the
+			// kubelet's 1s default.
+			StartupProbe: &corev1.Probe{
+				ProbeHandler:     placementRootProbeHandler(),
+				FailureThreshold: 30,
+				PeriodSeconds:    10,
+				TimeoutSeconds:   8,
+			},
 			LivenessProbe: &corev1.Probe{
 				ProbeHandler:        placementRootProbeHandler(),
 				InitialDelaySeconds: 15,
@@ -303,8 +333,8 @@ func placementPodAnnotations(dsnDigest, authtokenDigest string) map[string]strin
 	return annotations
 }
 
-// placementRootProbeHandler returns the shared readiness/liveness probe handler:
-// an HTTP GET of "/" on the API port.
+// placementRootProbeHandler returns the shared startup/readiness/liveness probe
+// handler: an HTTP GET of "/" on the API port.
 func placementRootProbeHandler() corev1.ProbeHandler {
 	return corev1.ProbeHandler{
 		HTTPGet: &corev1.HTTPGetAction{

@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/cobaltcore/internal/common/naming"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
 
@@ -289,13 +290,14 @@ func TestBuildBarbicanDeployment_ReMintedSecretIDRollsThePods(t *testing.T) {
 	g.Expect(afterAnnotations[secretStoreCredentialsHashAnnotation]).To(Equal("digest-after"))
 }
 
-// Every uWSGI worker imports the whole app under the container's CPU limit, so
-// the cold start stretches past the liveness budget once
-// spec.apiServer.uwsgi.processes rises above the default (observed 66-91s at
-// processes=4 under the default 500m limit, against a ~55s liveness budget:
-// the container is killed before the app ever answers, forever). The startup
-// probe must therefore exist and carry a budget that outlasts the worst
-// observed cold start, and only then does the liveness probe take over.
+// Every uWSGI worker imports the whole app, so under a CPU limit set on the
+// container or on a contended node the cold start stretches past the liveness
+// budget once spec.apiServer.uwsgi.processes rises above the default (observed
+// 66-91s at processes=4 under the former 500m default CPU limit, against a ~55s
+// liveness budget: the container is killed before the app ever answers,
+// forever). The startup probe must therefore exist and carry a budget that
+// outlasts the worst observed cold start, and only then does the liveness probe
+// take over.
 func TestBuildBarbicanDeployment_StartupProbeOutlastsSlowColdStarts(t *testing.T) {
 	g := NewGomegaWithT(t)
 	barbican := testBarbican()
@@ -381,4 +383,39 @@ func TestDBCleanPodsNotSelectedByAPIService(t *testing.T) {
 	g.Expect(cleanPodLabels).To(HaveKeyWithValue(naming.LabelKeyComponent, dbCleanComponent))
 	g.Expect(selector.Matches(labels.Set(cleanPodLabels))).To(BeFalse(),
 		"db-clean pods must never become endpoints of the API Service")
+}
+
+// TestBuildBarbicanDeployment_RendersResourceDefaults verifies that a CR whose
+// spec.deployment.resources names nothing renders a 100m CPU request, no CPU
+// limit, and a memory request and limit sized from spec.apiServer.uwsgi: 512Mi
+// at the default counts of an absent spec.apiServer, 800Mi at four processes,
+// and 928Mi at four processes of two threads.
+func TestBuildBarbicanDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		apiServer *barbicanv1alpha1.APIServerSpec
+		want      string
+	}{
+		{name: "default uWSGI counts", want: "512Mi"},
+		{
+			name:      "four processes",
+			apiServer: &barbicanv1alpha1.APIServerSpec{UWSGI: &barbicanv1alpha1.UWSGISpec{Processes: 4}},
+			want:      "800Mi",
+		},
+		{
+			name:      "four processes of two threads",
+			apiServer: &barbicanv1alpha1.APIServerSpec{UWSGI: &barbicanv1alpha1.UWSGISpec{Processes: 4, Threads: 2}},
+			want:      "928Mi",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			barbican := testBarbican()
+			barbican.Spec.APIServer = tc.apiServer
+
+			deploy := buildBarbicanDeployment(barbican, validProjection(), deploymentConfigSecretName, "", "")
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults(tc.want)))
+		})
+	}
 }

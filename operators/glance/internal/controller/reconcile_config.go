@@ -191,6 +191,14 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 	return ctrl.Result{}, configArtifacts{configMapName: configMapName, backendsSecretName: projection.secretName}, nil
 }
 
+// glanceEventletMaxPoolSize and glanceEventletMaxOverflow are the [database]
+// max_pool_size and max_overflow operatorDefaults pins below 2026.1; the
+// connection cap sizes an eventlet worker at their sum.
+const (
+	glanceEventletMaxPoolSize int32 = 5
+	glanceEventletMaxOverflow int32 = 0
+)
+
 // operatorDefaults builds the operator-owned glance-api.conf sections from the
 // CRD spec and the backends projection: the static
 // [DEFAULT]/[database]/[keystone_authtoken]/… scaffolding plus the
@@ -300,15 +308,33 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 
 	// workers is the eventlet API worker count. Below release 2026.1 (eventlet
 	// launch mode) it is ALWAYS rendered so the count is deterministic: from
-	// spec.apiServer.workers when set, else DefaultEventletWorkers — never the
+	// effectiveEventletWorkers, the count the connection cap sizes for — never the
 	// eventlet server's own fallback of one worker per host CPU, which ignores the
 	// pod's CPU limit and OOMs the container under load. Under the uWSGI launch
 	// mode (2026.1+) the key is inert (uWSGI ignores it), so it is rendered only
 	// when explicitly set, for transparency; the webhook warns on that combination.
-	if s := glance.Spec.APIServer; s != nil && s.Workers != nil {
+	if !glanceReleaseUsesUWSGI(glance.Spec.OpenStackRelease) {
+		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", effectiveEventletWorkers(glance))
+	} else if s := glance.Spec.APIServer; s != nil && s.Workers != nil {
 		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", *s.Workers)
-	} else if !glanceUsesUWSGI(glance) {
-		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", glancev1alpha1.DefaultEventletWorkers)
+	}
+	// max_pool_size = 5 and max_overflow = 0 bound an eventlet worker at five
+	// connections, which is what the connection cap sizes it at (see
+	// glanceEventletWorkerConnections). The pool size is oslo.db's default,
+	// rendered so the figure the cap counts is owned rather than assumed. An
+	// eventlet worker serves every request as a greenthread on one pool, so
+	// without the overflow pin its connection count follows client concurrency
+	// up to 55: measured on 2026-09-24 against ghcr.io/c5c3/glance:2025.2, one
+	// worker opened 30 to 32 connections under 16 clients, and 5 with the pin,
+	// which also served 3,127 requests against 2,960 and logged no QueuePool
+	// timeout. Greenthreads beyond five wait in the pool (SQLAlchemy's
+	// pool_timeout, 30 s by default) instead of opening a connection past
+	// max_user_connections. Under uWSGI (2026.1+) neither key is rendered: the
+	// thread count bounds demand there, and the overflow pin would make
+	// requests queue in any process running more than five threads.
+	if !glanceReleaseUsesUWSGI(glance.Spec.OpenStackRelease) {
+		defaults["database"]["max_pool_size"] = fmt.Sprintf("%d", glanceEventletMaxPoolSize)
+		defaults["database"]["max_overflow"] = fmt.Sprintf("%d", glanceEventletMaxOverflow)
 	}
 	// PerLoggerLevels render into oslo.log's default_log_levels CSV; empty omits
 	// the key so oslo.log keeps its compiled-in defaults.

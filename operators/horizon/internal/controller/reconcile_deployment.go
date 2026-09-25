@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -22,6 +23,7 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
@@ -178,6 +180,7 @@ func buildHorizonDeployment(horizon *horizonv1alpha1.Horizon, configMapName, sec
 		PodAnnotations: podAnnotations,
 		Deployment:     &horizon.Spec.Deployment,
 		Autoscaling:    horizon.Spec.Autoscaling,
+		DefaultMemory:  commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), horizonUWSGIProcesses, horizonUWSGIThreads),
 		Container: deployment.ContainerParams{
 			Name:    "horizon",
 			Image:   horizon.Spec.Image.Reference(),
@@ -259,6 +262,14 @@ func probeHostHeaders() []corev1.HTTPHeader {
 	return []corev1.HTTPHeader{{Name: "Host", Value: probeHostHeader}}
 }
 
+// horizonUWSGIProcesses and horizonUWSGIThreads are the fixed uWSGI counts of
+// the dashboard container. uwsgiCommand renders them and buildHorizonDeployment
+// sizes the default memory from them, so the two cannot drift apart.
+const (
+	horizonUWSGIProcesses = 2
+	horizonUWSGIThreads   = 1
+)
+
 // uwsgiCommand constructs the uWSGI container command. Horizon has no
 // per-CR uWSGI knobs in v1 (design decision D5): uwsgi loads
 // openstack_dashboard.wsgi directly (the module ships `application`), serves
@@ -272,8 +283,8 @@ func uwsgiCommand() []string {
 		"--master",
 		"--die-on-term",
 		"--need-app",
-		"--processes", "2",
-		"--threads", "1",
+		"--processes", strconv.Itoa(horizonUWSGIProcesses),
+		"--threads", strconv.Itoa(horizonUWSGIThreads),
 		"--static-map", "/static=" + horizonStaticRoot,
 		"--log-master",
 		"--log-format", "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))",

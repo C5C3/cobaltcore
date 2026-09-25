@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -1074,6 +1075,262 @@ func TestEnsureMariaDB_RefusesToReshapeAForeignInstance(t *testing.T) {
 		"ownership must never be claimed over an instance we did not create")
 }
 
+// seedMemcached builds the Memcached openstack-memcached in namespace with no
+// owner reference. labels and spec.replicas are set only when non-nil, so a test
+// can seed an unlabelled instance or one whose replica count is absent.
+func seedMemcached(namespace string, labels map[string]string, replicas *int64) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(memcachedGVK)
+	u.SetName("openstack-memcached")
+	u.SetNamespace(namespace)
+	if replicas != nil {
+		_ = unstructured.SetNestedField(u.Object, *replicas, "spec", "replicas")
+	}
+	if labels != nil {
+		u.SetLabels(labels)
+	}
+	return u
+}
+
+// getMemcached reads openstack-memcached in namespace through c and returns it
+// with its spec.replicas and whether that field is set. The Get has to succeed:
+// no Memcached pass ever deletes the instance it compares.
+func getMemcached(g Gomega, c client.Client, namespace string) (*unstructured.Unstructured, int64, bool) {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(memcachedGVK)
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "openstack-memcached", Namespace: namespace,
+	}, u)).To(Succeed(), "the Memcached in %q must still exist", namespace)
+	replicas, found, err := unstructured.NestedInt64(u.Object, "spec", "replicas")
+	g.Expect(err).NotTo(HaveOccurred())
+	return u, replicas, found
+}
+
+// memcachedUpdateInterceptor counts every Memcached Update in *updates and fails
+// it with err when err is non-nil. Every other Update, and a Memcached one when
+// err is nil, reaches the wrapped client, so a test can pin how many writes a
+// pass issued at the API seam and what a rejected one returns.
+func memcachedUpdateInterceptor(updates *int, err error) interceptor.Funcs {
+	return interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object,
+			opts ...client.UpdateOption,
+		) error {
+			if obj.GetObjectKind().GroupVersionKind().Kind == "Memcached" {
+				*updates++
+				if err != nil {
+					return err
+				}
+			}
+			return c.Update(ctx, obj, opts...)
+		},
+	}
+}
+
+// TestEnsureMemcached_CrossNamespaceOwnedReconcilesReplicas verifies a cache in a
+// service namespace, owned through the ownership labels because no owner
+// reference is possible there, has spec.replicas re-projected like an
+// owner-referenced one: up, down, and from an absent field. The object keeps its
+// labels, gains no owner reference, and a scale-down never deletes it.
+func TestEnsureMemcached_CrossNamespaceOwnedReconcilesReplicas(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		replicas *int64
+	}{
+		{name: "scale up", replicas: ptr.To(int64(1))},
+		{name: "scale down", replicas: ptr.To(int64(5))},
+		{name: "spec.replicas absent", replicas: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			s := infraTestScheme(t)
+			cp := splitNamespaceControlPlane() // Cache.Replicas = 3
+
+			seed := seedMemcached("identity", controlPlaneChildLabels(cp), tc.replicas)
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			_, err := r.ensureMemcached(ctx, c, cp, &cp.Spec.Infrastructure.Cache, "identity")
+			g.Expect(err).NotTo(HaveOccurred())
+
+			live, replicas, found := getMemcached(g, c, "identity")
+			g.Expect(found).To(BeTrue())
+			g.Expect(replicas).To(Equal(int64(3)),
+				"a label-owned Memcached must have spec.replicas reconciled to the declared cache.replicas")
+			g.Expect(live.GetOwnerReferences()).To(BeEmpty(),
+				"a cross-namespace child cannot carry an owner reference")
+			g.Expect(live.GetLabels()).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+			g.Expect(live.GetLabels()).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "openstack"))
+		})
+	}
+}
+
+// TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing pins the steady state: a
+// label-owned cache already at the declared count is compared, not rewritten.
+func TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := splitNamespaceControlPlane()
+
+	updates := 0
+	seed := seedMemcached("identity", controlPlaneChildLabels(cp), ptr.To(int64(3)))
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
+		WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, "identity")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(updates).To(BeZero(), "a cache at the declared count must not be written")
+}
+
+// TestEnsureMemcached_RefusesToReshapeAForeignInstance verifies the never-adopt
+// guard holds for a cache in a service namespace: an instance without our owner
+// reference whose labels do not name this ControlPlane, exactly and in full, is
+// adopted read-only. Its replica count and its labels stay as seeded.
+func TestEnsureMemcached_RefusesToReshapeAForeignInstance(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		labels map[string]string
+	}{
+		{name: "no labels", labels: nil},
+		{
+			name:   "labels naming another ControlPlane",
+			labels: map[string]string{controlPlaneNameLabel: "other", controlPlaneNamespaceLabel: "openstack"},
+		},
+		{
+			name:   "labels naming cp in another namespace",
+			labels: map[string]string{controlPlaneNameLabel: "cp", controlPlaneNamespaceLabel: "elsewhere"},
+		},
+		{
+			name:   "the name label alone",
+			labels: map[string]string{controlPlaneNameLabel: "cp"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			s := infraTestScheme(t)
+			cp := splitNamespaceControlPlane()
+
+			seed := seedMemcached("identity", tc.labels, ptr.To(int64(1)))
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			_, err := r.ensureMemcached(ctx, c, cp, &cp.Spec.Infrastructure.Cache, "identity")
+			g.Expect(err).NotTo(HaveOccurred())
+
+			live, replicas, _ := getMemcached(g, c, "identity")
+			g.Expect(replicas).To(Equal(int64(1)),
+				"an externally-provisioned cache must not have its replica count re-projected")
+			g.Expect(live.GetOwnerReferences()).To(BeEmpty(),
+				"ownership must never be claimed over an instance we did not create")
+			g.Expect(live.GetLabels()).To(Equal(tc.labels), "an adopted cache must keep its labels as seeded")
+		})
+	}
+}
+
+// TestEnsureMemcached_LabelOwnedInOwnNamespaceReconcilesReplicas pins that the
+// ownership labels make a cache ours in the ControlPlane's own namespace too,
+// the way isControlPlaneChild answers for ensureMariaDB there. A cache that
+// carries them but no owner reference is re-projected, not adopted read-only;
+// scaling it drops cached entries and no data, unlike the bus, which gates on the
+// owner reference alone.
+func TestEnsureMemcached_LabelOwnedInOwnNamespaceReconcilesReplicas(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := splitNamespaceControlPlane() // Cache.Replicas = 3
+
+	seed := seedMemcached(cp.Namespace, controlPlaneChildLabels(cp), ptr.To(int64(1)))
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, cp.Namespace)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	_, replicas, found := getMemcached(g, c, cp.Namespace)
+	g.Expect(found).To(BeTrue())
+	g.Expect(replicas).To(Equal(int64(3)),
+		"a label-owned cache in the ControlPlane's own namespace must have spec.replicas reconciled")
+}
+
+// TestEnsureMemcached_OwnedWriteErrorsAreWrapped pins the two failures of the
+// owned re-projection on a label-owned cache: a rejected Update and a
+// spec.replicas that is not an integer. Each is returned wrapped, naming the
+// cache, and reports not ready. A malformed count is refused before any write.
+func TestEnsureMemcached_OwnedWriteErrorsAreWrapped(t *testing.T) {
+	sentinel := errors.New("update rejected")
+
+	t.Run("update", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := splitNamespaceControlPlane()
+
+		updates := 0
+		seed := seedMemcached("identity", controlPlaneChildLabels(cp), ptr.To(int64(1)))
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
+			WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, sentinel)).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		ready, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, "identity")
+		g.Expect(ready).To(BeFalse())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(HavePrefix(`updating owned Memcached "openstack-memcached" replicas: `))
+		g.Expect(errors.Is(err, sentinel)).To(BeTrue(), "the Update error must stay unwrappable")
+		g.Expect(updates).To(Equal(1))
+	})
+
+	t.Run("malformed", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := splitNamespaceControlPlane()
+
+		updates := 0
+		seed := seedMemcached("identity", controlPlaneChildLabels(cp), nil)
+		g.Expect(unstructured.SetNestedField(seed.Object, "three", "spec", "replicas")).To(Succeed())
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
+			WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		ready, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, "identity")
+		g.Expect(ready).To(BeFalse())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(HavePrefix(`reading Memcached "openstack-memcached" spec.replicas: `))
+		g.Expect(updates).To(BeZero(), "a count that cannot be read must not be overwritten")
+	})
+}
+
+// TestReconcileInfrastructure_CrossNamespaceCacheUpdateErrorSurfacesMemcachedError
+// verifies a failed re-projection of a label-owned cache reaches the ControlPlane:
+// the pass returns the error for backoff and InfrastructureReady turns False with
+// reason MemcachedError, naming the cache, its namespace, and where it is
+// declared. The Keystone database in the same namespace is created first, through
+// a Create the interceptor does not touch.
+func TestReconcileInfrastructure_CrossNamespaceCacheUpdateErrorSurfacesMemcachedError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := splitNamespaceControlPlane()
+	sentinel := errors.New("update rejected")
+
+	updates := 0
+	seed := seedMemcached("identity", controlPlaneChildLabels(cp), ptr.To(int64(1)))
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
+		WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, sentinel)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(errors.Is(err, sentinel)).To(BeTrue(), "the Update error must reach the caller for backoff")
+	g.Expect(res).To(Equal(ctrl.Result{}))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeInfrastructureReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("MemcachedError"))
+	g.Expect(cond.Message).To(HavePrefix(
+		`ensuring Memcached "openstack-memcached" in namespace "identity" (spec.infrastructure.cache): ` +
+			`updating owned Memcached`,
+	))
+}
+
 // TestManagedInfraInstances_UndeclaredHorizonHasNoCache pins the Horizon gate: a
 // ControlPlane that declares only Keystone must not enumerate a cache for a
 // dashboard that does not exist. While every service shared the ControlPlane's
@@ -1772,6 +2029,70 @@ func TestReconcileInfrastructure_PlacedBackingServicesLandOnTheTarget(t *testing
 		"an unplaced service's database must not reach the target cluster")
 }
 
+// TestReconcileInfrastructure_PlacedCacheReplicasReprojectOnTheTarget verifies a
+// placed service's cache, owned on the target cluster through its labels alone,
+// has spec.replicas re-projected there. It keeps its label set, gains no owner
+// reference, and no copy of it appears at home.
+func TestReconcileInfrastructure_PlacedCacheReplicasReprojectOnTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := infraTestScheme(t)
+	cp := placedInfraControlPlane("remote-a") // Cache.Replicas = 3
+
+	target := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(seedMemcached("dashboard", remoteChildLabels(cp), ptr.To(int64(1)))).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: target},
+	}
+
+	_, err := r.reconcileInfrastructure(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	remote, replicas, found := getMemcached(g, target, "dashboard")
+	g.Expect(found).To(BeTrue())
+	g.Expect(replicas).To(Equal(int64(3)),
+		"a placed cache must have spec.replicas reconciled on its own cluster")
+	g.Expect(remote.GetLabels()).To(Equal(remoteChildLabels(cp)))
+	g.Expect(remote.GetOwnerReferences()).To(BeEmpty(),
+		"an owner reference on the target cluster names a UID that cluster cannot resolve")
+
+	athome := &unstructured.Unstructured{}
+	athome.SetGroupVersionKind(memcachedGVK)
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+		Name: "openstack-memcached", Namespace: "dashboard",
+	}, athome)).NotTo(Succeed(), "a placed instance must not be provisioned at home as well")
+}
+
+// TestReconcileInfrastructure_PlacedForeignCacheIsAdoptedReadOnly is the target
+// cluster's half of the never-adopt guard: a Memcached already on the target
+// under the placed cache's name, carrying none of the ownership labels, is
+// adopted read-only there. It keeps its replica count, gains no labels and no
+// owner reference, and is not claimed for the target-side teardown.
+func TestReconcileInfrastructure_PlacedForeignCacheIsAdoptedReadOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := placedInfraControlPlane("remote-a") // Cache.Replicas = 3
+
+	target := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(seedMemcached("dashboard", nil, ptr.To(int64(1)))).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: target},
+	}
+
+	_, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	remote, replicas, _ := getMemcached(g, target, "dashboard")
+	g.Expect(replicas).To(Equal(int64(1)),
+		"an externally-provisioned cache on a target cluster must not have its replica count re-projected")
+	g.Expect(remote.GetLabels()).To(BeEmpty(), "ownership must never be claimed over an instance we did not create")
+	g.Expect(remote.GetOwnerReferences()).To(BeEmpty())
+}
+
 // TestReconcileInfrastructure_UnresolvableTargetProvisionsNothing covers the
 // cluster that does not resolve. The proof is what did NOT happen at home: the
 // ControlPlane's own database and cache are enumerated before the placed cache, so
@@ -2207,6 +2528,55 @@ func TestEnsureRabbitMQ_AdoptsForeignReadOnly(t *testing.T) {
 	g.Expect(replicas).To(Equal(int64(5)), "a foreign broker must not be reshaped to the declared count")
 	g.Expect(u.GetOwnerReferences()).To(BeEmpty(),
 		"must not claim GC ownership of a pre-existing broker")
+}
+
+// TestEnsureRabbitMQ_AdoptsLabelledForeignReadOnly pins why the bus gates on
+// IsControlledBy alone rather than isControlPlaneChild, as ensureMemcached does.
+// A broker in the ControlPlane's own namespace that carries our ownership labels
+// but no owner reference is one this operator never creates, so it is adopted
+// read-only: never grown, and never shrunk, even with
+// messagingRecreateAllowedAnnotation opening the delete-and-recreate that would
+// otherwise bring it back empty, without a queue or message on it.
+func TestEnsureRabbitMQ_AdoptsLabelledForeignReadOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		replicas int64
+	}{
+		{name: "above the declared count", replicas: 5},
+		{name: "below the declared count", replicas: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			s := infraTestScheme(t)
+			cp := managedMessagingControlPlane()
+			cp.Spec.Infrastructure.Messaging.Replicas = 3
+			cp.Annotations = map[string]string{messagingRecreateAllowedAnnotation: "true"}
+
+			foreign := rabbitmqWithConditions("openstack-rabbitmq", cp.Namespace, []interface{}{
+				map[string]interface{}{"type": "AllReplicasReady", "status": "True"},
+			})
+			foreign.SetLabels(controlPlaneChildLabels(cp))
+			g.Expect(unstructured.SetNestedField(foreign.Object, tc.replicas, "spec", "replicas")).To(Succeed())
+
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(ready).To(BeTrue(), "an adopted cluster is still read for readiness")
+
+			u := &unstructured.Unstructured{}
+			u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
+			g.Expect(c.Get(ctx, types.NamespacedName{
+				Name: "openstack-rabbitmq", Namespace: cp.Namespace,
+			}, u)).To(Succeed(), "a broker this operator did not create must never be deleted")
+			replicas, _, _ := unstructured.NestedInt64(u.Object, "spec", "replicas")
+			g.Expect(replicas).To(Equal(tc.replicas), "a labelled foreign broker must not be reshaped to the declared count")
+			g.Expect(u.GetOwnerReferences()).To(BeEmpty(),
+				"must not claim GC ownership of a pre-existing broker")
+		})
+	}
 }
 
 // failingRabbitmqGet returns interceptor funcs whose Get fails for the

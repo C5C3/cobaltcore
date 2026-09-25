@@ -180,8 +180,8 @@ patches:
           timeoutSeconds: 10
         # Memory only, no CPU. Without a request the single replica is
         # BestEffort, the QoS class the kernel OOM killer takes first
-        # (oom_score_adj 1000), while every operator workload requests 256Mi
-        # (internal/common/types/workload.go). When two parallel e2e suites
+        # (oom_score_adj 1000), while every operator workload requests memory
+        # (internal/common/types/resources.go). When two parallel e2e suites
         # push a 4-vCPU runner past its RAM, the largest BestEffort process
         # on the node is mariadbd: CI run 34718789784 restarted openstack-db-0
         # five times in 36 minutes, each start an InnoDB crash recovery, and

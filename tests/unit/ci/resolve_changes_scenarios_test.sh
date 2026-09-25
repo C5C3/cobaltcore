@@ -200,6 +200,15 @@ test_openbao_change_adds_barbican() {
   expect e2e-operators '{"operator":["keystone","barbican"]}'
 }
 
+test_korc_pin_change_adds_c5c3() {
+  scenario "a K-ORC pin change" refs/heads/main FILTER_e2e_shared=true FILTER_e2e_korc=true
+  expect e2e-infra true
+  expect e2e-operators '{"operator":["keystone","c5c3"]}'
+  expect changed-operators '[]'
+  # shellcheck disable=SC2086 # deliberate: expand the job list
+  expect_all false $EXPENSIVE
+}
+
 test_workflow_plumbing_runs_the_canary_and_actionlint() {
   scenario "a workflow plumbing change" refs/heads/main FILTER_ci_plumbing=true FILTER_actionlint=true
   expect e2e-infra true
@@ -508,6 +517,7 @@ test_federation_proxy_change
 test_special_suites_run_only_their_own_job
 test_shared_substrate_runs_the_canary
 test_openbao_change_adds_barbican
+test_korc_pin_change_adds_c5c3
 test_workflow_plumbing_runs_the_canary_and_actionlint
 test_makefile_change
 test_docs_only_change

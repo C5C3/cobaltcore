@@ -10,9 +10,7 @@ import (
 	"net/url"
 
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -72,23 +70,6 @@ const (
 	// the top-of-midnight slot the sibling rotation CronJobs occupy.
 	DefaultDBPurgeSchedule = "1 0 * * *"
 )
-
-// defaultBackupMemoryLimit replaces the shared 512Mi limit on the cinder-backup
-// container. A backup reads the volume in chunks of spec.fileSize bytes and
-// compresses each chunk in memory before writing it, so the peak footprint
-// follows the chunk size rather than the request rate: under the shared limit the
-// process is killed mid-backup, and the restarted service begins the volume
-// again. CPU and both requests keep the shared defaults.
-//
-// It is a var rather than a const because resource.Quantity is a struct, and it
-// is exposed only through the accessor below, which returns a copy so no caller
-// can mutate the shared default — the idiom of the commonv1 resource defaults.
-var defaultBackupMemoryLimit = resource.MustParse("2Gi")
-
-// DefaultBackupMemoryLimit returns a copy of the memory limit the defaulting
-// webhook stamps on the cinder-backup container when spec.backup.deployment
-// .resources carries neither requests nor limits.
-func DefaultBackupMemoryLimit() resource.Quantity { return defaultBackupMemoryLimit.DeepCopy() }
 
 // CinderWebhook implements defaulting and validation webhooks for the Cinder
 // CRD. Client is injected at startup for cluster-scoped resource lookups (e.g.
@@ -152,29 +133,9 @@ func (w *CinderWebhook) Default(_ context.Context, obj *Cinder) error {
 		obj.Spec.Backup.Deployment.Replicas = 1
 	}
 
-	// Fill the backup container's resources with the raised memory limit before
-	// the shared DeploymentSpec defaults run — Default() would otherwise inject
-	// the shared 512Mi limit, which a chunked, compressing backup overruns. Same
-	// nil-or-empty condition as the shared method so an explicit user value is
-	// never clobbered.
-	backup := &obj.Spec.Backup.Deployment
-	if backup.Resources == nil ||
-		(len(backup.Resources.Requests) == 0 && len(backup.Resources.Limits) == 0) {
-		backup.Resources = &corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: commonv1.DefaultMemoryRequest(),
-				corev1.ResourceCPU:    commonv1.DefaultCPURequest(),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: DefaultBackupMemoryLimit(),
-				corev1.ResourceCPU:    commonv1.DefaultCPULimit(),
-			},
-		}
-	}
-
-	// Shared-type defaults (replicas, remaining container resources) are applied
-	// by the commonv1.DeploymentSpec Default method so they cannot drift across
-	// operators. All four processes get them: they are sized independently.
+	// Shared-type defaults (replicas) are applied by the commonv1.DeploymentSpec
+	// Default method so they cannot drift across operators. All four processes
+	// get them: they are sized independently.
 	obj.Spec.API.Deployment.Default()
 	obj.Spec.Scheduler.Deployment.Default()
 	obj.Spec.Volume.Deployment.Default()

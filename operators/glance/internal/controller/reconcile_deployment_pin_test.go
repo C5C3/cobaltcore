@@ -110,7 +110,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -122,6 +127,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config
@@ -238,7 +250,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -250,6 +267,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config
@@ -384,7 +408,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -396,6 +425,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config
@@ -597,7 +633,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -609,6 +650,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config
@@ -764,7 +812,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -776,6 +829,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config
@@ -910,7 +970,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -922,6 +987,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthcheck
+            port: 9292
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/glance/glance-api.conf.d/
           name: config

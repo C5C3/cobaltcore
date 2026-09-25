@@ -19,6 +19,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
 
@@ -110,9 +111,9 @@ func (r *OVNCentralReconciler) reconcileNorthd(ctx context.Context, children cli
 }
 
 // effectiveNorthd resolves the northd block the Deployment is rendered from: the
-// CR's own, on a copy, with the shared deployment defaults applied. The copy is
-// what keeps the resolution out of the CR that is written back at the end of the
-// pass.
+// CR's own, on a copy, with the shared replica default applied. The copy is what
+// keeps the resolution out of the CR that is written back at the end of the
+// pass. Container resources are resolved when BuildWorkload renders the pod.
 //
 // commonv1.DefaultReplicas applies unchanged. Three northd pods are not three
 // times the compile capacity, they are one active instance and two standbys, and
@@ -152,6 +153,8 @@ func buildNorthdDeployment(cr *ovnv1alpha1.OVNCentral) *appsv1.Deployment {
 		Labels:         naming.ComponentLabels(centralAppName, cr.Name, componentNorthd),
 		SelectorLabels: componentSelectorLabels(cr, componentNorthd),
 		Deployment:     &northd.Deployment,
+		// ovn-northd is one process that runs northd.Threads threads.
+		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, northd.Threads),
 		Container: deployment.ContainerParams{
 			Name:  componentNorthd,
 			Image: effectiveImage(cr.Spec.Image).Reference(),

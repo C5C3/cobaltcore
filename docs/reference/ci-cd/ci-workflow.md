@@ -721,15 +721,16 @@ guard.
 | 5 | Build base images | Builds `python-base` and `venv-builder`, only when `NEEDS_BASE_IMAGES` is true |
 | 6 | Build federation proxy image | Builds `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, only when `BUILD_PROXY` is true |
 | 7 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS` |
-| 8 | Build service images | Builds `<IMAGE_PREFIX>/<svc>:<release>` for each pair in `BUILD_SERVICE_IMAGES`; passes `GITHUB_TOKEN` so the source clones from `github.com` are authenticated |
+| 8 | Build service images | Builds `<IMAGE_PREFIX>/<svc>:<release>` for each `<service> <release>` line in `BUILD_SERVICE_IMAGES`, and `<IMAGE_PREFIX>/<image>:<release>` from the service's source for a line carrying a third field (`nova 2025.2 nova-compute`); passes `GITHUB_TOKEN` so the source clones from `github.com` are authenticated |
 | 9 | Build OVN image | Builds `<IMAGE_PREFIX>/ovn:<version>` from `images/ovn/Dockerfile`, with the version resolved by `hack/ci-resolve-ovn-version.sh`; passes `GITHUB_TOKEN` as the `github_token` BuildKit secret for the fetches inside the build |
 | 10 | Build Tempest images | Builds `<IMAGE_PREFIX>/tempest:<release>` for each release in `BUILD_TEMPEST_RELEASES` |
 | 11 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push` |
 
 `hack/ci-resolve-e2e-images.sh` derives the image set from the tree: an operator image
 per `operators/<op>/` with a `go.mod`, a service image per (operator, release) pair in
-`releases/*/source-refs.yaml`, a Tempest image per `releases/<release>/`, and the
-federation proxy. An image whose sources this pull request changed is built here and
+`releases/*/source-refs.yaml`, a derived image per release of the service it is built
+from (`nova-compute` from `nova`, built whenever that `nova` image is), a Tempest image
+per `releases/<release>/`, and the federation proxy. An image whose sources this pull request changed is built here and
 mapped to its run-scoped tag. Every other image is mapped to the index digest behind
 its published tag (`<op>-operator:latest`, `<svc>:<release>`, `tempest:<release>`,
 `keystone-federation-proxy:latest`), which the run pulls instead of rebuilding.
@@ -790,13 +791,13 @@ Chainsaw E2E test suites.
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
 | 5 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2025.2 and 2026.1) and `ovn:<pin>` |
-| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn` and `neutron` legs pass `WITH_OVN_KERNEL_MODULES: true`, the `cinder` and `nova` legs pass `WITH_MESSAGING: true`, and the `cinder` leg alone passes `WITH_NFS: true` |
+| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn`, `neutron` and `nova` legs pass `WITH_OVN_KERNEL_MODULES: true`, the `cinder` and `nova` legs pass `WITH_MESSAGING: true`, and the `cinder` leg alone passes `WITH_NFS: true` |
 | 7 | `hack/ci-deploy-operator.sh` (sibling operators) | `nova` leg: keystone-, placement- and glance-operator; `neutron` and `nova` legs: ovn-operator; `nova` leg: neutron-operator. Each goes into its `<op>-system` Namespace, ahead of the matrix operator |
 | 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
-| 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` |
+| 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` and `tests/e2e/<operator>-operator/`; a `nova` shard runs its half of the suite directories |
 | 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, node pressure (capacity and allocated requests, containers with restarts and their last termination reason, per-pod memory working set, kernel OOM lines from the kind node), events, operator logs |
 | 11 | `hack/ci-dump-diagnostics.sh` (always, sibling operators) | The `neutron` leg dumps `ovn-system`; the `nova` leg dumps `keystone-system`, `placement-system`, `glance-system`, `ovn-system` and `neutron-system`, one call per operator under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again |
-| 12 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
+| 12 | Upload JUnit report | Uploads test results as the `e2e-<operator>-junit-report` artifact, `e2e-nova-<shard>-junit-report` on a `nova` shard (14-day retention) |
 | 13 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Matrix strategy:**
@@ -804,13 +805,17 @@ Chainsaw E2E test suites.
 ```yaml
 strategy:
   fail-fast: false
-  matrix: ${{ fromJson(needs.changes.outputs.e2e-operators) }}
+  matrix: ${{ fromJson(needs.changes.outputs.e2e-operator-legs) }}
 ```
 
 The operator matrix is dynamically constructed by the `changes` job, including only operators
-whose code (or shared code) changed. The `imagePullPolicy: Never` Helm value ensures the
+whose code (or shared code) changed. Its `Shard the e2e-operator matrix` step
+turns the `e2e-operators` output into `e2e-operator-legs`: one leg per
+operator, except `nova`, which becomes two legs with `shard: "1"` and
+`shard: "2"`. The publish jobs keep reading `e2e-operators`, so they still see
+`nova` once. The `imagePullPolicy: Never` Helm value ensures the
 kind-loaded image is used instead of attempting a registry pull. Timeout: 68
-minutes, 150 for the `nova` leg.
+minutes, 150 for each `nova` shard.
 
 **The two OVN legs.** `ovn` ships no per-release service image. Its Pods all
 run `ghcr.io/c5c3/ovn:<pin>`, where `<pin>` is what
@@ -849,23 +854,25 @@ glance, ovn and neutron, each into its own `<op>-system` Namespace.
 `spec.keystoneEndpoint` and `spec.serviceUser` are required on the Nova CRD,
 and a booted server needs a Placement allocation, a Glance image and a Neutron
 port. The Neutron waits on a live OVNCentral, so the ovn-operator comes with
-it. No chassis runs here. A sibling deploy that fails stops the job at `helm
+it, and the `compute-node-pool` suite runs a single-node OVNChassis beside it
+for its NovaCompute. A sibling deploy that fails stops the job at `helm
 install --wait --timeout 120s`, the chainsaw step is skipped, and the dumps
 still run. The `setup-e2e-infra` step passes `WITH_MESSAGING: true`: every Nova
 process dials the bus, and the scheduler and the conductor report ready off
-their broker connection. `WITH_NFS` stays off, since `spec.endpoints.cinder` is
-opt-in on the Nova CRD, and so does `WITH_OVN_KERNEL_MODULES`, since no Nova
-suite places an OVNChassis.
+their broker connection. It passes `WITH_OVN_KERNEL_MODULES: true` for that
+chassis. `WITH_NFS` stays off, since `spec.endpoints.cinder` is opt-in on the
+Nova CRD.
 
 On top of `nova-operator:dev`, `nova:2025.2` and `nova:2026.1`, the leg also
 resolves the five sibling operator images; `keystone`, `placement`, `glance`
 and `neutron` at every release each one ships (2025.2 and 2026.1 today, per
-`hack/ci-service-image-releases.sh`); `ovn:<pin>`; and `tempest:2025.2`, whose
+`hack/ci-service-image-releases.sh`); `nova-compute` at every nova release,
+which the NovaCompute pool runs; `ovn:<pin>`; and `tempest:2025.2`, whose
 `openstack` client is what the catalog, seed and verify Jobs of the functional
 suites run, on both per-release suites, so it is loaded once. It loads the whole
 list in one `kind load docker-image` call, so the base layers the service images
 share go onto the node once. Both releases are there so a 2026.1 Nova suite can
-pair with 2026.1 siblings. The suites the leg carries are the fourteen under
+pair with 2026.1 siblings. The suites the leg carries are the sixteen under
 `tests/e2e/nova/` and the chart-level `metrics` suite under
 `tests/e2e/nova-operator/`, described in
 [Nova E2E Test Suites](../testing/nova-e2e-tests.md).
@@ -874,7 +881,23 @@ Keystone, an OVNCentral, a Neutron, a Placement, a Glance and the five Nova
 workloads. The wall is
 `timeout-minutes: ${{ matrix.operator == 'nova' && 150 || 68 }}`, so only this
 leg pays for its image loads, its sibling deploys and the suites stacked on
-it. A third step, `Dump diagnostic info (nova siblings)`,
+it.
+
+The leg runs as two shards, `e2e-operator (nova, 1)` and
+`e2e-operator (nova, 2)`, each on its own runner and kind cluster with the
+full bring-up above. As a single leg it took 125 to 137 minutes, until
+`compute-node-pool`, 27 minutes that no other suite runs beside, pushed it past
+its 150-minute wall on 2026-09-24. The `Run E2E tests` step names the
+suites of shard 2 (`compute-node-pool`, `invalid-novacompute-cr`,
+`basic-deployment-2026-1`, `release-upgrade`, `healthcheck`, `deletion-cleanup`
+and `pod-security-restricted`) and gives shard 1 every other suite directory
+of `tests/e2e/nova/` and `tests/e2e/nova-operator/`, so a new suite runs in
+shard 1 until it is moved. Each shard takes three of the six suites that run
+24 to 30 minutes, which puts both at about 80 to 95 minutes.
+`tests/unit/ci/nova_e2e_matrix_test.sh` fails when a suite runs in neither
+shard or in both.
+
+A third step, `Dump diagnostic info (nova siblings)`,
 calls `hack/ci-dump-diagnostics.sh` once per sibling under `always()`, each
 with `OPERATOR_ONLY=1`: the dump above it already emitted the infrastructure
 block and the `openstack` Namespace's Job and pod logs, which do not change
@@ -1071,7 +1094,8 @@ assertions.
 chassis baseline (`tests/e2e/ovn/chassis-single-node`) and the Neutron
 metadata-agent suite (`tests/e2e/neutron/metadata-agent`) run blocking, inside
 the `e2e-operator` legs for `ovn` and `neutron`. Both assert what one node can
-answer. The `e2e-ovn-overlay` job takes the non-blocking entry described above,
+answer. The `nova` leg loads the modules too: its `compute-node-pool` suite runs
+a single-node chassis for the gate its `NovaCompute` pod waits on. The `e2e-ovn-overlay` job takes the non-blocking entry described above,
 and so does the `ovn` leg of `e2e-chaos`.
 
 ### e2e-ovn-overlay
@@ -1287,7 +1311,7 @@ one under review — which is why the `e2e_controlplane` path filter also watche
 | 3 | `load-e2e-images` composite | Restores `keystone-operator:dev`, `c5c3-operator:dev`, `keystone:2025.2`, `tempest:2025.2` from GHCR |
 | 4 | `kind load docker-image` | Loads the four images into kind |
 | 5 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=controlplane-keystone` |
-| 6 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit; runs with `GITHUB_TOKEN` so the clone from `github.com` is authenticated (see [hack/ci-build-service-image.sh](#hackci-build-service-imagesh) for why) |
+| 6 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit; runs with `GITHUB_TOKEN` so the clone from `github.com` is authenticated (see [hack/ci-build-service-image.sh](#hack-ci-build-service-image-sh) for why) |
 | 7 | `hack/ci-deploy-operator.sh` (keystone) | Deploys the keystone-operator dev image into `keystone-system` |
 | 8 | `hack/ci-deploy-operator.sh` (c5c3) | Deploys the c5c3-operator dev image into `c5c3-system` |
 | 9 | `chainsaw test` | Runs the full-chain suite with `E2E_REQUIRE_CONTROLPLANE_STACK=true` |
@@ -1628,12 +1652,14 @@ full image chain (`python-base` -> `venv-builder` -> service image).
 | --- | --- | --- | --- |
 | `OPERATOR` | Yes | - | OpenStack service name (e.g. `keystone`) |
 | `IMAGE_PREFIX` | Yes | - | Container image prefix (e.g. `ghcr.io/c5c3`) |
+| `IMAGE` | No | `$OPERATOR` | Image to build. A derived image (e.g. `nova-compute`) is built from `OPERATOR`'s source, patches and constraints; `IMAGE` selects the `extra-packages.yaml` key, `images/<IMAGE>/` and the tag. Lowercase alphanumeric with hyphens, like `OPERATOR`. An `IMAGE` your shell exports for another purpose is read too, so unset it for a plain service build |
 | `RELEASE` | No | `2025.2` | Release directory name under `releases/` |
 | `GITHUB_TOKEN` | No | (unset) | Authenticates the clone from `github.com`; the `Build service images` step passes the workflow token, a run without one clones anonymously |
 
-The script reads `releases/<RELEASE>/source-refs.yaml` for the upstream Git ref and
-`releases/<RELEASE>/extra-packages.yaml` for additional pip/apt packages. The final image
-is tagged `<IMAGE_PREFIX>/<OPERATOR>:<RELEASE>`.
+The script reads `releases/<RELEASE>/source-refs.yaml` for the upstream Git ref of
+`OPERATOR` and `releases/<RELEASE>/extra-packages.yaml` for the additional pip/apt
+packages under the `IMAGE` key. The final image is tagged
+`<IMAGE_PREFIX>/<IMAGE>:<RELEASE>`.
 
 The source is cloned from the GitHub mirror first, the host the Build Images
 workflow checks out, and from `opendev.org` when the mirror does not serve the

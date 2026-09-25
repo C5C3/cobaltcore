@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.novaRef.name empty violates the MinLength=1 marker on NovaRef, which
+# the API server answers before the webhook's field.Required twin runs. A
+# pool that names no Nova has no contract to mount and no API to register
+# its services with.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: pool
+spec:
+  novaRef:
+    name: ""
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: a

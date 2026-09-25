@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/tools/record"
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 )
 
@@ -323,4 +324,17 @@ func TestReconcileBackupService_ApplyFailureWrapsTheError(t *testing.T) {
 
 	g.Expect(err).To(MatchError(boom))
 	g.Expect(err).To(MatchError(ContainSubstring("ensuring backup Deployment:")))
+}
+
+// TestBuildBackupDeployment_RendersResourceDefaults verifies that cinder-backup
+// renders its fixed 2Gi as memory request and limit, beside a 100m CPU request
+// and no CPU limit, when spec.backup.deployment.resources names nothing: its
+// footprint follows the backup chunk size, not a process count.
+func TestBuildBackupDeployment_RendersResourceDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildBackupDeployment(workloadCinder(), testBackupProjection(),
+		[]backendProjection{testBackendProjection("nfs")}, workloadArtifacts(), workloadDigests{}, testEgressPort)
+
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("2Gi")))
 }

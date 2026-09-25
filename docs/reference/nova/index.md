@@ -7,13 +7,16 @@ quadrant: operator
 
 The Nova operator runs the OpenStack compute control plane: the compute API
 under uWSGI, the metadata API, the scheduler, the conductor, and the noVNC
-console proxy. One kind, `Nova`, lives in `nova.openstack.c5c3.io/v1alpha1`,
-and one CR describes the whole control plane.
+console proxy. Two kinds live in `nova.openstack.c5c3.io/v1alpha1`. One `Nova`
+CR describes the whole control plane, and one `NovaCompute` CR runs
+`nova-compute` on one node pool of a compute cluster.
 
-The compute nodes are not part of it. A `nova-compute` process runs on the
-hypervisor, outside this cluster, and joins over the message bus. What the CR
+A `nova-compute` joins the control plane over the message bus. What the Nova
 publishes for it is the compute contract: a rendered `nova.conf` fragment and
-the bus credentials, in the Secret `status.computeConfigSecretRef` names.
+the bus credentials, in the Secret `status.computeConfigSecretRef` names. A
+[NovaCompute](./novacompute-crd.md) mounts that contract on the nodes its
+selector matches, keeps the host aggregates their onboarding needs, and drains a
+node that leaves the pool before its pod goes.
 
 ## Processes
 
@@ -69,9 +72,15 @@ this operator implements, together with the choices the CRD carries.
   alongside it, so a long boot outlives the user token's expiry.
 - The compute contract is a Secret, not a CRD. `{name}-compute-config` carries
   the `nova.conf` fragment a compute node reads, the transport URL, the
-  service-user password, the metadata shared secret and the cell name. There is
-  no compute kind in this API group, because a `nova-compute` runs on a
-  hypervisor this operator does not schedule onto.
+  service-user password, the metadata shared secret and the cell name. The
+  `NovaCompute` kind is its consumer, and a `nova-compute` running anywhere else
+  can mount the same Secret.
+- One `NovaCompute` per node pool, with a required node selector
+  ([#1013](https://github.com/C5C3/cobaltcore/issues/1013),
+  [#1061](https://github.com/C5C3/cobaltcore/issues/1061)). Leaving the pool is
+  the drain: the pool disables the node's service once, never migrates an
+  instance and never enables a service, and deletes the service once Nova
+  reports the host empty and the pod is gone.
 - The console proxy takes a hostname of its own. The console URL the API hands
   a browser is `https://<host>/vnc_lite.html?path=%3Ftoken%3D<token>`, so the
   page and the WebSocket that follows it both open on `/` with nothing but a
@@ -118,8 +127,10 @@ For a `Nova` named `{name}`:
 
 - [Nova CRD](./nova-crd.md): the `spec`/`status` contract, the rendered
   configuration, the compute contract, and the validation rules
-- [Controller Events](./nova-events.md): the Kubernetes events the controller
-  emits
+- [NovaCompute CRD](./novacompute-crd.md): the node pool that runs
+  `nova-compute`, its node phases, the node contract and the drain
+- [Controller Events](./nova-events.md): the Kubernetes events the two
+  controllers emit
 - [Reconciler Architecture](./nova-reconciler.md): the sub-reconciler pipeline,
   conditions, and requeue semantics
 - [Upgrade Flow](./nova-upgrade-flow.md): the expand-migrate-contract phases,

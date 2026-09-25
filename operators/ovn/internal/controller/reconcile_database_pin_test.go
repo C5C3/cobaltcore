@@ -48,8 +48,8 @@ func pinCustomOVNCentral() *ovnv1alpha1.OVNCentral {
 		},
 		Resources: &corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("100m"),
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
+				corev1.ResourceCPU:    resource.MustParse("250m"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
 			},
 			Limits: corev1.ResourceList{
 				corev1.ResourceMemory: resource.MustParse("1Gi"),
@@ -250,7 +250,10 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 5
           timeoutSeconds: 5
-        resources: {}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -393,7 +396,10 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 5
           timeoutSeconds: 5
-        resources: {}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -540,8 +546,8 @@ spec:
           limits:
             memory: 1Gi
           requests:
-            cpu: 100m
-            memory: 256Mi
+            cpu: 250m
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

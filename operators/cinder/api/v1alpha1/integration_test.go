@@ -513,7 +513,7 @@ func TestIntegration_WebhookDefaultsAbsentDeploymentBlocks(t *testing.T) {
 	g.Expect(got.Spec.Backup.Deployment.Replicas).To(Equal(int32(1)))
 	g.Expect(got.Spec.Volume.Deployment.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
 	g.Expect(got.Spec.Backup.Deployment.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
-	g.Expect(got.Spec.Backup.Deployment.Resources.Limits.Memory().String()).To(Equal("2Gi"))
+	g.Expect(got.Spec.Backup.Deployment.Resources).To(BeNil(), "the reconciler, not the webhook, sizes the backup memory")
 	g.Expect(got.Spec.API.UWSGI).NotTo(BeNil())
 }
 

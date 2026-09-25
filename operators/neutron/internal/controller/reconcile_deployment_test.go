@@ -24,6 +24,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 )
@@ -320,6 +321,52 @@ func TestBuildNeutronService_And_PDB_SelectTheAPIComponent(t *testing.T) {
 		"the three Deployments of one CR must not select each other's pods")
 }
 
+// TestTopologySpreadSelectorMatchesTheAPIDeployment feeds the pod selector of
+// the API Deployment back into the validating webhook as a
+// spec.deployment.topologySpreadConstraints selector. The webhook demands exact
+// equality with the selector it composes, so one it rejects would leave the
+// field unusable: the only accepted value would be a selector no Deployment
+// carries. The name and instance pair and a worker selector are rejected,
+// because both also match pods the API Deployment does not control.
+func TestTopologySpreadSelectorMatchesTheAPIDeployment(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	// The fixture leaves spec.deployment.replicas at 0, which ValidateCreate
+	// rejects; admission runs the defaulter first.
+	neutron := validNeutron()
+	g.Expect((&neutronv1alpha1.NeutronWebhook{}).Default(ctx, neutron)).To(Succeed())
+	api := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "", "")
+
+	admitted := neutron.DeepCopy()
+	admitted.Spec.Deployment.TopologySpreadConstraints = spreadOver(api.Spec.Selector.MatchLabels)
+	_, err := (&neutronv1alpha1.NeutronWebhook{}).ValidateCreate(ctx, admitted)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"the webhook must accept the selector of the Deployment spec.deployment configures")
+
+	for name, labels := range map[string]map[string]string{
+		"the name and instance pair":     naming.SelectorLabels(neutronAppName, neutron.Name),
+		"the periodic workers' selector": workerSelectorLabels(neutron, componentPeriodicWorkers),
+	} {
+		rejected := neutron.DeepCopy()
+		rejected.Spec.Deployment.TopologySpreadConstraints = spreadOver(labels)
+
+		_, err := (&neutronv1alpha1.NeutronWebhook{}).ValidateCreate(ctx, rejected)
+		g.Expect(err).To(HaveOccurred(), "spec.deployment must not take "+name)
+		g.Expect(err.Error()).To(ContainSubstring("spec.deployment.topologySpreadConstraints"))
+	}
+}
+
+// spreadOver returns one topology-spread constraint selecting the given labels.
+func spreadOver(labels map[string]string) []corev1.TopologySpreadConstraint {
+	return []corev1.TopologySpreadConstraint{{
+		MaxSkew:           1,
+		TopologyKey:       "kubernetes.io/hostname",
+		WhenUnsatisfiable: corev1.ScheduleAnyway,
+		LabelSelector:     &metav1.LabelSelector{MatchLabels: labels},
+	}}
+}
+
 // TestReconcileDeployment_RollingUpdateHoldsUntilTheImageIsDrained covers the
 // upgrade gate. The surge-tolerant readiness turns true while old-image pods
 // still serve, and the contract phase drops what those pods still read, so the
@@ -372,4 +419,39 @@ func TestReconcileDeployment_RollingUpdateHoldsUntilTheImageIsDrained(t *testing
 		g.Expect(ok).To(BeTrue())
 		g.Expect(collectEvents(recorder)).To(ContainElement(ContainSubstring("DeploymentRolloutComplete")))
 	})
+}
+
+// TestBuildNeutronDeployment_RendersResourceDefaults verifies that a CR whose
+// spec.deployment.resources names nothing renders a 100m CPU request, no CPU
+// limit, and a memory request and limit sized from spec.apiServer.uwsgi: 512Mi
+// at the default counts of an absent spec.apiServer, 800Mi at four processes,
+// and 928Mi at four processes of two threads.
+func TestBuildNeutronDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		apiServer *neutronv1alpha1.APIServerSpec
+		want      string
+	}{
+		{name: "default uWSGI counts", want: "512Mi"},
+		{
+			name:      "four processes",
+			apiServer: &neutronv1alpha1.APIServerSpec{UWSGI: &neutronv1alpha1.UWSGISpec{Processes: 4}},
+			want:      "800Mi",
+		},
+		{
+			name:      "four processes of two threads",
+			apiServer: &neutronv1alpha1.APIServerSpec{UWSGI: &neutronv1alpha1.UWSGISpec{Processes: 4, Threads: 2}},
+			want:      "928Mi",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			neutron := validNeutron()
+			neutron.Spec.APIServer = tc.apiServer
+
+			deploy := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "", "")
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults(tc.want)))
+		})
+	}
 }

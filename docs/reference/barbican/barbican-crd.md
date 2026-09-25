@@ -27,7 +27,7 @@ stays close to the plain API-server shape.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` ∈ {1,2}). It governs install and upgrade schema tracking: `status.installedRelease` is promoted to this value after a successful db-sync. Kept separate from the image tag so digest-pinned images still resolve a schema. It also selects the `barbican-api-paste.ini` layout: from `2026.1` the rendered file carries the oslo `request_id` filter in every pipeline and drops the `repoze.profile` pipeline and filter |
-| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (defaults: 256Mi request / 512Mi limit memory, 100m/500m CPU), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and 512Mi memory request and limit at the default `spec.apiServer.uwsgi` counts, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
 | `image` | `ImageSpec` | yes | Container image. `tag` and `digest` are mutually exclusive and one of the two is required (shared CEL rule, re-checked by the webhook). The field carries no immutability rule |
 | `database` | `DatabaseSpec` | yes | MariaDB connection, rendered into `[database]`. One of `clusterRef` (managed) or `host` (brownfield), never both; plus `database`, `secretRef`, and the optional `port`, `credentialsMode`, and `tls`. `credentialsMode` selects how the credential in `secretRef` is provisioned: `Static` (the default) keeps a long-lived password and has the operator manage the MariaDB `User`/`Grant` CRs, `Dynamic` takes short-lived engine-issued credentials and manages neither. `Dynamic` requires `clusterRef`. The mutual-exclusivity and Dynamic-requires-clusterRef rules are inherited from `commonv1.DatabaseSpec`, and so are `replicas` and `storageSize`: both sit in the schema, but only the c5c3 operator's managed-mode projection reads them, so the Barbican operator ignores whatever they say. With `tls` enabled the client keypair is projected into the API pods, the db-sync Job, and the clean-up CronJob alike |
 | `cache` | `CacheSpec` | yes | Memcached backing the keystonemiddleware token cache, rendered as `[keystone_authtoken] memcached_servers`. One of `clusterRef` (managed) or `servers` (brownfield), never both. `backend` is webhook-defaulted to `dogpile.cache.pymemcache`. `replicas` is inherited from `commonv1.CacheSpec` on the same terms as the database counterparts: schema-visible, honoured by the c5c3 operator's managed-mode projection, ignored here |
@@ -125,14 +125,16 @@ one active Job per firing.
 
 ### Defaulting and validation
 
-The mutating webhook applies the shared `DeploymentSpec` defaults (replicas 3,
-256Mi/512Mi memory and 100m/500m CPU), materializes the
-`dogpile.cache.pymemcache` cache backend and the `LoggingSpec` baseline, fills
-the `ServiceUserSpec` identity defaults (`barbican` / `service` / `Default` /
-`Default`, `secretRef.key` → `password`), and, only when `spec.apiServer.uwsgi`
-is present, the uWSGI sub-field defaults (`processes` 2, `threads` 1,
-`httpKeepAlive` true). `spec.dbClean` is left untouched, for the reason
-[DBCleanSpec](#dbcleanspec) gives.
+The mutating webhook applies the shared `DeploymentSpec` default (replicas 3),
+materializes the `dogpile.cache.pymemcache` cache backend and the `LoggingSpec`
+baseline, fills the `ServiceUserSpec` identity defaults (`barbican` / `service`
+/ `Default` / `Default`, `secretRef.key` → `password`), and, only when
+`spec.apiServer.uwsgi` is present, the uWSGI sub-field defaults (`processes` 2,
+`threads` 1, `httpKeepAlive` true). `spec.dbClean` is left untouched, for the
+reason [DBCleanSpec](#dbcleanspec) gives. The webhook writes no `resources`: the
+reconciler resolves them when it renders the Deployment, sizing memory from the
+uWSGI process and thread count, so the effective values show on the Deployment
+and its Pods.
 
 `metadata.name` is bounded at 43 characters. The db-clean CronJob is the child
 object with the tightest name budget: Kubernetes caps a CronJob name at 52

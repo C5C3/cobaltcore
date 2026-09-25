@@ -13,8 +13,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
@@ -181,4 +183,38 @@ func overlayKeys(deploy *appsv1.Deployment) []string {
 		}
 	}
 	return keys
+}
+
+// TestBuildConductorDeployment_RendersResourceDefaults verifies that the
+// conductor memory follows spec.conductor.workers, one single-threaded process
+// per worker, beside a 100m CPU request and no CPU limit: 512Mi at the default
+// two, 656Mi at three, and still 512Mi when only spec.scheduler.workers moves.
+func TestBuildConductorDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(nova *novav1alpha1.Nova)
+		want   string
+	}{
+		{name: "default workers", mutate: func(*novav1alpha1.Nova) {}, want: "512Mi"},
+		{
+			name:   "three conductor workers",
+			mutate: func(nova *novav1alpha1.Nova) { nova.Spec.Conductor.Workers = ptr.To(int32(3)) },
+			want:   "656Mi",
+		},
+		{
+			name:   "three scheduler workers",
+			mutate: func(nova *novav1alpha1.Nova) { nova.Spec.Scheduler.Workers = ptr.To(int32(3)) },
+			want:   "512Mi",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			nova := validNova()
+			tc.mutate(nova)
+
+			deploy := buildConductorDeployment(nova, workloadArtifacts(), workloadDigests{}, testEgressPort)
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults(tc.want)))
+		})
+	}
 }

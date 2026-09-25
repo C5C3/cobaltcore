@@ -10,6 +10,7 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -93,12 +94,17 @@ func TestBuildWorkload_ReplicasFollowAutoscaling(t *testing.T) {
 
 // The invariants the builder owns on its own — selector, default strategy, pod
 // and container security contexts, resources, and the preStop hook — must be
-// present without the caller asking for them.
+// present without the caller asking for them. A block that names CPU and
+// memory as requests and limits is rendered verbatim.
 func TestBuildWorkload_OwnsInvariants(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	resources := corev1.ResourceRequirements{Limits: corev1.ResourceList{}}
+	resources := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m"), corev1.ResourceMemory: resource.MustParse("1Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("2Gi")},
+	}
 	p := workloadParams()
+	p.DefaultMemory = resource.MustParse("512Mi")
 	p.Deployment = &commonv1.DeploymentSpec{Replicas: 3, Resources: &resources}
 	deploy := BuildWorkload(p)
 
@@ -127,6 +133,47 @@ func TestBuildWorkload_OwnsInvariants(t *testing.T) {
 	g.Expect(container.SecurityContext).To(gomega.Equal(RestrictedSecurityContext()))
 	g.Expect(container.Resources).To(gomega.Equal(resources))
 	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(gomega.Equal(PreStopSleepCommand(p.Deployment)))
+}
+
+// A block that names no CPU and no memory renders the per-resource defaults:
+// the caller's DefaultMemory as memory request and limit, a 100m CPU request,
+// no CPU limit. A zero DefaultMemory falls back to one single-threaded process.
+func TestBuildWorkload_ResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		resources     *corev1.ResourceRequirements
+		defaultMemory resource.Quantity
+		want          corev1.ResourceRequirements
+	}{
+		{
+			name:          "nil block",
+			defaultMemory: resource.MustParse("512Mi"),
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("512Mi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			},
+		},
+		{
+			name:      "zero default memory",
+			resources: &corev1.ResourceRequirements{},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			p := workloadParams()
+			p.Deployment = &commonv1.DeploymentSpec{Replicas: 3, Resources: tc.resources}
+			p.DefaultMemory = tc.defaultMemory
+
+			container := BuildWorkload(p).Spec.Template.Spec.Containers[0]
+
+			g.Expect(container.Resources).To(gomega.Equal(tc.want))
+			g.Expect(container.Resources.Limits).NotTo(gomega.HaveKey(corev1.ResourceCPU))
+		})
+	}
 }
 
 // The Service port and the target port are independent: Keystone keeps the

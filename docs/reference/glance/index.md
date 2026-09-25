@@ -91,9 +91,13 @@ The v1 operator resolves the onboarding decisions as follows:
   never rendered into config: it is delivered as the
   `OS_KEYSTONE_AUTHTOKEN__PASSWORD` environment variable, digested into a
   pod-template annotation so a rotation rolls the pods.
-- **`/healthcheck` probes.** Readiness and liveness both GET `/healthcheck`,
-  served by the oslo healthcheck middleware without touching the database or
-  Keystone, identical in both launch modes.
+- **`/healthcheck` probes.** Startup, readiness and liveness all GET
+  `/healthcheck`, served by the oslo healthcheck middleware without touching
+  the database or Keystone, identical in both launch modes. The startup probe
+  allows 300 seconds (30 probes 10 seconds apart, each with an 8-second
+  timeout) before the liveness probe takes over, so a cold start slowed by a CPU
+  limit set on the container or a contended node does not restart the
+  container.
 - **Expand-migrate-contract upgrades.** When `spec.openStackRelease` advances
   to a new OpenStack release (with the image in lockstep), the operator drives
   phased database migrations while the API keeps serving. Sequential-only

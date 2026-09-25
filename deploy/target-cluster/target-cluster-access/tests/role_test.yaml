@@ -214,9 +214,10 @@ tests:
               - delete
         documentIndex: 1
 
-  # The OVS and ovn-controller DaemonSets an OVNChassis is projected as. Without
-  # the grant the projection's first write comes back forbidden and the chassis
-  # never reaches Ready. It widens the existing apps rule rather than adding one.
+  # The OVS and ovn-controller DaemonSets an OVNChassis is projected as, and the
+  # nova-compute DaemonSet of a NovaCompute. Without the grant the projection's
+  # first write comes back forbidden and the chassis or the pool never reaches
+  # Ready. It widens the existing apps rule rather than adding one.
   - it: should grant full CRUD on daemonsets in a privileged namespace
     set:
       namespaces:

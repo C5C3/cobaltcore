@@ -38,7 +38,8 @@
 # newTag therefore stays only as the human-readable record of the tag the digest
 # was resolved from, and as the OFFLINE drift anchor: neither is Renovate-tracked,
 # so a source-commit bump must re-pin BOTH here in lockstep. The
-# hack/ci-deploy-korc.sh drift guard fails CI on a stale tag — which is what blocks
+# hack/ci-deploy-korc.sh drift guard fails CI on a stale tag (make test-shell runs
+# it offline on every pull request) — which is what blocks
 # Renovate from automerging a commit bump that leaves this image behind. Resolve
 # the new digest at bump time, e.g.
 #   crane digest quay.io/orc/openstack-resource-controller:commit-<short sha>

@@ -278,6 +278,7 @@ func buildCinderDeployment(cinder *cinderv1alpha1.Cinder, art configArtifacts,
 	digests workloadDigests,
 ) *appsv1.Deployment {
 	volumes, mounts := cinderWorkloadVolumes(cinder, art)
+	apiProcesses, apiThreads := deployment.EffectiveUWSGIConcurrency(cinder.Spec.API.UWSGI)
 	return deployment.BuildWorkload(deployment.WorkloadParams{
 		Namespace:      cinder.Namespace,
 		Name:           cinder.Name,
@@ -286,6 +287,7 @@ func buildCinderDeployment(cinder *cinderv1alpha1.Cinder, art configArtifacts,
 		PodAnnotations: cinderPodAnnotations(digests),
 		Deployment:     &cinder.Spec.API.Deployment,
 		Autoscaling:    cinder.Spec.Autoscaling,
+		DefaultMemory:  commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), apiProcesses, apiThreads),
 		Container: deployment.ContainerParams{
 			Name:    "cinder-api",
 			Image:   cinder.Spec.Image.Reference(),
@@ -295,9 +297,21 @@ func buildCinderDeployment(cinder *cinderv1alpha1.Cinder, art configArtifacts,
 				Name:          "cinder-api",
 				ContainerPort: cinderAPIPort,
 			}},
-			// Both probes GET /healthcheck, served by the oslo healthcheck
-			// middleware without touching the database or the message bus. The
-			// timings are the sibling operators'.
+			// All three probes GET /healthcheck, served by the oslo healthcheck
+			// middleware without touching the database or the message bus. The startup
+			// probe carries the cold-start window: every uWSGI worker imports cinder,
+			// which under a CPU limit set on the container or on a contended node took
+			// about 60 seconds (measured on a CI node under the former 500m default
+			// CPU limit), while the liveness probe alone restarts the container 55
+			// seconds after it started. The timings are the sibling operators': 30x10s
+			// of startup budget, and an 8s timeout because a cold-starting WSGI app
+			// can hold even a plain HTTP GET past the kubelet's 1s default.
+			StartupProbe: &corev1.Probe{
+				ProbeHandler:     cinderHealthcheckProbeHandler(),
+				FailureThreshold: 30,
+				PeriodSeconds:    10,
+				TimeoutSeconds:   8,
+			},
 			LivenessProbe: &corev1.Probe{
 				ProbeHandler:        cinderHealthcheckProbeHandler(),
 				InitialDelaySeconds: 15,

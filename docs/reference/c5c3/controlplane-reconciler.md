@@ -33,7 +33,7 @@ is a blocking prefix plus a sequential, non-short-circuiting tail group
 groups (`RunParallelGroup`) — and it keeps no per-CR metric cardinality. It does
 install a single finalizer to sequence K-ORC teardown ahead of
 Keystone/infrastructure teardown on deletion — see
-[Owner-ref / GC model](#owner-ref--gc-model).
+[Owner-ref / GC model](#owner-ref-gc-model).
 
 ## Controller Registration
 
@@ -141,6 +141,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Nova` | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the projected Nova compute-service child status changes. The nova-operator is installed only for a ControlPlane that runs the compute service, so both legs sit behind the discovery probe with the other sibling-operator kinds |
 | `OpenBaoCluster`, `OpenBaoTenant` | `Owns()` | Re-reconciles when the OpenBao instance provisioned for a dedicated Barbican secret store, or the tenant admitting its namespace, changes. The openbao-operator is installed only for that mode, so a ControlPlane without one runs on a cluster that never serves these kinds; both legs sit behind the discovery probe with the other sibling-operator kinds (`probeOptionalWatches`, which skips the leg and registers a leader-gated re-check that restarts the operator once the CRD appears) |
 | `RabbitmqCluster` (unstructured `rabbitmqClusterGVK`) | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the managed message-bus child status changes, so `InfrastructureReady` follows `AllReplicasReady` instead of waiting for the periodic requeue. Watched as `*unstructured.Unstructured`, since the c5c3 operator takes no dependency on the RabbitMQ Cluster Operator's Go module. Messaging is opt-in, so both legs sit behind the discovery probe with the openbao kinds: a cluster that does not serve `rabbitmqclusters.rabbitmq.com` starts without them, and `crdWatchGate` restarts the operator once the CRD appears |
+| `NovaCompute` | `Watches()` | Per-CR fan-out via `novaComputeToControlPlaneMapper`, matching the Nova namespace and the Nova name a pool's `spec.novaRef` names. Pools are user-authored and only read, for the clusters the compute contract is mirrored to, so they carry no owner reference. The predicate admits a pool being created, deleted or starting to be deleted, the events that change the mirror targets. The leg sits behind the discovery probe with the other nova-operator kinds |
 | `OVNCentral` | `Watches()` | Per-CR fan-out via `ovnCentralToControlPlaneMapper`. The central is deployed outside the plane and only named by `spec.services.neutron.ovn.centralRef`, so it carries no owner reference an `Owns()` could match; the leg re-runs `reconcileOVN` when the central's status moves instead of waiting for the periodic requeue. The ovn-operator is installed only for a plane that runs a network service, so the leg sits behind the discovery probe with the other sibling-operator kinds |
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
@@ -934,7 +935,7 @@ A **missing** mark refuses adoption too, since nothing on the object separates a
 stripped mark from labels somebody else wrote; that message names both remedies,
 restoring the annotation or picking a free name. The read behind the verdict goes
 through the target cluster's live reader, as the
-[teardown](#owner-ref--gc-model) side does — which draws the missing-mark line one
+[teardown](#owner-ref-gc-model) side does — which draws the missing-mark line one
 notch lower, because it is the last pass anything makes over that namespace. Under
 **`External`** the operator only verifies the namespace exists; a missing one parks
 the condition and requeues.
@@ -956,8 +957,8 @@ creates nothing on either side.
 | `False` | `NamespaceNotFound` | An `External` namespace does not exist; requeue. |
 | `False` | `NamespaceNotOwned` | A `Managed` namespace exists but does not carry the operator's ownership labels, or — on a target cluster — its `c5c3.io/controlplane-uid` annotation is missing or names a different ControlPlane, so it is never adopted. The message distinguishes the three, because the remedies differ. |
 | `False` | `NamespaceTerminating` | The namespace is being deleted; wait and requeue. |
-| `False` | `TargetClusterUnavailable` | A service placed the namespace on a target cluster that does not resolve; the resolver's own message, `cluster not found` for a name that was never registered. On deletion the same reason marks a placed namespace whose cluster has not answered yet: the teardown waits for it, and gives up on its children only past the abandon window (see [Owner-ref / GC model](#owner-ref--gc-model)). |
-| `False` | `FinalizingNamespaces` | On deletion, waiting for cross-namespace children to be torn down (see [Owner-ref / GC model](#owner-ref--gc-model)). |
+| `False` | `TargetClusterUnavailable` | A service placed the namespace on a target cluster that does not resolve; the resolver's own message, `cluster not found` for a name that was never registered. On deletion the same reason marks a placed namespace whose cluster has not answered yet: the teardown waits for it, and gives up on its children only past the abandon window (see [Owner-ref / GC model](#owner-ref-gc-model)). |
+| `False` | `FinalizingNamespaces` | On deletion, waiting for cross-namespace children to be torn down (see [Owner-ref / GC model](#owner-ref-gc-model)). |
 | `False` | `NamespaceError` | A create/get against the namespace failed. |
 
 ### reconcileInfrastructure
@@ -1031,18 +1032,25 @@ the reason vocabulary is unchanged by the dedicated opt-in.
 
 `ensureMariaDB` / `ensureMemcached` take the **declared instance** rather than
 reading `spec.infrastructure` directly, which is what makes a dedicated instance
-carry the shared block's lifecycle rather than a parallel one of its own: it is
-created with a controller owner reference (so it is garbage-collected with the
-ControlPlane), sized from **its** `replicas` / `storageSize`, re-projected on
-drift while owned, and **adopted read-only** — never reshaped, never GC-claimed —
-when a CR under that name already exists.
+carry the shared block's lifecycle rather than a parallel one of its own. It is
+created owned, in one of two forms. In the ControlPlane's own namespace it
+carries a controller owner reference, so it is garbage-collected with the
+ControlPlane. In a service namespace or on a target cluster it carries the two
+ownership labels `c5c3.io/controlplane-name` and `c5c3.io/controlplane-namespace`,
+and the finalizer-driven teardown deletes it (see
+[Owner-ref / GC model](#owner-ref-gc-model)). It is sized from **its**
+`replicas` / `storageSize` and re-projected on drift while it is owned in either
+form (`isControlPlaneChild`). A CR under that name that carries neither is
+**adopted read-only**: never reshaped, never GC-claimed.
 
 `ensureRabbitMQ` is the twin of `ensureMemcached`: read-modify-write on an
 `*unstructured.Unstructured` carrying `rabbitmqClusterGVK`. On
 `NotFound` it creates the CR with `spec.replicas` and a controller owner
 reference (`claimChildOwnership`); on a CR it already owns it re-projects
 `spec.replicas` and nothing else; a CR of that name owned by someone else is
-adopted read-only. The re-projection is asymmetric: growing an owned cluster is
+adopted read-only. Its ownership test is the controller owner reference alone
+(`IsControlledBy`), because the bus is only provisioned in the ControlPlane's own
+namespace on the management cluster. The re-projection is asymmetric: growing an owned cluster is
 an in-place `Update`, while **shrinking** it is a delete-and-recreate — the
 RabbitMQ Cluster Operator refuses an in-place scale-down, so a lowered count
 written onto the CR would sit there ignored while `AllReplicasReady` (and with it
@@ -1062,7 +1070,7 @@ the operator offers for a declared count the running cluster exceeds.
 On ControlPlane deletion the bus is not left to the owner-reference cascade:
 the finalizer deletes it with foreground propagation and waits for it to go, for
 the cluster-operator race described under
-[Owner-ref / GC model](#owner-ref--gc-model).
+[Owner-ref / GC model](#owner-ref-gc-model).
 
 A child that is mid-teardown is never reported ready. The RabbitMQ Cluster
 Operator holds a finalizer on its CRs, so a deleted `RabbitmqCluster` lingers in
@@ -2640,16 +2648,28 @@ services:
 **The compute-config mirror.** The nova operator publishes the compute contract,
 the `nova.conf` fragment and bus credentials a nova-compute needs to join this
 plane, as `{controlplane.Name}-nova-compute-config` in the Nova namespace. A
-compute node does not read it there: it runs outside this cluster, and its agents
-are configured from the namespace its own attachment names. `mirrorNovaComputeConfig`
-copies the Secret into one target namespace on that target's cluster, stamped
-with this ControlPlane's ownership labels so the teardown reaps it with the rest.
-A target that cannot be served parks `NovaReady` rather than failing the pass:
-the control plane is up, but a compute cluster that never receives the contract
-registers no hypervisor. `novaComputeConfigMirrorTargets` returns **nil** today,
-so the loop is skipped and the mirror writes nothing; #1013 fills it from the
-compute-cluster attachment it introduces, one target per attached cluster, which
-is why that issue adds the enumeration rather than the delivery.
+[NovaCompute](../nova/novacompute-crd.md) node pool mounts it in its own
+namespace on the cluster its pods run on, so the Secret has to exist there a
+second time. `novaComputeConfigMirrorTargets` lists the NovaComputes in the Nova
+namespace and returns one target per cluster a pool of this plane's Nova runs
+on, sorted, in the Nova namespace. Pools sharing a cluster share a target, the
+Nova's own placement is dropped because the published Secret lives there
+already, and a pool being deleted is left out. An unserved NovaCompute kind
+yields no target; any other list error fails `NovaReady` with
+`NovaComputeConfigError`. `mirrorNovaComputeConfig` copies the Secret into each
+target, stamped with this ControlPlane's ownership labels so the teardown reaps
+it with the rest, and with `nova.openstack.c5c3.io/compute-config-mirror:
+"true"`. A target that cannot be served parks `NovaReady` rather than failing
+the pass: the control plane is up, but a compute cluster that never receives the
+contract registers no hypervisor.
+
+The plane records nothing in its status about what it mirrored, because
+`reconcileNova` runs in the parallel group, which keeps only conditions and
+metadata. A mirror left behind by the last pool of a cluster is reaped by that
+pool's own teardown, which deletes the Secret only while it carries the mirror
+label. A `NovaCompute` watch wakes the plane whose Nova a pool names, narrowed to
+pools being created, deleted or starting to be deleted, so a pool's status polls
+do not reconcile the plane.
 
 Unsetting `spec.services.nova` deletes nothing on its own. With
 `c5c3.io/allow-nova-deletion: "true"`, `deleteOrphanedNova` releases the `Nova`
@@ -2694,8 +2714,8 @@ unowned, and the finalizer sweeps it by those labels.
 | Nova child not yet Ready | False | `WaitingForNova` | requeue 15s |
 | projected Nova spec rejected (HTTP 422 Invalid) | False | `NovaProjectionRejected` | returns the error; the projection violates a Nova CRD/webhook rule, so reconcile the ControlPlane spec to a valid projection to recover |
 | Nova create/update fails | False | `NovaError` | returns the error |
-| the compute contract has not been published yet | False | `WaitingForComputeConfig` | requeue 15s; only reachable once a mirror target is enumerated |
-| reading the compute contract or writing a mirror fails | False | `NovaComputeConfigError` | returns the error |
+| the compute contract has not been published yet | False | `WaitingForComputeConfig` | requeue 15s; only reachable once a NovaCompute runs on a cluster other than the Nova's own |
+| listing the NovaComputes, reading the compute contract, or writing a mirror fails | False | `NovaComputeConfigError` | returns the error |
 | Nova child Ready, every mirror target served, and its registration Ready | True | `NovaReady` | — |
 
 ### reconcileKORC
@@ -3522,7 +3542,7 @@ cluster without sharing OpenBao state.
   in its own namespace, and an independent rotation lifecycle — no two control
   planes can clobber one another's credentials.
 
-See [Migration: legacy flat paths → per-ControlPlane paths](#migration-legacy-flat-paths--per-controlplane-paths)
+See [Migration: legacy flat paths → per-ControlPlane paths](#migration-legacy-flat-paths-per-controlplane-paths)
 for moving an existing single-instance cluster onto the per-CR layout.
 
 ---
@@ -3654,7 +3674,7 @@ projected. On deletion it:
    object ownership-checked so a same-named object belonging to somebody else in
    that shared namespace is left alone. On a placed namespace both of those run
    against that cluster's client, and the
-   [label-selected sweep](#the-placed-namespaces--openstackc5c3ioremote-children)
+   [label-selected sweep](#placed-namespaces-remote-children)
    follows them. While children remain the condition
    reports `NamespacesReady=False/FinalizingNamespaces`; past the
    `orcTeardownDeadline` the sweep stops waiting, emits a **Warning**
@@ -3750,7 +3770,7 @@ then OpenBao cleanup); see
 The `{name}-admin-app-credential-backup` PushSecret is the one child kept on
 `DeletionPolicy: None` so its OpenBao path is not purged on teardown.
 
-#### The placed namespaces — `openstack.c5c3.io/remote-children`
+#### The placed namespaces — `openstack.c5c3.io/remote-children` {#placed-namespaces-remote-children}
 
 A ControlPlane that places a service on a [target
 cluster](../target-clusters.md) carries a second finalizer, the shared
@@ -4344,7 +4364,7 @@ The `c5c3_operator_*` duration/error metric vectors are registered by the shared
 `internal/metrics` package was folded into it); `instrumentation.go` supplies
 only the `c5c3_operator` prefix and the name → `condition_type` map.
 
-## Migration: legacy flat paths → per-ControlPlane paths
+## Migration: legacy flat paths → per-ControlPlane paths {#migration-legacy-flat-paths-per-controlplane-paths}
 
 Earlier releases wrote the admin / K-ORC credentials to cluster-global,
 flat OpenBao paths that assumed a single control plane per cluster. The operator

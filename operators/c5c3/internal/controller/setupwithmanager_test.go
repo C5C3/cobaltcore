@@ -17,12 +17,15 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
 
@@ -704,4 +707,88 @@ func TestOVNCentralToControlPlaneMapper_WakesEveryReferencingControlPlane(t *tes
 		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "openstack", Name: "first"}},
 		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "tenant-a", Name: "second"}},
 	))
+}
+
+// --- novaComputeToControlPlaneMapper ---
+
+// novaMapperControlPlane returns a mapper fixture that runs the compute
+// service, whose Nova is "<name>-nova" in the ControlPlane's namespace.
+func novaMapperControlPlane(name, namespace string) *c5c3v1alpha1.ControlPlane {
+	cp := mapperControlPlane(name, namespace, "admin-secret")
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{}
+	return cp
+}
+
+// TestNovaComputeToControlPlaneMapper covers which ControlPlane a NovaCompute
+// event wakes: the one whose Nova the pool joins, matched on the Nova namespace
+// and the Nova name together.
+func TestNovaComputeToControlPlaneMapper(t *testing.T) {
+	ctx := context.Background()
+	pool := func(namespace, novaRef string) *novav1alpha1.NovaCompute {
+		return &novav1alpha1.NovaCompute{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: namespace},
+			Spec:       novav1alpha1.NovaComputeSpec{NovaRef: novav1alpha1.NovaRef{Name: novaRef}},
+		}
+	}
+
+	for name, tc := range map[string]struct {
+		cp       *c5c3v1alpha1.ControlPlane
+		obj      client.Object
+		wantWake bool
+	}{
+		"a pool of the plane's Nova": {
+			cp:       novaMapperControlPlane("cp", "openstack"),
+			obj:      pool("openstack", "cp-nova"),
+			wantWake: true,
+		},
+		"the same Nova name in another namespace": {
+			cp:  novaMapperControlPlane("cp", "openstack"),
+			obj: pool("elsewhere", "cp-nova"),
+		},
+		"a pool of another Nova": {
+			cp:  novaMapperControlPlane("cp", "openstack"),
+			obj: pool("openstack", "other-nova"),
+		},
+		"a ControlPlane without a compute service": {
+			cp:  mapperControlPlane("cp", "openstack", "admin-secret"),
+			obj: pool("openstack", "cp-nova"),
+		},
+		"an object of another kind": {
+			cp:  novaMapperControlPlane("cp", "openstack"),
+			obj: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cp-nova", Namespace: "openstack"}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			r := &ControlPlaneReconciler{Client: newControlPlaneMapperClient(t, tc.cp)}
+
+			reqs := r.novaComputeToControlPlaneMapper(ctx, tc.obj)
+
+			if !tc.wantWake {
+				g.Expect(reqs).To(BeEmpty())
+				return
+			}
+			g.Expect(reqs).To(ConsistOf(reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: tc.cp.Namespace, Name: tc.cp.Name},
+			}))
+		})
+	}
+}
+
+// TestNovaComputeMembershipPredicate pins the narrowing of the NovaCompute leg:
+// a pool joining or leaving changes the mirror targets, a status poll does not.
+func TestNovaComputeMembershipPredicate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	p := novaComputeMembershipPredicate()
+	live := &novav1alpha1.NovaCompute{ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: "openstack"}}
+	polled := live.DeepCopy()
+	polled.Status.NumberReady = 1
+	leaving := live.DeepCopy()
+	leaving.DeletionTimestamp = ptr.To(metav1.Now())
+
+	g.Expect(p.Create(event.CreateEvent{Object: live})).To(BeTrue())
+	g.Expect(p.Delete(event.DeleteEvent{Object: live})).To(BeTrue())
+	g.Expect(p.Update(event.UpdateEvent{ObjectOld: live, ObjectNew: polled})).To(BeFalse())
+	g.Expect(p.Update(event.UpdateEvent{ObjectOld: live, ObjectNew: leaving})).To(BeTrue())
+	g.Expect(p.Generic(event.GenericEvent{Object: live})).To(BeFalse())
 }

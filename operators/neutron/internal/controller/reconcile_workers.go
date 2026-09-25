@@ -21,6 +21,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 )
 
@@ -159,6 +160,8 @@ func buildWorkerDeployment(neutron *neutronv1alpha1.Neutron, component string, c
 		// HorizontalPodAutoscaler targets these Deployments, so nothing else owns
 		// the field.
 		Autoscaling: nil,
+		// Each worker Deployment runs one single-threaded process.
+		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, 1),
 		Container: deployment.ContainerParams{
 			Name:         component,
 			Image:        neutron.Spec.Image.Reference(),

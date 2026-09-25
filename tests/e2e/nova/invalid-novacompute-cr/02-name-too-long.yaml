@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A metadata.name of 64 characters is rejected by the validating webhook
+# alone. The name is the app.kubernetes.io/instance label of every child,
+# and Kubernetes caps a label value at 63 characters. The name is a valid
+# DNS-1123 subdomain apart from its length, so the bound is the only rule it
+# breaks.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: nova-compute-pool-with-an-invalid-name-past-the-63-char-boundary
+spec:
+  novaRef:
+    name: nova
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: a

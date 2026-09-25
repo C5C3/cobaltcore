@@ -81,18 +81,42 @@ func TestPlacementDefault_MaterializesServiceUserAndLoggingDefaults(t *testing.T
 	g.Expect(obj.Spec.ServiceUser.ProjectDomainName).To(gomega.Equal("Default"))
 	g.Expect(obj.Spec.ServiceUser.SecretRef.Key).To(gomega.Equal("password"))
 
-	// Shared-block defaults come along too — with the placement-specific memory
-	// values (512Mi request / 1Gi limit) replacing the shared 256Mi/512Mi
-	// baseline, while CPU keeps the shared defaults.
-	g.Expect(obj.Spec.Deployment.Resources).NotTo(gomega.BeNil())
-	g.Expect(obj.Spec.Deployment.Resources.Requests.Memory().String()).To(gomega.Equal("512Mi"))
-	g.Expect(obj.Spec.Deployment.Resources.Limits.Memory().String()).To(gomega.Equal("1Gi"))
-	g.Expect(obj.Spec.Deployment.Resources.Requests.Cpu().String()).To(gomega.Equal("100m"))
-	g.Expect(obj.Spec.Deployment.Resources.Limits.Cpu().String()).To(gomega.Equal("500m"))
+	// Shared-block defaults come along too; resources are resolved when the
+	// Deployment is rendered, never written into the CR.
+	g.Expect(obj.Spec.Deployment.Resources).To(gomega.BeNil())
 	g.Expect(obj.Spec.Cache.Backend).To(gomega.Equal(commonv1.DefaultCacheBackend))
 	g.Expect(obj.Spec.Logging).NotTo(gomega.BeNil())
 	g.Expect(obj.Spec.Logging.Format).To(gomega.Equal("text"))
 	g.Expect(obj.Spec.Logging.Level).To(gomega.Equal("INFO"))
+}
+
+// The webhook writes no resources: a nil block stays nil, an empty one stays
+// empty, and an explicit one is left as written. The reconciler resolves the
+// defaults when it renders the Deployment.
+func TestPlacementDefault_LeavesResourcesAsWritten(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		resources *corev1.ResourceRequirements
+	}{
+		{name: "nil", resources: nil},
+		{name: "empty", resources: &corev1.ResourceRequirements{}},
+		{name: "explicit", resources: &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m"), corev1.ResourceMemory: resource.MustParse("1Gi")},
+			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("2Gi")},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &PlacementWebhook{}
+
+			obj := validPlacement()
+			obj.Spec.Deployment.Resources = tc.resources.DeepCopy()
+
+			g.Expect(w.Default(context.Background(), obj)).To(gomega.Succeed())
+
+			g.Expect(obj.Spec.Deployment.Resources).To(gomega.Equal(tc.resources))
+		})
+	}
 }
 
 func TestPlacementDefault_PreservesExplicitValues(t *testing.T) {

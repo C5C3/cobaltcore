@@ -348,8 +348,12 @@ spec:
               resources:
                 description: |-
                   Resources defines the CPU and memory requests and limits for the agent
-                  container. When empty the operator applies the shared container defaults,
-                  the ones a defaulted DeploymentSpec carries.
+                  container and its wait-for-chassis init container. The operator never
+                  writes defaults into this field; it resolves them when it renders the
+                  pod, per resource: a CPU the block names neither as request nor as limit
+                  gets a 100m request and no limit, and a memory the block names neither
+                  way gets 368Mi as both request and limit. A resource the block names is
+                  used as written, and anything else it sets is kept.
                 properties:
                   claims:
                     description: |-

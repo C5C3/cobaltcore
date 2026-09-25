@@ -57,14 +57,14 @@ The API is the only Deployment that scales horizontally.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 3` | Pod-level knobs: `replicas`, `resources` (256Mi/512Mi memory, 100m/500m CPU), `terminationGracePeriodSeconds` (30), `preStopSleepSeconds` (5), `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | `DeploymentSpec` | no | `replicas: 3` | Pod-level knobs: `replicas`, `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and memory sized from `spec.api.uwsgi`, 512Mi as request and limit at its defaults, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds` (30), `preStopSleepSeconds` (5), `strategy`, `topologySpreadConstraints`, `priorityClassName` |
 | `uwsgi` | `UWSGISpec` | no | materialized | uWSGI parameters: `processes` (2), `threads` (1), `httpKeepAlive` (true), `harakiri` and `httpKeepAliveTimeout` (both omitted when unset). The defaulting webhook materializes the block, so the API always runs with the documented values |
 
 ### CinderSchedulerSpec
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 1` | The same pod-level knobs. Schedulers are peers that hold no state between requests, so the count may be raised; every pod registers under the one `{name}-scheduler` identity |
+| `deployment` | `DeploymentSpec` | no | `replicas: 1` | The same pod-level knobs. `cinder-scheduler` runs one single-threaded process, so a block that names no memory renders 368Mi as memory request and limit. Schedulers are peers that hold no state between requests, so the count may be raised; every pod registers under the one `{name}-scheduler` identity |
 
 The one-replica default is applied by the defaulting webhook and reaches the
 absent block only. `commonv1.DeploymentSpec.Replicas` carries
@@ -75,7 +75,7 @@ carries a `deployment` object at all, before any mutating webhook runs.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `strategy.type: Recreate` | The pod-level knobs every `cinder-volume` Deployment shares. The operator projects one Deployment per attached backend and applies this block to all of them, which is why `topologySpreadConstraints` is rejected here (see [Defaulting and validation](#defaulting-and-validation)) |
+| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `strategy.type: Recreate` | The pod-level knobs every `cinder-volume` Deployment shares. The operator projects one Deployment per attached backend and applies this block to all of them, which is why `topologySpreadConstraints` is rejected here (see [Defaulting and validation](#defaulting-and-validation)). Each `cinder-volume` runs one single-threaded process, so a block that names no memory renders 368Mi as memory request and limit |
 
 Two CEL rules on `CinderSpec` pin this block: `replicas` must be `1` and
 `strategy.type` must be `Recreate`. A `cinder-volume` owns its backend through a
@@ -90,13 +90,16 @@ beside whatever else it sets, or admission rejects it.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `strategy.type: Recreate`, memory limit `2Gi` | The pod-level knobs of the backup Deployment |
+| `deployment` | `DeploymentSpec` | no | `replicas: 1`, `strategy.type: Recreate`, memory `2Gi` | The pod-level knobs of the backup Deployment |
 
-The same two CEL rules apply, with the same consequence for a present block. The
-memory limit is raised from the shared 512Mi because a backup reads the volume
-in chunks of `spec.fileSize` bytes and compresses each chunk in memory: under
-the shared limit the process is killed mid-backup and the restarted service
-begins the volume again. An explicit `resources` block is left alone.
+The same two CEL rules apply, with the same consequence for a present block.
+When the block names no memory, the reconciler renders a fixed `2Gi` as memory
+request and limit, beside the 100m CPU request and no CPU limit every container
+gets. The figure follows the chunk size: a backup reads the volume in chunks of
+`spec.fileSize` bytes and compresses each chunk in memory, so under a 512Mi
+limit the process is killed mid-backup and the restarted service begins the
+volume again. A resource the block names is used
+as written.
 
 The backup container also runs with `MALLOC_ARENA_MAX=2`. The chunked driver
 hands every chunk through eventlet's native thread pool (the read, the SHA pass,
@@ -192,12 +195,12 @@ since oslo.privsep registers a context's section at run time.
 ## Defaulting and validation
 
 The defaulting webhook resolves the three non-API replica counts to one before
-the shared `DeploymentSpec` defaults run, fills the backup container's resources
-with the raised memory limit, materializes `spec.api.uwsgi` and `spec.logging`,
-sets the `Recreate` strategy on the volume and backup blocks when they carry
-none, fills the cache backend, and materializes the `ServiceUserSpec` identity
-defaults. It leaves `spec.dbPurge` untouched, because those fields are resolved
-at reconcile time.
+the shared `DeploymentSpec` defaults run, materializes `spec.api.uwsgi` and
+`spec.logging`, sets the `Recreate` strategy on the volume and backup blocks
+when they carry none, fills the cache backend, and materializes the
+`ServiceUserSpec` identity defaults. It leaves `spec.dbPurge` and every
+`resources` block untouched, because those fields are resolved at reconcile
+time.
 
 The validating webhook accumulates every violation into one admission response.
 It repeats the schema-layer rules as defense in depth (image tag/digest XOR,

@@ -328,6 +328,9 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // all three get full verbs.
 // +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinders;cinderbackends;cinderbackupbackends,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novas,verbs=get;list;watch;create;update;patch;delete
+// The NovaComputes of a projected Nova are user-authored and only READ, to find
+// the clusters the compute contract has to be mirrored to: read-only verbs.
+// +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novacomputes,verbs=get;list;watch
 // The OVNCentral is deployed outside the plane and only REFERENCED by
 // services.neutron.ovn.centralRef, so the reconciler reads and watches it but
 // never writes it: read-only verbs.
@@ -1534,6 +1537,15 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		b = b.Watches(&ovnv1alpha1.OVNCentral{}, commonmulticluster.LocalRequests(
 			r.ovnCentralToControlPlaneMapper,
 		), engageLocal, engageNoProviders)
+	}
+	// NovaCompute CRs are authored by the pool owner and only read, for the
+	// clusters the compute contract is mirrored to. The predicate narrows the
+	// leg to pools joining or leaving: a pool's status polls must not reconcile
+	// the plane.
+	if isServed(&novav1alpha1.NovaCompute{}) {
+		b = b.Watches(&novav1alpha1.NovaCompute{}, commonmulticluster.LocalRequests(
+			r.novaComputeToControlPlaneMapper,
+		), mcbuilder.WithPredicates(novaComputeMembershipPredicate()), engageLocal, engageNoProviders)
 	}
 
 	if len(missing) > 0 {

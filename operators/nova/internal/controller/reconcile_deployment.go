@@ -342,6 +342,7 @@ func buildAPIDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 	digests workloadDigests,
 ) *appsv1.Deployment {
 	volumes, mounts := novaWorkloadVolumes(nova, art, roleAPI)
+	apiProcesses, apiThreads := deployment.EffectiveUWSGIConcurrency(nova.Spec.API.UWSGI)
 	return deployment.BuildWorkload(deployment.WorkloadParams{
 		Namespace:      nova.Namespace,
 		Name:           nova.Name,
@@ -350,6 +351,7 @@ func buildAPIDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 		PodAnnotations: novaPodAnnotations(digests),
 		Deployment:     &nova.Spec.API.Deployment,
 		Autoscaling:    nova.Spec.Autoscaling,
+		DefaultMemory:  commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), apiProcesses, apiThreads),
 		Container: deployment.ContainerParams{
 			Name:    "nova-api",
 			Image:   nova.Spec.Image.Reference(),
@@ -413,8 +415,9 @@ func novaUWSGIProbeHandler(port int32) corev1.ProbeHandler {
 }
 
 // novaUWSGIStartupProbe returns the startup probe of an HTTP front end. It
-// carries the cold-start window: every uWSGI worker imports nova under the
-// container's CPU limit, which measured 40 to 78 seconds on a CI node, while the
+// carries the cold-start window: every uWSGI worker imports nova, which under a
+// CPU limit set on the container or on a contended node measured 40 to 78
+// seconds (on a CI node under the former 500m default CPU limit), while the
 // liveness probe alone gives up 55 seconds after the container started and
 // restarts a front end that is still loading. The timings are the sibling
 // operators': 30x10s of startup budget, and an 8s timeout because a

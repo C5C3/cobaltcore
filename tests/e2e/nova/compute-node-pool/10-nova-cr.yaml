@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Nova CR for the compute-node-pool E2E test (2025.2 release).
+#
+# Managed mode throughout: the two schemas nova_pool_api and nova_pool on the
+# openstack-db MariaDB cluster (cell0 is derived as nova_pool_cell0), the
+# openstack-memcached cache, the ESO-synced nova-api-db and nova-db credentials
+# and the pre-seeded keystone-admin service-user password (all from
+# deploy/kind/infrastructure).
+#
+# The bus is the per-suite vhost broker-vhost.sh writes into
+# nova-pool-messaging. Managed messaging is not usable here: the URL it renders
+# always names the root vhost, so two suites would share the scheduler and
+# conductor RPC topics.
+#
+# Every process runs one replica: the suite asserts the node pool, not the
+# control plane, and the leg runs it beside two other full stacks. The compute
+# the pool registers is the one the NovaCompute CRs of this suite run, so the
+# Nova carries no override of its own.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-pool
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  apiDatabase:
+    clusterRef:
+      name: openstack-db
+    database: nova_pool_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: openstack-db
+    database: nova_pool
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: nova-pool-messaging
+  keystoneEndpoint: http://keystone-nova-pool.openstack.svc.cluster.local:5000/v3
+  region: RegionOne
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  metadata:
+    sharedSecretRef:
+      name: nova-pool-metadata-secret

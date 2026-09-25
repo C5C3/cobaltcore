@@ -7,18 +7,24 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
@@ -154,18 +160,103 @@ type computeConfigMirrorTarget struct {
 }
 
 // novaComputeConfigMirrorTargets returns the places this ControlPlane has to
-// deliver the compute contract to. It returns nil today: nothing attaches a
-// compute cluster to a ControlPlane yet, so the plane has no second namespace to
-// carry the Secret into and the mirror writes nothing.
+// deliver the compute contract to: one per cluster a NovaCompute of its Nova
+// runs on, in the Nova namespace, where the pool's pods mount it.
 //
-// #1013 is the caller that fills it, from the compute-cluster attachment it
-// introduces: one target per attached cluster, naming the namespace the
-// nova-compute agents read their configuration from. Everything behind it, the
-// copy and the condition it parks on, is already here (see
-// mirrorNovaComputeConfig), so that issue adds the enumeration rather than the
-// delivery.
-func novaComputeConfigMirrorTargets(_ *c5c3v1alpha1.ControlPlane) []computeConfigMirrorTarget {
-	return nil
+// The pools are user-authored, so the plane reads them and never projects
+// them. A pool being deleted is left out, and the mirror it leaves behind is
+// its own teardown's to reap (it carries novav1alpha1.ComputeConfigMirrorLabel
+// for that): a ControlPlane-status record of what it mirrored would not
+// survive, because reconcileNova runs in the parallel group, which keeps only
+// conditions and metadata. The cluster the Nova itself is placed on is dropped
+// too, since the published Secret already lives there, and pools sharing a
+// cluster share one target. A cluster that does not serve the NovaCompute kind
+// has no pools, so a no-match yields no target rather than an error.
+func (r *ControlPlaneReconciler) novaComputeConfigMirrorTargets(ctx context.Context,
+	cp *c5c3v1alpha1.ControlPlane,
+) ([]computeConfigMirrorTarget, error) {
+	var pools novav1alpha1.NovaComputeList
+	if err := r.List(ctx, &pools, client.InNamespace(cp.NovaNamespace())); err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing the NovaComputes in namespace %q: %w", cp.NovaNamespace(), err)
+	}
+
+	own := clusterNameOf(targetClusterRefForNamespace(cp, cp.NovaNamespace()))
+	clusters := map[string]*commonv1.TargetClusterRefSpec{}
+	for i := range pools.Items {
+		pool := &pools.Items[i]
+		if pool.Spec.NovaRef.Name != novaName(cp) || !pool.DeletionTimestamp.IsZero() {
+			continue
+		}
+		name := clusterNameOf(pool.Spec.TargetClusterRef)
+		if name == own {
+			continue
+		}
+		clusters[name] = pool.Spec.TargetClusterRef.DeepCopy()
+	}
+
+	targets := make([]computeConfigMirrorTarget, 0, len(clusters))
+	for _, name := range slices.Sorted(maps.Keys(clusters)) {
+		targets = append(targets, computeConfigMirrorTarget{ClusterRef: clusters[name], Namespace: cp.NovaNamespace()})
+	}
+	return targets, nil
+}
+
+// clusterNameOf is the cluster a ref names, "" for the local one.
+func clusterNameOf(ref *commonv1.TargetClusterRefSpec) string {
+	if ref == nil {
+		return ""
+	}
+	return ref.Name
+}
+
+// novaComputeToControlPlaneMapper maps a NovaCompute event onto the
+// ControlPlanes whose Nova the pool joins, so a pool that appears on a new
+// cluster, or the last one that leaves it, changes the mirror targets without
+// waiting for a periodic resync.
+//
+// A plain Owns() would never fire: pools are user-authored and carry no
+// ControlPlane owner reference. The match is on the Nova namespace and the Nova
+// name together, so a same-named Nova of an unrelated ControlPlane never wakes
+// this one.
+func (r *ControlPlaneReconciler) novaComputeToControlPlaneMapper(ctx context.Context, obj client.Object) []reconcile.Request {
+	pool, ok := obj.(*novav1alpha1.NovaCompute)
+	if !ok {
+		return nil
+	}
+
+	var list c5c3v1alpha1.ControlPlaneList
+	if err := r.List(ctx, &list); err != nil {
+		log.FromContext(ctx).Error(err, "listing ControlPlanes for NovaCompute event",
+			"novaCompute", client.ObjectKeyFromObject(pool))
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for i := range list.Items {
+		cp := &list.Items[i]
+		if cp.Spec.Services.Nova != nil && cp.NovaNamespace() == pool.Namespace &&
+			novaName(cp) == pool.Spec.NovaRef.Name {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		}
+	}
+	return requests
+}
+
+// novaComputeMembershipPredicate admits the NovaCompute events that change a
+// Nova's mirror targets: a pool created, deleted, or starting to be deleted.
+// novaRef and targetClusterRef are immutable, so no other update moves a pool
+// between targets, and a pool writes its status at least once a minute, which
+// must not reconcile the whole plane each time.
+func novaComputeMembershipPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return e.ObjectOld.GetDeletionTimestamp().IsZero() != e.ObjectNew.GetDeletionTimestamp().IsZero()
+		},
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
 }
 
 // mirrorNovaComputeConfig copies the compute contract the nova operator
@@ -184,7 +275,9 @@ func novaComputeConfigMirrorTargets(_ *c5c3v1alpha1.ControlPlane) []computeConfi
 // caller returns it.
 //
 // The mirror carries this ControlPlane's ownership labels, so the teardown that
-// sweeps a placed namespace's label-owned children reaps it with the rest.
+// sweeps a placed namespace's label-owned children reaps it with the rest, and
+// novav1alpha1.ComputeConfigMirrorLabel, which is how the last NovaCompute on
+// its cluster recognizes it as a mirror to reap.
 func (r *ControlPlaneReconciler) mirrorNovaComputeConfig(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, target computeConfigMirrorTarget,
 ) (ok bool, reason, message string, err error) {
@@ -219,6 +312,7 @@ func (r *ControlPlaneReconciler) mirrorNovaComputeConfig(
 	// Stamped before the apply, so the mirror is recognizable the moment it
 	// exists whichever ownership mechanism its namespace permits.
 	stampControlPlaneChildLabels(mirror, cp)
+	mirror.Labels[novav1alpha1.ComputeConfigMirrorLabel] = "true"
 	if err := r.ensureUnownedOrOwned(ctx, delivery, cp, mirror); err != nil {
 		return false, "", "", fmt.Errorf("mirroring the compute config Secret into namespace %q: %w",
 			target.Namespace, err)
@@ -663,7 +757,12 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 	// control plane is up, but a compute cluster that never receives the contract
 	// registers no hypervisor, and the plane must not report the compute service
 	// as ready for it.
-	for _, target := range novaComputeConfigMirrorTargets(cp) {
+	targets, err := r.novaComputeConfigMirrorTargets(ctx, cp)
+	if err != nil {
+		conditionFailer(cp, conditionTypeNovaReady)("NovaComputeConfigError", err.Error())
+		return ctrl.Result{}, err
+	}
+	for _, target := range targets {
 		ok, reason, message, err := r.mirrorNovaComputeConfig(ctx, cp, target)
 		if err != nil {
 			conditionFailer(cp, conditionTypeNovaReady)("NovaComputeConfigError", err.Error())

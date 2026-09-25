@@ -256,8 +256,8 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName, domai
 						Image: keystone.Spec.Image.Reference(),
 						// TODO Wire spec.Resources (or a smaller Job-specific default) to
 						// this container. Currently runs as BestEffort QoS. See
-						// deployment.ContainerResources for the pattern used by the keystone
-						// container.
+						// commonv1.WithResourceDefaults for the defaults the keystone
+						// container gets (#1099 wires Jobs).
 						Command: []string{"/bin/sh", "-eu", "-c", bootstrapScript},
 						Env: []corev1.EnvVar{
 							{

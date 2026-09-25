@@ -106,7 +106,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -118,6 +123,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /
+            port: 8778
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/placement
           name: config
@@ -231,7 +243,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -243,6 +260,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /
+            port: 8778
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/placement
           name: config
@@ -357,7 +381,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -369,6 +398,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /
+            port: 8778
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/placement
           name: config
@@ -505,7 +541,12 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 15
           timeoutSeconds: 10
-        resources: {}
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -517,6 +558,13 @@ spec:
           runAsUser: 42424
           seccompProfile:
             type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /
+            port: 8778
+          periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/placement
           name: config

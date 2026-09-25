@@ -128,11 +128,11 @@ Deployment rollout, bootstrap Job).
 | namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` still reconciles to Ready |
 | network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources |
 | prometheus-stack | — (operator-level) | `WITH_PROMETHEUS=true` opt-in addon: kube-prometheus-stack scrapes the operator end to end |
-| resources | `keystone-resources` | `spec.deployment.resources` webhook defaulting and propagation to the Deployment |
+| resources | `keystone-resources` | Render-time per-resource defaults on the Deployment and a running Pod (no CPU limit, Burstable), propagation of a patched `spec.deployment.resources`, and default memory that follows `spec.uwsgi.processes` once the block is removed |
 | rolling-update-zero-downtime | `keystone-rolling-update` | Full graceful-termination chain keeps the API serving during an image-tag rolling update |
 | trust-flush | `keystone-trust-flush` | Trust-flush CronJob creation, schedule and suspend tracking `spec.trustFlush` |
 | trust-flush-default | `keystone-trust-flush-default` | Default-on posture: omitted `spec.trustFlush` materializes the hourly CronJob |
-| upgrade-abort | `keystone-upgrade-abort` | In-flight upgrade abort by reverting the image tag; wedge in `Expanding` recovers cleanly |
+| upgrade-abort | `keystone-upgrade-abort` | In-flight upgrade abort by reverting the image tag; the upgrade wedges in `Expanding` because its target is pulled from an unresolvable `registry.invalid` repository, whichever releases exist, and recovers cleanly |
 | upgrade-flow | `keystone-upgrade-flow` | Expand-migrate-contract phase progression with `installedRelease`/`targetRelease` bookkeeping |
 | uwsgi | `keystone-uwsgi` | `spec.uwsgi` defaulting and propagation into the uWSGI command line |
 
@@ -694,7 +694,7 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
   namespace, so `spec.namespace: ""` **opts out** of Chainsaw's plumbing
   entirely — Chainsaw creates no namespace, and the test applies the labelled
   namespace from `00-namespace.yaml`. This is a **different mechanism** from
-  [`namespace-scoped-rbac`](#namespace-scoped-rbac), which sets
+  [`namespace-scoped-rbac`](#test-suite-inventory), which sets
   `spec.namespace: openstack` to **pin** to a pre-existing namespace (Chainsaw
   uses, but does not create, that namespace). Both tests avoid a `chainsaw-*`
   per-test namespace, but the underlying mechanism differs (opt-out vs.
@@ -771,7 +771,7 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
   [`brownfield-database`](#brownfield-database) (brownfield-mode invariant),
   [`fernet-rotation`](#fernet-rotation) (manual rotation + catch shape).
   Related but **not** reused (different mechanism, see design note above):
-  [`namespace-scoped-rbac`](#namespace-scoped-rbac) pins to a pre-existing
+  [`namespace-scoped-rbac`](#test-suite-inventory) pins to a pre-existing
   namespace via `spec.namespace: openstack`; this test opts out via
   `spec.namespace: ""`.
 
@@ -1019,7 +1019,8 @@ tests/e2e/keystone/
 ├── resources/
 │   ├── chainsaw-test.yaml              Resource defaults and propagation
 │   ├── 00-keystone-cr.yaml             Keystone CR without explicit resources
-│   └── 01-patch-custom-resources.yaml  Patch with custom resource limits
+│   ├── 01-patch-custom-resources.yaml  Patch with custom resource limits
+│   └── 02-patch-uwsgi-processes.yaml   Patch removing resources, uwsgi.processes 4
 ├── rolling-update-zero-downtime/
 │   ├── chainsaw-test.yaml              Zero-downtime rolling update
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial image tag
@@ -1051,8 +1052,8 @@ tests/e2e/keystone/
 ├── upgrade-abort/
 │   ├── chainsaw-test.yaml              Abort an in-flight upgrade by reverting the image tag
 │   ├── 00-keystone-cr.yaml             Keystone CR at release 2026.1
-│   ├── 01-patch-stuck-upgrade.yaml     Patch to 2026.2 (no image — wedges in Expanding)
-│   └── 02-patch-abort.yaml             Patch back to 2026.1 to abort
+│   ├── 01-patch-stuck-upgrade.yaml     Patch to 2026.2 on registry.invalid (pull fails — wedges in Expanding)
+│   └── 02-patch-abort.yaml             Patch back to ghcr.io/c5c3/keystone:2026.1 to abort
 ├── upgrade-flow/
 │   ├── chainsaw-test.yaml              Expand-migrate-contract upgrade
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial release

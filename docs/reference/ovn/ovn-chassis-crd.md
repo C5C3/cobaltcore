@@ -42,7 +42,7 @@ its registration in the old Southbound database.
 | `encapType` | `string` (Enum `geneve`, `vxlan`) | no | `geneve` | The tunnel protocol between chassis. Geneve carries the variable-length option header OVN uses for its logical metadata; VXLAN has no room for it and so caps the logical topology. VXLAN exists for hardware that cannot terminate Geneve |
 | `updateStrategy` | [`OVNChassisUpdateStrategy`](#ovnchassisupdatestrategy) | no | `{}` | Paces the DaemonSet rollout. Restarting `ovn-controller` interrupts the dataplane programming on that node, so the pace is a per-deployment tradeoff |
 | `remoteProbeIntervalMs` | `int32` (Minimum=0) | no | `60000` | How long `ovn-controller` lets its Southbound connection sit idle before probing it. Zero disables the probe, which is what a chassis behind a connection-tracking middlebox needs when the probe is what tears the connection down |
-| `ovs` | [`*OVNChassisContainerSpec`](#ovnchassiscontainerspec) | no | `nil` | Tunes the Open vSwitch containers |
+| `ovs` | [`*OVNChassisContainerSpec`](#ovnchassiscontainerspec) | no | `nil` | Tunes the `ovs-vswitchd` container. When nil the operator renders no requests or limits for the container. The local `ovsdb-server` container beside it takes no resources from any field |
 | `controller` | [`*OVNChassisContainerSpec`](#ovnchassiscontainerspec) | no | `nil` | Tunes the `ovn-controller` container |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSets are created on. The CR itself, its status and its finalizer stay on the management cluster. Immutable, enforced by two CEL transition rules and by the webhook. It has to name the same cluster the `OVNCentral` names. See [Target Clusters](../target-clusters.md) |
 
@@ -82,7 +82,7 @@ the local Open vSwitch database.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits for the container. A block the CR leaves unset renders none, the same way the database container does: what a datapath needs depends on the traffic the node carries, and a default picked here would be wrong on most hardware |
+| `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits for the container. When nil the operator renders none, unless a LimitRange in the namespace fills them in: what a datapath needs depends on the traffic the node carries, so no default fits most hardware |
 
 ## Defaulting and validation
 

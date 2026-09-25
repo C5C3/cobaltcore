@@ -109,6 +109,7 @@ func buildMetadataDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 	digests workloadDigests,
 ) *appsv1.Deployment {
 	volumes, mounts := novaWorkloadVolumes(nova, art, roleMetadata)
+	processes, threads := deployment.EffectiveUWSGIConcurrency(nova.Spec.Metadata.UWSGI)
 	return deployment.BuildWorkload(deployment.WorkloadParams{
 		Namespace:      nova.Namespace,
 		Name:           metadataName(nova),
@@ -117,6 +118,7 @@ func buildMetadataDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 		PodAnnotations: novaMetadataPodAnnotations(nova, digests),
 		Deployment:     &nova.Spec.Metadata.Deployment,
 		Autoscaling:    nil,
+		DefaultMemory:  commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), processes, threads),
 		Container: deployment.ContainerParams{
 			Name:    "nova-metadata",
 			Image:   nova.Spec.Image.Reference(),

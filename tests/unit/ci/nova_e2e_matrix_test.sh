@@ -515,6 +515,7 @@ test_nova_image_filter_is_wired() {
   local block
   block=$(filter_block image_nova)
   assert_contains "the image build context is covered" "$block" "images/nova/**"
+  assert_contains "the compute image build context is covered" "$block" "images/nova-compute/**"
   assert_contains "the source patches are covered" "$block" "patches/nova/**"
 
   assert_eq "an image change rebuilds nova and nothing else" \
@@ -575,8 +576,8 @@ test_nova_leg_opts_into_the_broker() {
   # report ready off their broker connection. deploy-infra.sh installs the
   # broker only when it is asked to, and setup-e2e-infra reads the flag from
   # this step's env, so a Nova on a leg without it waits out its readiness on
-  # an unreachable transport. The NFS export and the host kernel modules stay
-  # off: no Nova suite mounts a volume or places a chassis.
+  # an unreachable transport. The NFS export stays off: no Nova suite mounts a
+  # volume.
   local setup
   setup=$(job_step e2e-operator "Setup E2E infrastructure")
 
@@ -588,13 +589,14 @@ test_nova_leg_opts_into_the_broker() {
   assert_contains "the NFS export stays cinder-only" "$setup" \
     "WITH_NFS: \${{ matrix.operator == 'cinder' && 'true' || '' }}"
 
-  # The kernel modules are loaded on the runner host itself, so a nova arm on
-  # that line would touch the host for suites that place no chassis.
+  # The compute-node-pool suite places a single-node chassis for the
+  # nova-compute it runs, and the chassis needs the openvswitch and geneve
+  # modules on the runner host.
   local modules
   modules=$(grep WITH_OVN_KERNEL_MODULES <<<"$setup")
   assert_not_empty "the kernel-module flag is readable" "$modules"
-  assert_not_contains "the chassis modules stay off the nova leg" "$modules" \
-    "nova"
+  assert_contains "the chassis modules are loaded on the nova leg" "$modules" \
+    "matrix.operator == 'nova'"
 }
 
 test_nova_leg_deploys_the_sibling_operators() {
@@ -722,14 +724,14 @@ test_nova_leg_deploys_the_sibling_operators() {
     in_b { print }' "$output")
 
   # nova-operator:dev and one nova image per release, then each sibling's
-  # operator image and its service images, then ovn:<pin> and the tempest
-  # image.
+  # operator image and its service images, then one nova-compute image per
+  # nova release, ovn:<pin> and the tempest image.
   local expected sibling
   expected=$((1 + $(release_count nova)))
   for sibling in keystone placement glance ovn neutron; do
     expected=$((expected + 1 + $(release_count "$sibling")))
   done
-  expected=$((expected + 2))
+  expected=$((expected + $(release_count nova) + 2))
   assert_eq "the nova leg resolves its own images plus every sibling's" \
     "$expected" "$(printf '%s\n' "$refs" | wc -l | tr -d ' ')"
   assert_contains "its own operator image" "$refs" \
@@ -816,6 +818,106 @@ test_nova_leg_narrows_parallelism_and_budget() {
   # the axis is ever renamed.
   assert_contains "runs-on branches on the same matrix key" "$job" \
     "runs-on: \${{ matrix.operator == 'keystone'"
+}
+
+test_nova_leg_runs_as_two_shards() {
+  echo "Test: the nova e2e leg runs its suites as two shards"
+
+  # compute-node-pool runs 27 minutes with no other suite beside it, and with
+  # it the leg overran its 150-minute wall on 2026-09-24. The leg runs as two
+  # shards since, each on a kind cluster of its own, and every way the split
+  # breaks is silent: a suite in neither shard is never applied, a suite in
+  # both costs a shard its wall, a publish job reading the sharded matrix
+  # pushes the nova image and chart twice, and a second upload under the
+  # first shard's artifact name fails.
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local script output
+  script=$(mktemp)
+  output=$(mktemp)
+  yq -r '.jobs.changes.steps[]
+    | select(.id == "e2e-operator-legs") | .run' "$CI_YAML" >"$script"
+
+  E2E_OPERATORS='{"operator":["keystone","nova"]}' GITHUB_OUTPUT="$output" \
+    bash "$script"
+  assert_eq "nova splits into shards 1 and 2, keystone stays one leg" \
+    '{"include":[{"operator":"keystone"},{"operator":"nova","shard":"1"},{"operator":"nova","shard":"2"}]}' \
+    "$(sed -n 's/^legs=//p' "$output")"
+
+  : >"$output"
+  E2E_OPERATORS='{"operator":["__none__"]}' GITHUB_OUTPUT="$output" \
+    bash "$script"
+  assert_eq "the resolver's empty-matrix sentinel passes through" \
+    '{"include":[{"operator":"__none__"}]}' \
+    "$(sed -n 's/^legs=//p' "$output")"
+
+  assert_contains "the changes job exports the sharded matrix" \
+    "$(job_block changes)" \
+    'e2e-operator-legs: ${{ steps.e2e-operator-legs.outputs.legs }}'
+  assert_contains "the e2e-operator job runs it" "$(job_block e2e-operator)" \
+    'matrix: ${{ fromJson(needs.changes.outputs.e2e-operator-legs) }}'
+  local publish
+  for publish in build-and-push merge-operator-images helm-push; do
+    assert_not_contains "$publish keeps the unsharded matrix" \
+      "$(job_block "$publish")" "e2e-operator-legs"
+  done
+  assert_contains "each shard uploads its report under a name of its own" \
+    "$(job_step e2e-operator "Upload JUnit report")" \
+    "name: e2e-\${{ matrix.operator }}\${{ matrix.shard && format('-{0}', matrix.shard) || '' }}-junit-report"
+
+  # Run the chainsaw step with chainsaw stubbed out to see the directories each
+  # shard passes. It runs in a scratch directory whose tests/ links to the
+  # repository's, so its mkdir -p _output/reports stays out of the checkout.
+  local stubs work one two all keystone shard_two name rc
+  stubs=$(mktemp -d)
+  work=$(mktemp -d)
+  ln -s "$PROJECT_ROOT/tests" "$work/tests"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$@"\n' >"$stubs/chainsaw"
+  chmod +x "$stubs/chainsaw"
+  yq -r '.jobs.e2e-operator.steps[]
+    | select(.name == "Run E2E tests") | .run' "$CI_YAML" >"$script"
+
+  one=$(cd "$work" && PATH="$stubs:$BASE_PATH" OPERATOR=nova SHARD=1 \
+    bash -e -o pipefail "$script" | grep '/$')
+  two=$(cd "$work" && PATH="$stubs:$BASE_PATH" OPERATOR=nova SHARD=2 \
+    bash -e -o pipefail "$script" | grep '/$')
+  all=$(cd "$PROJECT_ROOT" &&
+    printf '%s\n' tests/e2e/nova/*/ tests/e2e/nova-operator/*/ | sort)
+
+  assert_eq "every nova suite runs in exactly one shard" "$all" \
+    "$(printf '%s\n%s\n' "$one" "$two" | sort)"
+  assert_contains "compute-node-pool runs in shard 2" "$two" \
+    "tests/e2e/nova/compute-node-pool/"
+  assert_contains "the chart-level metrics suite runs in shard 1" "$one" \
+    "tests/e2e/nova-operator/metrics/"
+
+  # A name in shard 2's list that matches no directory moves nothing: the suite
+  # it meant stays in shard 1, and the split the wall is derived from is gone.
+  shard_two=$(job_step e2e-operator "Run E2E tests" |
+    sed -n 's/^ *shard_two="\(.*\)"$/\1/p')
+  assert_not_empty "shard 2 names its suites" "$shard_two"
+  for name in $shard_two; do
+    assert_contains "shard 2 runs $name" "$two" "tests/e2e/nova/$name/"
+  done
+
+  # A nova leg without a shard stops instead of running no suite.
+  (cd "$work" && PATH="$stubs:$BASE_PATH" OPERATOR=nova SHARD='' \
+    bash -e -o pipefail "$script" >/dev/null 2>&1)
+  rc=$?
+  assert_nonzero_exit "a nova leg without a shard fails" "$rc"
+
+  # And the other legs pass their directories as before.
+  keystone=$(cd "$work" && PATH="$stubs:$BASE_PATH" OPERATOR=keystone SHARD='' \
+    bash -e -o pipefail "$script" | grep '/$')
+  assert_eq "a leg without a shard runs both of its directories" \
+    "$(printf '%s\n' tests/e2e/keystone/ tests/e2e/keystone-operator/)" \
+    "$keystone"
+
+  rm -rf "$script" "$output" "$stubs" "$work"
 }
 
 test_nova_leg_dumps_the_siblings() {
@@ -907,10 +1009,13 @@ test_nova_leg_loads_the_tempest_image() {
 
   assert_eq "the tempest image is the last ref the nova leg resolves" \
     "ghcr.io/c5c3/tempest:2025.2" "$(printf '%s\n' "$refs" | tail -1)"
-  # Eighteen: the leg's own two, the five siblings' fifteen, the OVN daemon
-  # image and this one. A release added under releases/ moves the number.
-  assert_eq "it comes on top of the seventeen the leg already had" "18" \
+  # Twenty: the leg's own two, the five siblings' fifteen, the nova-compute
+  # image of both nova releases, the OVN daemon image and this one. A release
+  # added under releases/ moves the number.
+  assert_eq "it comes on top of the nineteen the leg already had" "20" \
     "$(printf '%s\n' "$refs" | wc -l | tr -d ' ')"
+  assert_contains "the 2025.2 compute image is resolved" "$refs" "ghcr.io/c5c3/nova-compute:2025.2"
+  assert_contains "the 2026.1 compute image is resolved" "$refs" "ghcr.io/c5c3/nova-compute:2026.1"
 
   # And the branch still gates: the cinder leg, whose suites run no client Job,
   # resolves no tempest ref and loads no gigabyte it never uses.
@@ -1090,7 +1195,7 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   assert_contains "each pass hands its operator to the dump script" "$dump" \
     'OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh'
 
-  # The wall. The leg loads eighteen images, runs eight operator deploys and
+  # The wall. The leg loads twenty images, runs eight operator deploys and
   # then three full-stack suites one after the other (parallel: 1), so 90
   # minutes — sized for the network leg, which runs ten lighter suites — would
   # arrive mid-suite: chainsaw is killed outright, no catch block runs and no
@@ -2188,6 +2293,7 @@ test_nova_e2e_filter_is_wired
 test_nova_leg_opts_into_the_broker
 test_nova_leg_deploys_the_sibling_operators
 test_nova_leg_narrows_parallelism_and_budget
+test_nova_leg_runs_as_two_shards
 test_nova_leg_dumps_the_siblings
 test_nova_leg_loads_the_tempest_image
 test_chaos_nova_leg_runs_the_nova_suites

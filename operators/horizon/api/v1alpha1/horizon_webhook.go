@@ -67,7 +67,7 @@ func (w *HorizonWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 // only partially filled when explicitly present, except spec.logging which is
 // materialized so downstream reconciler code never sees a nil pointer.
 func (w *HorizonWebhook) Default(_ context.Context, obj *Horizon) error {
-	// Shared-type defaults (replicas, container resources) are applied by the
+	// Shared-type defaults (replicas) are applied by the
 	// commonv1.DeploymentSpec Default method so they cannot drift across
 	// operators.
 	obj.Spec.Deployment.Default()

@@ -28,10 +28,9 @@ spec:
   api:
     deployment:
       replicas: 2
-      # Mirror tests/tempest/neutron-2025-2/04-neutron-cr.yaml: with resources
-      # unset the webhook fills in the shared defaults (500m CPU, 512Mi memory,
-      # internal/common/types/workload.go), which puts the four uWSGI workers
-      # below into half a core and one 512Mi cgroup. The port-forward pins every
+      # Mirror tests/tempest/neutron-2025-2/04-neutron-cr.yaml: the operator sets
+      # no CPU limit, so this block exists for its memory. The four uWSGI
+      # workers below share one memory cgroup, and the port-forward pins every
       # stestr worker to a single pod, so that pod's budget has to cover the
       # whole suite and the second replica takes no traffic.
       resources:
@@ -39,7 +38,6 @@ spec:
           cpu: 200m
           memory: 512Mi
         limits:
-          cpu: "2"
           memory: 1536Mi
     # cinder-api serves its API from uWSGI, so this pod's request capacity is
     # replicas x processes. The webhook default (2) is at the stestr worker count

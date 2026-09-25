@@ -30,7 +30,8 @@
 # hack/ci-deploy-korc.sh parses this same commit so the CI installer and the Flux
 # source stay in lockstep. The container image in releases/k-orc.yaml (pinned by
 # digest, with newTag: commit-<short sha> as its drift anchor) is NOT independently
-# Renovate-tracked; the ci-deploy-korc.sh drift guard plus e2e keep it honest, so a
+# Renovate-tracked; the ci-deploy-korc.sh drift guard (run offline on every pull
+# request by tests/unit/deploy/korc_pin_lockstep_test.sh) plus e2e keep it honest, so a
 # Renovate commit-bump PR fails CI until the image is re-pinned in lockstep.
 ---
 apiVersion: source.toolkit.fluxcd.io/v1

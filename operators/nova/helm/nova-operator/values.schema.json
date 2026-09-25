@@ -172,7 +172,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Enable admission webhooks for Nova CR validation and defaulting",
+          "description": "Enable admission webhooks for Nova and NovaCompute CR validation and defaulting",
           "default": true
         }
       }

@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A toleration with operator Exists and no key tolerates every taint, the
+# offboarding one included, and is rejected by the validating webhook under
+# the same message. The webhook matches the taint the way
+# openstack-hypervisor-operator does, so the wildcard cannot walk past it.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: pool
+spec:
+  novaRef:
+    name: nova
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: a
+  tolerations:
+  - operator: Exists

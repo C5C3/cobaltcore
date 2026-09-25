@@ -164,8 +164,12 @@ empty until the next `Cinder` is created.
 
 The db-purge pair fills on the first firing of the `{name}-db-purge` CronJob,
 daily at `1 0 * * *` unless `spec.dbPurge.schedule` says otherwise. Only the Jobs
-that CronJob controls are counted, so a Job created by hand from the same
-template is ignored. The service-remove pair needs a backend detach:
+that CronJob controls are counted. A run triggered with
+`kubectl create job --from=cronjob/controlplane-cinder-db-purge` is one of them,
+because kubectl copies the template's labels and names the CronJob as the Job's
+controller, so it fills the pair on the spot and moves `DBPurgeReady` like a
+scheduled run. A Job applied from a copy of the template, without that owner
+reference, is not counted. The service-remove pair needs a backend detach:
 [Attach an NFS Backend to Cinder](./attach-an-nfs-backend.md) walks one, and the
 `{cinder}-{backend}-service-remove` Job it spawns is what fills the pair.
 

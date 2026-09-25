@@ -51,7 +51,7 @@ The custom managers cover:
 - **Test tooling in `hack/`** — Chainsaw, Flux CLI, kind, and kubectl versions in `hack/install-test-deps.sh`, plus `FLUX_OPERATOR_VERSION` in `hack/deploy-infra.sh`.
 - **kind deploy components** — `flux-web.yaml`, `envoy-gateway.yaml`, and `headlamp.yaml` under `deploy/kind/base/`.
 - **K-ORC Flux source** — the `ref.commit` of the K-ORC `GitRepository` in `deploy/flux-system/sources/k-orc.yaml` (git-refs on upstream `main`, digest updates). This closes a drift gap: without it the Flux-applied K-ORC CRDs could fall behind the `k-orc/openstack-resource-controller` Go module the operator compiles against. A commit bump is not complete on its own: the `commit-<short sha>` image tag and digest in `deploy/flux-system/releases/k-orc.yaml` and the Go pseudo-version in `operators/c5c3/go.mod` move in the same change, and the `hack/ci-deploy-korc.sh` drift guard fails CI until the image is re-pinned.
-- **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`.
+- **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`, plus the envtest Kubernetes minor (`ENVTEST_K8S_VERSION`), which follows the `envtest-vX.Y.Z` releases of `kubernetes-sigs/controller-tools` that `setup-envtest` downloads its assets from.
 - **`renovate-config-validator` pin** — the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
 - **OVN image pin** — the `ARG OVN_VERSION` line in `images/ovn/Dockerfile` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix). A second manager tracks the same upstream tag in `defaultOVNVersion`, the constant in `operators/ovn/internal/controller/image.go` that the ovn-operator resolves for a CR leaving `spec.image` unset. It carries the bare version, so its versioning regex expects no `v` and an `extractVersionTemplate` strips the one the tag has. Both pins are grouped under `OVN LTS patch releases`, so they move in a single PR; `TestDefaultOVNVersionMatchesDockerfilePin` fails when they diverge.
 - **noVNC console assets** — the `ARG NOVNC_VERSION` and `ARG NOVNC_COMMIT` lines in `images/nova/Dockerfile` (github-tags on `novnc/noVNC`, regex versioning because the tags carry a `v` prefix). One `matchStrings` entry spans both adjacent lines, so the tag and the commit it names move in a single PR. Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged, because the console page is user-facing and no e2e suite loads it before #1018. Digest updates are disabled: a tag moved upstream to another commit is not a release, and the pin stays on the reviewed commit.
@@ -69,6 +69,18 @@ line. Patch bumps there wait the 3-day cooldown but are **not** automerged, for 
 reason below. `build-images.yaml` runs on every `pull_request` touching `images/**`,
 builds the amd64 image and runs `tests/container-images/verify_ovn.sh` against it, so
 the reviewer merges on a green build.
+
+Go module PRs run two post-update options. `gomodTidy` runs `go mod tidy` in the
+module whose `go.mod` Renovate updates. `gomodTidyAll` then runs it in every module
+that points at that module through a local `replace` directive, in dependency order:
+every operator module replaces `internal/common`, and `operators/c5c3` also replaces
+the service operators. A bump in `internal/common` that raises an indirect requirement
+of the operators therefore arrives tidy in every module. Both options stay listed
+because the validator does not check `postUpdateOptions` values: a hosted bot too old
+for `gomodTidyAll` would silently skip it, and `gomodTidy` still runs. `go.work.sum` is
+not tracked (see `.gitignore`). The go command appends a checksum to it whenever a
+workspace build needs one that no member `go.sum` holds, so its content depends on
+which command ran, and Renovate's gomod manager writes it only when it vendors.
 
 Separately, the native `nix` manager keeps the development flake fresh: it maintains
 `flake.lock` (the pinned `nixpkgs` revision) via lock-file maintenance, opening a grouped
@@ -156,8 +168,8 @@ sed -i.bak 's/^go 1\.25\.10$/go 1.26.3/' \
   operators/c5c3/go.mod
 rm -f go.work.bak internal/common/go.mod.bak operators/*/go.mod.bak
 
-# 2. Resync the workspace. This refreshes `go.work.sum` and the indirect
-#    requirement lists in each `go.mod`.
+# 2. Resync the workspace. This refreshes the indirect requirement lists
+#    in each `go.mod`.
 go work sync
 
 # 3. Build every module from its own directory (the workspace cannot be

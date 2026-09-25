@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
@@ -295,19 +297,30 @@ func TestBuildAgentDaemonSet_TransportDigestAnnotation(t *testing.T) {
 }
 
 // A CR that names no resources still lands in the Burstable QoS class: an
-// unbounded agent on a compute node competes with the instances it serves.
+// unbounded agent on a compute node competes with the instances it serves. The
+// defaults fill each resource on its own, so a CPU-only block still gets its
+// memory, and a block naming both is used as written.
 func TestEffectiveAgentResources_FallsBackToTheSharedDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	defaults := effectiveAgentResources(validAgent())
-	g.Expect(defaults.Requests).To(HaveKey(corev1.ResourceCPU))
-	g.Expect(defaults.Limits).To(HaveKey(corev1.ResourceMemory))
+	g.Expect(effectiveAgentResources(validAgent())).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
 
-	cr := validAgent()
-	cr.Spec.Resources = corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: defaults.Limits[corev1.ResourceCPU]},
+	cpuOnly := validAgent()
+	cpuOnly.Spec.Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m")},
 	}
-	g.Expect(effectiveAgentResources(cr)).To(Equal(cr.Spec.Resources))
+	g.Expect(effectiveAgentResources(cpuOnly)).To(Equal(corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
+	}))
+	g.Expect(cpuOnly.Spec.Resources.Limits).To(BeNil(), "the fill must not write into the CR")
+
+	full := validAgent()
+	full.Spec.Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("128Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("256Mi")},
+	}
+	g.Expect(effectiveAgentResources(full)).To(Equal(full.Spec.Resources))
 }
 
 // The DaemonSet must select its own pods rather than the chassis pods sharing
@@ -321,4 +334,19 @@ func TestAgentSelectorLabels_NarrowByComponent(t *testing.T) {
 	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/instance", testAgentName))
 	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/component", metadataAgentComponent))
 	g.Expect(agentDaemonSetName(validAgent())).To(Equal(testAgentName + "-metadata-agent"))
+}
+
+// TestBuildAgentDaemonSet_RendersResourceDefaults verifies that both agent
+// containers, the wait-for-chassis init container and the agent, render 368Mi
+// as memory request and limit beside a 100m CPU request and no CPU limit when
+// spec.resources names nothing.
+func TestBuildAgentDaemonSet_RendersResourceDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ds := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "")
+
+	g.Expect(ds.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+	g.Expect(ds.Spec.Template.Spec.InitContainers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
+	g.Expect(ds.Spec.Template.Spec.Containers).To(HaveLen(1))
+	g.Expect(ds.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
 }

@@ -5,4 +5,10 @@
       "mutatePath" "/mutate-nova-openstack-c5c3-io-v1alpha1-nova"
       "validatePath" "/validate-nova-openstack-c5c3-io-v1alpha1-nova"
       "apiGroup" "nova.openstack.c5c3.io"
-      "resource" "novas") }}
+      "resource" "novas"
+      "additionalWebhooks" (list (dict
+        "mutatingWebhookName" "mnovacompute.kb.io"
+        "validatingWebhookName" "vnovacompute.kb.io"
+        "mutatePath" "/mutate-nova-openstack-c5c3-io-v1alpha1-novacompute"
+        "validatePath" "/validate-nova-openstack-c5c3-io-v1alpha1-novacompute"
+        "resource" "novacomputes"))) }}

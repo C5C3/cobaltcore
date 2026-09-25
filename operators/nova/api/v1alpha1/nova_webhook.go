@@ -213,7 +213,7 @@ func (w *NovaWebhook) Default(_ context.Context, obj *Nova) error {
 		obj.Spec.ConsoleProxy.Deployment = nil
 	}
 
-	// Shared-type defaults (replicas, container resources) are applied by the
+	// Shared-type defaults (replicas) are applied by the
 	// commonv1.DeploymentSpec Default method so they cannot drift across
 	// operators. Every process gets them: they are sized independently.
 	obj.Spec.API.Deployment.Default()

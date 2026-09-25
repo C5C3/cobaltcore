@@ -6,17 +6,22 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
@@ -79,6 +84,50 @@ func expectNoSyncJob(t *testing.T, r *PlacementReconciler) {
 	var syncJob batchv1.Job
 	err := r.Get(context.Background(), syncJobKey, &syncJob)
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "no migration Job may run on this path")
+}
+
+// readyMariaDBCluster returns the MariaDB cluster managedPlacement references,
+// reporting Ready so the provisioning flow passes its cluster gate.
+func readyMariaDBCluster() *mariadbv1alpha1.MariaDB {
+	cluster := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: "default"},
+	}
+	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Running",
+	})
+	return cluster
+}
+
+// readyPlacementDatabase returns the Database CR the provisioning flow applies
+// for the shared fixture, reporting Ready so the flow reaches the User step.
+func readyPlacementDatabase() *mariadbv1alpha1.Database {
+	db := &mariadbv1alpha1.Database{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-placement", Namespace: "default"},
+	}
+	meta.SetStatusCondition(&db.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Created",
+	})
+	return db
+}
+
+// failingUserApplyReconciler builds a reconciler whose server-side apply of the
+// shared fixture's User CR fails with boom, so the wrapping of the error can be
+// asserted. The provisioning flow writes through Apply, not Create.
+func failingUserApplyReconciler(boom error, objs ...client.Object) *PlacementReconciler {
+	c := placementFakeClientBuilder(objs...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration,
+				opts ...client.ApplyOption,
+			) error {
+				if co, ok := obj.(client.Object); ok &&
+					co.GetObjectKind().GroupVersionKind().Kind == "User" && co.GetName() == "test-placement" {
+					return boom
+				}
+				return cl.Apply(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	return &PlacementReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(50)}
 }
 
 func TestReconcileDatabase_SyncJobCommandAndEnv(t *testing.T) {
@@ -198,6 +247,191 @@ func TestReconcileDatabase_ProvisionGatesOnClusterReady(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(database.ReasonClusterNotReady))
 	expectNoSyncJob(t, r)
+}
+
+// TestPlacementMaxUserConnections pins the connection-cap arithmetic. The cap is
+// what the operator asks mariadb-operator for, and a value below the real
+// concurrency does not degrade: the process that opens the connection past it
+// gets MySQL error 1226 and the Nova scheduling call it serves answers 500.
+func TestPlacementMaxUserConnections(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*placementv1alpha1.Placement)
+		want    int32
+		because string
+	}{
+		{
+			name:    "default topology",
+			want:    18,
+			because: "3 API pods plus one surge run 2 single-threaded processes at two connections each, plus the db-sync Job",
+		},
+		{
+			name: "autoscaling raises the pod ceiling",
+			mutate: func(p *placementv1alpha1.Placement) {
+				p.Spec.Deployment.Replicas = 3
+				p.Spec.Autoscaling = &placementv1alpha1.AutoscalingSpec{MaxReplicas: 5}
+			},
+			want:    26,
+			because: "an HPA owns the replica count, so the cap is sized for its ceiling rather than for spec.deployment.replicas",
+		},
+		{
+			name:    "raised replica count",
+			mutate:  func(p *placementv1alpha1.Placement) { p.Spec.Deployment.Replicas = 5 },
+			want:    26,
+			because: "each added pod brings two processes at two connections each",
+		},
+		{
+			name: "uWSGI threads and processes multiply",
+			mutate: func(p *placementv1alpha1.Placement) {
+				p.Spec.APIServer = &placementv1alpha1.APIServerSpec{
+					UWSGI: &placementv1alpha1.UWSGISpec{Processes: 4, Threads: 2},
+				}
+			},
+			want:    66,
+			because: "every thread of every process counts twice: (3+1)*4*2*2+2",
+		},
+		{
+			name:    "single replica",
+			mutate:  func(p *placementv1alpha1.Placement) { p.Spec.Deployment.Replicas = 1 },
+			want:    10,
+			because: "the surge pod doubles a single-replica fleet during a rollout",
+		},
+		{
+			name:    "zero replicas fall back to the default",
+			mutate:  func(p *placementv1alpha1.Placement) { p.Spec.Deployment.Replicas = 0 },
+			want:    18,
+			because: "an unset replica count is the default of 3, never a fleet of zero",
+		},
+		{
+			name: "zero process and thread counts fall back to the defaults",
+			mutate: func(p *placementv1alpha1.Placement) {
+				p.Spec.APIServer = &placementv1alpha1.APIServerSpec{
+					UWSGI: &placementv1alpha1.UWSGISpec{Processes: 0, Threads: 0},
+				}
+			},
+			want:    18,
+			because: "the command renders 2 processes and 1 thread for non-positive counts, and the cap follows it",
+		},
+		{
+			name:    "nil apiServer uses the uWSGI defaults",
+			mutate:  func(p *placementv1alpha1.Placement) { p.Spec.APIServer = nil },
+			want:    18,
+			because: "an absent apiServer block runs the default 2 processes of 1 thread",
+		},
+		{
+			name: "nil uwsgi uses the uWSGI defaults",
+			mutate: func(p *placementv1alpha1.Placement) {
+				p.Spec.APIServer = &placementv1alpha1.APIServerSpec{UWSGI: nil}
+			},
+			want:    18,
+			because: "an absent uwsgi block runs the default 2 processes of 1 thread",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			placement := testPlacement()
+			if tc.mutate != nil {
+				tc.mutate(placement)
+			}
+			g.Expect(placementMaxUserConnections(placement)).To(Equal(tc.want), tc.because)
+		})
+	}
+}
+
+// TestReconcileDatabase_SizesTheUserConnectionCap verifies that the User CR the
+// provisioning flow creates carries the cap sized from the CR's topology. Left
+// unset, the mariadb-operator CRD default of 10 applies, which the default fleet
+// exceeds under load.
+func TestReconcileDatabase_SizesTheUserConnectionCap(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*placementv1alpha1.Placement)
+		want   int32
+	}{
+		{name: "default topology", want: 18},
+		{
+			name: "four processes",
+			mutate: func(p *placementv1alpha1.Placement) {
+				p.Spec.APIServer = &placementv1alpha1.APIServerSpec{
+					UWSGI: &placementv1alpha1.UWSGISpec{Processes: 4},
+				}
+			},
+			want: (3+1)*4*1*2 + 2,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			placement := managedPlacement()
+			if tc.mutate != nil {
+				tc.mutate(placement)
+			}
+			r := newPlacementTestReconciler(placement, readyMariaDBCluster(), readyPlacementDatabase())
+
+			_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			user := &mariadbv1alpha1.User{}
+			g.Expect(r.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-placement"}, user)).To(Succeed())
+			g.Expect(user.Spec.MaxUserConnections).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestReconcileDatabase_UserApplyErrorPropagates verifies that a failed apply of
+// the sized User CR surfaces as a reconcile error wrapping the cause, and that
+// no migration Job runs against a user whose cap was never written.
+func TestReconcileDatabase_UserApplyErrorPropagates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	placement := managedPlacement()
+	boom := errors.New("boom")
+	r := failingUserApplyReconciler(boom, placement, readyMariaDBCluster(), readyPlacementDatabase())
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, boom)).To(BeTrue(), "the apply error must stay in the chain")
+	g.Expect(err.Error()).To(ContainSubstring("ensuring database user"))
+	expectNoSyncJob(t, r)
+}
+
+// TestReconcileDatabase_NoUserOutsideStaticManaged verifies that the operator
+// sizes no User where it owns none: a brownfield database is not the
+// operator's to provision, and in Dynamic credentials mode the OpenBao engine
+// issues the users.
+func TestReconcileDatabase_NoUserOutsideStaticManaged(t *testing.T) {
+	cases := []struct {
+		name      string
+		placement func() *placementv1alpha1.Placement
+	}{
+		{name: "brownfield", placement: testPlacement},
+		{
+			name: "dynamic credentials",
+			placement: func() *placementv1alpha1.Placement {
+				p := managedPlacement()
+				p.Spec.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+				return p
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			placement := tc.placement()
+			r := newPlacementTestReconciler(placement, readyMariaDBCluster(), readyPlacementDatabase())
+
+			_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			users := &mariadbv1alpha1.UserList{}
+			g.Expect(r.List(context.Background(), users, client.InNamespace("default"))).To(Succeed())
+			g.Expect(users.Items).To(BeEmpty())
+		})
+	}
 }
 
 func TestReconcileDatabase_FreshInstallRunsOneJob(t *testing.T) {

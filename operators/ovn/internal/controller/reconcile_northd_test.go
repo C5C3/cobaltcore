@@ -10,7 +10,9 @@ import (
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -18,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
@@ -135,9 +138,50 @@ func TestEffectiveNorthd_NormalizesTheReplicaCountAndLeavesTheCRAlone(t *testing
 	northd := effectiveNorthd(cr)
 
 	g.Expect(northd.Deployment.Replicas).To(Equal(commonv1.DefaultReplicas))
-	g.Expect(northd.Deployment.Resources).NotTo(BeNil(),
-		"a container without requests lands in the BestEffort QoS class")
+	g.Expect(northd.Deployment.Resources).To(BeNil(),
+		"resources are resolved when the Deployment is rendered")
 	g.Expect(cr.Spec.Northd.Deployment.Replicas).To(BeEquivalentTo(0),
 		"the resolution happens on a copy; the CR is written back at the end of the pass")
 	g.Expect(cr.Spec.Northd.Deployment.Resources).To(BeNil())
+}
+
+// TestBuildNorthdDeployment_RendersResourceDefaults verifies the render-time
+// defaults of the northd container: one process at the default single thread
+// comes to 368Mi as memory request and limit beside a 100m CPU request and no
+// CPU limit, four threads come to 464Mi, and a block that names only a memory
+// limit keeps it, gains the CPU request, and gets no memory request beside the
+// limit.
+func TestBuildNorthdDeployment_RendersResourceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		threads   int32
+		resources *corev1.ResourceRequirements
+		want      corev1.ResourceRequirements
+	}{
+		{name: "no block", want: testutil.RenderedResourceDefaults("368Mi")},
+		{name: "four threads", threads: 4, want: testutil.RenderedResourceDefaults("464Mi")},
+		{
+			name: "memory limit only",
+			resources: &corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+			},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cr := testOVNCentral()
+			if tc.threads != 0 {
+				cr.Spec.Northd.Threads = tc.threads
+			}
+			cr.Spec.Northd.Deployment.Resources = tc.resources
+
+			deploy := buildNorthdDeployment(cr)
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(tc.want))
+		})
+	}
 }

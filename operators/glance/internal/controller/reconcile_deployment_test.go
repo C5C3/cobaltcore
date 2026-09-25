@@ -28,6 +28,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
@@ -688,6 +689,38 @@ func TestBuildGlanceDeployment_ProbesOnHealthcheck(t *testing.T) {
 	}
 }
 
+// TestBuildGlanceDeployment_StartupProbeCoversColdStart covers the cold start of
+// the API in both launch modes. Every worker imports glance, which under a CPU
+// limit set on the container or on a contended node took 66 to 90 seconds under
+// uWSGI (measured in a kind pod at 120m CPU). The liveness probe alone restarts
+// the container 55 seconds after it started, so the startup probe holds it back.
+func TestBuildGlanceDeployment_StartupProbeCoversColdStart(t *testing.T) {
+	for _, release := range []string{"2025.2", "2026.1"} {
+		t.Run(release, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			deploy := buildGlanceDeployment(deployGlance(release), testArtifacts(), "", "")
+			var api *corev1.Container
+			for i, c := range deploy.Spec.Template.Spec.Containers {
+				if c.Name == "glance-api" {
+					api = &deploy.Spec.Template.Spec.Containers[i]
+				}
+			}
+			g.Expect(api).NotTo(BeNil(), release+": glance-api container")
+
+			probe := api.StartupProbe
+			g.Expect(probe).NotTo(BeNil(), release+": startup probe")
+			g.Expect(probe.HTTPGet).NotTo(BeNil(), release+": startup probe handler")
+			g.Expect(probe.HTTPGet.Path).To(Equal("/healthcheck"), release+": startup probe path")
+			g.Expect(probe.HTTPGet.Port.IntVal).To(Equal(glanceAPIPort), release+": startup probe port")
+			g.Expect(probe.FailureThreshold*probe.PeriodSeconds).To(BeNumerically(">=", 300),
+				release+": startup budget in seconds")
+			g.Expect(probe.TimeoutSeconds).To(BeNumerically(">", 1),
+				release+": a loading WSGI app holds a GET past the kubelet's 1s default")
+		})
+	}
+}
+
 func TestReconcileDeployment_ServiceAndPDBEnsured(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1051,4 +1084,45 @@ func TestReconcileDeployment_EmptyPhaseNoFlipStampsEndpoint(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonDeploymentReady))
 	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
 		NotTo(ContainElement(ContainSubstring("DeploymentRolloutComplete")))
+}
+
+// TestBuildGlanceDeployment_RendersResourceDefaults verifies that a CR whose
+// spec.deployment.resources names nothing renders 400Mi per process in both
+// launch modes, beside a 100m CPU request and no CPU limit. Two uWSGI processes
+// at 2026.1 and two eventlet workers at 2025.2 both come to 1Gi. A
+// spec.apiServer that sets four eventlet workers and one uWSGI process shows
+// that each release counts only its own launch mode: 624Mi at 2026.1, 1824Mi at
+// 2025.2.
+func TestBuildGlanceDeployment_RendersResourceDefaults(t *testing.T) {
+	splitCounts := &glancev1alpha1.APIServerSpec{
+		Workers: ptr.To(int32(4)),
+		UWSGI:   &glancev1alpha1.UWSGISpec{Processes: 1},
+	}
+	for _, tc := range []struct {
+		name      string
+		release   string
+		apiServer *glancev1alpha1.APIServerSpec
+		want      string
+	}{
+		{name: "uWSGI defaults", release: "2026.1", want: "1Gi"},
+		{name: "eventlet defaults", release: "2025.2", want: "1Gi"},
+		{name: "uWSGI counts uwsgi.processes", release: "2026.1", apiServer: splitCounts, want: "624Mi"},
+		{name: "eventlet counts workers", release: "2025.2", apiServer: splitCounts, want: "1824Mi"},
+		{
+			name:      "uWSGI counts threads",
+			release:   "2026.1",
+			apiServer: &glancev1alpha1.APIServerSpec{UWSGI: &glancev1alpha1.UWSGISpec{Processes: 2, Threads: 2}},
+			want:      "1088Mi",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			glance := deployGlance(tc.release)
+			glance.Spec.APIServer = tc.apiServer
+
+			deploy := buildGlanceDeployment(glance, testArtifacts(), "", "")
+
+			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults(tc.want)))
+		})
+	}
 }

@@ -265,6 +265,23 @@ Title: docs: user-focused quality review findings (<scope>)
 - ...
 ```
 
+### 7. File the issue (only after confirmation)
+
+Filing publishes the review, so show the draft first and file it only
+when the user confirms. Then:
+
+1. Write the body to a scratch file (not into the repo) and measure it:
+   `wc -m < body.md`. GitHub rejects an issue body or comment longer than
+   65,536 characters; target at most ~63,000. A full-corpus review can
+   exceed that. Condense before splitting: one line per LOW finding,
+   evidence quoted once and referenced afterwards, the coverage checklist
+   collapsed to per-directory counts with only the `blocked` rows spelled
+   out. If it still does not fit, file the HIGH and MEDIUM findings in the
+   issue and post the LOW findings and the coverage checklist as a
+   follow-up comment (also under the limit).
+2. `gh issue create --title "docs: user-focused quality review findings (<scope>)" --label documentation --body-file body.md`
+3. Report the issue URL. Do not also paste the full body into the chat.
+
 ## Branching guidance
 
 - If scope is very large, split review execution into batches but keep one final
@@ -317,3 +334,9 @@ issue draft with:
 - Pair with [[check-doc-consistency]] for contradiction detection.
 - Pair with [[check-doc-structure]] for nav/frontmatter/link integrity.
 - Pair with [[check-doc-expressions]] for prose clarity refinement.
+- Run `bash .claude/skills/check-doc-structure/scripts/audit-doc-structure.sh`
+  before the review: its broken anchors, dead sidebar links, and orphan
+  pages go into the issue as Information-architect findings with the
+  script output as evidence, and the review time goes to what a script
+  cannot see.
+- Hand the filed issue to [[fix-docs]] to action it.

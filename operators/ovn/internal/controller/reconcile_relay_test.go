@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
@@ -290,4 +291,17 @@ func TestReconcileRelay_ClearedSpecDeletesTheCertificate(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(apierrors.IsNotFound(r.Get(ctx, centralKey("ovn-sb-relay"), &certmanagerv1.Certificate{}))).
 		To(BeTrue())
+}
+
+// TestBuildRelayDeployment_RendersResourceDefaults verifies that a relay whose
+// spec.relay.resources is nil renders the defaults for one single-threaded
+// process: 368Mi as memory request and limit, a 100m CPU request, no CPU limit.
+func TestBuildRelayDeployment_RendersResourceDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := relayOVNCentral()
+	cr.Spec.Relay.Resources = nil
+
+	deploy := buildRelayDeployment(cr)
+
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
 }

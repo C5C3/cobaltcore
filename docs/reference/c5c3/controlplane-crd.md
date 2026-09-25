@@ -280,9 +280,13 @@ projects a production-shaped Galera HA cluster (3 replicas, `galera.enabled`,
 `100Gi` storage), while `database.replicas: 1` projects a single-instance,
 non-Galera MariaDB so the fresh-create path schedules on a constrained cluster
 such as a single-node kind. `cache.replicas` (also default `3`) drives the
-Memcached replica count the same way. Both are only honoured in managed mode;
+Memcached replica count. Both are only honoured in managed mode;
 storage stays at `100Gi` regardless of the replica count, and a ControlPlane
 that adopts a pre-existing MariaDB/Memcached leaves its topology untouched.
+Unlike `database.replicas`, which is immutable after creation, `cache.replicas`
+stays mutable: a change is re-projected in place, in both directions, onto every
+Memcached the ControlPlane owns, whether in its own namespace, in a service
+namespace, or on a target cluster.
 
 > **`database.secretRef` is operator-owned in managed mode.** The
 > `DatabaseSpec` is projected onto the Keystone CR verbatim **except** for its
@@ -754,6 +758,16 @@ warning on every apply. A production key manager belongs on
 KMS unseal and a real replica count. See
 [reconcileBarbican](./controlplane-reconciler.md#reconcilebarbican) for the
 ensemble the reconciler projects around it.
+
+The `OpenBaoTenant` the operator creates to admit the service namespace is a
+self-service tenant in that namespace. The openbao-operator accepts quota and
+LimitRange overrides only from a tenant in its own namespace, so a namespace a
+ControlPlane-created tenant admits keeps the provisioner's default LimitRange:
+every container there without a CPU limit gets the openbao-operator's 500m
+default CPU limit, service containers included. The kind overlay's tenant for
+`openstack` lives in the operator namespace and drops that limit (see
+[OpenBao Proving Instance](../infrastructure/infrastructure-manifests.md#openbao-proving-instance)),
+and the operator creates no tenant of its own in a namespace one already admits.
 
 ### BarbicanExternalSecretStoreSpec
 
@@ -1470,7 +1484,7 @@ same path as a shared instance:
 | Guarantee | How it holds for a dedicated instance |
 | --- | --- |
 | Provisioning | `reconcileInfrastructure` ensures a `MariaDB` / `Memcached` child CR per managed instance a service **resolves to**, shared and dedicated alike, sized from **that instance's** `replicas` / `storageSize`. Opting out is a genuine opt-out: a shared instance every service has left has no consumer, so it is not provisioned. When every declared database consumer — Keystone, Glance, Placement, Barbican — takes a dedicated database, the shared cluster is never created — it would otherwise be an orphan (3 Galera replicas, 100Gi by default) that nothing talks to and readiness still waits for. |
-| Ownership and teardown | The child carries a controller owner reference to the ControlPlane with `blockOwnerDeletion`, so it is garbage-collected with the ControlPlane. A pre-existing CR under the same name is **adopted read-only** and never GC-claimed. |
+| Ownership and teardown | In the ControlPlane's own namespace the child carries a controller owner reference to the ControlPlane with `blockOwnerDeletion`, so it is garbage-collected with the ControlPlane. In a service namespace or on a target cluster it carries the ownership labels `c5c3.io/controlplane-name` / `c5c3.io/controlplane-namespace` instead, and the finalizer-driven teardown deletes it (see [Ownership and garbage collection](#ownership-and-garbage-collection), and for a target cluster [Ownership and teardown on the target](../target-clusters.md#ownership-and-teardown-on-the-target)). A pre-existing CR under the same name that carries neither is **adopted read-only** and never GC-claimed. |
 | Readiness gating | `InfrastructureReady` is `True` only once **every** managed instance is Ready. A service whose dedicated database is still converging holds the condition `False`, so its projection is deferred — it waits for the database it actually talks to, not just for the shared cluster. |
 | Credentials | The service child's `spec.database` is projected from the dedicated spec, so credential provisioning and rotation follow the instance the service connects to (see [Credential modes](#credential-modes) below). |
 | Network policy | The service operators derive their database/cache egress rules from the projected `spec.database` / `spec.cache`, so they follow the dedicated instance automatically. |
@@ -1869,11 +1883,11 @@ Declares the K-ORC admin application-credential policy.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `restricted` | `*bool` | No | `true` | Controls whether the application credential is restricted (least-privilege, unable to create further application credentials). Defaulted to `true` by **both** the `+kubebuilder:default` marker and the defaulting webhook. The pointer distinguishes "unset" (→ default `true`) from an explicit `false`, which is preserved. See the [restricted → unrestricted inversion](#restricted--unrestricted-inversion) note. |
+| `restricted` | `*bool` | No | `true` | Controls whether the application credential is restricted (least-privilege, unable to create further application credentials). Defaulted to `true` by **both** the `+kubebuilder:default` marker and the defaulting webhook. The pointer distinguishes "unset" (→ default `true`) from an explicit `false`, which is preserved. See the [restricted → unrestricted inversion](#restricted-unrestricted-inversion) note. |
 | `accessRules` | [`[]AccessRule`](#accessrule) | No | `nil` | Optionally narrows the application credential to a specific set of service/method/path rules. When empty, the credential is not constrained by access rules. |
 | `rotation` | [`RotationSpec`](#rotationspec) | Yes | — | How the application credential is rotated. |
 
-### restricted → unrestricted inversion
+### restricted → unrestricted inversion {#restricted-unrestricted-inversion}
 
 The ControlPlane spec exposes a **`restricted`** flag (the safe, least-privilege
 posture). K-ORC's `ApplicationCredentialResourceSpec` exposes the inverse field,
@@ -2891,7 +2905,7 @@ Set by `reconcileInfrastructure`.
 | `False` | `MemcachedError` | Error create-or-updating the Memcached child. |
 | `False` | `WaitingForMessaging` | The managed `RabbitmqCluster` is ensured but does not report `AllReplicasReady` yet. Message: `RabbitmqCluster "<name>" in namespace "<ns>" (spec.infrastructure.messaging) is not ready`. |
 | `False` | `RabbitMQError` | Error create-or-updating the `RabbitmqCluster` child. Message: `ensuring RabbitmqCluster "<name>" in namespace "<ns>" (spec.infrastructure.messaging): <error>`. A cluster that does not serve the `rabbitmq.com` CRD fails closed here, with a `no matches for kind` error from the `Get`. An unauthorised scale-down lands here too: the declared `replicas` is below the owned cluster's and `c5c3.io/allow-messaging-recreate` is not set, so the destructive recreate is refused and the error names the annotation. |
-| `False` | `FinalizingMessaging` | On deletion, the managed `RabbitmqCluster` has been deleted by the teardown (foreground propagation) and the ControlPlane finalizer waits for the RabbitMQ Cluster Operator to release its own finalizer on it before releasing; see [Owner-ref / GC model](./controlplane-reconciler.md#owner-ref--gc-model). Message: `waiting for the managed RabbitmqCluster "<name>" to be deleted before releasing the ControlPlane`. |
+| `False` | `FinalizingMessaging` | On deletion, the managed `RabbitmqCluster` has been deleted by the teardown (foreground propagation) and the ControlPlane finalizer waits for the RabbitMQ Cluster Operator to release its own finalizer on it before releasing; see [Owner-ref / GC model](./controlplane-reconciler.md#owner-ref-gc-model). Message: `waiting for the managed RabbitmqCluster "<name>" to be deleted before releasing the ControlPlane`. |
 | `True` | `ExternallyManaged` | `services.keystone.mode` is `External`: identity is managed against `services.keystone.external.authURL`, so no MariaDB/Memcached is provisioned. |
 | `False` | `InfrastructureNotConfigured` | `spec.infrastructure` is unset on a **non**-External ControlPlane. The validating webhook requires the block outside External mode, so this only fires for a webhook-bypassed CR; it fails closed rather than dereferencing the nil block. |
 
@@ -3146,11 +3160,15 @@ Managed-mode Keystone.
 | `False` | `NovaProjectionRejected` | The Nova API server rejected the projected Nova spec (HTTP 422): the projection violates a CRD/webhook rule. Reconcile the ControlPlane spec to a valid projection to recover. |
 | `False` | `NovaError` | Error create-or-updating the Nova CR. |
 | `False` | `WaitingForComputeConfig` | The child is Ready but the compute contract Secret `{controlplane.Name}-nova-compute-config` the nova operator publishes has not appeared yet, so a mirror target cannot be served. Requeue 15s. |
-| `False` | `NovaComputeConfigError` | Error reading the published compute contract or writing its mirror into a target namespace. |
+| `False` | `NovaComputeConfigError` | Error listing the NovaComputes, reading the published compute contract, or writing its mirror into a target namespace. |
 
-The compute-config reasons only appear once a compute cluster is attached to the
-ControlPlane: `novaComputeConfigMirrorTargets` enumerates no targets today, so
-the mirror writes nothing and the loop is skipped.
+The compute-config reasons only appear once a [NovaCompute](../nova/novacompute-crd.md)
+of the plane's Nova runs on a cluster other than the Nova's own. The mirror
+targets are one per such cluster, in the Nova namespace: pools sharing a cluster
+share a target, a pool being deleted is left out, and a cluster that does not
+serve the NovaCompute kind has no pools and so no target. The mirror carries
+`nova.openstack.c5c3.io/compute-config-mirror: "true"`, and the last pool of the
+Nova on a cluster reaps it when it is torn down.
 
 A registration that is provisioned but not yet fully `Ready` relays its own first
 failing sub-condition's reason onto `NovaReady`, the same way its peers do.
@@ -3361,7 +3379,7 @@ the ControlPlane places in a service namespace therefore carries no owner
 reference; it is stamped with two **ownership labels** instead —
 `c5c3.io/controlplane-name` and `c5c3.io/controlplane-namespace`, which together
 name the owning ControlPlane — and the [ORC-teardown
-finalizer](./controlplane-reconciler.md#owner-ref--gc-model) deletes it
+finalizer](./controlplane-reconciler.md#owner-ref-gc-model) deletes it
 explicitly, because nothing else collects it. The finalizer deletes
 the service children first and waits for them (their own operators run a
 sequenced ESO cleanup through the tenant store in the same namespace), then takes

@@ -4,9 +4,15 @@
 
 # Chainsaw E2E test for spec.resources defaulting and propagation.
 # Validates that:
-#   - A Keystone CR without explicit resources gets webhook defaults
-#     (256Mi/100m requests, 512Mi/500m limits) propagated to the Deployment
+#   - A Keystone CR without explicit resources renders the reconcile-time
+#     defaults on the Deployment: 100m CPU and 512Mi memory requests, a 512Mi
+#     memory limit, and no CPU limit
+#   - A running keystone Pod keeps no CPU limit and runs Burstable, so the
+#     openstack tenant's LimitRange adds no CPU limit either
 #   - Patching spec.resources updates the Deployment container resources
+#   - Removing spec.resources again and raising spec.uwsgi.processes to 4 moves
+#     the rendered memory to 800Mi, still with a 100m CPU request and no CPU
+#     limit, so the defaults follow the process count through the real webhook
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -21,7 +27,7 @@ spec:
   - try:
     - apply:
         file: 00-keystone-cr.yaml
-  # ── Step 2: Assert Ready and Deployment has default resources ───────────
+  # ── Step 2: Assert Ready and the rendered default resources ─────────────
   - try:
     - assert:
         resource:
@@ -48,11 +54,31 @@ spec:
                 - name: keystone
                   resources:
                     requests:
-                      memory: 256Mi
+                      memory: 512Mi
                       cpu: 100m
                     limits:
                       memory: 512Mi
-                      cpu: 500m
+                # A partial match would accept a CPU limit beside the memory
+                # limit, so its absence is asserted on its own.
+                (length(containers[?name == 'keystone'].resources.limits.cpu) == `0`): true
+    # The same on a running API Pod: the namespace's LimitRange fills a default
+    # limit into a container at admission, so the template alone cannot show
+    # that openstack adds no CPU limit. A CPU request without a CPU limit is
+    # never Guaranteed. Running excludes the Job and CronJob pods.
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: keystone
+              app.kubernetes.io/instance: keystone-resources
+          spec:
+            (length(containers[?name == 'keystone'].resources.limits.cpu) == `0`): true
+          status:
+            phase: Running
+            qosClass: Burstable
     catch:
     - script:
         content: |
@@ -126,5 +152,53 @@ spec:
         - openstack
         - -o
         - yaml
+    - events:
+        namespace: openstack
+  # ── Step 5: Remove spec.resources and raise spec.uwsgi.processes ────────
+  - try:
+    - patch:
+        file: 02-patch-uwsgi-processes.yaml
+  # ── Step 6: Assert the rendered defaults follow the process count ───────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-resources
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: keystone
+                  resources:
+                    requests:
+                      memory: 800Mi
+                      cpu: 100m
+                    limits:
+                      memory: 800Mi
+                (length(containers[?name == 'keystone'].resources.limits.cpu) == `0`): true
+    catch:
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - keystone
+        - keystone-resources
+        - -n
+        - openstack
+        - -o
+        - yaml
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - deployment
+        - keystone-resources
+        - -n
+        - openstack
+        - -o
+        - jsonpath={.spec.template.spec.containers[0].resources}
     - events:
         namespace: openstack

@@ -69,12 +69,14 @@ reference sibling modules.
 
 The builder stage is structured for optimal Docker layer caching:
 
-1. **Layer 1 — Dependency manifests:** Copies `go.work`, `go.work.sum`, and all
+1. **Layer 1 — Dependency manifests:** Copies `go.work` and all
    `go.mod`/`go.sum` files for workspace modules. This layer is cached as long as
-   dependency versions do not change.
+   dependency versions do not change. `go.work.sum` is not tracked in git, so
+   `go mod download` verifies the `go.mod` checksums that only the workspace needs
+   against the Go checksum database.
 
    ```dockerfile
-   COPY go.work go.work.sum ./
+   COPY go.work ./
    COPY internal/common/go.mod internal/common/go.sum ./internal/common/
    COPY operators/keystone/go.mod operators/keystone/go.sum ./operators/keystone/
    COPY operators/c5c3/go.mod operators/c5c3/go.sum ./operators/c5c3/

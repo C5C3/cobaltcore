@@ -340,9 +340,10 @@ func chassisOVSName(cr *ovnv1alpha1.OVNChassis) string {
 }
 
 // chassisResources resolves the requests and limits of one chassis container. A
-// block the CR leaves unset renders none, the same way the database container
-// does: what a datapath needs depends on the traffic the node carries, and a
-// default picked here would be wrong on most hardware.
+// block the CR leaves unset renders none: what a datapath needs depends on the
+// traffic the node carries, and a default picked here would be wrong on most
+// hardware. The ovsdb container of a Raft member differs on purpose (see
+// raftResources): a quorum member must not be the first pod the node evicts.
 func chassisResources(spec *ovnv1alpha1.OVNChassisContainerSpec) corev1.ResourceRequirements {
 	if spec == nil || spec.Resources == nil {
 		return corev1.ResourceRequirements{}
