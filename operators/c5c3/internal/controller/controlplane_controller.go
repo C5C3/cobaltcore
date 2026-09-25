@@ -331,6 +331,10 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // The NovaComputes of a projected Nova are user-authored and only READ, to find
 // the clusters the compute contract has to be mirrored to: read-only verbs.
 // +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novacomputes,verbs=get;list;watch
+// The NeutronMetadataAgents in the OVN central's namespace are user-authored and
+// only READ, to find the clusters the metadata shared secret has to be copied
+// to: read-only verbs.
+// +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutronmetadataagents,verbs=get;list;watch
 // The OVNCentral is deployed outside the plane and only REFERENCED by
 // services.neutron.ovn.centralRef, so the reconciler reads and watches it but
 // never writes it: read-only verbs.

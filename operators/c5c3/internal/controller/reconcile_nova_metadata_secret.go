@@ -30,11 +30,17 @@ import (
 //
 // The ControlPlane sees both sides, so it generates the value rather than asking
 // for one. The generation runs in ESO, through a Password generator and an
-// ExternalSecret that draws from it, which is what keeps the plaintext out of
-// the ControlPlane's own reconcile path: the operator writes two references and
-// never reads the value it references. A ControlPlane whose agents are seeded
-// from outside its reach names a Secret of its own instead
+// ExternalSecret that draws from it: this leg writes two references and never
+// reads the value it references. A ControlPlane whose agents are seeded from
+// outside its reach names a Secret of its own instead
 // (services.nova.metadataSharedSecretRef), and then this leg generates nothing.
+//
+// A metadata agent on a target cluster cannot read the Secret in the Nova
+// namespace. For every agent that names "<cp>-nova-metadata-agent-secret", the
+// ControlPlane reads the value out of the compute contract and copies it, under
+// novaMetadataSecretKey, into the agent's namespace on the agent's cluster
+// (reconcileNovaMetadataAgentSecrets). That is the one path on which the
+// operator reads the value.
 
 // novaMetadataSecretKey is the key the generated Secret carries the shared value
 // under. It is the key both consumers default their reference to: the Nova CRD's

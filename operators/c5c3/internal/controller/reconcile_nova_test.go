@@ -36,6 +36,7 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
+	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
@@ -46,9 +47,10 @@ const (
 	novaBusURL        = "rabbit://u:p@bus:5672/"
 )
 
-// novaTestScheme registers c5c3, client-go, nova, and external-secrets types
-// (the projection ensures two DB-credential ExternalSecrets and the metadata
-// generator pair).
+// novaTestScheme registers c5c3, client-go, nova, neutron, and external-secrets
+// types (the projection ensures two DB-credential ExternalSecrets and the
+// metadata generator pair, and the metadata-agent leg lists the
+// NeutronMetadataAgents).
 func novaTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -60,6 +62,9 @@ func novaTestScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := novav1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding nova scheme: %v", err)
+	}
+	if err := neutronv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding neutron scheme: %v", err)
 	}
 	if err := esov1.AddToScheme(s); err != nil {
 		t.Fatalf("adding external-secrets scheme: %v", err)

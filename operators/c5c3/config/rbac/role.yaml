@@ -231,6 +231,14 @@ rules:
 - apiGroups:
   - neutron.openstack.c5c3.io
   resources:
+  - neutronmetadataagents
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - neutron.openstack.c5c3.io
+  resources:
   - neutrons
   verbs:
   - create

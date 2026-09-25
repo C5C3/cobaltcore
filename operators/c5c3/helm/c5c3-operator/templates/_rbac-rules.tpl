@@ -232,6 +232,14 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
 - apiGroups:
   - neutron.openstack.c5c3.io
   resources:
+  - neutronmetadataagents
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - neutron.openstack.c5c3.io
+  resources:
   - neutrons
   verbs:
   - create

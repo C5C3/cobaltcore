@@ -347,8 +347,10 @@ func (r *ControlPlaneReconciler) mirrorNovaComputeConfig(
 // to every mirror target, provisions the hypervisor operator's account and
 // delivers its auth Secret to the same targets while
 // spec.services.nova.hypervisorOperator is set (pruning both while it is not,
-// see reconcileNovaHypervisorOperator), and folds both children's readiness
-// into NovaReady.
+// see reconcileNovaHypervisorOperator), copies the metadata shared secret to
+// the NeutronMetadataAgents on target clusters that name
+// "<cp>-nova-metadata-agent-secret" (see reconcileNovaMetadataAgentSecrets), and
+// folds both children's readiness into NovaReady.
 func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -819,6 +821,13 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 	}
 	if hvoRes, halt, err := hvoLeg(ctx, cp, targets); halt {
 		return hvoRes, err
+	}
+
+	// The metadata agents on target clusters sign with the shared secret the
+	// contract carries, so the copy follows the contract. A copy that cannot be
+	// delivered holds NovaReady: instances on that cluster boot without metadata.
+	if agentRes, halt, err := r.reconcileNovaMetadataAgentSecrets(ctx, cp); halt {
+		return agentRes, err
 	}
 
 	// The Nova child is ready. NovaReady still folds in the registration: a running
