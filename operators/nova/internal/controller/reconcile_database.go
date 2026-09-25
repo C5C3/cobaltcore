@@ -659,9 +659,15 @@ func novaDBTLSVolumesAndMounts(nova *novav1alpha1.Nova) ([]corev1.Volume, []core
 	return volumes, mounts
 }
 
+// novaJobPod resolves the pod settings of every Nova Job and CronJob:
+// spec.jobs, with spec.api.deployment as the fallback.
+func novaJobPod(nova *novav1alpha1.Nova) job.PodSettings {
+	return job.ResolvePodSettings(nova.Spec.Jobs, &nova.Spec.API.Deployment)
+}
+
 // novaJobSetParams derives the shared migration-Job inputs from the Nova CR: the
-// config mount, the two db-tls keypairs, the nova-manage environment, and the
-// db-sync script. The steady-state sync flow (database.ReconcileSyncJobs) and
+// config mount, the two db-tls keypairs, the nova-manage environment, the Job
+// pod settings, and the db-sync script. The steady-state sync flow (database.ReconcileSyncJobs) and
 // the upgrade-phase builders (upgradeFlowParams.BuildPhaseJob) both consume it,
 // so a seeded Job carries the same pod spec as the desired one.
 //
@@ -679,6 +685,7 @@ func novaJobSetParams(nova *novav1alpha1.Nova, configMapName string) database.Jo
 		Env:               novaWorkloadEnv(nova, roleManage),
 		ExtraVolumes:      extraVolumes,
 		ExtraVolumeMounts: extraMounts,
+		Pod:               novaJobPod(nova),
 		SyncCommand:       []string{"/bin/sh", "-eu", "-c", dbSyncScript(nova)},
 		// No schema-check: every nova-manage step the sync script runs is
 		// idempotent, so a second read-only Job would assert nothing the sync

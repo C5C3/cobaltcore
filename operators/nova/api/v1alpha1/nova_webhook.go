@@ -554,6 +554,9 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 	for _, block := range blocks {
 		allErrs = append(allErrs, w.validateDeploymentBlock(ctx, block.path, block.deployment, block.selector)...)
 	}
+	// The spec.jobs block: requests within limits, an existing priority
+	// class, and its own placement.
+	allErrs = append(allErrs, validation.Job(ctx, w.Client, specPath.Child("jobs"), n.Spec.Jobs)...)
 	allErrs = append(allErrs, validateUWSGIHarakiri(
 		specPath.Child("api", "uwsgi"), n.Spec.API.UWSGI, &n.Spec.API.Deployment)...)
 	allErrs = append(allErrs, validateUWSGIHarakiri(
@@ -871,6 +874,9 @@ func (w *NovaWebhook) validateDeploymentBlock(
 		errs = append(errs, validation.PriorityClassExists(ctx, w.Client,
 			fldPath.Child("priorityClassName"), *d.PriorityClassName)...)
 	}
+
+	// Node selector grammar and tolerations of the Deployment.
+	errs = append(errs, validation.NodePlacement(fldPath, &d.NodePlacementSpec)...)
 
 	// Validate that custom TopologySpreadConstraints use the correct
 	// LabelSelector matching the Deployment's selector labels.

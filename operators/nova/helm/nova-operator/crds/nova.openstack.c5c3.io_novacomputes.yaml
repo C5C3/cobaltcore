@@ -195,7 +195,8 @@ spec:
               resources:
                 description: |-
                   Resources defines the CPU and memory requests and limits of the
-                  nova-compute container. When nil the container carries none.
+                  nova-compute container and of its wait-for-chassis init container. When
+                  nil both carry none.
                 properties:
                   claims:
                     description: |-

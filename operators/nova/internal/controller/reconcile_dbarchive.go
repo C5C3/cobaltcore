@@ -358,7 +358,7 @@ func dbArchiveCronJob(nova *novav1alpha1.Nova, art configArtifacts) *batchv1.Cro
 	volumes = append(volumes, tlsVolumes...)
 	mounts = append(mounts, tlsMounts...)
 
-	return &batchv1.CronJob{
+	cronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      dbArchiveCronJobName(nova.Name),
 			Namespace: nova.Namespace,
@@ -415,4 +415,6 @@ func dbArchiveCronJob(nova *novav1alpha1.Nova, art configArtifacts) *batchv1.Cro
 			},
 		},
 	}
+	novaJobPod(nova).Apply(&cronJob.Spec.JobTemplate.Spec.Template.Spec)
+	return cronJob
 }

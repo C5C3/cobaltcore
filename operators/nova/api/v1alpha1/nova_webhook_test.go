@@ -16,6 +16,7 @@ import (
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -1690,4 +1691,102 @@ func TestNovaValidateCreate_RemoteComputeRejections(t *testing.T) {
 				"the rule is shared with update, so a later edit cannot introduce the violation either")
 		})
 	}
+}
+
+// --- Node placement and spec.jobs validation ---
+
+func TestNovaValidate_NodePlacementRejected(t *testing.T) {
+	for _, block := range []struct {
+		name       string
+		deployment func(o *Nova) *commonv1.DeploymentSpec
+		path       string
+	}{
+		{name: "spec.api.deployment", deployment: func(o *Nova) *commonv1.DeploymentSpec { return &o.Spec.API.Deployment }, path: "spec.api.deployment"},
+		{name: "spec.metadata.deployment", deployment: func(o *Nova) *commonv1.DeploymentSpec { return &o.Spec.Metadata.Deployment }, path: "spec.metadata.deployment"},
+		{name: "spec.scheduler.deployment", deployment: func(o *Nova) *commonv1.DeploymentSpec { return &o.Spec.Scheduler.Deployment }, path: "spec.scheduler.deployment"},
+		{name: "spec.conductor.deployment", deployment: func(o *Nova) *commonv1.DeploymentSpec { return &o.Spec.Conductor.Deployment }, path: "spec.conductor.deployment"},
+		{name: "spec.consoleProxy.deployment", deployment: func(o *Nova) *commonv1.DeploymentSpec {
+			return func() *commonv1.DeploymentSpec {
+				o.Spec.ConsoleProxy.Deployment = &DeploymentSpec{Replicas: 1}
+				return o.Spec.ConsoleProxy.Deployment
+			}()
+		}, path: "spec.consoleProxy.deployment"},
+	} {
+		for _, tc := range []struct {
+			name   string
+			mutate func(d *commonv1.DeploymentSpec)
+			want   string
+		}{
+			{
+				name:   "node selector key",
+				mutate: func(d *commonv1.DeploymentSpec) { d.NodeSelector = map[string]string{"bad key": "x"} },
+				want:   block.path + ".nodeSelector: Invalid value",
+			},
+			{
+				name: "toleration without key or Exists",
+				mutate: func(d *commonv1.DeploymentSpec) {
+					d.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpEqual}}
+				},
+				want: block.path + ".tolerations[0].operator: Invalid value",
+			},
+		} {
+			t.Run(block.name+"/"+tc.name, func(t *testing.T) {
+				g := gomega.NewWithT(t)
+				o := validNova()
+				tc.mutate(block.deployment(o))
+
+				_, err := (&NovaWebhook{}).ValidateCreate(context.Background(), o)
+				g.Expect(err).To(gomega.HaveOccurred())
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+			})
+		}
+	}
+}
+
+func TestNovaValidate_JobsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		jobs *commonv1.JobSpec
+		want string
+	}{
+		{
+			name: "unknown priority class",
+			jobs: &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("typo")}},
+			want: "spec.jobs.priorityClassName: Not found",
+		},
+		{
+			name: "memory request above limit",
+			jobs: &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			}}},
+			want: "spec.jobs.resources.requests.memory: Invalid value",
+		},
+		{
+			name: "node selector key",
+			jobs: &commonv1.JobSpec{NodePlacementSpec: commonv1.NodePlacementSpec{NodeSelector: map[string]string{"bad key": "x"}}},
+			want: "spec.jobs.nodeSelector: Invalid value",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &NovaWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+			o := validNova()
+			o.Spec.Jobs = tc.jobs
+
+			_, err := w.ValidateCreate(context.Background(), o)
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+		})
+	}
+}
+
+func TestNovaValidate_EmptyJobsAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &NovaWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+	o := validNova()
+	o.Spec.Jobs = &commonv1.JobSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
