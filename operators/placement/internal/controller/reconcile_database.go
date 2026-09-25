@@ -17,6 +17,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/job"
 	"github.com/c5c3/cobaltcore/internal/common/release"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
@@ -301,9 +302,15 @@ func checkImageReleaseMismatch(placement *placementv1alpha1.Placement) (ctrl.Res
 	return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, true
 }
 
+// placementJobPod resolves the pod settings of every Placement Job:
+// spec.jobs, with spec.deployment as the fallback.
+func placementJobPod(placement *placementv1alpha1.Placement) job.PodSettings {
+	return job.ResolvePodSettings(placement.Spec.Jobs, &placement.Spec.Deployment)
+}
+
 // placementJobSetParams derives the shared migration-Job inputs from the
 // Placement CR: the config mount, the db-tls keypair, the [placement_database]
-// connection override, and the db-sync command. reconcileDatabase and the unit
+// connection override, the Job pod settings, and the db-sync command. reconcileDatabase and the unit
 // tests build the Job from this one source, so a seeded Job carries the same pod
 // spec as the desired one.
 func placementJobSetParams(placement *placementv1alpha1.Placement, configMapName string) database.JobSetParams {
@@ -336,6 +343,7 @@ func placementJobSetParams(placement *placementv1alpha1.Placement, configMapName
 		Env:               []corev1.EnvVar{database.ConnectionEnvVarForSection(placement.Name, "placement_database")},
 		ExtraVolumes:      extraVolumes,
 		ExtraVolumeMounts: extraMounts,
+		Pod:               placementJobPod(placement),
 		SyncCommand:       []string{"/bin/sh", "-eu", "-c", placementDBSyncScript},
 		// No schema-check: placement-manage db sync is idempotent and applies all
 		// pending migrations in one pass, and the upgrade check inside the sync
