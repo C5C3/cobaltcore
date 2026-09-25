@@ -351,17 +351,28 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	// instead of keeping the last projected selection pinned.
 	glance.Spec.ImportPlugins = cp.Spec.Services.Glance.ImportPlugins.DeepCopy()
 
-	// Resolve replicas to the shared operator default, then let an override win.
-	// Assigning unconditionally means clearing services.glance.replicas reverts the
-	// child to the default instead of leaving the previously-projected value pinned
-	// on the fetched child.
-	glance.Spec.Deployment.Replicas = commonv1.DefaultReplicas
-	if cp.Spec.Services.Glance.Replicas != nil {
-		glance.Spec.Deployment.Replicas = *cp.Spec.Services.Glance.Replicas
+	// Project the resolved spec.sizing.glance onto the API Deployment, the
+	// autoscaling block and the Job pods. The process and thread counts land in
+	// spec.apiServer by launch mode (glanceAPIServer): uwsgi from 2026.1, the
+	// eventlet worker count below it. What stays unprojected is the child's own:
+	// network policy, logging, the graceful-termination timings, the rollout
+	// strategy and affinity.
+	sizing, err := r.effectiveSizing(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving sizing: %w", err)
 	}
-
-	// spec.apiServer is deliberately NOT set — the child-side release-conditional
-	// defaults (workers vs uwsgi) stay authoritative.
+	var glSizing c5c3v1alpha1.APIServiceSizingSpec
+	if sizing.Glance != nil {
+		glSizing = *sizing.Glance
+	}
+	var processes c5c3v1alpha1.ProcessSizingSpec
+	if glSizing.API != nil {
+		processes = glSizing.API.ProcessSizingSpec
+	}
+	_, glance.Spec.Autoscaling = projectAPI(&glance.Spec.Deployment, sizing.PodPlacementSpec, glSizing.API,
+		glancev1alpha1.APIPodSelector(glance.Name))
+	glance.Spec.APIServer = glanceAPIServer(cp.Spec.OpenStackRelease, processes)
+	glance.Spec.Jobs = projectJobs(glSizing.Jobs)
 
 	// Project the declared image stores as GlanceBackend children and prune any
 	// previously-projected backend whose entry was removed. A GlanceBackend

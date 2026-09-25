@@ -1245,13 +1245,6 @@ spec:
                         maxLength: 512
                         pattern: ^https?://
                         type: string
-                      replicas:
-                        description: |-
-                          Replicas overrides the number of Barbican API replicas. When nil the
-                          reconciler applies the Barbican operator's own default (3).
-                        format: int32
-                        minimum: 1
-                        type: integer
                       secretStore:
                         description: |-
                           SecretStore declares the secret-store backend the Barbican service writes
@@ -3017,13 +3010,6 @@ spec:
                         maxLength: 512
                         pattern: ^https?://
                         type: string
-                      replicas:
-                        description: |-
-                          Replicas overrides the number of Glance API replicas. When nil the
-                          reconciler applies the Glance operator's own default (3).
-                        format: int32
-                        minimum: 1
-                        type: integer
                       staging:
                         description: |-
                           Staging bounds the node-local scratch space an image import may consume on
@@ -3342,13 +3328,6 @@ spec:
                         maxLength: 499
                         pattern: ^https?://
                         type: string
-                      replicas:
-                        description: |-
-                          Replicas overrides the number of dashboard replicas. When nil the
-                          reconciler applies the Horizon operator's own default (3).
-                        format: int32
-                        minimum: 1
-                        type: integer
                       secretKeyRef:
                         description: |-
                           SecretKeyRef optionally overrides the Secret holding the Django
@@ -4103,13 +4082,6 @@ spec:
                         maxLength: 512
                         pattern: ^https?://
                         type: string
-                      replicas:
-                        description: |-
-                          Replicas overrides the number of Keystone API replicas. When nil the
-                          reconciler applies the Keystone operator's own default (3).
-                        format: int32
-                        minimum: 1
-                        type: integer
                       rotationInterval:
                         description: |-
                           RotationInterval optionally overrides the Fernet key rotation interval the
@@ -4160,9 +4132,6 @@ spec:
                     - message: services.keystone.external may only be set when services.keystone.mode
                         is External
                       rule: (has(self.mode) && self.mode == 'External') || !has(self.external)
-                    - message: services.keystone.replicas is forbidden when services.keystone.mode
-                        is External
-                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.replicas)'
                     - message: services.keystone.image is forbidden when services.keystone.mode
                         is External
                       rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.image)'
@@ -6008,13 +5977,6 @@ spec:
                         maxLength: 512
                         pattern: ^https?://
                         type: string
-                      replicas:
-                        description: |-
-                          Replicas overrides the number of Placement API replicas. When nil the
-                          reconciler applies the Placement operator's own default (3).
-                        format: int32
-                        minimum: 1
-                        type: integer
                       targetClusterRef:
                         description: |-
                           TargetClusterRef names the registered target cluster the Placement service is

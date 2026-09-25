@@ -958,8 +958,7 @@ func TestValidateUpdate_AllowsMutableFieldChanges(t *testing.T) {
 
 	newCP := managedControlPlane()
 	newCP.Spec.OpenStackRelease = "2026.1"
-	replicas := int32(3)
-	newCP.Spec.Services.Keystone.Replicas = &replicas
+	newCP.Spec.Sizing = &ControlPlaneSizingSpec{SizingSpec: keystoneAPI(apiReplicas(3))}
 
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1044,8 +1043,7 @@ func TestValidateUpdate_AcceptsUnchangedDatabaseStorageSize(t *testing.T) {
 	oldCP.Spec.Infrastructure.Database.StorageSize = "512Mi"
 	newCP := managedControlPlane()
 	newCP.Spec.Infrastructure.Database.StorageSize = "512Mi"
-	replicas := int32(3)
-	newCP.Spec.Services.Keystone.Replicas = &replicas
+	newCP.Spec.Sizing = &ControlPlaneSizingSpec{SizingSpec: keystoneAPI(apiReplicas(3))}
 
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1353,14 +1351,12 @@ func TestValidateCreate_RejectsExternalBlockInManagedMode(t *testing.T) {
 func TestValidateCreate_RejectsManagedOnlyFieldsInExternalMode(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
-	replicas := int32(3)
 
 	tests := []struct {
 		name       string
 		mutate     func(ks *ServiceKeystoneSpec)
 		wantSubstr string
 	}{
-		{"replicas", func(ks *ServiceKeystoneSpec) { ks.Replicas = &replicas }, "services.keystone.replicas"},
 		{"image", func(ks *ServiceKeystoneSpec) {
 			ks.Image = &commonv1.ImageSpec{Repository: "r", Tag: "t"}
 		}, "services.keystone.image"},
@@ -1686,12 +1682,11 @@ func TestValidateCreate_ExternalCatalogIgnoredOutsideExternalMode(t *testing.T) 
 func TestValidateCreate_AccumulatesAllExternalModeErrors(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
-	replicas := int32(3)
 
 	cp := externalControlPlane()
 	cp.Name = strings.Repeat("a", 240)       // the identity Endpoint import name overflows 253 bytes
 	cp.Spec.Services.Keystone.External = nil // external missing
-	cp.Spec.Services.Keystone.Replicas = &replicas
+	cp.Spec.Sizing = &ControlPlaneSizingSpec{SizingSpec: keystoneAPI(apiReplicas(3))}
 	cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{Repository: "r", Tag: "t"}
 	cp.Spec.Services.Keystone.PolicyOverrides = &commonv1.PolicySpec{Rules: map[string]string{"a": "b"}}
 	cp.Spec.Services.Keystone.RotationInterval = &metav1.Duration{Duration: 24 * time.Hour}
@@ -1709,7 +1704,7 @@ func TestValidateCreate_AccumulatesAllExternalModeErrors(t *testing.T) {
 	msg := err.Error()
 	g.Expect(msg).To(ContainSubstring("identity Endpoint import CR name"), "import-child-name error must be present")
 	g.Expect(msg).To(ContainSubstring("external is required"), "external-required error must be present")
-	g.Expect(msg).To(ContainSubstring("services.keystone.replicas"), "replicas-forbidden error must be present")
+	g.Expect(msg).To(ContainSubstring("spec.sizing: Forbidden"), "sizing-forbidden error must be present")
 	g.Expect(msg).To(ContainSubstring("services.keystone.image"), "image-forbidden error must be present")
 	g.Expect(msg).To(ContainSubstring("services.keystone.policyOverrides"), "policyOverrides-forbidden error must be present")
 	g.Expect(msg).To(ContainSubstring("services.keystone.rotationInterval"), "rotationInterval-forbidden error must be present")
@@ -5395,8 +5390,7 @@ func TestValidateUpdate_ExtraConfigCatalogGating(t *testing.T) {
 		g := NewGomegaWithT(t)
 		oldCP := staleInvalid()
 		newCP := staleInvalid()
-		replicas := int32(2)
-		newCP.Spec.Services.Keystone.Replicas = &replicas
+		newCP.Spec.Sizing = &ControlPlaneSizingSpec{SizingSpec: keystoneAPI(apiReplicas(2))}
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).NotTo(HaveOccurred())

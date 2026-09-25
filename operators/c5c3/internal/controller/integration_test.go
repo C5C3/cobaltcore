@@ -246,9 +246,7 @@ func integrationManagedControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 				},
 			},
 			Services: c5c3v1alpha1.ServicesSpec{
-				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
-					Replicas: ptr.To(int32(3)),
-				},
+				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
 			},
 			// One global oslo.policy override so the test can assert the reconciler
 			// merges it into the projected Keystone CR's PolicyOverrides.
@@ -292,10 +290,11 @@ func integrationMinimalControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
 			OpenStackRelease: "2025.2",
 			Services: c5c3v1alpha1.ServicesSpec{
-				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
-					Replicas: ptr.To(int32(1)),
-				},
+				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
 			},
+			Sizing: sizingOf(c5c3v1alpha1.SizingSpec{
+				Keystone: &c5c3v1alpha1.KeystoneSizingSpec{API: apiReplicas(1)},
+			}),
 		},
 	}
 }
@@ -334,8 +333,8 @@ func integrationPlacementService() *c5c3v1alpha1.ServicePlacementSpec {
 	return &c5c3v1alpha1.ServicePlacementSpec{}
 }
 
-// integrationBarbicanService returns a valid services.barbican block: one replica
-// on a secret store the ControlPlane provisions for it. Unlike its Placement
+// integrationBarbicanService returns a valid services.barbican block: a secret
+// store the ControlPlane provisions for it. Unlike its Placement
 // sibling the block cannot be empty — secretStore is required and admits exactly
 // one of dedicated/external — and the dedicated mode is the one that puts the whole
 // OpenBao ensemble under test. It is shared by the full-chain projection test, the
@@ -343,7 +342,6 @@ func integrationPlacementService() *c5c3v1alpha1.ServicePlacementSpec {
 // teardown test, so the enabling shape is written once.
 func integrationBarbicanService() *c5c3v1alpha1.ServiceBarbicanSpec {
 	return &c5c3v1alpha1.ServiceBarbicanSpec{
-		Replicas: ptr.To(int32(1)),
 		SecretStore: c5c3v1alpha1.ServiceBarbicanSecretStoreSpec{
 			Dedicated: &c5c3v1alpha1.BarbicanDedicatedSecretStoreSpec{},
 		},
@@ -1542,6 +1540,11 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	cp.Spec.Services.Cinder = integrationCinderService()
 	cp.Spec.Services.Nova = integrationNovaService()
 
+	// One Barbican API replica, so Phase 8 proves spec.sizing reaches the child.
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{
+		Barbican: &c5c3v1alpha1.APIServiceSizingSpec{API: apiReplicas(1)},
+	})
+
 	// The shared message bus. The network, block-storage and compute services are
 	// what need it: each projection derives its child's transport URL from this
 	// block, and the validating webhook requires the block beside services.neutron,
@@ -2290,7 +2293,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(projectedBarbican.Spec.Gateway).To(BeNil(),
 		"this fixture exposes Barbican nowhere externally, so no HTTPRoute is projected")
 	g.Expect(projectedBarbican.Spec.Deployment.Replicas).To(Equal(int32(1)),
-		"services.barbican.replicas overrides the shared operator default")
+		"spec.sizing.barbican.api.replicas overrides the shared operator default")
 
 	// The child is co-located with the ControlPlane, so ownership is a controller
 	// owner reference rather than the labels a cross-namespace child carries.
@@ -4553,6 +4556,43 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:    "sizing profile and profileRef together",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Sizing = &c5c3v1alpha1.ControlPlaneSizingSpec{
+					Profile:    c5c3v1alpha1.SizingProfileMinimal,
+					ProfileRef: &c5c3v1alpha1.SizingProfileRef{Name: "site"},
+				}
+			},
+		},
+		{
+			name:    "sizing keystone api replicas 0",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{
+					Keystone: &c5c3v1alpha1.KeystoneSizingSpec{API: apiReplicas(0)},
+				})
+			},
+		},
+		{
+			name:    "sizing spread maxSkew 0",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				api := apiReplicas(1)
+				api.SpreadConstraints = []c5c3v1alpha1.SpreadConstraintSpec{{
+					TopologyKey: "kubernetes.io/hostname", WhenUnsatisfiable: corev1.ScheduleAnyway,
+				}}
+				cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Keystone: &c5c3v1alpha1.KeystoneSizingSpec{API: api}})
+			},
+		},
+		{
+			name:    "sizing profile Minimal admitted",
+			wantErr: false,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Sizing = &c5c3v1alpha1.ControlPlaneSizingSpec{Profile: c5c3v1alpha1.SizingProfileMinimal}
+			},
+		},
 	}
 
 	for i, tc := range cases {
@@ -4677,12 +4717,13 @@ func TestIntegration_ControlPlane_NovaHypervisorOperatorRoundTrip(t *testing.T) 
 }
 
 // TestIntegration_RetiredInlineFieldsArePruned proves the structural schema
-// drops the two retired registration stanzas from a stored ControlPlane:
-// spec.korc.serviceAccounts on a Managed CR and
-// spec.services.keystone.external.catalog.managedEntries on an External one.
-// Neither field is in the CRD schema and there is no conversion webhook, so an
-// apply that still carries one is admitted (no admission rule names the retired
-// paths) and comes back from etcd without it.
+// drops retired fields from a stored ControlPlane: the two retired
+// registration stanzas (spec.korc.serviceAccounts on a Managed CR and
+// spec.services.keystone.external.catalog.managedEntries on an External one)
+// and a service replica count spec.sizing replaced. None of them is in the CRD
+// schema and there is no conversion webhook, so an apply that still carries one
+// is admitted (no admission rule names the retired paths) and comes back from
+// etcd without it; a dropped replica count falls back to the sizing.
 func TestIntegration_RetiredInlineFieldsArePruned(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -4693,7 +4734,7 @@ func TestIntegration_RetiredInlineFieldsArePruned(t *testing.T) {
 		name  string
 		build func(name, namespace string) *c5c3v1alpha1.ControlPlane
 		path  []string
-		value []any
+		value any
 		// sibling is a LIVE field under the retired one's own parent block, set
 		// alongside it and asserted to come back. NestedSlice reports found=false
 		// when ANY intermediate key is missing, so a regenerated CRD that dropped
@@ -4723,6 +4764,14 @@ func TestIntegration_RetiredInlineFieldsArePruned(t *testing.T) {
 			},
 			siblingValue: "keystone",
 		},
+		{
+			name:         "a retired service replica count",
+			build:        integrationMinimalControlPlane,
+			path:         []string{"spec", "services", "keystone", "replicas"},
+			value:        int64(3),
+			sibling:      []string{"spec", "services", "keystone", "mode"},
+			siblingValue: string(c5c3v1alpha1.KeystoneModeManaged),
+		},
 	}
 
 	for i, tc := range cases {
@@ -4737,7 +4786,7 @@ func TestIntegration_RetiredInlineFieldsArePruned(t *testing.T) {
 			g.Expect(err).NotTo(HaveOccurred(), "convert the fixture to unstructured")
 			obj := &unstructured.Unstructured{Object: raw}
 			obj.SetGroupVersionKind(gvk)
-			g.Expect(unstructured.SetNestedSlice(obj.Object, tc.value, tc.path...)).To(Succeed())
+			g.Expect(unstructured.SetNestedField(obj.Object, tc.value, tc.path...)).To(Succeed())
 			g.Expect(unstructured.SetNestedField(obj.Object, tc.siblingValue, tc.sibling...)).To(Succeed())
 
 			g.Expect(c.Create(ctx, obj)).To(Succeed(),
@@ -4747,7 +4796,7 @@ func TestIntegration_RetiredInlineFieldsArePruned(t *testing.T) {
 			stored.SetGroupVersionKind(gvk)
 			g.Expect(c.Get(ctx, client.ObjectKeyFromObject(obj), stored)).To(Succeed())
 
-			_, found, err := unstructured.NestedSlice(stored.Object, tc.path...)
+			_, found, err := unstructured.NestedFieldNoCopy(stored.Object, tc.path...)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(found).To(BeFalse(), "the structural schema must prune %s", tc.name)
 
@@ -5339,9 +5388,11 @@ func TestIntegration_ExternalMode_Rejections(t *testing.T) {
 		mutate func(*c5c3v1alpha1.ControlPlane)
 	}{
 		{
-			name: "CEL: managed-only replicas set in External mode",
+			name: "webhook: sizing set in External mode",
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
-				cp.Spec.Services.Keystone.Replicas = ptr.To(int32(3))
+				cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{
+					Keystone: &c5c3v1alpha1.KeystoneSizingSpec{API: apiReplicas(3)},
+				})
 			},
 		},
 		{
@@ -5460,7 +5511,6 @@ func TestIntegration_ExternalMode_TransitionsRejected(t *testing.T) {
 				return err
 			}
 			fetched.Spec.Services.Keystone.Mode = c5c3v1alpha1.KeystoneModeExternal
-			fetched.Spec.Services.Keystone.Replicas = nil
 			fetched.Spec.Services.Keystone.External = &c5c3v1alpha1.ExternalKeystoneSpec{
 				AuthURL: "https://keystone.example.com/v3",
 			}
@@ -6237,8 +6287,10 @@ func integrationDedicatedControlPlane(name, namespace string) *c5c3v1alpha1.Cont
 			Replicas:   1,
 		},
 	}
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Horizon: &c5c3v1alpha1.HorizonSizingSpec{
+		API: &c5c3v1alpha1.HorizonAPISizingSpec{DeploymentSizingSpec: deploymentReplicas(1)},
+	}})
 	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{
-		Replicas: ptr.To(int32(1)),
 		DedicatedBackingServices: &c5c3v1alpha1.HorizonDedicatedBackingServicesSpec{
 			Cache: &commonv1.CacheSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: name + "-horizon-cache"},

@@ -277,7 +277,9 @@ func TestControlPlaneExtraConfigCatalogInputsChanged_Barbican(t *testing.T) {
 			oldCP: barbicanControlPlane(),
 			newCP: func() *ControlPlane {
 				cp := barbicanControlPlane()
-				cp.Spec.Services.Barbican.Replicas = ptr.To(int32(5))
+				cp.Spec.Sizing = &ControlPlaneSizingSpec{SizingSpec: SizingSpec{
+					Barbican: &APIServiceSizingSpec{API: &APISizingSpec{DeploymentSizingSpec: deploymentReplicas(5)}},
+				}}
 				return cp
 			}(),
 			expected: false,

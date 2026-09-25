@@ -4080,10 +4080,6 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 		// Managed-only Keystone fields are forbidden in External mode: no Keystone
 		// workload is deployed, and per P2 catalog advertisement (publicEndpoint) is
 		// owned by the W5 catalog imports.
-		if ks.Replicas != nil {
-			allErrs = append(allErrs, field.Forbidden(ksPath.Child("replicas"),
-				"forbidden when services.keystone.mode is External (no Keystone workload is deployed)"))
-		}
 		if ks.Image != nil {
 			allErrs = append(allErrs, field.Forbidden(ksPath.Child("image"),
 				"forbidden when services.keystone.mode is External (no Keystone workload is deployed)"))

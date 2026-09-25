@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -445,8 +446,7 @@ func TestReconcileKeystone_ReplicasPassthrough(t *testing.T) {
 
 	s := keystoneTestScheme(t)
 	cp := keystoneControlPlane()
-	replicas := int32(5)
-	cp.Spec.Services.Keystone.Replicas = &replicas
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Keystone: &c5c3v1alpha1.KeystoneSizingSpec{API: apiReplicas(5)}})
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
@@ -1196,4 +1196,64 @@ func TestKeystoneEndpointURL_FollowsTheServiceNamespace(t *testing.T) {
 
 	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"}
 	g.Expect(keystoneEndpointURL(cp)).To(Equal("http://cp-keystone.identity.svc:5000/v3"))
+}
+
+// TestReconcileKeystone_NoSizingProjectsTodaysChild pins the no-roll guarantee:
+// a ControlPlane without spec.sizing projects the replica count and nothing
+// else of the sizing surface.
+func TestReconcileKeystone_NoSizingProjectsTodaysChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	k := getProjectedKeystone(t, c, cp)
+	expectUnsized(g, k.Spec.Deployment, commonv1.DefaultReplicas)
+	g.Expect(k.Spec.UWSGI).To(BeNil())
+	g.Expect(k.Spec.Autoscaling).To(BeNil())
+	g.Expect(k.Spec.Jobs).To(BeNil())
+	g.Expect(k.Spec.Federation.ProxyResources).To(BeNil())
+}
+
+// TestReconcileKeystone_SizingProjectsComponents projects Minimal plus one
+// override per component and finds each on the child field it sizes.
+func TestReconcileKeystone_SizingProjectsComponents(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	api := apiReplicas(2)
+	api.SpreadConstraints = hostSpread()
+	api.Autoscaling = &commonv1.AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: ptr.To[int32](80)}
+	cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{
+		PodPlacementSpec: c5c3v1alpha1.PodPlacementSpec{
+			NodeSelector:      map[string]string{"pool": "control"},
+			PriorityClassName: ptr.To("high"),
+		},
+		Keystone: &c5c3v1alpha1.KeystoneSizingSpec{
+			API:             api,
+			Jobs:            &c5c3v1alpha1.JobSizingSpec{PriorityClassName: ptr.To("batch")},
+			FederationProxy: &c5c3v1alpha1.ContainerSizingSpec{Resources: cpuRequestSizing("20m")},
+		},
+	})
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	k := getProjectedKeystone(t, c, cp)
+	d := k.Spec.Deployment
+	g.Expect(d.Replicas).To(Equal(int32(2)))
+	g.Expect(d.Resources.Requests.Cpu().String()).To(Equal("50m"), "the Minimal CPU request")
+	g.Expect(d.NodeSelector).To(Equal(map[string]string{"pool": "control"}))
+	g.Expect(d.PriorityClassName).To(Equal(ptr.To("high")))
+	g.Expect(d.TopologySpreadConstraints).To(HaveLen(1))
+	g.Expect(d.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(Equal(keystonev1alpha1.APIPodSelector(k.Name)))
+	g.Expect(k.Spec.UWSGI).To(Equal(&commonv1.UWSGISpec{Processes: 1, Threads: 1}))
+	g.Expect(k.Spec.Autoscaling.MaxReplicas).To(Equal(int32(5)))
+	g.Expect(k.Spec.Jobs.PriorityClassName).To(Equal(ptr.To("batch")))
+	g.Expect(k.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(k.Spec.Federation.ProxyResources.Requests.Cpu().String()).To(Equal("20m"))
 }

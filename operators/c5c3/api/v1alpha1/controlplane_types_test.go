@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"regexp"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -97,22 +98,20 @@ func TestControlPlaneSpecReusesCommonTypes(t *testing.T) {
 // TestServiceKeystoneSpecDeepCopy verifies the shared keystone subset
 // round-trips through DeepCopy with independent pointer storage (plan decision #2).
 func TestServiceKeystoneSpecDeepCopy(t *testing.T) {
-	replicas := int32(5)
 	spec := ServiceKeystoneSpec{
-		Replicas:         &replicas,
 		Image:            &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
-		RotationInterval: &metav1.Duration{},
+		RotationInterval: &metav1.Duration{Duration: time.Hour},
 	}
 
 	clone := spec.DeepCopy()
-	if clone.Replicas == spec.Replicas {
-		t.Errorf("DeepCopy did not allocate a new *int32 for Replicas")
-	}
 	if clone.Image == spec.Image {
 		t.Errorf("DeepCopy did not allocate a new *ImageSpec for Image")
 	}
-	if *clone.Replicas != 5 {
-		t.Errorf("DeepCopy altered Replicas: got %d", *clone.Replicas)
+	if clone.RotationInterval == spec.RotationInterval {
+		t.Errorf("DeepCopy did not allocate a new *Duration for RotationInterval")
+	}
+	if clone.RotationInterval.Duration != time.Hour {
+		t.Errorf("DeepCopy altered RotationInterval: got %s", clone.RotationInterval.Duration)
 	}
 }
 
@@ -707,10 +706,8 @@ func TestDedicatedGlanceBackingServicesAccessors(t *testing.T) {
 // projected spec onto the Glance child, so an aliased S3 block here would let a
 // child projection mutate the ControlPlane spec it was derived from.
 func TestServiceGlanceSpecDeepCopy(t *testing.T) {
-	replicas := int32(2)
 	spec := ServiceGlanceSpec{
-		Replicas: &replicas,
-		Image:    &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/glance", Tag: "2026.1"},
+		Image: &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/glance", Tag: "2026.1"},
 		Backends: []GlanceBackendEntry{
 			{
 				Name: "primary",
@@ -729,8 +726,8 @@ func TestServiceGlanceSpecDeepCopy(t *testing.T) {
 	}
 
 	clone := spec.DeepCopy()
-	if clone.Replicas == spec.Replicas {
-		t.Errorf("DeepCopy did not allocate a new *int32 for Replicas")
+	if clone.Image == spec.Image {
+		t.Errorf("DeepCopy did not allocate a new *ImageSpec for Image")
 	}
 	if &clone.Backends[0] == &spec.Backends[0] {
 		t.Errorf("DeepCopy did not allocate a new backends slice")
@@ -854,9 +851,7 @@ func TestDedicatedPlacementBackingServicesAccessors(t *testing.T) {
 // map here would let a child projection mutate the ControlPlane spec it was
 // derived from.
 func TestServicePlacementSpecDeepCopy(t *testing.T) {
-	replicas := int32(2)
 	spec := ServicePlacementSpec{
-		Replicas:    &replicas,
 		Image:       &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/placement", Tag: "2026.1"},
 		ExtraConfig: map[string]map[string]string{"placement": {"randomize_allocation_candidates": "true"}},
 		DedicatedBackingServices: &PlacementDedicatedBackingServicesSpec{
@@ -866,9 +861,6 @@ func TestServicePlacementSpecDeepCopy(t *testing.T) {
 	}
 
 	clone := spec.DeepCopy()
-	if clone.Replicas == spec.Replicas {
-		t.Errorf("DeepCopy did not allocate a new *int32 for Replicas")
-	}
 	if clone.Image == spec.Image {
 		t.Errorf("DeepCopy did not allocate a new *ImageSpec for Image")
 	}
@@ -997,9 +989,7 @@ func TestDedicatedBarbicanBackingServicesAccessors(t *testing.T) {
 // the projected spec onto the Barbican child, so an aliased pointer here would
 // let a child projection mutate the ControlPlane spec it was derived from.
 func TestServiceBarbicanSpecDeepCopy(t *testing.T) {
-	replicas := int32(2)
 	spec := ServiceBarbicanSpec{
-		Replicas:    &replicas,
 		Image:       &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/barbican", Tag: "2026.1"},
 		ExtraConfig: map[string]map[string]string{"DEFAULT": {"debug": "true"}},
 		SecretStore: ServiceBarbicanSecretStoreSpec{
@@ -1016,8 +1006,8 @@ func TestServiceBarbicanSpecDeepCopy(t *testing.T) {
 	}
 
 	clone := spec.DeepCopy()
-	if clone.Replicas == spec.Replicas {
-		t.Errorf("DeepCopy did not allocate a new *int32 for Replicas")
+	if clone.Image == spec.Image {
+		t.Errorf("DeepCopy did not allocate a new *ImageSpec for Image")
 	}
 	if clone.SecretStore.External == spec.SecretStore.External {
 		t.Errorf("DeepCopy did not allocate a new *BarbicanExternalSecretStoreSpec")

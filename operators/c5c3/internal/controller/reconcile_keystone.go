@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -237,6 +238,15 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 
 	merged := policy.MergePolicies(cp.Spec.GlobalPolicyOverrides, cp.Spec.Services.Keystone.PolicyOverrides)
 
+	sizing, err := r.effectiveSizing(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving sizing: %w", err)
+	}
+	var ksSizing c5c3v1alpha1.KeystoneSizingSpec
+	if sizing.Keystone != nil {
+		ksSizing = *sizing.Keystone
+	}
+
 	// Build the fully-projected desired Keystone. The projection is a pure
 	// function of cp.Spec (it reads no live child state), so it is applied via
 	// the shared child projector under Server-Side Apply.
@@ -251,15 +261,21 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 	// own CEL transition rule), so re-projecting it can never trip that freeze.
 	keystone.Spec.TargetClusterRef = cp.Spec.Services.Keystone.TargetClusterRef.DeepCopy()
 
-	// Project the federation proxy (mod_auth_openidc sidecar) image so
-	// attaching an OIDC KeystoneIdentityBackend works out of the box on the
-	// managed path, and the WebSSO origin of the ControlPlane's own dashboard so
-	// Keystone will accept the hand-off. Both fields are assigned unconditionally:
-	// clearing the override or the horizon block must revert the child rather than
-	// leave the previously-projected value pinned. Both are inert until a
+	// Project the federation proxy (mod_auth_openidc sidecar) image and its
+	// resources (spec.sizing.keystone.federationProxy) so attaching an OIDC
+	// KeystoneIdentityBackend works out of the box on the managed path, and the
+	// WebSSO origin of the ControlPlane's own dashboard so Keystone will accept
+	// the hand-off. The fields are assigned unconditionally: clearing the
+	// override, the sizing or the horizon block must revert the child rather
+	// than leave the previously-projected value pinned. All are inert until a
 	// federation backend attaches.
+	var proxyResources *corev1.ResourceRequirements
+	if fp := ksSizing.FederationProxy; fp != nil {
+		proxyResources = fp.Resources.DeepCopy()
+	}
 	keystone.Spec.Federation = &keystonev1alpha1.FederationSpec{
 		ProxyImage:        federationProxyImage(cp),
+		ProxyResources:    proxyResources,
 		TrustedDashboards: trustedDashboards(cp),
 	}
 
@@ -309,9 +325,13 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 	keystone.Spec.Gateway = cp.Spec.Services.Keystone.Gateway.DeepCopy()
 	keystone.Spec.Bootstrap.PublicEndpoint = keystonePublicEndpoint(cp.Spec.Services.Keystone)
 
-	if cp.Spec.Services.Keystone.Replicas != nil {
-		keystone.Spec.Deployment.Replicas = *cp.Spec.Services.Keystone.Replicas
-	}
+	// Project the resolved spec.sizing.keystone onto the API Deployment, the
+	// uWSGI and autoscaling blocks, and the Job pods. What stays unprojected is
+	// the child's own: network policy, logging, the graceful-termination
+	// timings, the rollout strategy and affinity.
+	keystone.Spec.UWSGI, keystone.Spec.Autoscaling = projectAPI(&keystone.Spec.Deployment,
+		sizing.PodPlacementSpec, ksSizing.API, keystonev1alpha1.APIPodSelector(keystone.Name))
+	keystone.Spec.Jobs = projectJobs(ksSizing.Jobs)
 
 	keystone.Spec.PolicyOverrides = merged
 

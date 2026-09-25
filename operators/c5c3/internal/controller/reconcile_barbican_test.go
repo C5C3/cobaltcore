@@ -1138,7 +1138,7 @@ func TestReconcileBarbican_GatewayNilClears(t *testing.T) {
 func TestReconcileBarbican_ReplicasOverrideAndRevert(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := barbicanControlPlane()
-	cp.Spec.Services.Barbican.Replicas = ptr.To(int32(5))
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Barbican: &c5c3v1alpha1.APIServiceSizingSpec{API: apiReplicas(5)}})
 	r := newBarbicanTestReconciler(t, cp)
 	ctx := context.Background()
 
@@ -1146,7 +1146,7 @@ func TestReconcileBarbican_ReplicasOverrideAndRevert(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedBarbican(t, r.Client, cp).Spec.Deployment.Replicas).To(Equal(int32(5)))
 
-	cp.Spec.Services.Barbican.Replicas = nil
+	cp.Spec.Sizing = nil
 	_, err = r.reconcileBarbican(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedBarbican(t, r.Client, cp).Spec.Deployment.Replicas).To(Equal(commonv1.DefaultReplicas),
@@ -2344,4 +2344,46 @@ func TestReconcileBarbican_MirrorStoreLookupFailurePropagates(t *testing.T) {
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+}
+
+// TestReconcileBarbican_NoSizingProjectsTodaysChild pins the no-roll
+// guarantee.
+func TestReconcileBarbican_NoSizingProjectsTodaysChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	r := newBarbicanTestReconciler(t, cp)
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	b := getProjectedBarbican(t, r.Client, cp)
+	expectUnsized(g, b.Spec.Deployment, commonv1.DefaultReplicas)
+	g.Expect(b.Spec.APIServer).To(BeNil())
+	g.Expect(b.Spec.Autoscaling).To(BeNil())
+	g.Expect(b.Spec.Jobs).To(BeNil())
+}
+
+// TestReconcileBarbican_SizingProjectsComponents projects Minimal plus
+// overrides and finds each on the child field it sizes.
+func TestReconcileBarbican_SizingProjectsComponents(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	api := apiReplicas(2)
+	api.SpreadConstraints = hostSpread()
+	api.PriorityClassName = ptr.To("")
+	cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{
+		PodPlacementSpec: c5c3v1alpha1.PodPlacementSpec{PriorityClassName: ptr.To("high")},
+		Barbican:         &c5c3v1alpha1.APIServiceSizingSpec{API: api},
+	})
+	r := newBarbicanTestReconciler(t, cp)
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	b := getProjectedBarbican(t, r.Client, cp)
+	g.Expect(b.Spec.Deployment.Replicas).To(Equal(int32(2)))
+	g.Expect(b.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(b.Spec.Deployment.PriorityClassName).To(BeNil(), "an empty class opts the API out of the top-level class")
+	g.Expect(b.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
+		Equal(barbicanv1alpha1.APIPodSelector(b.Name)))
+	g.Expect(b.Spec.APIServer).To(Equal(&barbicanv1alpha1.APIServerSpec{UWSGI: &commonv1.UWSGISpec{Processes: 1, Threads: 1}}))
+	g.Expect(b.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
 }

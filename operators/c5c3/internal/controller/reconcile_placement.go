@@ -298,17 +298,27 @@ func (r *ControlPlaneReconciler) reconcilePlacement(ctx context.Context, cp *c5c
 	// down.
 	pl.Spec.Gateway = cp.Spec.Services.Placement.Gateway.DeepCopy()
 
-	// Resolve replicas to the shared operator default, then let an override win.
-	// Assigning unconditionally means clearing services.placement.replicas reverts
-	// the child to the default instead of leaving the previously-projected value
-	// pinned on the fetched child.
-	pl.Spec.Deployment.Replicas = commonv1.DefaultReplicas
-	if cp.Spec.Services.Placement.Replicas != nil {
-		pl.Spec.Deployment.Replicas = *cp.Spec.Services.Placement.Replicas
+	// Project the resolved spec.sizing.placement onto the API Deployment, the
+	// uWSGI and autoscaling blocks and the Job pods. spec.apiServer is set only
+	// when the sizing names a process or thread count, so the child-side uWSGI
+	// defaults apply otherwise. What stays unprojected is the child's own:
+	// network policy, logging, the graceful-termination timings, the rollout
+	// strategy and affinity.
+	sizing, err := r.effectiveSizing(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving sizing: %w", err)
 	}
-
-	// spec.apiServer is deliberately NOT set — the child-side uWSGI defaults stay
-	// authoritative, and tuning them stays a standalone-CR concern.
+	var plSizing c5c3v1alpha1.APIServiceSizingSpec
+	if sizing.Placement != nil {
+		plSizing = *sizing.Placement
+	}
+	uwsgi, autoscaling := projectAPI(&pl.Spec.Deployment, sizing.PodPlacementSpec, plSizing.API,
+		placementv1alpha1.APIPodSelector(pl.Name))
+	if uwsgi != nil {
+		pl.Spec.APIServer = &placementv1alpha1.APIServerSpec{UWSGI: uwsgi}
+	}
+	pl.Spec.Autoscaling = autoscaling
+	pl.Spec.Jobs = projectJobs(plSizing.Jobs)
 
 	res, err := commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp,
 		commonreconcile.ChildProjectionParams[*placementv1alpha1.Placement]{

@@ -356,7 +356,6 @@ type ServicesSpec struct {
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || has(self.external)",message="services.keystone.external is required when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="(has(self.mode) && self.mode == 'External') || !has(self.external)",message="services.keystone.external may only be set when services.keystone.mode is External"
-// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.replicas)",message="services.keystone.replicas is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.image)",message="services.keystone.image is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.policyOverrides)",message="services.keystone.policyOverrides is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.rotationInterval)",message="services.keystone.rotationInterval is forbidden when services.keystone.mode is External"
@@ -386,12 +385,6 @@ type ServiceKeystoneSpec struct {
 	// webhook enforced).
 	// +optional
 	External *ExternalKeystoneSpec `json:"external,omitempty"`
-
-	// Replicas overrides the number of Keystone API replicas. When nil the
-	// reconciler applies the Keystone operator's own default (3).
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Replicas *int32 `json:"replicas,omitempty"`
 
 	// Image optionally overrides the Keystone container image. When nil the
 	// reconciler derives the image from spec.openStackRelease.
@@ -803,12 +796,6 @@ type ExternalCatalogSpec struct {
 // convention) rather than set by the user here, and the L1 api package stays
 // free of a dependency on the horizon module.
 type ServiceHorizonSpec struct {
-	// Replicas overrides the number of dashboard replicas. When nil the
-	// reconciler applies the Horizon operator's own default (3).
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Replicas *int32 `json:"replicas,omitempty"`
-
 	// Image optionally overrides the Horizon container image. When nil the
 	// reconciler derives the image from spec.openStackRelease.
 	// +optional
@@ -919,12 +906,6 @@ type ServiceHorizonSpec struct {
 // exactly-one-default invariant; the MinItems floor and the XValidation rule
 // below make it hold at the CRD schema layer too.
 type ServiceGlanceSpec struct {
-	// Replicas overrides the number of Glance API replicas. When nil the
-	// reconciler applies the Glance operator's own default (3).
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Replicas *int32 `json:"replicas,omitempty"`
-
 	// Image optionally overrides the Glance container image. When nil the
 	// reconciler derives the image from spec.openStackRelease.
 	// +optional
@@ -1250,12 +1231,6 @@ type GlanceDedicatedBackingServicesSpec struct {
 // backends, import-filtering, staging, or image-cache blocks of
 // ServiceGlanceSpec.
 type ServicePlacementSpec struct {
-	// Replicas overrides the number of Placement API replicas. When nil the
-	// reconciler applies the Placement operator's own default (3).
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Replicas *int32 `json:"replicas,omitempty"`
-
 	// Image optionally overrides the Placement container image. When nil the
 	// reconciler derives the image from spec.openStackRelease.
 	// +optional
@@ -1388,12 +1363,6 @@ type PlacementDedicatedBackingServicesSpec struct {
 // database, so the store is part of the service's definition, not an optional
 // add-on.
 type ServiceBarbicanSpec struct {
-	// Replicas overrides the number of Barbican API replicas. When nil the
-	// reconciler applies the Barbican operator's own default (3).
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Replicas *int32 `json:"replicas,omitempty"`
-
 	// Image optionally overrides the Barbican container image. When nil the
 	// reconciler derives the image from spec.openStackRelease.
 	// +optional

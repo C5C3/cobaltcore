@@ -429,7 +429,9 @@ func TestReconcileHorizon_SecretKeyRefDefaultAndOverride(t *testing.T) {
 func TestReconcileHorizon_ReplicasPassthrough(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := horizonControlPlane()
-	cp.Spec.Services.Horizon.Replicas = ptr.To(int32(5))
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Horizon: &c5c3v1alpha1.HorizonSizingSpec{
+		API: &c5c3v1alpha1.HorizonAPISizingSpec{DeploymentSizingSpec: deploymentReplicas(5)},
+	}})
 	r := newHorizonTestReconciler(t, cp)
 
 	_, err := r.reconcileHorizon(context.Background(), cp)
@@ -442,7 +444,9 @@ func TestReconcileHorizon_ReplicasPassthrough(t *testing.T) {
 func TestReconcileHorizon_ReplicasRevertsToDefaultWhenCleared(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := horizonControlPlane()
-	cp.Spec.Services.Horizon.Replicas = ptr.To(int32(8))
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Horizon: &c5c3v1alpha1.HorizonSizingSpec{
+		API: &c5c3v1alpha1.HorizonAPISizingSpec{DeploymentSizingSpec: deploymentReplicas(8)},
+	}})
 	r := newHorizonTestReconciler(t, cp)
 	ctx := context.Background()
 
@@ -454,7 +458,7 @@ func TestReconcileHorizon_ReplicasRevertsToDefaultWhenCleared(t *testing.T) {
 
 	// Clearing the override must revert the child to the operator default,
 	// not leave the previously-projected value pinned on the fetched child.
-	cp.Spec.Services.Horizon.Replicas = nil
+	cp.Spec.Sizing = nil
 	_, err = r.reconcileHorizon(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	h = getProjectedHorizon(t, r.Client, cp)
@@ -1141,4 +1145,54 @@ func TestHorizonKeystoneEndpoint_FollowsThePlacement(t *testing.T) {
 			g.Expect(horizonKeystoneEndpoint(cp)).To(Equal(tc.want))
 		})
 	}
+}
+
+// TestReconcileHorizon_NoSizingProjectsTodaysChild pins the no-roll guarantee
+// for the dashboard.
+func TestReconcileHorizon_NoSizingProjectsTodaysChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	r := newHorizonTestReconciler(t, cp)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	h := getProjectedHorizon(t, r.Client, cp)
+	expectUnsized(g, h.Spec.Deployment, commonv1.DefaultReplicas)
+	g.Expect(h.Spec.Autoscaling).To(BeNil())
+}
+
+// TestReconcileHorizon_SizingProjectsAndClears projects Minimal plus overrides
+// through the read-modify-write path, then clears spec.sizing and finds every
+// value reverted on the fetched child.
+func TestReconcileHorizon_SizingProjectsAndClears(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	api := &c5c3v1alpha1.HorizonAPISizingSpec{DeploymentSizingSpec: deploymentReplicas(2)}
+	api.SpreadConstraints = hostSpread()
+	api.Tolerations = []corev1.Toleration{{Key: "dashboard", Operator: corev1.TolerationOpExists}}
+	api.Autoscaling = &commonv1.AutoscalingSpec{MaxReplicas: 4, TargetCPUUtilization: ptr.To[int32](70)}
+	cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{
+		PodPlacementSpec: c5c3v1alpha1.PodPlacementSpec{NodeSelector: map[string]string{"pool": "control"}},
+		Horizon:          &c5c3v1alpha1.HorizonSizingSpec{API: api},
+	})
+	r := newHorizonTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.Deployment.Replicas).To(Equal(int32(2)))
+	g.Expect(h.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(h.Spec.Deployment.NodeSelector).To(Equal(map[string]string{"pool": "control"}))
+	g.Expect(h.Spec.Deployment.Tolerations).To(HaveLen(1))
+	g.Expect(h.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
+		Equal(horizonv1alpha1.APIPodSelector(h.Name)))
+	g.Expect(h.Spec.Autoscaling.MaxReplicas).To(Equal(int32(4)))
+
+	cp.Spec.Sizing = nil
+	_, err = r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	h = getProjectedHorizon(t, r.Client, cp)
+	expectUnsized(g, h.Spec.Deployment, commonv1.DefaultReplicas)
+	g.Expect(h.Spec.Autoscaling).To(BeNil())
 }
