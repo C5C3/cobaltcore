@@ -9,8 +9,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # Quick Start (ControlPlane): C5C3 + K-ORC on Kind
 
-This guide takes a single c5c3 `ControlPlane` CR from `git clone` to an authenticated
-Keystone API call. Compared with the [Quick Start](./quick-start.md), the
+This guide creates the [ControlPlane devstack](./contributing/guide-conventions.md#one-devstack-per-guide),
+a local kind environment that takes a single c5c3 `ControlPlane` CR from `git
+clone` to an authenticated Keystone API call. Compared with the [Quick Start](./quick-start.md), the
 c5c3-operator now provisions the `MariaDB`, `Memcached`, `RabbitmqCluster`,
 `Keystone`, `Horizon`, `Glance`, `Placement`, `Barbican`, `Neutron`, and `Nova`
 children against a referenced `OVNCentral`, mints the admin application
@@ -23,13 +24,9 @@ OpenBao, and registers the identity catalog.
 Same toolchain as the [Quick Start](./quick-start.md), plus:
 
 - `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
-- The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 6, plus two plugins for the other checks in that step: [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) for the placement call and [`python-barbicanclient`](https://docs.openstack.org/python-barbicanclient/latest/) for the `openstack secret` subcommands. The network commands in that step need no plugin: `openstack network` and `openstack subnet` ship with `python-openstackclient` itself
-- A stable internet connection while `make deploy-infra` clones K-ORC from GitHub
-- Roughly 8 GB RAM, 2 CPU cores, and 10 GB of free disk for a laptop-sized kind cluster
-- Room for the managed message bus on top of that: the RabbitMQ Cluster Operator requests 1 CPU and 2 Gi for the single broker pod Step 3 declares
-- Room for the compute service as well: its five Deployments (the API, the metadata API, the scheduler, the conductor, and the console proxy) request 100m CPU each and 512 MiB each (368 MiB for the console proxy) at one replica, 500m CPU and 2416 MiB together. The optional fake compute in Step 6 adds 50m CPU and 128Mi
+- The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 7, plus two plugins for the other checks in that step: [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) for the placement call and [`python-barbicanclient`](https://docs.openstack.org/python-barbicanclient/latest/) for the `openstack secret` subcommands.
+- Roughly 10 GB RAM, 2 CPU cores, and 10 GB of free disk for a laptop-sized kind cluster
 - `yq` v4.x on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
-
 Docker Desktop and Podman are both valid kind providers. When using Podman,
 ensure its machine is already running and select it explicitly before running
 Step 2:
@@ -81,7 +78,7 @@ ControlPlane operator stack (keystone-operator, horizon-operator,
 glance-operator, placement-operator, barbican-operator, ovn-operator,
 neutron-operator, cinder-operator, nova-operator, K-ORC, c5c3-operator) from
 the published charts. It does not create the `ControlPlane` CR itself; you
-create and apply that in Step 3. The RabbitMQ Cluster Operator that serves the managed bus
+create and apply that in Step 4. The RabbitMQ Cluster Operator that serves the managed bus
 arrives through a Flux Kustomization of its own, on every cluster this script
 provisions, with or without `WITH_CONTROLPLANE=true`. In this mode the
 ControlPlane provisions its own MariaDB/Memcached (managed mode), so
@@ -102,7 +99,7 @@ You do not need to redeploy. The helper prefers `docker buildx`, but falls back
 to `curl` if Docker is unavailable.
 :::
 
-Block storage is an opt-in. If you want the Cinder block of Step 3, run Step 2
+Block storage is an opt-in. If you want the Cinder block of Step 4, run Step 2
 with the NFS overlay instead:
 
 ```bash
@@ -116,10 +113,10 @@ to the Linux VM kernel Docker Desktop runs. The
 [NFS storage stack](./reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-kind-only-opt-in)
 reference describes the overlay.
 
-## Step 3 — Create the ControlPlane CR
+## Step 3 — Deploy the OVN control plane
 
-The network service in the CR below programs an OVN control plane the
-ControlPlane only references, so that central goes up first:
+The network service in the CR below programs an OVN control plane that the
+ControlPlane references. Setting up the service first:
 
 ```yaml
 # controlplane-ovn.yaml
@@ -159,6 +156,8 @@ addresses and the client Secret the central publishes, and it projects, updates
 and deletes nothing on it. The CR stays yours: `kubectl delete controlplane`
 leaves the central running, and only the Teardown at the end of this page takes
 it down with the cluster.
+
+## Step 4 — Create the ControlPlane CR
 
 Then apply a `ControlPlane` CR. You only supply `openStackRelease` and the
 `services.keystone` block; the defaulting webhook fills the infrastructure and
@@ -595,7 +594,7 @@ spec:
 
 </details>
 
-## Step 4 — Onboard the OpenBao database-engine tenant
+## Step 5 — Onboard the OpenBao database-engine tenant
 
 In managed mode the ControlPlane defaults to engine-issued (`Dynamic`) Keystone
 DB credentials: ESO draws short-lived MySQL users from the OpenBao
@@ -611,7 +610,7 @@ its own. The onboarding script resolves it from the live ControlPlane spec, so
 the two arguments below always name the ControlPlane, wherever its Keystone
 lands.
 
-Run it after the `kubectl apply` from Step 3, as soon as the projected MariaDB
+Run it after the `kubectl apply` from Step 4, as soon as the projected MariaDB
 is Ready (the script configures the engine's database connection, so it needs a
 reachable database):
 
@@ -665,7 +664,7 @@ ControlPlane. See the
 [multi-tenant deployment guide](./guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities).
 :::
 
-## Step 5 — Watch the chain reconcile
+## Step 6 — Watch the chain reconcile
 
 The aggregate `Ready` flips to `True` once all 19 sub-conditions are met, in
 dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady`,
@@ -688,7 +687,7 @@ NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredential
 ```
 
 `RegistrationTenantStoresReady` closes the chain and reads
-`True/NoRegistrationNamespaces` on this devstack: it provisions secret stores for
+`True/NoRegistrationNamespaces` on this ControlPlane devstack: it provisions secret stores for
 namespaces outside this ControlPlane's own that register services against it, and
 the quick start declares none.
 
@@ -704,7 +703,7 @@ kubectl wait controlplane/controlplane -n openstack \
   --for=condition=Ready --timeout=15m
 ```
 
-## Step 6 — Verify
+## Step 7 — Verify
 
 The ControlPlane exposes the projected Keystone through the shared Envoy Gateway
 at `https://keystone.127-0-0-1.nip.io:8443/v3`, the same path as the per-service
@@ -790,7 +789,7 @@ openstack --insecure token issue
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
 > and drop all seven `publicEndpoint` lines (keystone, glance, placement,
-> barbican, neutron, nova, and cinder) from the CR in Step 3.
+> barbican, neutron, nova, and cinder) from the CR in Step 4.
 
 ### Upload a first image
 
@@ -852,7 +851,7 @@ openstack --insecure catalog list
 A `placement` row proves the ControlPlane registered both endpoints: the
 in-cluster one at `http://controlplane-placement.openstack.svc:8778` and the
 public one at `https://placement.127-0-0-1.nip.io:8443`, the `publicEndpoint`
-from Step 3. Then ask the API for its resource classes:
+from Step 4. Then ask the API for its resource classes:
 
 ```bash
 openstack --insecure resource class list
@@ -877,7 +876,7 @@ openstack --insecure catalog list
 A `key-manager` row proves the ControlPlane registered both endpoints: the
 in-cluster one at `http://controlplane-barbican.openstack.svc:9311` and the
 public one at `https://barbican.127-0-0-1.nip.io:8443`, the `publicEndpoint`
-from Step 3. Store a secret through that public endpoint, read the payload back,
+from Step 4. Store a secret through that public endpoint, read the payload back,
 and delete it again:
 
 ```bash
@@ -898,12 +897,12 @@ the prerequisites; without it the CLI rejects `secret store` as an unknown
 command.
 
 ::: warning Do not substitute real key material into `--payload`
-The literal above is a throwaway, and this snippet is written for a devstack. A
+The literal above is a throwaway, and this snippet is written for the ControlPlane devstack. A
 value passed to `--payload` sits in the process argument vector, where any local
 user reads it out of `ps` or `/proc/<pid>/cmdline` for the life of the call, and
 typing it directly rather than through a variable also leaves it in your shell
 history. Feed real material in from a file or from standard input instead.
-`--insecure` belongs to this devstack for the same reason, and it reaches
+`--insecure` belongs to this ControlPlane devstack for the same reason, and it reaches
 further than the payload: the flag disables certificate verification for the
 whole invocation, including the Keystone call that sends `OS_PASSWORD`. Anything
 that answers on the way collects the admin credential. Drop it anywhere the
@@ -922,7 +921,7 @@ openstack --insecure catalog list
 A `network` row proves the ControlPlane registered both endpoints: the
 in-cluster one at `http://controlplane-neutron.openstack.svc:9696` and the
 public one at `https://neutron.127-0-0-1.nip.io:8443`, the `publicEndpoint`
-from Step 3. Create a network, put a subnet on it, and read the network's
+from Step 4. Create a network, put a subnet on it, and read the network's
 status back:
 
 ```bash
@@ -948,7 +947,7 @@ openstack --insecure network delete demo-net
 
 ### Create a first volume
 
-This check belongs to the optional block-storage block of Step 3; skip it if you
+This check belongs to the optional block-storage block of Step 4; skip it if you
 left that block out. With the same `OS_*` variables still exported, confirm the
 block-storage service reached the catalog:
 
@@ -959,7 +958,7 @@ openstack --insecure catalog list
 A `block-storage` row proves the ControlPlane registered both endpoints: the
 in-cluster one at `http://controlplane-cinder.openstack.svc:8776/v3` and the
 public one at `https://cinder.127-0-0-1.nip.io:8443/v3`, the `publicEndpoint`
-from Step 3 with the `/v3` the registration appends. Create a 1 GiB volume and
+from Step 4 with the `/v3` the registration appends. Create a 1 GiB volume and
 read its status back:
 
 ```bash
