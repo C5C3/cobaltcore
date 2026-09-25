@@ -126,11 +126,11 @@ const (
 	DedicatedNovaCacheClusterRefSuffix = "-nova-cache"
 	// DefaultDatabaseStorageSize is the effective per-replica MariaDB volume size
 	// when spec.infrastructure.database.storageSize is empty. It aliases
-	// commonv1.DatabaseStorageSizeDefault (also the CRD +kubebuilder:default and
-	// the c5c3 fresh-create fallback) so validateImmutable normalizes an empty
-	// stored value to the exact size the live MariaDB already uses. StorageSize is
-	// defaulted by the CRD marker rather than Default() below, so this constant is
-	// only consulted by the immutability check, not materialized onto the object.
+	// commonv1.DatabaseStorageSizeDefault (also the Standard sizing profile's
+	// value and the c5c3 fresh-create fallback) so validateImmutable normalizes an
+	// empty stored value to the size the live MariaDB already uses. Default()
+	// below materializes the resolved sizing's storageSize, so this constant is
+	// only consulted by the immutability check, not written onto the object.
 	DefaultDatabaseStorageSize = commonv1.DatabaseStorageSizeDefault
 	// DefaultAdminPasswordSecretName is materialized when
 	// spec.korc.adminCredential.passwordSecretRef.name is empty.
@@ -2449,11 +2449,67 @@ func defaultMessagingLeaves(m *commonv1.MessagingSpec, clusterRefName string) {
 	}
 }
 
+// defaultDatabaseSizing writes the resolved database sizing into
+// spec.infrastructure.database and every declared dedicated database block: a
+// zero replicas becomes the resolved database.replicas and an empty
+// storageSize the resolved database.storageSize. An explicit value is never
+// overwritten. Both values are immutable after creation
+// (validateDatabaseImmutable), so materializing them at admission is what
+// keeps that check comparing stored values: a later profile switch changes
+// neither the stored spec nor the live MariaDB. Cache and bus replicas are not
+// written; the reconciler resolves them on every pass, so they follow a
+// profile change.
+//
+// A spec.sizing.profileRef is read through w.Client, and only while a field
+// is left to fill: once admitted both values are stored, so a later update,
+// the controller's finalizer removal included, neither reads the profile nor
+// fails on a read error. When the SizingProfile does not exist the fields stay
+// unset and ValidateCreate reports the reference; any other read error rejects
+// the request, since a guess could freeze a size the profile does not name. A
+// nil w.Client resolves without the profile.
+func (w *ControlPlaneWebhook) defaultDatabaseSizing(ctx context.Context, obj *ControlPlane) error {
+	targets := []*commonv1.DatabaseSpec{&obj.Spec.Infrastructure.Database}
+	for _, d := range declaredDedicatedBackingServices(obj) {
+		if d.db != nil {
+			targets = append(targets, d.db)
+		}
+	}
+	if !slices.ContainsFunc(targets, func(db *commonv1.DatabaseSpec) bool {
+		return db.Replicas == 0 || db.StorageSize == ""
+	}) {
+		return nil
+	}
+
+	var profile *SizingProfile
+	if s := obj.Spec.Sizing; s != nil && s.ProfileRef != nil && w.Client != nil {
+		p := &SizingProfile{}
+		switch err := w.Client.Get(ctx, client.ObjectKey{Name: s.ProfileRef.Name}, p); {
+		case err == nil:
+			profile = p
+		case apierrors.IsNotFound(err):
+			return nil
+		default:
+			return fmt.Errorf("reading SizingProfile %q: %w", s.ProfileRef.Name, err)
+		}
+	}
+	// Both built-in profiles size the database, so the resolved block is set.
+	resolved := ResolveSizing(obj, profile).Database
+	for _, db := range targets {
+		if db.Replicas == 0 && resolved.Replicas != nil {
+			db.Replicas = *resolved.Replicas
+		}
+		if db.StorageSize == "" {
+			db.StorageSize = resolved.StorageSize
+		}
+	}
+	return nil
+}
+
 // Default implements admission.Defaulter[*ControlPlane].
 // It fills only zero-valued fields with their documented defaults, leaving any
 // explicit value untouched. It is idempotent: applying it twice produces the
 // same result.
-func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) error {
+func (w *ControlPlaneWebhook) Default(ctx context.Context, obj *ControlPlane) error {
 	// Plan decision #4: region defaults to RegionOne.
 	if obj.Spec.Region == "" {
 		obj.Spec.Region = DefaultRegion
@@ -2669,6 +2725,10 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		if nn := obj.Spec.Services.Neutron; nn != nil && nn.OVN.CentralRef.Namespace == "" {
 			nn.OVN.CentralRef.Namespace = obj.Namespace
 		}
+
+		if err := w.defaultDatabaseSizing(ctx, obj); err != nil {
+			return err
+		}
 	}
 
 	// K-ORC admin-credential defaults. cloudCredentialsRef.secretName defaults to
@@ -2854,6 +2914,7 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 		allErrs = append(allErrs, ValidateNeutronOVNCentralNamespace(newObj)...)
 	}
 
+	allErrs = append(allErrs, validateNewDatabasesSized(oldObj, newObj)...)
 	allErrs = append(allErrs, w.validateSizingReferences(ctx, oldObj, newObj, allErrs)...)
 
 	if err := newInvalidIfErrs(newObj, allErrs); err != nil {
@@ -3105,6 +3166,46 @@ func validateSizing(cp *ControlPlane) field.ErrorList {
 			nv.ConsoleProxy.Enabled != nil && !*nv.ConsoleProxy.Enabled {
 			allErrs = append(allErrs, field.Forbidden(sizingPath.Child("nova", "consoleProxy"),
 				"must not be set when services.nova.consoleProxy.enabled is false"))
+		}
+	}
+	return allErrs
+}
+
+// validateNewDatabasesSized rejects an update that declares a managed
+// dedicated database oldObj did not while its replicas or storageSize is still
+// unset. With a spec.sizing.profileRef, Default leaves both unset only when
+// that SizingProfile does not exist. Admitted, they would stay unset until the
+// profile returns, and the first update after that would fill them from it and
+// fail validateDatabaseImmutable against the stored zero values, the
+// finalizer removal included. Without a profileRef, Default always resolves
+// them from a built-in profile.
+func validateNewDatabasesSized(oldObj, newObj *ControlPlane) field.ErrorList {
+	s := newObj.Spec.Sizing
+	if s == nil || s.ProfileRef == nil {
+		return nil
+	}
+	declared := map[string]struct{}{}
+	for _, d := range declaredDedicatedBackingServices(oldObj) {
+		if d.db != nil {
+			declared[d.path.String()] = struct{}{}
+		}
+	}
+	msg := fmt.Sprintf("must be set while SizingProfile %q does not exist: the value is frozen at creation, "+
+		"so restore the profile or set the value explicitly", s.ProfileRef.Name)
+	var allErrs field.ErrorList
+	for _, d := range declaredDedicatedBackingServices(newObj) {
+		if d.db == nil || d.db.ClusterRef == nil {
+			continue
+		}
+		if _, ok := declared[d.path.String()]; ok {
+			continue
+		}
+		dbPath := d.path.Child("database")
+		if d.db.Replicas == 0 {
+			allErrs = append(allErrs, field.Required(dbPath.Child("replicas"), msg))
+		}
+		if d.db.StorageSize == "" {
+			allErrs = append(allErrs, field.Required(dbPath.Child("storageSize"), msg))
 		}
 	}
 	return allErrs
@@ -4258,7 +4359,12 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 //     the loop behind a KeystoneProjectionRejected condition;
 //   - replicas, which drives the owned MariaDB's replica count and the derived
 //     Galera topology, so an in-place edit would toggle Galera off or scale a
-//     running Galera cluster down — destructive on a live cluster;
+//     running Galera cluster down — destructive on a live cluster. A stored 0
+//     compares as the count an older reconciler provisioned for it
+//     (effectiveDatabaseReplicas), so a ControlPlane an older webhook admitted
+//     without the count can migrate once to it. A new 0 is compared as is: it
+//     means Default could not resolve the count, and storing it would let the
+//     reconciler follow the sizing away from the running count;
 //   - storageSize, which the mariadb-operator refuses to change on a live CR. The
 //     comparison normalizes "" to the default the fresh-create projection
 //     actually provisions (effectiveStorageSize), so a ControlPlane stored before
@@ -4285,7 +4391,7 @@ func validateDatabaseImmutable(fldPath *field.Path, oldDB, newDB *commonv1.Datab
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("database"),
 			newDB.Database, "database name is immutable"))
 	}
-	if oldDB.Replicas != newDB.Replicas {
+	if oldDB.Replicas != newDB.Replicas && effectiveDatabaseReplicas(oldDB.Replicas) != newDB.Replicas {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("replicas"),
 			newDB.Replicas, "database replicas is immutable after creation "+
 				"(toggling Galera or scaling down a live cluster is destructive)"))
@@ -4816,6 +4922,18 @@ func validateServiceTargetClustersImmutable(oldObj, newObj *ControlPlane) field.
 		oldObj.NovaTargetClusterRef(), newObj.NovaTargetClusterRef())
 
 	return allErrs
+}
+
+// effectiveDatabaseReplicas resolves a stored database.replicas of 0 to the
+// count an older reconciler provisioned for it, its floor
+// commonv1.DefaultReplicas. Only a ControlPlane an older webhook admitted
+// against a CRD that no longer defaults the field carries 0, since the
+// defaulting webhook now writes the resolved count at admission.
+func effectiveDatabaseReplicas(replicas int32) int32 {
+	if replicas == 0 {
+		return commonv1.DefaultReplicas
+	}
+	return replicas
 }
 
 // effectiveStorageSize resolves an empty database.storageSize to the default the

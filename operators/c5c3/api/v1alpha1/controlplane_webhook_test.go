@@ -2689,11 +2689,13 @@ func TestValidateUpdate_RejectsDedicatedLeafChanges(t *testing.T) {
 			g := NewGomegaWithT(t)
 			w := &ControlPlaneWebhook{}
 			oldCP := dedicatedControlPlane()
-			// Pin storageSize on the old object so the "" -> default normalization
-			// does not mask the resize test.
-			oldCP.Spec.Services.Keystone.DedicatedBackingServices.Database.StorageSize = "100Gi"
+			// Pin replicas and storageSize on both objects so the 0 and "" ->
+			// default normalizations do not mask the change tests.
+			oldDB := oldCP.Spec.Services.Keystone.DedicatedBackingServices.Database
+			oldDB.Replicas, oldDB.StorageSize = 1, "100Gi"
 			newCP := dedicatedControlPlane()
-			newCP.Spec.Services.Keystone.DedicatedBackingServices.Database.StorageSize = "100Gi"
+			newDB := newCP.Spec.Services.Keystone.DedicatedBackingServices.Database
+			newDB.Replicas, newDB.StorageSize = 1, "100Gi"
 			tc.mutate(newCP)
 
 			_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)

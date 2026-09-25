@@ -141,11 +141,11 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   replicas:
-                    default: 3
                     description: |-
                       Replicas is the number of Memcached pod replicas in the referenced cluster
                       (managed mode). Used to generate the correct number of StatefulSet pod
-                      endpoints. Only used when ClusterRef is set.
+                      endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+                      takes the value from its sizing (Standard: 3).
                     format: int32
                     minimum: 1
                     type: integer

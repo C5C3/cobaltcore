@@ -311,7 +311,6 @@ func TestIntegration_CRD_NestedDefaultsMaterialized(t *testing.T) {
 
 	g.Expect(got.Spec.Deployment.Replicas).To(BeEquivalentTo(3), "deployment.replicas")
 	g.Expect(got.Spec.Workers.Deployment.Replicas).To(BeEquivalentTo(3), "workers.deployment.replicas")
-	g.Expect(got.Spec.Messaging.Replicas).To(BeEquivalentTo(3), "messaging.replicas")
 	g.Expect(got.Spec.OVNDBSync.SyncMode).To(Equal(DefaultOVNDBSyncMode), "ovnDBSync.syncMode")
 }
 

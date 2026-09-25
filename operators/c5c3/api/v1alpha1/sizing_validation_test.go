@@ -612,3 +612,213 @@ func TestValidateUpdate_PriorityClassLookedUpOnlyWhenChanged(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(gets).To(Equal(map[string]int{"new": 1}))
 }
+
+func TestDefault_ResolvesDatabaseSizing(t *testing.T) {
+	// dedicated returns a managed ControlPlane whose Keystone and Glance run
+	// dedicated databases and a dedicated Keystone cache, none of them sized.
+	dedicated := func(sizing *ControlPlaneSizingSpec) *ControlPlane {
+		cp := managedControlPlane()
+		cp.Name, cp.Namespace = "cp", "openstack"
+		cp.Spec.Sizing = sizing
+		cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{}
+		cp.Spec.Services.Keystone.DedicatedBackingServices = &KeystoneDedicatedBackingServicesSpec{
+			Database: &commonv1.DatabaseSpec{},
+			Cache:    &commonv1.CacheSpec{},
+		}
+		cp.Spec.Services.Glance = &ServiceGlanceSpec{
+			DedicatedBackingServices: &GlanceDedicatedBackingServicesSpec{Database: &commonv1.DatabaseSpec{}},
+		}
+		return cp
+	}
+	databases := func(cp *ControlPlane) []*commonv1.DatabaseSpec {
+		return []*commonv1.DatabaseSpec{
+			&cp.Spec.Infrastructure.Database,
+			cp.Spec.Services.Keystone.DedicatedBackingServices.Database,
+			cp.Spec.Services.Glance.DedicatedBackingServices.Database,
+		}
+	}
+	site := sizingProfile("site", SizingProfileMinimal, SizingSpec{
+		Database: &DatabaseSizingSpec{Replicas: ptr.To[int32](3), StorageSize: "2Gi"},
+	})
+
+	tests := []struct {
+		name         string
+		sizing       *ControlPlaneSizingSpec
+		wantReplicas int32
+		wantStorage  string
+	}{
+		{name: "no sizing is Standard", wantReplicas: 3, wantStorage: "100Gi"},
+		{name: "profile Minimal", sizing: &ControlPlaneSizingSpec{Profile: SizingProfileMinimal}, wantReplicas: 1, wantStorage: "512Mi"},
+		{
+			name:         "a profileRef takes the SizingProfile's values",
+			sizing:       &ControlPlaneSizingSpec{ProfileRef: &SizingProfileRef{Name: "site"}},
+			wantReplicas: 3, wantStorage: "2Gi",
+		},
+		{
+			name: "the ControlPlane's own values win over the profile",
+			sizing: &ControlPlaneSizingSpec{
+				ProfileRef: &SizingProfileRef{Name: "site"},
+				SizingSpec: SizingSpec{Database: &DatabaseSizingSpec{StorageSize: "5Gi"}},
+			},
+			wantReplicas: 3, wantStorage: "5Gi",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			w := &ControlPlaneWebhook{Client: fake.NewClientBuilder().WithScheme(sizingScheme(t)).WithObjects(site).Build()}
+			cp := dedicated(tc.sizing)
+			g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+			for i, db := range databases(cp) {
+				g.Expect(db.Replicas).To(Equal(tc.wantReplicas), "database %d", i)
+				g.Expect(db.StorageSize).To(Equal(tc.wantStorage), "database %d", i)
+			}
+			// Cache and bus replicas follow the sizing on every reconcile, so
+			// Default never freezes them.
+			g.Expect(cp.Spec.Infrastructure.Cache.Replicas).To(BeZero())
+			g.Expect(cp.Spec.Services.Keystone.DedicatedBackingServices.Cache.Replicas).To(BeZero())
+			g.Expect(cp.Spec.Infrastructure.Messaging.Replicas).To(BeZero())
+		})
+	}
+
+	t.Run("an explicit value is never overwritten", func(t *testing.T) {
+		g := NewWithT(t)
+		w := &ControlPlaneWebhook{}
+		cp := dedicated(&ControlPlaneSizingSpec{Profile: SizingProfileMinimal})
+		cp.Spec.Infrastructure.Database.Replicas = 3
+		cp.Spec.Services.Glance.DedicatedBackingServices.Database.StorageSize = "7Gi"
+		g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+		g.Expect(cp.Spec.Infrastructure.Database.Replicas).To(Equal(int32(3)))
+		g.Expect(cp.Spec.Infrastructure.Database.StorageSize).To(Equal("512Mi"))
+		g.Expect(cp.Spec.Services.Glance.DedicatedBackingServices.Database.Replicas).To(Equal(int32(1)))
+		g.Expect(cp.Spec.Services.Glance.DedicatedBackingServices.Database.StorageSize).To(Equal("7Gi"))
+	})
+
+	t.Run("a missing SizingProfile leaves both fields unset", func(t *testing.T) {
+		g := NewWithT(t)
+		w := &ControlPlaneWebhook{Client: fake.NewClientBuilder().WithScheme(sizingScheme(t)).Build()}
+		cp := dedicated(&ControlPlaneSizingSpec{ProfileRef: &SizingProfileRef{Name: "missing"}})
+		g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+		for i, db := range databases(cp) {
+			g.Expect(db.Replicas).To(BeZero(), "database %d", i)
+			g.Expect(db.StorageSize).To(BeEmpty(), "database %d", i)
+		}
+	})
+
+	t.Run("any other read error rejects the request", func(t *testing.T) {
+		g := NewWithT(t)
+		c := fake.NewClientBuilder().WithScheme(sizingScheme(t)).WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				return apierrors.NewServiceUnavailable("etcd is down")
+			},
+		}).Build()
+		w := &ControlPlaneWebhook{Client: c}
+		cp := dedicated(&ControlPlaneSizingSpec{ProfileRef: &SizingProfileRef{Name: "site"}})
+		err := w.Default(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(`reading SizingProfile "site"`))
+	})
+
+	t.Run("an object with nothing to fill never reads the profile", func(t *testing.T) {
+		g := NewWithT(t)
+		c := fake.NewClientBuilder().WithScheme(sizingScheme(t)).WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				return apierrors.NewServiceUnavailable("etcd is down")
+			},
+		}).Build()
+		w := &ControlPlaneWebhook{Client: c}
+		cp := dedicated(&ControlPlaneSizingSpec{ProfileRef: &SizingProfileRef{Name: "site"}})
+		for _, db := range databases(cp) {
+			db.Replicas, db.StorageSize = 3, "2Gi"
+		}
+		// Every later update, the finalizer removal included, looks like this.
+		g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	})
+
+	t.Run("External mode provisions no database and fills nothing", func(t *testing.T) {
+		g := NewWithT(t)
+		cp := externalControlPlane()
+		g.Expect((&ControlPlaneWebhook{}).Default(context.Background(), cp)).To(Succeed())
+		g.Expect(cp.Spec.Infrastructure).To(BeNil())
+	})
+}
+
+func TestValidateUpdate_StandardToMinimalKeepsStoredDatabase(t *testing.T) {
+	g := NewWithT(t)
+	w := &ControlPlaneWebhook{Client: fake.NewClientBuilder().WithScheme(sizingScheme(t)).Build()}
+	oldCP := managedControlPlane()
+	oldCP.Name, oldCP.Namespace = "cp", "openstack"
+	g.Expect(w.Default(context.Background(), oldCP)).To(Succeed())
+	g.Expect(oldCP.Spec.Infrastructure.Database.Replicas).To(Equal(int32(3)))
+	g.Expect(oldCP.Spec.Infrastructure.Database.StorageSize).To(Equal("100Gi"))
+
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Sizing = &ControlPlaneSizingSpec{Profile: SizingProfileMinimal}
+	g.Expect(w.Default(context.Background(), newCP)).To(Succeed())
+	// The stored values are explicit now, so Minimal never overwrites them and
+	// the immutability check sees no change.
+	g.Expect(newCP.Spec.Infrastructure.Database.Replicas).To(Equal(int32(3)))
+	g.Expect(newCP.Spec.Infrastructure.Database.StorageSize).To(Equal("100Gi"))
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidateUpdate_NewDedicatedDatabaseNeedsResolvableSizing(t *testing.T) {
+	g := NewWithT(t)
+	// The profile the ControlPlane names was deleted after admission.
+	w := &ControlPlaneWebhook{Client: fake.NewClientBuilder().WithScheme(sizingScheme(t)).Build()}
+	oldCP := managedControlPlane()
+	oldCP.Name, oldCP.Namespace = "cp", "openstack"
+	oldCP.Spec.Sizing = &ControlPlaneSizingSpec{ProfileRef: &SizingProfileRef{Name: "gone"}}
+	oldCP.Spec.Infrastructure.Database.Replicas, oldCP.Spec.Infrastructure.Database.StorageSize = 3, "100Gi"
+
+	// Adding a service with a dedicated database leaves both values unset.
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Placement = &ServicePlacementSpec{
+		DedicatedBackingServices: &PlacementDedicatedBackingServicesSpec{Database: &commonv1.DatabaseSpec{}},
+	}
+	g.Expect(w.Default(context.Background(), newCP)).To(Succeed())
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	dbPath := "spec.services.placement.dedicatedBackingServices.database"
+	g.Expect(err.Error()).To(ContainSubstring(dbPath + `.replicas: Required value: must be set while SizingProfile "gone" does not exist`))
+	g.Expect(err.Error()).To(ContainSubstring(dbPath + ".storageSize: Required value"))
+
+	// Explicit values need no profile.
+	db := newCP.Spec.Services.Placement.DedicatedBackingServices.Database
+	db.Replicas, db.StorageSize = 1, "1Gi"
+	_, err = w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidateUpdate_StoredZeroDatabaseReplicasMigratesOnce(t *testing.T) {
+	g := NewWithT(t)
+	w := &ControlPlaneWebhook{Client: fake.NewClientBuilder().WithScheme(sizingScheme(t)).Build()}
+	// An older webhook admitted the ControlPlane against a CRD that no longer
+	// defaults database.replicas, so it is stored as 0, and the reconciler
+	// provisioned three replicas for it.
+	oldCP := managedControlPlane()
+	oldCP.Name, oldCP.Namespace = "cp", "openstack"
+
+	// Any update, the finalizer removal included, fills Standard's count.
+	newCP := oldCP.DeepCopy()
+	g.Expect(w.Default(context.Background(), newCP)).To(Succeed())
+	g.Expect(newCP.Spec.Infrastructure.Database.Replicas).To(Equal(int32(3)))
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Any other count is still a change of the running database.
+	newCP.Spec.Infrastructure.Database.Replicas = 1
+	_, err = w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("database replicas is immutable after creation"))
+
+	// A new 0, which Default leaves only when it cannot resolve the count, is
+	// not normalized.
+	stored := newCP.DeepCopy()
+	stored.Spec.Infrastructure.Database.Replicas = 3
+	newCP.Spec.Infrastructure.Database.Replicas = 0
+	_, err = w.ValidateUpdate(context.Background(), stored, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("database replicas is immutable after creation"))
+}

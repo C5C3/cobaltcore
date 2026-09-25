@@ -4586,8 +4586,8 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 
 	// The messaging replica floor cannot be reached through the table above: a Go
 	// zero int32 carries json:"replicas,omitempty", so the typed client drops the
-	// field and the CRD default of 3 fills it back in. Submitting the ControlPlane
-	// as an unstructured object is the only way to put replicas: 0 on the wire.
+	// field. Submitting the ControlPlane as an unstructured object is the only way
+	// to put replicas: 0 on the wire.
 	t.Run("messaging replicas 0", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-marker-"}}
@@ -7164,9 +7164,10 @@ func TestIntegration_Messaging_ManagedProjectsRabbitmqCluster(t *testing.T) {
 }
 
 // TestIntegration_Messaging_Defaulting pins what admission does to a messaging
-// block declared empty: the mutating webhook invents the managed clusterRef, the
-// CRD default supplies the replica count, and the block cannot be dropped again
-// once the ControlPlane is live.
+// block declared empty: the mutating webhook invents the managed clusterRef,
+// leaves the replica count for the reconciler to resolve from the sizing on
+// every pass, and the block cannot be dropped again once the ControlPlane is
+// live.
 func TestIntegration_Messaging_Defaulting(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -7189,7 +7190,7 @@ func TestIntegration_Messaging_Defaulting(t *testing.T) {
 	g.Expect(m.SecretRef).To(BeNil(), "an empty block resolves to managed mode, not brownfield")
 	g.Expect(m.ClusterRef).NotTo(BeNil(), "the defaulting webhook must materialize messaging.clusterRef")
 	g.Expect(m.ClusterRef.Name).To(Equal(c5c3v1alpha1.DefaultMessagingClusterRefName))
-	g.Expect(m.Replicas).To(Equal(int32(3)), "the CRD default supplies the replica count")
+	g.Expect(m.Replicas).To(BeZero(), "the replica count follows the sizing, so admission never freezes it")
 
 	// Dropping the block from a live ControlPlane is rejected: the owned
 	// RabbitmqCluster keeps the queues. Get-mutate-update under RetryOnConflict,
