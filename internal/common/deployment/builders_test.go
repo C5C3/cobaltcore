@@ -162,3 +162,41 @@ func TestRestrictedSecurityContext(t *testing.T) {
 	g.Expect(sc.SeccompProfile).NotTo(gomega.BeNil())
 	g.Expect(sc.SeccompProfile.Type).To(gomega.Equal(corev1.SeccompProfileTypeRuntimeDefault))
 }
+
+// A nil placement leaves the pod spec as it was, so a caller that has no
+// placement block renders nothing.
+func TestApplyNodePlacement_NilSpecLeavesPodSpecUntouched(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	ps := &corev1.PodSpec{NodeSelector: map[string]string{"kept": "yes"}}
+	ApplyNodePlacement(ps, nil)
+	g.Expect(ps).To(gomega.Equal(&corev1.PodSpec{NodeSelector: map[string]string{"kept": "yes"}}))
+
+	ApplyNodePlacement(nil, &commonv1.NodePlacementSpec{NodeSelector: map[string]string{"a": "b"}})
+}
+
+// The rendered fields are copies: a write to the pod spec must never reach the
+// CR the placement was read from.
+func TestApplyNodePlacement_RendersCopies(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	spec := &commonv1.NodePlacementSpec{
+		NodeSelector: map[string]string{"a": "b"},
+		Tolerations:  []corev1.Toleration{{Key: "k", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
+		Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{},
+		}},
+	}
+	want := spec.DeepCopy()
+
+	ps := &corev1.PodSpec{}
+	ApplyNodePlacement(ps, spec)
+	g.Expect(ps.NodeSelector).To(gomega.Equal(want.NodeSelector))
+	g.Expect(ps.Tolerations).To(gomega.Equal(want.Tolerations))
+	g.Expect(ps.Affinity).To(gomega.Equal(want.Affinity))
+
+	ps.NodeSelector["a"] = "changed"
+	ps.Tolerations[0].Key = "changed"
+	ps.Affinity.NodeAffinity = nil
+	g.Expect(spec).To(gomega.Equal(want))
+}

@@ -87,7 +87,8 @@ type ContainerParams struct {
 //     unmanaged;
 //   - .spec.selector from p.SelectorLabels and .spec.strategy from Strategy;
 //   - the pod-level knobs TerminationGracePeriodSeconds,
-//     TopologySpreadConstraints, and PriorityClassName, plus the FSGroup pod
+//     TopologySpreadConstraints, PriorityClassName, NodeSelector,
+//     Tolerations, and Affinity (ApplyNodePlacement), plus the FSGroup pod
 //     security context;
 //   - on the single container, the resources from
 //     commonv1.WithResourceDefaults with p.DefaultMemory,
@@ -106,7 +107,7 @@ type ContainerParams struct {
 // BuildWorkload is a total function over valid params: it performs no I/O and
 // has no error paths.
 func BuildWorkload(p WorkloadParams) *appsv1.Deployment {
-	return &appsv1.Deployment{
+	d := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      p.Name,
 			Namespace: p.Namespace,
@@ -153,6 +154,8 @@ func BuildWorkload(p WorkloadParams) *appsv1.Deployment {
 			},
 		},
 	}
+	ApplyNodePlacement(&d.Spec.Template.Spec, &p.Deployment.NodePlacementSpec)
+	return d
 }
 
 // BuildService renders the API Service shared by every service operator: the

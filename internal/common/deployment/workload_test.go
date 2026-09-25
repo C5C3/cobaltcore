@@ -135,6 +135,34 @@ func TestBuildWorkload_OwnsInvariants(t *testing.T) {
 	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(gomega.Equal(PreStopSleepCommand(p.Deployment)))
 }
 
+// The Deployment block's placement lands on the pod template; an unset
+// placement renders all three fields nil, so no existing Deployment rolls.
+func TestBuildWorkload_RendersNodePlacement(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	unset := BuildWorkload(workloadParams()).Spec.Template.Spec
+	g.Expect(unset.NodeSelector).To(gomega.BeNil())
+	g.Expect(unset.Tolerations).To(gomega.BeNil())
+	g.Expect(unset.Affinity).To(gomega.BeNil())
+
+	placement := commonv1.NodePlacementSpec{
+		NodeSelector: map[string]string{"kubernetes.io/os": "linux"},
+		Tolerations:  []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
+		Affinity: &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
+				Weight:          100,
+				PodAffinityTerm: corev1.PodAffinityTerm{TopologyKey: "kubernetes.io/hostname"},
+			}},
+		}},
+	}
+	p := workloadParams()
+	p.Deployment = &commonv1.DeploymentSpec{Replicas: 3, NodePlacementSpec: placement}
+	set := BuildWorkload(p).Spec.Template.Spec
+	g.Expect(set.NodeSelector).To(gomega.Equal(placement.NodeSelector))
+	g.Expect(set.Tolerations).To(gomega.Equal(placement.Tolerations))
+	g.Expect(set.Affinity).To(gomega.Equal(placement.Affinity))
+}
+
 // A block that names no CPU and no memory renders the per-resource defaults:
 // the caller's DefaultMemory as memory request and limit, a 100m CPU request,
 // no CPU limit. A zero DefaultMemory falls back to one single-threaded process.
