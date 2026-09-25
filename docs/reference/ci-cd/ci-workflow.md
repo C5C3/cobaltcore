@@ -1691,8 +1691,11 @@ deploying the operator via Helm with the specified container image.
 | `IMAGE_REPO` | Yes | - | Full image repository (e.g. `ghcr.io/c5c3/keystone-operator`) |
 | `IMAGE_TAG` | No | `dev` | Image tag |
 
-The script runs `kubectl apply -f <chart>/crds/`, waits for CRD establishment, then runs
-`helm install` with `image.pullPolicy=Never` (suitable for kind-loaded images).
+The script runs `kubectl apply --server-side --force-conflicts -f <chart>/crds/`, waits for
+CRD establishment, then runs `helm install` with `image.pullPolicy=Never` (suitable for
+kind-loaded images). Server-side apply keeps the CRD out of the 262,144-byte
+`last-applied-configuration` annotation that client-side apply writes, which the Nova and
+Cinder CRDs exceed.
 
 Usage:
 

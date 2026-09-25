@@ -12,6 +12,9 @@
 #     previous local run is re-built instead of silently reused;
 #   - a pulled chart with an empty/absent charts/ still runs the build.
 #
+# It also pins the CRD install to server-side apply: a client-side apply fails
+# on the Nova and Cinder CRDs with "metadata.annotations: Too long".
+#
 # The in-repo case is the regression guard: before the CHART_DIR gate, a
 # populated charts/ alone was enough to skip the build for the in-repo chart.
 #
@@ -40,9 +43,10 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 # make_stubs <dir>
 # Writes helm/kubectl stubs into <dir>. The helm stub logs its full argv to
-# $HELM_LOG and always succeeds. The kubectl stub returns non-zero for
-# `get mutatingwebhookconfigurations` so the deploy script skips the webhook
-# readiness wait (and its sleeps), and succeeds for everything else.
+# $HELM_LOG and always succeeds. The kubectl stub logs its full argv to
+# $KUBECTL_LOG when set, returns non-zero for `get mutatingwebhookconfigurations`
+# so the deploy script skips the webhook readiness wait (and its sleeps), and
+# succeeds for everything else.
 make_stubs() {
   local dir="$1"
   mkdir -p "$dir"
@@ -56,6 +60,7 @@ STUB
 
   cat >"$dir/kubectl" <<'STUB'
 #!/bin/bash
+echo "kubectl $*" >>"${KUBECTL_LOG:-/dev/null}"
 if [ "${1:-}" = "get" ] && [ "${2:-}" = "mutatingwebhookconfigurations" ]; then
   exit 1
 fi
@@ -66,8 +71,9 @@ STUB
 
 # make_chart <dir>
 # Materialises a minimal pulled-style chart under <dir>: a crds/ directory (the
-# deploy script runs `kubectl apply -f <chart>/crds/`) and, when POPULATE_CHARTS
-# is set, a vendored subchart under charts/.
+# deploy script runs `kubectl apply --server-side --force-conflicts -f
+# <chart>/crds/`) and, when POPULATE_CHARTS is set, a vendored subchart under
+# charts/.
 make_chart() {
   local dir="$1"
   mkdir -p "$dir/crds"
@@ -189,11 +195,39 @@ test_pulled_chart_empty_charts_builds() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 4: the chart's CRDs are installed with server-side apply
+#
+# Client-side apply stores the whole object in an annotation capped at 262,144
+# bytes, which the Nova and Cinder CRDs exceed. The e2e legs are the only other
+# place a revert to a plain `kubectl apply -f` would show.
+# ---------------------------------------------------------------------------
+test_crds_applied_server_side() {
+  echo "Test: CRDs are installed with server-side apply"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  make_stubs "$tmp/bin"
+  make_chart "$tmp/chart"
+  : >"$tmp/kubectl.log"
+
+  local output exit_code
+  output="$(CHART_DIR="$tmp/chart" KUBECTL_LOG="$tmp/kubectl.log" run_deploy "$tmp/bin" "$tmp/helm.log")"
+  exit_code=$?
+
+  assert_eq "deploy exits 0 for a pulled chart" "0" "$exit_code"
+  assert_file_contains_fixed "CRDs are applied server-side with --force-conflicts" \
+    "$tmp/kubectl.log" "kubectl apply --server-side --force-conflicts -f $tmp/chart/crds/"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_pulled_chart_skips_build
 test_inrepo_chart_rebuilds
 test_pulled_chart_empty_charts_builds
+test_crds_applied_server_side
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
