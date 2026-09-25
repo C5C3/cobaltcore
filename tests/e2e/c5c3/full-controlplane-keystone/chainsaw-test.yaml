@@ -1790,7 +1790,17 @@ spec:
           # the log past the point where kubectl finishes writing before grep
           # exits. A single capture also pins every assertion to one pod's log
           # instead of re-selecting a pod per kubectl call.
-          VERIFY_LOGS="$(kubectl logs -n "${CP_NS}" job/cp-openstack-verify)"
+          #
+          # That pod is the Succeeded one, read by name. job/<name> resolves to
+          # the OLDEST pod (kubectl's log-pod sort ranks finished pods equal on
+          # phase, readiness and restarts, then puts the older first), which
+          # after a backoffLimit retry is the failed attempt: a Job that came
+          # good on its retry would fail every assertion below.
+          VERIFY_PODS="$(kubectl get pods -n "${CP_NS}" -l job-name=cp-openstack-verify \
+            --field-selector=status.phase=Succeeded -o name)"
+          VERIFY_POD="${VERIFY_PODS%%$'\n'*}"
+          test -n "${VERIFY_POD}" || { echo "ERROR: no Succeeded pod of cp-openstack-verify"; exit 1; }
+          VERIFY_LOGS="$(kubectl logs -n "${CP_NS}" "${VERIFY_POD}")"
           printf '%s\n' "${VERIFY_LOGS}"
           grep -qi "identity" <<<"${VERIFY_LOGS}" \
             || { echo "ERROR: identity (keystone) service not listed in the catalog"; exit 1; }
@@ -1918,10 +1928,8 @@ spec:
           kubectl delete job cp-hypervisor-operator-verify -n "${CP_NS}" --ignore-not-found
           kubectl apply -f 07-hypervisor-operator-verify-job.yaml
           kubectl wait --for=condition=complete job/cp-hypervisor-operator-verify -n "${CP_NS}" --timeout=10m
-          # Captured once and matched with here-strings, for the pipefail reason
-          # the verify-Job capture above documents. The log is read from the
-          # Succeeded pod by name: job/<name> resolves to the OLDEST pod, which
-          # after a backoffLimit retry is the failed attempt.
+          # Captured once from the Succeeded pod and matched with here-strings,
+          # for the reasons the verify-Job capture above documents.
           HVO_PODS="$(kubectl get pods -n "${CP_NS}" -l job-name=cp-hypervisor-operator-verify \
             --field-selector=status.phase=Succeeded -o name)"
           HVO_POD="${HVO_PODS%%$'\n'*}"
@@ -2066,11 +2074,10 @@ spec:
           echo "=== K-ORC controller logs (last 100 lines) ==="
           kubectl logs -n orc-system -l app.kubernetes.io/name=openstack-resource-controller --tail=100 --all-containers 2>&1 || true
           echo "=== openstack verify Job pod logs (every attempt) ==="
-          # job/<name> resolves to ONE pod, the newest, so after a backoffLimit
-          # retry the attempt that carried the failure line is the one not
-          # shown. The label lists every pod the Job made; a Never-restart pod
-          # is kept as Failed rather than replaced, so the first attempt's log
-          # is still there to read.
+          # job/<name> resolves to ONE pod, the oldest, so after a backoffLimit
+          # retry the later attempt is the one not shown. The label lists every
+          # pod the Job made; a Never-restart pod is kept as Failed rather than
+          # replaced, so every attempt's log is still there to read.
           for pod in $(kubectl get pods -n openstack -l job-name=cp-openstack-verify -o name 2>/dev/null); do
             echo "--- ${pod} ---"
             kubectl logs -n openstack "${pod}" --tail=400 2>&1 || true
