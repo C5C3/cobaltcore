@@ -17,6 +17,11 @@ import (
 // 63 characters.
 const MaxNeutronMetadataAgentNameLength = 63
 
+// MetadataSharedSecretMirrorLabel marks a Secret the ControlPlane copied into a
+// NeutronMetadataAgent's namespace on a target cluster. The teardown of the last
+// agent there that names it deletes it; a Secret without it is left alone.
+const MetadataSharedSecretMirrorLabel = "neutron.openstack.c5c3.io/metadata-shared-secret-mirror"
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"

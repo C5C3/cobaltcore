@@ -19,6 +19,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -293,6 +294,16 @@ func (r *NeutronMetadataAgentReconciler) Reconcile(ctx context.Context, req ctrl
 					cr.Spec.TargetClusterRef.Name, commonmulticluster.AbandonAfter))
 			return r.updateStatus(ctx, &cr, statusBefore,
 				ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
+		}
+		// The metadata shared-secret copy the ControlPlane delivered goes
+		// before the finalizer does: once the sweep releases it, nothing on
+		// this agent's side would ever reap the copy. An abandoned target
+		// (children == nil) is skipped, and a local agent carries no finalizer
+		// and gets no copy.
+		if children != nil && controllerutil.ContainsFinalizer(&cr, commonmulticluster.RemoteChildrenFinalizer) {
+			if err := r.reapMetadataSharedSecretMirrors(ctx, children, &cr); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 		if err := r.reconcileDeleteRemoteChildren(ctx, children, &cr); err != nil {
 			return ctrl.Result{}, err
