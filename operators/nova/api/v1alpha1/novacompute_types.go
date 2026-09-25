@@ -18,11 +18,23 @@ import (
 // characters.
 const MaxNovaComputeNameLength = 63
 
-// ComputeConfigMirrorLabel marks a compute-contract Secret the ControlPlane
-// copied into a compute cluster's namespace. The last NovaCompute of a Nova on
-// that cluster deletes a Secret carrying it when it is torn down, and leaves a
-// Secret without it alone: that one was put there by hand.
+// ComputeConfigMirrorLabel marks a Secret the ControlPlane copied into a
+// compute cluster's namespace: the compute contract "<nova>-compute-config"
+// and, when the ControlPlane provisions the hypervisor operator's account, its
+// auth Secret "<nova>" plus HypervisorOperatorAuthSecretSuffix. The last
+// NovaCompute of a Nova on that cluster deletes each of the two carrying it
+// when it is torn down, and leaves a Secret without it alone: that one was put
+// there by hand.
 const ComputeConfigMirrorLabel = "nova.openstack.c5c3.io/compute-config-mirror"
+
+// HypervisorOperatorAuthSecretSuffix completes the name of the Secret the
+// ControlPlane writes for openstack-hypervisor-operator: "<nova>" plus this
+// suffix, beside the Nova and on every compute cluster a NovaCompute of it runs
+// on. The reap of the last pool on a cluster derives the same name from the
+// Nova's name alone.
+//
+// #nosec G101 -- Secret name suffix, not a credential.
+const HypervisorOperatorAuthSecretSuffix = "-hypervisor-operator-auth"
 
 // NovaComputeNodePhase is where one node stands in the pool's lifecycle.
 // +kubebuilder:validation:Enum=Pending;Active;Draining;Releasing;Conflict

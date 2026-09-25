@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -301,19 +302,66 @@ func mirrorSecret(mirrored bool) *corev1.Secret {
 	return secret
 }
 
-func TestReapComputeConfigMirror(t *testing.T) {
+// testHVOAuth is the name of the hypervisor operator's auth Secret the
+// ControlPlane mirrors beside the compute contract.
+const testHVOAuth = testNovaName + novav1alpha1.HypervisorOperatorAuthSecretSuffix
+
+// hvoAuthSecret is the hypervisor operator's auth Secret in the pool's
+// namespace, labelled as the ControlPlane's mirror when mirrored is set.
+func hvoAuthSecret(mirrored bool) *corev1.Secret {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: testHVOAuth, Namespace: testNamespace},
+		Data:       map[string][]byte{"password": []byte("pw")},
+	}
+	if mirrored {
+		secret.Labels = map[string]string{novav1alpha1.ComputeConfigMirrorLabel: "true"}
+	}
+	return secret
+}
+
+func TestReapComputeClusterMirrors(t *testing.T) {
 	ctx := context.Background()
 	contractKey := types.NamespacedName{Namespace: testNamespace, Name: testContract}
+	authKey := types.NamespacedName{Namespace: testNamespace, Name: testHVOAuth}
 
-	t.Run("the last pool on the cluster deletes a labelled mirror", func(t *testing.T) {
+	t.Run("the last pool on the cluster deletes both labelled mirrors, one event each", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := deletingPool(novaComputeDrainFinalizer)
+		r := newNovaComputeTestReconciler(nil, cr, mirrorSecret(true), hvoAuthSecret(true))
+
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
+
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, contractKey, &corev1.Secret{}))).To(BeTrue())
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, authKey, &corev1.Secret{}))).To(BeTrue())
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+			And(ContainSubstring("Normal ComputeConfigMirrorReaped"), ContainSubstring(" "+testContract+":")),
+			And(ContainSubstring("Normal ComputeConfigMirrorReaped"), ContainSubstring(" "+testHVOAuth+":")),
+		))
+	})
+
+	t.Run("an absent auth mirror is no error", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		cr := deletingPool(novaComputeDrainFinalizer)
 		r := newNovaComputeTestReconciler(nil, cr, mirrorSecret(true))
 
-		g.Expect(r.reapComputeConfigMirror(ctx, r.Client, cr)).To(Succeed())
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
 
 		g.Expect(apierrors.IsNotFound(r.Get(ctx, contractKey, &corev1.Secret{}))).To(BeTrue())
-		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(ContainSubstring("Normal ComputeConfigMirrorReaped")))
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+			And(ContainSubstring("Normal ComputeConfigMirrorReaped"), ContainSubstring(" "+testContract+":")),
+		))
+	})
+
+	t.Run("an unlabelled auth Secret is kept while the labelled contract goes", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := deletingPool(novaComputeDrainFinalizer)
+		r := newNovaComputeTestReconciler(nil, cr, mirrorSecret(true), hvoAuthSecret(false))
+
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
+
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, contractKey, &corev1.Secret{}))).To(BeTrue())
+		g.Expect(r.Get(ctx, authKey, &corev1.Secret{})).To(Succeed(), "a Secret put there by hand is not the ControlPlane's")
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(HaveLen(1))
 	})
 
 	t.Run("an unlabelled Secret is kept", func(t *testing.T) {
@@ -321,20 +369,68 @@ func TestReapComputeConfigMirror(t *testing.T) {
 		cr := deletingPool(novaComputeDrainFinalizer)
 		r := newNovaComputeTestReconciler(nil, cr, mirrorSecret(false))
 
-		g.Expect(r.reapComputeConfigMirror(ctx, r.Client, cr)).To(Succeed())
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
 
 		g.Expect(r.Get(ctx, contractKey, &corev1.Secret{})).To(Succeed())
 	})
 
-	t.Run("another pool on the same cluster keeps it", func(t *testing.T) {
+	t.Run("an absent contract mirror does not keep the auth mirror", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := deletingPool(novaComputeDrainFinalizer)
+		r := newNovaComputeTestReconciler(nil, cr, hvoAuthSecret(true))
+
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
+
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, authKey, &corev1.Secret{}))).To(BeTrue())
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+			And(ContainSubstring("Normal ComputeConfigMirrorReaped"), ContainSubstring(" "+testHVOAuth+":")),
+		))
+	})
+
+	t.Run("an unlabelled contract Secret does not keep the auth mirror", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := deletingPool(novaComputeDrainFinalizer)
+		r := newNovaComputeTestReconciler(nil, cr, mirrorSecret(false), hvoAuthSecret(true))
+
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
+
+		g.Expect(r.Get(ctx, contractKey, &corev1.Secret{})).To(Succeed())
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, authKey, &corev1.Secret{}))).To(BeTrue())
+	})
+
+	t.Run("a failing read of the auth mirror is returned wrapped", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := deletingPool(novaComputeDrainFinalizer)
+		r := newNovaComputeTestReconciler(nil, cr)
+		injected := errors.New("injected read failure")
+		children := novaFakeClientBuilder(mirrorSecret(true), hvoAuthSecret(true)).WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if key.Name == testHVOAuth {
+					return injected
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+
+		err := r.reapComputeClusterMirrors(ctx, children, cr)
+
+		g.Expect(err).To(MatchError(injected))
+		g.Expect(err.Error()).To(ContainSubstring("getting hypervisor-operator auth mirror " + testNamespace + "/" + testHVOAuth))
+		g.Expect(apierrors.IsNotFound(children.Get(ctx, contractKey, &corev1.Secret{}))).To(BeTrue(),
+			"the contract mirror ahead of it is still reaped")
+	})
+
+	t.Run("another pool on the same cluster keeps both", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		cr := deletingPool(novaComputeDrainFinalizer)
 		sibling := rivalPool("pool-b", 0, testPoolLabel, "b")
-		r := newNovaComputeTestReconciler(nil, cr, sibling, mirrorSecret(true))
+		r := newNovaComputeTestReconciler(nil, cr, sibling, mirrorSecret(true), hvoAuthSecret(true))
 
-		g.Expect(r.reapComputeConfigMirror(ctx, r.Client, cr)).To(Succeed())
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
 
 		g.Expect(r.Get(ctx, contractKey, &corev1.Secret{})).To(Succeed())
+		g.Expect(r.Get(ctx, authKey, &corev1.Secret{})).To(Succeed())
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(BeEmpty())
 	})
 
 	t.Run("a pool on another cluster or a deleting one does not keep it", func(t *testing.T) {
@@ -347,7 +443,7 @@ func TestReapComputeConfigMirror(t *testing.T) {
 		leaving.Finalizers = []string{novaComputeDrainFinalizer}
 		r := newNovaComputeTestReconciler(nil, cr, elsewhere, leaving, mirrorSecret(true))
 
-		g.Expect(r.reapComputeConfigMirror(ctx, r.Client, cr)).To(Succeed())
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
 
 		g.Expect(apierrors.IsNotFound(r.Get(ctx, contractKey, &corev1.Secret{}))).To(BeTrue())
 	})
@@ -361,7 +457,7 @@ func TestReapComputeConfigMirror(t *testing.T) {
 		draining.Status.Nodes = []novav1alpha1.NovaComputeNodeStatus{entry("node-b", novav1alpha1.NovaComputeNodeDraining)}
 		r := newNovaComputeTestReconciler(nil, cr, draining, mirrorSecret(true))
 
-		g.Expect(r.reapComputeConfigMirror(ctx, r.Client, cr)).To(Succeed())
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
 
 		g.Expect(r.Get(ctx, contractKey, &corev1.Secret{})).To(Succeed(),
 			"its draining pod mounts the Secret, and its teardown reads it")
@@ -372,7 +468,7 @@ func TestReapComputeConfigMirror(t *testing.T) {
 		cr := deletingPool(novaComputeDrainFinalizer)
 		r := newNovaComputeTestReconciler(nil, cr)
 
-		g.Expect(r.reapComputeConfigMirror(ctx, r.Client, cr)).To(Succeed())
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
 	})
 
 	t.Run("the teardown runs it after the Nova is gone", func(t *testing.T) {
