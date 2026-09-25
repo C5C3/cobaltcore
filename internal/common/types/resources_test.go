@@ -201,3 +201,97 @@ func TestWithResourceDefaults_ReturnsACopy(t *testing.T) {
 	g.Expect(next.Requests[corev1.ResourceMemory]).To(gomega.Equal(resource.MustParse("512Mi")))
 	g.Expect(next.Limits[corev1.ResourceMemory]).To(gomega.Equal(resource.MustParse("512Mi")))
 }
+
+func TestWithSidecarResourceDefaults_EmptyBlock(t *testing.T) {
+	want := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+	}
+	for _, tc := range []struct {
+		name string
+		in   *corev1.ResourceRequirements
+	}{
+		{name: "nil block", in: nil},
+		{name: "empty block", in: &corev1.ResourceRequirements{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			got := WithSidecarResourceDefaults(tc.in)
+
+			g.Expect(got).To(gomega.Equal(want))
+			g.Expect(got.Limits).NotTo(gomega.HaveKey(corev1.ResourceCPU))
+		})
+	}
+}
+
+// A block that names only a memory limit keeps it, and gains no memory request
+// the API server would otherwise default to that limit.
+func TestWithSidecarResourceDefaults_KeepsUserLimit(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	got := WithSidecarResourceDefaults(&corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+	})
+
+	g.Expect(got.Limits).To(gomega.Equal(corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")}))
+	g.Expect(got.Requests).To(gomega.Equal(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m")}))
+}
+
+func TestWithSidecarResourceDefaults_ReturnsACopy(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	first := WithSidecarResourceDefaults(nil)
+	first.Requests[corev1.ResourceCPU] = resource.MustParse("4")
+	first.Limits[corev1.ResourceMemory] = resource.MustParse("8Gi")
+
+	next := WithSidecarResourceDefaults(nil)
+	g.Expect(next.Requests[corev1.ResourceCPU]).To(gomega.Equal(resource.MustParse("25m")))
+	g.Expect(next.Limits[corev1.ResourceMemory]).To(gomega.Equal(resource.MustParse("256Mi")))
+}
+
+func TestWithRequestFloor_EmptyBlock(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   *corev1.ResourceRequirements
+	}{
+		{name: "nil block", in: nil},
+		{name: "empty block", in: &corev1.ResourceRequirements{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			got := WithRequestFloor(tc.in)
+
+			g.Expect(got.Requests).To(gomega.Equal(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			}))
+			g.Expect(got.Limits).To(gomega.BeNil())
+		})
+	}
+}
+
+// A memory limit the block sets decides the memory request (the API server
+// defaults it to the limit), so the floor adds only the CPU request. The result
+// is a copy: writing to it leaves the input and the floor unchanged.
+func TestWithRequestFloor_LimitOnlyAndCopy(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	in := &corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+	}
+	want := in.DeepCopy()
+
+	got := WithRequestFloor(in)
+	g.Expect(got.Requests).To(gomega.Equal(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}))
+	g.Expect(got.Limits).To(gomega.Equal(corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}))
+
+	got.Requests[corev1.ResourceCPU] = resource.MustParse("4")
+	got.Limits[corev1.ResourceMemory] = resource.MustParse("8Gi")
+	g.Expect(in).To(gomega.Equal(want), "writing to the result must leave the input block unchanged")
+
+	floor := WithRequestFloor(nil)
+	floor.Requests[corev1.ResourceMemory] = resource.MustParse("8Gi")
+	g.Expect(WithRequestFloor(nil).Requests[corev1.ResourceMemory]).To(gomega.Equal(resource.MustParse("256Mi")))
+}
