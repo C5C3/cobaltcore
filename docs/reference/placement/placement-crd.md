@@ -123,7 +123,8 @@ which has no schema-layer counterpart), the graceful-termination arithmetic
 (`preStopSleepSeconds < terminationGracePeriodSeconds`, and `harakiri` strictly
 inside the drain window), the `httpKeepAliveTimeout` pairing, the
 `Recreate`-vs-`rollingUpdate` sanity check, autoscaling bounds (including the
-implicit `minReplicas` default from `deployment.replicas`), network-policy
+implicit `minReplicas` default from `deployment.replicas`, and a non-zero
+`spec.deployment.resources` request for each utilization target), network-policy
 ingress, gateway hostname and `parentRef.name`, resource requests-vs-limits,
 PriorityClass existence, topology-spread selectors (matching the `placement`
 and instance labels), the `spec.deployment.nodeSelector` label grammar and

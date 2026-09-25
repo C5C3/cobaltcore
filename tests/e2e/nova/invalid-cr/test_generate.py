@@ -44,7 +44,7 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # Number of fixtures emitted by _generate.py. Bumping this value requires adding
 # the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 34
+_EXPECTED_FIXTURE_COUNT = 35
 
 # MaxNovaNameLength in operators/nova/api/v1alpha1/nova_webhook.go: the
 # 52-character CronJob cap less the 11 characters of "-db-archive".

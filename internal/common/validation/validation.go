@@ -404,6 +404,54 @@ func RequestsWithinLimits(fldPath *field.Path, rr *corev1.ResourceRequirements) 
 	return errs
 }
 
+// AutoscalingTargetRequests rejects a utilization target of a that the
+// HorizontalPodAutoscaler cannot compute against the container rr sizes: a
+// target is measured against the sum of the requests of every container in the
+// pod, so a zero request either fails the metric or inflates it.
+//
+// It checks cpu while a.TargetCPUUtilization is set and memory while
+// a.TargetMemoryUtilization is set, in that order. A named request decides
+// alone: a zero or negative one is rejected at requests.<name>. Without a
+// request, a zero or negative limit is rejected at limits.<name>, because the
+// API server copies that limit into the request. A block that names neither
+// passes: the operator's render-time default fills a positive request. A nil a
+// or rr returns none.
+func AutoscalingTargetRequests(fldPath *field.Path, rr *corev1.ResourceRequirements, a *commonv1.AutoscalingSpec) field.ErrorList {
+	if a == nil || rr == nil {
+		return nil
+	}
+	targets := []struct {
+		name   corev1.ResourceName
+		target *int32
+		field  string
+	}{
+		{name: corev1.ResourceCPU, target: a.TargetCPUUtilization, field: "targetCPUUtilization"},
+		{name: corev1.ResourceMemory, target: a.TargetMemoryUtilization, field: "targetMemoryUtilization"},
+	}
+	var errs field.ErrorList
+	for _, t := range targets {
+		if t.target == nil {
+			continue
+		}
+		path := fldPath.Child("requests", string(t.name))
+		kind := "request"
+		reason := "the HorizontalPodAutoscaler divides the pods' usage by the sum of their containers' requests"
+		q, ok := rr.Requests[t.name]
+		if !ok {
+			path = fldPath.Child("limits", string(t.name))
+			kind = "limit"
+			reason = "without a request the API server copies the limit into the request, and " + reason
+			q, ok = rr.Limits[t.name]
+		}
+		if !ok || q.Sign() > 0 {
+			continue
+		}
+		errs = append(errs, field.Invalid(path, q.String(), fmt.Sprintf(
+			"%s %s must be greater than zero while %s is set: %s", t.name, kind, t.field, reason)))
+	}
+	return errs
+}
+
 // Job checks a CR's spec.jobs block: requests within limits, an existing
 // priority class (PriorityClassExists), and the node placement. A nil spec
 // returns none.

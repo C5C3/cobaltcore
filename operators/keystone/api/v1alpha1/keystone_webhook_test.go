@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -3700,4 +3701,54 @@ func TestKeystoneValidateCreate_EmptyTargetClusterRefNameRejected(t *testing.T) 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("targetClusterRef.name"))
 	g.Expect(err.Error()).To(ContainSubstring("target cluster name must be set"))
+}
+
+// TestKeystoneValidate_AutoscalingTargetNeedsAPositiveRequest pins the HPA
+// request check: the HorizontalPodAutoscaler divides the pods' usage by the
+// sum of their containers' requests, so a zero CPU request under a CPU target
+// is rejected at its field path, and the same CR without it is admitted.
+func TestKeystoneValidate_AutoscalingTargetNeedsAPositiveRequest(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	withTarget := func() *Keystone {
+		o := validKeystone()
+		o.Spec.Autoscaling = &AutoscalingSpec{
+			MinReplicas:          ptr.To(int32(1)),
+			MaxReplicas:          5,
+			TargetCPUUtilization: ptr.To(int32(80)),
+		}
+		return o
+	}
+
+	o := withTarget()
+	o.Spec.Deployment.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("0")},
+	}
+	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(ContainSubstring("spec.deployment.resources.requests.cpu"))
+	g.Expect(err.Error()).To(ContainSubstring("cpu request must be greater than zero"))
+
+	_, err = w.ValidateCreate(context.Background(), withTarget())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The federation proxy sidecar joins the API pod while spec.federation is
+	// set, so its request is part of the sum the HPA divides by.
+	o = withTarget()
+	o.Spec.Federation = &FederationSpec{ProxyResources: &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("0")},
+	}}
+	_, err = w.ValidateCreate(context.Background(), o)
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(ContainSubstring("spec.federation.proxyResources.requests.cpu"))
+	g.Expect(err.Error()).To(ContainSubstring("cpu request must be greater than zero"))
+
+	// Without a CPU target the zero proxy request measures nothing.
+	o.Spec.Autoscaling = &AutoscalingSpec{
+		MinReplicas:             ptr.To(int32(1)),
+		MaxReplicas:             5,
+		TargetMemoryUtilization: ptr.To(int32(70)),
+	}
+	_, err = w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(HaveOccurred())
 }

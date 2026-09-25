@@ -208,7 +208,8 @@ It repeats the schema-layer rules as defense in depth (image tag/digest XOR,
 the database, cache and messaging mutual-exclusivity rules, the
 Dynamic-requires-clusterRef rule, the secret-store-ref shape, the replica floor,
 the autoscaling bounds including the implicit `minReplicas` default from
-`spec.api.deployment.replicas`, the network-policy ingress source, the gateway
+`spec.api.deployment.replicas` and a non-zero `spec.api.deployment.resources`
+request for each utilization target, the network-policy ingress source, the gateway
 hostname and parentRef, the four single-writer rules, the key-manager union and
 the `internalTenant` IDs) and adds the rules CEL cannot express: the URL shape
 of every endpoint field, the cron grammar of `spec.dbPurge.schedule`, the

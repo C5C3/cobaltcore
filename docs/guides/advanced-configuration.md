@@ -371,6 +371,12 @@ spec:
 - The API PodDisruptionBudget follows `minReplicas`. At `minReplicas: 1` it
   switches to `maxUnavailable: 1`, so a node drain can still evict the one pod the
   HPA may leave running. Above one it keeps `minAvailable: 1`.
+- The HPA measures a target against the summed requests of every container in
+  the API pod. While a target is set, the webhook rejects a zero or negative
+  request for the resource it measures, on the API container and on a sidecar
+  such as Keystone's federation proxy or Glance's image-cache maintenance
+  container. A block that names no request gets a positive default at render
+  time.
 - The generated HPA references `deploy/keystone` and uses the Kubernetes standard
   `metrics-server`. The Quick Start kind cluster does **not** ship one by default —
   the HPA will sit at `unknown/80%` until a resource-metrics API is available.

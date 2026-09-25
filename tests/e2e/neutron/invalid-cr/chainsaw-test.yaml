@@ -224,3 +224,13 @@ spec:
             (contains($error, 'spec.deployment.tolerations[0].operator')): true
             (contains($error, 'Invalid value')): true
             (contains($error, 'operator must be Exists when')): true
+  # A CPU request of zero under a CPU utilization target must be rejected by the
+  # validating webhook: the HPA divides usage by the summed requests.
+  - try:
+    - apply:
+        file: 18-autoscaling-cpu-request-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.deployment.resources.requests.cpu')): true
+            (contains($error, 'cpu request must be greater than zero')): true

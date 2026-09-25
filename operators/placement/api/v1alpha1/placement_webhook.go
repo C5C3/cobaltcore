@@ -462,6 +462,12 @@ func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra fie
 		}
 	}
 
+	// An HPA utilization target is measured against the summed requests of
+	// every container in the API pod, so a zero request under a target either
+	// fails the metric or inflates it. The render-time default fills a positive
+	// request when the block names none.
+	allErrs = append(allErrs, validation.AutoscalingTargetRequests(specPath.Child("deployment", "resources"), p.Spec.Deployment.Resources, p.Spec.Autoscaling)...)
+
 	// Defense-in-depth networkPolicy ingress check alongside the
 	// +kubebuilder:validation:XValidation CEL rule on NetworkPolicySpec.
 	if p.Spec.NetworkPolicy != nil && len(p.Spec.NetworkPolicy.Ingress) == 0 {

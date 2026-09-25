@@ -229,12 +229,18 @@ type AutoscalingSpec struct {
 	MaxReplicas int32 `json:"maxReplicas"`
 
 	// TargetCPUUtilization is the target average CPU utilization (percentage).
+	// The HPA measures it against the summed CPU requests of every container
+	// in the API pod, so while it is set the webhook rejects a zero or
+	// negative CPU request, or a limit the request would be copied from.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
 	TargetCPUUtilization *int32 `json:"targetCPUUtilization,omitempty"`
 
 	// TargetMemoryUtilization is the target average memory utilization (percentage).
+	// The HPA measures it against the summed memory requests of every
+	// container in the API pod, so while it is set the webhook rejects a zero
+	// or negative memory request, or a limit the request would be copied from.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100

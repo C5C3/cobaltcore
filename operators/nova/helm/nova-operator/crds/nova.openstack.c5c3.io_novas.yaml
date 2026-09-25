@@ -1717,15 +1717,21 @@ spec:
                     minimum: 1
                     type: integer
                   targetCPUUtilization:
-                    description: TargetCPUUtilization is the target average CPU utilization
-                      (percentage).
+                    description: |-
+                      TargetCPUUtilization is the target average CPU utilization (percentage).
+                      The HPA measures it against the summed CPU requests of every container
+                      in the API pod, so while it is set the webhook rejects a zero or
+                      negative CPU request, or a limit the request would be copied from.
                     format: int32
                     maximum: 100
                     minimum: 1
                     type: integer
                   targetMemoryUtilization:
-                    description: TargetMemoryUtilization is the target average memory
-                      utilization (percentage).
+                    description: |-
+                      TargetMemoryUtilization is the target average memory utilization (percentage).
+                      The HPA measures it against the summed memory requests of every
+                      container in the API pod, so while it is set the webhook rejects a zero
+                      or negative memory request, or a limit the request would be copied from.
                     format: int32
                     maximum: 100
                     minimum: 1

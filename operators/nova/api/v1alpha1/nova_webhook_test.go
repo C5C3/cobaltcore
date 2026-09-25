@@ -14,6 +14,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -1788,5 +1789,35 @@ func TestNovaValidate_EmptyJobsAccepted(t *testing.T) {
 	o.Spec.Jobs = &commonv1.JobSpec{}
 
 	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// TestNovaValidate_AutoscalingTargetNeedsAPositiveRequest pins the HPA
+// request check: the HorizontalPodAutoscaler divides the pods' usage by the
+// sum of their containers' requests, so a zero CPU request under a CPU target
+// is rejected at its field path, and the same CR without it is admitted.
+func TestNovaValidate_AutoscalingTargetNeedsAPositiveRequest(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &NovaWebhook{}
+	withTarget := func() *Nova {
+		o := validNova()
+		o.Spec.Autoscaling = &AutoscalingSpec{
+			MinReplicas:          ptr.To(int32(1)),
+			MaxReplicas:          5,
+			TargetCPUUtilization: ptr.To(int32(80)),
+		}
+		return o
+	}
+
+	o := withTarget()
+	o.Spec.API.Deployment.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("0")},
+	}
+	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.api.deployment.resources.requests.cpu"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("cpu request must be greater than zero"))
+
+	_, err = w.ValidateCreate(context.Background(), withTarget())
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }

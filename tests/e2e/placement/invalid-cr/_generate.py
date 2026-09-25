@@ -759,6 +759,30 @@ FIXTURES: tuple[Fixture, ...] = (
             "      value: x"
         ),
     ),
+    Fixture(
+        filename="39-autoscaling-cpu-request-zero.yaml",
+        comment=(
+            "spec.deployment.resources.requests.cpu names a CPU request of zero while\n"
+            "spec.autoscaling sets targetCPUUtilization. The HorizontalPodAutoscaler\n"
+            "divides the pods' usage by the sum of their containers' requests, so a zero\n"
+            "request fails the metric or inflates it. A resource.Quantity floor has no\n"
+            "marker, so the validating webhook (validation.AutoscalingTargetRequests)\n"
+            "answers."
+        ),
+        name="placement-invalid-autoscaling-request",
+        deployment=(
+            "    replicas: 1\n"
+            "    resources:\n"
+            "      requests:\n"
+            '        cpu: "0"'
+        ),
+        extra=(
+            "  autoscaling:\n"
+            "    minReplicas: 1\n"
+            "    maxReplicas: 5\n"
+            "    targetCPUUtilization: 80\n"
+        ),
+    ),
 )
 
 

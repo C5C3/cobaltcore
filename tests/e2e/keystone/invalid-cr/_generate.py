@@ -778,6 +778,30 @@ FIXTURES: list[Fixture] = [
 # "spec.deployment.tolerations[0].operator", "Invalid value" and "operator
 # must be Exists when".""",
     ),
+    Fixture(
+        filename="30-autoscaling-cpu-request-zero.yaml",
+        name="invalid-autoscaling-request",
+        deployment_extra=(
+            "    resources:\n"
+            "      requests:\n"
+            '        cpu: "0"\n'
+        ),
+        trailing=(
+            "  autoscaling:\n"
+            "    minReplicas: 1\n"
+            "    maxReplicas: 5\n"
+            "    targetCPUUtilization: 80\n"
+        ),
+        comment="""\
+# Keystone CR whose spec.deployment.resources names a CPU request of zero while
+# spec.autoscaling sets targetCPUUtilization. The HorizontalPodAutoscaler
+# divides the pods' usage by the sum of their containers' requests, so a zero
+# request fails the metric or inflates it. A resource.Quantity floor has no
+# marker, so the validating webhook (validation.AutoscalingTargetRequests) is
+# the only gate. Admission must reject this CR with an $error referencing the
+# substrings "spec.deployment.resources.requests.cpu" and "cpu request must be
+# greater than zero".""",
+    ),
 ]
 
 

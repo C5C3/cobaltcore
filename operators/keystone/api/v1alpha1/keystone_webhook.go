@@ -749,6 +749,16 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 		}
 	}
 
+	// An HPA utilization target is measured against the summed requests of
+	// every container in the API pod, so a zero request under a target either
+	// fails the metric or inflates it. The render-time default fills a positive
+	// request when the block names none.
+	allErrs = append(allErrs, validation.AutoscalingTargetRequests(specPath.Child("deployment", "resources"), k.Spec.Deployment.Resources, k.Spec.Autoscaling)...)
+	if k.Spec.Federation != nil {
+		allErrs = append(allErrs, validation.AutoscalingTargetRequests(
+			specPath.Child("federation", "proxyResources"), k.Spec.Federation.ProxyResources, k.Spec.Autoscaling)...)
+	}
+
 	// Defense-in-depth networkPolicy ingress check alongside the
 	// +kubebuilder:validation:XValidation CEL rule on NetworkPolicySpec.
 	if k.Spec.NetworkPolicy != nil && len(k.Spec.NetworkPolicy.Ingress) == 0 {

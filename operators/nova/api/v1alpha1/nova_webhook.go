@@ -739,6 +739,12 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 		}
 	}
 
+	// An HPA utilization target is measured against the summed requests of
+	// every container in the API pod, so a zero request under a target either
+	// fails the metric or inflates it. The render-time default fills a positive
+	// request when the block names none.
+	allErrs = append(allErrs, validation.AutoscalingTargetRequests(specPath.Child("api", "deployment", "resources"), n.Spec.API.Deployment.Resources, n.Spec.Autoscaling)...)
+
 	// Defense-in-depth networkPolicy ingress check alongside the
 	// +kubebuilder:validation:XValidation CEL rule on NetworkPolicySpec.
 	if n.Spec.NetworkPolicy != nil && len(n.Spec.NetworkPolicy.Ingress) == 0 {
