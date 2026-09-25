@@ -12,15 +12,19 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
@@ -28,7 +32,7 @@ import (
 
 // kindedApplyConfiguration is what an interceptor sees of an object the shared
 // apply helper writes: the apply configuration is built from an unstructured
-// object, whose kind is what tells the four objects of a database step apart.
+// object, whose kind is what tells the five objects of a database step apart.
 type kindedApplyConfiguration interface {
 	GetKind() string
 }
@@ -155,6 +159,59 @@ func TestReconcileRaftDatabase_ApplyErrorIsStatefulSetError(t *testing.T) {
 	// pass re-applies them, and deleting them would take the addresses of the
 	// members that are running away with it.
 	g.Expect(r.Get(ctx, centralKey("ovn-nb-0"), &corev1.Service{})).To(Succeed())
+}
+
+// Both database steps apply their own budget, named after the database.
+func TestReconcileRaftDatabase_AppliesBothBudgets(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := testOVNCentral()
+	r := newTestOVNCentralReconciler(t, cr)
+
+	_, err := r.reconcileNorthbound(ctx, r.Client, cr)
+	g.Expect(err).NotTo(HaveOccurred())
+	_, err = r.reconcileSouthbound(ctx, r.Client, cr)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for _, name := range []string{testOVNCentralName + "-nb", testOVNCentralName + "-sb"} {
+		var pdb policyv1.PodDisruptionBudget
+		g.Expect(r.Get(ctx, centralKey(name), &pdb)).To(Succeed(), name)
+		g.Expect(pdb.Spec.MaxUnavailable).To(HaveValue(Equal(intstr.FromInt32(1))), name)
+	}
+}
+
+// A target cluster that grants the operator no poddisruptionbudgets verb fails
+// the step after the StatefulSet went in, with the reason every failed apply of
+// the step reports.
+func TestReconcileRaftDatabase_PDBApplyErrorIsStatefulSetError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := testOVNCentral()
+
+	c := ovnCentralFakeClientBuilder(t, cr).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if kinded, ok := obj.(kindedApplyConfiguration); ok && kinded.GetKind() == "PodDisruptionBudget" {
+					return apierrors.NewForbidden(policyv1.Resource("poddisruptionbudgets"), "ovn-nb", nil)
+				}
+				return cl.Apply(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &OVNCentralReconciler{Client: c, Scheme: newTestScheme(t), Recorder: record.NewFakeRecorder(10)}
+
+	res, err := r.reconcileNorthbound(ctx, r.Client, cr)
+
+	g.Expect(err).To(MatchError(ContainSubstring("ensuring nb PodDisruptionBudget")))
+	g.Expect(apierrors.IsForbidden(err)).To(BeTrue(), "the API error must stay unwrappable")
+	g.Expect(res.IsZero()).To(BeTrue())
+
+	cond := ovnCentralCondition(cr, conditionTypeNorthboundReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonStatefulSetError))
+
+	// The StatefulSet went in before the failure; the next pass re-applies both.
+	g.Expect(r.Get(ctx, centralKey("ovn-nb"), &appsv1.StatefulSet{})).To(Succeed())
 }
 
 func TestReconcileRaftDatabase_ScriptsConfigMapCarriesTheFiveKeys(t *testing.T) {
@@ -510,5 +567,49 @@ func TestRaftStatefulSet_RendersNoneWhenUnset(t *testing.T) {
 		g.Expect(spec.NodeSelector).To(BeNil(), db.suffix)
 		g.Expect(spec.Tolerations).To(BeNil(), db.suffix)
 		g.Expect(spec.Affinity).To(BeNil(), db.suffix)
+	}
+}
+
+// The members of both databases carry the two soft default constraints of the
+// API Deployments, selecting their own database's members. A database block's
+// affinity, the way to make the spread hard, still renders beside them.
+func TestRaftStatefulSet_RendersTheDefaultSpread(t *testing.T) {
+	g := NewWithT(t)
+	cr := testOVNCentral()
+	cr.Spec.Northbound.Affinity = &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+		RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+			TopologyKey:   "kubernetes.io/hostname",
+			LabelSelector: &metav1.LabelSelector{MatchLabels: raftSelectorLabels(cr, northboundDB(cr))},
+		}},
+	}}
+
+	for _, db := range []raftDB{northboundDB(cr), southboundDB(cr)} {
+		spec := raftStatefulSet(cr, db).Spec.Template.Spec
+		g.Expect(spec.TopologySpreadConstraints).To(Equal(
+			deployment.DefaultTopologySpreadConstraints(raftSelectorLabels(cr, db))), db.suffix)
+	}
+	g.Expect(raftStatefulSet(cr, northboundDB(cr)).Spec.Template.Spec.Affinity).To(Equal(cr.Spec.Northbound.Affinity))
+	g.Expect(raftStatefulSet(cr, southboundDB(cr)).Spec.Template.Spec.Affinity).To(BeNil())
+}
+
+// maxUnavailable: 1 fits every member count: it keeps quorum for three
+// members, never blocks the drain of one, and evicts five one at a time.
+func TestRaftPodDisruptionBudget_AllowsOneVoluntaryDisruption(t *testing.T) {
+	for _, replicas := range []int32{1, 3, 5} {
+		t.Run(fmt.Sprintf("%d members", replicas), func(t *testing.T) {
+			g := NewWithT(t)
+			cr := testOVNCentral()
+			cr.Spec.Northbound.Replicas = replicas
+			db := northboundDB(cr)
+
+			pdb := raftPodDisruptionBudget(cr, db)
+
+			g.Expect(pdb.Name).To(Equal(testOVNCentralName + "-nb"))
+			g.Expect(pdb.Namespace).To(Equal(cr.Namespace))
+			g.Expect(pdb.Labels).To(Equal(naming.ComponentLabels(centralAppName, cr.Name, suffixNorthbound)))
+			g.Expect(pdb.Spec.Selector.MatchLabels).To(Equal(raftSelectorLabels(cr, db)))
+			g.Expect(pdb.Spec.MaxUnavailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+			g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+		})
 	}
 }

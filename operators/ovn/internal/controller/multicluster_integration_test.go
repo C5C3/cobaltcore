@@ -36,6 +36,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -495,6 +496,7 @@ func centralChildren(cr *ovnv1alpha1.OVNCentral, nb, sb raftDB) []remoteChild {
 		children = append(children,
 			remoteChild{key: client.ObjectKey{Namespace: ns, Name: raftName(cr, db)}, obj: &appsv1.StatefulSet{}, what: db.suffix + " StatefulSet"},
 			remoteChild{key: client.ObjectKey{Namespace: ns, Name: raftName(cr, db)}, obj: &corev1.Service{}, what: db.suffix + " headless Service"},
+			remoteChild{key: client.ObjectKey{Namespace: ns, Name: raftName(cr, db)}, obj: &policyv1.PodDisruptionBudget{}, what: db.suffix + " PodDisruptionBudget"},
 		)
 		for ordinal := int32(0); ordinal < db.spec.Replicas; ordinal++ {
 			children = append(children, remoteChild{

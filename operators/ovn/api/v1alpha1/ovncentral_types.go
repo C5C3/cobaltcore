@@ -147,6 +147,9 @@ type OVNDatabaseSpec struct {
 	// tolerates no more failures than the odd one below it and has two ways to
 	// split the vote. Five is the practical ceiling, past which the write
 	// latency of the extra round trips outweighs the added fault tolerance.
+	// The members get a PodDisruptionBudget of one voluntary disruption at a
+	// time (maxUnavailable: 1), which keeps quorum for three members through a
+	// drain and never blocks the drain of a single member.
 	// +optional
 	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=1
@@ -233,6 +236,11 @@ type OVNDatabaseSpec struct {
 	// excludes the node a member's claim is bound to leaves that member
 	// Pending, and the rolling update stops there while the other members keep
 	// serving.
+	//
+	// The members carry a soft spread across zones and nodes (ScheduleAnyway),
+	// so they still schedule where the cluster has one node. A required pod
+	// anti-affinity on kubernetes.io/hostname, selecting the database's member
+	// labels, is how the spread becomes hard.
 	commonv1.NodePlacementSpec `json:",inline"`
 }
 

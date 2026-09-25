@@ -222,6 +222,24 @@ tests:
               - list
               - watch
 
+  - it: should grant full CRUD on poddisruptionbudgets for the Raft budgets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - policy
+            resources:
+              - poddisruptionbudgets
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch
+              - update
+              - watch
+
   - it: should grant full CRUD on leases for leader election
     asserts:
       - contains:

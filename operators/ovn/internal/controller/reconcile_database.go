@@ -13,6 +13,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -43,7 +44,7 @@ const (
 )
 
 // The condition reasons of a database step. Every failed apply reports
-// StatefulSetError, whichever of the four objects failed: the step is one unit
+// StatefulSetError, whichever of the five objects failed: the step is one unit
 // of work, and splitting the reason per object would put the object that
 // happened to fail first into a field consumers match on.
 const (
@@ -187,9 +188,10 @@ func (r *OVNCentralReconciler) reconcileSouthbound(ctx context.Context, children
 }
 
 // reconcileRaftDatabase projects one Raft cluster: the scripts its members run,
-// the headless Service they find each other through, one Service per member, and
-// the StatefulSet itself. It reports the cluster under the database's own
-// condition type and mirrors the live ready-member count into status.
+// the headless Service they find each other through, one Service per member, the
+// StatefulSet itself, and the PodDisruptionBudget that lets a drain evict one
+// member at a time. It reports the cluster under the database's own condition
+// type and mirrors the live ready-member count into status.
 //
 // The scripts ConfigMap is applied by both database steps rather than by a step
 // of its own. It holds the scripts of both databases, the apply is idempotent,
@@ -218,6 +220,10 @@ func (r *OVNCentralReconciler) reconcileRaftDatabase(ctx context.Context, childr
 	sts := raftStatefulSet(cr, db)
 	if err := apply.EnsureObject(ctx, children, r.Scheme, cr, sts, apply.FieldManager); err != nil {
 		return ctrl.Result{}, markDatabaseFailed(cr, db, fmt.Errorf("ensuring %s StatefulSet: %w", db.suffix, err))
+	}
+
+	if err := apply.EnsureObject(ctx, children, r.Scheme, cr, raftPodDisruptionBudget(cr, db), apply.FieldManager); err != nil {
+		return ctrl.Result{}, markDatabaseFailed(cr, db, fmt.Errorf("ensuring %s PodDisruptionBudget: %w", db.suffix, err))
 	}
 
 	// Readiness is read from a Get after the apply, not from the applied object:
@@ -454,6 +460,13 @@ func raftPerPodService(cr *ovnv1alpha1.OVNCentral, db raftDB, ordinal int32) *co
 //
 // The pods take the database block's node placement and priority class; a nil
 // or empty priority class renders none.
+//
+// The members carry the two default spread constraints of the API Deployments:
+// zone and hostname, maxSkew 1, ScheduleAnyway. The spread is soft because the
+// CI legs and the quick start run three members on one kind node, where a hard
+// constraint would leave two of them Pending. A hard spread is a required pod
+// anti-affinity on kubernetes.io/hostname, set through spec.<db>.affinity; the
+// scheduler honors it beside the soft constraints.
 func raftStatefulSet(cr *ovnv1alpha1.OVNCentral, db raftDB) *appsv1.StatefulSet {
 	name := raftName(cr, db)
 	sts := &appsv1.StatefulSet{
@@ -499,9 +512,10 @@ func raftStatefulSet(cr *ovnv1alpha1.OVNCentral, db raftDB) *appsv1.StatefulSet 
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
 					},
-					PriorityClassName: ptr.Deref(db.spec.PriorityClassName, ""),
-					Containers:        []corev1.Container{ovsdbContainer(cr, db)},
-					Volumes:           raftVolumes(cr, db),
+					PriorityClassName:         ptr.Deref(db.spec.PriorityClassName, ""),
+					TopologySpreadConstraints: deployment.DefaultTopologySpreadConstraints(raftSelectorLabels(cr, db)),
+					Containers:                []corev1.Container{ovsdbContainer(cr, db)},
+					Volumes:                   raftVolumes(cr, db),
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{raftDataClaim(db)},
@@ -509,6 +523,27 @@ func raftStatefulSet(cr *ovnv1alpha1.OVNCentral, db raftDB) *appsv1.StatefulSet 
 	}
 	deployment.ApplyNodePlacement(&sts.Spec.Template.Spec, &db.spec.NodePlacementSpec)
 	return sts
+}
+
+// raftPodDisruptionBudget allows one voluntary disruption of a database's
+// members at a time. maxUnavailable: 1 fits every member count: it keeps quorum
+// for three members through a drain (two stay up), never blocks the drain of a
+// single-member database the way minAvailable: 1 would, and evicts five members
+// one at a time with one further failure of margin. The selector is the
+// members' own, so the backup pods, which carry component backup, are not
+// counted.
+func raftPodDisruptionBudget(cr *ovnv1alpha1.OVNCentral, db raftDB) *policyv1.PodDisruptionBudget {
+	return &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      raftName(cr, db),
+			Namespace: cr.Namespace,
+			Labels:    naming.ComponentLabels(centralAppName, cr.Name, db.suffix),
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			Selector:       &metav1.LabelSelector{MatchLabels: raftSelectorLabels(cr, db)},
+			MaxUnavailable: ptr.To(intstr.FromInt32(1)),
+		},
+	}
 }
 
 // ovsdbContainer builds the one container of a database pod.

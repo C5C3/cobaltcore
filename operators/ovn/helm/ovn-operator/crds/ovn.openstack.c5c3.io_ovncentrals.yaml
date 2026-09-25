@@ -2295,6 +2295,9 @@ spec:
                       tolerates no more failures than the odd one below it and has two ways to
                       split the vote. Five is the practical ceiling, past which the write
                       latency of the extra round trips outweighs the added fault tolerance.
+                      The members get a PodDisruptionBudget of one voluntary disruption at a
+                      time (maxUnavailable: 1), which keeps quorum for three members through a
+                      drain and never blocks the drain of a single member.
                     format: int32
                     maximum: 5
                     minimum: 1
@@ -5835,6 +5838,9 @@ spec:
                       tolerates no more failures than the odd one below it and has two ways to
                       split the vote. Five is the practical ceiling, past which the write
                       latency of the extra round trips outweighs the added fault tolerance.
+                      The members get a PodDisruptionBudget of one voluntary disruption at a
+                      time (maxUnavailable: 1), which keeps quorum for three members through a
+                      drain and never blocks the drain of a single member.
                     format: int32
                     maximum: 5
                     minimum: 1
