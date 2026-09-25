@@ -588,6 +588,21 @@ const NovaServiceProjectName = "service-nova"
 // instance across projects needs admin.
 const NeutronNovaNotifierAccountName = "neutron-nova"
 
+// NovaHypervisorOperatorAccountName is the OpenStack user name of the account
+// openstack-hypervisor-operator authenticates as, carried on the account-only
+// KeystoneService "{cp}-nova-hypervisor-operator" that
+// spec.services.nova.hypervisorOperator projects. It holds the admin role
+// alone: Nova's os-services, os-hypervisors and os-aggregates policies check
+// context_is_admin, and every Placement rule that accepts service also accepts
+// admin.
+const NovaHypervisorOperatorAccountName = "hypervisor-operator"
+
+// NovaHypervisorOperatorProjectName is the Keystone project the hypervisor
+// operator's account is created and owned in. It is a project of its own
+// rather than NovaServiceProjectName, so the account's credential and its
+// audit trail stay apart from nova-compute's.
+const NovaHypervisorOperatorProjectName = "service-hypervisor-operator"
+
 // novaChildNameOverhead is the fixed part of the projected Nova child CR name,
 // "{cp}-nova". Like its Glance, Barbican, Neutron and Cinder siblings the budget
 // it eats into is not the apiserver's 253-byte cap but the tighter one the Nova
