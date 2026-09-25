@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -1109,4 +1110,93 @@ func TestNeutronValidateCreate_EmptyTargetClusterRefNameRejected(t *testing.T) {
 	g.Expect(err).To(gomega.HaveOccurred())
 	g.Expect(err.Error()).To(gomega.ContainSubstring("targetClusterRef.name"))
 	g.Expect(err.Error()).To(gomega.ContainSubstring("target cluster name must be set"))
+}
+
+// --- Node placement and spec.jobs validation ---
+
+func TestNeutronValidate_NodePlacementRejected(t *testing.T) {
+	for _, block := range []struct {
+		name       string
+		deployment func(o *Neutron) *commonv1.DeploymentSpec
+		path       string
+	}{
+		{name: "spec.deployment", deployment: func(o *Neutron) *commonv1.DeploymentSpec { return &o.Spec.Deployment }, path: "spec.deployment"},
+	} {
+		for _, tc := range []struct {
+			name   string
+			mutate func(d *commonv1.DeploymentSpec)
+			want   string
+		}{
+			{
+				name:   "node selector key",
+				mutate: func(d *commonv1.DeploymentSpec) { d.NodeSelector = map[string]string{"bad key": "x"} },
+				want:   block.path + ".nodeSelector: Invalid value",
+			},
+			{
+				name: "toleration without key or Exists",
+				mutate: func(d *commonv1.DeploymentSpec) {
+					d.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpEqual}}
+				},
+				want: block.path + ".tolerations[0].operator: Invalid value",
+			},
+		} {
+			t.Run(block.name+"/"+tc.name, func(t *testing.T) {
+				g := gomega.NewWithT(t)
+				o := validNeutron()
+				tc.mutate(block.deployment(o))
+
+				_, err := (&NeutronWebhook{}).ValidateCreate(context.Background(), o)
+				g.Expect(err).To(gomega.HaveOccurred())
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+			})
+		}
+	}
+}
+
+func TestNeutronValidate_JobsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		jobs *commonv1.JobSpec
+		want string
+	}{
+		{
+			name: "unknown priority class",
+			jobs: &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("typo")}},
+			want: "spec.jobs.priorityClassName: Not found",
+		},
+		{
+			name: "memory request above limit",
+			jobs: &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			}}},
+			want: "spec.jobs.resources.requests.memory: Invalid value",
+		},
+		{
+			name: "node selector key",
+			jobs: &commonv1.JobSpec{NodePlacementSpec: commonv1.NodePlacementSpec{NodeSelector: map[string]string{"bad key": "x"}}},
+			want: "spec.jobs.nodeSelector: Invalid value",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &NeutronWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+			o := validNeutron()
+			o.Spec.Jobs = tc.jobs
+
+			_, err := w.ValidateCreate(context.Background(), o)
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+		})
+	}
+}
+
+func TestNeutronValidate_EmptyJobsAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &NeutronWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+	o := validNeutron()
+	o.Spec.Jobs = &commonv1.JobSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 }

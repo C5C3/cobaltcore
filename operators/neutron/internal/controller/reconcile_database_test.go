@@ -12,9 +12,11 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -636,4 +638,78 @@ func TestReconcileDatabase_MidUpgradeImageDriftBlocks(t *testing.T) {
 	g.Expect(neutron.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseExpanding))
 	g.Expect(neutron.Status.TargetRelease).To(Equal("2026.1"))
 	expectNoJob(t, r, neutron, "db-expand")
+}
+
+// TestNeutronJobs_PodSettings pins the pod settings of the db-sync Job, the upgrade phases and the ovn-db-sync CronJob, which resolves its resources through the request floor: unset, every
+// container renders the Job resources and no priority class or placement; the
+// API Deployment's priority class and node selector carry over; spec.jobs
+// overrides both.
+func TestNeutronJobs_PodSettings(t *testing.T) {
+	type pod struct {
+		spec  corev1.PodSpec
+		floor bool
+	}
+	podSpecs := func(o *neutronv1alpha1.Neutron) map[string]pod {
+		return map[string]pod{
+			"db-sync":     {spec: database.SyncJob(neutronJobSetParams(o, pinDeploymentConfigMapName)).Spec.Template.Spec, floor: false},
+			"db-expand":   {spec: database.BuildJob(neutronJobSetParams(o, pinDeploymentConfigMapName), o.Spec.Image.Reference(), "db-expand", nil, 4).Spec.Template.Spec, floor: false},
+			"ovn-db-sync": {spec: buildOVNDBSyncCronJob(o, pinDeploymentConfigMapName).Spec.JobTemplate.Spec.Template.Spec, floor: true},
+		}
+	}
+	defaults := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
+	}
+	floor := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
+	}
+
+	for _, tc := range []struct {
+		name         string
+		mutate       func(o *neutronv1alpha1.Neutron)
+		wantPriority string
+		wantSelector map[string]string
+	}{
+		{name: "defaults", mutate: func(*neutronv1alpha1.Neutron) {}},
+		{
+			name: "API Deployment fallback",
+			mutate: func(o *neutronv1alpha1.Neutron) {
+				o.Spec.Deployment.PriorityClassName = ptr.To("high")
+				o.Spec.Deployment.NodeSelector = map[string]string{"a": "b"}
+			},
+			wantPriority: "high",
+			wantSelector: map[string]string{"a": "b"},
+		},
+		{
+			name: "spec.jobs override",
+			mutate: func(o *neutronv1alpha1.Neutron) {
+				o.Spec.Deployment.PriorityClassName = ptr.To("high")
+				o.Spec.Deployment.NodeSelector = map[string]string{"a": "b"}
+				o.Spec.Jobs = &commonv1.JobSpec{
+					JobBaseSpec:       commonv1.JobBaseSpec{PriorityClassName: ptr.To("low")},
+					NodePlacementSpec: commonv1.NodePlacementSpec{NodeSelector: map[string]string{"pool": "jobs"}},
+				}
+			},
+			wantPriority: "low",
+			wantSelector: map[string]string{"pool": "jobs"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			o := validNeutron()
+			tc.mutate(o)
+
+			for name, p := range podSpecs(o) {
+				want := defaults
+				if p.floor {
+					want = floor
+				}
+				g.Expect(p.spec.PriorityClassName).To(Equal(tc.wantPriority), name)
+				g.Expect(p.spec.NodeSelector).To(Equal(tc.wantSelector), name)
+				for _, c := range append(p.spec.InitContainers, p.spec.Containers...) {
+					g.Expect(c.Resources).To(Equal(want), "%s/%s", name, c.Name)
+				}
+			}
+		})
+	}
 }

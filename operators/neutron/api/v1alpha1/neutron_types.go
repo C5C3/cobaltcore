@@ -103,6 +103,18 @@ type NeutronSpec struct {
 	// +optional
 	Deployment DeploymentSpec `json:"deployment,omitempty"`
 
+	// Jobs sizes, prioritizes and places the pods of the db-sync Job, the
+	// db-expand, db-migrate and db-contract upgrade phases, and the
+	// ovn-db-sync CronJob. A field left unset falls back to spec.deployment:
+	// the priority class, the node selector, the tolerations, and the node
+	// affinity (never the pod (anti-)affinity). An empty value opts out of the
+	// fallback. Unset resources default to a 100m CPU request and 368Mi memory
+	// as request and limit; ovn-db-sync, whose working set grows with the
+	// logical model, gets a 100m CPU and a 256Mi memory request and no limit
+	// instead.
+	// +optional
+	Jobs *commonv1.JobSpec `json:"jobs,omitempty"`
+
 	// Image defines the Neutron container image reference. Like the sibling
 	// operators, the field carries no immutability rule: image upgrades are
 	// routine.

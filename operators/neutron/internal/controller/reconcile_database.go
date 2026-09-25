@@ -17,6 +17,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/job"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	"github.com/c5c3/cobaltcore/internal/common/release"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -383,7 +384,8 @@ func checkImageReleaseMismatch(neutron *neutronv1alpha1.Neutron) (ctrl.Result, b
 
 // neutronJobSetParams derives the shared migration-Job inputs from the Neutron
 // CR: the config mount, the two credential env overrides, the projected TLS
-// material, and the db-sync command. The steady-state sync flow
+// material, the Job pod settings (spec.jobs, with spec.deployment as the
+// fallback), and the db-sync command. The steady-state sync flow
 // (database.ReconcileSyncJobs) and the upgrade-phase builders
 // (upgradeFlowParams.BuildPhaseJob) both consume it; centralising it here lets
 // tests build the identical Job.
@@ -425,6 +427,7 @@ func neutronJobSetParams(neutron *neutronv1alpha1.Neutron, configMapName string)
 		},
 		ExtraVolumes:      extraVolumes,
 		ExtraVolumeMounts: extraMounts,
+		Pod:               job.ResolvePodSettings(neutron.Spec.Jobs, &neutron.Spec.Deployment),
 		SyncCommand:       neutronDBSyncCommand,
 		// No schema-check: neutron-db-manage upgrade head is an idempotent alembic
 		// upgrade to head, so a second read-only Job would assert nothing the sync

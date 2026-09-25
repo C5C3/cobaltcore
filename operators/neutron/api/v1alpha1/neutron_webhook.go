@@ -589,6 +589,12 @@ func (w *NeutronWebhook) validate(
 			specPath.Child("deployment", "priorityClassName"), *n.Spec.Deployment.PriorityClassName)...)
 	}
 
+	// Node selector grammar and tolerations of the API Deployment, and the
+	// spec.jobs block: requests within limits, an existing priority class,
+	// and its own placement.
+	allErrs = append(allErrs, validation.NodePlacement(specPath.Child("deployment"), &n.Spec.Deployment.NodePlacementSpec)...)
+	allErrs = append(allErrs, validation.Job(ctx, w.Client, specPath.Child("jobs"), n.Spec.Jobs)...)
+
 	// Validate that custom TopologySpreadConstraints name the API Deployment's
 	// pod selector: the shared selector labels narrowed by
 	// app.kubernetes.io/component=api. The pods of the two worker Deployments and
