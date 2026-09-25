@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The CA bundle the https agent of 05-neutronmetadataagent-https.yaml verifies
+# the Nova metadata API with, under the key the webhook defaults
+# caBundleSecretRef.key to. It is one self-signed certificate for
+# nova-metadata.example.test, generated once with
+#   openssl req -x509 -newkey rsa:2048 -nodes -keyout /dev/null \
+#     -subj /CN=nova-metadata.example.test -days 3650
+# The suite compares the bytes the pod mounts with these and never parses them.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: neutron-agent-nova-metadata-ca
+  namespace: openstack
+stringData:
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIDKzCCAhOgAwIBAgIUQdEwqynbMgXCo9mLYZf+74b4IaIwDQYJKoZIhvcNAQEL
+    BQAwJTEjMCEGA1UEAwwabm92YS1tZXRhZGF0YS5leGFtcGxlLnRlc3QwHhcNMjYw
+    OTI1MTg1MTM1WhcNMzYwOTIyMTg1MTM1WjAlMSMwIQYDVQQDDBpub3ZhLW1ldGFk
+    YXRhLmV4YW1wbGUudGVzdDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
+    AMAuQ5JJFa8ud3kKH0bFqzEdFNJBAaWEWMmMvMddHC6Nf1G6FO6OaN+FpE2PWYwX
+    WtexDAY5h/jE6Kpb8JTkW8Zre76ym9P7Kjr41USOnVfocvc1tyURlMePRM1ZJ/8q
+    /b0EaVy+tVZB3Wd3MzIvyvY29xPpnwCp2Koz9uaKhEZvTldDhjahNlRrXXXP0ZfV
+    sv/giBpG924IIQUqB608QDtkAc3DOoQ3irV9oG815zKAWDHcBDuTndyo5dcpqRoK
+    ulz8/X7Vxjc9LYVwOJd1Ja5aV3Z1D74E63LtHn7NjzDqjbEr1sp+PzIWOLr26v7Q
+    p/nzCLHfbSK3QJY2jM6dtfMCAwEAAaNTMFEwHQYDVR0OBBYEFDfNBqSSV1M8odUZ
+    2riQKALH25dQMB8GA1UdIwQYMBaAFDfNBqSSV1M8odUZ2riQKALH25dQMA8GA1Ud
+    EwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAAHxbpzO9wyK0DDIjns6Q/Oc
+    A5HhUzTpMcmJt4XakI/GTQBFEaB8xWQ/lvGNkgget5d8abd+ivn6Fy0VxVzEuvhQ
+    HqThgah6Q2NyJTuTH2dvzVpMSf2kQBwDtsDx7Sa6NdONXCYoOBJ4fiMh9Umj+Q/k
+    UVB9w1+YBbYdt7hmsgHXd599e1otbvkB8xOL/q26LbyeaS6LYEc6mI6OR089bzva
+    JSefTIagc4skCWDV/HzdZxxOX9F4TPiSxB7rwyZ6PHHesVo94503eOkvhmaRfrRN
+    lF3j1CE2HdHxDH24wuMddZ0f1+/JiB8KjC+zfZ9WpjOGMOUt/213/GReX1335gk=
+    -----END CERTIFICATE-----

@@ -20,6 +20,17 @@
 # never reaches the ConfigMap (it is an env override when a bus is configured at
 # all) was until now pinned only by the operator's unit tests.
 #
+# Steps 6 to 8 re-point the agent at a Nova metadata API behind a gateway, the
+# shape of an agent on a compute cluster (#1064):
+#   - with spec.novaMetadata.caBundleSecretRef naming a Secret that does not
+#     exist yet, SecretsReady=False with reason WaitingForNovaMetadataCA
+#   - once the Secret exists, all three sub-conditions and Ready are True again
+#   - the rendered ini carries the https host, port and protocol and
+#     auth_ca_cert = /etc/nova-metadata-ca/ca.crt, and no shared secret; the
+#     shared secret reaches the agent container as an env var sourced from its
+#     Secret, and the file the container reads at /etc/nova-metadata-ca/ca.crt
+#     is the Secret's ca.crt, byte for byte
+#
 # spec.concurrent is false because the agent pods run with hostNetwork and share
 # /run/openvswitch and /run/netns on the node with the OVNChassis pods.
 # hack/kind-config.yaml declares a single node, so a second suite rendering an
@@ -313,3 +324,166 @@ spec:
           kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
           echo "=== ovn-operator pod logs ==="
           kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+  # ── Step 6: Point the agent at a gateway and wait for its CA bundle ─────
+  # The agent now proxies over https and names a CA bundle whose Secret does
+  # not exist yet. The gate holds the pass before the Config and DaemonSet
+  # steps, so the running pod keeps its previous template rather than one
+  # whose volume never mounts.
+  - try:
+    - apply:
+        file: 04-nova-metadata-shared-secret.yaml
+    - apply:
+        file: 05-neutronmetadataagent-https.yaml
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: NeutronMetadataAgent
+          metadata:
+            name: neutron-agent
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "False"
+              reason: WaitingForNovaMetadataCA
+    catch:
+    - script:
+        content: |
+          echo "=== NeutronMetadataAgent CR status ==="
+          kubectl get neutronmetadataagent neutron-agent -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Agent DaemonSet ==="
+          kubectl describe ds neutron-agent-metadata-agent -n $NAMESPACE 2>&1 || true
+          echo "=== Agent pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o wide 2>&1 || true
+          echo "=== Agent pod logs (init containers included) ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Publish the CA bundle and assert the agent converges ────────
+  # The Secret event reaches the agent through the Secret-name index, which
+  # carries the CA ref's name. The new template mounts the bundle, so the
+  # DaemonSet rolls, and DaemonSetReady turns True only once the new pod is
+  # ready.
+  - try:
+    - apply:
+        file: 06-nova-metadata-ca.yaml
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: NeutronMetadataAgent
+          metadata:
+            name: neutron-agent
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'DaemonSetReady']):
+            - status: "True"
+              reason: DaemonSetReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== NeutronMetadataAgent CR status ==="
+          kubectl get neutronmetadataagent neutron-agent -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Agent DaemonSet ==="
+          kubectl describe ds neutron-agent-metadata-agent -n $NAMESPACE 2>&1 || true
+          echo "=== Agent pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o wide 2>&1 || true
+          echo "=== Agent pod logs (init containers included) ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 8: Assert the https config, the env and the mounted bundle ─────
+  # The rollout is awaited first, so the exec below reaches a pod of the
+  # template that mounts the bundle. The shared secret must not appear in the
+  # ConfigMap every agent pod mounts: it reaches the container as the
+  # OS_DEFAULT__METADATA_PROXY_SHARED_SECRET override, sourced from its Secret.
+  - try:
+    - script:
+        timeout: 4m
+        content: |
+          set -eu
+          kubectl rollout status ds/neutron-agent-metadata-agent -n openstack --timeout=3m
+          CM=$(kubectl get ds neutron-agent-metadata-agent -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          test -n "$CM"
+          kubectl get cm "$CM" -n openstack \
+            -o 'jsonpath={.data.neutron_ovn_metadata_agent\.ini}' > /tmp/neutron-agent-https.ini
+          for line in 'nova_metadata_host = nova-metadata.example.test' \
+                      'nova_metadata_port = 443' \
+                      'nova_metadata_protocol = https' \
+                      'auth_ca_cert = /etc/nova-metadata-ca/ca.crt'; do
+            if ! grep -Fxq "$line" /tmp/neutron-agent-https.ini; then
+              echo "FAIL: $CM carries no line '$line'"
+              exit 1
+            fi
+          done
+          if grep -q '^metadata_proxy_shared_secret' /tmp/neutron-agent-https.ini; then
+            echo "FAIL: $CM carries a metadata_proxy_shared_secret line"
+            exit 1
+          fi
+          echo "OK: $CM renders the https Nova metadata keys and auth_ca_cert, and no shared secret"
+
+          POD=""
+          for pod in $(kubectl get pods -n openstack \
+            -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o name); do
+            if [ -z "$(kubectl get "$pod" -n openstack -o 'jsonpath={.metadata.deletionTimestamp}')" ]; then
+              POD="$pod"
+            fi
+          done
+          if [ -z "$POD" ]; then
+            echo "FAIL: no running pod of the metadata-agent DaemonSet found"
+            exit 1
+          fi
+
+          SECRET=$(kubectl get "$POD" -n openstack -o \
+            'jsonpath={.spec.containers[?(@.name=="metadata-agent")].env[?(@.name=="OS_DEFAULT__METADATA_PROXY_SHARED_SECRET")].valueFrom.secretKeyRef.name}')
+          if [ "$SECRET" != "neutron-agent-nova-metadata" ]; then
+            echo "FAIL: $POD sources OS_DEFAULT__METADATA_PROXY_SHARED_SECRET from '$SECRET', want neutron-agent-nova-metadata"
+            exit 1
+          fi
+          echo "OK: $POD sources the shared secret from neutron-agent-nova-metadata"
+
+          kubectl get secret neutron-agent-nova-metadata-ca -n openstack \
+            -o 'jsonpath={.data.ca\.crt}' | base64 -d > /tmp/nova-metadata-ca.expected
+          kubectl exec -n openstack "$POD" -c metadata-agent -- \
+            cat /etc/nova-metadata-ca/ca.crt > /tmp/nova-metadata-ca.mounted
+          if ! cmp -s /tmp/nova-metadata-ca.expected /tmp/nova-metadata-ca.mounted; then
+            echo "FAIL: /etc/nova-metadata-ca/ca.crt in $POD differs from the Secret's ca.crt"
+            exit 1
+          fi
+          echo "OK: $POD reads the Secret's ca.crt at /etc/nova-metadata-ca/ca.crt"
+    catch:
+    - script:
+        content: |
+          echo "=== NeutronMetadataAgent CR status ==="
+          kubectl get neutronmetadataagent neutron-agent -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Agent DaemonSet ==="
+          kubectl describe ds neutron-agent-metadata-agent -n $NAMESPACE 2>&1 || true
+          echo "=== Agent pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o wide 2>&1 || true
+          echo "=== Agent pod logs (init containers included) ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
