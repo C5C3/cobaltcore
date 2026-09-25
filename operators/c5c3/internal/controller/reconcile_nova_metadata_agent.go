@@ -18,6 +18,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -187,4 +191,60 @@ func (r *ControlPlaneReconciler) reconcileNovaMetadataAgentSecrets(ctx context.C
 		return ctrl.Result{RequeueAfter: infraRequeueAfter}, true, nil
 	}
 	return ctrl.Result{}, false, nil
+}
+
+// neutronMetadataAgentToControlPlaneMapper maps a NeutronMetadataAgent event
+// onto the ControlPlanes whose OVN central lives in the agent's namespace, so an
+// agent that starts naming the copy, or the last one on a cluster that leaves,
+// changes the delivery targets without waiting for a periodic resync.
+//
+// Agents are user-authored and carry no ControlPlane owner reference, so a
+// plain Owns() would never fire. Only planes that run both the compute and the
+// network service deliver a copy, so only they are woken.
+func (r *ControlPlaneReconciler) neutronMetadataAgentToControlPlaneMapper(ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	agent, ok := obj.(*neutronv1alpha1.NeutronMetadataAgent)
+	if !ok {
+		return nil
+	}
+
+	var list c5c3v1alpha1.ControlPlaneList
+	if err := r.List(ctx, &list); err != nil {
+		log.FromContext(ctx).Error(err, "listing ControlPlanes for NeutronMetadataAgent event",
+			"neutronMetadataAgent", client.ObjectKeyFromObject(agent))
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for i := range list.Items {
+		cp := &list.Items[i]
+		if cp.Spec.Services.Nova != nil && cp.Spec.Services.Neutron != nil &&
+			cp.NeutronOVNCentralNamespace() == agent.Namespace {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		}
+	}
+	return requests
+}
+
+// neutronMetadataAgentDeliveryPredicate admits the NeutronMetadataAgent events
+// that change the delivery targets: an agent created, deleted, starting to be
+// deleted, or re-pointing spec.novaMetadata.sharedSecretRef.name. targetClusterRef
+// is immutable, so no other update moves an agent between clusters, and an
+// agent's status writes must not reconcile the whole plane.
+func neutronMetadataAgentDeliveryPredicate() predicate.Predicate {
+	sharedSecretName := func(obj client.Object) string {
+		agent, ok := obj.(*neutronv1alpha1.NeutronMetadataAgent)
+		if !ok || agent.Spec.NovaMetadata == nil || agent.Spec.NovaMetadata.SharedSecretRef == nil {
+			return ""
+		}
+		return agent.Spec.NovaMetadata.SharedSecretRef.Name
+	}
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return e.ObjectOld.GetDeletionTimestamp().IsZero() != e.ObjectNew.GetDeletionTimestamp().IsZero() ||
+				sharedSecretName(e.ObjectOld) != sharedSecretName(e.ObjectNew)
+		},
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
 }

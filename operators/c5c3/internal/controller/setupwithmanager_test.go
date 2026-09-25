@@ -20,11 +20,13 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
+	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
@@ -855,6 +857,119 @@ func TestNovaComputeMembershipPredicate(t *testing.T) {
 	g.Expect(p.Create(event.CreateEvent{Object: live})).To(BeTrue())
 	g.Expect(p.Delete(event.DeleteEvent{Object: live})).To(BeTrue())
 	g.Expect(p.Update(event.UpdateEvent{ObjectOld: live, ObjectNew: polled})).To(BeFalse())
+	g.Expect(p.Update(event.UpdateEvent{ObjectOld: live, ObjectNew: leaving})).To(BeTrue())
+	g.Expect(p.Generic(event.GenericEvent{Object: live})).To(BeFalse())
+}
+
+// --- neutronMetadataAgentToControlPlaneMapper ---
+
+// metadataAgentMapperControlPlane returns a mapper fixture that runs the
+// compute service and the network service, with its OVN central in
+// centralNamespace.
+func metadataAgentMapperControlPlane(name, namespace, centralNamespace string) *c5c3v1alpha1.ControlPlane {
+	cp := ovnMapperControlPlane(name, namespace, "ovn-central", centralNamespace)
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{}
+	return cp
+}
+
+// TestNeutronMetadataAgentToControlPlaneMapper covers which ControlPlane a
+// NeutronMetadataAgent event wakes: the one whose OVN central lives in the
+// agent's namespace, and only while it runs the compute and the network service.
+func TestNeutronMetadataAgentToControlPlaneMapper(t *testing.T) {
+	ctx := context.Background()
+	agent := func(namespace string) *neutronv1alpha1.NeutronMetadataAgent {
+		return &neutronv1alpha1.NeutronMetadataAgent{ObjectMeta: metav1.ObjectMeta{Name: "agent", Namespace: namespace}}
+	}
+	withoutNova := metadataAgentMapperControlPlane("cp", "openstack", "ovn-system")
+	withoutNova.Spec.Services.Nova = nil
+
+	for name, tc := range map[string]struct {
+		cp       *c5c3v1alpha1.ControlPlane
+		obj      client.Object
+		wantWake bool
+	}{
+		"an agent in the central's namespace": {
+			cp:       metadataAgentMapperControlPlane("cp", "openstack", "ovn-system"),
+			obj:      agent("ovn-system"),
+			wantWake: true,
+		},
+		"an agent in another namespace": {
+			cp:  metadataAgentMapperControlPlane("cp", "openstack", "ovn-system"),
+			obj: agent("openstack"),
+		},
+		"a ControlPlane without a compute service": {
+			cp:  withoutNova,
+			obj: agent("ovn-system"),
+		},
+		"a ControlPlane without a network service": {
+			cp:  novaMapperControlPlane("cp", "ovn-system"),
+			obj: agent("ovn-system"),
+		},
+		"an object of another kind": {
+			cp:  metadataAgentMapperControlPlane("cp", "openstack", "ovn-system"),
+			obj: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "agent", Namespace: "ovn-system"}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			r := &ControlPlaneReconciler{Client: newControlPlaneMapperClient(t, tc.cp)}
+
+			reqs := r.neutronMetadataAgentToControlPlaneMapper(ctx, tc.obj)
+
+			if !tc.wantWake {
+				g.Expect(reqs).To(BeEmpty())
+				return
+			}
+			g.Expect(reqs).To(ConsistOf(reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: tc.cp.Namespace, Name: tc.cp.Name},
+			}))
+		})
+	}
+
+	t.Run("a failed ControlPlane list wakes nothing", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		c := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).
+			WithObjects(metadataAgentMapperControlPlane("cp", "openstack", "ovn-system")).
+			WithInterceptorFuncs(interceptor.Funcs{
+				List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+					return apierrors.NewServiceUnavailable("cache not started")
+				},
+			}).Build()
+		r := &ControlPlaneReconciler{Client: c}
+
+		g.Expect(r.neutronMetadataAgentToControlPlaneMapper(ctx, agent("ovn-system"))).To(BeEmpty())
+	})
+}
+
+// TestNeutronMetadataAgentDeliveryPredicate pins the narrowing of the agent leg:
+// an agent arriving, leaving, or re-pointing its shared secret changes the
+// delivery targets; a status write does not.
+func TestNeutronMetadataAgentDeliveryPredicate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	p := neutronMetadataAgentDeliveryPredicate()
+	live := &neutronv1alpha1.NeutronMetadataAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent", Namespace: "ovn-system"},
+		Spec: neutronv1alpha1.NeutronMetadataAgentSpec{
+			NovaMetadata: &neutronv1alpha1.NovaMetadataSpec{
+				SharedSecretRef: &commonv1.SecretRefSpec{Name: "cp-nova-metadata-agent-secret"},
+			},
+		},
+	}
+	statusOnly := live.DeepCopy()
+	statusOnly.Status.NumberReady = 1
+	repointed := live.DeepCopy()
+	repointed.Spec.NovaMetadata.SharedSecretRef.Name = "hand-made"
+	unnamed := live.DeepCopy()
+	unnamed.Spec.NovaMetadata = nil
+	leaving := live.DeepCopy()
+	leaving.DeletionTimestamp = ptr.To(metav1.Now())
+
+	g.Expect(p.Create(event.CreateEvent{Object: live})).To(BeTrue())
+	g.Expect(p.Delete(event.DeleteEvent{Object: live})).To(BeTrue())
+	g.Expect(p.Update(event.UpdateEvent{ObjectOld: live, ObjectNew: statusOnly})).To(BeFalse())
+	g.Expect(p.Update(event.UpdateEvent{ObjectOld: live, ObjectNew: repointed})).To(BeTrue())
+	g.Expect(p.Update(event.UpdateEvent{ObjectOld: unnamed, ObjectNew: live})).To(BeTrue(),
+		"a ref set on an agent that named none reads as a change from the empty name")
 	g.Expect(p.Update(event.UpdateEvent{ObjectOld: live, ObjectNew: leaving})).To(BeTrue())
 	g.Expect(p.Generic(event.GenericEvent{Object: live})).To(BeFalse())
 }

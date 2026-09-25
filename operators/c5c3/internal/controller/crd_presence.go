@@ -90,7 +90,8 @@ type serverResourcesLister interface {
 // The Neutron and OVNCentral kinds are listed for the sibling reason too: the
 // neutron-operator and the ovn-operator are installed only for a ControlPlane that
 // runs a network service, so a plane without one runs on a cluster that never
-// served them.
+// served them. The neutron-operator serves the NeutronMetadataAgent kind beside
+// Neutron, so the metadata-agent delivery leg sits behind the same probe.
 //
 // The three Cinder kinds are listed for the same sibling reason: the
 // cinder-operator is installed only for a ControlPlane that runs the
@@ -124,6 +125,7 @@ func optionalWatchObjects() []client.Object {
 		&openbaov1alpha1.OpenBaoTenant{},
 		rabbitmq,
 		&neutronv1alpha1.Neutron{},
+		&neutronv1alpha1.NeutronMetadataAgent{},
 		&cinderv1alpha1.Cinder{},
 		&cinderv1alpha1.CinderBackend{},
 		&cinderv1alpha1.CinderBackupBackend{},
