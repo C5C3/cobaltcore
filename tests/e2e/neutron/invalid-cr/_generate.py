@@ -455,6 +455,29 @@ FIXTURES: tuple[Fixture, ...] = (
             "    targetCPUUtilization: 80\n"
         ),
     ),
+    Fixture(
+        filename="19-workers-topologyspread-forbidden.yaml",
+        comment=(
+            "spec.workers.deployment.topologySpreadConstraints carries one hostname\n"
+            "constraint. The operator projects the periodic-workers and\n"
+            "ovn-maintenance-worker Deployments from this block, each with its own pod\n"
+            "selector, so no constraint set here names the selector of both. The\n"
+            "validating webhook forbids a non-empty list; the schema has no rule for it."
+        ),
+        name="neutron-invalid-worker-spread",
+        extra=(
+            "  workers:\n"
+            "    deployment:\n"
+            "      topologySpreadConstraints:\n"
+            "      - maxSkew: 1\n"
+            "        topologyKey: kubernetes.io/hostname\n"
+            "        whenUnsatisfiable: ScheduleAnyway\n"
+            "        labelSelector:\n"
+            "          matchLabels:\n"
+            "            app.kubernetes.io/name: neutron\n"
+            "            app.kubernetes.io/component: periodic-workers\n"
+        ),
+    ),
 )
 
 

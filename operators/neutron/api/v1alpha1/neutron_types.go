@@ -172,10 +172,10 @@ type NeutronSpec struct {
 	// +optional
 	APIServer *APIServerSpec `json:"apiServer,omitempty"`
 
-	// Workers groups the pod-level knobs for the neutron-server RPC worker
-	// Deployment. The workers run the same neutron-server binary as the API pods
-	// with the RPC side enabled, so they scale on the message bus rather than on
-	// the HTTP request rate and get their own Deployment.
+	// Workers groups the pod-level knobs for the two worker Deployments,
+	// <name>-periodic-workers and <name>-ovn-maintenance-worker, which run the
+	// neutron processes that serve no HTTP. They scale on the maintenance load
+	// rather than on the HTTP request rate, so they get their own Deployments.
 	// +optional
 	Workers WorkersSpec `json:"workers,omitempty"`
 
@@ -402,12 +402,16 @@ type APIServerSpec struct {
 // DeploymentSpec alias block above for the rationale).
 type UWSGISpec = commonv1.UWSGISpec
 
-// WorkersSpec configures the neutron-server RPC workers, the processes that
-// serve the agent RPC and the maintenance tasks the API pods do not run.
+// WorkersSpec configures the neutron processes that run the maintenance tasks
+// the API pods do not run: the periodic workers and the OVN maintenance worker.
 type WorkersSpec struct {
-	// Deployment groups the pod-level knobs for the worker Deployment (replicas,
-	// resources, rollout strategy, graceful-termination timings, and scheduling
-	// constraints).
+	// Deployment groups the pod-level knobs for the periodic-workers and
+	// ovn-maintenance-worker Deployments (replicas, resources, rollout strategy,
+	// graceful-termination timings, and scheduling constraints). Both
+	// Deployments are projected from this one block, each with its own pod
+	// selector, so topologySpreadConstraints must be unset or empty: no
+	// constraint set here could name the selector of both. The webhook applies
+	// the same rules as to spec.deployment.
 	// +optional
 	Deployment commonv1.DeploymentSpec `json:"deployment,omitempty"`
 }

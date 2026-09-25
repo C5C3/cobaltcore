@@ -3667,16 +3667,20 @@ spec:
                 type: object
               workers:
                 description: |-
-                  Workers groups the pod-level knobs for the neutron-server RPC worker
-                  Deployment. The workers run the same neutron-server binary as the API pods
-                  with the RPC side enabled, so they scale on the message bus rather than on
-                  the HTTP request rate and get their own Deployment.
+                  Workers groups the pod-level knobs for the two worker Deployments,
+                  <name>-periodic-workers and <name>-ovn-maintenance-worker, which run the
+                  neutron processes that serve no HTTP. They scale on the maintenance load
+                  rather than on the HTTP request rate, so they get their own Deployments.
                 properties:
                   deployment:
                     description: |-
-                      Deployment groups the pod-level knobs for the worker Deployment (replicas,
-                      resources, rollout strategy, graceful-termination timings, and scheduling
-                      constraints).
+                      Deployment groups the pod-level knobs for the periodic-workers and
+                      ovn-maintenance-worker Deployments (replicas, resources, rollout strategy,
+                      graceful-termination timings, and scheduling constraints). Both
+                      Deployments are projected from this one block, each with its own pod
+                      selector, so topologySpreadConstraints must be unset or empty: no
+                      constraint set here could name the selector of both. The webhook applies
+                      the same rules as to spec.deployment.
                     properties:
                       affinity:
                         description: |-

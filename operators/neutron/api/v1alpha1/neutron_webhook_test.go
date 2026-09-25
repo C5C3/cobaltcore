@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -1150,6 +1151,214 @@ func TestNeutronValidate_NodePlacementRejected(t *testing.T) {
 				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
 			})
 		}
+	}
+}
+
+// spec.workers.deployment configures the periodic-workers and
+// ovn-maintenance-worker Deployments and runs the API block's pod-level rules:
+// each mutation is rejected at the worker path with the message the same
+// mutation earns on spec.deployment.
+func TestNeutronValidate_WorkerBlockRules(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		mutate func(d *commonv1.DeploymentSpec)
+		field  string
+		want   string
+	}{
+		{
+			name:   "replicas below one",
+			mutate: func(d *commonv1.DeploymentSpec) { d.Replicas = 0 },
+			field:  "replicas",
+			want:   "replicas must be at least 1",
+		},
+		{
+			name:   "grace below ten",
+			mutate: func(d *commonv1.DeploymentSpec) { d.TerminationGracePeriodSeconds = ptr.To(int64(5)) },
+			field:  "terminationGracePeriodSeconds",
+			want:   "terminationGracePeriodSeconds must be at least 10",
+		},
+		{
+			name:   "preStop not below the default grace",
+			mutate: func(d *commonv1.DeploymentSpec) { d.PreStopSleepSeconds = ptr.To(int64(30)) },
+			field:  "preStopSleepSeconds",
+			want:   "preStopSleepSeconds (30) must be strictly less than terminationGracePeriodSeconds (30)",
+		},
+		{
+			name: "Recreate with rollingUpdate",
+			mutate: func(d *commonv1.DeploymentSpec) {
+				d.Strategy = &appsv1.DeploymentStrategy{
+					Type:          appsv1.RecreateDeploymentStrategyType,
+					RollingUpdate: &appsv1.RollingUpdateDeployment{},
+				}
+			},
+			field: "strategy.rollingUpdate",
+			want:  "rollingUpdate must not be set when strategy.type is Recreate",
+		},
+		{
+			name: "request above limit",
+			mutate: func(d *commonv1.DeploymentSpec) {
+				d.Resources = &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+					Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				}
+			},
+			field: "resources.requests.cpu",
+			want:  "cpu request must not exceed limit (1)",
+		},
+		{
+			name:   "unknown priority class",
+			mutate: func(d *commonv1.DeploymentSpec) { d.PriorityClassName = ptr.To("nonexistent-class") },
+			field:  "priorityClassName",
+			want:   "Not found",
+		},
+		{
+			name:   "node selector key",
+			mutate: func(d *commonv1.DeploymentSpec) { d.NodeSelector = map[string]string{"bad key": "x"} },
+			field:  "nodeSelector",
+			want:   "Invalid value",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &NeutronWebhook{Client: newFakeClient().Build()}
+
+			api := validNeutron()
+			tc.mutate(&api.Spec.Deployment)
+			_, apiErr := w.ValidateCreate(ctx, api)
+			g.Expect(apiErr).To(gomega.MatchError(gomega.ContainSubstring("spec.deployment." + tc.field)))
+			g.Expect(apiErr).To(gomega.MatchError(gomega.ContainSubstring(tc.want)))
+
+			workers := validNeutron()
+			tc.mutate(&workers.Spec.Workers.Deployment)
+			_, err := w.ValidateCreate(ctx, workers)
+			g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+			g.Expect(err.Error()).To(gomega.ContainSubstring("spec.workers.deployment." + tc.field))
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+			g.Expect(err.Error()).NotTo(gomega.ContainSubstring("spec.deployment."),
+				"a worker-block violation must not be reported against the API block")
+		})
+	}
+}
+
+// The worker block configures two Deployments with different selectors, so a
+// topology-spread constraint there has no selector to name and is forbidden.
+// An empty list only switches the injected defaults off and is admitted, as is
+// an unset one.
+func TestNeutronValidate_WorkerSpreadForbidden(t *testing.T) {
+	ctx := context.Background()
+	w := &NeutronWebhook{}
+
+	t.Run("one constraint", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		o := validNeutron()
+		o.Spec.Workers.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+			spreadOn("kubernetes.io/hostname", wideSpreadLabels()),
+		}
+		_, err := w.ValidateCreate(ctx, o)
+		g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+		g.Expect(err.Error()).To(gomega.ContainSubstring(
+			"spec.workers.deployment.topologySpreadConstraints: Forbidden: topologySpreadConstraints is not supported here"))
+	})
+
+	t.Run("empty list", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		o := validNeutron()
+		o.Spec.Workers.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{}
+		_, err := w.ValidateCreate(ctx, o)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	})
+
+	t.Run("nil list", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		o := validNeutron()
+		o.Spec.Workers.Deployment.TopologySpreadConstraints = nil
+		_, err := w.ValidateCreate(ctx, o)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	})
+}
+
+// A CR stored with a worker-block constraint, admitted before the rule
+// existed, must still release its finalizer: the deletion bypass admits an
+// update that leaves the spec alone.
+func TestNeutronValidateUpdate_FinalizerRemovalAdmitsAStoredWorkerSpread(t *testing.T) {
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+	w := &NeutronWebhook{}
+
+	stored := validNeutron()
+	stored.Spec.Workers.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+		spreadOn("kubernetes.io/hostname", wideSpreadLabels()),
+	}
+	stored.Finalizers = []string{"neutron.openstack.c5c3.io/finalizer"}
+	stored.DeletionTimestamp = ptr.To(metav1.Now())
+	g.Expect(w.Default(ctx, stored)).To(gomega.Succeed())
+	_, createErr := w.ValidateCreate(ctx, stored)
+	g.Expect(createErr).To(gomega.HaveOccurred(), "the stored worker block fails today's rule")
+
+	released := stored.DeepCopy()
+	released.Finalizers = nil
+	g.Expect(w.Default(ctx, released)).To(gomega.Succeed())
+
+	_, err := w.ValidateUpdate(ctx, stored, released)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// uWSGI runs only in the API pods, so harakiri has to fit the API block's
+// drain window. The worker block carries its own grace and preStop pair, and
+// neither a longer nor a shorter worker window changes the verdict.
+func TestNeutronValidate_HarakiriFitsTheAPIDrainWindow(t *testing.T) {
+	ctx := context.Background()
+	w := &NeutronWebhook{}
+	defaults := func(*commonv1.DeploymentSpec) {}
+	window := func(grace, preStop int64) func(d *commonv1.DeploymentSpec) {
+		return func(d *commonv1.DeploymentSpec) {
+			d.TerminationGracePeriodSeconds = ptr.To(grace)
+			d.PreStopSleepSeconds = ptr.To(preStop)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		api      func(d *commonv1.DeploymentSpec)
+		workers  func(d *commonv1.DeploymentSpec)
+		harakiri *int32
+		want     string
+	}{
+		{
+			name:     "fits the API window but not the worker window",
+			api:      window(120, 5),
+			workers:  defaults,
+			harakiri: ptr.To(int32(60)),
+		},
+		{
+			name:     "fits the worker window but not the API window",
+			api:      defaults,
+			workers:  window(120, 5),
+			harakiri: ptr.To(int32(60)),
+			want:     "harakiri (60) must be strictly less than terminationGracePeriodSeconds - preStopSleepSeconds (25)",
+		},
+		{
+			name:    "unset",
+			api:     window(10, 5),
+			workers: window(120, 5),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			o := validNeutron()
+			tc.api(&o.Spec.Deployment)
+			tc.workers(&o.Spec.Workers.Deployment)
+			o.Spec.APIServer = &APIServerSpec{UWSGI: &UWSGISpec{Harakiri: tc.harakiri}}
+
+			_, err := w.ValidateCreate(ctx, o)
+			if tc.want == "" {
+				g.Expect(err).NotTo(gomega.HaveOccurred())
+				return
+			}
+			g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+			g.Expect(err.Error()).To(gomega.ContainSubstring("spec.apiServer.uwsgi.harakiri"))
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+		})
 	}
 }
 

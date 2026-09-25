@@ -256,15 +256,15 @@ func (w *NeutronWebhook) validate(
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	// Defense-in-depth replicas check alongside the
-	// +kubebuilder:validation:Minimum=1 marker.
-	if n.Spec.Deployment.Replicas < 1 {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("deployment", "replicas"),
-			n.Spec.Deployment.Replicas,
-			"replicas must be at least 1",
-		))
-	}
+	// spec.deployment configures the API Deployment and spec.workers.deployment
+	// the periodic-workers and ovn-maintenance-worker Deployments. Both carry
+	// the same pod-level knobs and are validated by the same rules. The worker
+	// block has no single selector a topology-spread constraint could name,
+	// because it configures two Deployments with different selectors.
+	allErrs = append(allErrs, w.validateDeploymentBlock(ctx, specPath.Child("deployment"),
+		&n.Spec.Deployment, naming.APISelectorLabels(neutronAppName, n.Name))...)
+	allErrs = append(allErrs, w.validateDeploymentBlock(ctx, specPath.Child("workers", "deployment"),
+		&n.Spec.Workers.Deployment, nil)...)
 
 	// Defense-in-depth image checks alongside the +kubebuilder:validation markers
 	// and the XValidation rule on commonv1.ImageSpec.
@@ -391,56 +391,17 @@ func (w *NeutronWebhook) validate(
 
 	allErrs = append(allErrs, validateLogging(specPath.Child("logging"), n.Spec.Logging, "neutron.conf")...)
 
-	// Defense-in-depth range check on spec.deployment.terminationGracePeriodSeconds
-	// alongside the +kubebuilder:validation:Minimum=10 marker.
-	if n.Spec.Deployment.TerminationGracePeriodSeconds != nil && *n.Spec.Deployment.TerminationGracePeriodSeconds < 10 {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("deployment", "terminationGracePeriodSeconds"),
-			*n.Spec.Deployment.TerminationGracePeriodSeconds,
-			"terminationGracePeriodSeconds must be at least 10",
-		))
-	}
-	// Defense-in-depth range check on spec.deployment.preStopSleepSeconds
-	// alongside the +kubebuilder:validation:Minimum=0 marker.
-	if n.Spec.Deployment.PreStopSleepSeconds != nil && *n.Spec.Deployment.PreStopSleepSeconds < 0 {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("deployment", "preStopSleepSeconds"),
-			*n.Spec.Deployment.PreStopSleepSeconds,
-			"preStopSleepSeconds must be non-negative",
-		))
-	}
-
-	// preStopSleepSeconds must be strictly less than
-	// terminationGracePeriodSeconds so there is a non-zero drain window between the
-	// end of the preStop sleep and the forced kubelet kill. Resolve nil pointers to
-	// the reconciler's effective defaults so the cross-field rule holds even when
-	// one or both pointers are omitted.
-	resolvedGrace := commonv1.DefaultTerminationGracePeriodSeconds
-	if n.Spec.Deployment.TerminationGracePeriodSeconds != nil {
-		resolvedGrace = *n.Spec.Deployment.TerminationGracePeriodSeconds
-	}
-	resolvedPreStop := commonv1.DefaultPreStopSleepSeconds
-	if n.Spec.Deployment.PreStopSleepSeconds != nil {
-		resolvedPreStop = *n.Spec.Deployment.PreStopSleepSeconds
-	}
-	if resolvedPreStop >= resolvedGrace {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("deployment", "preStopSleepSeconds"),
-			resolvedPreStop,
-			fmt.Sprintf("preStopSleepSeconds (%d) must be strictly less than terminationGracePeriodSeconds (%d)", resolvedPreStop, resolvedGrace),
-		))
-	}
-
 	if n.Spec.APIServer != nil && n.Spec.APIServer.UWSGI != nil {
 		uwsgiPath := specPath.Child("apiServer", "uwsgi")
 		u := n.Spec.APIServer.UWSGI
 		// harakiri must be strictly less than the drain window
 		// (terminationGracePeriodSeconds - preStopSleepSeconds) so the worst-case
 		// uWSGI per-request kill fits inside the envelope between preStop sleep
-		// completion and SIGKILL. Only applied when harakiri is set, reusing the
-		// grace/preStop values already resolved above.
+		// completion and SIGKILL. Only applied when harakiri is set. The window is
+		// the API block's: uWSGI runs only in the API pods.
 		if u.Harakiri != nil {
-			drain := resolvedGrace - resolvedPreStop
+			grace, preStop := resolveDrainWindow(&n.Spec.Deployment)
+			drain := grace - preStop
 			harakiri := int64(*u.Harakiri)
 			if harakiri >= drain {
 				allErrs = append(allErrs, field.Invalid(
@@ -460,19 +421,6 @@ func (w *NeutronWebhook) validate(
 				uwsgiPath.Child("httpKeepAliveTimeout"),
 				*u.HTTPKeepAliveTimeout,
 				"httpKeepAliveTimeout may only be set when httpKeepAlive is true",
-			))
-		}
-	}
-
-	// spec.deployment.strategy sanity check — a Recreate strategy must not carry a
-	// RollingUpdate block because the Deployment controller would reject the object
-	// at apply time.
-	if n.Spec.Deployment.Strategy != nil {
-		if n.Spec.Deployment.Strategy.Type == appsv1.RecreateDeploymentStrategyType && n.Spec.Deployment.Strategy.RollingUpdate != nil {
-			allErrs = append(allErrs, field.Invalid(
-				specPath.Child("deployment", "strategy", "rollingUpdate"),
-				n.Spec.Deployment.Strategy.RollingUpdate,
-				"rollingUpdate must not be set when strategy.type is Recreate",
 			))
 		}
 	}
@@ -574,45 +522,9 @@ func (w *NeutronWebhook) validate(
 	allErrs = append(allErrs, validateOVNDBSync(specPath.Child("ovnDBSync"), n.Spec.OVNDBSync)...)
 	allErrs = append(allErrs, validateExtraConfigShape(specPath, n.Spec.ExtraConfig, oldExtraConfig, OwnedConfigKeys)...)
 
-	// Validate that resource requests do not exceed limits.
-	if n.Spec.Deployment.Resources != nil && n.Spec.Deployment.Resources.Limits != nil {
-		for resourceName, request := range n.Spec.Deployment.Resources.Requests {
-			if limit, hasLimit := n.Spec.Deployment.Resources.Limits[resourceName]; hasLimit && request.Cmp(limit) > 0 {
-				allErrs = append(allErrs, field.Invalid(
-					specPath.Child("deployment", "resources", "requests", string(resourceName)),
-					request.String(),
-					fmt.Sprintf("%s request must not exceed limit (%s)", resourceName, limit.String()),
-				))
-			}
-		}
-	}
-
-	// Validate that spec.deployment.priorityClassName references an existing
-	// scheduling.k8s.io/v1 PriorityClass (shared validator; catches typos at
-	// admission time, skipped when no lookup client is injected).
-	if n.Spec.Deployment.PriorityClassName != nil {
-		allErrs = append(allErrs, validation.PriorityClassExists(ctx, w.Client,
-			specPath.Child("deployment", "priorityClassName"), *n.Spec.Deployment.PriorityClassName)...)
-	}
-
-	// Node selector grammar and tolerations of the API Deployment, and the
-	// spec.jobs block: requests within limits, an existing priority class,
+	// The spec.jobs block: requests within limits, an existing priority class,
 	// and its own placement.
-	allErrs = append(allErrs, validation.NodePlacement(specPath.Child("deployment"), &n.Spec.Deployment.NodePlacementSpec)...)
 	allErrs = append(allErrs, validation.Job(ctx, w.Client, specPath.Child("jobs"), n.Spec.Jobs)...)
-
-	// Validate that custom TopologySpreadConstraints name the API Deployment's
-	// pod selector: the shared selector labels narrowed by
-	// app.kubernetes.io/component=api. The pods of the two worker Deployments and
-	// of the ovn-db-sync CronJob share the name and instance labels, so a
-	// selector without the component key would count them too.
-	if n.Spec.Deployment.TopologySpreadConstraints != nil {
-		allErrs = append(allErrs, validation.TopologySpreadSelector(
-			specPath.Child("deployment", "topologySpreadConstraints"),
-			n.Spec.Deployment.TopologySpreadConstraints,
-			naming.APISelectorLabels(neutronAppName, n.Name),
-		)...)
-	}
 
 	allErrs = append(allErrs, extra...)
 
@@ -624,6 +536,131 @@ func (w *NeutronWebhook) validate(
 		)
 	}
 	return nil
+}
+
+// validateDeploymentBlock runs the pod-level rules both Neutron Deployment
+// blocks share: the replica floor, the graceful-termination arithmetic, the
+// strategy sanity check, the request/limit ordering, the PriorityClass lookup
+// and the node placement. selector is the pod selector of the Deployment the
+// block configures, which a topology-spread constraint on it has to name
+// exactly. It is nil for spec.workers.deployment, which configures two
+// Deployments with different selectors, so a constraint there has no selector
+// to name and is rejected instead.
+//
+// ctx is required for the PriorityClass lookup, which is skipped when no reader
+// is injected (a programmatically constructed webhook), mirroring the shared
+// validator's own behavior.
+func (w *NeutronWebhook) validateDeploymentBlock(
+	ctx context.Context,
+	fldPath *field.Path,
+	d *commonv1.DeploymentSpec,
+	selector map[string]string,
+) field.ErrorList {
+	var errs field.ErrorList
+
+	// Defense-in-depth replicas check alongside the
+	// +kubebuilder:validation:Minimum=1 marker.
+	if d.Replicas < 1 {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("replicas"), d.Replicas, "replicas must be at least 1",
+		))
+	}
+
+	// Defense-in-depth range checks alongside the
+	// +kubebuilder:validation:Minimum=10 / Minimum=0 markers.
+	if d.TerminationGracePeriodSeconds != nil && *d.TerminationGracePeriodSeconds < 10 {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("terminationGracePeriodSeconds"),
+			*d.TerminationGracePeriodSeconds,
+			"terminationGracePeriodSeconds must be at least 10",
+		))
+	}
+	if d.PreStopSleepSeconds != nil && *d.PreStopSleepSeconds < 0 {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("preStopSleepSeconds"),
+			*d.PreStopSleepSeconds,
+			"preStopSleepSeconds must be non-negative",
+		))
+	}
+
+	// preStopSleepSeconds must be strictly less than
+	// terminationGracePeriodSeconds so there is a non-zero drain window between
+	// the end of the preStop sleep and the forced kubelet kill.
+	grace, preStop := resolveDrainWindow(d)
+	if preStop >= grace {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("preStopSleepSeconds"), preStop,
+			fmt.Sprintf("preStopSleepSeconds (%d) must be strictly less than terminationGracePeriodSeconds (%d)", preStop, grace),
+		))
+	}
+
+	// A Recreate strategy must not carry a RollingUpdate block because the
+	// Deployment controller would reject the object at apply time.
+	if d.Strategy != nil &&
+		d.Strategy.Type == appsv1.RecreateDeploymentStrategyType && d.Strategy.RollingUpdate != nil {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("strategy", "rollingUpdate"), d.Strategy.RollingUpdate,
+			"rollingUpdate must not be set when strategy.type is Recreate",
+		))
+	}
+
+	errs = append(errs, validation.RequestsWithinLimits(fldPath.Child("resources"), d.Resources)...)
+
+	// Validate that priorityClassName references an existing
+	// scheduling.k8s.io/v1 PriorityClass (shared validator; catches typos at
+	// admission time, skipped when no lookup client is injected).
+	if d.PriorityClassName != nil {
+		errs = append(errs, validation.PriorityClassExists(ctx, w.Client,
+			fldPath.Child("priorityClassName"), *d.PriorityClassName)...)
+	}
+
+	// Node selector grammar and tolerations of the Deployment.
+	errs = append(errs, validation.NodePlacement(fldPath, &d.NodePlacementSpec)...)
+
+	// A constraint on the API block must name the API Deployment's pod selector:
+	// the shared selector labels narrowed by app.kubernetes.io/component=api. The
+	// pods of the two worker Deployments and of the ovn-db-sync CronJob share the
+	// name and instance labels, so a selector without the component key would
+	// count them too.
+	//
+	// The worker block has no such selector. The empty slice is the exception
+	// there: it names no selector and only switches the operator's injected
+	// defaults off.
+	if selector == nil {
+		if len(d.TopologySpreadConstraints) > 0 {
+			errs = append(errs, field.Forbidden(
+				fldPath.Child("topologySpreadConstraints"),
+				"topologySpreadConstraints is not supported here: the operator projects the "+
+					"periodic-workers and ovn-maintenance-worker Deployments from this block, each "+
+					"with its own selector, so a constraint set here would spread each worker's "+
+					"pods against the pods of the other components. An empty list, which only "+
+					"switches the injected defaults off, is accepted",
+			))
+		}
+	} else if d.TopologySpreadConstraints != nil {
+		errs = append(errs, validation.TopologySpreadSelector(
+			fldPath.Child("topologySpreadConstraints"),
+			d.TopologySpreadConstraints,
+			selector,
+		)...)
+	}
+	return errs
+}
+
+// resolveDrainWindow resolves the graceful-termination pair a Deployment block
+// runs with, substituting the reconciler's effective defaults for the
+// nil-preserving pointers so the cross-field rules hold even when one or both are
+// omitted.
+func resolveDrainWindow(d *commonv1.DeploymentSpec) (grace, preStop int64) {
+	grace = commonv1.DefaultTerminationGracePeriodSeconds
+	if d.TerminationGracePeriodSeconds != nil {
+		grace = *d.TerminationGracePeriodSeconds
+	}
+	preStop = commonv1.DefaultPreStopSleepSeconds
+	if d.PreStopSleepSeconds != nil {
+		preStop = *d.PreStopSleepSeconds
+	}
+	return grace, preStop
 }
 
 // validateEndpointURL checks that a non-empty endpoint parses cleanly, uses an
