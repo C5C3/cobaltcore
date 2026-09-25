@@ -949,7 +949,11 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 //     of waiting for the cache resync;
 //   - the Secret handed through services.nova.remoteCompute, while that block is
 //     set, so a rotated external bus URL, or one handed after the pass waited
-//     for it, reaches the Nova namespace without waiting for a requeue.
+//     for it, reaches the Nova namespace without waiting for a requeue;
+//   - while spec.services.nova.hypervisorOperator is set, the consumer Secret of
+//     the hypervisor operator's registration
+//     (novaHypervisorOperatorCredentialsSecretName), so a rotation of that
+//     account rewrites the auth Secret and every mirror on the next pass.
 //
 // Any two may name the same Secret, so the result is deduplicated: a duplicate
 // index entry would enqueue the same ControlPlane twice per Secret event.
@@ -969,6 +973,11 @@ func controlPlaneSecretNameExtractor(obj client.Object) []string {
 	}
 	if nv := cp.Spec.Services.Nova; nv != nil && nv.RemoteCompute != nil {
 		if name := nv.RemoteCompute.TransportURLSecretRef.Name; name != "" && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	if nv := cp.Spec.Services.Nova; nv != nil && nv.HypervisorOperator != nil {
+		if name := novaHypervisorOperatorCredentialsSecretName(cp); !slices.Contains(names, name) {
 			names = append(names, name)
 		}
 	}

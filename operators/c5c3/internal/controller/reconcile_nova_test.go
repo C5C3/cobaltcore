@@ -672,6 +672,39 @@ func TestReconcileNova_UnsetDeletesChildWithOptIn(t *testing.T) {
 	g.Expect(registrations.Items).To(BeEmpty(), "the opt-in annotation must delete the owned registration")
 }
 
+// TestReconcileNova_UnsetDeletesTheHypervisorOperatorAccountWithOptIn verifies
+// the opt-in deletion sweep also removes the hypervisor operator's registration
+// and its auth Secret when the whole services.nova block goes, and keeps the
+// same pair while the opt-in is absent.
+func TestReconcileNova_UnsetDeletesTheHypervisorOperatorAccountWithOptIn(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := novaControlPlane()
+	cp.Spec.Services.Nova.HypervisorOperator = &c5c3v1alpha1.ServiceNovaHypervisorOperatorSpec{}
+	// Both carry the ControlPlane's ownership labels, the mark the sweep
+	// recognizes its own objects by.
+	registration := desiredNovaHypervisorOperatorRegistration(cp)
+	stampControlPlaneChildLabels(registration, cp)
+	auth := desiredNovaHypervisorOperatorAuthSecret(cp, []byte("s3cret"))
+	r := newNovaTestReconciler(t, cp, readyNovaRegistration(cp), registration, auth)
+	ctx := context.Background()
+
+	cp.Spec.Services.Nova = nil
+	_, err := r.reconcileNova(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(r.Get(ctx, client.ObjectKeyFromObject(registration), &c5c3v1alpha1.KeystoneService{})).To(Succeed(),
+		"without the opt-in the account is preserved with the rest of the compute service")
+	g.Expect(r.Get(ctx, client.ObjectKeyFromObject(auth), &corev1.Secret{})).To(Succeed())
+
+	cp.Annotations = map[string]string{novaDeletionAllowedAnnotation: "true"}
+	_, err = r.reconcileNova(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, client.ObjectKeyFromObject(registration),
+		&c5c3v1alpha1.KeystoneService{}))).To(BeTrue(), "the opt-in deletes the hypervisor operator's registration")
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, client.ObjectKeyFromObject(auth), &corev1.Secret{}))).To(BeTrue(),
+		"the opt-in deletes the auth Secret beside the Nova")
+}
+
 // TestReconcileNova_UnsetPreservesForeignObjects proves the deletion sweep is
 // ownership-checked across every object it names: a Nova child, a same-named
 // KeystoneService, a messaging Secret and, most importantly, the FIXED-name
