@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The image the hypervisor operator's smoke test boots, looked up by the name
+# "cirros-kvm". K-ORC downloads it and checks the sha256 below, taken from the
+# upstream SHA256SUMS of cirros 0.6.3. It sits in a file of its own because
+# the full-ControlPlane e2e suite applies fixtures.yaml alone, so CI never
+# downloads it. Bump the URL and the hash together.
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Image
+metadata:
+  name: hvo-cirros-kvm
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: managed
+  resource:
+    name: cirros-kvm
+    visibility: public
+    content:
+      containerFormat: bare
+      diskFormat: qcow2
+      download:
+        url: https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img
+        hash:
+          algorithm: sha256
+          value: 7d6355852aeb6dbcd191bcda7cd74f1536cfe5cbf8a10495a7283a8396e4b75b

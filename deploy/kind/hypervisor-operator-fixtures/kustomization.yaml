@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Opt-in example overlay with the OpenStack objects openstack-hypervisor-operator
+# expects to find, declared as K-ORC resources. Nothing applies it for you:
+# hack/deploy-infra.sh never does, and the production overlays
+# (deploy/flux-system/kustomization.yaml) do not list it. Apply it by hand once
+# the ControlPlane reports NovaReady=True with spec.services.nova.hypervisorOperator
+# set, and CinderReady=True:
+#
+#   kubectl apply -k deploy/kind/hypervisor-operator-fixtures
+#
+# K-ORC caches one client per clouds.yaml for half the token lifetime (about
+# 30 minutes at Keystone's defaults), and the client keeps the service catalog
+# of the token it authenticated with. Within that time of the ControlPlane's
+# bring-up the cached catalog predates the compute, network and block-storage
+# rows: the flavor, the volume type, the network and the subnet then report
+# "No suitable endpoint could be found in the service catalog" until the entry
+# expires (k-orc/openstack-resource-controller#941). Restart K-ORC before
+# applying the overlay to start from the current catalog:
+#
+#   kubectl rollout restart deployment/orc-controller-manager -n orc-system
+#   kubectl rollout status deployment/orc-controller-manager -n orc-system
+#
+# The hypervisor operator scopes a second token to project "test" in domain
+# "cc3test" at start and exits when that fails, so the project and a role for
+# its user on it are needed even with the smoke test skipped. The smoke test
+# itself boots flavor ID "1" from image "cirros-kvm" onto a 64 GiB volume of
+# type "premium", on the first non-shared network the test-scoped token lists.
+#
+# fixtures.yaml declares the domain, the project, the imports of the
+# hypervisor operator's user and the admin role, the role assignment, the
+# flavor, the volume type, the network and the subnet. image.yaml declares
+# the cirros image, which K-ORC downloads from download.cirros-cloud.net; the
+# full-ControlPlane e2e suite applies fixtures.yaml alone. The image URL and
+# its sha256 are bumped together by hand.
+#
+# Every object lives in `openstack`, the quick start ControlPlane's
+# namespace, and authenticates through that ControlPlane's admin clouds.yaml
+# Secret (k-orc-clouds-yaml, cloud "admin"). For another ControlPlane, set
+# every metadata.namespace to its namespace, and replace "Default" in the
+# hvo-user-domain import with its spec.korc.adminCredential.domainName, the
+# domain the hypervisor-operator user lives in.
+#
+# Apply it only to a cloud that has none of its managed objects yet. K-ORC
+# adopts an existing object with the name of a managed resource instead of
+# creating one, so on a cloud that already has a cc3test domain or a premium
+# volume type the teardown below deletes them: cc3test with every project,
+# user and group in it, premium unless a volume still uses it.
+#
+# Delete the fixtures before the ControlPlane: K-ORC deletes the managed
+# objects through the ControlPlane's credential. Keystone refuses to delete an
+# enabled domain and K-ORC does not disable it first, so disable it, wait for
+# K-ORC to apply that, then delete:
+#
+#   kubectl patch -n openstack domains.openstack.k-orc.cloud/hvo-cc3test \
+#     --type=merge -p '{"spec":{"resource":{"enabled":false}}}'
+#   kubectl wait -n openstack domains.openstack.k-orc.cloud/hvo-cc3test \
+#     --for=jsonpath='{.status.resource.enabled}'=false
+#   kubectl delete -k deploy/kind/hypervisor-operator-fixtures
+#
+# All resource references are local to this overlay (no parent-directory
+# paths), so `kubectl apply -k` renders it under kustomize's default
+# `LoadRestrictionsRootOnly` check (kubernetes/kubectl#948).
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - fixtures.yaml
+  - image.yaml
