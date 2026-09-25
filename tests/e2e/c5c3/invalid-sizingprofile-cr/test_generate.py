@@ -3,24 +3,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fast unit tests for the c5c3 invalid-CR fixture generator.
+"""Fast unit tests for the SizingProfile invalid-CR fixture generator.
 
-Mirrors tests/e2e/keystone/invalid-cr/test_generate.py and
-tests/e2e/horizon/invalid-cr/test_generate.py: guards the canonical-scaffold
-contract at a layer that runs without a Kubernetes cluster — accidental fixture
-removal/rename is caught here in milliseconds instead of waiting for the
-Chainsaw E2E job to fail at the apply step.
+Mirrors tests/e2e/c5c3/invalid-keystoneservice-cr/test_generate.py: guards
+the canonical-scaffold contract at a layer that runs without a Kubernetes
+cluster, so an accidental fixture removal or rename is caught here in
+milliseconds instead of waiting for the Chainsaw E2E job to fail at the apply
+step.
 
 Coverage:
 
 * ``FIXTURES`` lists exactly the generated fixtures the chainsaw suite expects.
 * Every ``Fixture.filename`` is referenced by an ``apply.file:`` entry in
-  ``chainsaw-test.yaml`` — guards against renames or accidental deletions.
-* Every ``apply.file:`` entry in ``chainsaw-test.yaml`` names a declared fixture
-  — guards the other direction: a block left behind for a fixture ``FIXTURES``
-  no longer declares reaches the cluster-bound job as an apply of a missing file.
+  ``chainsaw-test.yaml``, and every ``apply.file:`` entry names a declared
+  fixture.
 * Filenames are unique within ``FIXTURES``.
-* No fixture carries a metadata.namespace (Chainsaw injects the ephemeral one).
+* No fixture carries a namespace: the kind is cluster-scoped.
 * ``_generate.py --check`` passes in-process, so on-disk drift (either
   direction, including orphan files) fails the unit test.
 """
@@ -41,11 +39,13 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # Number of fixtures emitted by _generate.py. Bumping this value requires adding
 # the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 130
+_EXPECTED_FIXTURE_COUNT = 7
 
 
 def _load_generator() -> types.ModuleType:
-    spec = importlib.util.spec_from_file_location("c5c3_invalid_cr_generate", _GENERATOR)
+    spec = importlib.util.spec_from_file_location(
+        "c5c3_invalid_sizingprofile_cr_generate", _GENERATOR
+    )
     assert spec and spec.loader, f"failed to load spec for {_GENERATOR}"
     module = importlib.util.module_from_spec(spec)
     # Register before exec_module so @dataclass(frozen=True) can resolve
@@ -77,11 +77,6 @@ class TestFixtures(unittest.TestCase):
             )
 
     def test_no_orphan_chainsaw_reference(self) -> None:
-        # The reverse of the check above. Removing a fixture means deleting both
-        # its Fixture entry and its try:/apply: block; a leftover block passes
-        # `_generate.py --check` (nothing on disk drifted) and passes chainsaw
-        # lint (which validates schema, not referenced paths), so without this it
-        # only fails once the cluster-bound e2e-operator job applies it.
         declared = {fixture.filename for fixture in self.generator.FIXTURES}
         for name in re.findall(r"file:\s*(\S+)", self.chainsaw):
             self.assertIn(
@@ -90,19 +85,14 @@ class TestFixtures(unittest.TestCase):
                 f"chainsaw-test.yaml applies {name}, which FIXTURES no longer declares",
             )
 
-    def test_no_fixture_pins_a_namespace(self) -> None:
-        # Chainsaw injects the ephemeral namespace; a hardcoded namespace would
-        # break the one-ControlPlane-per-namespace isolation across Tests.
-        #
-        # Anchored at the metadata indent level (2 spaces, where metadata.name
-        # sits). A bare substring scan would also catch the deeply-indented
-        # spec.services.<svc>.namespace field, which pins no metadata.namespace at
-        # all — it names the namespace a SERVICE is placed in.
+    def test_no_fixture_carries_a_namespace(self) -> None:
+        # SizingProfile is cluster-scoped: a namespace would be ignored at best
+        # and would suggest the kind is namespaced.
         for fixture in self.generator.FIXTURES:
             self.assertNotIn(
-                "\n  namespace:",
+                "namespace:",
                 fixture.render(),
-                f"{fixture.filename} must not pin a metadata.namespace",
+                f"{fixture.filename} must not carry a namespace",
             )
 
     def test_no_drift(self) -> None:
@@ -116,18 +106,6 @@ class TestFixtures(unittest.TestCase):
             )
         finally:
             sys.argv = argv
-
-    def test_remotecompute_fixtures_publish_through_public_endpoints(self) -> None:
-        # Fixtures 114 to 118 each break one remote-compute rule and publish every
-        # service the other rules name. A gateway anywhere would bring in the
-        # gateway host rules (105-nova-public-endpoint-host-mismatch.yaml), which
-        # could answer in place of the rule under test.
-        remote = [f for f in self.generator.FIXTURES if "-nova-remotecompute-" in f.filename]
-        self.assertEqual(len(remote), 5)
-        for fixture in remote:
-            rendered = fixture.render()
-            self.assertIn("remoteCompute:", rendered, fixture.filename)
-            self.assertNotIn("gateway:", rendered, f"{fixture.filename} must publish through publicEndpoint alone")
 
     def test_rendered_fixture_carries_spdx_header(self) -> None:
         for fixture in self.generator.FIXTURES:

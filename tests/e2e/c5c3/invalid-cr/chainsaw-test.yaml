@@ -89,14 +89,16 @@ spec:
             ($error != null): true
             (contains($error, 'regionDescription')): true
             (contains($error, 'forbidden when services.keystone.mode is External')): true
-  # managed-only replicas in External mode must be rejected (CEL).
+  # service sizing in External mode must be rejected (webhook): no workload is
+  # deployed, so there is nothing to size.
   - try:
     - apply:
         file: 05-external-replicas.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'services.keystone.replicas is forbidden when services.keystone.mode is External')): true
+            (contains($error, 'spec.sizing')): true
+            (contains($error, 'forbidden when services.keystone.mode is External (no workload is deployed)')): true
   # managed-only image in External mode must be rejected (CEL).
   - try:
     - apply:
@@ -781,16 +783,16 @@ spec:
             ($error != null): true
             (contains($error, 'consoleProxy.gateway.path')): true
             (contains($error, 'must be empty or "/"')): true
-    # replicas beside consoleProxy.enabled false is refused by the CEL rule on
+    # A gateway beside consoleProxy.enabled false is refused by the CEL rule on
     # ServiceNovaConsoleProxySpec, which has no webhook twin: a disabled proxy has no
-    # Deployment to size, so the value would have nowhere to land.
+    # listener to expose, so the value would have nowhere to land.
     - apply:
         file: 107-nova-console-knobs-while-disabled.yaml
         expect:
         - check:
             ($error != null): true
             (contains($error, 'consoleProxy')): true
-            (contains($error, 'replicas and gateway must not be set when consoleProxy.enabled is false')): true
+            (contains($error, 'gateway must not be set when consoleProxy.enabled is false')): true
     # An unparseable services.nova.dbArchive.schedule is refused by the webhook
     # rather than by a CRD pattern: the accepted grammar includes descriptors such
     # as @daily, which no regex expresses without also rejecting valid expressions.
@@ -825,15 +827,15 @@ spec:
             ($error != null): true
             (contains($error, 'catalog_info')): true
             (contains($error, 'is projected by the ControlPlane from services.cinder')): true
-    # A gateway beside consoleProxy.enabled false is refused by the gateway leg of
-    # the same CEL rule 107 pins: a disabled proxy has no listener to publish.
+    # A gateway beside consoleProxy.enabled false is refused by the same CEL rule
+    # 107 pins: a disabled proxy has no listener to publish.
     - apply:
         file: 111-nova-console-gateway-while-disabled.yaml
         expect:
         - check:
             ($error != null): true
             (contains($error, 'consoleProxy')): true
-            (contains($error, 'replicas and gateway must not be set when consoleProxy.enabled is false')): true
+            (contains($error, 'gateway must not be set when consoleProxy.enabled is false')): true
     # The metadata route carries no path prefix (webhook-only): the Neutron metadata
     # agent has no path option and requests /openstack/... on the root of the
     # hostname, so a prefix match routes none of its requests.
@@ -899,6 +901,96 @@ spec:
             ($error != null): true
             (contains($error, 'spec.services.keystone.publicEndpoint')): true
             (contains($error, 'must use scheme https when services.nova.remoteCompute is set')): true
+    # A built-in profile and a SizingProfile named together (CEL on
+    # ControlPlaneSizingSpec): the base of the resolved sizing would be ambiguous.
+    - apply:
+        file: 119-sizing-profile-and-profileref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'profile and profileRef are mutually exclusive')): true
+    # A profileRef naming no SizingProfile (webhook-only).
+    - apply:
+        file: 120-sizing-profileref-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.profileRef.name')): true
+            (contains($error, 'Not found')): true
+    # spec.sizing in External mode (webhook-only): nothing is deployed to size.
+    - apply:
+        file: 121-sizing-in-external.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing')): true
+            (contains($error, 'forbidden when services.keystone.mode is External (no workload is deployed)')): true
+    # Minimal's 50m Keystone request against a 10m limit the ControlPlane sets: each
+    # value is valid alone, the merged sizing is not (webhook-only).
+    - apply:
+        file: 122-sizing-merged-request-above-limit.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.keystone.api.resources.requests.cpu')): true
+            (contains($error, 'cpu request must not exceed limit')): true
+    # A CPU utilization target beside a zero CPU request (webhook-only).
+    - apply:
+        file: 123-sizing-autoscaling-zero-request.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.keystone.api.resources.requests.cpu')): true
+            (contains($error, 'while targetCPUUtilization is set')): true
+    # Console-proxy sizing beside a disabled proxy (webhook-only).
+    - apply:
+        file: 124-sizing-nova-console-proxy-while-disabled.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.nova.consoleProxy')): true
+            (contains($error, 'must not be set when services.nova.consoleProxy.enabled is false')): true
+    # Two Galera nodes cannot hold a majority (webhook-only).
+    - apply:
+        file: 125-sizing-database-replicas-two.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.database.replicas')): true
+            (contains($error, '2 cannot hold a majority')): true
+    # A node-selector key that is no label key (webhook-only).
+    - apply:
+        file: 126-sizing-node-selector-bad-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.nodeSelector')): true
+            (contains($error, 'bad key')): true
+    # A priority class naming no PriorityClass (webhook-only).
+    - apply:
+        file: 127-sizing-priority-class-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.priorityClassName')): true
+            (contains($error, 'Not found')): true
+    # A cache memory limit below the Memcached operator's floor (webhook-only).
+    - apply:
+        file: 128-sizing-cache-memory-limit-too-low.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.cache.resources.limits.memory')): true
+            (contains($error, 'memory limit must be at least 96Mi')): true
+    # An autoscaling maxReplicas below Standard's three API replicas, which the
+    # HPA minimum defaults to without minReplicas (webhook-only).
+    - apply:
+        file: 129-sizing-autoscaling-max-below-replicas.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.keystone.api.autoscaling.maxReplicas')): true
+            (contains($error, 'maxReplicas must be >= replicas (3)')): true
     # A 256-character spec.regionDescription is refused by the CRD's MaxLength 255
     # marker (K-ORC's bound on RegionResourceSpec.Description); there is no
     # webhook mirror, so the error is the API server's own.

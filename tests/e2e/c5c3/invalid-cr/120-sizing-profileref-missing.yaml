@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.sizing.profileRef names a SizingProfile that does not exist (webhook-only):
+# the reconciler would resolve nothing to project. The step anchors on
+# `spec.sizing.profileRef.name: Not found`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-sizing-profileref-missing
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+  sizing:
+    profileRef:
+      name: c5c3-e2e-sizing-absent
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

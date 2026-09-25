@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for the SizingProfile admission surface. Pins the CRD
+# markers on the sizing types and the SizingProfile validating webhook in
+# operators/c5c3/api/v1alpha1/ to deterministic admission failures against a
+# real API server.
+#
+# Enforcement precedence at admission: the mutating (defaulting) webhook runs
+# first (it materializes an empty spec.base to Standard), then the CRD schema
+# validation (structural + enum + minimum), then the validating webhook. The
+# enum on spec.base and the minimum on a spread entry's maxSkew are answered at
+# the schema layer; the rules no schema can express (requests within limits,
+# label keys, the Galera quorum, the Memcached memory floor, an existing
+# PriorityClass) are answered by the webhook.
+#
+# SizingProfile is cluster-scoped, so the fixtures carry no namespace. Every
+# fixture is rejected, so none persists.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py`. After editing the scaffold or any per-fixture override,
+# regenerate via:
+#   python3 tests/e2e/c5c3/invalid-sizingprofile-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes `_generate.py
+# --check` (drift mode, both directions incl. orphans) and `test_generate.py`
+# (FIXTURES count + chainsaw-test.yaml cross-reference) so any hand-edit to a
+# generated fixture fails the build before the cluster-bound e2e-operator job
+# runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-invalid-sizingprofile-cr
+spec:
+  steps:
+  # A base that names no built-in profile (Enum marker).
+  - try:
+    - apply:
+        file: 00-base-unknown.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.base')): true
+            (contains($error, 'Unsupported value')): true
+  # A memory request above its limit (webhook-only).
+  - try:
+    - apply:
+        file: 01-request-above-limit.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.messaging.resources.requests.memory')): true
+            (contains($error, 'memory request must not exceed limit')): true
+  # A node-selector key that is no label key (webhook-only).
+  - try:
+    - apply:
+        file: 02-node-selector-bad-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.nodeSelector')): true
+            (contains($error, 'bad key')): true
+  # Two Galera nodes cannot hold a majority (webhook-only).
+  - try:
+    - apply:
+        file: 03-database-replicas-two.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.database.replicas')): true
+            (contains($error, '2 cannot hold a majority')): true
+  # A cache memory limit below the Memcached operator's floor (webhook-only).
+  - try:
+    - apply:
+        file: 04-cache-memory-limit-too-low.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.cache.resources.limits.memory')): true
+            (contains($error, 'memory limit must be at least 96Mi')): true
+  # A spread entry with maxSkew 0 (Minimum marker).
+  - try:
+    - apply:
+        file: 05-spread-max-skew-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'maxSkew')): true
+            (contains($error, 'should be greater than or equal to 1')): true
+  # A priority class naming no PriorityClass (webhook-only).
+  - try:
+    - apply:
+        file: 06-priority-class-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.priorityClassName')): true
+            (contains($error, 'Not found')): true

@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A spread entry with maxSkew: 0 allows no skew at all. Rejected by the Minimum
+# marker on SpreadConstraintSpec.MaxSkew before the webhook runs; the error names
+# `maxSkew` and carries `should be greater than or equal to 1`.
+apiVersion: c5c3.io/v1alpha1
+kind: SizingProfile
+metadata:
+  name: c5c3-e2e-sizing-max-skew-zero
+spec:
+  base: Minimal
+  glance:
+    api:
+      spreadConstraints:
+      - maxSkew: 0
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway

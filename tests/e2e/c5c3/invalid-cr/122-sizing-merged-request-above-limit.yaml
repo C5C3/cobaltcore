@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The Minimal profile requests 50m CPU for the Keystone API, and the ControlPlane
+# limits it to 10m. Each value is valid on its own; the merged sizing is not, so
+# the webhook's check of the resolved sizing answers at
+# `spec.sizing.keystone.api.resources.requests.cpu`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-sizing-merged-limit
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+  sizing:
+    profile: Minimal
+    keystone:
+      api:
+        resources:
+          limits:
+            cpu: 10m
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

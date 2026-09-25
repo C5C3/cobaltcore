@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An autoscaling maxReplicas below Standard's three Keystone API replicas
+# (webhook-only): without minReplicas the HPA minimum defaults to the replica
+# count, so the Keystone webhook would refuse the projected child. The step
+# anchors on `spec.sizing.keystone.api.autoscaling.maxReplicas` and
+# `maxReplicas must be >= replicas (3)`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-sizing-autoscaling-max
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+  sizing:
+    keystone:
+      api:
+        resources:
+          requests:
+            cpu: 100m
+        autoscaling:
+          maxReplicas: 2
+          targetCPUUtilization: 80
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
