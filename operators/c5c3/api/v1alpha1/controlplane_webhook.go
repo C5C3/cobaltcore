@@ -3004,9 +3004,10 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 					allErrs = append(allErrs, field.Required(mPath.Child("tls", "caBundleSecretRef", "name"),
 						"must be set when messaging.tls is configured"))
 				}
-				// tls carries CLIENT trust only, and ensureRabbitMQ projects
-				// spec.replicas and nothing else — a managed broker therefore comes up
-				// on the RabbitMQ Cluster Operator's default, plaintext listener.
+				// tls carries CLIENT trust only, and ensureRabbitMQ projects the replica
+				// count and the sizing but no listener — a managed broker therefore
+				// comes up on the RabbitMQ Cluster Operator's default, plaintext
+				// listener.
 				// Admitting tls beside a clusterRef would promise an encrypted
 				// connection nothing provisions, and the mismatch would only surface
 				// when the first consumer renders ssl = true against a broker that

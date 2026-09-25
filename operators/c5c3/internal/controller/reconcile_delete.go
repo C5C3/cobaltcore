@@ -1229,7 +1229,7 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 
 	var objs []client.Object
 	// The backing services this namespace's services resolved to.
-	for _, inst := range r.managedInfraInstances(cp) {
+	for _, inst := range r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{}) {
 		if inst.namespace != namespace {
 			continue
 		}

@@ -271,7 +271,7 @@ func TestEnsureMariaDB_OwnedReconcilesReplicas(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMariaDB).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
+	_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, nil, cp.KeystoneNamespace())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var mariadb mariadbv1alpha1.MariaDB
@@ -316,7 +316,7 @@ func TestEnsureMariaDB_OwnedReconcilesGaleraState(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMariaDB).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
+	_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, nil, cp.KeystoneNamespace())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var mariadb mariadbv1alpha1.MariaDB
@@ -358,7 +358,7 @@ func TestEnsureMariaDB_ReplicasFromSpec(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
+			_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, nil, cp.KeystoneNamespace())
 			g.Expect(err).NotTo(HaveOccurred())
 
 			var mariadb mariadbv1alpha1.MariaDB
@@ -401,7 +401,7 @@ func TestEnsureMariaDB_StorageSizeFromSpec(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
+			_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, nil, cp.KeystoneNamespace())
 			g.Expect(err).NotTo(HaveOccurred())
 
 			var mariadb mariadbv1alpha1.MariaDB
@@ -436,7 +436,7 @@ func TestEnsureMemcached_OwnedReconcilesReplicas(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMemcached).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, cp.KeystoneNamespace())
+	_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, cp.KeystoneNamespace())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	u := &unstructured.Unstructured{}
@@ -775,7 +775,7 @@ func TestManagedInfraInstances_DeduplicatesOnChildIdentity(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 	var caches int
 	for _, inst := range instances {
 		if inst.kind == "Memcached" {
@@ -964,7 +964,7 @@ func TestManagedInfraInstances_FollowTheServiceNamespace(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 
 	type placement struct{ kind, name, namespace string }
 	got := make([]placement, 0, len(instances))
@@ -989,7 +989,7 @@ func TestManagedInfraInstances_ColocatedServicesShare(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 	g.Expect(instances).To(HaveLen(2), "co-located services share one database and one cache")
 	for _, inst := range instances {
 		g.Expect(inst.namespace).To(Equal("identity"))
@@ -1010,7 +1010,7 @@ func TestManagedInfraInstances_UnassignedIsUnchanged(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 	g.Expect(instances).To(HaveLen(2))
 	for _, inst := range instances {
 		g.Expect(inst.namespace).To(Equal(cp.Namespace))
@@ -1062,7 +1062,7 @@ func TestEnsureMariaDB_RefusesToReshapeAForeignInstance(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, "identity")
+	_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, nil, "identity")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var live mariadbv1alpha1.MariaDB
@@ -1150,7 +1150,7 @@ func TestEnsureMemcached_CrossNamespaceOwnedReconcilesReplicas(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			_, err := r.ensureMemcached(ctx, c, cp, &cp.Spec.Infrastructure.Cache, "identity")
+			_, err := r.ensureMemcached(ctx, c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
 			g.Expect(err).NotTo(HaveOccurred())
 
 			live, replicas, found := getMemcached(g, c, "identity")
@@ -1178,7 +1178,7 @@ func TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing(t *testing.T) {
 		WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, "identity")
+	_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(updates).To(BeZero(), "a cache at the declared count must not be written")
 }
@@ -1216,7 +1216,7 @@ func TestEnsureMemcached_RefusesToReshapeAForeignInstance(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			_, err := r.ensureMemcached(ctx, c, cp, &cp.Spec.Infrastructure.Cache, "identity")
+			_, err := r.ensureMemcached(ctx, c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
 			g.Expect(err).NotTo(HaveOccurred())
 
 			live, replicas, _ := getMemcached(g, c, "identity")
@@ -1244,7 +1244,7 @@ func TestEnsureMemcached_LabelOwnedInOwnNamespaceReconcilesReplicas(t *testing.T
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, cp.Namespace)
+	_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, cp.Namespace)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	_, replicas, found := getMemcached(g, c, cp.Namespace)
@@ -1271,10 +1271,10 @@ func TestEnsureMemcached_OwnedWriteErrorsAreWrapped(t *testing.T) {
 			WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, sentinel)).Build()
 		r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-		ready, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, "identity")
+		ready, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
 		g.Expect(ready).To(BeFalse())
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(HavePrefix(`updating owned Memcached "openstack-memcached" replicas: `))
+		g.Expect(err.Error()).To(HavePrefix(`updating owned Memcached "openstack-memcached": `))
 		g.Expect(errors.Is(err, sentinel)).To(BeTrue(), "the Update error must stay unwrappable")
 		g.Expect(updates).To(Equal(1))
 	})
@@ -1291,7 +1291,7 @@ func TestEnsureMemcached_OwnedWriteErrorsAreWrapped(t *testing.T) {
 			WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
 		r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-		ready, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, "identity")
+		ready, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
 		g.Expect(ready).To(BeFalse())
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(HavePrefix(`reading Memcached "openstack-memcached" spec.replicas: `))
@@ -1352,7 +1352,7 @@ func TestManagedInfraInstances_UndeclaredHorizonHasNoCache(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 
 	type placement struct{ kind, namespace string }
 	got := make([]placement, 0, len(instances))
@@ -1380,13 +1380,13 @@ func TestManagedInfraInstances_GlanceEnumeratedOnlyWhenDeclared(t *testing.T) {
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// Without services.glance: only Keystone's shared database and cache.
-	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2))
+	g.Expect(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})).To(HaveLen(2))
 
 	// With services.glance sharing the ControlPlane's namespace: Glance resolves to
 	// the same shared instances, so the (kind, namespace, name) dedup collapses
 	// them — still two.
 	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
-	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2),
+	g.Expect(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})).To(HaveLen(2),
 		"a co-located Glance shares Keystone's instances, so nothing new is enumerated")
 }
 
@@ -1408,7 +1408,7 @@ func TestManagedInfraInstances_GlanceDedicatedNamespaceMaterializesInstances(t *
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 	type placement struct{ kind, name, namespace string }
 	got := make([]placement, 0, len(instances))
 	for _, inst := range instances {
@@ -1445,7 +1445,7 @@ func TestManagedInfraInstances_GlanceDedicatedBackingServices(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 	byName := make(map[string]infraInstance, len(instances))
 	for _, inst := range instances {
 		byName[inst.kind+"/"+inst.name] = inst
@@ -1476,13 +1476,13 @@ func TestManagedInfraInstances_PlacementEnumeratedOnlyWhenDeclared(t *testing.T)
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// Without services.placement: only Keystone's shared database and cache.
-	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2))
+	g.Expect(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})).To(HaveLen(2))
 
 	// With services.placement sharing the ControlPlane's namespace: Placement
 	// resolves to the same shared instances, so the (kind, namespace, name) dedup
 	// collapses them — still two.
 	cp.Spec.Services.Placement = &c5c3v1alpha1.ServicePlacementSpec{}
-	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2),
+	g.Expect(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})).To(HaveLen(2),
 		"a co-located Placement shares Keystone's instances, so nothing new is enumerated")
 }
 
@@ -1504,7 +1504,7 @@ func TestManagedInfraInstances_PlacementDedicatedNamespaceMaterializesInstances(
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 	type instancePlacement struct{ kind, name, namespace string }
 	got := make([]instancePlacement, 0, len(instances))
 	for _, inst := range instances {
@@ -1541,7 +1541,7 @@ func TestManagedInfraInstances_PlacementDedicatedBackingServices(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 	byName := make(map[string]infraInstance, len(instances))
 	for _, inst := range instances {
 		byName[inst.kind+"/"+inst.name] = inst
@@ -1572,7 +1572,7 @@ func TestManagedInfraInstances_BarbicanEnumeratedOnlyWhenDeclared(t *testing.T) 
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// Without services.barbican: only Keystone's shared database and cache.
-	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2))
+	g.Expect(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})).To(HaveLen(2))
 
 	// With services.barbican sharing the ControlPlane's namespace: Barbican
 	// resolves to the same shared instances, so the (kind, namespace, name) dedup
@@ -1582,7 +1582,7 @@ func TestManagedInfraInstances_BarbicanEnumeratedOnlyWhenDeclared(t *testing.T) 
 			Dedicated: &c5c3v1alpha1.BarbicanDedicatedSecretStoreSpec{},
 		},
 	}
-	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2),
+	g.Expect(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})).To(HaveLen(2),
 		"a co-located Barbican shares Keystone's instances, so nothing new is enumerated")
 }
 
@@ -1624,7 +1624,7 @@ func TestManagedInfraInstances_BarbicanDedicatedBackingServices(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 	byName := make(map[string]infraInstance, len(instances))
 	for _, inst := range instances {
 		byName[inst.kind+"/"+inst.name] = inst
@@ -1677,7 +1677,7 @@ func TestManagedInfraInstances_NeutronEnumeratedOnlyWhenDeclared(t *testing.T) {
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// Without services.neutron: only Keystone's shared database and cache.
-	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2))
+	g.Expect(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})).To(HaveLen(2))
 
 	// With services.neutron sharing the ControlPlane's namespace: Neutron resolves
 	// to the same shared instances, so the (kind, namespace, name) dedup collapses
@@ -1687,7 +1687,7 @@ func TestManagedInfraInstances_NeutronEnumeratedOnlyWhenDeclared(t *testing.T) {
 			CentralRef: c5c3v1alpha1.NeutronOVNCentralRef{Name: "ovn"},
 		},
 	}
-	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2),
+	g.Expect(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})).To(HaveLen(2),
 		"a co-located Neutron shares Keystone's instances, so nothing new is enumerated")
 }
 
@@ -1721,7 +1721,7 @@ func TestManagedInfraInstances_NeutronDedicatedBackingServices(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 	byName := make(map[string]infraInstance, len(instances))
 	for _, inst := range instances {
 		byName[inst.kind+"/"+inst.name] = inst
@@ -1756,7 +1756,7 @@ func TestManagedInfraInstances_CinderEnumeratedOnlyWhenDeclared(t *testing.T) {
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// Without services.cinder: only Keystone's shared database and cache.
-	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2))
+	g.Expect(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})).To(HaveLen(2))
 
 	// With services.cinder sharing the ControlPlane's namespace: Cinder resolves
 	// to the same shared instances, so the (kind, namespace, name) dedup collapses
@@ -1768,7 +1768,7 @@ func TestManagedInfraInstances_CinderEnumeratedOnlyWhenDeclared(t *testing.T) {
 			NFS:  &c5c3v1alpha1.NFSShareSpec{Server: "nfs.example.com", Path: "/exports/cinder"},
 		}},
 	}
-	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2),
+	g.Expect(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})).To(HaveLen(2),
 		"a co-located Cinder shares Keystone's instances, so nothing new is enumerated")
 }
 
@@ -1805,7 +1805,7 @@ func TestManagedInfraInstances_CinderDedicatedBackingServices(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 	byName := make(map[string]infraInstance, len(instances))
 	for _, inst := range instances {
 		byName[inst.kind+"/"+inst.name] = inst
@@ -1861,19 +1861,19 @@ func TestManagedInfraInstances_NovaEnumeratedOnlyWhenDeclared(t *testing.T) {
 	shared := []string{"MariaDB/default/openstack-db", "Memcached/default/openstack-memcached"}
 
 	// Without services.nova: only Keystone's shared database and cache.
-	g.Expect(infraInstanceKeys(r.managedInfraInstances(cp))).To(ConsistOf(shared))
+	g.Expect(infraInstanceKeys(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{}))).To(ConsistOf(shared))
 
 	// With services.nova sharing the ControlPlane's namespace: Nova resolves to
 	// the same shared instances, so the (kind, namespace, name) dedup collapses
 	// them.
 	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{}
-	g.Expect(infraInstanceKeys(r.managedInfraInstances(cp))).To(ConsistOf(shared),
+	g.Expect(infraInstanceKeys(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{}))).To(ConsistOf(shared),
 		"a co-located Nova shares Keystone's instances, so nothing new is enumerated")
 
 	// In a namespace of its own, the shared instances are materialized a second
 	// time beside the compute service, one database for both schemas.
 	cp.Spec.Services.Nova.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{Name: "compute"}
-	instances := r.managedInfraInstances(cp)
+	instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 	g.Expect(infraInstanceKeys(instances)).To(ConsistOf(append(shared,
 		"MariaDB/compute/openstack-db", "Memcached/compute/openstack-memcached")))
 	db, _ := infraInstanceAt(instances, "MariaDB/compute/openstack-db")
@@ -1916,7 +1916,7 @@ func TestManagedInfraInstances_NovaDedicatedBackingServices(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 		r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-		instances := r.managedInfraInstances(cp)
+		instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 		g.Expect(infraInstanceKeys(instances)).To(ConsistOf(
 			"MariaDB/openstack/openstack-db", "Memcached/openstack/openstack-memcached",
 			"MariaDB/compute/cp-nova-db", "Memcached/compute/openstack-memcached",
@@ -1941,7 +1941,7 @@ func TestManagedInfraInstances_NovaDedicatedBackingServices(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 		r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-		instances := r.managedInfraInstances(cp)
+		instances := r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{})
 		g.Expect(infraInstanceKeys(instances)).To(ConsistOf(
 			"MariaDB/openstack/openstack-db", "Memcached/openstack/openstack-memcached",
 			"MariaDB/compute/openstack-db", "Memcached/compute/cp-nova-cache",
@@ -2210,7 +2210,7 @@ func TestManagedInfraInstances_MessagingNilAndBrownfieldProvisionNothing(t *test
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			g.Expect(rabbitmqInstances(r.managedInfraInstances(cp))).To(BeEmpty(),
+			g.Expect(rabbitmqInstances(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{}))).To(BeEmpty(),
 				"nothing to provision, so no RabbitmqCluster may be enumerated")
 		})
 	}
@@ -2231,7 +2231,7 @@ func TestManagedInfraInstances_MessagingEnumeratedAtHome(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 		r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-		buses := rabbitmqInstances(r.managedInfraInstances(cp))
+		buses := rabbitmqInstances(r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{}))
 		g.Expect(buses).To(HaveLen(1), "a declared managed bus is wanted even with services: {}")
 		g.Expect(buses[0].name).To(Equal("openstack-rabbitmq"))
 		g.Expect(buses[0].namespace).To(Equal(cp.Namespace))
@@ -2251,7 +2251,7 @@ func TestManagedInfraInstances_MessagingEnumeratedAtHome(t *testing.T) {
 
 		type placement struct{ kind, name, namespace string }
 		var got []placement
-		for _, inst := range r.managedInfraInstances(cp) {
+		for _, inst := range r.managedInfraInstances(cp, c5c3v1alpha1.SizingSpec{}) {
 			got = append(got, placement{inst.kind, inst.name, inst.namespace})
 		}
 		g.Expect(got).To(ConsistOf(
@@ -2291,7 +2291,7 @@ func TestEnsureRabbitMQ_CreatesOwnedClusterFromSpec(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+			ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, nil, cp.Namespace)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(ready).To(BeFalse(), "a cluster without conditions is not ready")
 
@@ -2312,12 +2312,13 @@ func TestEnsureRabbitMQ_CreatesOwnedClusterFromSpec(t *testing.T) {
 	}
 }
 
-// TestEnsureRabbitMQ_OwnedReconcilesReplicasOnly verifies the narrow projection
-// onto an OWNED cluster: the replica count is corrected back to the declared one,
-// and every other field of the spec is left where the platform put it. Image,
-// resources and tls are site-specific hardening the ControlPlane never projects,
-// so re-asserting a default over them would silently downgrade a tuned broker.
-func TestEnsureRabbitMQ_OwnedReconcilesReplicasOnly(t *testing.T) {
+// TestEnsureRabbitMQ_OwnedReconcilesReplicasAndSizing verifies the projection
+// onto an OWNED cluster: the replica count is corrected back to the declared
+// one, resources the sizing does not set are removed so the operator's default
+// applies again, and every field the ControlPlane does not project is left where
+// the platform put it. Image and tls are site-specific hardening, so
+// re-asserting a default over them would silently downgrade a tuned broker.
+func TestEnsureRabbitMQ_OwnedReconcilesReplicasAndSizing(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	s := infraTestScheme(t)
@@ -2337,7 +2338,7 @@ func TestEnsureRabbitMQ_OwnedReconcilesReplicasOnly(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	_, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, nil, cp.Namespace)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	u := &unstructured.Unstructured{}
@@ -2351,8 +2352,8 @@ func TestEnsureRabbitMQ_OwnedReconcilesReplicasOnly(t *testing.T) {
 
 	image, _, _ := unstructured.NestedString(u.Object, "spec", "image")
 	g.Expect(image).To(Equal("x"), "spec.image is not projected and must survive")
-	cpu, _, _ := unstructured.NestedString(u.Object, "spec", "resources", "requests", "cpu")
-	g.Expect(cpu).To(Equal("1"), "spec.resources is not projected and must survive")
+	_, found, _ := unstructured.NestedMap(u.Object, "spec", "resources")
+	g.Expect(found).To(BeFalse(), "resources the sizing does not set are removed, so the operator default applies")
 	tlsSecret, _, _ := unstructured.NestedString(u.Object, "spec", "tls", "secretName")
 	g.Expect(tlsSecret).To(Equal("t"), "spec.tls is not projected and must survive")
 }
@@ -2384,7 +2385,7 @@ func TestEnsureRabbitMQ_OwnedScaleDownRecreates(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, nil, cp.Namespace)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse(),
 		"readiness must not be gated on the cluster that is going away, even though it still reports AllReplicasReady")
@@ -2396,7 +2397,7 @@ func TestEnsureRabbitMQ_OwnedScaleDownRecreates(t *testing.T) {
 		"the oversized owned cluster must be deleted, not updated to a count the operator ignores")
 
 	// The next pass recreates it at the declared size.
-	ready, err = r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	ready, err = r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, nil, cp.Namespace)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse(), "a freshly created cluster reports no conditions")
 	g.Expect(c.Get(ctx, types.NamespacedName{
@@ -2430,8 +2431,8 @@ func TestEnsureRabbitMQ_OwnedScaleDownRefusedWithoutOptIn(t *testing.T) {
 			ctx := context.Background()
 			s := infraTestScheme(t)
 			cp := managedMessagingControlPlane()
-			// The accident the gate exists for: the declared count is the schema
-			// DEFAULT, reached by dropping the replicas line off a broker running 5.
+			// The accident the gate exists for: the declared count is Standard's,
+			// reached by dropping the replicas line off a broker running 5.
 			cp.Spec.Infrastructure.Messaging.Replicas = 3
 			cp.Annotations = tc.annotation
 
@@ -2444,7 +2445,7 @@ func TestEnsureRabbitMQ_OwnedScaleDownRefusedWithoutOptIn(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+			ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, nil, cp.Namespace)
 			g.Expect(ready).To(BeFalse(), "an unconverged bus is not ready")
 			g.Expect(err).To(HaveOccurred(), "an unauthorised shrink must not be converged silently")
 			g.Expect(err.Error()).To(ContainSubstring(messagingRecreateAllowedAnnotation),
@@ -2491,7 +2492,7 @@ func TestEnsureRabbitMQ_TerminatingChildIsNotReady(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, terminating).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, nil, cp.Namespace)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse(),
 		"a terminating broker still reports AllReplicasReady, but readiness must never be gated on a bus that is going away")
@@ -2515,7 +2516,7 @@ func TestEnsureRabbitMQ_AdoptsForeignReadOnly(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, nil, cp.Namespace)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeTrue(), "an adopted cluster is still read for readiness")
 
@@ -2562,7 +2563,7 @@ func TestEnsureRabbitMQ_AdoptsLabelledForeignReadOnly(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+			ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, nil, cp.Namespace)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(ready).To(BeTrue(), "an adopted cluster is still read for readiness")
 
@@ -2612,7 +2613,7 @@ func TestEnsureRabbitMQ_GetErrorIsWrapped(t *testing.T) {
 		WithInterceptorFuncs(failingRabbitmqGet(sentinel)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, nil, cp.Namespace)
 	g.Expect(ready).To(BeFalse())
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(strings.HasPrefix(err.Error(), `getting RabbitmqCluster "openstack-rabbitmq": `)).To(BeTrue(),
@@ -2752,5 +2753,372 @@ func TestUnstructuredConditionTrue(t *testing.T) {
 	t.Run("unstructuredReady still answers for the Ready specialisation", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		g.Expect(unstructuredReady(readyMemcached("openstack-memcached", "default"))).To(BeTrue())
+	})
+}
+
+// minimalWithPlacement is the Minimal sizing plus a top-level node selector and
+// priority class, the placement every backing service with a pod template
+// falls back to.
+func minimalWithPlacement() c5c3v1alpha1.SizingSpec {
+	s := c5c3v1alpha1.BuiltinSizing(c5c3v1alpha1.SizingProfileMinimal)
+	s.NodeSelector = map[string]string{"pool": "infra"}
+	s.PriorityClassName = ptr.To("infra-critical")
+	return s
+}
+
+// mariadbUpdateInterceptor counts every MariaDB Update in *updates and fails it
+// with err when err is non-nil.
+func mariadbUpdateInterceptor(updates *int, err error) interceptor.Funcs {
+	return interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*mariadbv1alpha1.MariaDB); ok {
+				*updates++
+				if err != nil {
+					return err
+				}
+			}
+			return c.Update(ctx, obj, opts...)
+		},
+	}
+}
+
+func getMariaDB(g Gomega, c client.Client, namespace string) *mariadbv1alpha1.MariaDB {
+	m := &mariadbv1alpha1.MariaDB{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: "openstack-db", Namespace: namespace}, m)).To(Succeed())
+	return m
+}
+
+func TestEnsureMariaDB_Sizing(t *testing.T) {
+	t.Run("Minimal creates a sized single-instance MariaDB", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedInfraControlPlane() // replicas and storageSize unset
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database,
+			databaseSizing(minimalWithPlacement()), cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		m := getMariaDB(g, c, cp.Namespace)
+		g.Expect(m.Spec.Replicas).To(Equal(int32(1)))
+		g.Expect(m.Spec.Galera.Enabled).To(BeFalse())
+		g.Expect(m.Spec.Storage.Size.String()).To(Equal("512Mi"))
+		g.Expect(m.Spec.Resources.Requests.Cpu().String()).To(Equal("100m"))
+		g.Expect(m.Spec.Resources.Limits.Memory().String()).To(Equal("1Gi"))
+		g.Expect(m.Spec.NodeSelector).To(Equal(map[string]string{"pool": "infra"}))
+		g.Expect(m.Spec.PriorityClassName).To(Equal(ptr.To("infra-critical")))
+	})
+
+	t.Run("a nil sizing creates what it always did", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedInfraControlPlane()
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, nil, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		m := getMariaDB(g, c, cp.Namespace)
+		g.Expect(m.Spec.Replicas).To(Equal(infraMariaDBReplicasDefault))
+		g.Expect(m.Spec.Storage.Size.String()).To(Equal(infraMariaDBStorageSizeDefault))
+		g.Expect(m.Spec.Resources).To(BeNil())
+		g.Expect(m.Spec.NodeSelector).To(BeNil())
+		g.Expect(m.Spec.Tolerations).To(BeNil())
+		g.Expect(m.Spec.PriorityClassName).To(BeNil())
+	})
+
+	t.Run("an explicit count and size win over the sizing", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedInfraControlPlane()
+		cp.Spec.Infrastructure.Database.Replicas = 3
+		cp.Spec.Infrastructure.Database.StorageSize = "10Gi"
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database,
+			databaseSizing(minimalWithPlacement()), cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		m := getMariaDB(g, c, cp.Namespace)
+		g.Expect(m.Spec.Replicas).To(Equal(int32(3)))
+		g.Expect(m.Spec.Storage.Size.String()).To(Equal("10Gi"))
+	})
+
+	// seedOwned is a live single-instance MariaDB this ControlPlane owns, sized
+	// at a 2Gi memory limit.
+	seedOwned := func(g Gomega, s *runtime.Scheme, cp *c5c3v1alpha1.ControlPlane) *mariadbv1alpha1.MariaDB {
+		size := resource.MustParse("512Mi")
+		m := &mariadbv1alpha1.MariaDB{
+			ObjectMeta: metav1.ObjectMeta{Name: "openstack-db", Namespace: cp.Namespace},
+			Spec: mariadbv1alpha1.MariaDBSpec{
+				Replicas: 1,
+				Galera:   &mariadbv1alpha1.Galera{Enabled: false},
+				Storage:  mariadbv1alpha1.Storage{Size: &size},
+			},
+		}
+		m.Spec.Resources = &mariadbv1alpha1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+		}
+		g.Expect(controllerutil.SetControllerReference(cp, m, s)).To(Succeed())
+		return m
+	}
+
+	t.Run("an owned MariaDB is re-asserted with one Update", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedInfraControlPlane()
+		cp.Spec.Infrastructure.Database.Replicas = 1
+		updates := 0
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seedOwned(g, s, cp)).
+			WithInterceptorFuncs(mariadbUpdateInterceptor(&updates, nil)).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+		sizing := databaseSizing(minimalWithPlacement())
+
+		_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, sizing, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(updates).To(Equal(1))
+		m := getMariaDB(g, c, cp.Namespace)
+		g.Expect(m.Spec.Resources.Limits.Memory().String()).To(Equal("1Gi"))
+		g.Expect(m.Spec.NodeSelector).To(Equal(map[string]string{"pool": "infra"}))
+
+		// A second pass finds nothing to change and writes nothing.
+		_, err = r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, sizing, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(updates).To(Equal(1))
+
+		// Clearing the sizing clears the owned MariaDB's resources and placement.
+		_, err = r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, nil, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(updates).To(Equal(2))
+		m = getMariaDB(g, c, cp.Namespace)
+		g.Expect(m.Spec.Resources).To(BeNil())
+		g.Expect(m.Spec.NodeSelector).To(BeNil())
+		g.Expect(m.Spec.PriorityClassName).To(BeNil())
+	})
+
+	t.Run("an adopted MariaDB is left untouched", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedInfraControlPlane()
+		foreign := seedOwned(g, s, cp)
+		foreign.OwnerReferences = nil
+		updates := 0
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).
+			WithInterceptorFuncs(mariadbUpdateInterceptor(&updates, nil)).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database,
+			databaseSizing(minimalWithPlacement()), cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(updates).To(BeZero())
+		g.Expect(getMariaDB(g, c, cp.Namespace).Spec.Resources.Limits.Memory().String()).To(Equal("2Gi"))
+	})
+
+	t.Run("an Update failure is wrapped", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedInfraControlPlane()
+		cp.Spec.Infrastructure.Database.Replicas = 1
+		sentinel := errors.New("update rejected")
+		updates := 0
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seedOwned(g, s, cp)).
+			WithInterceptorFuncs(mariadbUpdateInterceptor(&updates, sentinel)).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		ready, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database,
+			databaseSizing(minimalWithPlacement()), cp.Namespace)
+		g.Expect(ready).To(BeFalse())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(HavePrefix(`updating owned MariaDB "openstack-db": `))
+		g.Expect(errors.Is(err, sentinel)).To(BeTrue())
+	})
+}
+
+func TestEnsureMemcached_Sizing(t *testing.T) {
+	memcachedResources := func(g Gomega, u *unstructured.Unstructured) (map[string]interface{}, bool) {
+		m, found, err := unstructured.NestedMap(u.Object, "spec", "resources")
+		g.Expect(err).NotTo(HaveOccurred())
+		return m, found
+	}
+
+	t.Run("writes and re-asserts spec.resources, removes it when unset", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedInfraControlPlane()
+		cp.Spec.Infrastructure.Cache.Replicas = 0
+		updates := 0
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+			WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+		minimal := c5c3v1alpha1.BuiltinSizing(c5c3v1alpha1.SizingProfileMinimal).Cache
+
+		_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, minimal, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		u, replicas, _ := getMemcached(g, c, cp.Namespace)
+		g.Expect(replicas).To(Equal(int64(1)), "an unset count follows the sizing")
+		res, found := memcachedResources(g, u)
+		g.Expect(found).To(BeTrue())
+		g.Expect(res).To(HaveKeyWithValue("limits", map[string]interface{}{"memory": "128Mi"}))
+		// Placement is never written: the Memcached CRD has none.
+		g.Expect(u.Object["spec"]).NotTo(HaveKey("nodeSelector"))
+		g.Expect(u.Object["spec"]).NotTo(HaveKey("tolerations"))
+		g.Expect(u.Object["spec"]).NotTo(HaveKey("priorityClassName"))
+
+		// Drift on the owned cache is corrected with one Update.
+		g.Expect(unstructured.SetNestedField(u.Object, "64Mi", "spec", "resources", "limits", "memory")).To(Succeed())
+		g.Expect(c.Update(context.Background(), u)).To(Succeed())
+		updates = 0
+		_, err = r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, minimal, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(updates).To(Equal(1))
+		u, _, _ = getMemcached(g, c, cp.Namespace)
+		res, _ = memcachedResources(g, u)
+		g.Expect(res).To(HaveKeyWithValue("limits", map[string]interface{}{"memory": "128Mi"}))
+
+		// A sizing without resources removes them; a zero count floors to 3.
+		_, err = r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		u, replicas, _ = getMemcached(g, c, cp.Namespace)
+		g.Expect(replicas).To(Equal(int64(infraMemcachedReplicasDefault)))
+		_, found = memcachedResources(g, u)
+		g.Expect(found).To(BeFalse())
+	})
+
+	t.Run("an explicit count wins over the sizing", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedInfraControlPlane() // cache.replicas 3
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache,
+			c5c3v1alpha1.BuiltinSizing(c5c3v1alpha1.SizingProfileMinimal).Cache, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		_, replicas, _ := getMemcached(g, c, cp.Namespace)
+		g.Expect(replicas).To(Equal(int64(3)))
+	})
+}
+
+func TestEnsureRabbitMQ_Sizing(t *testing.T) {
+	getBus := func(g Gomega, c client.Client, cp *c5c3v1alpha1.ControlPlane) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
+		g.Expect(c.Get(context.Background(), types.NamespacedName{
+			Name: "openstack-rabbitmq", Namespace: cp.Namespace,
+		}, u)).To(Succeed())
+		return u
+	}
+
+	t.Run("writes resources, tolerations and the override pod spec", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedMessagingControlPlane()
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+		sizing := minimalWithPlacement()
+		sizing.Tolerations = []corev1.Toleration{{Key: "infra", Operator: corev1.TolerationOpExists}}
+
+		_, err := r.ensureRabbitMQ(context.Background(), c, cp, cp.Spec.Infrastructure.Messaging,
+			messagingSizing(sizing), cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		u := getBus(g, c, cp)
+		memory, _, _ := unstructured.NestedString(u.Object, "spec", "resources", "limits", "memory")
+		g.Expect(memory).To(Equal("512Mi"))
+		tolerations, _, _ := unstructured.NestedSlice(u.Object, "spec", "tolerations")
+		g.Expect(tolerations).To(ConsistOf(map[string]interface{}{"key": "infra", "operator": "Exists"}))
+		podSpec, found, _ := unstructured.NestedMap(u.Object, "spec", "override", "statefulSet", "spec", "template", "spec")
+		g.Expect(found).To(BeTrue())
+		g.Expect(podSpec).To(Equal(map[string]interface{}{
+			"containers":        []interface{}{},
+			"nodeSelector":      map[string]interface{}{"pool": "infra"},
+			"priorityClassName": "infra-critical",
+		}))
+	})
+
+	t.Run("no node selector and no priority class write no override", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedMessagingControlPlane()
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureRabbitMQ(context.Background(), c, cp, cp.Spec.Infrastructure.Messaging,
+			messagingSizing(c5c3v1alpha1.BuiltinSizing(c5c3v1alpha1.SizingProfileMinimal)), cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		u := getBus(g, c, cp)
+		_, found, _ := unstructured.NestedMap(u.Object, "spec", "override")
+		g.Expect(found).To(BeFalse())
+		_, found, _ = unstructured.NestedSlice(u.Object, "spec", "tolerations")
+		g.Expect(found).To(BeFalse())
+	})
+
+	t.Run("the operator's default resources count as unset", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedMessagingControlPlane()
+		owned := rabbitmqWithConditions("openstack-rabbitmq", cp.Namespace, nil)
+		g.Expect(unstructured.SetNestedMap(owned.Object, map[string]interface{}{
+			"requests": map[string]interface{}{"cpu": "1000m", "memory": "2Gi"},
+			"limits":   map[string]interface{}{"cpu": "2000m", "memory": "2Gi"},
+		}, "spec", "resources")).To(Succeed())
+		g.Expect(controllerutil.SetControllerReference(cp, owned, s)).To(Succeed())
+		updates := 0
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					updates++
+					return c.Update(ctx, obj, opts...)
+				},
+			}).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureRabbitMQ(context.Background(), c, cp, cp.Spec.Infrastructure.Messaging,
+			messagingSizing(c5c3v1alpha1.BuiltinSizing(c5c3v1alpha1.SizingProfileStandard)), cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(updates).To(BeZero(), "a Standard bus at the CRD default must not be rewritten on every pass")
+	})
+
+	t.Run("a Minimal-to-Standard switch grows the bus in place", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedMessagingControlPlane()
+		cp.Spec.Infrastructure.Messaging.Replicas = 0
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureRabbitMQ(context.Background(), c, cp, cp.Spec.Infrastructure.Messaging,
+			messagingSizing(c5c3v1alpha1.BuiltinSizing(c5c3v1alpha1.SizingProfileMinimal)), cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		replicas, _, _ := unstructured.NestedInt64(getBus(g, c, cp).Object, "spec", "replicas")
+		g.Expect(replicas).To(Equal(int64(1)))
+
+		_, err = r.ensureRabbitMQ(context.Background(), c, cp, cp.Spec.Infrastructure.Messaging,
+			messagingSizing(c5c3v1alpha1.BuiltinSizing(c5c3v1alpha1.SizingProfileStandard)), cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		u := getBus(g, c, cp)
+		g.Expect(u.GetDeletionTimestamp()).To(BeNil(), "a grow is an in-place Update")
+		replicas, _, _ = unstructured.NestedInt64(u.Object, "spec", "replicas")
+		g.Expect(replicas).To(Equal(int64(3)))
+		_, found, _ := unstructured.NestedMap(u.Object, "spec", "resources")
+		g.Expect(found).To(BeFalse(), "Standard sets no resources, so the Minimal ones are removed")
+	})
+
+	t.Run("a Standard-to-Minimal switch without the opt-in refuses the shrink", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedMessagingControlPlane()
+		cp.Spec.Infrastructure.Messaging.Replicas = 0
+		owned := rabbitmqWithConditions("openstack-rabbitmq", cp.Namespace, nil)
+		g.Expect(unstructured.SetNestedField(owned.Object, int64(3), "spec", "replicas")).To(Succeed())
+		g.Expect(controllerutil.SetControllerReference(cp, owned, s)).To(Succeed())
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureRabbitMQ(context.Background(), c, cp, cp.Spec.Infrastructure.Messaging,
+			messagingSizing(c5c3v1alpha1.BuiltinSizing(c5c3v1alpha1.SizingProfileMinimal)), cp.Namespace)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(messagingRecreateAllowedAnnotation))
+		replicas, _, _ := unstructured.NestedInt64(getBus(g, c, cp).Object, "spec", "replicas")
+		g.Expect(replicas).To(Equal(int64(3)))
 	})
 }

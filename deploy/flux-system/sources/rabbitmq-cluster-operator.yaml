@@ -32,6 +32,13 @@
 # commit are bumped together by one customManager rule in renovate.json;
 # tests/unit/renovate/rabbitmq_cluster_operator_source_custommanager_test.sh
 # guards that pairing.
+#
+# A bump that changes the spec.resources default of the RabbitmqCluster CRD must
+# move rabbitMQDefaultResources in
+# operators/c5c3/internal/controller/reconcile_infrastructure.go, and the
+# figures docs/reference/c5c3/controlplane-crd.md repeats, in lockstep. Otherwise
+# the c5c3-operator rewrites every owned bus without sized resources on every
+# pass.
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
