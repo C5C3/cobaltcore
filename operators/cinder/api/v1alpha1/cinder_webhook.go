@@ -72,6 +72,14 @@ const (
 	DefaultDBPurgeSchedule = "1 0 * * *"
 )
 
+// DefaultSchedulerReplicas is the replica count the scheduler Deployment
+// resolves to when its block leaves it unset, rather than the shared default of
+// three. The scheduler is a peer that holds no state a second pod would share,
+// and the volume service it feeds runs one replica, so one is enough to start
+// from. The ControlPlane projects the same value explicitly, so the two stay
+// one fact.
+const DefaultSchedulerReplicas int32 = 1
+
 // CinderWebhook implements defaulting and validation webhooks for the Cinder
 // CRD. Client is injected at startup for cluster-scoped resource lookups (e.g.
 // PriorityClass validation). Production wiring injects mgr.GetAPIReader() — a
@@ -125,7 +133,7 @@ func (w *CinderWebhook) Default(_ context.Context, obj *Cinder) error {
 	// the shared Default() runs, which would otherwise fill the absent block with
 	// three.
 	if obj.Spec.Scheduler.Deployment.Replicas == 0 {
-		obj.Spec.Scheduler.Deployment.Replicas = 1
+		obj.Spec.Scheduler.Deployment.Replicas = DefaultSchedulerReplicas
 	}
 	if obj.Spec.Volume.Deployment.Replicas == 0 {
 		obj.Spec.Volume.Deployment.Replicas = 1
