@@ -1,0 +1,240 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Example sizing and placement overlay for the base FluxCD manifests.
+#
+# This directory is an example to copy. No script applies it;
+# tests/unit/deploy/sizing_overlay_example_test.sh renders it and pins every
+# patched field. A deployer copies the directory, points the resources entry
+# below at a checkout or a remote base, and runs kubectl apply -k on the copy
+# in place of deploy/flux-system/. infrastructure/ does the same for the
+# second apply phase. The recipe is in
+# docs/reference/infrastructure/infrastructure-manifests.md, section "Sizing
+# and placement overrides".
+#
+# Each patch shows one shape the stack uses: a CobaltCore operator HelmRelease,
+# a third-party HelmRelease, the two Git-sourced Flux Kustomizations and the
+# FluxInstance. The figures are illustrative; size them against the usage you
+# observe. The placement values are:
+#   node label     node.c5c3.io/role: platform
+#   toleration     node.c5c3.io/role=platform:NoSchedule
+#   PriorityClass  cobaltcore-platform (priorityclass.yaml, which only this
+#                  phase applies; infrastructure/ references it)
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../flux-system
+  - priorityclass.yaml
+
+patches:
+  # A CobaltCore operator chart: a merge patch on spec.chart.spec.version and
+  # spec.values. nodeSelector, tolerations and priorityClassName need
+  # keystone-operator chart 0.11.0 or later (operator-library 0.9.0); an older
+  # chart rejects them through its values schema, so the patch raises the
+  # release's version floor with them. The patch replaces the base's whole
+  # range, so it repeats the base's upper bound; re-check it whenever the
+  # base moves. A patch copied to one of the other nine operator releases
+  # raises that release's floor to its chart version of the same change:
+  # barbican, glance, neutron, ovn and placement 0.3.0, c5c3 0.14.0, horizon
+  # 0.4.0, cinder and nova 0.2.0.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: keystone-operator
+      namespace: keystone-system
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: keystone-operator
+        namespace: keystone-system
+      spec:
+        chart:
+          spec:
+            version: ">=0.11.0 <1.0.0"
+        values:
+          # One replica fits a single-node cluster; keep two for HA.
+          replicas: 1
+          resources:
+            requests:
+              cpu: 20m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 192Mi
+          nodeSelector:
+            node.c5c3.io/role: platform
+          tolerations:
+            - key: node.c5c3.io/role
+              operator: Equal
+              value: platform
+              effect: NoSchedule
+          priorityClassName: cobaltcore-platform
+
+  # A third-party chart: a merge patch on spec.values with the chart's own
+  # keys, checked against cert-manager chart v1.21.2. The top-level keys size
+  # and place the controller; webhook.* and cainjector.* take the same keys
+  # for the other two Deployments. global.priorityClassName applies to all
+  # three.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: cert-manager
+      namespace: cert-manager
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: cert-manager
+        namespace: cert-manager
+      spec:
+        values:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+          nodeSelector:
+            node.c5c3.io/role: platform
+          tolerations:
+            - key: node.c5c3.io/role
+              operator: Equal
+              value: platform
+              effect: NoSchedule
+          global:
+            priorityClassName: cobaltcore-platform
+
+  # A Git-sourced Flux Kustomization over an upstream installer: spec.patches
+  # holds a JSON6902 patch that the kustomize-controller applies to the
+  # installer it renders. The K-ORC installer (config/default) and the
+  # RabbitMQ cluster-operator installer (config/installation) each render
+  # exactly one Deployment with one container, so target kind: Deployment
+  # selects the manager whatever name prefix the upstream base applies, and
+  # containers/0 is the manager container. op: add replaces a member that
+  # already exists, such as the upstream resources.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: k-orc
+      namespace: flux-system
+    patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: k-orc
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: Deployment
+            patch: |
+              - op: add
+                path: /spec/template/spec/nodeSelector
+                value:
+                  node.c5c3.io/role: platform
+              - op: add
+                path: /spec/template/spec/tolerations
+                value:
+                  - key: node.c5c3.io/role
+                    operator: Equal
+                    value: platform
+                    effect: NoSchedule
+              - op: add
+                path: /spec/template/spec/priorityClassName
+                value: cobaltcore-platform
+              - op: add
+                path: /spec/template/spec/containers/0/resources
+                value:
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                  limits:
+                    memory: 128Mi
+
+  # The RabbitMQ cluster operator is placed only: its installer already sizes
+  # the manager (requests and limits 200m / 500Mi), and an add on
+  # containers/0/resources would replace that block whole.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: rabbitmq-cluster-operator
+      namespace: flux-system
+    patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: rabbitmq-cluster-operator
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: Deployment
+            patch: |
+              - op: add
+                path: /spec/template/spec/nodeSelector
+                value:
+                  node.c5c3.io/role: platform
+              - op: add
+                path: /spec/template/spec/tolerations
+                value:
+                  - key: node.c5c3.io/role
+                    operator: Equal
+                    value: platform
+                    effect: NoSchedule
+              - op: add
+                path: /spec/template/spec/priorityClassName
+                value: cobaltcore-platform
+
+  # The FluxInstance: spec.kustomize.patches (flux-operator v0.60.0, the
+  # version hack/deploy-infra.sh installs) patches the Flux controllers the
+  # flux-operator renders. An entry names one controller; source-controller,
+  # kustomize-controller and notification-controller take the same entry with
+  # their own name. The Flux manifests already run the source, kustomize and
+  # helm controllers with priorityClassName system-cluster-critical, which
+  # ranks above cobaltcore-platform, so this patch leaves the priority class
+  # alone. The notification-controller has none and takes the class as a
+  # fourth operation.
+  - target:
+      group: fluxcd.controlplane.io
+      version: v1
+      kind: FluxInstance
+      name: flux
+      namespace: flux-system
+    patch: |
+      apiVersion: fluxcd.controlplane.io/v1
+      kind: FluxInstance
+      metadata:
+        name: flux
+        namespace: flux-system
+      spec:
+        kustomize:
+          patches:
+            - target:
+                kind: Deployment
+                name: helm-controller
+              patch: |
+                - op: add
+                  path: /spec/template/spec/nodeSelector
+                  value:
+                    node.c5c3.io/role: platform
+                - op: add
+                  path: /spec/template/spec/tolerations
+                  value:
+                    - key: node.c5c3.io/role
+                      operator: Equal
+                      value: platform
+                      effect: NoSchedule
+                - op: add
+                  path: /spec/template/spec/containers/0/resources
+                  value:
+                    requests:
+                      cpu: 50m
+                      memory: 128Mi
+                    limits:
+                      memory: 512Mi

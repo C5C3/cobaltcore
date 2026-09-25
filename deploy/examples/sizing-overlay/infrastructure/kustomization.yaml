@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Example sizing and placement overlay for the infrastructure CRs, the second
+# apply phase.
+#
+# This directory is an example to copy. No script applies it;
+# tests/unit/deploy/sizing_overlay_example_test.sh renders it and pins every
+# patched field. A deployer runs kubectl apply -k on the copy in place of
+# deploy/flux-system/infrastructure/, after the base phase (../). The MariaDB
+# patch references the cobaltcore-platform PriorityClass that the base phase
+# applies; this phase takes it from there, as it takes its namespace, CRDs
+# and operators. It does not include the class: kubectl delete -k on either
+# phase deletes an object both apply, and without the class the API server
+# rejects every new pod that names it, the base phase's operators included.
+# The figures are illustrative; size them against the usage you observe.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../flux-system/infrastructure
+
+patches:
+  # MariaDB: spec.resources, spec.nodeSelector, spec.tolerations and
+  # spec.priorityClassName are the ContainerTemplate and PodTemplate fields of
+  # mariadb-operator v0.38.1, which the operator copies onto the MariaDB pods.
+  - target:
+      group: k8s.mariadb.com
+      version: v1alpha1
+      kind: MariaDB
+      name: openstack-db
+      namespace: openstack
+    patch: |
+      apiVersion: k8s.mariadb.com/v1alpha1
+      kind: MariaDB
+      metadata:
+        name: openstack-db
+        namespace: openstack
+      spec:
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            memory: 2Gi
+        nodeSelector:
+          node.c5c3.io/role: platform
+        tolerations:
+          - key: node.c5c3.io/role
+            operator: Equal
+            value: platform
+            effect: NoSchedule
+        priorityClassName: cobaltcore-platform
+
+  # Memcached: spec.resources only; the Memcached CRD has no placement
+  # fields. The memory limit stays at or above the 96Mi the Memcached
+  # operator's webhook requires for its default maxMemoryMB of 64 (64Mi plus
+  # 32Mi overhead).
+  - target:
+      group: memcached.c5c3.io
+      version: v1beta1
+      kind: Memcached
+      name: openstack-memcached
+      namespace: openstack
+    patch: |
+      apiVersion: memcached.c5c3.io/v1beta1
+      kind: Memcached
+      metadata:
+        name: openstack-memcached
+        namespace: openstack
+      spec:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 128Mi
