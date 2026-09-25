@@ -393,19 +393,28 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 	// so the ControlPlane's block is projected as it stands.
 	nn.Spec.Gateway = cp.Spec.Services.Neutron.Gateway.DeepCopy()
 
-	// Resolve replicas to the shared operator default, then let an override win.
-	// Assigning unconditionally means clearing services.neutron.replicas reverts
-	// the child to the default instead of leaving the previously-projected value
-	// pinned on the fetched child. The RPC workers carry their own count on the
-	// same terms.
-	nn.Spec.Deployment.Replicas = commonv1.DefaultReplicas
-	if cp.Spec.Services.Neutron.Replicas != nil {
-		nn.Spec.Deployment.Replicas = *cp.Spec.Services.Neutron.Replicas
+	// Project the resolved spec.sizing.neutron onto the API Deployment, the
+	// uWSGI and autoscaling blocks, the RPC worker Deployments and the Job pods.
+	// spec.apiServer is set only when the sizing names a process or thread
+	// count. The worker block sizes the periodic workers and the OVN maintenance
+	// worker alike, and it carries no spread: no single pod selector covers both
+	// Deployments, so the child forbids one there.
+	sizing, err := r.effectiveSizing(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving sizing: %w", err)
 	}
-	nn.Spec.Workers.Deployment.Replicas = commonv1.DefaultReplicas
-	if cp.Spec.Services.Neutron.WorkerReplicas != nil {
-		nn.Spec.Workers.Deployment.Replicas = *cp.Spec.Services.Neutron.WorkerReplicas
+	var nnSizing c5c3v1alpha1.NeutronSizingSpec
+	if sizing.Neutron != nil {
+		nnSizing = *sizing.Neutron
 	}
+	uwsgi, autoscaling := projectAPI(&nn.Spec.Deployment, sizing.PodPlacementSpec, nnSizing.API,
+		neutronv1alpha1.APIPodSelector(nn.Name))
+	if uwsgi != nil {
+		nn.Spec.APIServer = &neutronv1alpha1.APIServerSpec{UWSGI: uwsgi}
+	}
+	nn.Spec.Autoscaling = autoscaling
+	projectScaled(&nn.Spec.Workers.Deployment, sizing.PodPlacementSpec, nnSizing.Workers, commonv1.DefaultReplicas)
+	nn.Spec.Jobs = projectJobs(nnSizing.Jobs)
 
 	// The shared bus reaches the child as a BROWNFIELD secretRef naming the Secret
 	// reconcileServiceMessaging wrote beside it: the neutron operator resolves
@@ -452,9 +461,10 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 		}
 	}
 
-	// spec.apiServer, spec.ovnDBSync, spec.networkPolicy, spec.autoscaling and
-	// spec.logging are deliberately NOT set, the Placement posture: the child-side
-	// defaults stay authoritative, and tuning them stays a standalone-CR concern.
+	// spec.ovnDBSync, spec.networkPolicy and spec.logging stay unprojected with
+	// the graceful-termination timings, the rollout strategy and affinity: the
+	// child-side defaults stay authoritative, and tuning them stays a
+	// standalone-CR concern.
 
 	res, err := commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp,
 		commonreconcile.ChildProjectionParams[*neutronv1alpha1.Neutron]{

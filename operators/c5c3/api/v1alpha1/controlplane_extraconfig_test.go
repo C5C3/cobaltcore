@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
-	"k8s.io/utils/ptr"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
@@ -487,7 +486,9 @@ func TestControlPlaneExtraConfigCatalogInputsChanged_Neutron(t *testing.T) {
 			oldCP: neutronControlPlane(),
 			newCP: func() *ControlPlane {
 				cp := neutronControlPlane()
-				cp.Spec.Services.Neutron.Replicas = ptr.To(int32(5))
+				cp.Spec.Sizing = &ControlPlaneSizingSpec{SizingSpec: SizingSpec{
+					Neutron: &NeutronSizingSpec{API: &APISizingSpec{DeploymentSizingSpec: deploymentReplicas(5)}},
+				}}
 				return cp
 			}(),
 			expected: false,
@@ -714,7 +715,9 @@ func TestControlPlaneExtraConfigCatalogInputsChanged_Cinder(t *testing.T) {
 			oldCP: cinderControlPlane(),
 			newCP: func() *ControlPlane {
 				cp := cinderControlPlane()
-				cp.Spec.Services.Cinder.Replicas = ptr.To(int32(5))
+				cp.Spec.Sizing = &ControlPlaneSizingSpec{SizingSpec: SizingSpec{
+					Cinder: &CinderSizingSpec{API: &APISizingSpec{DeploymentSizingSpec: deploymentReplicas(5)}},
+				}}
 				return cp
 			}(),
 			expected: false,
@@ -1111,7 +1114,9 @@ func TestControlPlaneExtraConfigCatalogInputsChanged_Nova(t *testing.T) {
 			oldCP: novaControlPlane(),
 			newCP: func() *ControlPlane {
 				cp := novaControlPlane()
-				cp.Spec.Services.Nova.Replicas = ptr.To(int32(5))
+				cp.Spec.Sizing = &ControlPlaneSizingSpec{SizingSpec: SizingSpec{
+					Nova: &NovaSizingSpec{API: &APISizingSpec{DeploymentSizingSpec: deploymentReplicas(5)}},
+				}}
 				return cp
 			}(),
 			expected: false,

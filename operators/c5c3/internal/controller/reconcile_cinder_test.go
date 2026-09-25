@@ -1477,7 +1477,7 @@ func TestReconcileCinder_GatewayNilClears(t *testing.T) {
 func TestReconcileCinder_ReplicasOverrideAndRevert(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := cinderControlPlane()
-	cp.Spec.Services.Cinder.Replicas = ptr.To(int32(5))
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Cinder: &c5c3v1alpha1.CinderSizingSpec{API: apiReplicas(5)}})
 	r := newCinderTestReconciler(t, cp)
 	ctx := context.Background()
 
@@ -1485,7 +1485,7 @@ func TestReconcileCinder_ReplicasOverrideAndRevert(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedCinder(t, r.Client, cp).Spec.API.Deployment.Replicas).To(Equal(int32(5)))
 
-	cp.Spec.Services.Cinder.Replicas = nil
+	cp.Spec.Sizing = nil
 	_, err = r.reconcileCinder(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedCinder(t, r.Client, cp).Spec.API.Deployment.Replicas).To(Equal(commonv1.DefaultReplicas),
@@ -2529,4 +2529,56 @@ func TestReconcileCinder_MirrorStoreLookupFailurePropagates(t *testing.T) {
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCinderReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+}
+
+// TestReconcileCinder_NoSizingProjectsTodaysChild pins the no-roll guarantee:
+// the API at three, the scheduler, volume and backup at one, and nothing else.
+func TestReconcileCinder_NoSizingProjectsTodaysChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cinderControlPlane()
+	r := newCinderTestReconciler(t, cp)
+
+	_, err := r.reconcileCinder(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	cn := getProjectedCinder(t, r.Client, cp)
+	expectUnsized(g, cn.Spec.API.Deployment, commonv1.DefaultReplicas)
+	expectUnsized(g, cn.Spec.Scheduler.Deployment, 1)
+	expectUnsized(g, cn.Spec.Volume.Deployment, 1)
+	expectUnsized(g, cn.Spec.Backup.Deployment, 1)
+	g.Expect(cn.Spec.API.UWSGI).To(BeNil())
+	g.Expect(cn.Spec.Autoscaling).To(BeNil())
+	g.Expect(cn.Spec.Jobs).To(BeNil())
+}
+
+// TestReconcileCinder_SizingProjectsComponents projects Minimal plus overrides
+// and finds each on the child field it sizes. The volume and backup
+// Deployments keep their one replica.
+func TestReconcileCinder_SizingProjectsComponents(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cinderControlPlane()
+	scheduler := deploymentReplicas(2)
+	scheduler.SpreadConstraints = hostSpread()
+	cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{Cinder: &c5c3v1alpha1.CinderSizingSpec{
+		API:       &c5c3v1alpha1.APISizingSpec{ProcessSizingSpec: c5c3v1alpha1.ProcessSizingSpec{Processes: ptr.To[int32](3)}},
+		Scheduler: &scheduler,
+		Volume: &c5c3v1alpha1.PinnedSizingSpec{PodPlacementSpec: c5c3v1alpha1.PodPlacementSpec{
+			NodeSelector: map[string]string{"storage": "nfs"},
+		}},
+	}})
+	r := newCinderTestReconciler(t, cp)
+
+	_, err := r.reconcileCinder(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	cn := getProjectedCinder(t, r.Client, cp)
+	g.Expect(cn.Spec.API.Deployment.Replicas).To(Equal(int32(1)))
+	g.Expect(cn.Spec.API.UWSGI).To(Equal(&commonv1.UWSGISpec{Processes: 3, Threads: 1}))
+	g.Expect(cn.Spec.Scheduler.Deployment.Replicas).To(Equal(int32(2)))
+	g.Expect(cn.Spec.Scheduler.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
+		Equal(cinderv1alpha1.SchedulerPodSelector(cn.Name)))
+	g.Expect(cn.Spec.Volume.Deployment.Replicas).To(Equal(int32(1)))
+	g.Expect(cn.Spec.Volume.Deployment.NodeSelector).To(Equal(map[string]string{"storage": "nfs"}))
+	g.Expect(cn.Spec.Volume.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(cn.Spec.Backup.Deployment.Replicas).To(Equal(int32(1)))
+	g.Expect(cn.Spec.Backup.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(cn.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
 }

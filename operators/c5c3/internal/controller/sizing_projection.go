@@ -137,6 +137,26 @@ func projectAPI(
 	return projectUWSGI(processes), autoscaling.DeepCopy()
 }
 
+// projectWorker projects an RPC worker component onto its Deployment d and
+// returns the worker count the caller places on the child, or nil to leave
+// the child's own default in force.
+func projectWorker(
+	d *commonv1.DeploymentSpec, top c5c3v1alpha1.PodPlacementSpec, w *c5c3v1alpha1.WorkerSizingSpec,
+	defaultReplicas int32, selector map[string]string,
+) *int32 {
+	var deployment *c5c3v1alpha1.DeploymentSizingSpec
+	var workers *int32
+	if w != nil {
+		deployment = &w.DeploymentSizingSpec
+		workers = w.Workers
+	}
+	projectDeployment(d, top, deployment, defaultReplicas, selector)
+	if workers == nil {
+		return nil
+	}
+	return ptr.To(*workers)
+}
+
 // projectUWSGI returns the uWSGI block of a process sizing, or nil when it
 // sets neither count. A count it leaves unset stays zero, which the child's
 // defaulting fills.
