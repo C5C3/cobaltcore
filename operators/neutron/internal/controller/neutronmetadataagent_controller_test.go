@@ -203,6 +203,106 @@ func TestReconcileAgent_TerminatingCR_TargetNotEngagedYetKeepsFinalizer(t *testi
 	g.Expect(cond.Message).To(ContainSubstring("not-engaged-yet-agent"))
 }
 
+// The metadata shared-secret copy is reaped before the sweep releases the
+// finalizer, so a reap the target refuses fails the pass and keeps the
+// finalizer: once it is gone, nothing on this agent's side would reap the copy.
+func TestReconcileAgent_TerminatingCR_ReapFailureKeepsFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r, _ := terminatingRemoteAgent(t)
+	target := neutronFakeClientBuilder().
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, isSecrets := list.(*corev1.SecretList); isSecrets {
+					return apierrors.NewForbidden(corev1.Resource("secrets"), "", nil)
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).Build()
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{Client: target})
+
+	_, err := r.Reconcile(context.Background(), agentRequest)
+
+	g.Expect(err).To(MatchError(ContainSubstring("listing metadata shared-secret mirrors in namespace")))
+	g.Expect(getAgent(t, r.Client).Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer),
+		"a failed reap must keep the finalizer so the next pass retries")
+}
+
+// A target abandoned past the window cannot be reached, so the reap is skipped
+// and the sweep releases the finalizer as it would without a copy.
+func TestReconcileAgent_TerminatingCR_AbandonedTargetSkipsTheReap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	abandonAfter := commonmulticluster.AbandonAfter
+	t.Cleanup(func() { commonmulticluster.AbandonAfter = abandonAfter })
+	commonmulticluster.AbandonAfter = time.Millisecond
+
+	cr := validAgent()
+	// Named for this test alone: the abandon window is tracked per cluster name
+	// in a process-global map.
+	cr.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "deregistered-agent-reap"}
+	cr.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer}
+	deletedAt := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	cr.DeletionTimestamp = &deletedAt
+	agentLists := 0
+	r := &NeutronMetadataAgentReconciler{
+		Client: neutronFakeClientBuilder(cr).
+			WithInterceptorFuncs(interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if _, isAgents := list.(*neutronv1alpha1.NeutronMetadataAgentList); isAgents {
+						agentLists++
+					}
+					return c.List(ctx, list, opts...)
+				},
+			}).Build(),
+		Scheme:   testScheme(),
+		Recorder: record.NewFakeRecorder(50),
+		Resolver: unresolvableResolver{},
+	}
+
+	ctx := context.Background()
+	_, err := r.Reconcile(ctx, agentRequest)
+	g.Expect(err).NotTo(HaveOccurred())
+	time.Sleep(10 * commonmulticluster.AbandonAfter)
+
+	_, err = r.Reconcile(ctx, agentRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(agentLists).To(BeZero(), "no reap may run against an abandoned target")
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, agentRequest.NamespacedName, &neutronv1alpha1.NeutronMetadataAgent{}))).
+		To(BeTrue(), "the sweep releases the finalizer")
+}
+
+// A local agent gets no copy and carries no remote-children finalizer, so its
+// deletion pass reads neither Secrets nor agents for a reap.
+func TestReconcileAgent_TerminatingLocalCRRunsNoReap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := validAgent()
+	cr.Finalizers = []string{"foreign.example.com/keep-alive"}
+	deletedAt := metav1.NewTime(time.Now())
+	cr.DeletionTimestamp = &deletedAt
+	lists := 0
+	r := &NeutronMetadataAgentReconciler{
+		Client: neutronFakeClientBuilder(cr).
+			WithInterceptorFuncs(interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					switch list.(type) {
+					case *corev1.SecretList, *neutronv1alpha1.NeutronMetadataAgentList:
+						lists++
+					}
+					return c.List(ctx, list, opts...)
+				},
+			}).Build(),
+		Scheme:   testScheme(),
+		Recorder: record.NewFakeRecorder(50),
+	}
+
+	res, err := r.Reconcile(context.Background(), agentRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(lists).To(BeZero(), "a local agent's teardown runs no reap")
+	g.Expect(getAgent(t, r.Client).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
+}
+
 // The whole pipeline of a local CR whose chassis and central have resolved: the
 // config ConfigMap and the DaemonSet are projected, and the aggregate turns True
 // because a DaemonSet that selects no node has nothing left to roll out.
