@@ -1568,6 +1568,15 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 			r.novaComputeToControlPlaneMapper,
 		), mcbuilder.WithPredicates(novaComputeMembershipPredicate()), engageLocal, engageNoProviders)
 	}
+	// NeutronMetadataAgent CRs are user-authored and only read, for the clusters
+	// the metadata shared secret is copied to. The predicate narrows the leg to
+	// agents arriving, leaving, or re-pointing their shared secret: an agent's
+	// status writes must not reconcile the plane.
+	if isServed(&neutronv1alpha1.NeutronMetadataAgent{}) {
+		b = b.Watches(&neutronv1alpha1.NeutronMetadataAgent{}, commonmulticluster.LocalRequests(
+			r.neutronMetadataAgentToControlPlaneMapper,
+		), mcbuilder.WithPredicates(neutronMetadataAgentDeliveryPredicate()), engageLocal, engageNoProviders)
+	}
 
 	if len(missing) > 0 {
 		msgs := make([]string, 0, len(missing))
