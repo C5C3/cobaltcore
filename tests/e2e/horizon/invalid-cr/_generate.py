@@ -53,7 +53,7 @@ metadata:
   namespace: openstack
 spec:
   deployment:
-    replicas: 1
+{deployment}
   image:
 {image}
   cache:
@@ -63,6 +63,8 @@ spec:
     name: {secret_key_name}
     key: secret-key
 {extra}"""
+
+VALID_DEPLOYMENT = "    replicas: 1"
 
 VALID_IMAGE = """\
     repository: ghcr.io/c5c3/horizon
@@ -82,6 +84,7 @@ class Fixture:
     filename: str
     comment: str
     name: str
+    deployment: str = VALID_DEPLOYMENT
     image: str = VALID_IMAGE
     cache: str = VALID_CACHE
     endpoint: str = VALID_ENDPOINT
@@ -91,6 +94,7 @@ class Fixture:
     def render(self) -> str:
         body = SCAFFOLD.format(
             name=self.name,
+            deployment=self.deployment,
             image=self.image,
             cache=self.cache,
             endpoint=self.endpoint,
@@ -239,6 +243,38 @@ FIXTURES: tuple[Fixture, ...] = (
         extra=(
             "  targetClusterRef:\n"
             '    name: ""\n'
+        ),
+    ),
+    Fixture(
+        filename="12-deployment-nodeselector-invalid-key.yaml",
+        comment=(
+            "spec.deployment.nodeSelector with the key \"bad key\" is not a qualified label\n"
+            "name. The schema admits any string key on the map, so the validating\n"
+            "webhook (validation.NodeSelectorLabels) is the only gate before the\n"
+            "rendered pod template reaches the API server and is refused there."
+        ),
+        name="horizon-invalid-nodeselector",
+        deployment=(
+            "    replicas: 1\n"
+            "    nodeSelector:\n"
+            '      "bad key": x'
+        ),
+    ),
+    Fixture(
+        filename="13-deployment-toleration-empty-key-equal.yaml",
+        comment=(
+            "spec.deployment.tolerations[0] with no key and the operator Equal: an empty\n"
+            "key only means \"match all keys\" with Exists. The schema has no rule for it\n"
+            "on the embedded upstream Toleration, so the validating webhook\n"
+            "(validation.Tolerations) is the only gate before the rendered pod template\n"
+            "reaches the API server and is refused there."
+        ),
+        name="horizon-invalid-toleration",
+        deployment=(
+            "    replicas: 1\n"
+            "    tolerations:\n"
+            "    - operator: Equal\n"
+            "      value: x"
         ),
     ),
 )

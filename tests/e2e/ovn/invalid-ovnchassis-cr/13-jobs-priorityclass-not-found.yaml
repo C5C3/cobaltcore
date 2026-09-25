@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.jobs.priorityClassName naming a PriorityClass that does not exist is
+# rejected by the validating webhook alone (validation.PriorityClassExists):
+# the object is cluster-scoped, so no marker can express the reference. The
+# webhook resolves it through the operator's uncached API reader, as the
+# operator's ServiceAccount, so a missing get grant on
+# scheduling.k8s.io/priorityclasses would surface as an Internal error
+# instead of Not found: the step also pins the operator's RBAC.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  jobs:
+    priorityClassName: ovn-invalid-missing-priority-class

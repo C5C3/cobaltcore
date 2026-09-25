@@ -708,6 +708,57 @@ FIXTURES: tuple[Fixture, ...] = (
             '    name: ""\n'
         ),
     ),
+    Fixture(
+        filename="36-deployment-nodeselector-invalid-key.yaml",
+        comment=(
+            "spec.deployment.nodeSelector with the key \"bad key\" is not a qualified label\n"
+            "name. The schema admits any string key on the map, so the validating\n"
+            "webhook (validation.NodeSelectorLabels) is the only gate before the\n"
+            "rendered pod template reaches the API server and is refused there."
+        ),
+        name="placement-invalid-nodeselector",
+        deployment=(
+            "    replicas: 1\n"
+            "    nodeSelector:\n"
+            '      "bad key": x'
+        ),
+    ),
+    Fixture(
+        filename="37-jobs-resources-request-above-limit.yaml",
+        comment=(
+            "A spec.jobs.resources memory request above its limit is rejected by the\n"
+            "validating webhook alone (validation.RequestsWithinLimits):\n"
+            "ResourceRequirements is an embedded upstream type carrying no cross-field\n"
+            "marker, so admission is the only gate before the rendered Job and CronJob\n"
+            "pod templates reach the API server and are refused there."
+        ),
+        name="placement-invalid-jobs-resources",
+        extra=(
+            "  jobs:\n"
+            "    resources:\n"
+            "      requests:\n"
+            "        memory: 1Gi\n"
+            "      limits:\n"
+            "        memory: 512Mi\n"
+        ),
+    ),
+    Fixture(
+        filename="38-deployment-toleration-empty-key-equal.yaml",
+        comment=(
+            "spec.deployment.tolerations[0] with no key and the operator Equal: an empty\n"
+            "key only means \"match all keys\" with Exists. The schema has no rule for it\n"
+            "on the embedded upstream Toleration, so the validating webhook\n"
+            "(validation.Tolerations) is the only gate before the rendered pod template\n"
+            "reaches the API server and is refused there."
+        ),
+        name="placement-invalid-toleration",
+        deployment=(
+            "    replicas: 1\n"
+            "    tolerations:\n"
+            "    - operator: Equal\n"
+            "      value: x"
+        ),
+    ),
 )
 
 

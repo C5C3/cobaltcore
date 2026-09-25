@@ -1613,6 +1613,9 @@ is pinned by a Chainsaw step.
 | `prestop-not-less-than-grace-rejected` | `18-prestop-not-less-than-grace.yaml` | drain window preStop < TGPS (CEL) | Error containing "preStopSleepSeconds" and "terminationGracePeriodSeconds" |
 | `publicendpoint-not-url-rejected` | `19-publicendpoint-not-url.yaml` | BootstrapSpec.PublicEndpoint Pattern | Error containing "publicEndpoint" |
 | `perloggerlevels-invalid-value-rejected` | `20-perloggerlevels-invalid-value.yaml` | perLoggerLevels value enum (CEL) | Error containing "perLoggerLevels" |
+| `deployment-nodeselector-invalid-key-rejected` | `27-deployment-nodeselector-invalid-key.yaml` | `spec.deployment.nodeSelector` label grammar (webhook) | Error containing "spec.deployment.nodeSelector" and "Invalid value" |
+| `jobs-resources-request-above-limit-rejected` | `28-jobs-resources-request-above-limit.yaml` | `spec.jobs.resources` request within limit (webhook) | Error containing "spec.jobs.resources.requests.memory", "Invalid value" and "memory request must not exceed limit" |
+| `deployment-toleration-empty-key-equal-rejected` | `29-deployment-toleration-empty-key-equal.yaml` | `spec.deployment.tolerations` empty key requires `Exists` (webhook) | Error containing "spec.deployment.tolerations[0].operator", "Invalid value" and "operator must be Exists when" |
 
 Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
 so each is applied as an UPDATE of the base CR and is rejected by the
