@@ -607,7 +607,7 @@ Validates Helm chart structure, template rendering, and unit tests for every
 operator chart and the operator-library testbed without requiring a cluster.
 Verifies the generated `values.schema.json` and `_rbac-rules.tpl` files are in
 sync with their sources, vendors the shared `operator-library` subchart, then
-runs `helm lint`, `helm template` with five value override scenarios, and
+runs `helm lint`, `helm template` with six value override scenarios, and
 `helm unittest` for each chart to catch regressions at PR time. The chart list
 is the `operators/*/helm/*-operator` and `operators/*/helm/*-testbed` globs, so
 a new operator chart in that layout is validated without editing the job.
@@ -625,7 +625,7 @@ a new operator chart in that layout is validated without editing the job.
 | 5 | `make verify-helm-rbac` | Fails if any chart's `templates/_rbac-rules.tpl` has drifted from its committed `config/rbac/role.yaml` |
 | 6 | `make helm-deps` | Vendors the `operator-library` subchart into each consumer chart's `charts/` |
 | 7 | `helm lint` | Validates chart structure and syntax for every chart |
-| 8 | `helm template` (5 scenarios) | Renders each chart with value overrides to catch broken conditionals and invalid YAML |
+| 8 | `helm template` (6 scenarios) | Renders each chart with value overrides to catch broken conditionals and invalid YAML |
 | 9 | `helm unittest` | Runs the unit test suites under each chart's `tests/` directory |
 
 **Template scenarios (step 8), run against each chart:**
@@ -637,6 +637,7 @@ a new operator chart in that layout is validated without editing the job.
 | 3 — external service account | `serviceAccount.create=false`, `serviceAccount.name=existing-sa` | Validates ServiceAccount conditional logic |
 | 4 — custom resources | `resources.limits.cpu=100m`, `resources.limits.memory=64Mi` | Validates resource override wiring |
 | 5 — namespace-scoped RBAC | `rbac.namespaceScoped=true`, `webhook.enabled=false` | Validates Role/RoleBinding rendering instead of ClusterRole/ClusterRoleBinding. A chart that refuses the mode by design (ovn-operator, neutron-operator) fails the render with the documented `is not supported by <chart>` message, which the job accepts; any other failure fails the job |
+| 6 — node placement | `priorityClassName=cobaltcore-platform`, `nodeSelector.role=platform`, one `tolerations` entry | Validates that the generated schema admits the placement keys and that they render |
 
 **Unit test suites (step 9):** the shared templates are tested once, in the
 operator-library testbed (`operators/shared/helm/operator-library-testbed/tests/`);
@@ -644,7 +645,7 @@ each operator chart's own `tests/` suites cover what that chart adds.
 
 | Chart | Test File | Key Assertions |
 | --- | --- | --- |
-| testbed | `deployment_test.yaml` | Image, replicas, resources, securityContext, probes, args, `extraArgs`/`extraEnv`, conditional webhook volume mount |
+| testbed | `deployment_test.yaml` | Image, replicas, resources, `nodeSelector`/`tolerations`/`priorityClassName`, securityContext, probes, args, `extraArgs`/`extraEnv`, conditional webhook volume mount |
 | testbed | `networkpolicy_test.yaml`, `certificate_test.yaml`, `service_test.yaml`, `serviceaccount_test.yaml`, `clusterrolebinding_test.yaml`, `rolebinding_test.yaml`, `pdb_test.yaml`, `servicemonitor_test.yaml`, `release_namespace_test.yaml` | The shared manifests, their conditionals and the release-namespace threading |
 | testbed | `clusterrole_test.yaml`, `role_test.yaml` | The shared RBAC templates: rendering per scope, the webhook guard, the hook-less default |
 | testbed | `schema_validation_test.yaml` | The shared values schema: type, enum, range, quantity and conditional constraints |
