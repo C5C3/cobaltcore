@@ -272,6 +272,34 @@ func TestReconcileAgent_ChassisNotFoundGatesThePipeline(t *testing.T) {
 	g.Expect(agentCondition(got, conditionTypeDaemonSetReady)).To(BeNil())
 }
 
+// The CA gate holds the pass ahead of the Config and DaemonSet steps: a pod whose
+// volume projects a Secret that does not exist never leaves ContainerCreating,
+// so nothing may be projected while the bundle is missing.
+func TestReconcileAgent_CAWaitProjectsNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr, shared := withNovaMetadataCA("ca.crt") // no CA Secret seeded
+	r := newAgentTestReconciler(cr, shared,
+		readyOVNChassis(testOVNChassisName, testNamespace, testOVNCentralName), agentCentral())
+
+	res, err := r.Reconcile(ctx, agentRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+
+	got := getAgent(t, r.Client)
+	cond := agentCondition(got, "SecretsReady")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForNovaMetadataCA"))
+
+	var configMaps corev1.ConfigMapList
+	g.Expect(r.List(ctx, &configMaps, client.InNamespace(testNamespace))).To(Succeed())
+	g.Expect(configMaps.Items).To(BeEmpty())
+	var daemonSets appsv1.DaemonSetList
+	g.Expect(r.List(ctx, &daemonSets)).To(Succeed())
+	g.Expect(daemonSets.Items).To(BeEmpty())
+}
+
 // TestAgentPipelineSteps_OrderAndNames pins the pipeline: four named steps in
 // dependency order and no parallel group, because each step consumes what the
 // previous one resolved.

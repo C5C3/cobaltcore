@@ -173,6 +173,7 @@ var MetadataAgentOwnedConfigKeys = []config.OwnedKey{
 	{Section: "DEFAULT", Key: "nova_metadata_host", OwnedBy: "spec.novaMetadata.host"},
 	{Section: "DEFAULT", Key: "nova_metadata_port", OwnedBy: "spec.novaMetadata.port"},
 	{Section: "DEFAULT", Key: "nova_metadata_protocol", OwnedBy: "spec.novaMetadata.protocol"},
+	{Section: "DEFAULT", Key: "auth_ca_cert", OwnedBy: "spec.novaMetadata.caBundleSecretRef", Impact: "the operator mounts the CA bundle at this path; another path names a file the pod does not carry"},
 	{Section: "DEFAULT", Key: "metadata_workers", OwnedBy: "spec.metadataWorkers"},
 	// metadata_proxy_shared_secret is env-injected from the referenced Secret, so
 	// a file value is inert at runtime. It is Rejected because rendering it would

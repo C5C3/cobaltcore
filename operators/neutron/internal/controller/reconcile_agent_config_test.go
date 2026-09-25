@@ -134,6 +134,7 @@ func TestReconcileAgentConfig_NovaMetadataKeysFollowTheSpec(t *testing.T) {
 		g.Expect(conf).NotTo(ContainSubstring("nova_metadata_host"))
 		g.Expect(conf).NotTo(ContainSubstring("nova_metadata_port"))
 		g.Expect(conf).NotTo(ContainSubstring("nova_metadata_protocol"))
+		g.Expect(conf).NotTo(ContainSubstring("auth_ca_cert"))
 	})
 
 	t.Run("a block renders both keys", func(t *testing.T) {
@@ -189,6 +190,29 @@ func TestReconcileAgentConfig_NovaMetadataKeysFollowTheSpec(t *testing.T) {
 		conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
 		g.Expect(conf).NotTo(ContainSubstring("nova_metadata_protocol"))
 		g.Expect(conf).To(ContainSubstring("nova_metadata_port = 8775"))
+	})
+
+	t.Run("a CA bundle ref renders auth_ca_cert at the mount", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := withNovaMetadata("shared_secret")
+		cr.Spec.NovaMetadata.Protocol = "https"
+		cr.Spec.NovaMetadata.CABundleSecretRef = &commonv1.SecretRefSpec{Name: "nova-metadata-ca", Key: "bundle.pem"}
+		r, name := renderAgentConfig(t, cr)
+
+		conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
+		g.Expect(conf).To(ContainSubstring("auth_ca_cert = /etc/nova-metadata-ca/ca.crt"))
+	})
+
+	// Without the ref an https agent verifies against the image's default CA
+	// bundle, which is oslo's own behaviour for an unset auth_ca_cert.
+	t.Run("a block without a CA bundle ref renders no auth_ca_cert", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := withNovaMetadata("shared_secret")
+		cr.Spec.NovaMetadata.Protocol = "https"
+		r, name := renderAgentConfig(t, cr)
+
+		conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
+		g.Expect(conf).NotTo(ContainSubstring("auth_ca_cert"))
 	})
 }
 
@@ -385,6 +409,7 @@ func TestAgentOperatorDefaults_RenderEveryOwnedKey(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cr := withNovaMetadata("shared_secret")
 	cr.Spec.NovaMetadata.Protocol = "https"
+	cr.Spec.NovaMetadata.CABundleSecretRef = &commonv1.SecretRefSpec{Name: "nova-metadata-ca"}
 	cr.Spec.Messaging = &commonv1.MessagingSpec{
 		ClusterRef: &corev1.LocalObjectReference{Name: testRabbitmqClusterName},
 		TLS:        &commonv1.MessagingTLSSpec{CABundleSecretRef: commonv1.SecretRefSpec{Name: "rabbitmq-ca"}},
@@ -449,4 +474,52 @@ func TestReconcileAgentConfig_MetadataWorkersOverrideIsReported(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Message).To(ContainSubstring("[DEFAULT] metadata_workers"))
+}
+
+// auth_ca_cert is owned but honored: an agent that sets it through extraConfig
+// keeps its value, since extraConfig is merged last, and is told that the key
+// follows spec.novaMetadata.caBundleSecretRef.
+func TestReconcileAgentConfig_AuthCACertOverrideIsReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := withNovaMetadata("shared_secret")
+	cr.Spec.NovaMetadata.Protocol = "https"
+	cr.Spec.NovaMetadata.CABundleSecretRef = &commonv1.SecretRefSpec{Name: "nova-metadata-ca"}
+	cr.Spec.ExtraConfig = map[string]map[string]string{
+		"DEFAULT": {"auth_ca_cert": "/etc/ssl/certs/ca-certificates.crt"},
+	}
+	r, name := renderAgentConfig(t, cr)
+
+	conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
+	g.Expect(conf).To(ContainSubstring("auth_ca_cert = /etc/ssl/certs/ca-certificates.crt"))
+	g.Expect(conf).NotTo(ContainSubstring(novaMetadataCAFilePath))
+
+	cond := agentCondition(cr, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+	g.Expect(cond.Message).To(ContainSubstring("[DEFAULT] auth_ca_cert"))
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
+		To(ContainElement(And(
+			ContainSubstring(corev1.EventTypeWarning),
+			ContainSubstring(config.EventReasonExtraConfigOwnedKeyOverride),
+		)))
+}
+
+// nova_metadata_insecure has no typed field, so an extraConfig value is rendered
+// and is no override of anything the operator owns.
+func TestReconcileAgentConfig_InsecureOverrideStaysHealthy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := withNovaMetadata("shared_secret")
+	cr.Spec.NovaMetadata.Protocol = "https"
+	cr.Spec.ExtraConfig = map[string]map[string]string{"DEFAULT": {"nova_metadata_insecure": "true"}}
+	r, name := renderAgentConfig(t, cr)
+
+	g.Expect(renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]).
+		To(ContainSubstring("nova_metadata_insecure = true"))
+
+	cond := agentCondition(cr, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(BeEmpty())
 }
