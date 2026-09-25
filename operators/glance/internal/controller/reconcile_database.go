@@ -17,6 +17,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/job"
 	"github.com/c5c3/cobaltcore/internal/common/release"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
@@ -282,9 +283,15 @@ func checkImageReleaseMismatch(glance *glancev1alpha1.Glance) (ctrl.Result, bool
 // the config-free image, so the db-sync Job passes this path explicitly.
 const glanceMetadefsSourcePath = "/var/lib/openstack/etc/glance/metadefs"
 
+// glanceJobPod resolves the pod settings of every Glance Job and CronJob:
+// spec.jobs, with spec.deployment as the fallback.
+func glanceJobPod(glance *glancev1alpha1.Glance) job.PodSettings {
+	return job.ResolvePodSettings(glance.Spec.Jobs, &glance.Spec.Deployment)
+}
+
 // glanceJobSetParams derives the shared migration-Job inputs from the Glance CR:
-// the config mount, the DB-connection env override, and the glance-manage db
-// sync command. The steady-state sync flow (database.ReconcileSyncJobs) and the
+// the config mount, the DB-connection env override, the Job pod settings, and
+// the glance-manage db sync command. The steady-state sync flow (database.ReconcileSyncJobs) and the
 // upgrade-phase builders (upgradeFlowParams.BuildPhaseJob) both consume it;
 // centralising it here lets tests build the identical Job.
 func glanceJobSetParams(glance *glancev1alpha1.Glance, configMapName string) database.JobSetParams {
@@ -297,6 +304,7 @@ func glanceJobSetParams(glance *glancev1alpha1.Glance, configMapName string) dat
 		// Override [database].connection via the oslo.config env-var so db-sync
 		// reads the DB URL from the derived Secret instead of the ConfigMap.
 		Env: []corev1.EnvVar{database.ConnectionEnvVar(glance.Name)},
+		Pod: glanceJobPod(glance),
 		// After the schema migration, load the default metadata-definitions
 		// catalog — the managed counterpart of the classic deployment's
 		// `glance-manage db_load_metadefs` step. Without it GET

@@ -604,14 +604,14 @@ done
 // no service-user password, and no backends Secret mount. They make no network
 // calls either, so the NetworkPolicy needs no rule for them.
 //
-// Its resources are fixed modest constants for a prune loop over a pod-local
-// directory, the same shape keystone's federation-proxy sidecar uses; a spec
-// knob is deferred until a deployment demonstrates the need. The requests are
-// mandatory rather than cosmetic: the HPA's Resource metric aggregates across
-// every container in the pod, so one container without a cpu request makes the
-// whole metric unavailable (FailedGetResourceMetric) and silently freezes
-// autoscaling, and a namespace ResourceQuota on requests.cpu rejects the pod
-// outright.
+// Its resources come from spec.imageCache.maintenanceResources, resolved per
+// resource with the sidecar defaults keystone's federation-proxy sidecar also
+// uses: a 25m CPU request and 256Mi memory. The per-resource rule always
+// leaves a CPU request, and the requests are mandatory rather than cosmetic:
+// the HPA's Resource metric aggregates across every container in the pod, so
+// one container without a cpu request makes the whole metric unavailable
+// (FailedGetResourceMetric) and silently freezes autoscaling, and a namespace
+// ResourceQuota on requests.cpu rejects the pod outright.
 func cacheMaintenanceContainer(glance *glancev1alpha1.Glance, imageCache *glancev1alpha1.ImageCacheSpec) corev1.Container {
 	script := fmt.Sprintf(
 		cacheMaintenanceScript,
@@ -627,15 +627,7 @@ func cacheMaintenanceContainer(glance *glancev1alpha1.Glance, imageCache *glance
 		Image:           glance.Spec.Image.Reference(),
 		Command:         []string{"/bin/sh", "-eu", "-c", script},
 		SecurityContext: deployment.RestrictedSecurityContext(),
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("25m"),
-				corev1.ResourceMemory: resource.MustParse("64Mi"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
-			},
-		},
+		Resources:       commonv1.WithSidecarResourceDefaults(imageCache.MaintenanceResources),
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: configVolumeName, MountPath: glanceConfigDir, ReadOnly: true},
 			{Name: imageCacheVolumeName, MountPath: glanceImageCachePath},

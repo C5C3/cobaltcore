@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -71,6 +72,16 @@ type GlanceSpec struct {
 	// scheduling constraints).
 	// +optional
 	Deployment DeploymentSpec `json:"deployment,omitempty"`
+
+	// Jobs sizes, prioritizes and places the pods of the db-sync Job, the
+	// db-expand, db-migrate and db-contract upgrade phases, and the db-purge
+	// CronJob. A field left unset falls back to spec.deployment: the priority
+	// class, the node selector, the tolerations, and the node affinity (never
+	// the pod (anti-)affinity). An empty value opts out of the fallback. Unset
+	// resources default to a 100m CPU request and 368Mi memory as request and
+	// limit.
+	// +optional
+	Jobs *commonv1.JobSpec `json:"jobs,omitempty"`
 
 	// Image defines the Glance container image reference. Like the sibling
 	// operators, the field carries no immutability rule — image upgrades are
@@ -776,6 +787,16 @@ type ImageCacheSpec struct {
 	// path.
 	// +optional
 	MaintenanceInterval *metav1.Duration `json:"maintenanceInterval,omitempty"`
+
+	// MaintenanceResources defines the CPU and memory requests and limits of
+	// the cache-maintenance sidecar, resolved per resource: a CPU the block
+	// names neither as request nor as limit gets a 25m request and no limit,
+	// and a memory it names neither way gets 256Mi as both request and limit.
+	// A resource the block names is used as written. The CPU request is always
+	// present, because the HPA's Resource metric needs a request on every
+	// container of the pod.
+	// +optional
+	MaintenanceResources *corev1.ResourceRequirements `json:"maintenanceResources,omitempty"`
 }
 
 // GlanceStatus defines the observed state of Glance.

@@ -1126,3 +1126,40 @@ func TestBuildGlanceDeployment_RendersResourceDefaults(t *testing.T) {
 		})
 	}
 }
+
+// The cache-maintenance sidecar renders the sidecar defaults when
+// spec.imageCache.maintenanceResources is unset, and a block that names only a
+// memory limit keeps it, gains no memory request, and gets the 25m CPU
+// request the HPA needs.
+func TestCacheMaintenanceContainer_Resources(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   *corev1.ResourceRequirements
+		want corev1.ResourceRequirements
+	}{
+		{
+			name: "defaults",
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+			},
+		},
+		{
+			name: "limit only",
+			in:   &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")}},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			glance := deployGlance("2026.1")
+			glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{MaintenanceResources: tc.in}
+
+			container := cacheMaintenanceContainer(glance, effectiveImageCache(glance.Spec.ImageCache))
+			g.Expect(container.Resources).To(Equal(tc.want))
+		})
+	}
+}

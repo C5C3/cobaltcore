@@ -10,6 +10,7 @@ package v1alpha1
 
 import (
 	"github.com/c5c3/cobaltcore/internal/common/types"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
@@ -251,6 +252,11 @@ func (in *GlanceRefSpec) DeepCopy() *GlanceRefSpec {
 func (in *GlanceSpec) DeepCopyInto(out *GlanceSpec) {
 	*out = *in
 	in.Deployment.DeepCopyInto(&out.Deployment)
+	if in.Jobs != nil {
+		in, out := &in.Jobs, &out.Jobs
+		*out = new(types.JobSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	out.Image = in.Image
 	in.Database.DeepCopyInto(&out.Database)
 	in.Cache.DeepCopyInto(&out.Cache)
@@ -398,6 +404,11 @@ func (in *ImageCacheSpec) DeepCopyInto(out *ImageCacheSpec) {
 		in, out := &in.MaintenanceInterval, &out.MaintenanceInterval
 		*out = new(v1.Duration)
 		**out = **in
+	}
+	if in.MaintenanceResources != nil {
+		in, out := &in.MaintenanceResources, &out.MaintenanceResources
+		*out = new(corev1.ResourceRequirements)
+		(*in).DeepCopyInto(*out)
 	}
 }
 

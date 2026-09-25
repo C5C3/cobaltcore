@@ -346,5 +346,6 @@ func dbPurgeCronJob(glance *glancev1alpha1.Glance, configMapName string) *batchv
 		podSpec.Volumes = append(podSpec.Volumes, tlsVol)
 		podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, tlsMount)
 	}
+	glanceJobPod(glance).Apply(&cronJob.Spec.JobTemplate.Spec.Template.Spec)
 	return cronJob
 }

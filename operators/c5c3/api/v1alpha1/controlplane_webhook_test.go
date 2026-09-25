@@ -3452,6 +3452,27 @@ func TestValidateCreate_RejectsGlanceImageCacheMaintenanceInterval(t *testing.T)
 	}
 }
 
+// TestValidateCreate_RejectsGlanceImageCacheMaintenanceResources covers the
+// request-within-limit rule of the shared validator on the sidecar's
+// resources: services.glance.imageCache is projected verbatim, so the
+// ControlPlane must refuse what the Glance webhook refuses.
+func TestValidateCreate_RejectsGlanceImageCacheMaintenanceResources(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.ImageCache = &glancev1alpha1.ImageCacheSpec{
+		MaintenanceResources: &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.glance.imageCache.maintenanceResources.requests.cpu"))
+	g.Expect(err.Error()).To(ContainSubstring("cpu request must not exceed limit (1)"))
+}
+
 // TestValidateCreate_AcceptsGlanceImageCache pins the positive half: a block
 // clearing both floors is admitted, and so is an empty one, which is how a
 // ControlPlane asks for the cache with the glance operator's own defaults.
