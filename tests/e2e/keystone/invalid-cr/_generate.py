@@ -724,6 +724,60 @@ FIXTURES: list[Fixture] = [
 # Admission must reject this CR with an $error referencing the substring
 # "targetClusterRef.name".""",
     ),
+    Fixture(
+        filename="27-deployment-nodeselector-invalid-key.yaml",
+        name="invalid-deployment-nodeselector",
+        deployment_extra=(
+            "    nodeSelector:\n"
+            '      "bad key": x\n'
+        ),
+        comment="""\
+# Keystone CR whose spec.deployment.nodeSelector carries the key "bad key",
+# which is not a qualified label name. The schema admits any string key on the
+# map, so the validating webhook (validation.NodeSelectorLabels) is the only
+# gate before the rendered pod template reaches the API server and is refused
+# there. Admission must reject this CR with an $error referencing the
+# substrings "spec.deployment.nodeSelector" and "Invalid value".""",
+    ),
+    Fixture(
+        filename="28-jobs-resources-request-above-limit.yaml",
+        name="invalid-jobs-resources",
+        trailing=(
+            "  jobs:\n"
+            "    resources:\n"
+            "      requests:\n"
+            "        memory: 1Gi\n"
+            "      limits:\n"
+            "        memory: 512Mi\n"
+        ),
+        comment="""\
+# Keystone CR whose spec.jobs.resources asks for a 1Gi memory request above its
+# 512Mi limit. ResourceRequirements is an embedded upstream type carrying no
+# cross-field marker, so the validating webhook
+# (validation.RequestsWithinLimits) is the only gate before the rendered Job
+# and CronJob pod templates reach the API server and are refused there.
+# Admission must reject this CR with an $error referencing the substrings
+# "spec.jobs.resources.requests.memory", "Invalid value" and "memory request
+# must not exceed limit".""",
+    ),
+    Fixture(
+        filename="29-deployment-toleration-empty-key-equal.yaml",
+        name="invalid-deployment-toleration",
+        deployment_extra=(
+            "    tolerations:\n"
+            "    - operator: Equal\n"
+            "      value: x\n"
+        ),
+        comment="""\
+# Keystone CR whose spec.deployment.tolerations[0] carries no key and the
+# operator Equal. An empty key only means "match all keys" with Exists, and
+# the schema has no rule for it on the embedded upstream Toleration, so the
+# validating webhook (validation.Tolerations) is the only gate before the
+# rendered pod template reaches the API server and is refused there.
+# Admission must reject this CR with an $error referencing the substrings
+# "spec.deployment.tolerations[0].operator", "Invalid value" and "operator
+# must be Exists when".""",
+    ),
 ]
 
 

@@ -357,3 +357,35 @@ spec:
             ($error != null): true
             (contains($error, 'remoteCompute.keystoneEndpoint')): true
             (contains($error, '^https://')): true
+  # spec.api.deployment.nodeSelector with a key that is not a qualified label name must be
+  # rejected by the validating webhook: the schema admits any string key.
+  - try:
+    - apply:
+        file: 31-api-deployment-nodeselector-invalid-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.api.deployment.nodeSelector')): true
+            (contains($error, 'Invalid value')): true
+  # spec.jobs.resources with a memory request above its limit must be rejected by
+  # the validating webhook: ResourceRequirements carries no cross-field marker.
+  - try:
+    - apply:
+        file: 32-jobs-resources-request-above-limit.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.jobs.resources.requests.memory')): true
+            (contains($error, 'Invalid value')): true
+            (contains($error, 'memory request must not exceed limit')): true
+  # A spec.api.deployment toleration with no key and the operator Equal must be rejected by
+  # the validating webhook: an empty key requires Exists, and no marker says so.
+  - try:
+    - apply:
+        file: 33-api-deployment-toleration-empty-key-equal.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.api.deployment.tolerations[0].operator')): true
+            (contains($error, 'Invalid value')): true
+            (contains($error, 'operator must be Exists when')): true

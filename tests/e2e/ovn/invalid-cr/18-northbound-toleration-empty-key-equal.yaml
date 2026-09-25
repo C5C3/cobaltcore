@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.northbound.tolerations[0] with no key and the operator Equal: an empty
+# key only means "match all keys" with Exists. The schema has no rule for it
+# on the embedded upstream Toleration, so the validating webhook
+# (validation.Tolerations) is the only gate before the rendered pod template
+# reaches the API server and is refused there.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  northbound:
+    tolerations:
+    - operator: Equal
+      value: x

@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A spec.jobs.resources memory request above its limit is rejected by the
+# validating webhook alone (validation.RequestsWithinLimits):
+# ResourceRequirements is an embedded upstream type carrying no cross-field
+# marker, so admission is the only gate before the rendered Job and CronJob
+# pod templates reach the API server and are refused there.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-invalid-jobs-resources
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: glance-service-password
+  jobs:
+    resources:
+      requests:
+        memory: 1Gi
+      limits:
+        memory: 512Mi

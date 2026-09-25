@@ -312,6 +312,52 @@ FIXTURES: tuple[Fixture, ...] = (
             '    name: ""\n'
         ),
     ),
+    Fixture(
+        filename="16-northbound-nodeselector-invalid-key.yaml",
+        comment=(
+            "spec.northbound.nodeSelector with the key \"bad key\" is not a qualified label\n"
+            "name. The schema admits any string key on the map, so the validating\n"
+            "webhook (validation.NodeSelectorLabels) is the only gate before the\n"
+            "rendered pod template reaches the API server and is refused there."
+        ),
+        extra=(
+            "  northbound:\n"
+            "    nodeSelector:\n"
+            '      "bad key": x\n'
+        ),
+    ),
+    Fixture(
+        filename="17-jobs-priorityclass-not-found.yaml",
+        comment=(
+            "spec.jobs.priorityClassName naming a PriorityClass that does not exist is\n"
+            "rejected by the validating webhook alone (validation.PriorityClassExists):\n"
+            "the object is cluster-scoped, so no marker can express the reference. The\n"
+            "webhook resolves it through the operator's uncached API reader, as the\n"
+            "operator's ServiceAccount, so a missing get grant on\n"
+            "scheduling.k8s.io/priorityclasses would surface as an Internal error\n"
+            "instead of Not found: the step also pins the operator's RBAC."
+        ),
+        extra=(
+            "  jobs:\n"
+            "    priorityClassName: ovn-invalid-missing-priority-class\n"
+        ),
+    ),
+    Fixture(
+        filename="18-northbound-toleration-empty-key-equal.yaml",
+        comment=(
+            "spec.northbound.tolerations[0] with no key and the operator Equal: an empty\n"
+            "key only means \"match all keys\" with Exists. The schema has no rule for it\n"
+            "on the embedded upstream Toleration, so the validating webhook\n"
+            "(validation.Tolerations) is the only gate before the rendered pod template\n"
+            "reaches the API server and is refused there."
+        ),
+        extra=(
+            "  northbound:\n"
+            "    tolerations:\n"
+            "    - operator: Equal\n"
+            "      value: x\n"
+        ),
+    ),
 )
 
 

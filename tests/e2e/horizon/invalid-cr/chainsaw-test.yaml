@@ -124,3 +124,24 @@ spec:
             ($error != null): true
             (contains($error, 'targetClusterRef.name')): true
             (contains($error, 'should be at least 1 chars long')): true
+  # spec.deployment.nodeSelector with a key that is not a qualified label name must be
+  # rejected by the validating webhook: the schema admits any string key.
+  - try:
+    - apply:
+        file: 12-deployment-nodeselector-invalid-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.deployment.nodeSelector')): true
+            (contains($error, 'Invalid value')): true
+  # A spec.deployment toleration with no key and the operator Equal must be rejected by
+  # the validating webhook: an empty key requires Exists, and no marker says so.
+  - try:
+    - apply:
+        file: 13-deployment-toleration-empty-key-equal.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.deployment.tolerations[0].operator')): true
+            (contains($error, 'Invalid value')): true
+            (contains($error, 'operator must be Exists when')): true

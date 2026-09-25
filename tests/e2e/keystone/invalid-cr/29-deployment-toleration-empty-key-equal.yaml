@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR whose spec.deployment.tolerations[0] carries no key and the
+# operator Equal. An empty key only means "match all keys" with Exists, and
+# the schema has no rule for it on the embedded upstream Toleration, so the
+# validating webhook (validation.Tolerations) is the only gate before the
+# rendered pod template reaches the API server and is refused there.
+# Admission must reject this CR with an $error referencing the substrings
+# "spec.deployment.tolerations[0].operator", "Invalid value" and "operator
+# must be Exists when".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-deployment-toleration
+spec:
+  deployment:
+    replicas: 3
+    tolerations:
+    - operator: Equal
+      value: x
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

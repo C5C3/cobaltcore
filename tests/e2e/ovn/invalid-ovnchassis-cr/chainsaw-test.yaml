@@ -170,3 +170,14 @@ spec:
             ($error != null): true
             (contains($error, 'targetClusterRef.name')): true
             (contains($error, 'should be at least 1 chars long')): true
+  # spec.jobs.priorityClassName naming a missing PriorityClass must be rejected as
+  # Not found; without the operator's get grant on priorityclasses it would answer
+  # Internal error instead.
+  - try:
+    - apply:
+        file: 13-jobs-priorityclass-not-found.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.jobs.priorityClassName')): true
+            (contains($error, 'Not found')): true

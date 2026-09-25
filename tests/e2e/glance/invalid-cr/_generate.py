@@ -58,7 +58,7 @@ metadata:
 spec:
   openStackRelease: "{release}"
   deployment:
-    replicas: 1
+{deployment}
   image:
 {image}
   database:
@@ -72,6 +72,8 @@ spec:
 {extra}"""
 
 VALID_RELEASE = "2025.2"
+
+VALID_DEPLOYMENT = "    replicas: 1"
 
 VALID_IMAGE = """\
     repository: ghcr.io/c5c3/glance
@@ -99,6 +101,7 @@ class Fixture:
     comment: str
     name: str
     release: str = VALID_RELEASE
+    deployment: str = VALID_DEPLOYMENT
     image: str = VALID_IMAGE
     database: str = VALID_DATABASE
     cache: str = VALID_CACHE
@@ -110,6 +113,7 @@ class Fixture:
         body = SCAFFOLD.format(
             name=self.name,
             release=self.release,
+            deployment=self.deployment,
             image=self.image,
             database=self.database,
             cache=self.cache,
@@ -589,6 +593,57 @@ FIXTURES: tuple[Fixture, ...] = (
         extra=(
             "  targetClusterRef:\n"
             '    name: ""\n'
+        ),
+    ),
+    Fixture(
+        filename="31-deployment-nodeselector-invalid-key.yaml",
+        comment=(
+            "spec.deployment.nodeSelector with the key \"bad key\" is not a qualified label\n"
+            "name. The schema admits any string key on the map, so the validating\n"
+            "webhook (validation.NodeSelectorLabels) is the only gate before the\n"
+            "rendered pod template reaches the API server and is refused there."
+        ),
+        name="glance-invalid-nodeselector",
+        deployment=(
+            "    replicas: 1\n"
+            "    nodeSelector:\n"
+            '      "bad key": x'
+        ),
+    ),
+    Fixture(
+        filename="32-jobs-resources-request-above-limit.yaml",
+        comment=(
+            "A spec.jobs.resources memory request above its limit is rejected by the\n"
+            "validating webhook alone (validation.RequestsWithinLimits):\n"
+            "ResourceRequirements is an embedded upstream type carrying no cross-field\n"
+            "marker, so admission is the only gate before the rendered Job and CronJob\n"
+            "pod templates reach the API server and are refused there."
+        ),
+        name="glance-invalid-jobs-resources",
+        extra=(
+            "  jobs:\n"
+            "    resources:\n"
+            "      requests:\n"
+            "        memory: 1Gi\n"
+            "      limits:\n"
+            "        memory: 512Mi\n"
+        ),
+    ),
+    Fixture(
+        filename="33-deployment-toleration-empty-key-equal.yaml",
+        comment=(
+            "spec.deployment.tolerations[0] with no key and the operator Equal: an empty\n"
+            "key only means \"match all keys\" with Exists. The schema has no rule for it\n"
+            "on the embedded upstream Toleration, so the validating webhook\n"
+            "(validation.Tolerations) is the only gate before the rendered pod template\n"
+            "reaches the API server and is refused there."
+        ),
+        name="glance-invalid-toleration",
+        deployment=(
+            "    replicas: 1\n"
+            "    tolerations:\n"
+            "    - operator: Equal\n"
+            "      value: x"
         ),
     ),
 )

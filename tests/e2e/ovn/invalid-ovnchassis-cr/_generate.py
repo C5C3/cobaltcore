@@ -280,6 +280,22 @@ FIXTURES: tuple[Fixture, ...] = (
             '    maxUnavailable: "0%"\n'
         ),
     ),
+    Fixture(
+        filename="13-jobs-priorityclass-not-found.yaml",
+        comment=(
+            "spec.jobs.priorityClassName naming a PriorityClass that does not exist is\n"
+            "rejected by the validating webhook alone (validation.PriorityClassExists):\n"
+            "the object is cluster-scoped, so no marker can express the reference. The\n"
+            "webhook resolves it through the operator's uncached API reader, as the\n"
+            "operator's ServiceAccount, so a missing get grant on\n"
+            "scheduling.k8s.io/priorityclasses would surface as an Internal error\n"
+            "instead of Not found: the step also pins the operator's RBAC."
+        ),
+        extra=(
+            "  jobs:\n"
+            "    priorityClassName: ovn-invalid-missing-priority-class\n"
+        ),
+    ),
 )
 
 
