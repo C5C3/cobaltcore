@@ -440,8 +440,10 @@ func buildAPIService(nova *novav1alpha1.Nova) *corev1.Service {
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the API Deployment,
-// delegating to the shared builder (minAvailable=1 for multi-replica,
-// maxUnavailable=1 for single-replica to avoid drain deadlock).
+// delegating to the shared builder (minAvailable=1 above a lower replica bound
+// of one, maxUnavailable=1 at one to avoid drain deadlock). The lower bound is
+// the HPA's minReplicas while spec.autoscaling is set, otherwise the effective
+// replica count of spec.api.deployment.
 //
 // The selector is the API component plus the absence of the Job name label
 // (naming.ExcludeJobPods): the migration and archive pods carry no readiness
@@ -454,7 +456,7 @@ func buildAPIService(nova *novav1alpha1.Nova) *corev1.Service {
 // removes their last pod costs no request.
 func buildPodDisruptionBudget(nova *novav1alpha1.Nova) *policyv1.PodDisruptionBudget {
 	pdb := deployment.BuildPDB(nova.Namespace, nova.Name, commonLabels(nova),
-		apiSelectorLabels(nova), &nova.Spec.API.Deployment)
+		apiSelectorLabels(nova), &nova.Spec.API.Deployment, nova.Spec.Autoscaling)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

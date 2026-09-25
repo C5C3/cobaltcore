@@ -113,7 +113,7 @@ Deployment rollout, bootstrap Job).
 | [pod-security-restricted](#pod-security-restricted) | `keystone-pss-restricted` | Reconciliation reaches Ready=True/AllReady inside a `pod-security.kubernetes.io/enforce=restricted` namespace; every Pod the reconciler creates (API Deployment, bootstrap Job, db-sync Job, policy-validation Job, manually-triggered fernet-rotation Job) admits under PSS Restricted; zero `FailedCreate` events carry the literal violation `violates PodSecurity "restricted:latest"` |
 | admin-password-rotation | `keystone-adminpw` | Re-bootstrap on admin-password Secret change: stale bootstrap Job replaced, new password authenticates against `/v3` |
 | admin-password-scheduled-rotation | `keystone-adminpw-sched` | Model B scheduled rotation: rotation CronJob rendered from `spec.passwordRotation`, full OpenBao/ESO evidence chain |
-| autoscaling | `keystone-autoscaling` | HPA create/update/delete driven by `spec.autoscaling` (CPU and memory targets) |
+| autoscaling | `keystone-autoscaling` | HPA create/update/delete driven by `spec.autoscaling` (CPU and memory targets); the API PodDisruptionBudget follows the HPA minimum: `minAvailable: 1` with `minReplicas` unset, `maxUnavailable: 1` at `minReplicas: 1`, `minAvailable: 1` again after autoscaling is removed |
 | basic-deployment-2026-1 | `keystone-basic-2026-1` | Happy-path deployment pinned to the 2026.1 release image |
 | configmap-no-secrets | `keystone-cc0080` | No secrets leak into the ConfigMap: placeholder URL in `keystone.conf`, real DSN only in the derived `<name>-db-connection` Secret |
 | credential-rotation | `keystone-credential` | Credential-key CronJob schedule, manual rotation changes Secret data, `credential_migrate` step |
@@ -915,7 +915,8 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              HPA reconciliation
 │   ├── 00-keystone-cr.yaml             Keystone CR with CPU autoscaling
 │   ├── 01-patch-add-memory-metric.yaml Patch to add memory metric
-│   └── 02-patch-disable-autoscaling.yaml Patch to disable autoscaling
+│   ├── 02-patch-min-replicas-one.yaml  Patch to lower minReplicas to 1
+│   └── 03-patch-disable-autoscaling.yaml Patch to disable autoscaling
 ├── basic-deployment/
 │   ├── chainsaw-test.yaml              Happy-path reconciliation
 │   └── 00-keystone-cr.yaml             Keystone CR in managed mode

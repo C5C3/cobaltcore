@@ -85,7 +85,7 @@ For a Barbican CR named `{name}` the operator manages:
 | --- | --- | --- |
 | Deployment | `{name}` | The Barbican API pods (port 9311) |
 | Service | `{name}` | ClusterIP in front of the API pods on port 9311 |
-| PodDisruptionBudget | `{name}` | `minAvailable: 1` (or `maxUnavailable: 1` at a single replica); the selector excludes Job pods |
+| PodDisruptionBudget | `{name}` | `minAvailable: 1` (or `maxUnavailable: 1` at a lower replica bound of one, which is the HPA's `minReplicas` while `spec.autoscaling` is set); the selector excludes Job pods |
 | HorizontalPodAutoscaler | `{name}` | Only when `spec.autoscaling` is set |
 | NetworkPolicy | `{name}` | Only when `spec.networkPolicy` is set |
 | HTTPRoute | `{name}` | Only when `spec.gateway` is set |

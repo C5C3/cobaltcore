@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
@@ -675,4 +676,29 @@ func TestBuildPlacementDeployment_RendersResourceDefaults(t *testing.T) {
 			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults(tc.want)))
 		})
 	}
+}
+
+// TestBuildPodDisruptionBudget_FollowsTheHPAMinimum pins the budget to the
+// lower replica bound: an autoscaler that may scale three configured replicas
+// down to one pod gets maxUnavailable=1, because minAvailable=1 would refuse
+// every eviction of that last pod and stall a node drain. Without autoscaling
+// the three replicas keep minAvailable=1.
+func TestBuildPodDisruptionBudget_FollowsTheHPAMinimum(t *testing.T) {
+	g := NewGomegaWithT(t)
+	placement := testPlacement()
+	placement.Spec.Deployment.Replicas = 3
+	placement.Spec.Autoscaling = &placementv1alpha1.AutoscalingSpec{
+		MinReplicas:          ptr.To(int32(1)),
+		MaxReplicas:          5,
+		TargetCPUUtilization: ptr.To(int32(80)),
+	}
+
+	pdb := buildPodDisruptionBudget(placement)
+	g.Expect(pdb.Spec.MaxUnavailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+
+	placement.Spec.Autoscaling = nil
+	pdb = buildPodDisruptionBudget(placement)
+	g.Expect(pdb.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
 }

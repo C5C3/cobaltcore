@@ -1707,7 +1707,9 @@ spec:
                   minReplicas:
                     description: |-
                       MinReplicas is the lower bound for the number of replicas.
-                      Defaults to the current spec.replicas value if unset.
+                      Defaults to the API block's replica count if unset. The API
+                      PodDisruptionBudget follows this bound: maxUnavailable: 1 at one
+                      replica, so a drain can evict the last pod, and minAvailable: 1 above.
                     format: int32
                     minimum: 1
                     type: integer

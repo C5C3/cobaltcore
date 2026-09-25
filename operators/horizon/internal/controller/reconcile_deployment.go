@@ -292,9 +292,10 @@ func uwsgiCommand() []string {
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the dashboard
-// deployment, delegating to the shared builder (minAvailable=1 for
-// multi-replica, maxUnavailable=1 for single-replica to avoid drain
-// deadlock).
+// deployment, delegating to the shared builder (minAvailable=1 above a lower
+// replica bound of one, maxUnavailable=1 at one to avoid drain deadlock). The
+// lower bound is the HPA's minReplicas while spec.autoscaling is set, otherwise
+// the effective replica count.
 //
 // The selector keeps the stable name and instance labels and excludes
 // Job-created pods (naming.ExcludeJobPods) rather than narrowing to the API
@@ -305,7 +306,7 @@ func uwsgiCommand() []string {
 // Service's two-phase narrowing has no counterpart here that would bound that
 // gap.
 func buildPodDisruptionBudget(horizon *horizonv1alpha1.Horizon) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(horizon.Namespace, subResourceName(horizon), commonLabels(horizon), selectorLabels(horizon), &horizon.Spec.Deployment)
+	pdb := deployment.BuildPDB(horizon.Namespace, subResourceName(horizon), commonLabels(horizon), selectorLabels(horizon), &horizon.Spec.Deployment, horizon.Spec.Autoscaling)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

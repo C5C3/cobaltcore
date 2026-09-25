@@ -2395,13 +2395,18 @@ sequence and does not mutate `status.endpoint`.
 **PodDisruptionBudget:**
 
 After ensuring the Deployment and Service, `reconcileDeployment` creates or updates
-a PodDisruptionBudget via `deployment.EnsurePDB()`. The PDB uses a replica-aware
-disruption budget strategy:
+a PodDisruptionBudget via `deployment.EnsurePDB()`. The PDB branches on the lower
+replica bound, `deployment.EffectiveMinReplicas`: the HPA's `minReplicas` while
+`spec.autoscaling` is set, otherwise the effective `spec.deployment.replicas`.
+An unset `minReplicas` falls back to the replica count, the value the HPA renders.
 
-| Replicas | Field | Value | Rationale |
+| Lower bound | Field | Value | Rationale |
 | --- | --- | --- | --- |
 | `> 1` | `minAvailable` | `1` | Guarantees at least one pod remains during voluntary disruptions |
-| `<= 1` | `maxUnavailable` | `1` | Avoids drain deadlock — a PDB with `minAvailable=1` on a single-replica deployment would block all evictions |
+| `<= 1` | `maxUnavailable` | `1` | Avoids drain deadlock: a PDB with `minAvailable=1` on a single pod would block all evictions, including the one pod an HPA at `minReplicas: 1` may leave running |
+
+A flip between the two fields drops the one the operator no longer asserts,
+because `EnsurePDB` applies the budget with server-side apply.
 
 | PDB Field | Value |
 | --- | --- |

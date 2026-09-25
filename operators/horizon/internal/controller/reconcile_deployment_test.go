@@ -15,11 +15,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
 // findContainer returns the container with the given name, avoiding brittle
@@ -349,4 +352,29 @@ func TestBuildHorizonDeployment_RendersResourceDefaults(t *testing.T) {
 	deploy := buildHorizonDeployment(testHorizon(), "cm", "")
 
 	g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("512Mi")))
+}
+
+// TestBuildPodDisruptionBudget_FollowsTheHPAMinimum pins the budget to the
+// lower replica bound: an autoscaler that may scale three configured replicas
+// down to one pod gets maxUnavailable=1, because minAvailable=1 would refuse
+// every eviction of that last pod and stall a node drain. Without autoscaling
+// the three replicas keep minAvailable=1.
+func TestBuildPodDisruptionBudget_FollowsTheHPAMinimum(t *testing.T) {
+	g := NewGomegaWithT(t)
+	horizon := testHorizon()
+	horizon.Spec.Deployment.Replicas = 3
+	horizon.Spec.Autoscaling = &horizonv1alpha1.AutoscalingSpec{
+		MinReplicas:          ptr.To(int32(1)),
+		MaxReplicas:          5,
+		TargetCPUUtilization: ptr.To(int32(80)),
+	}
+
+	pdb := buildPodDisruptionBudget(horizon)
+	g.Expect(pdb.Spec.MaxUnavailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+
+	horizon.Spec.Autoscaling = nil
+	pdb = buildPodDisruptionBudget(horizon)
+	g.Expect(pdb.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
 }

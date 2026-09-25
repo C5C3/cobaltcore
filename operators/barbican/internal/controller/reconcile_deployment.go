@@ -516,8 +516,10 @@ func barbicanDBTLSVolumeAndMount(barbican *barbicanv1alpha1.Barbican) (corev1.Vo
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the Barbican API
-// deployment, delegating to the shared builder (minAvailable=1 for
-// multi-replica, maxUnavailable=1 for single-replica to avoid drain deadlock).
+// deployment, delegating to the shared builder (minAvailable=1 above a lower
+// replica bound of one, maxUnavailable=1 at one to avoid drain deadlock). The
+// lower bound is the HPA's minReplicas while spec.autoscaling is set, otherwise
+// the effective replica count.
 //
 // The selector keeps the stable name and instance labels and excludes the
 // db-sync and db-clean pods by the absence of the Job name label
@@ -530,7 +532,7 @@ func barbicanDBTLSVolumeAndMount(barbican *barbicanv1alpha1.Barbican) (corev1.Vo
 // and the Service's two-phase narrowing has no counterpart here that would bound
 // that gap.
 func buildPodDisruptionBudget(barbican *barbicanv1alpha1.Barbican) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(barbican.Namespace, subResourceName(barbican), commonLabels(barbican), selectorLabels(barbican), &barbican.Spec.Deployment)
+	pdb := deployment.BuildPDB(barbican.Namespace, subResourceName(barbican), commonLabels(barbican), selectorLabels(barbican), &barbican.Spec.Deployment, barbican.Spec.Autoscaling)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

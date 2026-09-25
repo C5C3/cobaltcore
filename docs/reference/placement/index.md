@@ -80,7 +80,7 @@ For a Placement CR named `{name}` the operator manages:
 | --- | --- | --- |
 | Deployment | `{name}` | The Placement API pods (port 8778) |
 | Service | `{name}` | ClusterIP in front of the API pods on port 8778 |
-| PodDisruptionBudget | `{name}` | `minAvailable: 1` (or `maxUnavailable: 1` at a single replica) |
+| PodDisruptionBudget | `{name}` | `minAvailable: 1` (or `maxUnavailable: 1` at a lower replica bound of one, which is the HPA's `minReplicas` while `spec.autoscaling` is set) |
 | HorizontalPodAutoscaler | `{name}` | Only when `spec.autoscaling` is set |
 | NetworkPolicy | `{name}` | Only when `spec.networkPolicy` is set |
 | HTTPRoute | `{name}` | Only when `spec.gateway` is set |

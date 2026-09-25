@@ -4,10 +4,13 @@
 
 # Chainsaw E2E test for HorizontalPodAutoscaler reconciliation.
 # Verifies that the operator creates, updates, and deletes HPAs based on
-# spec.autoscaling:
-#   - Initial deployment with CPU autoscaling (maxReplicas: 6, CPU: 80%)
+# spec.autoscaling, and that the API PodDisruptionBudget follows the HPA's
+# minimum:
+#   - Initial deployment with CPU autoscaling (maxReplicas: 6, CPU: 80%);
+#     minReplicas is unset, so the budget keeps minAvailable: 1
 #   - Add memory metric (CPU: 80%, Memory: 70%)
-#   - Disable autoscaling (HPA deleted)
+#   - Lower minReplicas to 1 (HPA minReplicas: 1, PDB maxUnavailable: 1)
+#   - Disable autoscaling (HPA deleted, PDB back at minAvailable: 1)
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -63,6 +66,17 @@ spec:
                 target:
                   type: Utilization
                   averageUtilization: 80
+    # minReplicas is unset, so the lower bound is the three configured
+    # replicas and the budget keeps minAvailable: 1.
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: keystone-autoscaling
+            namespace: openstack
+          spec:
+            minAvailable: 1
     catch:
     - script:
         content: |
@@ -121,11 +135,41 @@ spec:
                 target:
                   type: Utilization
                   averageUtilization: 70
-  # ── Step 5: Disable autoscaling ──────────────────────────────────────────
+  # ── Step 5: Lower the HPA minimum to one replica ─────────────────────────
   - try:
     - patch:
-        file: 02-patch-disable-autoscaling.yaml
-  # ── Step 6: Assert HPA deleted and condition updated ─────────────────────
+        file: 02-patch-min-replicas-one.yaml
+  # ── Step 6: Assert the HPA minimum and the budget that follows it ────────
+  # An autoscaler that may scale down to one pod must not keep
+  # minAvailable: 1, which would refuse every eviction of that pod and
+  # stall a drain. The budget flips to maxUnavailable: 1 and server-side
+  # apply drops minAvailable.
+  - try:
+    - assert:
+        resource:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: keystone-autoscaling
+            namespace: openstack
+          spec:
+            minReplicas: 1
+            maxReplicas: 6
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: keystone-autoscaling
+            namespace: openstack
+          spec:
+            maxUnavailable: 1
+            (minAvailable == null): true
+  # ── Step 7: Disable autoscaling ──────────────────────────────────────────
+  - try:
+    - patch:
+        file: 03-patch-disable-autoscaling.yaml
+  # ── Step 8: Assert HPA deleted, condition updated, budget restored ───────
   - try:
     - assert:
         resource:
@@ -146,3 +190,15 @@ spec:
             exit 1
           fi
           echo "PASS: HPA correctly deleted"
+    # Without autoscaling the lower bound is the three configured replicas
+    # again, so the budget is back at minAvailable: 1.
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: keystone-autoscaling
+            namespace: openstack
+          spec:
+            minAvailable: 1
+            (maxUnavailable == null): true

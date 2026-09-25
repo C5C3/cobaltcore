@@ -423,8 +423,10 @@ func placementDBTLSVolumeAndMount(placement *placementv1alpha1.Placement) (corev
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the Placement API
-// deployment, delegating to the shared builder (minAvailable=1 for
-// multi-replica, maxUnavailable=1 for single-replica to avoid drain deadlock).
+// deployment, delegating to the shared builder (minAvailable=1 above a lower
+// replica bound of one, maxUnavailable=1 at one to avoid drain deadlock). The
+// lower bound is the HPA's minReplicas while spec.autoscaling is set, otherwise
+// the effective replica count.
 //
 // The selector keeps the stable name and instance labels and excludes the
 // db-sync pods by the absence of the Job name label (naming.ExcludeJobPods)
@@ -437,7 +439,7 @@ func placementDBTLSVolumeAndMount(placement *placementv1alpha1.Placement) (corev
 // all, and the Service's two-phase narrowing has no counterpart here that would
 // bound that gap.
 func buildPodDisruptionBudget(placement *placementv1alpha1.Placement) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(placement.Namespace, subResourceName(placement), commonLabels(placement), selectorLabels(placement), &placement.Spec.Deployment)
+	pdb := deployment.BuildPDB(placement.Namespace, subResourceName(placement), commonLabels(placement), selectorLabels(placement), &placement.Spec.Deployment, placement.Spec.Autoscaling)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

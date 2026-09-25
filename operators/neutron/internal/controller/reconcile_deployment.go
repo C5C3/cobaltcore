@@ -575,8 +575,10 @@ func buildNeutronService(neutron *neutronv1alpha1.Neutron) *corev1.Service {
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the Neutron API
-// Deployment, delegating to the shared builder (minAvailable=1 for
-// multi-replica, maxUnavailable=1 for single-replica to avoid drain deadlock).
+// Deployment, delegating to the shared builder (minAvailable=1 above a lower
+// replica bound of one, maxUnavailable=1 at one to avoid drain deadlock). The
+// lower bound is the HPA's minReplicas while spec.autoscaling is set, otherwise
+// the effective replica count.
 //
 // The selector is the API component's, plus the absence of the Job name label.
 // The component key keeps the worker pods out of the budget, which protects the
@@ -587,7 +589,7 @@ func buildNeutronService(neutron *neutronv1alpha1.Neutron) *corev1.Service {
 // disruptionsAllowed.
 func buildPodDisruptionBudget(neutron *neutronv1alpha1.Neutron) *policyv1.PodDisruptionBudget {
 	pdb := deployment.BuildPDB(neutron.Namespace, neutron.Name, commonLabels(neutron),
-		apiSelectorLabels(neutron), &neutron.Spec.Deployment)
+		apiSelectorLabels(neutron), &neutron.Spec.Deployment, neutron.Spec.Autoscaling)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

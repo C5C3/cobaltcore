@@ -105,7 +105,7 @@ For a `Nova` named `{name}`:
 | --- | --- | --- |
 | Deployment | `{name}` | The API pods, uWSGI on port 8774 |
 | Service | `{name}` | ClusterIP in front of the API pods on port 8774 |
-| PodDisruptionBudget | `{name}` | `minAvailable: 1` above one replica, `maxUnavailable: 1` at one; selects the API component and excludes Job pods |
+| PodDisruptionBudget | `{name}` | `minAvailable: 1` above a lower replica bound of one, `maxUnavailable: 1` at one (the bound is the HPA's `minReplicas` while `spec.autoscaling` is set); selects the API component and excludes Job pods |
 | HorizontalPodAutoscaler | `{name}` | Only while `spec.autoscaling` is set; the API is the only autoscaled Deployment |
 | NetworkPolicy | `{name}` | Only while `spec.networkPolicy` is set; one policy covers all five workloads and the Job pods |
 | NetworkPolicy | `{name}-novncproxy` | Only while `spec.networkPolicy` is set and the console proxy is enabled; the proxy's egress to the hypervisors' VNC ports |

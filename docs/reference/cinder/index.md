@@ -104,7 +104,7 @@ of the attached satellites:
 | --- | --- | --- |
 | Deployment | `{name}` | The API pods, uWSGI on port 8776 |
 | Service | `{name}` | ClusterIP in front of the API pods on port 8776 |
-| PodDisruptionBudget | `{name}` | `minAvailable: 1` above one replica, `maxUnavailable: 1` at one; selects the API component and excludes Job pods |
+| PodDisruptionBudget | `{name}` | `minAvailable: 1` above a lower replica bound of one, `maxUnavailable: 1` at one (the bound is the HPA's `minReplicas` while `spec.autoscaling` is set); selects the API component and excludes Job pods |
 | HorizontalPodAutoscaler | `{name}` | Only while `spec.autoscaling` is set; the API is the only autoscaled Deployment |
 | NetworkPolicy | `{name}` | Only while `spec.networkPolicy` is set; one policy covers all four workloads and the Job pods |
 | HTTPRoute | `{name}` | Only while `spec.gateway` is set |
