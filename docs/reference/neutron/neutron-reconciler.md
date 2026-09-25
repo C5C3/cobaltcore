@@ -102,7 +102,7 @@ Chassis ──► Secrets ──► Config ──► DaemonSet
 | Step | What it does | Condition |
 | --- | --- | --- |
 | Chassis | Resolves the `OVNChassis` into its node selector and tolerations, and that chassis's `OVNCentral` into the Southbound address and the client Secret name | `ChassisReady` |
-| Secrets | Gates on the Nova metadata shared secret and, under `spec.messaging`, materialises `{name}-transport-url` and digests it | `SecretsReady` |
+| Secrets | Gates on the Nova metadata shared secret and the Nova metadata CA bundle and, under `spec.messaging`, materialises `{name}-transport-url` and digests it | `SecretsReady` |
 | Config | Renders `neutron_ovn_metadata_agent.ini` into an immutable content-addressed ConfigMap and prunes the history to three. Reports failures through `SecretsReady` | `SecretsReady` |
 | DaemonSet | Projects the `{name}-metadata-agent` DaemonSet onto the chassis's nodes, mirrors its node counters into status, and stamps `status.installedImage` | `DaemonSetReady` |
 
@@ -135,7 +135,7 @@ aggregates ten, a `NeutronMetadataAgent` three.
 | `HPAReady` | `Neutron` | `HPAReady`, `HPANotRequired` | none (errors propagate) |
 | `NetworkPolicyReady` | `Neutron` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | none (errors propagate) |
 | `ChassisReady` | `NeutronMetadataAgent` | `ChassisResolved` | `ChassisNotFound`, `ChassisReadError`, `ChassisOnAnotherCluster`, `CentralNotFound`, `CentralReadError`, `CentralNotReady`, `TargetClusterUnavailable` |
-| `SecretsReady` | `NeutronMetadataAgent` | `SecretsAvailable` | `WaitingForNovaSharedSecret`, `WaitingForMessagingCredentials`, `ConfigError` |
+| `SecretsReady` | `NeutronMetadataAgent` | `SecretsAvailable` | `WaitingForNovaSharedSecret`, `WaitingForNovaMetadataCA`, `WaitingForMessagingCredentials`, `ConfigError` |
 | `DaemonSetReady` | `NeutronMetadataAgent` | `DaemonSetReady` | `DaemonSetProgressing`, `DaemonSetError` |
 
 `TargetClusterUnavailable` is set ahead of every sub-reconciler, when
@@ -727,7 +727,10 @@ that does not exist at admission time.
 transport URL's digest for the DaemonSet's pod-template annotation. Both blocks
 it gates on are optional: an agent without `spec.novaMetadata` proxies nowhere,
 and one without `spec.messaging` opens no broker connection, so a CR that sets
-neither reaches `SecretsAvailable` without reading anything. The shared secret
+neither reaches `SecretsAvailable` without reading anything. Inside
+`spec.novaMetadata` one `GateCredentials` call checks the shared secret first
+and the CA bundle `caBundleSecretRef` names second, each only while it is
+referenced. The shared secret
 reaches the process as `OS_DEFAULT__METADATA_PROXY_SHARED_SECRET` and the
 transport URL as `OS_DEFAULT__TRANSPORT_URL`, so neither enters the ConfigMap
 every agent pod mounts.
@@ -737,14 +740,18 @@ every agent pod mounts.
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
 | `False` | `WaitingForNovaSharedSecret` | The gate's attribution: the ExternalSecret is absent, it has not synced, or the Secret is missing the configured key | `RequeueSecretPolling` |
+| `False` | `WaitingForNovaMetadataCA` | The same attribution for the CA bundle, under the noun `Nova metadata CA bundle (key "<key>")`, so the message names the key the gate checks | `RequeueSecretPolling` |
 | `False` | `WaitingForMessagingCredentials` | The managed `RabbitmqCluster` has published no default-user Secret yet, or the brownfield Secret carries no transport URL | `RequeueSecretPolling` |
 | `True` | `SecretsAvailable` | none | none |
 
 **Error handling:** A backend read error is returned. The gate and the container
 environment resolve the shared secret's data key through one function, so a pod
-never sources a key the gate did not check. Nova rejects an unsigned request when
-it carries a secret of its own, so the gate holds `False` until the shared secret
-exists.
+never sources a key the gate did not check, and the gate and the DaemonSet's CA
+volume resolve the bundle's key the same way (`agentNovaMetadataCAKey`, `ca.crt`
+for an empty key). Nova rejects an unsigned request when it carries a secret of
+its own, so the gate holds `False` until the shared secret exists. A wait on
+either returns before the Config and DaemonSet steps run, so no pod is started
+with a volume that never mounts.
 
 ### reconcileAgentConfig
 
@@ -759,7 +766,8 @@ rendered `[ovs] ovsdb_connection` is the local socket
 with the three files of the mounted client keypair. `[DEFAULT] root_helper` and
 the privsep helper commands stay at their oslo defaults of `sudo` and
 `sudo privsep-helper`, because the image ships `/usr/bin/sudo` and the container
-runs as root.
+runs as root. While `spec.novaMetadata.caBundleSecretRef` is set, `[DEFAULT]
+auth_ca_cert` names the mounted bundle, `/etc/nova-metadata-ca/ca.crt`.
 
 **Condition Contract:**
 
@@ -788,6 +796,10 @@ database until `external_ids:system-id` exists, which is what the chassis's own
 `apply-node` init container writes: both workloads select the same nodes and
 nothing orders the two DaemonSets, so the gate is per node. Readiness is the
 metadata proxy socket, tested with `test -S /var/lib/neutron/metadata_proxy`.
+While `spec.novaMetadata.caBundleSecretRef` is set, the `nova-metadata-ca`
+Secret volume projects the configured key as `ca.crt`, mode `0444`, read-only at
+`/etc/nova-metadata-ca` on the agent container alone. Neutron reads the file on
+every proxied request, so a rotated bundle rolls no pod.
 See [Node contract](./neutron-metadata-agent-crd.md#node-contract).
 
 **Condition Contract:**
@@ -880,7 +892,8 @@ owns the kind neither has to register it nor conflicts with it. The controller
 adds three watches:
 
 - **Secrets**, over the two shared legs alone: the agents that name a Secret in
-  `spec.novaMetadata.sharedSecretRef` or `spec.messaging.secretRef`, and the
+  `spec.novaMetadata.sharedSecretRef`, `spec.novaMetadata.caBundleSecretRef` or
+  `spec.messaging.secretRef`, and the
   agents that own the derived transport-URL Secret. Both are namespace-scoped, as
   an agent only ever references Secrets beside itself.
 - **OVNChassis**, mapped through the `spec.chassisRef.name` index to the agents
@@ -905,3 +918,16 @@ the PodDisruptionBudget, the HorizontalPodAutoscaler, the NetworkPolicy, the
 HTTPRoute and the three MariaDB CRs; for a `NeutronMetadataAgent` the DaemonSet,
 the ConfigMaps and the derived Secret. A kind missing from either list is a kind
 that keeps running after its CR is gone.
+
+Before that sweep, the deletion pass of a placed `NeutronMetadataAgent` reaps the
+metadata shared-secret copies the ControlPlane delivered
+(`reapMetadataSharedSecretMirrors`, `reconcile_agent_mirrors.go`). It lists the
+Secrets in the agent's namespace on its target cluster that carry
+`neutron.openstack.c5c3.io/metadata-shared-secret-mirror: "true"`, through the
+target's uncached reader, and deletes each one that no other live agent in that
+namespace on the same cluster names in `spec.novaMetadata.sharedSecretRef`. Each
+deletion records a Normal `MetadataSharedSecretMirrorReaped` event. A failed
+list or delete returns the error and keeps the remote-children finalizer, so the
+next pass retries. The reap is skipped for a target abandoned past the window,
+whose children client is nil, and for a local agent, which carries no such
+finalizer and gets no copy.
