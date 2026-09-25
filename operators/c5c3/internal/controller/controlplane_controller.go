@@ -271,6 +271,13 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // The ControlPlane reconciler only observes SecretAggregate CRs; it never
 // creates or mutates them, so the rule is intentionally read-only.
 // +kubebuilder:rbac:groups=c5c3.io,resources=secretaggregates,verbs=get;list;watch
+// The ControlPlane resolves its sizing from the SizingProfile
+// spec.sizing.profileRef names and watches the kind, so an edit of a profile
+// reaches every ControlPlane that references it. The ControlPlane and
+// SizingProfile webhooks, which run under this identity, look up the
+// PriorityClasses a sizing names.
+// +kubebuilder:rbac:groups=c5c3.io,resources=sizingprofiles,verbs=get;list;watch
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 // The ControlPlane projects one KeystoneService per built-in service it manages,
 // resets a spec field another field manager wrote on one
 // (reclaimBuiltinRegistrationFields, an ordinary Update because field ownership

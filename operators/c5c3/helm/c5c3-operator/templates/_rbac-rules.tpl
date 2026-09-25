@@ -89,6 +89,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - c5c3.io
   resources:
   - secretaggregates
+  - sizingprofiles
   verbs:
   - get
   - list
@@ -367,6 +368,12 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - clusterroles
   verbs:
   - bind
+- apiGroups:
+  - scheduling.k8s.io
+  resources:
+  - priorityclasses
+  verbs:
+  - get
 - apiGroups:
   - coordination.k8s.io
   resources:

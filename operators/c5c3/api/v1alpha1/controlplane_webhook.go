@@ -14,6 +14,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -2735,6 +2736,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	warnings := insecurePublicEndpointWarnings(obj)
 	warnings = append(warnings, glanceImportFilteringWarnings(obj)...)
 	warnings = append(warnings, warnDevelopmentBarbicanSecretStore(obj)...)
+	warnings = append(warnings, sizingInertWarnings(obj)...)
 
 	// extraConfig admission checks: the un-gated shape/ownership family (A) and
 	// the option-catalog family (B). Both fold their errors into the single
@@ -2755,6 +2757,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	allErrs = append(allErrs, validateCinderChildName(obj)...)
 	allErrs = append(allErrs, validateNovaChildName(obj)...)
 	allErrs = append(allErrs, ValidateNeutronOVNCentralNamespace(obj)...)
+	allErrs = append(allErrs, w.validateSizingReferences(ctx, nil, obj, allErrs)...)
 	if err := newInvalidIfErrs(obj, allErrs); err != nil {
 		return warnings, err
 	}
@@ -2787,6 +2790,7 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	warnings = append(warnings, glanceImportFilteringWarnings(newObj)...)
 	warnings = append(warnings, warnDevelopmentBarbicanSecretStore(newObj)...)
 	warnings = append(warnings, warnRemovedCinderBackends(oldObj, newObj)...)
+	warnings = append(warnings, sizingInertWarnings(newObj)...)
 
 	allErrs := w.validate(newObj)
 	allErrs = append(allErrs, validateImmutable(oldObj, newObj)...)
@@ -2849,6 +2853,8 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 		oldObj.NeutronOVNCentralNamespace() != newObj.NeutronOVNCentralNamespace() {
 		allErrs = append(allErrs, ValidateNeutronOVNCentralNamespace(newObj)...)
 	}
+
+	allErrs = append(allErrs, w.validateSizingReferences(ctx, oldObj, newObj, allErrs)...)
 
 	if err := newInvalidIfErrs(newObj, allErrs); err != nil {
 		return warnings, err
@@ -3077,8 +3083,107 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validateServiceCredentialsModeOverrides(cp)...)
 	allErrs = append(allErrs, validateServiceNamespaces(cp)...)
 	allErrs = append(allErrs, validateServiceTargetClusters(cp)...)
+	allErrs = append(allErrs, validateSizing(cp)...)
 
 	return allErrs
+}
+
+// validateSizing checks spec.sizing as written: the values themselves
+// (validateSizingSpec) and the one rule that ties a sizing block to a service
+// switch. A disabled console proxy has no Deployment to size, so a
+// spec.sizing.nova.consoleProxy block beside it has nowhere to land. A nil
+// block has nothing to check.
+func validateSizing(cp *ControlPlane) field.ErrorList {
+	s := cp.Spec.Sizing
+	if s == nil {
+		return nil
+	}
+	sizingPath := field.NewPath("spec", "sizing")
+	allErrs := validateSizingSpec(sizingPath, &s.SizingSpec)
+	if s.Nova != nil && s.Nova.ConsoleProxy != nil {
+		if nv := cp.Spec.Services.Nova; nv != nil && nv.ConsoleProxy != nil &&
+			nv.ConsoleProxy.Enabled != nil && !*nv.ConsoleProxy.Enabled {
+			allErrs = append(allErrs, field.Forbidden(sizingPath.Child("nova", "consoleProxy"),
+				"must not be set when services.nova.consoleProxy.enabled is false"))
+		}
+	}
+	return allErrs
+}
+
+// validateSizingReferences runs the sizing checks that read the cluster: the
+// SizingProfile spec.sizing.profileRef names, the merged sizing that profile
+// produces (validateResolvedSizing), and the PriorityClasses spec.sizing names.
+// oldObj is nil on create. already holds the errors validate() reported, so a
+// merged value that repeats one of them is not reported twice.
+//
+// Each check runs only when the update can change its outcome, so a
+// ControlPlane admitted before its profile or priority class was deleted can
+// still be updated, including the finalizer removal that completes its
+// deletion:
+//
+//   - the profileRef lookup runs when spec.sizing changed; a missing profile is
+//     reported on create and when profileRef.name changed, any other read
+//     error always;
+//   - the merged sizing is checked on create and when spec.sizing changed, but
+//     not while the referenced profile does not exist: resolving over the base
+//     alone checks values no child projects. An edit or a restore of the
+//     referenced profile is checked by the SizingProfile webhook;
+//   - a priority class is looked up on create, and on update only when the old
+//     spec.sizing did not name it.
+//
+// External mode forbids spec.sizing outright (validateKeystoneMode), so there
+// is nothing more to check there.
+func (w *ControlPlaneWebhook) validateSizingReferences(
+	ctx context.Context, oldObj, newObj *ControlPlane, already field.ErrorList,
+) field.ErrorList {
+	s := newObj.Spec.Sizing
+	if s == nil || newObj.IsExternalKeystone() {
+		return nil
+	}
+	sizingPath := field.NewPath("spec", "sizing")
+	var oldSizing *ControlPlaneSizingSpec
+	if oldObj != nil {
+		oldSizing = oldObj.Spec.Sizing
+	}
+	sizingChanged := oldObj == nil || !equality.Semantic.DeepEqual(oldSizing, s)
+
+	var allErrs field.ErrorList
+	var profile *SizingProfile
+	if ref := s.ProfileRef; ref != nil && sizingChanged && w.Client != nil {
+		refPath := sizingPath.Child("profileRef", "name")
+		refChanged := oldSizing == nil || oldSizing.ProfileRef == nil || oldSizing.ProfileRef.Name != ref.Name
+		p := &SizingProfile{}
+		switch err := w.Client.Get(ctx, client.ObjectKey{Name: ref.Name}, p); {
+		case err == nil:
+			profile = p
+		case apierrors.IsNotFound(err) && !refChanged:
+			// The name was admitted before; a profile deleted since is the
+			// reconciler's to report (SizingReady=False), not this update's.
+		case apierrors.IsNotFound(err):
+			allErrs = append(allErrs, field.NotFound(refPath, ref.Name))
+		default:
+			allErrs = append(allErrs, field.InternalError(refPath, err))
+		}
+	}
+
+	if sizingChanged && (s.ProfileRef == nil || profile != nil || w.Client == nil) {
+		reported := make(map[string]struct{}, len(already))
+		for _, err := range already {
+			reported[err.Error()] = struct{}{}
+		}
+		resolved := ResolveSizing(newObj, profile)
+		for _, err := range validateResolvedSizing(sizingPath, &resolved) {
+			if _, dup := reported[err.Error()]; !dup {
+				allErrs = append(allErrs, err)
+			}
+		}
+	}
+
+	var oldSpec *SizingSpec
+	if oldSizing != nil {
+		oldSpec = &oldSizing.SizingSpec
+	}
+	return append(allErrs, validateNewPriorityClasses(ctx, w.Client, sizingPath, oldSpec, &s.SizingSpec)...)
 }
 
 // namespaceNamePattern mirrors the Pattern marker on ServiceNamespaceSpec.Name:
@@ -3937,6 +4042,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 		if cp.Spec.Infrastructure != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("infrastructure"),
 				"forbidden when services.keystone.mode is External (phase 2 will relax this to optional)"))
+		}
+		if cp.Spec.Sizing != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("sizing"),
+				"forbidden when services.keystone.mode is External (no workload is deployed)"))
 		}
 		if cp.Spec.Services.Horizon != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "horizon"),

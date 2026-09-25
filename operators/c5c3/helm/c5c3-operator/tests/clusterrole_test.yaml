@@ -30,7 +30,9 @@ tests:
               - update
               - watch
 
-  - it: should grant read-only on secretaggregates
+  # The ControlPlane reads the SizingProfile it references and watches the
+  # kind; it never writes one.
+  - it: should grant read-only on secretaggregates and sizingprofiles
     asserts:
       - contains:
           path: rules
@@ -39,10 +41,25 @@ tests:
               - c5c3.io
             resources:
               - secretaggregates
+              - sizingprofiles
             verbs:
               - get
               - list
               - watch
+
+  # The ControlPlane and SizingProfile webhooks look up the PriorityClasses a
+  # sizing names; nothing lists, watches or writes them.
+  - it: should grant get on priorityclasses and nothing more
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - scheduling.k8s.io
+            resources:
+              - priorityclasses
+            verbs:
+              - get
 
   - it: should grant read-only access on keystoneidentitybackends
     asserts:
