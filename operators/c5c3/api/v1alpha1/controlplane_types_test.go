@@ -1590,7 +1590,8 @@ func TestServiceNovaSpecDeepCopy(t *testing.T) {
 			RetentionDays: &retentionDays,
 			Suspend:       true,
 		},
-		ExtraConfig: map[string]map[string]string{"DEFAULT": {"cpu_allocation_ratio": "4.0"}},
+		HypervisorOperator: &ServiceNovaHypervisorOperatorSpec{},
+		ExtraConfig:        map[string]map[string]string{"DEFAULT": {"cpu_allocation_ratio": "4.0"}},
 		DedicatedBackingServices: &NovaDedicatedBackingServicesSpec{
 			Database: &commonv1.DatabaseSpec{Database: "nova"},
 			Cache:    &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
@@ -1673,6 +1674,11 @@ func TestServiceNovaSpecDeepCopy(t *testing.T) {
 	if spec.TargetClusterRef.Name != "edge-compute" {
 		t.Errorf("DeepCopy aliased the target-cluster ref: source = %q", spec.TargetClusterRef.Name)
 	}
+	// The opt-in marker is a zero-size struct, so the runtime may hand the clone
+	// the same address; what matters is that a set marker stays set.
+	if clone.HypervisorOperator == nil {
+		t.Error("DeepCopy dropped the HypervisorOperator marker: clone = nil, want non-nil")
+	}
 
 	// The optional blocks stay nil rather than becoming empty structs, so a
 	// projection can tell "no console proxy declared" from "a console proxy with
@@ -1683,6 +1689,9 @@ func TestServiceNovaSpecDeepCopy(t *testing.T) {
 	}
 	if sparseClone.DBArchive != nil {
 		t.Errorf("DeepCopy materialized DBArchive = %+v, want nil", sparseClone.DBArchive)
+	}
+	if sparseClone.HypervisorOperator != nil {
+		t.Errorf("DeepCopy materialized HypervisorOperator = %+v, want nil", sparseClone.HypervisorOperator)
 	}
 	if sparseClone.MetadataSharedSecretRef != nil {
 		t.Errorf("DeepCopy materialized MetadataSharedSecretRef = %+v, want nil", sparseClone.MetadataSharedSecretRef)

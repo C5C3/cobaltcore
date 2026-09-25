@@ -5272,6 +5272,14 @@ spec:
                         - hostname
                         - parentRef
                         type: object
+                      hypervisorOperator:
+                        description: |-
+                          HypervisorOperator provisions the Keystone account openstack-hypervisor-operator
+                          authenticates as, and delivers its credentials beside this Nova and onto every
+                          compute cluster a NovaCompute of it runs on (<cp>-nova-hypervisor-operator-auth).
+                          The account holds admin: Nova's os-services, os-hypervisors and os-aggregates
+                          policies accept nothing narrower. Removing the block deletes the account.
+                        type: object
                       image:
                         description: |-
                           Image optionally overrides the Nova container image. When nil the

@@ -4611,6 +4611,63 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 	})
 }
 
+// TestIntegration_ControlPlane_NovaHypervisorOperatorRoundTrip pins the opt-in
+// marker spec.services.nova.hypervisorOperator through the real CRD schema and
+// admission: an empty block is admitted and survives the apiserver's pruning as
+// a non-nil struct, and a ControlPlane without it reads back nil. A CRD that
+// lost the field would prune the block and fail the first case.
+func TestIntegration_ControlPlane_NovaHypervisorOperatorRoundTrip(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// The webhook requires the shared bus and the three services the compute
+	// service calls on every boot beside services.nova; see
+	// TestIntegration_ControlPlane_ValidationMarkers.
+	withNova := func(cp *c5c3v1alpha1.ControlPlane, nv *c5c3v1alpha1.ServiceNovaSpec) {
+		cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-rabbitmq"},
+			Replicas:   1,
+		}
+		cp.Spec.Services.Placement = integrationPlacementService()
+		cp.Spec.Services.Neutron = integrationNeutronService()
+		cp.Spec.Services.Glance = integrationGlanceService()
+		cp.Spec.Services.Nova = nv
+	}
+
+	for _, tc := range []struct {
+		name    string
+		marker  *c5c3v1alpha1.ServiceNovaHypervisorOperatorSpec
+		wantSet bool
+	}{
+		{name: "block set", marker: &c5c3v1alpha1.ServiceNovaHypervisorOperatorSpec{}, wantSet: true},
+		{name: "block absent", marker: nil, wantSet: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-hvo-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			cp := integrationManagedControlPlane("cp-hvo", ns.Name)
+			nv := integrationNovaService()
+			nv.HypervisorOperator = tc.marker
+			withNova(cp, nv)
+			g.Expect(c.Create(ctx, cp)).To(Succeed(), "admission must accept the nova block")
+
+			got := &c5c3v1alpha1.ControlPlane{}
+			g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), got)).To(Succeed())
+			g.Expect(got.Spec.Services.Nova).NotTo(BeNil(), "services.nova must read back")
+			if tc.wantSet {
+				g.Expect(got.Spec.Services.Nova.HypervisorOperator).NotTo(BeNil(),
+					"an empty hypervisorOperator block must survive the apiserver's pruning")
+			} else {
+				g.Expect(got.Spec.Services.Nova.HypervisorOperator).To(BeNil(),
+					"a ControlPlane without the block must read it back nil")
+			}
+		})
+	}
+}
+
 // TestIntegration_RetiredInlineFieldsArePruned proves the structural schema
 // drops the two retired registration stanzas from a stored ControlPlane:
 // spec.korc.serviceAccounts on a Managed CR and

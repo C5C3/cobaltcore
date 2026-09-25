@@ -2151,7 +2151,7 @@ type CinderDedicatedBackingServicesSpec struct {
 // policy) rather than set by the user here, so this type stays a local copy of
 // the shapes it projects rather than an import of novav1alpha1.NovaSpec.
 //
-// Eight fields have no counterpart on the other services. Three are replica
+// Nine fields have no counterpart on the other services. Three are replica
 // counts, because the compute service runs a metadata API, a scheduler, and a
 // conductor in Deployments beside its API. Two are the metadata pair,
 // metadataGateway and metadataSharedSecretRef: the metadata API is the one
@@ -2161,7 +2161,9 @@ type CinderDedicatedBackingServicesSpec struct {
 // a browser-facing bridge to the hypervisors no other service runs, and
 // dbArchive tunes the archive of the rows Nova soft-deletes instead of removing.
 // remoteCompute hands over the one address of the compute contract the
-// ControlPlane cannot derive: the bus's external listener.
+// ControlPlane cannot derive: the bus's external listener. hypervisorOperator
+// provisions the Keystone account openstack-hypervisor-operator runs as on the
+// compute clusters.
 type ServiceNovaSpec struct {
 	// Replicas overrides the number of Nova API replicas. When nil the
 	// reconciler applies the nova operator's own default (3). It sizes the API
@@ -2303,6 +2305,14 @@ type ServiceNovaSpec struct {
 	// resolution, which still runs the archive. See ServiceNovaDBArchiveSpec.
 	// +optional
 	DBArchive *ServiceNovaDBArchiveSpec `json:"dbArchive,omitempty"`
+
+	// HypervisorOperator provisions the Keystone account openstack-hypervisor-operator
+	// authenticates as, and delivers its credentials beside this Nova and onto every
+	// compute cluster a NovaCompute of it runs on (<cp>-nova-hypervisor-operator-auth).
+	// The account holds admin: Nova's os-services, os-hypervisors and os-aggregates
+	// policies accept nothing narrower. Removing the block deletes the account.
+	// +optional
+	HypervisorOperator *ServiceNovaHypervisorOperatorSpec `json:"hypervisorOperator,omitempty"`
 
 	// ExtraConfig is a free-form INI block for the compute service. It is merged
 	// key by key with spec.globalExtraConfig (sections unioned, this per-service
@@ -2460,6 +2470,14 @@ type ServiceNovaDBArchiveSpec struct {
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
 }
+
+// ServiceNovaHypervisorOperatorSpec is an opt-in marker and carries no fields.
+// Its presence projects the account-only KeystoneService
+// "<cp>-nova-hypervisor-operator" (user NovaHypervisorOperatorAccountName in
+// project NovaHypervisorOperatorProjectName, role admin) and the auth Secret
+// "<cp>-nova-hypervisor-operator-auth" the hypervisor operator's Helm values
+// are filled from.
+type ServiceNovaHypervisorOperatorSpec struct{}
 
 // NovaDedicatedBackingServicesSpec declares the backing-service instances the
 // compute service gets for itself instead of the ControlPlane-wide shared ones.
