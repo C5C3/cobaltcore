@@ -492,10 +492,7 @@ func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon, extra field.E
 		allErrs = append(allErrs, validation.TopologySpreadSelector(
 			specPath.Child("deployment", "topologySpreadConstraints"),
 			h.Spec.Deployment.TopologySpreadConstraints,
-			map[string]string{
-				LabelKeyName:     AppName,
-				LabelKeyInstance: h.Name,
-			},
+			APIPodSelector(h.Name),
 		)...)
 	}
 
@@ -656,4 +653,15 @@ func validateKeystoneEndpoint(fldPath *field.Path, endpoint string) field.ErrorL
 		errs = append(errs, field.Invalid(fldPath, endpoint, "URL must include a host"))
 	}
 	return errs
+}
+
+// APIPodSelector returns the pod selector of the dashboard Deployment of the
+// Horizon named name, which the labelSelector of every custom topology spread
+// constraint must equal. The ControlPlane reads it to complete the spread
+// constraints it projects.
+func APIPodSelector(name string) map[string]string {
+	return map[string]string{
+		LabelKeyName:     AppName,
+		LabelKeyInstance: name,
+	}
 }

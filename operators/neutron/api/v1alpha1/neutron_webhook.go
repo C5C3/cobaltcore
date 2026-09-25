@@ -262,7 +262,7 @@ func (w *NeutronWebhook) validate(
 	// block has no single selector a topology-spread constraint could name,
 	// because it configures two Deployments with different selectors.
 	allErrs = append(allErrs, w.validateDeploymentBlock(ctx, specPath.Child("deployment"),
-		&n.Spec.Deployment, naming.APISelectorLabels(neutronAppName, n.Name))...)
+		&n.Spec.Deployment, APIPodSelector(n.Name))...)
 	allErrs = append(allErrs, w.validateDeploymentBlock(ctx, specPath.Child("workers", "deployment"),
 		&n.Spec.Workers.Deployment, nil)...)
 
@@ -713,4 +713,12 @@ func validateOVNDBSync(fldPath *field.Path, s *OVNDBSyncSpec) field.ErrorList {
 		))
 	}
 	return errs
+}
+
+// APIPodSelector returns the pod selector of the API Deployment of the Neutron
+// named name, which the labelSelector of every custom topology spread
+// constraint on spec.deployment must equal. The ControlPlane reads it to
+// complete the spread constraints it projects.
+func APIPodSelector(name string) map[string]string {
+	return naming.APISelectorLabels(neutronAppName, name)
 }

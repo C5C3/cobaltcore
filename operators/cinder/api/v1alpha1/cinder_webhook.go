@@ -337,11 +337,11 @@ func (w *CinderWebhook) validate(ctx context.Context, c *Cinder, extra field.Err
 	}{
 		{
 			specPath.Child("api", "deployment"), &c.Spec.API.Deployment,
-			naming.APISelectorLabels(cinderAppName, c.Name),
+			APIPodSelector(c.Name),
 		},
 		{
 			specPath.Child("scheduler", "deployment"), &c.Spec.Scheduler.Deployment,
-			componentSelectorLabels(c.Name, componentScheduler),
+			SchedulerPodSelector(c.Name),
 		},
 		{specPath.Child("volume", "deployment"), &c.Spec.Volume.Deployment, nil},
 		{
@@ -685,6 +685,19 @@ func (w *CinderWebhook) validateDeploymentBlock(
 		)...)
 	}
 	return errs
+}
+
+// APIPodSelector returns the pod selector of the API Deployment of the Cinder
+// named name, which the labelSelector of every custom topology spread
+// constraint on spec.api.deployment must equal. The ControlPlane reads it to
+// complete the spread constraints it projects.
+func APIPodSelector(name string) map[string]string {
+	return naming.APISelectorLabels(cinderAppName, name)
+}
+
+// SchedulerPodSelector is the APIPodSelector twin for spec.scheduler.deployment.
+func SchedulerPodSelector(name string) map[string]string {
+	return componentSelectorLabels(name, componentScheduler)
 }
 
 // componentSelectorLabels returns the pod selector of the Deployment of one

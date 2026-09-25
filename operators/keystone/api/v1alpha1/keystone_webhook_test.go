@@ -3752,3 +3752,17 @@ func TestKeystoneValidate_AutoscalingTargetNeedsAPositiveRequest(t *testing.T) {
 	_, err = w.ValidateCreate(context.Background(), o)
 	g.Expect(err).NotTo(HaveOccurred())
 }
+
+// TestAPIPodSelector pins the exported selector to the labels the API
+// Deployment's pods carry, the map the spread check compares against.
+func TestAPIPodSelector(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(APIPodSelector("ks")).To(Equal(map[string]string{
+		"app.kubernetes.io/name":     "keystone",
+		"app.kubernetes.io/instance": "ks",
+	}))
+	// Each call returns a fresh map, so a caller cannot alias another's.
+	a := APIPodSelector("ks")
+	a["extra"] = "x"
+	g.Expect(APIPodSelector("ks")).NotTo(HaveKey("extra"))
+}

@@ -522,19 +522,19 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 	}{
 		{
 			specPath.Child("api", "deployment"), &n.Spec.API.Deployment,
-			naming.APISelectorLabels(novaAppName, n.Name),
+			APIPodSelector(n.Name),
 		},
 		{
 			specPath.Child("metadata", "deployment"), &n.Spec.Metadata.Deployment,
-			componentSelectorLabels(n.Name, componentMetadata),
+			MetadataPodSelector(n.Name),
 		},
 		{
 			specPath.Child("scheduler", "deployment"), &n.Spec.Scheduler.Deployment,
-			componentSelectorLabels(n.Name, componentScheduler),
+			SchedulerPodSelector(n.Name),
 		},
 		{
 			specPath.Child("conductor", "deployment"), &n.Spec.Conductor.Deployment,
-			componentSelectorLabels(n.Name, componentConductor),
+			ConductorPodSelector(n.Name),
 		},
 	}
 	// The console block is validated only while it exists and the proxy is
@@ -548,7 +548,7 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 			selector   map[string]string
 		}{
 			specPath.Child("consoleProxy", "deployment"), n.Spec.ConsoleProxy.Deployment,
-			componentSelectorLabels(n.Name, componentConsoleProxy),
+			ConsoleProxyPodSelector(n.Name),
 		})
 	}
 	for _, block := range blocks {
@@ -894,6 +894,35 @@ func (w *NovaWebhook) validateDeploymentBlock(
 		)...)
 	}
 	return errs
+}
+
+// APIPodSelector returns the pod selector of the API Deployment of the Nova
+// named name, which the labelSelector of every custom topology spread
+// constraint on spec.api.deployment must equal. The ControlPlane reads it and
+// its component twins below to complete the spread constraints it projects.
+func APIPodSelector(name string) map[string]string {
+	return naming.APISelectorLabels(novaAppName, name)
+}
+
+// MetadataPodSelector is the APIPodSelector twin for spec.metadata.deployment.
+func MetadataPodSelector(name string) map[string]string {
+	return componentSelectorLabels(name, componentMetadata)
+}
+
+// SchedulerPodSelector is the APIPodSelector twin for spec.scheduler.deployment.
+func SchedulerPodSelector(name string) map[string]string {
+	return componentSelectorLabels(name, componentScheduler)
+}
+
+// ConductorPodSelector is the APIPodSelector twin for spec.conductor.deployment.
+func ConductorPodSelector(name string) map[string]string {
+	return componentSelectorLabels(name, componentConductor)
+}
+
+// ConsoleProxyPodSelector is the APIPodSelector twin for
+// spec.consoleProxy.deployment.
+func ConsoleProxyPodSelector(name string) map[string]string {
+	return componentSelectorLabels(name, componentConsoleProxy)
 }
 
 // componentSelectorLabels returns the pod selector of the Deployment of one
