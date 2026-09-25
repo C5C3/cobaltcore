@@ -2038,15 +2038,6 @@ spec:
                         maxLength: 512
                         pattern: ^https?://
                         type: string
-                      replicas:
-                        description: |-
-                          Replicas overrides the number of Cinder API replicas. When nil the
-                          reconciler applies the cinder operator's own default (3). It sizes the API
-                          Deployment only; the volume and backup Deployments the satellites carry are
-                          single-replica by construction.
-                        format: int32
-                        minimum: 1
-                        type: integer
                       targetClusterRef:
                         description: |-
                           TargetClusterRef names the registered target cluster the block-storage
@@ -4671,13 +4662,6 @@ spec:
                         maxLength: 512
                         pattern: ^https?://
                         type: string
-                      replicas:
-                        description: |-
-                          Replicas overrides the number of Neutron API replicas. When nil the
-                          reconciler applies the neutron operator's own default (3).
-                        format: int32
-                        minimum: 1
-                        type: integer
                       targetClusterRef:
                         description: |-
                           TargetClusterRef names the registered target cluster the network service is
@@ -4699,18 +4683,6 @@ spec:
                         required:
                         - name
                         type: object
-                      workerReplicas:
-                        description: |-
-                          WorkerReplicas overrides the replica count of the two RPC worker
-                          Deployments the neutron child runs beside its API, the periodic workers and
-                          the OVN maintenance worker. It is projected onto the child's
-                          spec.workers.deployment.replicas, which sizes both. When nil the reconciler
-                          applies the neutron operator's own default (3), which is six worker pods.
-                          The knob exists because a single-node devstack cannot carry six idle worker
-                          pods beside the rest of the control plane.
-                        format: int32
-                        minimum: 1
-                        type: integer
                     required:
                     - ovn
                     type: object
@@ -4738,16 +4710,6 @@ spec:
                       previously-projected Nova child unless the ControlPlane carries the
                       annotation c5c3.io/allow-nova-deletion: "true".
                     properties:
-                      conductorReplicas:
-                        description: |-
-                          ConductorReplicas overrides the replica count of the nova-conductor
-                          Deployment, the only process that reaches the cell database on behalf of a
-                          compute node. When nil the reconciler applies the nova operator's own
-                          default (1); conductors are peers that hold nothing between requests, so
-                          raising it costs only the pods.
-                        format: int32
-                        minimum: 1
-                        type: integer
                       consoleProxy:
                         description: |-
                           ConsoleProxy configures the console proxy of the projected compute
@@ -4819,20 +4781,11 @@ spec:
                             - hostname
                             - parentRef
                             type: object
-                          replicas:
-                            description: |-
-                              Replicas overrides the replica count of the console-proxy Deployment. When
-                              nil the reconciler applies the nova operator's own default (1). Forbidden
-                              while the proxy is disabled (the rule above).
-                            format: int32
-                            minimum: 1
-                            type: integer
                         type: object
                         x-kubernetes-validations:
-                        - message: replicas and gateway must not be set when consoleProxy.enabled
+                        - message: gateway must not be set when consoleProxy.enabled
                             is false
-                          rule: '!has(self.enabled) || self.enabled || (!has(self.replicas)
-                            && !has(self.gateway))'
+                          rule: '!has(self.enabled) || self.enabled || !has(self.gateway)'
                       databaseCredentialsMode:
                         description: |-
                           DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
@@ -5344,16 +5297,6 @@ spec:
                         - hostname
                         - parentRef
                         type: object
-                      metadataReplicas:
-                        description: |-
-                          MetadataReplicas overrides the replica count of the nova-metadata-api
-                          Deployment, the process that answers an instance's calls to
-                          169.254.169.254. When nil the reconciler applies the nova operator's own
-                          default (1); the metadata API holds nothing between requests, so raising
-                          it costs only the pods.
-                        format: int32
-                        minimum: 1
-                        type: integer
                       metadataSharedSecretRef:
                         description: |-
                           MetadataSharedSecretRef references a Secret holding the value the Neutron
@@ -5483,25 +5426,6 @@ spec:
                         required:
                         - transportURLSecretRef
                         type: object
-                      replicas:
-                        description: |-
-                          Replicas overrides the number of Nova API replicas. When nil the
-                          reconciler applies the nova operator's own default (3). It sizes the API
-                          Deployment only; the metadata, scheduler, conductor, and console-proxy
-                          Deployments carry replica counts of their own.
-                        format: int32
-                        minimum: 1
-                        type: integer
-                      schedulerReplicas:
-                        description: |-
-                          SchedulerReplicas overrides the replica count of the nova-scheduler
-                          Deployment, the process that picks a host for every instance the conductor
-                          asks it about. When nil the reconciler applies the nova operator's own
-                          default (1); schedulers are peers that read the same host state out of
-                          Placement, so raising it costs only the pods.
-                        format: int32
-                        minimum: 1
-                        type: integer
                       targetClusterRef:
                         description: |-
                           TargetClusterRef names the registered target cluster the compute service is

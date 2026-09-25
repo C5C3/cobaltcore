@@ -530,14 +530,19 @@ func (r *ControlPlaneReconciler) reconcileCinder(ctx context.Context, cp *c5c3v1
 	// the ControlPlane's block is projected as it stands.
 	cn.Spec.Gateway = cp.Spec.Services.Cinder.Gateway.DeepCopy()
 
-	// Resolve API replicas to the shared operator default, then let an override win.
-	// Assigning unconditionally means clearing services.cinder.replicas reverts the
-	// child to the default instead of leaving the previously-projected value pinned
-	// on the fetched child.
-	cn.Spec.API.Deployment.Replicas = commonv1.DefaultReplicas
-	if cp.Spec.Services.Cinder.Replicas != nil {
-		cn.Spec.API.Deployment.Replicas = *cp.Spec.Services.Cinder.Replicas
+	// Project the resolved spec.sizing.cinder onto the API Deployment, its uWSGI
+	// block and the autoscaling block. The scheduler, volume and backup
+	// Deployments and the Job pods follow below.
+	sizing, err := r.effectiveSizing(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving sizing: %w", err)
 	}
+	var cdSizing c5c3v1alpha1.CinderSizingSpec
+	if sizing.Cinder != nil {
+		cdSizing = *sizing.Cinder
+	}
+	cn.Spec.API.UWSGI, cn.Spec.Autoscaling = projectAPI(&cn.Spec.API.Deployment, sizing.PodPlacementSpec,
+		cdSizing.API, cinderv1alpha1.APIPodSelector(cn.Name))
 
 	// The shared bus reaches the child as a BROWNFIELD secretRef naming the Secret
 	// reconcileServiceMessaging wrote beside it: the cinder operator resolves
@@ -579,23 +584,30 @@ func (r *ControlPlaneReconciler) reconcileCinder(ctx context.Context, cp *c5c3v1
 
 	// The volume and backup Deployments run exactly one replica, which the Cinder
 	// CRD's CEL rules require: the NFS drivers refuse a second process under the
-	// same host identity. The scheduler runs one because that is what the cinder
-	// operator's defaulting webhook gives a standalone CR; no CEL rule guards it.
-	// All three blocks are struct values rather than pointers, so the apply carries
-	// them whatever this projection assigns, and the API server materializes the
-	// shared DeploymentSpec default of three into the replicas of every deployment
-	// block on the wire before that webhook runs. Writing the one replica here is
-	// what keeps the projected child admissible: leaving the volume and backup
+	// same host identity. The scheduler runs one unless spec.sizing says
+	// otherwise, because that is what the cinder operator's defaulting webhook
+	// gives a standalone CR; no CEL rule guards it. All three blocks are struct
+	// values rather than pointers, so the apply carries them whatever this
+	// projection assigns, and the API server materializes the shared
+	// DeploymentSpec default of three into the replicas of every deployment
+	// block on the wire before that webhook runs. Writing the replica count here
+	// is what keeps the projected child admissible: leaving the volume and backup
 	// blocks alone has the Cinder API server reject the child on every pass, and
 	// leaving the scheduler block alone has it silently run three schedulers.
-	cn.Spec.Scheduler.Deployment.Replicas = 1
+	// spec.sizing.cinder sizes and places all three; the volume and backup blocks
+	// carry no spread, since one pod each has nothing to spread.
+	projectDeployment(&cn.Spec.Scheduler.Deployment, sizing.PodPlacementSpec, cdSizing.Scheduler,
+		cinderv1alpha1.DefaultSchedulerReplicas, cinderv1alpha1.SchedulerPodSelector(cn.Name))
 	cn.Spec.Volume.Deployment.Replicas = 1
+	projectPod(&cn.Spec.Volume.Deployment, sizing.PodPlacementSpec, cdSizing.Volume)
 	cn.Spec.Backup.Deployment.Replicas = 1
+	projectPod(&cn.Spec.Backup.Deployment, sizing.PodPlacementSpec, cdSizing.Backup)
+	cn.Spec.Jobs = projectJobs(cdSizing.Jobs)
 
-	// spec.dbPurge, spec.networkPolicy, spec.autoscaling, spec.logging,
-	// spec.api.uwsgi and spec.policyOverrides are deliberately NOT set, the
-	// Placement posture: the child-side defaults stay authoritative, and tuning
-	// them stays a standalone-CR concern.
+	// spec.dbPurge, spec.networkPolicy, spec.logging and spec.policyOverrides stay
+	// unprojected with the graceful-termination timings, the rollout strategy and
+	// affinity: the child-side defaults stay authoritative, and tuning them stays
+	// a standalone-CR concern.
 
 	res, err := commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp,
 		commonreconcile.ChildProjectionParams[*cinderv1alpha1.Cinder]{

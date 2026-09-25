@@ -1591,28 +1591,11 @@ type BarbicanDedicatedBackingServicesSpec struct {
 // Keystone child's naming convention) rather than set by the user here, and the
 // L1 api package stays free of a dependency on the neutron module.
 //
-// Two fields have no counterpart on the other services: the required ovn block,
+// One field has no counterpart on the other services: the required ovn block,
 // because Neutron's ML2/OVN mechanism driver has no logical network model to
-// write to without an OVN control plane, and workerReplicas, because the child
-// runs its RPC workers in Deployments beside the API.
+// write to without an OVN control plane. The RPC workers the child runs in
+// Deployments beside the API are sized by spec.sizing.neutron.workers.
 type ServiceNeutronSpec struct {
-	// Replicas overrides the number of Neutron API replicas. When nil the
-	// reconciler applies the neutron operator's own default (3).
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Replicas *int32 `json:"replicas,omitempty"`
-
-	// WorkerReplicas overrides the replica count of the two RPC worker
-	// Deployments the neutron child runs beside its API, the periodic workers and
-	// the OVN maintenance worker. It is projected onto the child's
-	// spec.workers.deployment.replicas, which sizes both. When nil the reconciler
-	// applies the neutron operator's own default (3), which is six worker pods.
-	// The knob exists because a single-node devstack cannot carry six idle worker
-	// pods beside the rest of the control plane.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	WorkerReplicas *int32 `json:"workerReplicas,omitempty"`
-
 	// Image optionally overrides the Neutron container image. When nil the
 	// reconciler derives the image from spec.openStackRelease.
 	// +optional
@@ -1802,14 +1785,6 @@ type NeutronDedicatedBackingServicesSpec struct {
 // backup service rather than one of several. Both project satellite CRs of their
 // own kinds beside the Cinder child.
 type ServiceCinderSpec struct {
-	// Replicas overrides the number of Cinder API replicas. When nil the
-	// reconciler applies the cinder operator's own default (3). It sizes the API
-	// Deployment only; the volume and backup Deployments the satellites carry are
-	// single-replica by construction.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Replicas *int32 `json:"replicas,omitempty"`
-
 	// Image optionally overrides the Cinder container image. When nil the
 	// reconciler derives the image from spec.openStackRelease.
 	// +optional
@@ -2131,13 +2106,11 @@ type CinderDedicatedBackingServicesSpec struct {
 // policy) rather than set by the user here, so this type stays a local copy of
 // the shapes it projects rather than an import of novav1alpha1.NovaSpec.
 //
-// Nine fields have no counterpart on the other services. Three are replica
-// counts, because the compute service runs a metadata API, a scheduler, and a
-// conductor in Deployments beside its API. Two are the metadata pair,
+// Six fields have no counterpart on the other services. Two are the metadata pair,
 // metadataGateway and metadataSharedSecretRef: the metadata API is the one
 // endpoint dialed from a compute cluster rather than from inside the control
 // plane, and the agent that dials it signs every request with a secret both
-// sides have to hold. consoleProxy sizes and publishes the noVNC console proxy,
+// sides have to hold. consoleProxy switches and publishes the noVNC console proxy,
 // a browser-facing bridge to the hypervisors no other service runs, and
 // dbArchive tunes the archive of the rows Nova soft-deletes instead of removing.
 // remoteCompute hands over the one address of the compute contract the
@@ -2145,41 +2118,6 @@ type CinderDedicatedBackingServicesSpec struct {
 // provisions the Keystone account openstack-hypervisor-operator runs as on the
 // compute clusters.
 type ServiceNovaSpec struct {
-	// Replicas overrides the number of Nova API replicas. When nil the
-	// reconciler applies the nova operator's own default (3). It sizes the API
-	// Deployment only; the metadata, scheduler, conductor, and console-proxy
-	// Deployments carry replica counts of their own.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Replicas *int32 `json:"replicas,omitempty"`
-
-	// MetadataReplicas overrides the replica count of the nova-metadata-api
-	// Deployment, the process that answers an instance's calls to
-	// 169.254.169.254. When nil the reconciler applies the nova operator's own
-	// default (1); the metadata API holds nothing between requests, so raising
-	// it costs only the pods.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	MetadataReplicas *int32 `json:"metadataReplicas,omitempty"`
-
-	// SchedulerReplicas overrides the replica count of the nova-scheduler
-	// Deployment, the process that picks a host for every instance the conductor
-	// asks it about. When nil the reconciler applies the nova operator's own
-	// default (1); schedulers are peers that read the same host state out of
-	// Placement, so raising it costs only the pods.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	SchedulerReplicas *int32 `json:"schedulerReplicas,omitempty"`
-
-	// ConductorReplicas overrides the replica count of the nova-conductor
-	// Deployment, the only process that reaches the cell database on behalf of a
-	// compute node. When nil the reconciler applies the nova operator's own
-	// default (1); conductors are peers that hold nothing between requests, so
-	// raising it costs only the pods.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	ConductorReplicas *int32 `json:"conductorReplicas,omitempty"`
-
 	// ConsoleProxy configures the console proxy of the projected compute
 	// service. Omitting it (the default) leaves the proxy enabled at the nova
 	// operator's own defaults, which is what a plane whose users open instance
@@ -2359,13 +2297,13 @@ type ServiceNovaRemoteComputeSpec struct {
 // the nova-novncproxy Deployment that bridges a browser's noVNC session to the
 // VNC server of the hypervisor an instance runs on.
 //
-// The rule pairs the sizing knobs with the switch that projects them. A disabled
-// proxy has no Deployment to size and no listener to expose, and the Nova CRD
-// rejects a spec.consoleProxy.deployment written on a disabled proxy, so a
-// replicas or gateway value set here beside enabled: false has nowhere to land.
-// Rejecting it at admission answers the user instead of parking the projected
-// child on a rule of its own.
-// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || self.enabled || (!has(self.replicas) && !has(self.gateway))",message="replicas and gateway must not be set when consoleProxy.enabled is false"
+// The rule pairs the listener with the switch that projects it. A disabled proxy
+// has no listener to expose, so a gateway set here beside enabled: false has
+// nowhere to land. Rejecting it at admission answers the user instead of
+// parking the projected child on a rule of its own. The proxy is sized by
+// spec.sizing.nova.consoleProxy, which the validating webhook forbids beside a
+// disabled proxy for the same reason.
+// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || self.enabled || !has(self.gateway)",message="gateway must not be set when consoleProxy.enabled is false"
 type ServiceNovaConsoleProxySpec struct {
 	// Enabled projects the console proxy. When nil the reconciler applies the
 	// nova operator's own default (true): a control plane whose consoles cannot
@@ -2373,13 +2311,6 @@ type ServiceNovaConsoleProxySpec struct {
 	// false deletes the proxy Deployment, its Service, and its HTTPRoute.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
-
-	// Replicas overrides the replica count of the console-proxy Deployment. When
-	// nil the reconciler applies the nova operator's own default (1). Forbidden
-	// while the proxy is disabled (the rule above).
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Replicas *int32 `json:"replicas,omitempty"`
 
 	// Gateway optionally exposes the console proxy externally via a Gateway API
 	// HTTPRoute. It takes a hostname of its own rather than a path under the

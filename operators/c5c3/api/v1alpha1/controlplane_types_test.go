@@ -1132,18 +1132,15 @@ func TestDedicatedNeutronBackingServicesAccessors(t *testing.T) {
 }
 
 // TestServiceNeutronSpecDeepCopy verifies the curated Neutron subset round-trips
-// through DeepCopy with independent storage, in particular the extraConfig map,
-// the worker replica count, and the dedicated-backing-services pointer: the
+// through DeepCopy with independent storage, in particular the extraConfig map
+// and the dedicated-backing-services pointer: the
 // reconciler DeepCopies the projected spec onto the Neutron child, so an aliased
 // nested map here would let a child projection mutate the ControlPlane spec it
 // was derived from.
 func TestServiceNeutronSpecDeepCopy(t *testing.T) {
-	replicas, workerReplicas := int32(2), int32(1)
 	spec := ServiceNeutronSpec{
-		Replicas:       &replicas,
-		WorkerReplicas: &workerReplicas,
-		Image:          &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/neutron", Tag: "2026.1"},
-		ExtraConfig:    map[string]map[string]string{"ml2": {"tenant_network_types": "geneve"}},
+		Image:       &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/neutron", Tag: "2026.1"},
+		ExtraConfig: map[string]map[string]string{"ml2": {"tenant_network_types": "geneve"}},
 		OVN: NeutronOVNSpec{
 			CentralRef: NeutronOVNCentralRef{Name: "ovn", Namespace: "networking"},
 		},
@@ -1154,12 +1151,6 @@ func TestServiceNeutronSpecDeepCopy(t *testing.T) {
 	}
 
 	clone := spec.DeepCopy()
-	if clone.Replicas == spec.Replicas {
-		t.Errorf("DeepCopy did not allocate a new *int32 for Replicas")
-	}
-	if clone.WorkerReplicas == spec.WorkerReplicas {
-		t.Errorf("DeepCopy did not allocate a new *int32 for WorkerReplicas")
-	}
 	if clone.Image == spec.Image {
 		t.Errorf("DeepCopy did not allocate a new *ImageSpec for Image")
 	}
@@ -1435,10 +1426,9 @@ func TestDedicatedNovaBackingServicesAccessors(t *testing.T) {
 // satellites, so an aliased nested value here would let a child projection
 // mutate the ControlPlane spec it was derived from.
 func TestServiceCinderSpecDeepCopy(t *testing.T) {
-	replicas, maxSizeGB, maxCount := int32(2), int32(50), int32(10)
+	maxSizeGB, maxCount := int32(50), int32(10)
 	fileSize := int64(52428800)
 	spec := ServiceCinderSpec{
-		Replicas:                &replicas,
 		Image:                   &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/cinder", Tag: "2026.1"},
 		Gateway:                 &commonv1.GatewaySpec{Hostname: "cinder.example.com"},
 		PublicEndpoint:          "https://cinder.example.com",
@@ -1483,7 +1473,6 @@ func TestServiceCinderSpecDeepCopy(t *testing.T) {
 
 	// Every pointer-backed leaf must be freshly allocated: mutating the clone
 	// leaves the source at the values asserted below.
-	*clone.Replicas = 9
 	clone.Image.Tag = "2026.2"
 	clone.Backends[0].NFS.Server = "other.example.com"
 	*clone.Backends[0].ImageVolumeCache.MaxSizeGB = 999
@@ -1493,9 +1482,6 @@ func TestServiceCinderSpecDeepCopy(t *testing.T) {
 	clone.ExtraConfig["DEFAULT"]["quota_volumes"] = "99"
 	clone.TargetClusterRef.Name = "edge-other"
 
-	if *spec.Replicas != 2 {
-		t.Errorf("DeepCopy aliased Replicas: source = %d, want 2", *spec.Replicas)
-	}
 	if spec.Image.Tag != "2026.1" {
 		t.Errorf("DeepCopy aliased the image: source tag = %q, want %q", spec.Image.Tag, "2026.1")
 	}
@@ -1546,26 +1532,19 @@ func TestServiceCinderSpecDeepCopy(t *testing.T) {
 
 // TestServiceNovaSpecDeepCopy verifies the curated Nova subset round-trips
 // through DeepCopy with independent storage, down to the leaves the other
-// services have no counterpart for: the three per-component replica counts, the
-// console-proxy block with its own gateway, the second gateway the metadata API
+// services have no counterpart for: the console-proxy block with its own
+// gateway, the second gateway the metadata API
 // is exposed on, the shared-secret reference, and the archive block. The
 // reconciler DeepCopies the projected spec onto the Nova child, so an aliased
 // nested value here would let a child projection mutate the ControlPlane spec it
 // was derived from.
 func TestServiceNovaSpecDeepCopy(t *testing.T) {
-	replicas, metadataReplicas, schedulerReplicas := int32(2), int32(3), int32(4)
-	conductorReplicas, proxyReplicas := int32(5), int32(6)
 	maxRows, sleep, retentionDays := int32(1000), int32(1), int32(30)
 	enabled := true
 	spec := ServiceNovaSpec{
-		Replicas:          &replicas,
-		MetadataReplicas:  &metadataReplicas,
-		SchedulerReplicas: &schedulerReplicas,
-		ConductorReplicas: &conductorReplicas,
 		ConsoleProxy: &ServiceNovaConsoleProxySpec{
-			Enabled:  &enabled,
-			Replicas: &proxyReplicas,
-			Gateway:  &commonv1.GatewaySpec{Hostname: "nova-novnc.example.com"},
+			Enabled: &enabled,
+			Gateway: &commonv1.GatewaySpec{Hostname: "nova-novnc.example.com"},
 		},
 		Image:                   &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/nova", Tag: "2026.1"},
 		Gateway:                 &commonv1.GatewaySpec{Hostname: "nova.example.com"},
@@ -1597,12 +1576,7 @@ func TestServiceNovaSpecDeepCopy(t *testing.T) {
 
 	// Every pointer-backed leaf must be freshly allocated: mutating the clone
 	// leaves the source at the values asserted below.
-	*clone.Replicas = 9
-	*clone.MetadataReplicas = 9
-	*clone.SchedulerReplicas = 9
-	*clone.ConductorReplicas = 9
 	*clone.ConsoleProxy.Enabled = false
-	*clone.ConsoleProxy.Replicas = 9
 	clone.ConsoleProxy.Gateway.Hostname = "other.example.com"
 	clone.Image.Tag = "2026.2"
 	clone.Gateway.Hostname = "other.example.com"
@@ -1620,11 +1594,6 @@ func TestServiceNovaSpecDeepCopy(t *testing.T) {
 		got   int32
 		want  int32
 	}{
-		{"Replicas", *spec.Replicas, 2},
-		{"MetadataReplicas", *spec.MetadataReplicas, 3},
-		{"SchedulerReplicas", *spec.SchedulerReplicas, 4},
-		{"ConductorReplicas", *spec.ConductorReplicas, 5},
-		{"ConsoleProxy.Replicas", *spec.ConsoleProxy.Replicas, 6},
 		{"DBArchive.MaxRows", *spec.DBArchive.MaxRows, 1000},
 		{"DBArchive.RetentionDays", *spec.DBArchive.RetentionDays, 30},
 	} {

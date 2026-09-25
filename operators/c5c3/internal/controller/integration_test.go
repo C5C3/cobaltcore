@@ -349,12 +349,9 @@ func integrationBarbicanService() *c5c3v1alpha1.ServiceBarbicanSpec {
 }
 
 // integrationNeutronService returns a valid services.neutron block: the required
-// OVN control plane reference and a single RPC worker. The block cannot be empty
-// the way its Placement sibling can, because the ML2/OVN mechanism driver has no
-// logical network model to write to without a central. workerReplicas is pinned
-// so the full-chain test can prove the override reaches the child's
-// spec.workers.deployment.replicas, while replicas is left unset so the same test
-// proves the API pods fall back to the shared operator default.
+// OVN control plane reference. The block cannot be empty the way its Placement
+// sibling can, because the ML2/OVN mechanism driver has no logical network model
+// to write to without a central.
 //
 // The centralRef spells no namespace on purpose: the defaulting webhook fills an
 // empty one with the ControlPlane's own namespace, and NeutronOVNCentralNamespace()
@@ -362,7 +359,6 @@ func integrationBarbicanService() *c5c3v1alpha1.ServiceBarbicanSpec {
 // tests create the OVNCentral.
 func integrationNeutronService() *c5c3v1alpha1.ServiceNeutronSpec {
 	return &c5c3v1alpha1.ServiceNeutronSpec{
-		WorkerReplicas: ptr.To(int32(1)),
 		OVN: c5c3v1alpha1.NeutronOVNSpec{
 			CentralRef: c5c3v1alpha1.NeutronOVNCentralRef{Name: "cp-ovn"},
 		},
@@ -1540,9 +1536,14 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	cp.Spec.Services.Cinder = integrationCinderService()
 	cp.Spec.Services.Nova = integrationNovaService()
 
-	// One Barbican API replica, so Phase 8 proves spec.sizing reaches the child.
+	// One Barbican API replica and a single Neutron RPC worker, so Phases 8 and 9
+	// prove spec.sizing reaches the children, while the Neutron API is left
+	// unsized so Phase 9 proves its pods fall back to the shared operator default.
 	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{
 		Barbican: &c5c3v1alpha1.APIServiceSizingSpec{API: apiReplicas(1)},
+		Neutron: &c5c3v1alpha1.NeutronSizingSpec{
+			Workers: &c5c3v1alpha1.ScaledSizingSpec{Replicas: ptr.To(int32(1))},
+		},
 	})
 
 	// The shared message bus. The network, block-storage and compute services are
@@ -2451,9 +2452,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// Two replica counts, one overridden and one not: the RPC workers take the
 	// declared count, the API pods the shared operator default.
 	g.Expect(projectedNeutron.Spec.Deployment.Replicas).To(Equal(commonv1.DefaultReplicas),
-		"replicas fall back to the shared operator default when services.neutron sets none")
+		"replicas fall back to the shared operator default when spec.sizing.neutron.api sets none")
 	g.Expect(projectedNeutron.Spec.Workers.Deployment.Replicas).To(Equal(int32(1)),
-		"services.neutron.workerReplicas sizes both RPC worker Deployments")
+		"spec.sizing.neutron.workers.replicas sizes both RPC worker Deployments")
 
 	// The bus reaches the child as a brownfield secretRef naming the Secret asserted
 	// above, never as the managed clusterRef the ControlPlane resolved it from: the
@@ -2942,10 +2943,13 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(projectedNova.Spec.Scheduler.Deployment.Replicas).To(Equal(int32(1)))
 	g.Expect(projectedNova.Spec.Conductor.Deployment.Replicas).To(Equal(int32(1)))
 
-	// An absent services.nova.consoleProxy projects the ZERO block, which leaves
-	// both the switch and the deployment absent on the wire and lets the nova
-	// defaulting webhook enable the proxy at one replica.
-	g.Expect(projectedNova.Spec.ConsoleProxy).To(Equal(novav1alpha1.NovaConsoleProxySpec{}))
+	// An absent services.nova.consoleProxy leaves the switch absent on the wire,
+	// so the nova defaulting webhook enables the proxy, and carries the sized
+	// Deployment: under the Standard profile the one replica that webhook
+	// would otherwise materialize.
+	g.Expect(projectedNova.Spec.ConsoleProxy).To(Equal(novav1alpha1.NovaConsoleProxySpec{
+		Deployment: &novav1alpha1.DeploymentSpec{Replicas: 1},
+	}))
 
 	g.Expect(projectedNova.Spec.DBArchive).To(BeNil(),
 		"spec.dbArchive is unset: a nil block resolves exactly like an empty one on the child")
@@ -4465,25 +4469,34 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			mutate:  withCinder(integrationCinderService()),
 		},
 		{
-			// Minimum=1 on services.nova.replicas: a compute API scaled to zero
-			// answers nothing, and the field is a pointer, so the zero reaches the
-			// wire rather than being dropped as an empty value.
-			name:    "nova replicas zero",
+			// Minimum=1 on spec.sizing.nova.api.replicas: a compute API scaled to
+			// zero answers nothing, and the field is a pointer, so the zero reaches
+			// the wire rather than being dropped as an empty value.
+			name:    "nova sizing api replicas zero",
 			wantErr: true,
-			mutate:  withNova(&c5c3v1alpha1.ServiceNovaSpec{Replicas: ptr.To(int32(0))}),
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				withNova(integrationNovaService())(cp)
+				cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{
+					Nova: &c5c3v1alpha1.NovaSizingSpec{API: apiReplicas(0)},
+				})
+			},
 		},
 		{
-			// The CEL rule on ServiceNovaConsoleProxySpec: sizing a proxy that is
-			// switched off is a contradiction, and the Nova CRD rejects the
-			// consoleProxy.deployment block the projection would derive from it.
-			name:    "nova consoleProxy replicas while disabled",
+			// Sizing a proxy that is switched off is a contradiction the validating
+			// webhook rejects: the Nova CRD rejects the consoleProxy.deployment block
+			// the projection would derive from it.
+			name:    "nova sizing consoleProxy while disabled",
 			wantErr: true,
-			mutate: withNova(&c5c3v1alpha1.ServiceNovaSpec{
-				ConsoleProxy: &c5c3v1alpha1.ServiceNovaConsoleProxySpec{
-					Enabled:  ptr.To(false),
-					Replicas: ptr.To(int32(1)),
-				},
-			}),
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				withNova(&c5c3v1alpha1.ServiceNovaSpec{
+					ConsoleProxy: &c5c3v1alpha1.ServiceNovaConsoleProxySpec{Enabled: ptr.To(false)},
+				})(cp)
+				cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Nova: &c5c3v1alpha1.NovaSizingSpec{
+					ConsoleProxy: &c5c3v1alpha1.DeploymentSizingSpec{
+						ScaledSizingSpec: c5c3v1alpha1.ScaledSizingSpec{Replicas: ptr.To(int32(1))},
+					},
+				}})
+			},
 		},
 		{
 			// The same rule's gateway leg: a disabled proxy has no listener to publish.
@@ -4502,11 +4515,16 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 		{
 			// An unset switch means enabled, so sizing it is the documented way to
 			// scale the default proxy and must be admitted.
-			name:    "nova consoleProxy replicas with enabled unset",
+			name:    "nova sizing consoleProxy replicas with the block unset",
 			wantErr: false,
-			mutate: withNova(&c5c3v1alpha1.ServiceNovaSpec{
-				ConsoleProxy: &c5c3v1alpha1.ServiceNovaConsoleProxySpec{Replicas: ptr.To(int32(2))},
-			}),
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				withNova(integrationNovaService())(cp)
+				cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Nova: &c5c3v1alpha1.NovaSizingSpec{
+					ConsoleProxy: &c5c3v1alpha1.DeploymentSizingSpec{
+						ScaledSizingSpec: c5c3v1alpha1.ScaledSizingSpec{Replicas: ptr.To(int32(2))},
+					},
+				}})
+			},
 		},
 		{
 			// The switch alone is how a proxy is turned off.

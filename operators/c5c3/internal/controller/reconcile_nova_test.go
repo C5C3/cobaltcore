@@ -1418,11 +1418,13 @@ func TestReconcileNova_ProjectedChildFields(t *testing.T) {
 	g.Expect(nv.Spec.Scheduler.Deployment.Replicas).To(Equal(int32(1)))
 	g.Expect(nv.Spec.Conductor.Deployment.Replicas).To(Equal(int32(1)))
 
-	// No gateway of any kind, and the console proxy left to the nova webhook.
+	// No gateway of any kind, and the console proxy's switch left to the nova
+	// webhook: only the sized Deployment is projected.
 	g.Expect(nv.Spec.Gateway).To(BeNil())
 	g.Expect(nv.Spec.Metadata.Gateway).To(BeNil())
-	g.Expect(nv.Spec.ConsoleProxy).To(Equal(novav1alpha1.NovaConsoleProxySpec{}),
-		"an undeclared console proxy is left for the nova defaulting webhook to enable")
+	g.Expect(nv.Spec.ConsoleProxy).To(Equal(novav1alpha1.NovaConsoleProxySpec{
+		Deployment: &novav1alpha1.DeploymentSpec{Replicas: 1},
+	}), "an undeclared console proxy is left for the nova defaulting webhook to enable")
 
 	// Both optional client sections on, and every override empty: the catalog's
 	// internal rows already carry the managed URLs.
@@ -1438,16 +1440,31 @@ func TestReconcileNova_ProjectedChildFields(t *testing.T) {
 }
 
 // TestReconcileNova_ConsoleProxyCases walks the three shapes the console proxy
-// takes. The zero block is the one that needs saying: it leaves both the switch
-// and the deployment absent on the wire, which is the only state the nova
-// defaulting webhook acts on.
+// takes. The absent block is the one that needs saying: it leaves the switch
+// absent on the wire, so the nova defaulting webhook enables the proxy, and it
+// still carries the sized Deployment, so a sizing profile reaches the proxy a
+// ControlPlane runs by default.
 func TestReconcileNova_ConsoleProxyCases(t *testing.T) {
 	for name, tc := range map[string]struct {
-		proxy *c5c3v1alpha1.ServiceNovaConsoleProxySpec
-		want  novav1alpha1.NovaConsoleProxySpec
+		proxy  *c5c3v1alpha1.ServiceNovaConsoleProxySpec
+		sizing *c5c3v1alpha1.ControlPlaneSizingSpec
+		want   novav1alpha1.NovaConsoleProxySpec
 	}{
-		"an absent block is left to the nova defaulting webhook": {
-			want: novav1alpha1.NovaConsoleProxySpec{},
+		"an absent block leaves the switch to the nova defaulting webhook": {
+			want: novav1alpha1.NovaConsoleProxySpec{Deployment: &novav1alpha1.DeploymentSpec{Replicas: 1}},
+		},
+		"an absent block carries the sizing too": {
+			sizing: sizingOf(c5c3v1alpha1.SizingSpec{Nova: &c5c3v1alpha1.NovaSizingSpec{
+				ConsoleProxy: &c5c3v1alpha1.DeploymentSizingSpec{ScaledSizingSpec: c5c3v1alpha1.ScaledSizingSpec{
+					Replicas: ptr.To[int32](2),
+					PinnedSizingSpec: c5c3v1alpha1.PinnedSizingSpec{
+						ContainerSizingSpec: c5c3v1alpha1.ContainerSizingSpec{Resources: cpuRequestSizing("50m")},
+					},
+				}},
+			}}),
+			want: novav1alpha1.NovaConsoleProxySpec{Deployment: &novav1alpha1.DeploymentSpec{
+				Replicas: 2, Resources: cpuRequestSizing("50m"),
+			}},
 		},
 		"a disabled proxy carries the switch and nothing else": {
 			proxy: &c5c3v1alpha1.ServiceNovaConsoleProxySpec{Enabled: ptr.To(false)},
@@ -1461,8 +1478,12 @@ func TestReconcileNova_ConsoleProxyCases(t *testing.T) {
 			},
 		},
 		"an enabled proxy carries its replicas and its own listener": {
+			sizing: sizingOf(c5c3v1alpha1.SizingSpec{Nova: &c5c3v1alpha1.NovaSizingSpec{
+				ConsoleProxy: &c5c3v1alpha1.DeploymentSizingSpec{
+					ScaledSizingSpec: c5c3v1alpha1.ScaledSizingSpec{Replicas: ptr.To[int32](4)},
+				},
+			}}),
 			proxy: &c5c3v1alpha1.ServiceNovaConsoleProxySpec{
-				Replicas: ptr.To(int32(4)),
 				Gateway: &commonv1.GatewaySpec{
 					ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
 					Hostname:  "nova-console.example.com",
@@ -1482,13 +1503,14 @@ func TestReconcileNova_ConsoleProxyCases(t *testing.T) {
 			g := NewGomegaWithT(t)
 			cp := novaControlPlane()
 			cp.Spec.Services.Nova.ConsoleProxy = tc.proxy
+			cp.Spec.Sizing = tc.sizing
 			r := newNovaTestReconciler(t, cp)
 
 			_, err := r.reconcileNova(context.Background(), cp)
 			g.Expect(err).NotTo(HaveOccurred())
 
 			nv := getProjectedNova(t, r.Client, cp)
-			g.Expect(nv.Spec.ConsoleProxy).To(Equal(tc.want))
+			g.Expect(nv.Spec.ConsoleProxy).To(BeEquivalentTo(tc.want))
 			if tc.proxy != nil && tc.proxy.Gateway != nil {
 				g.Expect(nv.Spec.ConsoleProxy.Gateway).NotTo(BeIdenticalTo(tc.proxy.Gateway),
 					"the projected listener must not alias the ControlPlane spec")
@@ -1585,10 +1607,12 @@ func TestReconcileNova_ThreeGatewaysProjectedAndCleared(t *testing.T) {
 func TestReconcileNova_ReplicasOverridesWinAndRevert(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := novaControlPlane()
-	cp.Spec.Services.Nova.Replicas = ptr.To(int32(5))
-	cp.Spec.Services.Nova.MetadataReplicas = ptr.To(int32(4))
-	cp.Spec.Services.Nova.SchedulerReplicas = ptr.To(int32(3))
-	cp.Spec.Services.Nova.ConductorReplicas = ptr.To(int32(2))
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Nova: &c5c3v1alpha1.NovaSizingSpec{
+		API:       apiReplicas(5),
+		Metadata:  &c5c3v1alpha1.MetadataAPISizingSpec{DeploymentSizingSpec: deploymentReplicas(4)},
+		Scheduler: &c5c3v1alpha1.WorkerSizingSpec{DeploymentSizingSpec: deploymentReplicas(3)},
+		Conductor: &c5c3v1alpha1.WorkerSizingSpec{DeploymentSizingSpec: deploymentReplicas(2)},
+	}})
 	r := newNovaTestReconciler(t, cp)
 	ctx := context.Background()
 
@@ -1601,10 +1625,7 @@ func TestReconcileNova_ReplicasOverridesWinAndRevert(t *testing.T) {
 	g.Expect(nv.Spec.Scheduler.Deployment.Replicas).To(Equal(int32(3)))
 	g.Expect(nv.Spec.Conductor.Deployment.Replicas).To(Equal(int32(2)))
 
-	cp.Spec.Services.Nova.Replicas = nil
-	cp.Spec.Services.Nova.MetadataReplicas = nil
-	cp.Spec.Services.Nova.SchedulerReplicas = nil
-	cp.Spec.Services.Nova.ConductorReplicas = nil
+	cp.Spec.Sizing = nil
 	_, err = r.reconcileNova(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -2782,4 +2803,92 @@ func TestMirrorNovaComputeConfig_WrapsARemoteReadError(t *testing.T) {
 	g.Expect(ok).To(BeFalse())
 	g.Expect(err).To(MatchError(boom))
 	g.Expect(err.Error()).To(HavePrefix("reading the compute config Secret default/cp-nova-remote-compute-config:"))
+}
+
+// TestReconcileNova_NoSizingProjectsTodaysChild pins the no-roll guarantee.
+// The console proxy is the one block projected differently from before: the
+// sized Deployment rides beside the absent switch. After the nova defaulting
+// webhook it is the same block the webhook made of the empty one.
+func TestReconcileNova_NoSizingProjectsTodaysChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := novaControlPlane()
+	r := newNovaTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileNova(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	nv := getProjectedNova(t, r.Client, cp)
+	expectUnsized(g, nv.Spec.API.Deployment, commonv1.DefaultReplicas)
+	expectUnsized(g, nv.Spec.Metadata.Deployment, 1)
+	expectUnsized(g, nv.Spec.Scheduler.Deployment, 1)
+	expectUnsized(g, nv.Spec.Conductor.Deployment, 1)
+	expectUnsized(g, *nv.Spec.ConsoleProxy.Deployment, 1)
+	g.Expect(nv.Spec.API.UWSGI).To(BeNil())
+	g.Expect(nv.Spec.Metadata.UWSGI).To(BeNil())
+	g.Expect(nv.Spec.Scheduler.Workers).To(BeNil())
+	g.Expect(nv.Spec.Conductor.Workers).To(BeNil())
+	g.Expect(nv.Spec.Autoscaling).To(BeNil())
+	g.Expect(nv.Spec.Jobs).To(BeNil())
+
+	projected := nv.DeepCopy()
+	g.Expect((&novav1alpha1.NovaWebhook{}).Default(ctx, projected)).To(Succeed())
+	legacy := nv.DeepCopy()
+	legacy.Spec.ConsoleProxy = novav1alpha1.NovaConsoleProxySpec{}
+	g.Expect((&novav1alpha1.NovaWebhook{}).Default(ctx, legacy)).To(Succeed())
+	g.Expect(projected.Spec.ConsoleProxy).To(Equal(legacy.Spec.ConsoleProxy))
+}
+
+// TestReconcileNova_SizingProjectsComponents projects Minimal plus overrides
+// onto the five process Deployments. A top-level node selector reaches every
+// one of them unless the component sets its own, and a component's empty
+// priority class opts it out of the top-level class.
+func TestReconcileNova_SizingProjectsComponents(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := novaControlPlane()
+	api := apiReplicas(2)
+	api.SpreadConstraints = hostSpread()
+	api.PriorityClassName = ptr.To("")
+	conductor := &c5c3v1alpha1.WorkerSizingSpec{Workers: ptr.To[int32](3)}
+	conductor.NodeSelector = map[string]string{"pool": "db-adjacent"}
+	cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{
+		PodPlacementSpec: c5c3v1alpha1.PodPlacementSpec{
+			NodeSelector:      map[string]string{"pool": "control"},
+			PriorityClassName: ptr.To("high"),
+		},
+		Nova: &c5c3v1alpha1.NovaSizingSpec{
+			API:       api,
+			Conductor: conductor,
+			Metadata: &c5c3v1alpha1.MetadataAPISizingSpec{
+				ProcessSizingSpec: c5c3v1alpha1.ProcessSizingSpec{Threads: ptr.To[int32](4)},
+			},
+		},
+	})
+	r := newNovaTestReconciler(t, cp)
+
+	_, err := r.reconcileNova(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	nv := getProjectedNova(t, r.Client, cp)
+
+	g.Expect(nv.Spec.API.Deployment.Replicas).To(Equal(int32(2)))
+	g.Expect(nv.Spec.API.Deployment.PriorityClassName).To(BeNil())
+	g.Expect(nv.Spec.API.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
+		Equal(novav1alpha1.APIPodSelector(nv.Name)))
+	g.Expect(nv.Spec.API.UWSGI).To(Equal(&commonv1.UWSGISpec{Processes: 1, Threads: 1}))
+	g.Expect(nv.Spec.Metadata.UWSGI).To(Equal(&commonv1.UWSGISpec{Processes: 1, Threads: 4}))
+	g.Expect(nv.Spec.Scheduler.Workers).To(Equal(ptr.To[int32](1)))
+	g.Expect(nv.Spec.Conductor.Workers).To(Equal(ptr.To[int32](3)))
+	g.Expect(nv.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
+
+	for name, d := range map[string]commonv1.DeploymentSpec{
+		"api":          nv.Spec.API.Deployment,
+		"metadata":     nv.Spec.Metadata.Deployment,
+		"scheduler":    nv.Spec.Scheduler.Deployment,
+		"consoleProxy": *nv.Spec.ConsoleProxy.Deployment,
+	} {
+		g.Expect(d.NodeSelector).To(Equal(map[string]string{"pool": "control"}), name)
+		g.Expect(d.Resources.Requests.Cpu().String()).To(Equal("50m"), name)
+	}
+	g.Expect(nv.Spec.Conductor.Deployment.NodeSelector).To(Equal(map[string]string{"pool": "db-adjacent"}),
+		"a component's own node selector replaces the top-level one")
+	g.Expect(nv.Spec.Metadata.Deployment.PriorityClassName).To(Equal(ptr.To("high")))
 }

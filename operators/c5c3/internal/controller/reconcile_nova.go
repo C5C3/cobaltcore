@@ -638,66 +638,76 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 	// own block.
 	nv.Spec.Gateway = cp.Spec.Services.Nova.Gateway.DeepCopy()
 
+	// Project the resolved spec.sizing.nova onto the five process Deployments,
+	// the two uWSGI blocks, the worker counts, the autoscaling block and the Job
+	// pods. Every field is assigned on every pass, so clearing a value reverts
+	// the child instead of leaving the previously-projected value pinned.
+	//
+	// The metadata, scheduler and conductor replica counts fall back to one
+	// rather than to the shared default of three, and they are written
+	// EXPLICITLY. Their deployment blocks are struct values, so the apply carries
+	// them whatever this projection assigns, and the API server materializes the
+	// shared DeploymentSpec default of three into every one of them on the wire
+	// before the nova defaulting webhook runs. That webhook only reaches an
+	// ABSENT block, so leaving these alone silently runs three metadata APIs,
+	// three schedulers and three conductors where the nova operator's own
+	// standalone default is one of each.
+	sizing, err := r.effectiveSizing(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving sizing: %w", err)
+	}
+	var nvSizing c5c3v1alpha1.NovaSizingSpec
+	if sizing.Nova != nil {
+		nvSizing = *sizing.Nova
+	}
+	top := sizing.PodPlacementSpec
+
+	nv.Spec.API.UWSGI, nv.Spec.Autoscaling = projectAPI(&nv.Spec.API.Deployment, top, nvSizing.API,
+		novav1alpha1.APIPodSelector(nv.Name))
+
 	// The metadata API, with the shared secret its caller signs requests with. The
 	// reference is resolved rather than materialised, so a ControlPlane that stops
 	// supplying its own Secret reverts to the generated one.
 	nv.Spec.Metadata = novav1alpha1.NovaMetadataSpec{
-		Deployment:      novav1alpha1.DeploymentSpec{Replicas: novav1alpha1.DefaultComponentReplicas},
 		SharedSecretRef: effectiveNovaMetadataSharedSecretRef(cp),
 		Gateway:         cp.Spec.Services.Nova.MetadataGateway.DeepCopy(),
 	}
-	if override := cp.Spec.Services.Nova.MetadataReplicas; override != nil {
-		nv.Spec.Metadata.Deployment.Replicas = *override
+	var metadata *c5c3v1alpha1.DeploymentSizingSpec
+	var metadataProcesses c5c3v1alpha1.ProcessSizingSpec
+	if m := nvSizing.Metadata; m != nil {
+		metadata = &m.DeploymentSizingSpec
+		metadataProcesses = m.ProcessSizingSpec
 	}
+	projectDeployment(&nv.Spec.Metadata.Deployment, top, metadata, novav1alpha1.DefaultComponentReplicas,
+		novav1alpha1.MetadataPodSelector(nv.Name))
+	nv.Spec.Metadata.UWSGI = projectUWSGI(metadataProcesses)
 
-	// Resolve the four replica counts, then let the overrides win. Assigning
-	// unconditionally means clearing an override reverts the child to the default
-	// instead of leaving the previously-projected value pinned on the fetched
-	// child.
-	//
-	// The metadata, scheduler and conductor counts are written EXPLICITLY, and
-	// they are written to one rather than to the shared default of three. Their
-	// deployment blocks are struct values, so the apply carries them whatever this
-	// projection assigns, and the API server materializes the shared
-	// DeploymentSpec default of three into every one of them on the wire before
-	// the nova defaulting webhook runs. That webhook only reaches an ABSENT block,
-	// so leaving these alone silently runs three metadata APIs, three schedulers
-	// and three conductors where the nova operator's own standalone default is one
-	// of each.
-	nv.Spec.API.Deployment.Replicas = commonv1.DefaultReplicas
-	if override := cp.Spec.Services.Nova.Replicas; override != nil {
-		nv.Spec.API.Deployment.Replicas = *override
-	}
-	nv.Spec.Scheduler.Deployment.Replicas = novav1alpha1.DefaultComponentReplicas
-	if override := cp.Spec.Services.Nova.SchedulerReplicas; override != nil {
-		nv.Spec.Scheduler.Deployment.Replicas = *override
-	}
-	nv.Spec.Conductor.Deployment.Replicas = novav1alpha1.DefaultComponentReplicas
-	if override := cp.Spec.Services.Nova.ConductorReplicas; override != nil {
-		nv.Spec.Conductor.Deployment.Replicas = *override
-	}
+	nv.Spec.Scheduler.Workers = projectWorker(&nv.Spec.Scheduler.Deployment, top, nvSizing.Scheduler,
+		novav1alpha1.DefaultComponentReplicas, novav1alpha1.SchedulerPodSelector(nv.Name))
+	nv.Spec.Conductor.Workers = projectWorker(&nv.Spec.Conductor.Deployment, top, nvSizing.Conductor,
+		novav1alpha1.DefaultComponentReplicas, novav1alpha1.ConductorPodSelector(nv.Name))
+	nv.Spec.Jobs = projectJobs(nvSizing.Jobs)
 
-	// The console proxy takes three shapes, and the empty one is deliberate. An
-	// absent services.nova.consoleProxy projects the ZERO block, which leaves both
-	// the switch and the deployment absent on the wire and lets the nova defaulting
-	// webhook enable the proxy at one replica, the standalone default. A disabled
-	// proxy projects the switch and nothing else, because the Nova CRD rejects a
-	// spec.consoleProxy.deployment written on a disabled proxy. An enabled one
-	// carries the sizing and the listener it was given.
+	// The console proxy takes three shapes. A disabled proxy projects the switch
+	// and nothing else, because the Nova CRD rejects a spec.consoleProxy.deployment
+	// written on a disabled proxy. An enabled one carries the switch and the
+	// listener it was given. An absent services.nova.consoleProxy leaves both the
+	// switch and the listener absent on the wire, so the nova defaulting webhook
+	// enables the proxy, the standalone default. Both enabled shapes carry the
+	// sized Deployment, which under the Standard profile is the one replica that
+	// webhook would materialize, so the stored child is the same either way.
 	nv.Spec.ConsoleProxy = novav1alpha1.NovaConsoleProxySpec{}
-	if proxy := cp.Spec.Services.Nova.ConsoleProxy; proxy != nil {
-		if proxy.Enabled != nil && !*proxy.Enabled {
-			nv.Spec.ConsoleProxy = novav1alpha1.NovaConsoleProxySpec{Enabled: ptr.To(false)}
-		} else {
-			replicas := novav1alpha1.DefaultComponentReplicas
-			if proxy.Replicas != nil {
-				replicas = *proxy.Replicas
-			}
-			nv.Spec.ConsoleProxy = novav1alpha1.NovaConsoleProxySpec{
-				Enabled:    ptr.To(true),
-				Deployment: &novav1alpha1.DeploymentSpec{Replicas: replicas},
-				Gateway:    proxy.Gateway.DeepCopy(),
-			}
+	proxy := cp.Spec.Services.Nova.ConsoleProxy
+	if proxy != nil && proxy.Enabled != nil && !*proxy.Enabled {
+		nv.Spec.ConsoleProxy.Enabled = ptr.To(false)
+	} else {
+		deployment := &novav1alpha1.DeploymentSpec{}
+		projectDeployment(deployment, top, nvSizing.ConsoleProxy, novav1alpha1.DefaultComponentReplicas,
+			novav1alpha1.ConsoleProxyPodSelector(nv.Name))
+		nv.Spec.ConsoleProxy.Deployment = deployment
+		if proxy != nil {
+			nv.Spec.ConsoleProxy.Enabled = ptr.To(true)
+			nv.Spec.ConsoleProxy.Gateway = proxy.Gateway.DeepCopy()
 		}
 	}
 
@@ -717,8 +727,8 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 
 	nv.Spec.DBArchive = (*novav1alpha1.DBArchiveSpec)(cp.Spec.Services.Nova.DBArchive.DeepCopy())
 
-	// spec.networkPolicy, spec.autoscaling, spec.logging, spec.api.uwsgi and
-	// spec.metadata.uwsgi are deliberately NOT set, the Placement posture: the
+	// spec.networkPolicy and spec.logging stay unprojected with the
+	// graceful-termination timings, the rollout strategy and affinity: the
 	// child-side defaults stay authoritative, and tuning them stays a
 	// standalone-CR concern.
 

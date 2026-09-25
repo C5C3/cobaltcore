@@ -1445,7 +1445,7 @@ func TestReconcileNeutron_GatewayNilClears(t *testing.T) {
 func TestReconcileNeutron_ReplicasOverrideAndRevert(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := neutronControlPlane()
-	cp.Spec.Services.Neutron.Replicas = ptr.To(int32(5))
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Neutron: &c5c3v1alpha1.NeutronSizingSpec{API: apiReplicas(5)}})
 	r := newNeutronTestReconciler(t, cp)
 	ctx := context.Background()
 
@@ -1453,7 +1453,7 @@ func TestReconcileNeutron_ReplicasOverrideAndRevert(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedNeutron(t, r.Client, cp).Spec.Deployment.Replicas).To(Equal(int32(5)))
 
-	cp.Spec.Services.Neutron.Replicas = nil
+	cp.Spec.Sizing = nil
 	_, err = r.reconcileNeutron(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedNeutron(t, r.Client, cp).Spec.Deployment.Replicas).To(Equal(commonv1.DefaultReplicas),
@@ -1461,13 +1461,15 @@ func TestReconcileNeutron_ReplicasOverrideAndRevert(t *testing.T) {
 }
 
 // TestReconcileNeutron_ProjectsWorkerReplicasOverrideAndRevert covers the second
-// replica knob: the RPC workers run their own Deployment, and the override exists
-// because a single-node devstack cannot carry six idle worker pods beside the rest
-// of the control plane.
+// replica count: the RPC workers run their own Deployments, and a single-node
+// devstack cannot carry six idle worker pods beside the rest of the control
+// plane.
 func TestReconcileNeutron_ProjectsWorkerReplicasOverrideAndRevert(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := neutronControlPlane()
-	cp.Spec.Services.Neutron.WorkerReplicas = ptr.To(int32(1))
+	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{Neutron: &c5c3v1alpha1.NeutronSizingSpec{
+		Workers: &c5c3v1alpha1.ScaledSizingSpec{Replicas: ptr.To[int32](1)},
+	}})
 	r := newNeutronTestReconciler(t, cp)
 	ctx := context.Background()
 
@@ -1475,7 +1477,7 @@ func TestReconcileNeutron_ProjectsWorkerReplicasOverrideAndRevert(t *testing.T) 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedNeutron(t, r.Client, cp).Spec.Workers.Deployment.Replicas).To(Equal(int32(1)))
 
-	cp.Spec.Services.Neutron.WorkerReplicas = nil
+	cp.Spec.Sizing = nil
 	_, err = r.reconcileNeutron(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedNeutron(t, r.Client, cp).Spec.Workers.Deployment.Replicas).
@@ -2443,4 +2445,54 @@ func TestReconcileNeutron_MirrorStoreLookupFailurePropagates(t *testing.T) {
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeNeutronReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+}
+
+// TestReconcileNeutron_NoSizingProjectsTodaysChild pins the no-roll guarantee.
+func TestReconcileNeutron_NoSizingProjectsTodaysChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := neutronControlPlane()
+	r := newNeutronTestReconciler(t, cp)
+
+	_, err := r.reconcileNeutron(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	nn := getProjectedNeutron(t, r.Client, cp)
+	expectUnsized(g, nn.Spec.Deployment, commonv1.DefaultReplicas)
+	expectUnsized(g, nn.Spec.Workers.Deployment, commonv1.DefaultReplicas)
+	g.Expect(nn.Spec.APIServer).To(BeNil())
+	g.Expect(nn.Spec.Autoscaling).To(BeNil())
+	g.Expect(nn.Spec.Jobs).To(BeNil())
+}
+
+// TestReconcileNeutron_SizingProjectsComponents projects Minimal plus overrides
+// and finds each on the child field it sizes. The workers take the top-level
+// placement and carry no spread.
+func TestReconcileNeutron_SizingProjectsComponents(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := neutronControlPlane()
+	api := apiReplicas(2)
+	api.SpreadConstraints = hostSpread()
+	cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{
+		PodPlacementSpec: c5c3v1alpha1.PodPlacementSpec{NodeSelector: map[string]string{"pool": "control"}},
+		Neutron: &c5c3v1alpha1.NeutronSizingSpec{
+			API:  api,
+			Jobs: &c5c3v1alpha1.JobSizingSpec{PriorityClassName: ptr.To("batch")},
+		},
+	})
+	r := newNeutronTestReconciler(t, cp)
+
+	_, err := r.reconcileNeutron(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	nn := getProjectedNeutron(t, r.Client, cp)
+	g.Expect(nn.Spec.Deployment.Replicas).To(Equal(int32(2)))
+	g.Expect(nn.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(nn.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
+		Equal(neutronv1alpha1.APIPodSelector(nn.Name)))
+	g.Expect(nn.Spec.APIServer).To(Equal(&neutronv1alpha1.APIServerSpec{UWSGI: &commonv1.UWSGISpec{Processes: 1, Threads: 1}}))
+	w := nn.Spec.Workers.Deployment
+	g.Expect(w.Replicas).To(Equal(int32(1)))
+	g.Expect(w.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(w.NodeSelector).To(Equal(map[string]string{"pool": "control"}))
+	g.Expect(w.TopologySpreadConstraints).To(BeNil())
+	g.Expect(nn.Spec.Jobs.PriorityClassName).To(Equal(ptr.To("batch")))
+	g.Expect(nn.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
 }

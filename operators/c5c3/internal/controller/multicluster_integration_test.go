@@ -661,7 +661,6 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 				return err
 			}
 			live.Spec.Services.Neutron = &c5c3v1alpha1.ServiceNeutronSpec{
-				WorkerReplicas: ptr.To(int32(1)),
 				OVN: c5c3v1alpha1.NeutronOVNSpec{
 					CentralRef: c5c3v1alpha1.NeutronOVNCentralRef{Name: mcOVNCentral},
 				},
