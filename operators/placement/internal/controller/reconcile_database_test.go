@@ -16,10 +16,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -772,4 +774,66 @@ func TestReconcileDatabase_ReleaseBumpWithNewDigestAccepted(t *testing.T) {
 	g.Expect(placement.Status.InstalledRelease).To(Equal("2026.1"))
 	g.Expect(placement.Status.InstalledImage).To(Equal(placement.Spec.Image.Reference()),
 		"the image that ran the migration is recorded alongside the release it installed")
+}
+
+// TestPlacementJobs_PodSettings pins the pod settings of the db-sync Job and the upgrade phases: unset, every
+// container renders the Job resources and no priority class or placement; the
+// API Deployment's priority class and node selector carry over; spec.jobs
+// overrides both.
+func TestPlacementJobs_PodSettings(t *testing.T) {
+	podSpecs := func(o *placementv1alpha1.Placement) map[string]corev1.PodSpec {
+		return map[string]corev1.PodSpec{
+			"db-sync":   database.SyncJob(placementJobSetParams(o, dbConfigMapName)).Spec.Template.Spec,
+			"db-expand": database.BuildJob(placementJobSetParams(o, dbConfigMapName), o.Spec.Image.Reference(), "db-expand", nil, 4).Spec.Template.Spec,
+		}
+	}
+	defaults := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
+	}
+
+	for _, tc := range []struct {
+		name         string
+		mutate       func(o *placementv1alpha1.Placement)
+		wantPriority string
+		wantSelector map[string]string
+	}{
+		{name: "defaults", mutate: func(*placementv1alpha1.Placement) {}},
+		{
+			name: "API Deployment fallback",
+			mutate: func(o *placementv1alpha1.Placement) {
+				o.Spec.Deployment.PriorityClassName = ptr.To("high")
+				o.Spec.Deployment.NodeSelector = map[string]string{"a": "b"}
+			},
+			wantPriority: "high",
+			wantSelector: map[string]string{"a": "b"},
+		},
+		{
+			name: "spec.jobs override",
+			mutate: func(o *placementv1alpha1.Placement) {
+				o.Spec.Deployment.PriorityClassName = ptr.To("high")
+				o.Spec.Deployment.NodeSelector = map[string]string{"a": "b"}
+				o.Spec.Jobs = &commonv1.JobSpec{
+					JobBaseSpec:       commonv1.JobBaseSpec{PriorityClassName: ptr.To("low")},
+					NodePlacementSpec: commonv1.NodePlacementSpec{NodeSelector: map[string]string{"pool": "jobs"}},
+				}
+			},
+			wantPriority: "low",
+			wantSelector: map[string]string{"pool": "jobs"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			o := managedPlacement()
+			tc.mutate(o)
+
+			for name, spec := range podSpecs(o) {
+				g.Expect(spec.PriorityClassName).To(Equal(tc.wantPriority), name)
+				g.Expect(spec.NodeSelector).To(Equal(tc.wantSelector), name)
+				for _, c := range append(spec.InitContainers, spec.Containers...) {
+					g.Expect(c.Resources).To(Equal(defaults), "%s/%s", name, c.Name)
+				}
+			}
+		})
+	}
 }

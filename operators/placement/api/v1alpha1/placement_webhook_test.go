@@ -857,3 +857,123 @@ func TestPlacementValidateCreate_EmptyTargetClusterRefNameRejected(t *testing.T)
 	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("targetClusterRef.name")))
 	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("target cluster name must be set")))
 }
+
+// --- Node placement and spec.jobs validation ---
+
+func TestPlacementValidate_NodePlacementRejected(t *testing.T) {
+	for _, block := range []struct {
+		name       string
+		deployment func(o *Placement) *commonv1.DeploymentSpec
+		path       string
+	}{
+		{name: "spec.deployment", deployment: func(o *Placement) *commonv1.DeploymentSpec { return &o.Spec.Deployment }, path: "spec.deployment"},
+	} {
+		for _, tc := range []struct {
+			name   string
+			mutate func(d *commonv1.DeploymentSpec)
+			want   string
+		}{
+			{
+				name:   "node selector key",
+				mutate: func(d *commonv1.DeploymentSpec) { d.NodeSelector = map[string]string{"bad key": "x"} },
+				want:   block.path + ".nodeSelector: Invalid value",
+			},
+			{
+				name: "toleration without key or Exists",
+				mutate: func(d *commonv1.DeploymentSpec) {
+					d.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpEqual}}
+				},
+				want: block.path + ".tolerations[0].operator: Invalid value",
+			},
+		} {
+			t.Run(block.name+"/"+tc.name, func(t *testing.T) {
+				g := gomega.NewWithT(t)
+				o := validPlacement()
+				tc.mutate(block.deployment(o))
+
+				_, err := (&PlacementWebhook{}).ValidateCreate(context.Background(), o)
+				g.Expect(err).To(gomega.HaveOccurred())
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+			})
+		}
+	}
+}
+
+func TestPlacementValidate_JobsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		jobs *commonv1.JobSpec
+		want string
+	}{
+		{
+			name: "unknown priority class",
+			jobs: &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("typo")}},
+			want: "spec.jobs.priorityClassName: Not found",
+		},
+		{
+			name: "memory request above limit",
+			jobs: &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			}}},
+			want: "spec.jobs.resources.requests.memory: Invalid value",
+		},
+		{
+			name: "node selector key",
+			jobs: &commonv1.JobSpec{NodePlacementSpec: commonv1.NodePlacementSpec{NodeSelector: map[string]string{"bad key": "x"}}},
+			want: "spec.jobs.nodeSelector: Invalid value",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &PlacementWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+			o := validPlacement()
+			o.Spec.Jobs = tc.jobs
+
+			_, err := w.ValidateCreate(context.Background(), o)
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.want))
+		})
+	}
+}
+
+// The finalizer removal reconcileDelete issues is an update, and it passes the
+// defaulting webhook before the validating one. A spec.jobs.priorityClassName
+// admitted earlier can name a PriorityClass deleted since, and rejecting the
+// removal would hold the CR in Terminating. The stored spec is left undefaulted,
+// so a default the defaulter fills on the removal alone must not count as a
+// spec change either. A deleting CR whose spec changes is still validated.
+func TestPlacementValidateUpdate_FinalizerRemovalOnADeletingCRSkipsValidation(t *testing.T) {
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+	w := &PlacementWebhook{Client: newFakeClient().Build()}
+
+	stale := validPlacement()
+	stale.Spec.Jobs = &commonv1.JobSpec{JobBaseSpec: commonv1.JobBaseSpec{PriorityClassName: ptr.To("deleted-class")}}
+	stale.Finalizers = []string{"placement.openstack.c5c3.io/finalizer"}
+	stale.DeletionTimestamp = ptr.To(metav1.Now())
+
+	released := stale.DeepCopy()
+	released.Finalizers = nil
+	g.Expect(w.Default(ctx, released)).To(gomega.Succeed())
+
+	_, err := w.ValidateUpdate(ctx, stale, released)
+	g.Expect(err).NotTo(gomega.HaveOccurred(),
+		"the finalizer removal must pass however the unchanged spec fares against today's rules")
+
+	edited := released.DeepCopy()
+	edited.Spec.Deployment.Replicas = 5
+	_, err = w.ValidateUpdate(ctx, stale, edited)
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("spec.jobs.priorityClassName: Not found")),
+		"a spec edit on a deleting CR is validated like any other")
+}
+
+func TestPlacementValidate_EmptyJobsAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &PlacementWebhook{Client: fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()}
+	o := validPlacement()
+	o.Spec.Jobs = &commonv1.JobSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
