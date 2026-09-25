@@ -107,7 +107,11 @@
 #                        Password generator, the cinder and barbican client
 #                        sections its sibling services switch on, and the compute
 #                        contract the child publishes on
-#                        status.computeConfigSecretRef; NovaReady=True.
+#                        status.computeConfigSecretRef; NovaReady=True. Then
+#                        ServiceAccountsReady=True, which waits here rather than
+#                        at 5b: the hypervisor operator's registration
+#                        ("…-nova-hypervisor-operator") is projected only once
+#                        the Nova child is Ready.
 #   5n. Compute cat.   — the compute registration's K-ORC Service +
 #                        internal/public Endpoints, resolved through its ownership
 #                        labels, both URLs the in-cluster Nova API on the /v2.1
@@ -141,6 +145,16 @@
 #                        using the materialised admin clouds.yaml (proves the
 #                        minted, pushed, re-materialised application credential
 #                        authenticates and the services work).
+#   7d. Hypervisor op. — the auth Secret ("…-nova-hypervisor-operator-auth")
+#                        carries exactly the seven keys of the hypervisor
+#                        operator's chart values; the K-ORC fixtures of
+#                        deploy/kind/hypervisor-operator-fixtures/fixtures.yaml
+#                        become Available; and a Job authenticating as the
+#                        hypervisor operator's user
+#                        (07-hypervisor-operator-verify-job.yaml) proves one
+#                        public compute and placement row per scope, the admin
+#                        reach into services, hypervisors, aggregates and
+#                        Placement, and the test@cc3test scope.
 #
 # ── DECISION: belt-and-braces presence guard + single consolidated script ────
 # Ambiguity: the task says "follow tests/e2e/keystone/basic-deployment
@@ -782,13 +796,10 @@ spec:
           assert_registration "${PLACEMENT_KS}" "${PLACEMENT_SELECTOR}"
           assert_registration "${BARBICAN_KS}" "${BARBICAN_SELECTOR}"
           assert_registration "${NEUTRON_KS}" "${NEUTRON_SELECTOR}"
-
-          # ServiceAccountsReady on the ControlPlane aggregates those four
-          # registrations, so it turns True only once all of them are Ready.
-          wait_cp_condition ServiceAccountsReady 600
-          assert_eq "ServiceAccountsReady aggregates the projected registrations" "ServiceAccountsProvisioned" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
-              -o "jsonpath={.status.conditions[?(@.type=='ServiceAccountsReady')].reason}")"
+          # ServiceAccountsReady aggregates these and every later registration,
+          # the hypervisor operator's among them, which the Nova leg projects
+          # only once the Nova child is Ready. It is therefore awaited in link
+          # 5m, after NovaReady.
 
           # ── Link 5c: Glance child (gated on KeystoneReady + registration) ───
           # GlanceReady mirrors the child's Ready, which requires the real
@@ -1364,6 +1375,15 @@ spec:
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
               -o "jsonpath={.status.conditions[?(@.type=='NovaReady')].reason}")"
 
+          # ServiceAccountsReady aggregates every built-in registration. The
+          # last one, the hypervisor operator's account, is projected only once
+          # the Nova child is Ready, and NovaReady=True above means its password
+          # has been delivered, so the aggregate is due now.
+          wait_cp_condition ServiceAccountsReady 600
+          assert_eq "ServiceAccountsReady aggregates the projected registrations" "ServiceAccountsProvisioned" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='ServiceAccountsReady')].reason}")"
+
           assert_eq "Nova image tag derived from openStackRelease" "2025.2" \
             "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
 
@@ -1858,7 +1878,62 @@ spec:
             exit 1
           fi
           echo "OK: no network-changed event came back from nova with a failed status"
-          echo "OK: token issued, identity + image + placement + key-manager + network + block-storage + compute services catalogued, and the image, placement, secret, network, volume, backup, encryption, cache and compute round-trips passed — full chain verified."
+
+          # ── Link 7d: the hypervisor operator's account ─────────────────────
+          # spec.services.nova.hypervisorOperator has the plane write the auth
+          # Secret openstack-hypervisor-operator's chart values are filled from.
+          # Its key NAMES are read and compared; the values are never printed,
+          # because the Secret carries a cloud-admin password.
+          HVO_AUTH_SECRET="${NOVA_CR}-hypervisor-operator-auth"
+          HVO_KEYS="$(kubectl get secret "${HVO_AUTH_SECRET}" -n "${CP_NS}" \
+            -o go-template='{{range $k, $v := .data}}{{$k}}{{"\n"}}{{end}}')"
+          echo "${HVO_AUTH_SECRET} keys: $(tr '\n' ' ' <<<"${HVO_KEYS}")"
+          assert_eq "the auth Secret carries the seven keys of the hypervisor operator's chart values" \
+            "$(printf '%s\n' auth_url password project_domain_name project_name region_name user_domain_name username)" \
+            "${HVO_KEYS}"
+
+          # K-ORC caches one client per clouds.yaml for half the token lifetime
+          # (about 30 minutes), and the client keeps the service catalog of the
+          # token it authenticated with. The plane's credential was first used
+          # before the compute, network and block-storage rows existed, so until
+          # that entry expires the flavor, volume type, network and subnet fail
+          # with "No suitable endpoint could be found in the service catalog". A
+          # restart empties the cache; the overlay's header tells users the same.
+          # Drop it once k-orc/openstack-resource-controller#941 is fixed.
+          kubectl rollout restart deployment/orc-controller-manager -n orc-system
+          kubectl rollout status deployment/orc-controller-manager -n orc-system --timeout=5m
+
+          # The fixtures the hypervisor operator's start and smoke test look up
+          # by fixed names, from the example overlay. fixtures.yaml alone: the
+          # overlay's image.yaml downloads cirros, which CI never does. The wait
+          # reads the same file, so a fixture added there is waited for too.
+          kubectl apply -f ../../../../deploy/kind/hypervisor-operator-fixtures/fixtures.yaml
+          kubectl wait --for=condition=Available --timeout=10m \
+            -f ../../../../deploy/kind/hypervisor-operator-fixtures/fixtures.yaml
+
+          # The hypervisor operator does not run in kind; the Job makes its
+          # calls as its user instead. About twenty CLI calls at the 15-25s the
+          # verify Job above measures per call fit the 10m wait.
+          echo "== calls as the hypervisor operator's user =="
+          kubectl delete job cp-hypervisor-operator-verify -n "${CP_NS}" --ignore-not-found
+          kubectl apply -f 07-hypervisor-operator-verify-job.yaml
+          kubectl wait --for=condition=complete job/cp-hypervisor-operator-verify -n "${CP_NS}" --timeout=10m
+          # Captured once and matched with here-strings, for the pipefail reason
+          # the verify-Job capture above documents. The log is read from the
+          # Succeeded pod by name: job/<name> resolves to the OLDEST pod, which
+          # after a backoffLimit retry is the failed attempt.
+          HVO_PODS="$(kubectl get pods -n "${CP_NS}" -l job-name=cp-hypervisor-operator-verify \
+            --field-selector=status.phase=Succeeded -o name)"
+          HVO_POD="${HVO_PODS%%$'\n'*}"
+          test -n "${HVO_POD}" || { echo "ERROR: no Succeeded pod of cp-hypervisor-operator-verify"; exit 1; }
+          HVO_LOGS="$(kubectl logs -n "${CP_NS}" "${HVO_POD}")"
+          printf '%s\n' "${HVO_LOGS}"
+          for line in "OK: hvo catalog" "OK: hvo compute services" "OK: hvo aggregates" \
+            "OK: hvo placement" "OK: hvo test scope"; do
+            grep -q "${line}" <<<"${HVO_LOGS}" \
+              || { echo "ERROR: the hypervisor-operator Job printed no '${line}' line"; exit 1; }
+          done
+          echo "OK: token issued, identity + image + placement + key-manager + network + block-storage + compute services catalogued, the image, placement, secret, network, volume, backup, encryption, cache and compute round-trips passed, and the hypervisor operator's account reaches what it needs — full chain verified."
     catch:
     - script:
         # Pinned, because chainsaw applies the test's exec budget to EVERY
@@ -2000,6 +2075,15 @@ spec:
             echo "--- ${pod} ---"
             kubectl logs -n openstack "${pod}" --tail=400 2>&1 || true
           done
+          echo "=== Hypervisor-operator fixtures (K-ORC) ==="
+          # The auth Secret is deliberately not dumped: it carries a cloud-admin
+          # password.
+          kubectl get -o wide -f ../../../../deploy/kind/hypervisor-operator-fixtures/fixtures.yaml 2>&1 || true
+          echo "=== hypervisor-operator verify Job pod logs (every attempt) ==="
+          for pod in $(kubectl get pods -n openstack -l job-name=cp-hypervisor-operator-verify -o name 2>/dev/null); do
+            echo "--- ${pod} ---"
+            kubectl logs -n openstack "${pod}" --tail=400 2>&1 || true
+          done
           echo "=== Events (openstack ns, last 30) ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
     finally:
@@ -2033,13 +2117,25 @@ spec:
         # label left behind advertises a chassis role nothing serves, which the
         # next suite rendering an OVNChassis would schedule against.
         #
-        # Deletes run in reverse order of the apply (the compute first, then the
-        # agent, then the chassis that both sit on) and every one is best-effort:
-        # a run that gated out before it applied any of them must not redden
-        # here.
+        # Deletes run in reverse order of the apply (the hypervisor-operator
+        # Job and fixtures first, then the compute, then the agent, then the
+        # chassis that both sit on) and every one is best-effort: a run that
+        # gated out before it applied any of them must not redden here.
+        #
+        # The fixtures go while the ControlPlane's credential still works,
+        # because K-ORC deletes the managed ones through it. Keystone refuses
+        # to delete an enabled domain and K-ORC does not disable one first, so
+        # cc3test is disabled before the delete.
         timeout: 5m
         shell: bash
         content: |
+          kubectl delete job cp-hypervisor-operator-verify -n openstack --ignore-not-found 2>&1 || true
+          kubectl patch domains.openstack.k-orc.cloud/hvo-cc3test -n openstack --type=merge \
+            -p '{"spec":{"resource":{"enabled":false}}}' 2>&1 || true
+          kubectl wait domains.openstack.k-orc.cloud/hvo-cc3test -n openstack \
+            --for=jsonpath='{.status.resource.enabled}'=false --timeout=1m 2>&1 || true
+          kubectl delete -f ../../../../deploy/kind/hypervisor-operator-fixtures/fixtures.yaml \
+            --ignore-not-found --wait --timeout=3m 2>&1 || true
           kubectl delete -f 06-fake-compute.yaml --ignore-not-found 2>&1 || true
           kubectl delete neutronmetadataagent controlplane-keystone-agent -n openstack --ignore-not-found 2>&1 || true
           kubectl delete ovnchassis controlplane-keystone-chassis -n openstack --ignore-not-found 2>&1 || true

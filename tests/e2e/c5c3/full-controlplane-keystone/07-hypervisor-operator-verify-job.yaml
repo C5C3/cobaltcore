@@ -1,0 +1,223 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Hypervisor-operator verification Job for the full-controlplane-keystone E2E
+# test (Link 7d). openstack-hypervisor-operator does not run in kind, so this
+# Job acts as its Keystone user instead: it authenticates with the values the
+# ControlPlane wrote into controlplane-keystone-nova-hypervisor-operator-auth
+# (spec.services.nova.hypervisorOperator in 00-controlplane-cr.yaml) and makes
+# the calls the hypervisor operator makes against the fake compute. Each of the
+# five blocks prints one OK: line the chainsaw script greps for:
+#
+#   OK: hvo catalog           the account's token, and one scoped to project
+#                             test in domain cc3test, carry exactly one public
+#                             compute and one public placement row. The
+#                             hypervisor operator takes the first public row of
+#                             a type in any region, so a second one is
+#                             unsupported (see the ControlPlane reference).
+#   OK: hvo compute services  enable and force up the fake compute's service,
+#                             list its hypervisor and the servers on it across
+#                             projects: Nova's os-services, os-hypervisors and
+#                             all-tenants server policies are admin-only.
+#   OK: hvo aggregates        create an aggregate, add and remove the host,
+#                             delete the aggregate.
+#   OK: hvo placement         read the host's resource provider and its traits,
+#                             then create a trait and set it on a scratch
+#                             provider. A trait set replaces the provider's
+#                             whole list, so it never touches the fake
+#                             compute's provider.
+#   OK: hvo test scope        a token scoped to test@cc3test, and the flavor,
+#                             volume type and network the fixtures in
+#                             deploy/kind/hypervisor-operator-fixtures declare.
+#
+# Neither live nor cold migration is called: the suite has one compute, so
+# there is no destination, and both check the same admin rule the compute
+# services and aggregates blocks prove.
+#
+# The script runs under set -euo pipefail and never under set -x, so the
+# password it reads from the Secret never reaches the log, and the token
+# block prints the project ID only. One EXIT trap removes whatever scratch
+# object a failed block left behind. The trap cannot see an object whose
+# create landed while the client timed out, nor run in a killed pod, so every
+# scratch name carries the pod's random suffix: the retry backoffLimit allows
+# never collides with what an earlier attempt left in the cloud.
+#
+# DECISION image, pull policy and backoffLimit are those of
+# 01-openstack-verify-job.yaml: the repo's tempest image bundles the OpenStack
+# client, osc-placement and keystoneauth1, and CI loads it into kind.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cp-hypervisor-operator-verify
+  namespace: openstack
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: osc
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-hypervisor-operator-auth
+                  key: auth_url
+            - name: OS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-hypervisor-operator-auth
+                  key: username
+            - name: OS_USER_DOMAIN_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-hypervisor-operator-auth
+                  key: user_domain_name
+            - name: OS_PROJECT_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-hypervisor-operator-auth
+                  key: project_name
+            - name: OS_PROJECT_DOMAIN_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-hypervisor-operator-auth
+                  key: project_domain_name
+            - name: OS_REGION_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-hypervisor-operator-auth
+                  key: region_name
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-keystone-nova-hypervisor-operator-auth
+                  key: password
+            - name: OS_INTERFACE
+              value: public
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # The pod's random suffix, new per attempt.
+              SUFFIX="${HOSTNAME##*-}"
+              AGG="hvo-e2e-${SUFFIX}"
+              RP_NAME="hvo-e2e-rp-${SUFFIX}"
+              TRAIT="CUSTOM_HVO_E2E_${SUFFIX^^}"
+              HOST=""
+              AGGREGATE_CREATED=""
+              HOST_ADDED=""
+              TRAIT_CREATED=""
+              SCRATCH_RP=""
+              cleanup() {
+                if [ -n "${HOST_ADDED}" ]; then
+                  openstack aggregate remove host "${AGG}" "${HOST}" >/dev/null 2>&1 || true
+                fi
+                if [ -n "${AGGREGATE_CREATED}" ]; then
+                  openstack aggregate delete "${AGG}" >/dev/null 2>&1 || true
+                fi
+                if [ -n "${SCRATCH_RP}" ]; then
+                  OS_PLACEMENT_API_VERSION=1.6 openstack resource provider delete "${SCRATCH_RP}" >/dev/null 2>&1 || true
+                fi
+                if [ -n "${TRAIT_CREATED}" ]; then
+                  OS_PLACEMENT_API_VERSION=1.6 openstack trait delete "${TRAIT}" >/dev/null 2>&1 || true
+                fi
+              }
+              trap cleanup EXIT
+
+              echo "== hvo catalog =="
+              # keystoneauth reads the catalog the way gophercloud does in the
+              # hypervisor operator: every public row of a type, whatever the
+              # region.
+              python3 - <<'PY'
+              import os
+              import sys
+
+              from keystoneauth1 import session
+              from keystoneauth1.identity import v3
+
+              def public_rows(project, project_domain):
+                  auth = v3.Password(
+                      auth_url=os.environ["OS_AUTH_URL"],
+                      username=os.environ["OS_USERNAME"],
+                      password=os.environ["OS_PASSWORD"],
+                      user_domain_name=os.environ["OS_USER_DOMAIN_NAME"],
+                      project_name=project,
+                      project_domain_name=project_domain,
+                  )
+                  catalog = auth.get_access(session.Session(auth=auth)).service_catalog
+                  return {
+                      t: len(catalog.get_endpoints(service_type=t, interface="public").get(t, []))
+                      for t in ("compute", "placement")
+                  }
+
+              failed = False
+              for label, project, domain in (
+                  ("account", os.environ["OS_PROJECT_NAME"], os.environ["OS_PROJECT_DOMAIN_NAME"]),
+                  ("test@cc3test", "test", "cc3test"),
+              ):
+                  rows = public_rows(project, domain)
+                  print(f"{label}: public rows per type {rows}")
+                  if any(n != 1 for n in rows.values()):
+                      print(f"ERROR: the {label} token must carry exactly one public row of each type")
+                      failed = True
+              sys.exit(1 if failed else 0)
+              PY
+              echo "OK: hvo catalog (the account's scope and test@cc3test)"
+
+              echo "== hvo compute services =="
+              # Captured rather than piped into head, which would close the pipe
+              # under pipefail.
+              hosts="$(openstack compute service list --service nova-compute -f value -c Host)"
+              HOST="${hosts%%$'\n'*}"
+              test -n "${HOST}" || { echo "ERROR: no nova-compute service is listed"; exit 1; }
+              openstack --os-compute-api-version 2.95 compute service set --enable --up "${HOST}" nova-compute
+              openstack hypervisor list --matching "${HOST}"
+              openstack server list --all-projects --host "${HOST}"
+              echo "OK: hvo compute services (${HOST})"
+
+              echo "== hvo aggregates =="
+              openstack aggregate create "${AGG}"
+              AGGREGATE_CREATED=1
+              openstack aggregate add host "${AGG}" "${HOST}"
+              HOST_ADDED=1
+              openstack aggregate remove host "${AGG}" "${HOST}"
+              HOST_ADDED=""
+              openstack aggregate delete "${AGG}"
+              AGGREGATE_CREATED=""
+              echo "OK: hvo aggregates"
+
+              echo "== hvo placement =="
+              # The trait calls need placement microversion 1.6.
+              export OS_PLACEMENT_API_VERSION=1.6
+              RP="$(openstack resource provider list --name "${HOST}" -f value -c uuid)"
+              test -n "${RP}" || { echo "ERROR: no resource provider is named ${HOST}"; exit 1; }
+              openstack resource provider trait list "${RP}"
+              openstack trait create "${TRAIT}"
+              TRAIT_CREATED=1
+              SCRATCH_RP="$(openstack resource provider create "${RP_NAME}" -f value -c uuid)"
+              openstack resource provider trait set --trait "${TRAIT}" "${SCRATCH_RP}"
+              openstack resource provider delete "${SCRATCH_RP}"
+              SCRATCH_RP=""
+              openstack trait delete "${TRAIT}"
+              TRAIT_CREATED=""
+              unset OS_PLACEMENT_API_VERSION
+              echo "OK: hvo placement"
+
+              echo "== hvo test scope =="
+              export OS_PROJECT_NAME=test OS_PROJECT_DOMAIN_NAME=cc3test
+              openstack token issue -f value -c project_id
+              FLAVOR="$(openstack flavor show 1 -f value -c id)"
+              test "${FLAVOR}" = "1" || { echo "ERROR: flavor 1 answered id '${FLAVOR}'"; exit 1; }
+              PREMIUM="$(openstack volume type show premium -f value -c is_public)"
+              test "${PREMIUM}" = "True" || { echo "ERROR: volume type premium is_public '${PREMIUM}' != True"; exit 1; }
+              NETWORKS="$(openstack network list --no-share -f value -c Name)"
+              grep -qx hvo-smoke-test <<<"${NETWORKS}" \
+                || { echo "ERROR: hvo-smoke-test is not among the non-shared networks: ${NETWORKS}"; exit 1; }
+              echo "OK: hvo test scope"
