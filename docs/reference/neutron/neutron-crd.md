@@ -161,7 +161,14 @@ load the process that opens the connection past it answers HTTP 500.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the worker Deployments. `replicas` (default 3) sizes both, so the default is three periodic-worker pods and three OVN maintenance-worker pods. Each worker runs one single-threaded process, so a `resources` block that names neither CPU nor memory renders a 100m CPU request, no CPU limit, and 368Mi as memory request and limit (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). The worker Deployments render its `nodeSelector`, `tolerations` and `affinity` too; the webhook does not validate this block yet ([#1100](https://github.com/C5C3/cobaltcore/issues/1100)) |
+| `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the worker Deployments. `replicas` (default 3) sizes both, so the default is three periodic-worker pods and three OVN maintenance-worker pods. Each worker runs one single-threaded process, so a `resources` block that names neither CPU nor memory renders a 100m CPU request, no CPU limit, and 368Mi as memory request and limit (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). The worker Deployments render its `nodeSelector`, `tolerations` and `affinity` too. The webhook validates this block like `spec.deployment`, except that `topologySpreadConstraints` must be unset or empty (see [Webhook rules](#webhook-rules)) |
+
+The block configures two Deployments, `{name}-periodic-workers` and
+`{name}-ovn-maintenance-worker`. Each selects its pods by its own component
+label and derives its default topology spread from that selector. A constraint
+set on the shared block could name only one of the two selectors, so the
+webhook forbids a non-empty list; an empty list switches the injected defaults
+off for both.
 
 Neither worker Deployment gets a Service, an HPA or a PodDisruptionBudget: no
 client dials them, their load is the maintenance queue, and an eviction costs a
@@ -342,8 +349,9 @@ The three arguments are the bound (40), the suffix (`-ovn-db-sync`), and
 An update to a CR that is being deleted and leaves the spec unchanged is
 admitted without validation. That is the finalizer removal the reconciler
 issues, and an unchanged spec admitted earlier can fail today's rules: a
-PriorityClass deleted since, or a topology-spread constraint that still names
-only the name and instance labels. Rejecting the removal would hold the CR in
+PriorityClass deleted since, a topology-spread constraint that still names
+only the name and instance labels, or a worker block that predates its
+validation. Rejecting the removal would hold the CR in
 `Terminating`. An update that changes the spec of a deleting CR is still
 validated.
 
@@ -465,6 +473,18 @@ Network policy, gateway, resources and scheduling:
 | `%s request must not exceed limit (%s)` on `spec.jobs.resources` | A request in `spec.jobs.resources` above its own limit |
 | `field.NotFound` on `spec.jobs.priorityClassName` | The named PriorityClass does not exist. `""` opts out of the fallback and is not looked up |
 | `field.Invalid` on `spec.jobs.nodeSelector` / `spec.jobs.tolerations[i]` | The node selector and toleration rules above, applied to `spec.jobs` |
+
+The worker block. `spec.workers.deployment` runs the pod-level rules of
+`spec.deployment` with the same messages, reported at
+`spec.workers.deployment.*`: the replica floor, the grace and preStop bounds and
+their drain window, the `Recreate`-vs-`rollingUpdate` check, the request within
+its limit, the PriorityClass lookup (`field.NotFound`), and the node selector and
+toleration rules. The harakiri rule stays with the API block, because uWSGI runs
+only in the API pods. The topology-spread rule differs:
+
+| Message | Trigger |
+| --- | --- |
+| `topologySpreadConstraints is not supported here: the operator projects the periodic-workers and ovn-maintenance-worker Deployments from this block, each with its own selector, so a constraint set here would spread each worker's pods against the pods of the other components. An empty list, which only switches the injected defaults off, is accepted` | `field.Forbidden` on a non-empty `spec.workers.deployment.topologySpreadConstraints`. An empty or unset list is admitted |
 
 Secret store, target cluster and logging:
 

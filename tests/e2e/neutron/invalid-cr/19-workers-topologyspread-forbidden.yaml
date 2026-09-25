@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.workers.deployment.topologySpreadConstraints carries one hostname
+# constraint. The operator projects the periodic-workers and
+# ovn-maintenance-worker Deployments from this block, each with its own pod
+# selector, so no constraint set here names the selector of both. The
+# validating webhook forbids a non-empty list; the schema has no rule for it.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-invalid-worker-spread
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: openstack-rabbitmq
+  ovn:
+    centralRef:
+      name: ovn-central
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: neutron-service-password
+  workers:
+    deployment:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: neutron
+            app.kubernetes.io/component: periodic-workers

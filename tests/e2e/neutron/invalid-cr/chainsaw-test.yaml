@@ -234,3 +234,13 @@ spec:
             ($error != null): true
             (contains($error, 'spec.deployment.resources.requests.cpu')): true
             (contains($error, 'cpu request must be greater than zero')): true
+  # A topology-spread constraint on spec.workers.deployment must be rejected by the
+  # validating webhook: the block configures two Deployments with different selectors.
+  - try:
+    - apply:
+        file: 19-workers-topologyspread-forbidden.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.workers.deployment.topologySpreadConstraints')): true
+            (contains($error, 'topologySpreadConstraints is not supported here')): true
