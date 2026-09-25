@@ -1,0 +1,166 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The OpenStack objects openstack-hypervisor-operator's start and smoke test
+# look up by fixed names, as K-ORC resources. See kustomization.yaml for when
+# to apply them, how to adapt them to another ControlPlane, and how to delete
+# them. Managed objects are created and deleted by K-ORC; the three imports
+# (the admin domain, the hypervisor-operator user and the admin role) only
+# resolve objects that already exist and leave them in place on deletion.
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Domain
+metadata:
+  name: hvo-cc3test
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: managed
+  resource:
+    name: cc3test
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Project
+metadata:
+  name: hvo-test
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: managed
+  resource:
+    name: test
+    domainRef: hvo-cc3test
+---
+# The domain the hypervisor-operator user lives in: the ControlPlane's admin
+# domain, "Default" in the quick start.
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Domain
+metadata:
+  name: hvo-user-domain
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: unmanaged
+  import:
+    filter:
+      name: Default
+---
+# The user spec.services.nova.hypervisorOperator provisions.
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: User
+metadata:
+  name: hvo-user
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: unmanaged
+  import:
+    filter:
+      name: hypervisor-operator
+      domainRef: hvo-user-domain
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Role
+metadata:
+  name: hvo-admin-role
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: unmanaged
+  import:
+    filter:
+      name: admin
+---
+# admin rather than member: the smoke test boots onto a forced host
+# (<zone>:<host>), which Nova's servers:create:forced_host policy grants to
+# admin alone.
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: RoleAssignment
+metadata:
+  name: hvo-test-admin
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: managed
+  resource:
+    roleRef: hvo-admin-role
+    userRef: hvo-user
+    projectRef: hvo-test
+---
+# The smoke test asks for flavor ID "1", and no flag changes it.
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Flavor
+metadata:
+  name: hvo-smoke-test-flavor
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: managed
+  resource:
+    id: "1"
+    name: hvo-smoke-test
+    vcpus: 1
+    ram: 256
+    disk: 1
+    isPublic: true
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: VolumeType
+metadata:
+  name: hvo-premium
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: managed
+  resource:
+    name: premium
+    isPublic: true
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Network
+metadata:
+  name: hvo-smoke-test
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: managed
+  resource:
+    name: hvo-smoke-test
+    shared: false
+    projectRef: hvo-test
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Subnet
+metadata:
+  name: hvo-smoke-test
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: managed
+  resource:
+    networkRef: hvo-smoke-test
+    ipVersion: 4
+    cidr: 10.254.254.0/24
+    enableDHCP: true
+    projectRef: hvo-test
