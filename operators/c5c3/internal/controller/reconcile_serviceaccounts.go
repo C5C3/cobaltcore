@@ -66,7 +66,9 @@ type projectedBuiltinRegistration struct {
 // projectedBuiltinRegistrations returns one entry per enabled built-in service (a
 // non-nil spec.services.glance / .placement / .barbican / .neutron / .cinder /
 // .nova), in that order, plus the account-only notifier registration the network
-// service takes while a compute service is declared beside it.
+// service takes while a compute service is declared beside it, and the
+// account-only hypervisor-operator registration that follows nova's while
+// spec.services.nova.hypervisorOperator is set.
 func projectedBuiltinRegistrations(cp *c5c3v1alpha1.ControlPlane) []projectedBuiltinRegistration {
 	var entries []projectedBuiltinRegistration
 	if cp.Spec.Services.Glance != nil {
@@ -107,6 +109,14 @@ func projectedBuiltinRegistrations(cp *c5c3v1alpha1.ControlPlane) []projectedBui
 		entries = append(entries, projectedBuiltinRegistration{
 			display: "nova", desired: desiredNovaRegistration(cp),
 		})
+		// The account openstack-hypervisor-operator runs as. The Nova leg applies
+		// it only after the Nova child is Ready, so while the block is set the
+		// aggregate waits on the compute service's rollout as well.
+		if cp.Spec.Services.Nova.HypervisorOperator != nil {
+			entries = append(entries, projectedBuiltinRegistration{
+				display: "nova-hypervisor-operator", desired: desiredNovaHypervisorOperatorRegistration(cp),
+			})
+		}
 	}
 	return entries
 }
@@ -114,7 +124,8 @@ func projectedBuiltinRegistrations(cp *c5c3v1alpha1.ControlPlane) []projectedBui
 // reconcileServiceAccounts aggregates the readiness of the KeystoneService
 // children the Glance, Placement, Barbican, Neutron, Cinder and Nova legs
 // applied earlier in the same pass into the ServiceAccountsReady condition. The
-// network service's compute-notifier account is aggregated with them.
+// network service's compute-notifier account and the hypervisor operator's
+// account are aggregated with them.
 //
 // The double reporting is intended: a failing child already fails its own
 // service condition, and the aggregate names the same cause under the condition

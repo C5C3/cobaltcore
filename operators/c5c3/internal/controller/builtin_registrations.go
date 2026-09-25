@@ -235,6 +235,56 @@ func desiredNovaRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.Keysto
 		[]string{"service", "admin"})
 }
 
+// novaHypervisorOperatorRegistrationName returns the name of the KeystoneService
+// child carrying the account openstack-hypervisor-operator authenticates as
+// ("{cp}-nova-hypervisor-operator"). It is derived from the Nova child's name,
+// so the registrations of one compute service sort together. validateNovaChildName
+// caps the ControlPlane name at 36 characters while Nova is declared, so the name
+// stays within the 63 characters of the c5c3.io/keystoneservice-name label it
+// becomes.
+func novaHypervisorOperatorRegistrationName(cp *c5c3v1alpha1.ControlPlane) string {
+	return novaName(cp) + "-hypervisor-operator"
+}
+
+// desiredNovaHypervisorOperatorRegistration builds the account-only
+// registration spec.services.nova.hypervisorOperator projects: the user
+// openstack-hypervisor-operator runs as on the compute clusters. It lives in
+// the Nova namespace, declares no catalog block, since the user answers no
+// requests of its own, and otherwise follows the rules builtinRegistration
+// documents.
+//
+// The project is CREATED: service-hypervisor-operator belongs to this
+// registration alone, so the account's credential and audit trail stay apart
+// from nova-compute's in service-nova.
+//
+// The account holds admin alone. Nova 32.0.0's os-services, os-hypervisors and
+// os-aggregates policies check context_is_admin, which no narrower default
+// role satisfies; every Placement
+// rule the operator meets that accepts service also accepts admin, so service
+// would add nothing.
+func desiredNovaHypervisorOperatorRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+	return &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      novaHypervisorOperatorRegistrationName(cp),
+			Namespace: cp.NovaNamespace(),
+		},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{
+				Name:      cp.Name,
+				Namespace: cp.Namespace,
+			},
+			Account: &c5c3v1alpha1.KeystoneServiceAccountSpec{
+				UserName: c5c3v1alpha1.NovaHypervisorOperatorAccountName,
+				Project: c5c3v1alpha1.ServiceAccountProjectSpec{
+					Name:   c5c3v1alpha1.NovaHypervisorOperatorProjectName,
+					Create: true,
+				},
+				Roles: []string{"admin"},
+			},
+		},
+	}
+}
+
 // reconcileBuiltinRegistration drives the registration leg every built-in
 // service shares: it applies the registration child, mirrors the credentials the
 // child delivers onto the cluster a placed service runs on, and gates on the
