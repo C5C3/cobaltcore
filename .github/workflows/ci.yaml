@@ -3791,7 +3791,7 @@ jobs:
       # The chassis programs the local Open vSwitch of every node its selector
       # matches, and it selects on a label the cluster bring-up does not set, so
       # the step writes that label first (the one
-      # tests/e2e/neutron/metadata-agent/chainsaw-test.yaml:48-54 writes too).
+      # tests/e2e/neutron/metadata-agent/chainsaw-test.yaml:59-65 writes too).
       # Without a live chassis row in the Southbound database every server the
       # suite boots ends in ERROR on a binding failure.
       - name: Deploy the OVN chassis

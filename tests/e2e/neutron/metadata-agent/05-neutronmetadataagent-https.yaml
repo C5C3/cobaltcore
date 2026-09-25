@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The agent of 03-neutronmetadataagent-cr.yaml pointed at a Nova metadata API
+# behind a gateway, the shape of an agent on a compute cluster: https on port
+# 443, the shared secret of 04-nova-metadata-shared-secret.yaml, and a CA bundle
+# that signs the gateway's certificate. The bundle's Secret is applied only in
+# the step after this one, so the agent first waits on it.
+#
+# nova-metadata.example.test resolves nowhere. The agent dials the Nova metadata
+# API only when an instance asks it something, and the suite starts none, so the
+# rendered config, the environment and the mounted bundle are what it asserts.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: neutron-agent
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  chassisRef:
+    name: neutron-agent-chassis
+  novaMetadata:
+    host: nova-metadata.example.test
+    port: 443
+    protocol: https
+    sharedSecretRef:
+      name: neutron-agent-nova-metadata
+    caBundleSecretRef:
+      name: neutron-agent-nova-metadata-ca
