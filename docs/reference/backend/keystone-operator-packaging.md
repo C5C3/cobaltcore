@@ -239,6 +239,14 @@ All configurable parameters with their types, defaults, and descriptions:
 | `resources.requests.cpu` | `string` | `10m` | CPU request per operator pod |
 | `resources.requests.memory` | `string` | `64Mi` | Memory request per operator pod |
 
+#### Scheduling
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `nodeSelector` | `object` | `{}` | Node labels the operator pods must match. Empty renders no `nodeSelector` |
+| `tolerations` | `array` | `[]` | Taints the operator pods tolerate. Empty renders no `tolerations` |
+| `priorityClassName` | `string` | `""` | PriorityClass of the operator pods; the class must exist. Empty renders none |
+
 #### RBAC
 
 | Parameter | Type | Default | Description |
@@ -421,7 +429,9 @@ replicas land on different nodes where possible while single-node clusters
 (kind) stay schedulable. Together with the `PodDisruptionBudget`
 (`minAvailable: 1`, rendered only when `replicas > 1`), a voluntary disruption
 such as a node drain can never evict every replica — and with it the in-process
-admission webhook — at once.
+admission webhook — at once. `nodeSelector`, `tolerations` and
+`priorityClassName` render on the pod spec only when set (see
+[Scheduling](#scheduling)).
 
 ### Service Configuration
 

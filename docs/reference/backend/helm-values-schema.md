@@ -33,6 +33,8 @@ Each chart ships its own generated copy of the schema:
 | barbican-operator | `operators/barbican/helm/barbican-operator/values.schema.json` |
 | ovn-operator | `operators/ovn/helm/ovn-operator/values.schema.json` |
 | neutron-operator | `operators/neutron/helm/neutron-operator/values.schema.json` |
+| cinder-operator | `operators/cinder/helm/cinder-operator/values.schema.json` |
+| nova-operator | `operators/nova/helm/nova-operator/values.schema.json` |
 | operator-library-testbed | `operators/shared/helm/operator-library-testbed/values.schema.json` (the library's test consumer, never published) |
 
 ::: warning Generated file
@@ -68,7 +70,8 @@ to a chart version, so it is not repeated here.
 ## Per-Operator Applicability
 
 Every chart exposes the same core value keys — `image`, `replicas`,
-`resources`, `rbac`, `leaderElection`, `controller`, `webhook`, `metrics`,
+`resources`, `nodeSelector`, `tolerations`, `priorityClassName`, `rbac`,
+`leaderElection`, `controller`, `webhook`, `metrics`,
 `logging`, `monitoring`, `serviceAccount`, `extraArgs`, `extraEnv`,
 `nameOverride`, `fullnameOverride`. A few keys are conditional on what a chart
 ships, so they are present only where they apply:
@@ -116,6 +119,27 @@ the Kubernetes quantity grammar does not allow combining both.
 | `resources.limits.memory` | `resourceQuantity` | pattern or number >= 0 | `128Mi` |
 | `resources.requests.cpu` | `resourceQuantity` | pattern or number >= 0 | `10m` |
 | `resources.requests.memory` | `resourceQuantity` | pattern or number >= 0 | `64Mi` |
+
+### nodeSelector, tolerations and priorityClassName
+
+| Field | Type | Constraint | Default |
+| --- | --- | --- | --- |
+| `nodeSelector` | `object` | string values only (`stringMap`) | `{}` |
+| `tolerations` | `array` of `object` | item keys `key`, `operator`, `value`, `effect`, `tolerationSeconds` and no others; `operator` enum: `Equal`, `Exists`, `Lt`, `Gt`; `effect` enum: `""`, `NoSchedule`, `PreferNoSchedule`, `NoExecute`; `tolerationSeconds` integer | `[]` |
+| `priorityClassName` | `string` | maxLength: `253` | `""` |
+
+Each key renders on the operator pod spec (`spec.template.spec`) only when it is
+non-empty, so the defaults render the same pod template as a chart without the
+keys. The fixed soft hostname spread (`topologySpreadConstraints`) renders beside
+them, and the charts expose no affinity key. A toleration without `operator`
+means `Equal`. `Lt` and `Gt` need the API server's
+`TaintTolerationComparisonOperators` feature gate. The PriorityClass must exist
+before the pods are created, or the API server rejects them.
+
+The keys need operator-library 0.9.0, which the chart versions keystone-operator
+0.11.0, c5c3-operator 0.14.0, horizon-operator 0.4.0, cinder-operator and
+nova-operator 0.2.0, and barbican-, glance-, neutron-, ovn- and
+placement-operator 0.3.0 carry. An older chart rejects them.
 
 ### rbac
 
@@ -302,6 +326,7 @@ ships an enforced schema and covers the keys its extras file adds.
 | Exponent+suffix | `cpu: "1e3m"`, `memory: "1e3Ki"` |
 | Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=true` |
 | Logging constraints | `logging.development: "yes"`, `logging.encoder: "xml"`, `logging.level: "verbose"` |
+| Placement constraints | `nodeSelector: {role: 1}`, a toleration with `operator: Sometimes`, `effect: NoSchedul`, `tolerationSeconds: "300"` or the unknown key `taint`, `priorityClassName: 5`, a `priorityClassName` of 254 characters |
 
 ### Positive Tests (acceptance)
 
@@ -314,6 +339,7 @@ ships an enforced schema and covers the keys its extras file adds.
 | Exponent-only quantities | `cpu: "1e3"` |
 | Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=false` |
 | Logging overrides | `development: true`, `level: debug`, `encoder: console` |
+| Placement keys | `priorityClassName`, a `nodeSelector` label and two tolerations, one with `tolerationSeconds`; a toleration with `effect: ""`, which matches every effect |
 
 ## Values by Operator
 
@@ -334,6 +360,9 @@ description, and by carrying no `federation` key (see the
 | `replicas` | `2` | `2` |
 | `resources.requests` | `cpu: 10m`, `memory: 64Mi` | `cpu: 10m`, `memory: 64Mi` |
 | `resources.limits` | `cpu: 500m`, `memory: 128Mi` | `cpu: 500m`, `memory: 128Mi` |
+| `nodeSelector` | `{}` | `{}` |
+| `tolerations` | `[]` | `[]` |
+| `priorityClassName` | `""` | `""` |
 | `rbac.namespaceScoped` | `false` | `false` |
 | `leaderElection.enabled` | `true` | `true` |
 | `controller.maxConcurrentReconciles` | `2` | unset (accepted, not consumed) |
@@ -425,3 +454,23 @@ monitoring:
 See the [Multi-Tenant Deployment guide](../../guides/multi-tenant-deployment.md#security-trade-off-the-cluster-wide-rbac-default)
 for the privilege-escalation path `rbac.namespaceScoped: true` closes and the
 [capabilities that still need cluster scope](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required).
+
+**Any operator chart: dedicated nodes and a priority class.** Run the operator
+pods on nodes labelled and tainted for the platform, and rank them above tenant
+workloads. The PriorityClass must exist first:
+
+```yaml
+# placement-overrides.yaml
+nodeSelector:
+  node.c5c3.io/role: platform
+tolerations:
+  - key: node.c5c3.io/role
+    operator: Equal
+    value: platform
+    effect: NoSchedule
+priorityClassName: cobaltcore-platform
+```
+
+On the Flux install the same keys go into each operator HelmRelease's
+`spec.values` through a kustomize overlay; see
+[Sizing and placement overrides](../infrastructure/infrastructure-manifests.md#sizing-and-placement-overrides).

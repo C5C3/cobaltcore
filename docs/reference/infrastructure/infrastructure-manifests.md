@@ -191,7 +191,8 @@ installation state.
 **No `spec.sync` block.** The kind Quick Start applies Helm sources and releases
 directly via `kubectl apply -k deploy/kind/base/`, so the `FluxInstance` here does not
 carry a `GitRepository` sync. Production overlays that want continuous reconciliation
-from Git add a `spec.sync` block on top of this base.
+from Git add a `spec.sync` block on top of this base, with the overlay technique
+that [Sizing and placement overrides](#sizing-and-placement-overrides) uses.
 
 **Kustomize ordering.** Kustomize applies `Namespace` resources first by default, so
 `flux-system` exists before the `FluxInstance` is created. The flux-operator itself is
@@ -1530,6 +1531,151 @@ syntax and resource inclusion before deployment.
 - A Kubernetes cluster with FluxCD installed (source-controller and helm-controller)
 - `kubectl` configured with cluster access
 - For local validation only: `kustomize` CLI
+
+## Sizing and placement overrides
+
+The manifests under `deploy/flux-system/` ship the components' own sizing and no
+node placement. A deployer changes both with a kustomize overlay per apply phase
+and leaves the shipped files untouched. `deploy/examples/sizing-overlay/` is an
+example of such an overlay. No script applies it, and
+`tests/unit/deploy/sizing_overlay_example_test.sh` renders it and pins every
+field it patches. The kind devstack's `deploy/kind/base/` is an overlay built
+the same way.
+
+### Recipe
+
+1. Copy `deploy/examples/sizing-overlay/`, including its `infrastructure/`
+   subdirectory. Keep, change or drop each patch, and add one for every other
+   workload you size, using the field the
+   [table below](#where-each-workload-is-sized) names.
+2. Point the base entry in each phase's `resources` list at its base; the
+   `priorityclass.yaml` entry stays as it is. Inside a checkout of this
+   repository a relative path works. Elsewhere, use a remote base pinned to a
+   commit: `https://github.com/C5C3/cobaltcore//deploy/flux-system?ref=<commit>`
+   for the base phase and
+   `https://github.com/C5C3/cobaltcore//deploy/flux-system/infrastructure?ref=<commit>`
+   for the infrastructure phase. When you move `<commit>` later, compare each
+   copied `spec.chart.spec.version` with the base's at the new commit. The
+   patch replaces the whole range, so an upper bound the base has moved past
+   holds the release on an older chart, and Flux downgrades a release that
+   already runs a newer one.
+3. Render both phases with `kustomize build <overlay>/` and
+   `kustomize build <overlay>/infrastructure/` and review the output.
+4. Label the nodes the platform workloads move to before you apply either
+   phase: `kubectl label node <node> node.c5c3.io/role=platform`. A pod whose
+   `nodeSelector` matches no node stays `Pending`. To keep other workloads off
+   those nodes, also taint them with
+   `kubectl taint node <node> node.c5c3.io/role=platform:NoSchedule`; the
+   example's tolerations admit its own pods. Check that
+   `kubectl get nodes -l node.c5c3.io/role=platform` lists the nodes you
+   expect.
+5. Run `kubectl apply -k <overlay>/` in place of
+   [Step 1](#step-1-apply-base-resources), then
+   `kubectl apply -k <overlay>/infrastructure/` in place of
+   [Step 2](#step-2-apply-infrastructure-resources). The base phase applies
+   the `cobaltcore-platform` PriorityClass that the patches of both phases
+   reference. The infrastructure phase does not include it, so
+   `kubectl delete -k <overlay>/infrastructure/` leaves the class in place for
+   the base phase's pods. On a running deployment the MariaDB patch changes
+   the Galera pod template, and mariadb-operator replaces the pods one at a
+   time, replicas first and the primary last (its default
+   `ReplicasFirstPrimaryLast` update strategy). A replaced pod that cannot be scheduled stops the update with
+   the cluster one member short, so watch
+   `kubectl get mariadb openstack-db -n openstack` until it reports `Ready`
+   again before you change anything else.
+
+The example uses the node label `node.c5c3.io/role: platform`, a matching
+`NoSchedule` toleration, and the PriorityClass `cobaltcore-platform` at
+`1000000`. Its resource figures are illustrative; size them against the usage
+you observe.
+
+### Example files
+
+The base phase, `deploy/examples/sizing-overlay/kustomization.yaml`:
+
+<<< @/../deploy/examples/sizing-overlay/kustomization.yaml
+
+The PriorityClass, `deploy/examples/sizing-overlay/priorityclass.yaml`, which
+the base phase includes:
+
+<<< @/../deploy/examples/sizing-overlay/priorityclass.yaml
+
+The infrastructure phase, `deploy/examples/sizing-overlay/infrastructure/kustomization.yaml`:
+
+<<< @/../deploy/examples/sizing-overlay/infrastructure/kustomization.yaml
+
+### Where each workload is sized
+
+One row per entry of `deploy/flux-system/kustomization.yaml` and
+`deploy/flux-system/infrastructure/kustomization.yaml` that runs pods:
+
+| Entry | Kind | Field to patch | Sizing keys |
+| --- | --- | --- | --- |
+| `fluxinstance.yaml` | FluxInstance | `spec.kustomize.patches`, one entry per controller Deployment (`source-controller`, `kustomize-controller`, `helm-controller`, `notification-controller`) | [JSON6902 recipe](#patching-the-upstream-installers-and-the-flux-controllers) |
+| `releases/cert-manager.yaml` | HelmRelease | `spec.values` | Checked against chart v1.21.2: `resources`, `nodeSelector` and `tolerations` for the controller, the same keys under `webhook` and `cainjector` for the other two Deployments, and `global.priorityClassName` for all three |
+| `releases/mariadb-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `https://mariadb-operator.github.io/mariadb-operator` (`sources/mariadb-operator.yaml`) |
+| `releases/external-secrets.yaml` | HelmRelease | `spec.values` | The chart's values reference at `https://charts.external-secrets.io` (`sources/external-secrets.yaml`) |
+| `releases/memcached-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/c5c3/charts` (`sources/c5c3-charts.yaml`) |
+| `releases/openbao.yaml` | HelmRelease | `spec.values`; the shipped release already sets `server.resources` | The chart's values reference at `https://openbao.github.io/openbao-helm` (`sources/openbao.yaml`) |
+| `releases/garage-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/rajsinghtech/charts` (`sources/garage-operator.yaml`) |
+| `releases/openbao-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/dc-tec/charts/openbao-operator` (`sources/openbao-operator.yaml`) |
+| `releases/keystone-operator.yaml`, `horizon-operator.yaml`, `glance-operator.yaml`, `placement-operator.yaml`, `barbican-operator.yaml`, `ovn-operator.yaml`, `neutron-operator.yaml`, `cinder-operator.yaml`, `nova-operator.yaml`, `c5c3-operator.yaml` | HelmRelease | `spec.values`, and `spec.chart.spec.version` with the placement keys ([merge rule 3](#merge-rules)) | [`replicas`, `resources`, `nodeSelector`, `tolerations`, `priorityClassName`](../backend/helm-values-schema.md#nodeselector-tolerations-and-priorityclassname) |
+| `releases/k-orc.yaml` | Flux Kustomization | `spec.patches` | [JSON6902 recipe](#patching-the-upstream-installers-and-the-flux-controllers) |
+| `releases/rabbitmq-cluster-operator.yaml` | Flux Kustomization | `spec.patches` | [JSON6902 recipe](#patching-the-upstream-installers-and-the-flux-controllers) |
+| `infrastructure/mariadb.yaml` | CR (`MariaDB`) | `spec.resources`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName` | The `ContainerTemplate` and `PodTemplate` fields of mariadb-operator v0.38.1. The embedded `spec.maxScale` carries none of them |
+| `infrastructure/memcached.yaml` | CR (`Memcached`) | `spec.resources` | The CRD has no placement fields. The operator's webhook requires a memory limit of at least `maxMemoryMB` plus 32Mi, 96Mi at the default of 64 |
+| `infrastructure/garage.yaml` | CR (`GarageCluster`) | `spec.storage.resources`, `spec.storage.nodeSelector`, `spec.storage.tolerations`, `spec.storage.priorityClassName` | The pod template `GarageCluster` v1beta2 inlines into `spec.storage`; confirm against the installed CRD with `kubectl explain garagecluster.spec.storage` |
+
+The two CRD-only releases (`prometheus-operator-crds`, `mariadb-operator-crds`),
+the sources, namespaces, issuers and certificates, and the External Secrets
+`ClusterSecretStore` run no pods. The flux-operator itself is installed out of
+band by `hack/deploy-infra.sh` and is outside the overlay's reach.
+
+### Patching the upstream installers and the Flux controllers
+
+K-ORC and the RabbitMQ cluster operator are Flux Kustomizations over an upstream
+installer, and the FluxInstance renders the Flux controllers. None of them has a
+values file, so the overlay adds a JSON6902 patch that the kustomize-controller
+or the flux-operator applies to the rendered Deployment:
+
+- The K-ORC installer (`config/default`) and the RabbitMQ cluster-operator
+  installer (`config/installation`) each render one Deployment with one
+  container at the pinned commits; a pin move has to re-check that.
+  `target: {kind: Deployment}` selects the Deployment whatever name prefix the
+  upstream base applies (K-ORC's `namePrefix: orc-` turns `controller-manager`
+  into `orc-controller-manager`), and `containers/0` is the manager
+  container.
+- A FluxInstance entry names one controller Deployment, for example
+  `target: {kind: Deployment, name: helm-controller}`.
+- `op: add` sets a member whether or not it exists, and replaces the whole
+  value when it does. The patch therefore replaces the upstream `resources`
+  block instead of merging into it. The example sizes the K-ORC manager this
+  way and leaves the RabbitMQ cluster operator's upstream `200m` / `500Mi` in
+  place.
+- The Flux manifests run the source, kustomize and helm controllers with
+  `priorityClassName: system-cluster-critical`, which ranks above
+  `cobaltcore-platform`, so the example's FluxInstance patch leaves the helm
+  controller's class alone. The notification-controller has no class and can
+  take `cobaltcore-platform` as a fourth operation.
+
+### Merge rules
+
+1. kustomize applies a merge patch to a HelmRelease's `spec.values`: a patched
+   list, such as `tolerations`, replaces the base list, and a patched map merges
+   key by key. Helm then merges the result with the chart defaults the same
+   way, so cert-manager's default `kubernetes.io/os: linux` node selector stays
+   beside a label the patch adds.
+2. A chart value the shipped release sets can be removed only by setting it to
+   `null` in the patch; omitting the key keeps the shipped value.
+3. The `nodeSelector`, `tolerations` and `priorityClassName` keys of the
+   CobaltCore operator charts need operator-library 0.9.0: keystone-operator
+   0.11.0, c5c3-operator 0.14.0, horizon-operator 0.4.0, cinder-operator and
+   nova-operator 0.2.0, the other five charts 0.3.0, or later. An older chart
+   rejects the keys through its values schema, and the HelmRelease reports the
+   failure in its `Ready` condition. The shipped releases'
+   `spec.chart.spec.version` floors still admit such a chart, so a patch that
+   sets the keys raises the floor to the version above as well, as the
+   example does for keystone-operator with `>=0.11.0 <1.0.0`.
 
 ## Extensibility
 
