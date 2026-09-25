@@ -77,7 +77,8 @@ For an `OVNCentral` named `{name}` the operator manages:
 
 | Resource | Name | Purpose |
 | --- | --- | --- |
-| StatefulSet | `{name}-nb`, `{name}-sb` | One Raft cluster per database, `spec.<db>.replicas` members, started in parallel |
+| StatefulSet | `{name}-nb`, `{name}-sb` | One Raft cluster per database, `spec.<db>.replicas` members, started in parallel, with a soft zone and hostname spread |
+| PodDisruptionBudget | `{name}-nb`, `{name}-sb` | `maxUnavailable: 1` over one database's members, so a drain evicts one member at a time |
 | Service (headless) | `{name}-nb`, `{name}-sb` | Raft peer discovery; publishes not-ready addresses so a fresh cluster can form |
 | Service (per member) | `{name}-nb-0`, `{name}-sb-0`, one per ordinal | ClusterIP, or `NodePort` at `nodePortBase + ordinal` under `spec.<db>.externallyReachable` |
 | PersistentVolumeClaim | `db-{name}-nb-0`, one per member | From the StatefulSet's `db` volume claim template; retained on scale-down, deleted with the CR |

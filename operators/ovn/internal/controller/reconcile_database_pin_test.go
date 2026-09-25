@@ -172,6 +172,28 @@ status:
   loadBalancer: {}
 `
 
+const pinNorthboundPodDisruptionBudgetGolden = `metadata:
+  labels:
+    app.kubernetes.io/component: nb
+    app.kubernetes.io/instance: ovn
+    app.kubernetes.io/managed-by: ovncentral-operator
+    app.kubernetes.io/name: ovncentral
+  name: ovn-nb
+  namespace: openstack
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: nb
+      app.kubernetes.io/instance: ovn
+      app.kubernetes.io/name: ovncentral
+status:
+  currentHealthy: 0
+  desiredHealthy: 0
+  disruptionsAllowed: 0
+  expectedPods: 0
+`
+
 const pinNorthboundStatefulSetGolden = `metadata:
   labels:
     app.kubernetes.io/component: nb
@@ -287,6 +309,23 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 300
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: nb
+            app.kubernetes.io/instance: ovn
+            app.kubernetes.io/name: ovncentral
+        maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: nb
+            app.kubernetes.io/instance: ovn
+            app.kubernetes.io/name: ovncentral
+        maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - emptyDir: {}
         name: run
@@ -433,6 +472,23 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 300
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: sb
+            app.kubernetes.io/instance: ovn
+            app.kubernetes.io/name: ovncentral
+        maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: sb
+            app.kubernetes.io/instance: ovn
+            app.kubernetes.io/name: ovncentral
+        maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - emptyDir: {}
         name: run
@@ -581,6 +637,23 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 300
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: nb
+            app.kubernetes.io/instance: ovn
+            app.kubernetes.io/name: ovncentral
+        maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: nb
+            app.kubernetes.io/instance: ovn
+            app.kubernetes.io/name: ovncentral
+        maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - emptyDir: {}
         name: run
@@ -705,6 +778,18 @@ func TestPinRaftHeadlessService(t *testing.T) {
 				"the rendered headless Service must stay byte-identical")
 		})
 	}
+}
+
+// TestPinRaftPodDisruptionBudget pins the budget of one database. Both
+// databases render the same shape under their own name and component.
+func TestPinRaftPodDisruptionBudget(t *testing.T) {
+	g := NewWithT(t)
+	cr := testOVNCentral()
+
+	got, err := yaml.Marshal(raftPodDisruptionBudget(cr, northboundDB(cr)))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(string(got)).To(Equal(pinNorthboundPodDisruptionBudgetGolden),
+		"the rendered PodDisruptionBudget must stay byte-identical")
 }
 
 // TestPinRaftMemberService pins the Service one member is addressed through, in

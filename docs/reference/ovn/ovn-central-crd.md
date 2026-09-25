@@ -97,6 +97,43 @@ the node a member's claim is bound to leaves that member `Pending`, and the
 rolling update stops there while the other members keep serving. Move the
 members off such storage before you narrow their placement.
 
+#### Disruption budget and spread
+
+Each database gets a PodDisruptionBudget named after its StatefulSet,
+`{name}-nb` or `{name}-sb`, with `maxUnavailable: 1`. It selects the database's
+own members, so the backup pods (component `backup`) are not counted. One
+voluntary disruption at a time fits every member count:
+
+- Three members keep quorum through a node drain, because two stay up.
+- A single member, as in CI and the quick start, never blocks a drain. The
+  database is unavailable while its one pod restarts.
+- Five members are evicted one at a time and keep one further failure of
+  margin.
+
+The members also carry the two spread constraints the API Deployments get by
+default: `topology.kubernetes.io/zone` and `kubernetes.io/hostname`, both with
+`maxSkew: 1` and `whenUnsatisfiable: ScheduleAnyway`, both selecting the
+database's members. The spread is soft, so three members still schedule on a
+single node. To make it hard, set a required pod anti-affinity on
+`kubernetes.io/hostname` through the database block's `affinity`:
+
+```yaml
+spec:
+  northbound:
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+        - topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: ovncentral
+              app.kubernetes.io/instance: ovn
+              app.kubernetes.io/component: nb
+```
+
+With a hard spread every member needs a node of its own, and a member that
+finds none stays `Pending`.
+
 ### OVNStorageSpec
 
 Sizes a PersistentVolumeClaim. Shared by the two database members and by the
@@ -325,7 +362,7 @@ Seven sub-reconcilers each own one condition type. The aggregate `Ready` is
 | `TLSReady` | False | `TargetClusterUnavailable` | `spec.targetClusterRef` names a cluster that does not resolve. TLS is the pipeline's first gate, so the failure lands on the condition the rest of the graph waits behind |
 | `NorthboundReady`, `SouthboundReady` | True | `StatefulSetReady` | Every Raft member of that database is ready |
 | `NorthboundReady`, `SouthboundReady` | False | `StatefulSetProgressing` | Fewer members are ready than `replicas`, or the StatefulSet's counters still describe the template before the last apply. The message counts the ready members |
-| `NorthboundReady`, `SouthboundReady` | False | `StatefulSetError` | A child of that database could not be applied or read; the message carries the wrapped error. A target cluster that grants the operator no `statefulsets` verb lands here |
+| `NorthboundReady`, `SouthboundReady` | False | `StatefulSetError` | A child of that database could not be applied or read; the message carries the wrapped error. A target cluster that grants the operator no `statefulsets` or `poddisruptionbudgets` verb lands here; a failed budget apply reads `ensuring nb PodDisruptionBudget` (or `sb`) |
 | `EndpointsReady` | True | `EndpointsPublished` | Both databases are reachable at the published addresses |
 | `EndpointsReady` | False | `EndpointsPending` | A member Service has no cluster IP yet, no member of a published database runs on a node, or a read failed |
 | `NorthdReady` | True | `DeploymentReady` | The northd Deployment is available |
@@ -359,6 +396,7 @@ Every child takes the CR name plus a component suffix. For an `OVNCentral` named
 | --- | --- | --- |
 | StatefulSet | `{name}-nb`, `{name}-sb` | One per database. Each shares its name with the headless Service that gives its members their stable DNS names, because a StatefulSet derives the per-pod names from its `serviceName` |
 | Pod | `{name}-nb-0`, `{name}-nb-1`, … and `{name}-sb-0` upward | One per Raft member, in ordinal order |
+| PodDisruptionBudget | `{name}-nb`, `{name}-sb` | One per database, `maxUnavailable: 1`, selecting that database's members (see [Disruption budget and spread](#disruption-budget-and-spread)) |
 | Service (per member) | `{name}-nb-0` upward, matching the pod | ClusterIP on 6641 (NB) or 6642 (SB); `NodePort` at `nodePortBase + ordinal` under `externallyReachable`. A Raft client addresses the members individually, so a single load-balanced Service would send half the writes to a follower |
 | PersistentVolumeClaim | `db-{name}-nb-0` upward | From the `db` volume claim template |
 | Secret | `{name}-nb-server`, `{name}-sb-server` | The server keypair each database's members listen with, written by cert-manager under the Certificate's name |

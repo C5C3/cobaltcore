@@ -12,6 +12,11 @@
 #     cluster) and behind one NodePort Service per member
 #   - member 0 of each database requests the 100m/256Mi floor and runs
 #     Burstable, since the CR leaves resources unset
+#   - each database's members carry the two soft (ScheduleAnyway) spread
+#     constraints, which leave all three schedulable on the one kind node
+#   - PodDisruptionBudgets ovn-basic-nb and ovn-basic-sb allow one voluntary
+#     disruption at a time (maxUnavailable: 1) and, with three healthy
+#     members, report disruptionsAllowed: 1
 #   - northd, the three cert-manager Certificates and their Secrets, the
 #     scripts ConfigMap, the backup CronJob and its volume all exist
 #   - status.<db>.internalDbAddress names three ssl: members, and every
@@ -119,9 +124,13 @@ spec:
             # OpenBao tenant namespace, and the LimitRange the openbao-operator
             # provisioner puts there (openbao-operator-tenant-limits) gives
             # every container without a memory limit a 512Mi one.
+            #
+            # The two spread constraints are soft, so the three members still
+            # run Ready on the one kind node.
             template:
               spec:
                 (length(containers[?name == 'ovsdb'].resources.limits) == `0`): true
+                (length(topologySpreadConstraints[?whenUnsatisfiable == 'ScheduleAnyway']) == `2`): true
           status:
             readyReplicas: 3
     - assert:
@@ -137,8 +146,33 @@ spec:
             template:
               spec:
                 (length(containers[?name == 'ovsdb'].resources.limits) == `0`): true
+                (length(topologySpreadConstraints[?whenUnsatisfiable == 'ScheduleAnyway']) == `2`): true
           status:
             readyReplicas: 3
+    # One voluntary disruption at a time keeps quorum through a drain: with
+    # three healthy members the budget allows exactly one eviction.
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: ovn-basic-nb
+            namespace: openstack
+          spec:
+            maxUnavailable: 1
+          status:
+            disruptionsAllowed: 1
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: ovn-basic-sb
+            namespace: openstack
+          spec:
+            maxUnavailable: 1
+          status:
+            disruptionsAllowed: 1
     # The CR sets no resources on either database, so the operator renders
     # its request floor. The QoS class is what the kubelet ranks evictions by,
     # and BestEffort would put a quorum member first in line.

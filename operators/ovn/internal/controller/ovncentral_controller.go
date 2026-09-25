@@ -13,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -163,6 +164,7 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 	corev1.SchemeGroupVersion.WithKind("PersistentVolumeClaim"),
 	batchv1.SchemeGroupVersion.WithKind("CronJob"),
 	batchv1.SchemeGroupVersion.WithKind("Job"),
+	policyv1.SchemeGroupVersion.WithKind("PodDisruptionBudget"),
 	certificateGVK,
 }
 
@@ -201,6 +203,8 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // jobs covers the chassis maintenance Jobs; cronjobs covers the recurring
 // database backup.
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
+// poddisruptionbudgets covers the budget of each Raft database.
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // The operator issues the OVN client and server certificates through
 // cert-manager and reads back the Secrets they write.
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
@@ -509,7 +513,8 @@ func (r *OVNCentralReconciler) setupWithOptions(mgr mcmanager.Manager, opts crco
 		Owns(&corev1.ConfigMap{}, engageLocal, engageNoProviders).
 		Owns(&corev1.PersistentVolumeClaim{}, engageLocal, engageNoProviders).
 		Owns(&batchv1.CronJob{}, engageLocal, engageNoProviders).
-		Owns(&batchv1.Job{}, engageLocal, engageNoProviders)
+		Owns(&batchv1.Job{}, engageLocal, engageNoProviders).
+		Owns(&policyv1.PodDisruptionBudget{}, engageLocal, engageNoProviders)
 
 	if r.certManagerAvailable {
 		b = b.Owns(&certmanagerv1.Certificate{}, engageLocal, engageNoProviders)

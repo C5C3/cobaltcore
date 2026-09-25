@@ -6,6 +6,7 @@
 #
 # Deploys an OVNCentral, waits for Ready=True, then:
 #   - asserts every object the control plane owns exists (two StatefulSets,
+#     the two PodDisruptionBudgets ovn-deletion-nb and ovn-deletion-sb,
 #     the two headless and the two per-member Services, the northd Deployment,
 #     the scripts ConfigMap, the three Certificates and their Secrets, the
 #     backup CronJob and volume, and the per-member database volumes);
@@ -91,6 +92,20 @@ spec:
         resource:
           apiVersion: apps/v1
           kind: StatefulSet
+          metadata:
+            name: ovn-deletion-sb
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: ovn-deletion-nb
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
           metadata:
             name: ovn-deletion-sb
             namespace: openstack
@@ -230,6 +245,20 @@ spec:
         resource:
           apiVersion: apps/v1
           kind: StatefulSet
+          metadata:
+            name: ovn-deletion-sb
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: ovn-deletion-nb
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
           metadata:
             name: ovn-deletion-sb
             namespace: openstack

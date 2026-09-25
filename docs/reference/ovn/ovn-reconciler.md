@@ -37,7 +37,7 @@ TLS ──► Northbound ──► Southbound ──► Endpoints ──► ┬�
 | Step | What it does | Condition |
 | --- | --- | --- |
 | TLS | Probes the target cluster for the `cert-manager.io/v1` Certificate kind, requests the two server keypairs, the client keypair and the relay keypair, and publishes `status.clientSecretName` once the client Secret carries `tls.crt`, `tls.key` and `ca.crt` | `TLSReady` |
-| Northbound | Projects the Northbound Raft cluster: the shared scripts ConfigMap, the headless Service, one Service per member, and the StatefulSet | `NorthboundReady` |
+| Northbound | Projects the Northbound Raft cluster: the shared scripts ConfigMap, the headless Service, one Service per member, the StatefulSet, and the PodDisruptionBudget | `NorthboundReady` |
 | Southbound | The same code against the Southbound database, picking its condition type off the `raftDB` it was handed | `SouthboundReady` |
 | Endpoints | Assembles both connection strings per database from the per-member Services and pods, and stamps `internalDbAddress` and `dbAddress` | `EndpointsReady` |
 | Northd | Projects the `ovn-northd` Deployment and stamps `status.installedImage` once it is available | `NorthdReady` |
@@ -198,9 +198,11 @@ the `nb` suffix, the spec block, the ports and the condition type.
 
 **Purpose:** The same `reconcileRaftDatabase` body against the Southbound
 database. It applies the shared scripts ConfigMap, the headless Service, one
-Service per member before the StatefulSet, and the StatefulSet itself, then reads
-the StatefulSet back and mirrors `readyReplicas` into
-`status.<db>.readyReplicas`. The per-member Services go first: a member that
+Service per member before the StatefulSet, the StatefulSet itself, and the
+database's PodDisruptionBudget (`maxUnavailable: 1`, selecting its members), then
+reads the StatefulSet back and mirrors `readyReplicas` into
+`status.<db>.readyReplicas`. The budget goes in right after the StatefulSet and
+before the read, so a failed budget apply fails the step on the same pass. The per-member Services go first: a member that
 comes up before its Service has no address to publish, and the endpoint step
 would hold the whole CR unready until the next pass created it.
 
@@ -208,12 +210,12 @@ would hold the whole CR unready until the next pass created it.
 
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
-| `False` | `StatefulSetError` | The wrapped error of whichever child failed to apply or read. A target cluster that grants the operator no `statefulsets` verb lands here | none (error returned) |
+| `False` | `StatefulSetError` | The wrapped error of whichever child failed to apply or read. A target cluster that grants the operator no `statefulsets` or `poddisruptionbudgets` verb lands here | none (error returned) |
 | `False` | `StatefulSetProgressing` | "\<n\> of \<m\> sb Raft members are ready" | `RequeueRaftWait` |
 | `True` | `StatefulSetReady` | "All \<m\> sb Raft members are ready" | none |
 
 **Error handling:** Every failed apply reports `StatefulSetError` whichever of the
-four objects failed. The step is one unit of work, and a reason per object would
+five objects failed. The step is one unit of work, and a reason per object would
 put whichever happened to fail first into a field consumers match on. Readiness
 is judged on a `Get` after the apply: the counters live on the status
 subresource the apply strips out, and the
@@ -558,7 +560,7 @@ unresolvable target cluster is surfaced as `TargetClusterUnavailable` and
 requeued, where the wrapper would swallow it as a successful reconcile.
 
 The `OVNCentral` controller `Owns` its StatefulSet, Deployment, Service,
-ConfigMap, PersistentVolumeClaim, CronJob and Job. The cert-manager Certificate
+ConfigMap, PersistentVolumeClaim, CronJob, Job and PodDisruptionBudget. The cert-manager Certificate
 joins that set only when the kind is present on the management cluster, probed at
 setup through the RESTMapper. An unconditional `Owns(Certificate)` would fail at
 start with "no matches for kind Certificate", which takes down every controller
