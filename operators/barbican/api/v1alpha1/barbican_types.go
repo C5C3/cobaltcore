@@ -70,6 +70,15 @@ type BarbicanSpec struct {
 	// +optional
 	Deployment DeploymentSpec `json:"deployment,omitempty"`
 
+	// Jobs sizes, prioritizes and places the pods of the db-sync Job and the
+	// db-clean CronJob. A field left unset falls back to spec.deployment: the
+	// priority class, the node selector, the tolerations, and the node
+	// affinity (never the pod (anti-)affinity). An empty value opts out of the
+	// fallback. Unset resources default to a 100m CPU request and 368Mi
+	// memory as request and limit.
+	// +optional
+	Jobs *commonv1.JobSpec `json:"jobs,omitempty"`
+
 	// Image defines the Barbican container image reference. Like the sibling
 	// operators, the field carries no immutability rule: image upgrades are
 	// routine.

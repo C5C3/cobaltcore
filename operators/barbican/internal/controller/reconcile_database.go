@@ -17,6 +17,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/job"
 	"github.com/c5c3/cobaltcore/internal/common/release"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
@@ -317,9 +318,15 @@ func checkImageReleaseMismatch(barbican *barbicanv1alpha1.Barbican) (ctrl.Result
 	return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, true
 }
 
+// barbicanJobPod resolves the pod settings of the db-sync Job and the db-clean
+// CronJob: spec.jobs, with spec.deployment as the fallback.
+func barbicanJobPod(barbican *barbicanv1alpha1.Barbican) job.PodSettings {
+	return job.ResolvePodSettings(barbican.Spec.Jobs, &barbican.Spec.Deployment)
+}
+
 // barbicanJobSetParams derives the shared migration-Job inputs from the Barbican
 // CR: the config mount, the db-tls keypair, the [database] connection override,
-// and the db-sync command. reconcileDatabase and the unit tests build the Job
+// the Job pod settings, and the db-sync command. reconcileDatabase and the unit tests build the Job
 // from this one source, so a seeded Job carries the same pod spec as the desired
 // one.
 //
@@ -354,6 +361,7 @@ func barbicanJobSetParams(barbican *barbicanv1alpha1.Barbican, configSecretName 
 		Env:               []corev1.EnvVar{database.ConnectionEnvVar(barbican.Name)},
 		ExtraVolumes:      extraVolumes,
 		ExtraVolumeMounts: extraMounts,
+		Pod:               barbicanJobPod(barbican),
 		SyncCommand:       barbicanDBSyncCommand,
 		// No schema-check: barbican-manage db upgrade is an idempotent alembic
 		// upgrade to head, so a second read-only Job would assert nothing the sync

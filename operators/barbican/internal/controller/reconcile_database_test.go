@@ -14,9 +14,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
@@ -526,4 +528,66 @@ func TestReconcileDatabase_DigestPinnedImageSkipsMismatchCheck(t *testing.T) {
 	var syncJob batchv1.Job
 	g.Expect(r.Get(context.Background(), syncJobKey, &syncJob)).To(Succeed())
 	g.Expect(syncJob.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("@sha256:"))
+}
+
+// TestBarbicanJobs_PodSettings pins the pod settings of the db-sync Job and the db-clean CronJob: unset, every
+// container renders the Job resources and no priority class or placement; the
+// API Deployment's priority class and node selector carry over; spec.jobs
+// overrides both.
+func TestBarbicanJobs_PodSettings(t *testing.T) {
+	podSpecs := func(o *barbicanv1alpha1.Barbican) map[string]corev1.PodSpec {
+		return map[string]corev1.PodSpec{
+			"db-sync":  database.SyncJob(barbicanJobSetParams(o, dbConfigSecretName)).Spec.Template.Spec,
+			"db-clean": dbCleanCronJob(o, dbCleanConfigSecretName).Spec.JobTemplate.Spec.Template.Spec,
+		}
+	}
+	defaults := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
+	}
+
+	for _, tc := range []struct {
+		name         string
+		mutate       func(o *barbicanv1alpha1.Barbican)
+		wantPriority string
+		wantSelector map[string]string
+	}{
+		{name: "defaults", mutate: func(*barbicanv1alpha1.Barbican) {}},
+		{
+			name: "API Deployment fallback",
+			mutate: func(o *barbicanv1alpha1.Barbican) {
+				o.Spec.Deployment.PriorityClassName = ptr.To("high")
+				o.Spec.Deployment.NodeSelector = map[string]string{"a": "b"}
+			},
+			wantPriority: "high",
+			wantSelector: map[string]string{"a": "b"},
+		},
+		{
+			name: "spec.jobs override",
+			mutate: func(o *barbicanv1alpha1.Barbican) {
+				o.Spec.Deployment.PriorityClassName = ptr.To("high")
+				o.Spec.Deployment.NodeSelector = map[string]string{"a": "b"}
+				o.Spec.Jobs = &commonv1.JobSpec{
+					JobBaseSpec:       commonv1.JobBaseSpec{PriorityClassName: ptr.To("low")},
+					NodePlacementSpec: commonv1.NodePlacementSpec{NodeSelector: map[string]string{"pool": "jobs"}},
+				}
+			},
+			wantPriority: "low",
+			wantSelector: map[string]string{"pool": "jobs"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			o := dbCleanBarbican()
+			tc.mutate(o)
+
+			for name, spec := range podSpecs(o) {
+				g.Expect(spec.PriorityClassName).To(Equal(tc.wantPriority), name)
+				g.Expect(spec.NodeSelector).To(Equal(tc.wantSelector), name)
+				for _, c := range append(spec.InitContainers, spec.Containers...) {
+					g.Expect(c.Resources).To(Equal(defaults), "%s/%s", name, c.Name)
+				}
+			}
+		})
+	}
 }

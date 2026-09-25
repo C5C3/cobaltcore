@@ -221,6 +221,11 @@ func (in *BarbicanSecretStoreStatus) DeepCopy() *BarbicanSecretStoreStatus {
 func (in *BarbicanSpec) DeepCopyInto(out *BarbicanSpec) {
 	*out = *in
 	in.Deployment.DeepCopyInto(&out.Deployment)
+	if in.Jobs != nil {
+		in, out := &in.Jobs, &out.Jobs
+		*out = new(types.JobSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	out.Image = in.Image
 	in.Database.DeepCopyInto(&out.Database)
 	in.Cache.DeepCopyInto(&out.Cache)
