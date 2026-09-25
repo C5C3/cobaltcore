@@ -7,8 +7,9 @@
 
 The operator charts share the bulk of their Helm values schema: the
 resourceQuantity/cidr/stringMap definitions, the image / replicas / resources /
-rbac / leaderElection / controller / webhook / metrics / logging / monitoring /
-serviceAccount / extraArgs / extraEnv / name-override properties, the
+nodeSelector / tolerations / priorityClassName / rbac / leaderElection /
+controller / webhook / metrics / logging / monitoring / serviceAccount /
+extraArgs / extraEnv / name-override properties, the
 operator-library subchart-values property, the rbac->webhook constraint, and —
 for every chart that ships templates/networkpolicy.yaml — the NetworkPolicy
 property with its fail-closed constraint. This script holds that shared schema
@@ -139,6 +140,47 @@ RESOURCES = {
             },
         },
     },
+}
+
+NODE_SELECTOR = {
+    "description": "Node labels the operator pods must match (pod spec nodeSelector)",
+    "allOf": [{"$ref": "#/definitions/stringMap"}],
+    "default": {},
+}
+
+TOLERATIONS = {
+    "type": "array",
+    "description": "Taints the operator pods tolerate (pod spec tolerations); empty renders none",
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "key": {"type": "string", "description": "Taint key the toleration matches; empty with operator Exists matches every taint"},
+            "operator": {
+                "type": "string",
+                "description": "How key and value are compared; Lt and Gt need the API server's TaintTolerationComparisonOperators feature gate",
+                "enum": ["Equal", "Exists", "Lt", "Gt"],
+            },
+            "value": {"type": "string", "description": "Taint value the toleration matches"},
+            "effect": {
+                "type": "string",
+                "description": "Taint effect the toleration matches; empty matches every effect",
+                "enum": ["", "NoSchedule", "PreferNoSchedule", "NoExecute"],
+            },
+            "tolerationSeconds": {
+                "type": "integer",
+                "description": "Seconds a NoExecute toleration keeps the pod bound after the taint appears",
+            },
+        },
+    },
+    "default": [],
+}
+
+PRIORITY_CLASS_NAME = {
+    "type": "string",
+    "maxLength": 253,
+    "default": "",
+    "description": "PriorityClass of the operator pods; empty renders none",
 }
 
 RBAC = {
@@ -552,6 +594,9 @@ def build_schema(chart):
         "image": image_property(chart["image_repository_default"]),
         "replicas": REPLICAS,
         "resources": RESOURCES,
+        "nodeSelector": NODE_SELECTOR,
+        "tolerations": TOLERATIONS,
+        "priorityClassName": PRIORITY_CLASS_NAME,
         "rbac": RBAC,
         "leaderElection": LEADER_ELECTION,
         "controller": CONTROLLER,

@@ -5,9 +5,10 @@ Consuming charts render it with a one-line template that passes the root context
 
     {{- include "operator-library.deployment" . }}
 
-All settings (image, replicas, resources, webhook, leaderElection, metrics,
-rbac.namespaceScoped, logging, extraArgs, extraEnv) are read from the consuming
-chart's .Values. What only the chart knows — an operator-specific flag derived
+All settings (image, replicas, resources, nodeSelector, tolerations,
+priorityClassName, webhook, leaderElection, metrics, rbac.namespaceScoped,
+logging, extraArgs, extraEnv) are read from the consuming chart's .Values.
+What only the chart knows — an operator-specific flag derived
 from its own values, an environment variable — comes through the
 "operator-library.chart.args" and "operator-library.chart.env" hooks (see
 _helpers.tpl), so the library names no operator.
@@ -31,6 +32,17 @@ spec:
         {{- include "operator-library.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "operator-library.serviceAccountName" . }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532

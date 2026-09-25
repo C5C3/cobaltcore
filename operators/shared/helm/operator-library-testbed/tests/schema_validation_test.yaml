@@ -534,3 +534,92 @@ tests:
     asserts:
       - isKind:
           of: Deployment
+
+  # ---------------------------------------------------------------------------
+  # placement schema constraints (nodeSelector, tolerations, priorityClassName)
+  # ---------------------------------------------------------------------------
+  - it: should reject a non-string nodeSelector value
+    set:
+      nodeSelector:
+        role: 1
+    asserts:
+      - failedTemplate:
+          errorPattern: "/nodeSelector/role.*want string"
+
+  - it: should reject an unknown toleration operator
+    set:
+      tolerations:
+        - key: k
+          operator: Sometimes
+    asserts:
+      - failedTemplate:
+          errorPattern: "/tolerations/0/operator.*must be one of"
+
+  - it: should reject an unknown toleration effect
+    set:
+      tolerations:
+        - key: k
+          operator: Exists
+          effect: NoSchedul
+    asserts:
+      - failedTemplate:
+          errorPattern: "/tolerations/0/effect.*must be one of"
+
+  - it: should accept an empty toleration effect, which matches every effect
+    set:
+      tolerations:
+        - operator: Exists
+          effect: ""
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should reject an unknown key in a toleration
+    set:
+      tolerations:
+        - taint: k
+    asserts:
+      - failedTemplate:
+          errorPattern: "/tolerations/0.*additional properties.*not allowed"
+
+  - it: should reject a non-integer tolerationSeconds
+    set:
+      tolerations:
+        - operator: Exists
+          effect: NoExecute
+          tolerationSeconds: "300"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/tolerations/0/tolerationSeconds.*got string, want integer"
+
+  - it: should reject a non-string priorityClassName
+    set:
+      priorityClassName: 5
+    asserts:
+      - failedTemplate:
+          errorPattern: "/priorityClassName.*want string"
+
+  - it: should reject a priorityClassName longer than 253 characters
+    set:
+      priorityClassName: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - failedTemplate:
+          errorPattern: "/priorityClassName.*maxLength"
+
+  - it: should accept valid placement values
+    set:
+      priorityClassName: cobaltcore-platform
+      nodeSelector:
+        node.c5c3.io/role: platform
+      tolerations:
+        - key: node.c5c3.io/role
+          operator: Equal
+          value: platform
+          effect: NoSchedule
+        - key: k
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 300
+    asserts:
+      - isKind:
+          of: Deployment

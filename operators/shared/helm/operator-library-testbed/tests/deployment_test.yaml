@@ -302,6 +302,78 @@ tests:
           path: spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels["app.kubernetes.io/instance"]
           value: RELEASE-NAME
 
+  # nodeSelector / tolerations / priorityClassName: rendered on the pod spec
+  # only when set, so a default install keeps a byte-identical pod template.
+  - it: should render no priorityClassName, nodeSelector or tolerations by default
+    asserts:
+      - notExists:
+          path: spec.template.spec.priorityClassName
+      - notExists:
+          path: spec.template.spec.nodeSelector
+      - notExists:
+          path: spec.template.spec.tolerations
+
+  - it: should render no placement keys when they are set empty
+    set:
+      priorityClassName: ""
+      nodeSelector: {}
+      tolerations: []
+    asserts:
+      - notExists:
+          path: spec.template.spec.priorityClassName
+      - notExists:
+          path: spec.template.spec.nodeSelector
+      - notExists:
+          path: spec.template.spec.tolerations
+
+  - it: should render priorityClassName, nodeSelector and tolerations verbatim
+    set:
+      priorityClassName: cobaltcore-platform
+      nodeSelector:
+        node.c5c3.io/role: platform
+      tolerations:
+        - key: node.c5c3.io/role
+          operator: Equal
+          value: platform
+          effect: NoSchedule
+    asserts:
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: cobaltcore-platform
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            node.c5c3.io/role: platform
+      - equal:
+          path: spec.template.spec.tolerations
+          value:
+            - key: node.c5c3.io/role
+              operator: Equal
+              value: platform
+              effect: NoSchedule
+
+  - it: should keep the fixed topology spread beside the placement keys
+    set:
+      priorityClassName: cobaltcore-platform
+      nodeSelector:
+        node.c5c3.io/role: platform
+      tolerations:
+        - key: node.c5c3.io/role
+          operator: Exists
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.topologySpreadConstraints
+          count: 1
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].topologyKey
+          value: kubernetes.io/hostname
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable
+          value: ScheduleAnyway
+      # The chart exposes no affinity; the soft hostname spread stays fixed.
+      - notExists:
+          path: spec.template.spec.affinity
+
   # extraArgs / extraEnv: verbatim pass-through after the chart-rendered flags.
   - it: should append extraArgs after the chart-rendered flags
     set:
