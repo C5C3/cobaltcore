@@ -10,7 +10,8 @@ package v1alpha1
 
 import (
 	"github.com/c5c3/cobaltcore/internal/common/types"
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -124,6 +125,11 @@ func (in *FederationSpec) DeepCopyInto(out *FederationSpec) {
 		in, out := &in.ProxyImage, &out.ProxyImage
 		*out = new(types.ImageSpec)
 		**out = **in
+	}
+	if in.ProxyResources != nil {
+		in, out := &in.ProxyResources, &out.ProxyResources
+		*out = new(v1.ResourceRequirements)
+		(*in).DeepCopyInto(*out)
 	}
 	if in.TrustedDashboards != nil {
 		in, out := &in.TrustedDashboards, &out.TrustedDashboards
@@ -301,7 +307,7 @@ func (in *KeystoneIdentityBackendStatus) DeepCopyInto(out *KeystoneIdentityBacke
 	*out = *in
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
-		*out = make([]v1.Condition, len(*in))
+		*out = make([]metav1.Condition, len(*in))
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
@@ -369,6 +375,11 @@ func (in *KeystoneRefSpec) DeepCopy() *KeystoneRefSpec {
 func (in *KeystoneSpec) DeepCopyInto(out *KeystoneSpec) {
 	*out = *in
 	in.Deployment.DeepCopyInto(&out.Deployment)
+	if in.Jobs != nil {
+		in, out := &in.Jobs, &out.Jobs
+		*out = new(types.JobSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	out.Image = in.Image
 	in.Database.DeepCopyInto(&out.Database)
 	in.Cache.DeepCopyInto(&out.Cache)
@@ -479,7 +490,7 @@ func (in *KeystoneStatus) DeepCopyInto(out *KeystoneStatus) {
 	*out = *in
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
-		*out = make([]v1.Condition, len(*in))
+		*out = make([]metav1.Condition, len(*in))
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
