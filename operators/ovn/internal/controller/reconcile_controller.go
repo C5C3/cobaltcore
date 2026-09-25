@@ -139,6 +139,9 @@ func buildControllerDaemonSet(cr *ovnv1alpha1.OVNChassis, central resolvedCentra
 		Command:         []string{"/bin/bash", path.Join(chassisScriptDir, applyNodeScriptKey)},
 		Env:             env,
 		SecurityContext: deployment.RestrictedSecurityContext(),
+		// The init container finishes before ovn-controller starts, so the
+		// pod's effective request stays the larger of the two.
+		Resources: chassisResources(cr.Spec.Controller),
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: runOVSVolumeName, MountPath: ovsRunDir},
 			{Name: scriptsVolumeName, MountPath: chassisScriptDir},

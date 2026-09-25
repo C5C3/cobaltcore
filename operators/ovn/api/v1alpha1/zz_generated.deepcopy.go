@@ -337,6 +337,11 @@ func (in *OVNChassisSpec) DeepCopyInto(out *OVNChassisSpec) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.Jobs != nil {
+		in, out := &in.Jobs, &out.Jobs
+		*out = new(types.JobBaseSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Gateway != nil {
 		in, out := &in.Gateway, &out.Gateway
 		*out = new(OVNGatewaySpec)

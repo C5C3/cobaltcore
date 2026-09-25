@@ -91,6 +91,15 @@ type OVNChassisSpec struct {
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 
+	// Jobs sizes and prioritizes the pods of the maintenance Jobs: apply,
+	// evacuate and chassis-del. Unset resources default to a 100m CPU request
+	// and 368Mi memory as request and limit, and an unset priority class
+	// renders none. The Jobs take spec.tolerations. The block has no placement
+	// fields: the apply Job is pinned to its node, and a node selector that
+	// node does not match fails the pinned pod's kubelet admission.
+	// +optional
+	Jobs *commonv1.JobBaseSpec `json:"jobs,omitempty"`
+
 	// Gateway marks the subset of the selected nodes that announce
 	// enable-chassis-as-gw, the flag that makes a chassis eligible to host a
 	// distributed router's gateway port. Its selector is applied on top of
@@ -211,9 +220,11 @@ type OVNChassisUpdateStrategy struct {
 // (spec.controller).
 type OVNChassisContainerSpec struct {
 	// Resources defines the CPU and memory requests and limits for the
-	// container. When nil the operator renders none, unless a LimitRange in the
-	// namespace fills them in: what a datapath needs depends on the traffic the
-	// node carries, so no default fits most hardware.
+	// container and for the init container that prepares it: host-prepare in
+	// the OVS DaemonSet, apply-node in the controller DaemonSet. When nil the
+	// operator renders none, unless a LimitRange in the namespace fills them
+	// in: what a datapath needs depends on the traffic the node carries, so no
+	// default fits most hardware.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }

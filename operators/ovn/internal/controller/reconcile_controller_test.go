@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -218,4 +219,32 @@ func TestChassisResources_UnsetRendersNone(t *testing.T) {
 
 	g.Expect(chassisResources(nil)).To(Equal(corev1.ResourceRequirements{}))
 	g.Expect(chassisResources(&ovnv1alpha1.OVNChassisContainerSpec{})).To(Equal(corev1.ResourceRequirements{}))
+}
+
+// Each init container renders the resources of the container it prepares:
+// host-prepare those of spec.ovs, apply-node those of spec.controller. Unset
+// blocks render none on either.
+func TestChassisInitContainers_RenderTheirContainersResources(t *testing.T) {
+	g := NewGomegaWithT(t)
+	initResources := func(ds *appsv1.DaemonSet, name string) corev1.ResourceRequirements {
+		for _, c := range ds.Spec.Template.Spec.InitContainers {
+			if c.Name == name {
+				return c.Resources
+			}
+		}
+		t.Fatalf("no %s init container", name)
+		return corev1.ResourceRequirements{}
+	}
+
+	unset := testOVNChassis()
+	g.Expect(initResources(buildOVSDaemonSet(unset), "host-prepare")).To(Equal(corev1.ResourceRequirements{}))
+	g.Expect(initResources(buildControllerDaemonSet(unset, testResolvedCentral()), "apply-node")).To(Equal(corev1.ResourceRequirements{}))
+
+	ovs := corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("200m")}}
+	controller := corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}}
+	set := testOVNChassis()
+	set.Spec.OVS = &ovnv1alpha1.OVNChassisContainerSpec{Resources: &ovs}
+	set.Spec.Controller = &ovnv1alpha1.OVNChassisContainerSpec{Resources: &controller}
+	g.Expect(initResources(buildOVSDaemonSet(set), "host-prepare")).To(Equal(ovs))
+	g.Expect(initResources(buildControllerDaemonSet(set, testResolvedCentral()), "apply-node")).To(Equal(controller))
 }

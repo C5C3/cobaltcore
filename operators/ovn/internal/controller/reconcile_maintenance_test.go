@@ -12,14 +12,17 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
 
@@ -519,4 +522,39 @@ func TestReconcileMaintenance_PendingJobDoesNotBlockAnotherNode(t *testing.T) {
 		To(ConsistOf(testApplyJobNodeA, testChassisDelJobNodeB))
 	g.Expect(ovnChassisCondition(cr, conditionTypeMaintenanceReady).Message).
 		To(ContainSubstring(testNodeA + ", " + testNodeB))
+}
+
+// The maintenance Jobs render the Job defaults and spec.jobs' priority class,
+// and keep what pins them: the apply Job its nodeName and host network, all
+// three spec.tolerations. None renders a node selector, which a pinned pod on a
+// node it does not match would fail kubelet admission with.
+func TestMaintenanceJobs_PodSettings(t *testing.T) {
+	g := NewWithT(t)
+	entry := nodeEntry{systemID: testFixedSystemID, encapType: "geneve"}
+	cr := pinMaintenanceChassis()
+	cr.Spec.Jobs = &commonv1.JobBaseSpec{PriorityClassName: ptr.To("maintenance")}
+	defaults := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
+	}
+
+	apply := applyJob(cr, pinMaintenanceCentral, testNodeA).Spec.Template.Spec
+	g.Expect(apply.NodeName).To(Equal(testNodeA))
+	g.Expect(apply.HostNetwork).To(BeTrue())
+
+	for name, spec := range map[string]corev1.PodSpec{
+		"apply":       apply,
+		"evacuate":    evacuateJob(cr, pinMaintenanceCentral, testNodeA, entry).Spec.Template.Spec,
+		"chassis-del": chassisDelJob(cr, pinMaintenanceCentral, testNodeA, entry).Spec.Template.Spec,
+	} {
+		g.Expect(spec.Containers[0].Resources).To(Equal(defaults), name)
+		g.Expect(spec.PriorityClassName).To(Equal("maintenance"), name)
+		g.Expect(spec.Tolerations).To(Equal(cr.Spec.Tolerations), name)
+		g.Expect(spec.NodeSelector).To(BeNil(), name)
+		g.Expect(spec.Affinity).To(BeNil(), name)
+	}
+
+	// Unset, the Jobs carry no priority class.
+	cr.Spec.Jobs = nil
+	g.Expect(applyJob(cr, pinMaintenanceCentral, testNodeA).Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }

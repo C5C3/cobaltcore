@@ -122,9 +122,11 @@ spec:
                   resources:
                     description: |-
                       Resources defines the CPU and memory requests and limits for the
-                      container. When nil the operator renders none, unless a LimitRange in the
-                      namespace fills them in: what a datapath needs depends on the traffic the
-                      node carries, so no default fits most hardware.
+                      container and for the init container that prepares it: host-prepare in
+                      the OVS DaemonSet, apply-node in the controller DaemonSet. When nil the
+                      operator renders none, unless a LimitRange in the namespace fills them
+                      in: what a datapath needs depends on the traffic the node carries, so no
+                      default fits most hardware.
                     properties:
                       claims:
                         description: |-
@@ -256,6 +258,91 @@ spec:
                 x-kubernetes-validations:
                 - message: exactly one of image.tag or image.digest must be set
                   rule: has(self.tag) != has(self.digest)
+              jobs:
+                description: |-
+                  Jobs sizes and prioritizes the pods of the maintenance Jobs: apply,
+                  evacuate and chassis-del. Unset resources default to a 100m CPU request
+                  and 368Mi memory as request and limit, and an unset priority class
+                  renders none. The Jobs take spec.tolerations. The block has no placement
+                  fields: the apply Job is pinned to its node, and a node selector that
+                  node does not match fails the pinned pod's kubelet admission.
+                properties:
+                  priorityClassName:
+                    description: |-
+                      PriorityClassName sets the priority class of the Job and CronJob pods.
+                      When unset, the pods take the priority class of the CR's API
+                      Deployment, if any. An empty string opts out of that fallback and
+                      renders no priority class.
+                    type: string
+                  resources:
+                    description: |-
+                      Resources defines the CPU and memory requests and limits of every
+                      container and init container of the CR's Job and CronJob pods. The
+                      operator resolves them per resource when it renders the pod: a CPU the
+                      block names neither as request nor as limit gets a 100m request and no
+                      limit, and a memory the block names neither way gets 368Mi as both
+                      request and limit. Jobs that size with their data rather than with a
+                      process count (the OVN backup and Neutron's ovn-db-sync) get a 100m CPU
+                      and 256Mi memory request and no limit instead. A resource the block
+                      names is used as written.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                type: object
               nodeSelector:
                 additionalProperties:
                   type: string
@@ -275,9 +362,11 @@ spec:
                   resources:
                     description: |-
                       Resources defines the CPU and memory requests and limits for the
-                      container. When nil the operator renders none, unless a LimitRange in the
-                      namespace fills them in: what a datapath needs depends on the traffic the
-                      node carries, so no default fits most hardware.
+                      container and for the init container that prepares it: host-prepare in
+                      the OVS DaemonSet, apply-node in the controller DaemonSet. When nil the
+                      operator renders none, unless a LimitRange in the namespace fills them
+                      in: what a datapath needs depends on the traffic the node carries, so no
+                      default fits most hardware.
                     properties:
                       claims:
                         description: |-

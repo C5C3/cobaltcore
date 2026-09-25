@@ -374,7 +374,13 @@ spec:
         - /etc/ovn-chassis/bin/host-prepare.sh
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
         name: host-prepare
-        resources: {}
+        resources:
+          limits:
+            cpu: "2"
+            memory: 2Gi
+          requests:
+            cpu: 200m
+            memory: 512Mi
         securityContext:
           allowPrivilegeEscalation: true
           privileged: true
