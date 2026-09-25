@@ -178,6 +178,13 @@ func main() {
 				if err := (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr); err != nil {
 					return err
 				}
+				// The SizingProfile webhook reads the PriorityClasses a profile
+				// names and the ControlPlanes that reference it; like the
+				// ControlPlane webhook it reads the API server directly, so an
+				// update is checked against the ControlPlanes that exist now.
+				if err := (&c5c3v1alpha1.SizingProfileWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+					return err
+				}
 			}
 			return nil
 		},

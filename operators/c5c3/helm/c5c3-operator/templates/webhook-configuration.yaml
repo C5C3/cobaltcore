@@ -11,4 +11,9 @@
         "validatingWebhookName" "vkeystoneservice.kb.io"
         "mutatePath" "/mutate-c5c3-io-v1alpha1-keystoneservice"
         "validatePath" "/validate-c5c3-io-v1alpha1-keystoneservice"
-        "resource" "keystoneservices"))) }}
+        "resource" "keystoneservices") (dict
+        "mutatingWebhookName" "msizingprofile.kb.io"
+        "validatingWebhookName" "vsizingprofile.kb.io"
+        "mutatePath" "/mutate-c5c3-io-v1alpha1-sizingprofile"
+        "validatePath" "/validate-c5c3-io-v1alpha1-sizingprofile"
+        "resource" "sizingprofiles"))) }}

@@ -230,7 +230,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Enable admission webhooks for ControlPlane and KeystoneService CR validation and defaulting",
+          "description": "Enable admission webhooks for ControlPlane, SizingProfile and KeystoneService CR validation and defaulting",
           "default": true
         }
       }

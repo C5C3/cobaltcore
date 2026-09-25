@@ -131,8 +131,12 @@ func startControlPlaneEnvTest(
 				return err
 			}
 			// The webhook manifests installed by envtest carry the KeystoneService
-			// entries (failurePolicy=Fail), so the handler must be served here too.
-			return (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr)
+			// and SizingProfile entries (failurePolicy=Fail), so their handlers must
+			// be served here too.
+			if err := (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			return (&c5c3v1alpha1.SizingProfileWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			r := &ControlPlaneReconciler{

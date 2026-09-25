@@ -83,8 +83,12 @@ func TestSetupWithManager_AllControllersStart(t *testing.T) {
 				return err
 			}
 			// The webhook manifests installed by envtest carry the KeystoneService
-			// entries (failurePolicy=Fail), so the handler must be served here too.
-			return (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr)
+			// and SizingProfile entries (failurePolicy=Fail), so their handlers must
+			// be served here too.
+			if err := (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			return (&c5c3v1alpha1.SizingProfileWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			// Mirror operators/c5c3/main.go: all three controllers are registered
@@ -165,8 +169,12 @@ func TestBuildControlPlaneController_StartsWithoutServiceCRDs(t *testing.T) {
 				return err
 			}
 			// The webhook manifests installed by envtest carry the KeystoneService
-			// entries (failurePolicy=Fail), so the handler must be served here too.
-			return (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr)
+			// and SizingProfile entries (failurePolicy=Fail), so their handlers must
+			// be served here too.
+			if err := (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			return (&c5c3v1alpha1.SizingProfileWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			r := &ControlPlaneReconciler{
@@ -250,8 +258,12 @@ func TestBuildControlPlaneController_StartsWithoutRabbitmqClusterCRD(t *testing.
 				return err
 			}
 			// The webhook manifests installed by envtest carry the KeystoneService
-			// entries (failurePolicy=Fail), so the handler must be served here too.
-			return (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr)
+			// and SizingProfile entries (failurePolicy=Fail), so their handlers must
+			// be served here too.
+			if err := (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			return (&c5c3v1alpha1.SizingProfileWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			r := &ControlPlaneReconciler{
@@ -315,8 +327,12 @@ func TestKeystoneServiceSetup_WatchesConverge(t *testing.T) {
 				return err
 			}
 			// The webhook manifests installed by envtest carry the KeystoneService
-			// entries (failurePolicy=Fail), so the handler must be served here too.
-			return (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr)
+			// and SizingProfile entries (failurePolicy=Fail), so their handlers must
+			// be served here too.
+			if err := (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			return (&c5c3v1alpha1.SizingProfileWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			r := &KeystoneServiceReconciler{
@@ -424,8 +440,12 @@ func TestControlPlaneSetup_ProjectedChildStatusReEnqueues(t *testing.T) {
 				return err
 			}
 			// The webhook manifests installed by envtest carry the KeystoneService
-			// entries (failurePolicy=Fail), so the handler must be served here too.
-			return (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr)
+			// and SizingProfile entries (failurePolicy=Fail), so their handlers must
+			// be served here too.
+			if err := (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			return (&c5c3v1alpha1.SizingProfileWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			r := &ControlPlaneReconciler{

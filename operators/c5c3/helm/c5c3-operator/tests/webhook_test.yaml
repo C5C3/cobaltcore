@@ -154,6 +154,61 @@ tests:
           path: webhooks[1].rules[0].operations
           content: DELETE
 
+  # The SizingProfile entries follow the KeystoneService ones in the
+  # additionalWebhooks list, so they land at index 2 of both configurations.
+  - it: should carry the SizingProfile mutating webhook as third entry
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: webhooks[2].name
+          value: msizingprofile.kb.io
+      - equal:
+          path: webhooks[2].clientConfig.service.path
+          value: /mutate-c5c3-io-v1alpha1-sizingprofile
+      - equal:
+          path: webhooks[2].rules[0].apiGroups
+          value:
+            - c5c3.io
+      - equal:
+          path: webhooks[2].rules[0].resources
+          value:
+            - sizingprofiles
+      - equal:
+          path: webhooks[2].failurePolicy
+          value: Fail
+      - equal:
+          path: webhooks[2].sideEffects
+          value: None
+
+  - it: should carry the SizingProfile validating webhook as third entry
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: webhooks[2].name
+          value: vsizingprofile.kb.io
+      - equal:
+          path: webhooks[2].clientConfig.service.path
+          value: /validate-c5c3-io-v1alpha1-sizingprofile
+      - equal:
+          path: webhooks[2].rules[0].apiGroups
+          value:
+            - c5c3.io
+      - equal:
+          path: webhooks[2].rules[0].resources
+          value:
+            - sizingprofiles
+      - contains:
+          path: webhooks[2].rules[0].operations
+          content: CREATE
+      - contains:
+          path: webhooks[2].rules[0].operations
+          content: UPDATE
+      # DELETE is not intercepted: a referenced SizingProfile can be deleted,
+      # and the ControlPlanes that reference it report SizingReady=False.
+      - notContains:
+          path: webhooks[2].rules[0].operations
+          content: DELETE
+
   - it: should not render any documents when webhook is disabled
     set:
       webhook:
