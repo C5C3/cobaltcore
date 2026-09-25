@@ -181,3 +181,13 @@ spec:
             ($error != null): true
             (contains($error, 'spec.jobs.priorityClassName')): true
             (contains($error, 'Not found')): true
+  # spec.ovs.revalidatorThreads below one must be rejected by the Minimum=1 marker,
+  # which answers before the webhook twin.
+  - try:
+    - apply:
+        file: 14-ovs-revalidatorthreads-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.ovs.revalidatorThreads')): true
+            (contains($error, 'should be greater than or equal to 1')): true

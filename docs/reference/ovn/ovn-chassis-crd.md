@@ -43,7 +43,7 @@ its registration in the old Southbound database.
 | `encapType` | `string` (Enum `geneve`, `vxlan`) | no | `geneve` | The tunnel protocol between chassis. Geneve carries the variable-length option header OVN uses for its logical metadata; VXLAN has no room for it and so caps the logical topology. VXLAN exists for hardware that cannot terminate Geneve |
 | `updateStrategy` | [`OVNChassisUpdateStrategy`](#ovnchassisupdatestrategy) | no | `{}` | Paces the DaemonSet rollout. Restarting `ovn-controller` interrupts the dataplane programming on that node, so the pace is a per-deployment tradeoff |
 | `remoteProbeIntervalMs` | `int32` (Minimum=0) | no | `60000` | How long `ovn-controller` lets its Southbound connection sit idle before probing it. Zero disables the probe, which is what a chassis behind a connection-tracking middlebox needs when the probe is what tears the connection down |
-| `ovs` | [`*OVNChassisContainerSpec`](#ovnchassiscontainerspec) | no | `nil` | Tunes the `ovs-vswitchd` container. When nil the operator renders no requests or limits for the container. The local `ovsdb-server` container beside it takes no resources from any field |
+| `ovs` | [`*OVNChassisOVSSpec`](#ovnchassisovsspec) | no | `nil` | Tunes the `ovs-vswitchd` container: its resources and its revalidator thread count. When nil the operator renders no requests or limits for the container and pins 2 revalidator threads. The local `ovsdb-server` container beside it takes no resources from any field |
 | `controller` | [`*OVNChassisContainerSpec`](#ovnchassiscontainerspec) | no | `nil` | Tunes the `ovn-controller` container |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSets are created on. The CR itself, its status and its finalizer stay on the management cluster. Immutable, enforced by two CEL transition rules and by the webhook. It has to name the same cluster the `OVNCentral` names. See [Target Clusters](../target-clusters.md) |
 
@@ -79,6 +79,50 @@ the local Open vSwitch database.
 | `type` | `string` (Enum `RollingUpdate`, `OnDelete`) | no | `RollingUpdate` | The rollout mode. `OnDelete` hands the pace to whoever drains the nodes, which is what a deployment with an external maintenance workflow wants |
 | `maxUnavailable` | `*intstr.IntOrString` | no | operator-resolved `1` | How many selected nodes may lose their dataplane programming at once. It applies to `RollingUpdate` only, and the webhook rejects it alongside `OnDelete` so it cannot read as effective |
 
+### OVNChassisOVSSpec
+
+The `ovs` block carries the fields of
+[`OVNChassisContainerSpec`](#ovnchassiscontainerspec) inline, so
+`spec.ovs.resources` keeps its place, and adds one field.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `resources` | `*corev1.ResourceRequirements` | no | none | As in [`OVNChassisContainerSpec`](#ovnchassiscontainerspec), for `ovs-vswitchd` and `host-prepare` |
+| `revalidatorThreads` | `*int32` (Minimum=1) | no | operator-resolved `2` | The number of revalidator threads `ovs-vswitchd` runs, the threads that dump the datapath flows and expire or revalidate them. The operator resolves the default at render time and never writes it into the CR |
+
+The count reaches the `ovs-vswitchd` container as the environment variable
+`OVS_REVALIDATOR_THREADS`, and `run-vswitchd.sh` writes it as
+`other_config:n-revalidator-threads` into the node's `Open_vSwitch` table before
+it starts the daemon. A pod created before the operator upgrade has no such
+variable, but the kubelet still refreshes the script inside it. When that pod's
+`ovs-vswitchd` container restarts, the script skips the write and starts the
+daemon with the OVS default count, which lasts until the DaemonSet replaces the
+pod.
+
+Unpinned, OVS 3.7 starts the handler count divided by four, plus one,
+revalidators. The handler count follows the CPU cores in the process's CPU
+affinity, so the default would be 2 revalidators on a 4-CPU node and 5 on a
+16-CPU node, and a chassis pod's footprint would depend on the node it lands on.
+The handler threads cannot be pinned the same way. Under the kernel datapath's
+per-CPU upcall dispatch, which Linux 5.14 and later provide, OVS starts one
+handler per core in its CPU affinity and overrides
+`other_config:n-handler-threads`. A CPU limit does not change that affinity;
+only a cpuset bounds the handlers.
+
+`ovs-vswitchd` logs the applied counts at INFO when it starts its threads:
+
+```text
+Overriding n-handler-threads to <n>, setting n-revalidator-threads to <m>
+```
+
+`kubectl logs <pod> -c ovs-vswitchd` shows the line, and
+`kubectl exec <pod> -c ovs-vswitchd -- ovs-vsctl get open . other_config:n-revalidator-threads`
+prints the pinned value. The value lives in the node's `conf.db`, which outlives
+the pod. Every start of `ovs-vswitchd` writes it again, so changing
+`revalidatorThreads` takes effect when the DaemonSet rolls the pod. An operator
+downgrade to a release without the field leaves the last value in place; remove
+it with `ovs-vsctl remove open . other_config n-revalidator-threads`.
+
 ### OVNChassisContainerSpec
 
 | Field | Type | Required | Default | Description |
@@ -108,7 +152,8 @@ These hold even when the webhook is down.
 The three transition rules are evaluated on UPDATE only. Beside them the schema
 carries the ordinary field markers: `MinProperties=1` on both selectors, the
 `geneve`/`vxlan` enum on `spec.encapType`, the `RollingUpdate`/`OnDelete` enum on
-`spec.updateStrategy.type`, `Minimum=0` on `spec.remoteProbeIntervalMs`, the two
+`spec.updateStrategy.type`, `Minimum=0` on `spec.remoteProbeIntervalMs`,
+`Minimum=1` on `spec.ovs.revalidatorThreads`, the two
 patterns on a bridge mapping, and `MinLength=1` on `spec.centralRef.name`.
 `spec.bridgeMappings` is a list-map keyed by `physicalNetwork`, so the API server
 already refuses a repeated physical network.
@@ -136,6 +181,7 @@ The validating webhook accumulates every violation into one admission response.
 | `targetClusterRef is immutable (the children already exist on the previously named cluster)` | An update renames the ref |
 | `%s request must not exceed limit (%s)` | A request in `spec.jobs.resources` above its own limit |
 | `field.NotFound` on `spec.jobs.priorityClassName` | The named PriorityClass does not exist. Skipped when no lookup client is injected, and for `""` |
+| `revalidatorThreads must be at least 1` | `spec.ovs.revalidatorThreads` is set below 1, mirroring the `Minimum=1` marker |
 
 The percentage in `maxUnavailable` is scaled against 100, not against the node
 count, and rounded up the way the DaemonSet controller rounds it. The nodes a
@@ -292,6 +338,10 @@ Every mapped bridge is then created with `ovs-vsctl --may-exist add-br`.
 `ovn-controller` attaches patch ports to a bridge but never creates one, so a
 mapping pointing at a bridge that does not exist would silently drop every packet
 on that physical network.
+
+The `ovs-vswitchd` container writes one `other_config` key on the same table
+itself, before its daemon starts: `n-revalidator-threads`, from
+[`spec.ovs.revalidatorThreads`](#ovnchassisovsspec).
 
 The CRD fixes no label keys. The suites and the guides use
 `openstack.c5c3.io/chassis=true` for the nodes an `OVNChassis` selects and

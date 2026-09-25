@@ -296,6 +296,18 @@ FIXTURES: tuple[Fixture, ...] = (
             "    priorityClassName: ovn-invalid-missing-priority-class\n"
         ),
     ),
+    Fixture(
+        filename="14-ovs-revalidatorthreads-zero.yaml",
+        comment=(
+            "spec.ovs.revalidatorThreads of 0 violates the Minimum=1 marker: ovs-vswitchd\n"
+            "needs at least one revalidator to expire datapath flows. The schema answers\n"
+            "before the validating webhook, which carries the same rule as its twin."
+        ),
+        extra=(
+            "  ovs:\n"
+            "    revalidatorThreads: 0\n"
+        ),
+    ),
 )
 
 

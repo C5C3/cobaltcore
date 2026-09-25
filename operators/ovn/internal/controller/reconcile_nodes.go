@@ -177,10 +177,28 @@ exec ovsdb-server /run/openvswitch/conf.db \
 // talks to ovsdb-server over the shared socket, so it waits for that socket to
 // answer before it execs: started earlier it exits immediately, and the restart
 // backoff would then hold the datapath down far longer than the wait costs.
+//
+// Before the exec it pins the revalidator thread count from
+// OVS_REVALIDATOR_THREADS, which the container's environment carries (see
+// effectiveRevalidatorThreads). Unpinned, OVS starts one revalidator per four
+// handler threads plus one, so the pod's footprint would follow the node it
+// lands on. The value lives in the node's conf.db, which outlives the pod, so
+// every start writes it again.
+//
+// A container without the variable skips the write and starts the daemon. The
+// scripts ConfigMap keeps its name and is mounted without a subPath, so the
+// kubelet also refreshes this script in pods created from an older template
+// that carries no such variable. Failing there would take the node's datapath
+// down whenever such a container restarts, and under an OnDelete update
+// strategy it would stay down until someone deletes the pod. Every template
+// this operator renders carries the variable (buildOVSDaemonSet).
 const runVswitchdScript = `#!/bin/bash
 set -eu
 until ovs-vsctl --timeout=5 --no-wait show >/dev/null 2>&1; do sleep 1; done
 ovs-vsctl --no-wait init
+if [ -n "${OVS_REVALIDATOR_THREADS:-}" ]; then
+  ovs-vsctl --no-wait set open . other_config:n-revalidator-threads="${OVS_REVALIDATOR_THREADS}"
+fi
 exec ovs-vswitchd unix:/run/openvswitch/db.sock --pidfile=/run/openvswitch/ovs-vswitchd.pid --unixctl=/run/openvswitch/ovs-vswitchd.ctl
 `
 

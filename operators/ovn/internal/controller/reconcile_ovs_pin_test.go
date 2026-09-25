@@ -42,7 +42,7 @@ func pinCustomChassis() *ovnv1alpha1.OVNChassis {
 		Operator: corev1.TolerationOpExists,
 		Effect:   corev1.TaintEffectNoSchedule,
 	}}
-	cr.Spec.OVS = &ovnv1alpha1.OVNChassisContainerSpec{Resources: &corev1.ResourceRequirements{
+	cr.Spec.OVS = &ovnv1alpha1.OVNChassisOVSSpec{OVNChassisContainerSpec: ovnv1alpha1.OVNChassisContainerSpec{Resources: &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("200m"),
 			corev1.ResourceMemory: resource.MustParse("512Mi"),
@@ -51,7 +51,7 @@ func pinCustomChassis() *ovnv1alpha1.OVNChassis {
 			corev1.ResourceCPU:    resource.MustParse("2"),
 			corev1.ResourceMemory: resource.MustParse("2Gi"),
 		},
-	}}
+	}}}
 	cr.Spec.Controller = &ovnv1alpha1.OVNChassisContainerSpec{Resources: &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -139,6 +139,9 @@ spec:
       - command:
         - /bin/bash
         - /etc/ovn-chassis/bin/run-vswitchd.sh
+        env:
+        - name: OVS_REVALIDATOR_THREADS
+          value: "2"
         image: ghcr.io/c5c3/ovn:26.03.2
         lifecycle:
           preStop:
@@ -315,6 +318,9 @@ spec:
       - command:
         - /bin/bash
         - /etc/ovn-chassis/bin/run-vswitchd.sh
+        env:
+        - name: OVS_REVALIDATOR_THREADS
+          value: "2"
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
         lifecycle:
           preStop:
