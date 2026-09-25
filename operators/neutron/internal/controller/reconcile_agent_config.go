@@ -143,6 +143,12 @@ func agentOperatorDefaults(cr *neutronv1alpha1.NeutronMetadataAgent, chassis res
 		if p := cr.Spec.NovaMetadata.Protocol; p != "" && p != neutronv1alpha1.DefaultNovaMetadataProtocol {
 			defaults["DEFAULT"]["nova_metadata_protocol"] = p
 		}
+		// The bundle the DaemonSet mounts from caBundleSecretRef. Without the
+		// ref the key stays unset and an https agent verifies against the
+		// image's default CA bundle.
+		if agentNovaMetadataCARef(cr) != nil {
+			defaults["DEFAULT"]["auth_ca_cert"] = novaMetadataCAFilePath
+		}
 	}
 
 	// The broker section is rendered only for an agent that names a bus. The

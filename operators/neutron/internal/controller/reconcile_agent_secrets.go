@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -25,6 +26,12 @@ import (
 // that webhook fills in.
 const agentSharedSecretDefaultKey = "shared_secret"
 
+// agentCABundleDefaultKey is the Secret data key holding the Nova metadata CA
+// bundle when spec.novaMetadata.caBundleSecretRef.key is empty, the case of a CR
+// that bypassed the defaulting webhook. It mirrors the value that webhook fills
+// in.
+const agentCABundleDefaultKey = "ca.crt"
+
 // reconcileAgentSecrets gates on the credentials the agent pods consume and
 // returns the SHA-256 digest of the transport URL, which the DaemonSet step
 // stamps into a pod-template annotation so a rotated broker credential rolls the
@@ -33,23 +40,43 @@ const agentSharedSecretDefaultKey = "shared_secret"
 // Both blocks it gates on are optional. An agent without spec.novaMetadata
 // proxies nowhere, and one without spec.messaging opens no broker connection, so
 // a CR that sets neither reports SecretsAvailable without reading anything.
+// Inside spec.novaMetadata it gates on the shared secret and then on the CA
+// bundle named by caBundleSecretRef, each only while it is referenced.
 //
 // The Secrets are read and written through the children client: they are
 // materialised beside the pods that consume them.
 func (r *NeutronMetadataAgentReconciler) reconcileAgentSecrets(ctx context.Context, children client.Client,
 	cr *neutronv1alpha1.NeutronMetadataAgent,
 ) (ctrl.Result, string, error) {
+	var gates []secrets.CredentialGateSpec
 	if ref := agentSharedSecretRef(cr); ref != nil {
 		// The secret the agent signs forwarded requests with. Nova rejects an
 		// unsigned request when it carries a secret of its own, so a pod started
 		// without it would answer every instance with a 403 from Nova.
-		ready, err := secrets.GateCredentials(ctx, children, []secrets.CredentialGateSpec{{
+		gates = append(gates, secrets.CredentialGateSpec{
 			Key:          client.ObjectKey{Namespace: cr.Namespace, Name: ref.Name},
 			Reason:       "WaitingForNovaSharedSecret",
 			Noun:         "Nova metadata shared secret",
 			WaitingMsg:   "Waiting for the Nova metadata shared secret to be synced",
 			ExpectedKeys: []string{agentSharedSecretKey(cr)},
-		}}, &cr.Status.Conditions, cr.Generation, "SecretsReady")
+		})
+	}
+	if ref := agentNovaMetadataCARef(cr); ref != nil {
+		// The bundle the agent verifies the Nova metadata API's certificate
+		// with. The DaemonSet projects the key as a file, and a pod started
+		// without the Secret never leaves ContainerCreating. The noun names the
+		// key because the gate's own messages do not.
+		key := agentNovaMetadataCAKey(cr)
+		gates = append(gates, secrets.CredentialGateSpec{
+			Key:          client.ObjectKey{Namespace: cr.Namespace, Name: ref.Name},
+			Reason:       "WaitingForNovaMetadataCA",
+			Noun:         fmt.Sprintf("Nova metadata CA bundle (key %q)", key),
+			WaitingMsg:   "Waiting for the CA bundle the agent verifies the Nova metadata API with",
+			ExpectedKeys: []string{key},
+		})
+	}
+	if len(gates) > 0 {
+		ready, err := secrets.GateCredentials(ctx, children, gates, &cr.Status.Conditions, cr.Generation, "SecretsReady")
 		if err != nil {
 			return ctrl.Result{}, "", err
 		}
@@ -110,4 +137,24 @@ func agentSharedSecretKey(cr *neutronv1alpha1.NeutronMetadataAgent) string {
 		return ref.Key
 	}
 	return agentSharedSecretDefaultKey
+}
+
+// agentNovaMetadataCARef returns the Secret reference holding the CA bundle the
+// agent verifies the Nova metadata API with, or nil when the agent names none.
+func agentNovaMetadataCARef(cr *neutronv1alpha1.NeutronMetadataAgent) *commonv1.SecretRefSpec {
+	if cr.Spec.NovaMetadata == nil {
+		return nil
+	}
+	return cr.Spec.NovaMetadata.CABundleSecretRef
+}
+
+// agentNovaMetadataCAKey returns the Secret data key the CA bundle is read from,
+// defaulting to agentCABundleDefaultKey. The credential gate and the DaemonSet
+// volume resolve it through this one function, so a pod never projects a key
+// the gate did not check.
+func agentNovaMetadataCAKey(cr *neutronv1alpha1.NeutronMetadataAgent) string {
+	if ref := agentNovaMetadataCARef(cr); ref != nil && ref.Key != "" {
+		return ref.Key
+	}
+	return agentCABundleDefaultKey
 }

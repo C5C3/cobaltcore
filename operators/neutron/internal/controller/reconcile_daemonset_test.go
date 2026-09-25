@@ -248,6 +248,76 @@ func TestBuildAgentDaemonSet_MountsTheCentralsClientSecret(t *testing.T) {
 	g.Expect(configMapName).To(Equal("rendered-config"))
 }
 
+// The Nova metadata CA bundle is projected into the agent container alone, under
+// the file name auth_ca_cert renders, whatever key the Secret carries it under.
+// An agent without the ref carries no such volume.
+func TestBuildAgentDaemonSet_MountsTheNovaMetadataCA(t *testing.T) {
+	caVolume := func(ds *appsv1.DaemonSet) *corev1.Volume {
+		for i := range ds.Spec.Template.Spec.Volumes {
+			if ds.Spec.Template.Spec.Volumes[i].Name == novaMetadataCAVolumeName {
+				return &ds.Spec.Template.Spec.Volumes[i]
+			}
+		}
+		return nil
+	}
+	caMounts := func(c corev1.Container) []corev1.VolumeMount {
+		var mounts []corev1.VolumeMount
+		for _, m := range c.VolumeMounts {
+			if m.Name == novaMetadataCAVolumeName {
+				mounts = append(mounts, m)
+			}
+		}
+		return mounts
+	}
+
+	for _, tc := range []struct {
+		name    string
+		key     string
+		wantKey string
+	}{
+		{name: "a configured key is projected as ca.crt", key: "bundle.pem", wantKey: "bundle.pem"},
+		// A CR that bypassed the defaulting webhook: the gate checks ca.crt, so
+		// the volume projects the same key.
+		{name: "an empty key projects ca.crt", key: "", wantKey: "ca.crt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cr := withNovaMetadata("shared_secret")
+			cr.Spec.NovaMetadata.Protocol = "https"
+			cr.Spec.NovaMetadata.CABundleSecretRef = &commonv1.SecretRefSpec{Name: "nova-metadata-ca", Key: tc.key}
+
+			ds := buildAgentDaemonSet(cr, resolvedForAgentConfig(), "rendered-config", "")
+
+			volume := caVolume(ds)
+			g.Expect(volume).NotTo(BeNil())
+			g.Expect(volume.Secret).NotTo(BeNil())
+			g.Expect(volume.Secret.SecretName).To(Equal("nova-metadata-ca"))
+			g.Expect(volume.Secret.DefaultMode).To(HaveValue(Equal(int32(0o444))))
+			g.Expect(volume.Secret.Items).To(Equal([]corev1.KeyToPath{{Key: tc.wantKey, Path: "ca.crt"}}))
+
+			pod := ds.Spec.Template.Spec
+			g.Expect(pod.Containers).To(HaveLen(1))
+			g.Expect(pod.Containers[0].Name).To(Equal(metadataAgentComponent))
+			g.Expect(caMounts(pod.Containers[0])).To(Equal([]corev1.VolumeMount{{
+				Name: novaMetadataCAVolumeName, MountPath: "/etc/nova-metadata-ca", ReadOnly: true,
+			}}))
+			g.Expect(pod.InitContainers).To(HaveLen(1))
+			g.Expect(caMounts(pod.InitContainers[0])).To(BeEmpty())
+		})
+	}
+
+	t.Run("no ref carries no CA volume", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := withNovaMetadata("shared_secret")
+		cr.Spec.NovaMetadata.Protocol = "https"
+
+		ds := buildAgentDaemonSet(cr, resolvedForAgentConfig(), "rendered-config", "")
+
+		g.Expect(caVolume(ds)).To(BeNil())
+		g.Expect(caMounts(ds.Spec.Template.Spec.Containers[0])).To(BeEmpty())
+	})
+}
+
 // Each env var follows the spec block that names its Secret, so a CR without a
 // bus or without a Nova metadata API starts a container that sources neither.
 func TestAgentEnv_FollowsTheOptionalBlocks(t *testing.T) {

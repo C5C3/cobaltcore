@@ -277,3 +277,108 @@ func TestReconcileAgentSecrets_SharedSecretGateErrorPropagates(t *testing.T) {
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(digest).To(BeEmpty())
 }
+
+// testAgentCASecretName is the Secret holding the bundle the agent verifies the
+// Nova metadata API's certificate with.
+const testAgentCASecretName = "nova-metadata-ca"
+
+// withNovaMetadataCA returns the https agent fixture whose shared secret is
+// already published, verifying the Nova metadata API against the CA bundle
+// under the given key. The shared-secret Secret is returned beside it.
+func withNovaMetadataCA(key string) (*neutronv1alpha1.NeutronMetadataAgent, *corev1.Secret) {
+	cr := withNovaMetadata("shared_secret")
+	cr.Spec.NovaMetadata.Protocol = "https"
+	cr.Spec.NovaMetadata.CABundleSecretRef = &commonv1.SecretRefSpec{Name: testAgentCASecretName, Key: key}
+	shared := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: testAgentSharedSecretName, Namespace: testNamespace},
+		Data:       map[string][]byte{"shared_secret": []byte("s3cr3t")},
+	}
+	return cr, shared
+}
+
+// The CA bundle is gated after the shared secret: a pod started without the
+// Secret its volume projects never leaves ContainerCreating. A Secret without
+// the configured key is the same wait, and the message names the key, because
+// the gate's own wording does not.
+func TestReconcileAgentSecrets_WaitsForTheNovaMetadataCA(t *testing.T) {
+	tests := []struct {
+		name   string
+		secret *corev1.Secret
+	}{
+		{name: "the CA Secret has not been created yet"},
+		{
+			name: "the CA Secret exists without the configured key",
+			secret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: testAgentCASecretName, Namespace: testNamespace},
+				Data:       map[string][]byte{"ca.crt": []byte("-----BEGIN CERTIFICATE-----")},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cr, shared := withNovaMetadataCA("bundle.pem")
+			objs := []client.Object{cr, shared}
+			if tc.secret != nil {
+				objs = append(objs, tc.secret)
+			}
+			r := newAgentTestReconciler(objs...)
+
+			res, digest, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+			g.Expect(digest).To(BeEmpty())
+
+			cond := agentCondition(cr, "SecretsReady")
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal("WaitingForNovaMetadataCA"))
+			g.Expect(cond.Message).To(ContainSubstring("Nova metadata CA bundle"))
+			g.Expect(cond.Message).To(ContainSubstring(`"bundle.pem"`))
+		})
+	}
+}
+
+// An empty key on the ref (a CR that bypassed the defaulting webhook) gates on
+// ca.crt, the key the DaemonSet volume projects in that case.
+func TestReconcileAgentSecrets_CAEmptyKeyGatesOnCACrt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr, shared := withNovaMetadataCA("")
+	ca := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: testAgentCASecretName, Namespace: testNamespace},
+		Data:       map[string][]byte{"ca.crt": []byte("-----BEGIN CERTIFICATE-----")},
+	}
+	r := newAgentTestReconciler(cr, shared, ca)
+
+	res, _, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(agentCondition(cr, "SecretsReady").Reason).To(Equal("SecretsAvailable"))
+	g.Expect(agentNovaMetadataCAKey(cr)).To(Equal(agentCABundleDefaultKey))
+}
+
+// A backend failure reading the CA Secret fails the pass: the gate returns the
+// error rather than a wait, so nothing downstream renders.
+func TestReconcileAgentSecrets_CAGateErrorPropagates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr, shared := withNovaMetadataCA("ca.crt")
+	c := neutronFakeClientBuilder(cr, shared).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey,
+				obj client.Object, opts ...client.GetOption,
+			) error {
+				if _, isSecret := obj.(*corev1.Secret); isSecret && key.Name == testAgentCASecretName {
+					return apierrors.NewServiceUnavailable("cache not started")
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &NeutronMetadataAgentReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
+
+	res, digest, err := r.reconcileAgentSecrets(context.Background(), r.Client, cr)
+
+	g.Expect(apierrors.IsServiceUnavailable(err)).To(BeTrue())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(digest).To(BeEmpty())
+}

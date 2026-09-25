@@ -45,10 +45,10 @@ const metadataAgentComponent = "metadata-agent"
 
 // NeutronMetadataAgentSecretNameIndexKey is the field-indexer key under which
 // NeutronMetadataAgent CRs are indexed by the union of their referenced Secret
-// names (spec.novaMetadata.sharedSecretRef.name and
-// spec.messaging.secretRef.name). The Secret watch mapper resolves an event
-// through it with an O(1) reverse lookup instead of listing every agent in the
-// namespace.
+// names (spec.novaMetadata.sharedSecretRef.name,
+// spec.novaMetadata.caBundleSecretRef.name and spec.messaging.secretRef.name).
+// The Secret watch mapper resolves an event through it with an O(1) reverse
+// lookup instead of listing every agent in the namespace.
 // #nosec G101 -- field-indexer key (a JSONPath-like field selector), not a credential.
 const NeutronMetadataAgentSecretNameIndexKey = "spec.secretRefs.name"
 
@@ -128,6 +128,9 @@ func agentSecretNameExtractor(obj client.Object) []string {
 
 	var referenced []string
 	if ref := agentSharedSecretRef(agent); ref != nil {
+		referenced = append(referenced, ref.Name)
+	}
+	if ref := agentNovaMetadataCARef(agent); ref != nil {
 		referenced = append(referenced, ref.Name)
 	}
 	if agent.Spec.Messaging != nil && agent.Spec.Messaging.SecretRef != nil {
@@ -480,8 +483,9 @@ func (r *NeutronMetadataAgentReconciler) setupWithOptions(mgr mcmanager.Manager,
 	}
 
 	// Watch Secrets and map to the agents that reference them by name or own
-	// them: the Nova shared secret and the brownfield transport URL on the input
-	// side, the derived transport-URL Secret on the owned side.
+	// them: the Nova shared secret, the Nova metadata CA bundle and the
+	// brownfield transport URL on the input side, the derived transport-URL
+	// Secret on the owned side.
 	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &corev1.Secret{},
 		secretToAgentMapper(local.GetClient()))
 	if err != nil {

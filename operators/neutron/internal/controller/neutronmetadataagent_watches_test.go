@@ -58,6 +58,11 @@ func TestSecretToAgentMapper(t *testing.T) {
 	withBus.Spec.Messaging = &commonv1.MessagingSpec{
 		SecretRef: &commonv1.SecretRefSpec{Name: "external-bus", Key: commonv1.DefaultTransportURLSecretKey},
 	}
+	withCA := agentFor("ca-verifier", testNamespace, testOVNChassisName)
+	withCA.Spec.NovaMetadata = &neutronv1alpha1.NovaMetadataSpec{
+		Protocol:          "https",
+		CABundleSecretRef: &commonv1.SecretRefSpec{Name: "nova-metadata-ca", Key: "ca.crt"},
+	}
 
 	tests := []struct {
 		name   string
@@ -75,6 +80,11 @@ func TestSecretToAgentMapper(t *testing.T) {
 			want:   []reconcile.Request{agentReq(testNamespace, "bus-reader")},
 		},
 		{
+			name:   "the Nova metadata CA bundle reference",
+			secret: "nova-metadata-ca",
+			want:   []reconcile.Request{agentReq(testNamespace, "ca-verifier")},
+		},
+		{
 			name:   "a Secret nobody references",
 			secret: "unrelated",
 		},
@@ -82,7 +92,7 @@ func TestSecretToAgentMapper(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
-			c := neutronFakeClientBuilder(withNova, withBus).Build()
+			c := neutronFakeClientBuilder(withNova, withBus, withCA).Build()
 			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 				Name:      tc.secret,
 				Namespace: testNamespace,
@@ -232,6 +242,24 @@ func TestAgentIndexExtractors(t *testing.T) {
 					cr.Spec.Messaging = &commonv1.MessagingSpec{
 						SecretRef: &commonv1.SecretRefSpec{Name: testAgentSharedSecretName},
 					}
+					return cr
+				}(),
+				want: []string{testAgentSharedSecretName},
+			},
+			{
+				name: "the CA bundle is indexed beside the shared secret",
+				obj: func() client.Object {
+					cr := withNovaMetadata("shared_secret")
+					cr.Spec.NovaMetadata.CABundleSecretRef = &commonv1.SecretRefSpec{Name: "nova-metadata-ca"}
+					return cr
+				}(),
+				want: []string{testAgentSharedSecretName, "nova-metadata-ca"},
+			},
+			{
+				name: "one Secret carrying the shared secret and the CA bundle is indexed once",
+				obj: func() client.Object {
+					cr := withNovaMetadata("shared_secret")
+					cr.Spec.NovaMetadata.CABundleSecretRef = &commonv1.SecretRefSpec{Name: testAgentSharedSecretName}
 					return cr
 				}(),
 				want: []string{testAgentSharedSecretName},

@@ -53,6 +53,15 @@ const (
 	tmpVolumeName      = "tmp"
 )
 
+// The CA bundle spec.novaMetadata.caBundleSecretRef names, projected into the
+// agent container and rendered as [DEFAULT] auth_ca_cert. The mount sits outside
+// /etc/neutron, where the read-only config volume is mounted.
+const (
+	novaMetadataCAVolumeName = "nova-metadata-ca"
+	novaMetadataCAMountPath  = "/etc/nova-metadata-ca"
+	novaMetadataCAFilePath   = novaMetadataCAMountPath + "/ca.crt"
+)
+
 // metadataProxySocketPath is the UNIX socket the agent listens on once it is
 // serving. It is the [DEFAULT] metadata_proxy_socket default, $state_path
 // relative, and the readiness probe tests for it rather than for the process:
@@ -233,6 +242,23 @@ func buildAgentDaemonSet(cr *neutronv1alpha1.NeutronMetadataAgent, chassis resol
 		{Name: tmpVolumeName, VolumeSource: corev1.VolumeSource{
 			EmptyDir: &corev1.EmptyDirVolumeSource{},
 		}},
+	}
+
+	// The Nova metadata CA bundle reaches the agent container alone: the init
+	// container makes no https request. Neutron reads the file on every proxied
+	// request and the volume carries no subPath, so a rotated bundle reaches the
+	// running pods without a rollout.
+	if ref := agentNovaMetadataCARef(cr); ref != nil {
+		containers[0].VolumeMounts = append(containers[0].VolumeMounts, corev1.VolumeMount{
+			Name: novaMetadataCAVolumeName, MountPath: novaMetadataCAMountPath, ReadOnly: true,
+		})
+		volumes = append(volumes, corev1.Volume{Name: novaMetadataCAVolumeName, VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName:  ref.Name,
+				DefaultMode: ptr.To(int32(0o444)),
+				Items:       []corev1.KeyToPath{{Key: agentNovaMetadataCAKey(cr), Path: path.Base(novaMetadataCAFilePath)}},
+			},
+		}})
 	}
 
 	return deployment.BuildDaemonSet(deployment.DaemonSetParams{
