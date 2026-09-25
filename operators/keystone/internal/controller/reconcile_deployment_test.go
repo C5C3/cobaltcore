@@ -2720,3 +2720,28 @@ func TestBuildKeystoneService_FederationTargetPortSwitch(t *testing.T) {
 	g.Expect(federated.Spec.Ports[0].Port).To(Equal(int32(5000)), "the Service port is the stable API contract")
 	g.Expect(federated.Spec.Ports[0].TargetPort.IntValue()).To(Equal(int(federationProxyPort)))
 }
+
+// TestBuildPodDisruptionBudget_FollowsTheHPAMinimum pins the budget to the
+// lower replica bound: an autoscaler that may scale three configured replicas
+// down to one pod gets maxUnavailable=1, because minAvailable=1 would refuse
+// every eviction of that last pod and stall a node drain. Without autoscaling
+// the three replicas keep minAvailable=1.
+func TestBuildPodDisruptionBudget_FollowsTheHPAMinimum(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.Deployment.Replicas = 3
+	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
+		MinReplicas:          ptr.To(int32(1)),
+		MaxReplicas:          5,
+		TargetCPUUtilization: ptr.To(int32(80)),
+	}
+
+	pdb := buildPodDisruptionBudget(ks)
+	g.Expect(pdb.Spec.MaxUnavailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+
+	ks.Spec.Autoscaling = nil
+	pdb = buildPodDisruptionBudget(ks)
+	g.Expect(pdb.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+}

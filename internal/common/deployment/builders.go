@@ -26,13 +26,26 @@ import (
 // absent object to materialize the nested leaf default) or for any path that
 // bypasses the webhook. Left unnormalized, a zero would make
 // DeploymentReplicas scale the Deployment to zero pods. Every replica
-// consumer (DeploymentReplicas, BuildPDB, BuildHPA) routes through this
-// single point so the default is applied consistently.
+// consumer (DeploymentReplicas, EffectiveMinReplicas, BuildPDB, BuildHPA)
+// routes through this single point so the default is applied consistently.
 func EffectiveReplicas(spec *commonv1.DeploymentSpec) int32 {
 	if spec.Replicas == 0 {
 		return commonv1.DefaultReplicas
 	}
 	return spec.Replicas
+}
+
+// EffectiveMinReplicas returns the lowest replica count the API Deployment can
+// run at: the HPA's minReplicas while autoscaling is set, EffectiveReplicas(spec)
+// when minReplicas is unset (the value BuildHPA renders), and
+// EffectiveReplicas(spec) without autoscaling. A minReplicas of 0 or below can
+// only arrive past the Minimum=1 marker and the webhook; it is returned as it
+// is, so BuildPDB treats it as a lower bound of one.
+func EffectiveMinReplicas(spec *commonv1.DeploymentSpec, autoscaling *commonv1.AutoscalingSpec) int32 {
+	if autoscaling == nil || autoscaling.MinReplicas == nil {
+		return EffectiveReplicas(spec)
+	}
+	return *autoscaling.MinReplicas
 }
 
 // DeploymentReplicas returns the desired .spec.replicas for the API
@@ -51,14 +64,16 @@ func DeploymentReplicas(spec *commonv1.DeploymentSpec, autoscaling *commonv1.Aut
 }
 
 // BuildPDB constructs the desired PDB for the API deployment. It branches on
-// the effective replica count — so a zero-valued spec.deployment.replicas
-// normalizes to the default, matching the Deployment's own replica count —
-// rather than the raw spec value. When the effective count is > 1,
-// minAvailable=1 guarantees at least one pod remains during voluntary
-// disruptions. When it is 1, maxUnavailable=1 is used instead to avoid drain
-// deadlock (a PDB with minAvailable=1 on a single-replica deployment would
-// block all evictions).
-func BuildPDB(namespace, name string, labels, selector map[string]string, spec *commonv1.DeploymentSpec) *policyv1.PodDisruptionBudget {
+// the lower replica bound, EffectiveMinReplicas(spec, autoscaling): the HPA's
+// minReplicas while autoscaling is set, otherwise the effective replica count
+// (a zero-valued spec.deployment.replicas normalizes to the default, matching
+// the Deployment's own replica count). When the bound is > 1, minAvailable=1
+// guarantees at least one pod remains during voluntary disruptions. When it is
+// 1, maxUnavailable=1 is used instead to avoid drain deadlock: a PDB with
+// minAvailable=1 on a single pod blocks every eviction. The same holds for an
+// autoscaler that may scale the Deployment down to one pod, whatever
+// spec.deployment.replicas says.
+func BuildPDB(namespace, name string, labels, selector map[string]string, spec *commonv1.DeploymentSpec, autoscaling *commonv1.AutoscalingSpec) *policyv1.PodDisruptionBudget {
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -72,7 +87,7 @@ func BuildPDB(namespace, name string, labels, selector map[string]string, spec *
 		},
 	}
 
-	if EffectiveReplicas(spec) > 1 {
+	if EffectiveMinReplicas(spec, autoscaling) > 1 {
 		minAvailable := intstr.FromInt32(1)
 		pdb.Spec.MinAvailable = &minAvailable
 	} else {
@@ -84,20 +99,15 @@ func BuildPDB(namespace, name string, labels, selector map[string]string, spec *
 }
 
 // BuildHPA constructs the desired HorizontalPodAutoscaler for the API
-// deployment. MinReplicas defaults to the effective spec.deployment.replicas
-// when autoscaling.minReplicas is not set — routing through EffectiveReplicas
+// deployment. MinReplicas is EffectiveMinReplicas(spec, autoscaling), so it
+// defaults to the effective spec.deployment.replicas when
+// autoscaling.minReplicas is not set — routing through EffectiveReplicas
 // normalizes a zero-valued (webhook-bypassed) count to the default, so a
 // bypassed spec never yields an invalid minReplicas=0 the API server would
 // reject. Metrics are added for CPU and/or memory utilization based on the
 // autoscaling spec. name is used for both the HPA and its scale target
 // Deployment (the shared sub-resource naming convention).
 func BuildHPA(namespace, name string, labels map[string]string, spec *commonv1.DeploymentSpec, autoscaling *commonv1.AutoscalingSpec) *autoscalingv2.HorizontalPodAutoscaler {
-	minReplicas := autoscaling.MinReplicas
-	if minReplicas == nil {
-		defaultMin := EffectiveReplicas(spec)
-		minReplicas = &defaultMin
-	}
-
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -110,7 +120,7 @@ func BuildHPA(namespace, name string, labels map[string]string, spec *commonv1.D
 				Kind:       "Deployment",
 				Name:       name,
 			},
-			MinReplicas: minReplicas,
+			MinReplicas: ptr.To(EffectiveMinReplicas(spec, autoscaling)),
 			MaxReplicas: autoscaling.MaxReplicas,
 		},
 	}
@@ -146,14 +156,21 @@ func BuildHPA(namespace, name string, labels map[string]string, spec *commonv1.D
 
 // TopologySpreadConstraints returns the topology spread constraints for the
 // API pods. If spec.TopologySpreadConstraints is non-nil, those are used
-// verbatim (an empty slice disables defaults). Otherwise, two default
-// constraints are injected: one zone-spread and one hostname-spread, both
-// with ScheduleAnyway to distribute pods across zones and nodes. selector is
-// the pod selector label set the defaults target.
+// verbatim (an empty slice disables defaults). Otherwise, the two
+// DefaultTopologySpreadConstraints are injected. selector is the pod selector
+// label set the defaults target.
 func TopologySpreadConstraints(spec *commonv1.DeploymentSpec, selector map[string]string) []corev1.TopologySpreadConstraint {
 	if spec.TopologySpreadConstraints != nil {
 		return spec.TopologySpreadConstraints
 	}
+	return DefaultTopologySpreadConstraints(selector)
+}
+
+// DefaultTopologySpreadConstraints returns the two constraints injected when a
+// block sets none: topology.kubernetes.io/zone and kubernetes.io/hostname, both
+// MaxSkew 1 and ScheduleAnyway, both selecting selector. ScheduleAnyway keeps
+// them soft, so pods still schedule where the cluster has one zone or node.
+func DefaultTopologySpreadConstraints(selector map[string]string) []corev1.TopologySpreadConstraint {
 	ls := &metav1.LabelSelector{MatchLabels: selector}
 	return []corev1.TopologySpreadConstraint{
 		{

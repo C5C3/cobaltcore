@@ -15,7 +15,9 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -454,4 +456,29 @@ func TestBuildNeutronDeployment_RendersResourceDefaults(t *testing.T) {
 			g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults(tc.want)))
 		})
 	}
+}
+
+// TestBuildPodDisruptionBudget_FollowsTheHPAMinimum pins the budget to the
+// lower replica bound: an autoscaler that may scale three configured replicas
+// down to one pod gets maxUnavailable=1, because minAvailable=1 would refuse
+// every eviction of that last pod and stall a node drain. Without autoscaling
+// the three replicas keep minAvailable=1.
+func TestBuildPodDisruptionBudget_FollowsTheHPAMinimum(t *testing.T) {
+	g := NewGomegaWithT(t)
+	neutron := validNeutron()
+	neutron.Spec.Deployment.Replicas = 3
+	neutron.Spec.Autoscaling = &neutronv1alpha1.AutoscalingSpec{
+		MinReplicas:          ptr.To(int32(1)),
+		MaxReplicas:          5,
+		TargetCPUUtilization: ptr.To(int32(80)),
+	}
+
+	pdb := buildPodDisruptionBudget(neutron)
+	g.Expect(pdb.Spec.MaxUnavailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+
+	neutron.Spec.Autoscaling = nil
+	pdb = buildPodDisruptionBudget(neutron)
+	g.Expect(pdb.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
 }

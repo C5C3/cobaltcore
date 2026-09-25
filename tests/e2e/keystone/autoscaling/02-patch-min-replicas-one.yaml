@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to lower the autoscaler's minimum to one replica. The API
+# PodDisruptionBudget follows that minimum and switches to maxUnavailable: 1,
+# so a drain can still evict the one pod the HPA may leave running.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-autoscaling
+  namespace: openstack
+spec:
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 6
+    targetCPUUtilization: 80
+    targetMemoryUtilization: 70

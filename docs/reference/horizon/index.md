@@ -64,7 +64,7 @@ For a Horizon CR named `{name}` the operator manages:
 | --- | --- | --- |
 | Deployment | `{name}` | The uWSGI dashboard pods (port 8080) |
 | Service | `{name}` | ClusterIP in front of the dashboard pods |
-| PodDisruptionBudget | `{name}` | `minAvailable: 1` (or `maxUnavailable: 1` at a single replica) |
+| PodDisruptionBudget | `{name}` | `minAvailable: 1` (or `maxUnavailable: 1` at a lower replica bound of one, which is the HPA's `minReplicas` while `spec.autoscaling` is set) |
 | ConfigMap | `{name}-config-<hash>` | Immutable, content-addressed `local_settings.py` |
 | HorizontalPodAutoscaler | `{name}` | Only when `spec.autoscaling` is set |
 | NetworkPolicy | `{name}` | Only when `spec.networkPolicy` is set |

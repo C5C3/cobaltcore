@@ -368,6 +368,9 @@ spec:
 
 - At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required.
 - `minReplicas` defaults to `spec.deployment.replicas` if unset — omitting it will floor the HPA at your current hand-set replica count, not at 1.
+- The API PodDisruptionBudget follows `minReplicas`. At `minReplicas: 1` it
+  switches to `maxUnavailable: 1`, so a node drain can still evict the one pod the
+  HPA may leave running. Above one it keeps `minAvailable: 1`.
 - The generated HPA references `deploy/keystone` and uses the Kubernetes standard
   `metrics-server`. The Quick Start kind cluster does **not** ship one by default —
   the HPA will sit at `unknown/80%` until a resource-metrics API is available.

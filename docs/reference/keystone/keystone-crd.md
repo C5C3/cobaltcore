@@ -326,9 +326,15 @@ reconciler does not reset it on each pass. `spec.deployment.replicas` is then us
 as the initial replica count and as the `minReplicas` default when
 `autoscaling.minReplicas` is unset.
 
+The API PodDisruptionBudget follows the HPA's minimum while `spec.autoscaling`
+is set. At `minReplicas: 1` it renders `maxUnavailable: 1`, so a node drain can
+evict the one pod the HPA may leave running; above one it keeps
+`minAvailable: 1`. Removing `spec.autoscaling` returns the budget to
+`spec.deployment.replicas`.
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `minReplicas` | `*int32` | No | `spec.deployment.replicas` | Lower bound for the number of replicas. Minimum: 1. Defaults to `spec.deployment.replicas` when unset, allowing the HPA to scale down to the static replica count. |
+| `minReplicas` | `*int32` | No | `spec.deployment.replicas` | Lower bound for the number of replicas. Minimum: 1. Defaults to `spec.deployment.replicas` when unset, allowing the HPA to scale down to the static replica count. The PodDisruptionBudget follows this bound: `maxUnavailable: 1` at one, `minAvailable: 1` above. |
 | `maxReplicas` | `int32` | Yes | — | Upper bound for the number of replicas. Minimum: 1. |
 | `targetCPUUtilization` | `*int32` | No\* | — | Target average CPU utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. |
 | `targetMemoryUtilization` | `*int32` | No\* | — | Target average memory utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. |

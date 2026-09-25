@@ -581,13 +581,14 @@ func buildFederationVolumes(fed *federationProjection) []corev1.Volume {
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the Keystone API
-// deployment. It branches on deployment.EffectiveReplicas — so a zero-valued
-// spec.deployment.replicas normalizes to the default, matching the Deployment's
-// own replica count — rather than the raw spec value. When the effective count
+// deployment. It branches on deployment.EffectiveMinReplicas, the lower replica
+// bound: the HPA's minReplicas while spec.autoscaling is set, otherwise the
+// effective replica count, so a zero-valued spec.deployment.replicas normalizes
+// to the default and matches the Deployment's own replica count. When the bound
 // is > 1, minAvailable=1 guarantees at least one pod remains during voluntary
 // disruptions. When it is 1, maxUnavailable=1 is used instead to avoid drain
-// deadlock (a PDB with minAvailable=1 on a single-replica deployment would block
-// all evictions).
+// deadlock (a PDB with minAvailable=1 on a single pod would block all
+// evictions).
 //
 // The selector keeps the stable name and instance labels and excludes the
 // maintenance pods by the absence of the Job name label (naming.ExcludeJobPods)
@@ -600,7 +601,7 @@ func buildFederationVolumes(fed *federationProjection) []corev1.Volume {
 // all, and the Service's two-phase narrowing has no counterpart here that would
 // bound that gap.
 func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), selectorLabels(keystone), &keystone.Spec.Deployment)
+	pdb := deployment.BuildPDB(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), selectorLabels(keystone), &keystone.Spec.Deployment, keystone.Spec.Autoscaling)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

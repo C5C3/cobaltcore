@@ -40,7 +40,7 @@ func TestBuildPDB_MultiReplicaUsesMinAvailable(t *testing.T) {
 
 	labels := map[string]string{"app.kubernetes.io/name": "keystone"}
 	selector := map[string]string{"app.kubernetes.io/instance": "ks"}
-	pdb := BuildPDB("ns", "ks", labels, selector, &commonv1.DeploymentSpec{Replicas: 3})
+	pdb := BuildPDB("ns", "ks", labels, selector, &commonv1.DeploymentSpec{Replicas: 3}, nil)
 
 	g.Expect(pdb.Name).To(gomega.Equal("ks"))
 	g.Expect(pdb.Namespace).To(gomega.Equal("ns"))
@@ -55,7 +55,7 @@ func TestBuildPDB_MultiReplicaUsesMinAvailable(t *testing.T) {
 func TestBuildPDB_SingleReplicaUsesMaxUnavailable(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{Replicas: 1})
+	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{Replicas: 1}, nil)
 
 	g.Expect(pdb.Spec.MinAvailable).To(gomega.BeNil())
 	g.Expect(pdb.Spec.MaxUnavailable).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
@@ -66,9 +66,84 @@ func TestBuildPDB_SingleReplicaUsesMaxUnavailable(t *testing.T) {
 func TestBuildPDB_ZeroReplicasNormalized(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{})
+	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{}, nil)
 
 	g.Expect(pdb.Spec.MinAvailable).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
+}
+
+// The lower replica bound is the HPA minimum while autoscaling is set, and
+// the effective replica count otherwise or when minReplicas is unset.
+func TestEffectiveMinReplicas(t *testing.T) {
+	tests := []struct {
+		name        string
+		spec        commonv1.DeploymentSpec
+		autoscaling *commonv1.AutoscalingSpec
+		want        int32
+	}{
+		{name: "replicas without autoscaling", spec: commonv1.DeploymentSpec{Replicas: 3}, want: 3},
+		{name: "zero replicas without autoscaling", spec: commonv1.DeploymentSpec{Replicas: 0}, want: 3},
+		{
+			name:        "explicit HPA minimum",
+			spec:        commonv1.DeploymentSpec{Replicas: 3},
+			autoscaling: &commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 5},
+			want:        1,
+		},
+		{
+			name:        "unset HPA minimum falls back to replicas",
+			spec:        commonv1.DeploymentSpec{Replicas: 3},
+			autoscaling: &commonv1.AutoscalingSpec{MaxReplicas: 5},
+			want:        3,
+		},
+		{
+			name:        "HPA minimum beside zero replicas",
+			spec:        commonv1.DeploymentSpec{Replicas: 0},
+			autoscaling: &commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(2)), MaxReplicas: 5},
+			want:        2,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(EffectiveMinReplicas(&tc.spec, tc.autoscaling)).To(gomega.Equal(tc.want))
+		})
+	}
+}
+
+// An autoscaler that may scale three configured replicas down to one pod
+// must get maxUnavailable=1: minAvailable=1 would block every eviction of
+// that last pod and stall the drain.
+func TestBuildPDB_FollowsTheHPAMinimum(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{Replicas: 3},
+		&commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 5})
+
+	g.Expect(pdb.Spec.MaxUnavailable).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MinAvailable).To(gomega.BeNil())
+}
+
+// An HPA minimum above one keeps minAvailable=1 even when the configured
+// replica count is one.
+func TestBuildPDB_HPAMinimumAboveOneKeepsMinAvailable(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{Replicas: 1},
+		&commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(3)), MaxReplicas: 5})
+
+	g.Expect(pdb.Spec.MinAvailable).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MaxUnavailable).To(gomega.BeNil())
+}
+
+// A minReplicas of 0 can only arrive past the marker and the webhook; it is
+// taken as it is and allows one disruption instead of blocking every drain.
+func TestBuildPDB_NonPositiveHPAMinimumAllowsOneDisruption(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{Replicas: 3},
+		&commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(0)), MaxReplicas: 5})
+
+	g.Expect(pdb.Spec.MaxUnavailable).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MinAvailable).To(gomega.BeNil())
 }
 
 func TestBuildHPA_MinReplicasDefaultsToEffectiveReplicas(t *testing.T) {
@@ -100,6 +175,29 @@ func TestBuildHPA_ExplicitMinAndBothMetrics(t *testing.T) {
 
 	g.Expect(hpa.Spec.MinReplicas).To(gomega.HaveValue(gomega.Equal(int32(2))))
 	g.Expect(hpa.Spec.Metrics).To(gomega.HaveLen(2))
+}
+
+// The two default constraints spread across zones first and nodes second,
+// both soft and both selecting the given label set. TopologySpreadConstraints
+// injects them for a nil list and keeps an empty list empty.
+func TestDefaultTopologySpreadConstraints(t *testing.T) {
+	g := gomega.NewWithT(t)
+	sel := map[string]string{"app.kubernetes.io/instance": "ks"}
+
+	tscs := DefaultTopologySpreadConstraints(sel)
+	g.Expect(tscs).To(gomega.HaveLen(2))
+	g.Expect(tscs[0].TopologyKey).To(gomega.Equal("topology.kubernetes.io/zone"))
+	g.Expect(tscs[1].TopologyKey).To(gomega.Equal("kubernetes.io/hostname"))
+	for _, tsc := range tscs {
+		g.Expect(tsc.MaxSkew).To(gomega.Equal(int32(1)))
+		g.Expect(tsc.WhenUnsatisfiable).To(gomega.Equal(corev1.ScheduleAnyway))
+		g.Expect(tsc.LabelSelector.MatchLabels).To(gomega.Equal(sel))
+	}
+
+	g.Expect(TopologySpreadConstraints(&commonv1.DeploymentSpec{}, sel)).To(gomega.Equal(tscs))
+	empty := TopologySpreadConstraints(&commonv1.DeploymentSpec{TopologySpreadConstraints: []corev1.TopologySpreadConstraint{}}, sel)
+	g.Expect(empty).NotTo(gomega.BeNil())
+	g.Expect(empty).To(gomega.BeEmpty())
 }
 
 // The nil-spec fallbacks keep webhook-bypassed CRs safe: the shared

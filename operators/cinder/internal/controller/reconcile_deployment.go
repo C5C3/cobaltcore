@@ -367,8 +367,10 @@ func buildCinderService(cinder *cinderv1alpha1.Cinder) *corev1.Service {
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the API Deployment,
-// delegating to the shared builder (minAvailable=1 for multi-replica,
-// maxUnavailable=1 for single-replica to avoid drain deadlock).
+// delegating to the shared builder (minAvailable=1 above a lower replica bound
+// of one, maxUnavailable=1 at one to avoid drain deadlock). The lower bound is
+// the HPA's minReplicas while spec.autoscaling is set, otherwise the effective
+// replica count of spec.api.deployment.
 //
 // The selector is the API component plus the absence of the Job name label
 // (naming.ExcludeJobPods): the db-purge and service-remove pods carry no
@@ -377,7 +379,7 @@ func buildCinderService(cinder *cinderv1alpha1.Cinder) *corev1.Service {
 // the budget exists to protect.
 func buildPodDisruptionBudget(cinder *cinderv1alpha1.Cinder) *policyv1.PodDisruptionBudget {
 	pdb := deployment.BuildPDB(cinder.Namespace, cinder.Name, commonLabels(cinder),
-		apiSelectorLabels(cinder), &cinder.Spec.API.Deployment)
+		apiSelectorLabels(cinder), &cinder.Spec.API.Deployment, cinder.Spec.Autoscaling)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }
