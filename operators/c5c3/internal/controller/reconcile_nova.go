@@ -344,7 +344,11 @@ func (r *ControlPlaneReconciler) mirrorNovaComputeConfig(
 // generates the metadata shared secret, projects the Nova CR (databases and
 // cache DeepCopied from the resolved backing services, the Keystone endpoint
 // derived top-down through novaKeystoneEndpoint), delivers the compute contract
-// to every mirror target, and folds both children's readiness into NovaReady.
+// to every mirror target, provisions the hypervisor operator's account and
+// delivers its auth Secret to the same targets while
+// spec.services.nova.hypervisorOperator is set (pruning both while it is not,
+// see reconcileNovaHypervisorOperator), and folds both children's readiness
+// into NovaReady.
 func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -806,6 +810,17 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 		}
 	}
 
+	// The hypervisor operator's account follows the compute service to the same
+	// targets as the contract, or is pruned while its block is unset. It runs
+	// after the Nova child is ready, so a stuck account holds NovaReady only.
+	hvoLeg := r.pruneNovaHypervisorOperator
+	if cp.Spec.Services.Nova.HypervisorOperator != nil {
+		hvoLeg = r.reconcileNovaHypervisorOperator
+	}
+	if hvoRes, halt, err := hvoLeg(ctx, cp, targets); halt {
+		return hvoRes, err
+	}
+
 	// The Nova child is ready. NovaReady still folds in the registration: a running
 	// Nova whose catalog entry never landed is reachable by nothing that discovers
 	// it through the catalog, and the ControlPlane must not report the compute
@@ -818,7 +833,8 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 
 // deleteOrphanedNova removes a previously-projected Nova child, the two
 // DB-credential chains, the generated metadata shared secret, the three messaging
-// Secrets, and the KeystoneService registration that follow it, when
+// Secrets, the KeystoneService registration, and the hypervisor operator's
+// registration and auth Secret that follow it, when
 // spec.services.nova is unset AND the ControlPlane has opted in to deletion via
 // novaDeletionAllowedAnnotation (the caller gates this). Each object is only
 // deleted when this ControlPlane still owns it (by owner reference in its own
@@ -883,6 +899,18 @@ func (r *ControlPlaneReconciler) deleteOrphanedNova(ctx context.Context, cp *c5c
 	children = append(children, &c5c3v1alpha1.KeystoneService{
 		ObjectMeta: metav1.ObjectMeta{Name: novaName(cp), Namespace: novaNS},
 	})
+
+	// The hypervisor operator's registration and its auth Secret, reached the
+	// same way. The copies on the compute clusters are each NovaCompute
+	// teardown's to reap, like the contract mirrors.
+	children = append(children,
+		&c5c3v1alpha1.KeystoneService{
+			ObjectMeta: metav1.ObjectMeta{Name: novaHypervisorOperatorRegistrationName(cp), Namespace: novaNS},
+		},
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: novaHypervisorOperatorAuthSecretName(cp), Namespace: novaNS},
+		},
+	)
 
 	for _, child := range children {
 		if err := commonreconcile.DeleteOrphanedChildFunc(ctx, r.Client, child, func(live client.Object) bool {

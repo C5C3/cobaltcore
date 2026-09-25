@@ -185,6 +185,23 @@ func TestControlPlaneSecretNameExtractor_IndexesTheHandedRemoteTransportSecret(t
 	g.Expect(controlPlaneSecretNameExtractor(cp)).To(ConsistOf("keystone-admin"))
 }
 
+// TestControlPlaneSecretNameExtractor_HypervisorOperatorCredentials pins the
+// rotation wake-up of the hypervisor operator's account: its consumer Secret is
+// indexed while spec.services.nova.hypervisorOperator is set and not without
+// it, so a rotation rewrites the auth Secret on the next pass.
+func TestControlPlaneSecretNameExtractor_HypervisorOperatorCredentials(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := mapperControlPlane("controlplane", "default", "keystone-admin")
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{}
+	g.Expect(controlPlaneSecretNameExtractor(cp)).To(ConsistOf("keystone-admin"),
+		"without the block the account's credentials are not the ControlPlane's concern")
+
+	cp.Spec.Services.Nova.HypervisorOperator = &c5c3v1alpha1.ServiceNovaHypervisorOperatorSpec{}
+	g.Expect(controlPlaneSecretNameExtractor(cp)).To(ConsistOf(
+		"keystone-admin", "controlplane-nova-hypervisor-operator-credentials"))
+}
+
 func TestControlPlaneSecretNameExtractor_WrongTypeReturnsNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -250,6 +267,34 @@ func TestSecretToControlPlaneMapper_ScopedToNamespace(t *testing.T) {
 	g.Expect(reqs).To(HaveLen(1),
 		"only the ControlPlane in the Secret's namespace must be enqueued")
 	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{Namespace: "ns-a", Name: "cp-a"}))
+}
+
+// TestSecretToControlPlaneMapper_HypervisorOperatorCredentialsInTheNovaNamespace
+// pins the mapper on the hypervisor operator's consumer Secret: it wakes the
+// ControlPlane from the Nova namespace the registration delivers it into, and
+// not from a namespace the ControlPlane does not occupy.
+func TestSecretToControlPlaneMapper_HypervisorOperatorCredentialsInTheNovaNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := mapperControlPlane("cp", "default", "keystone-admin")
+	cp.Spec.Services.Nova = &c5c3v1alpha1.ServiceNovaSpec{
+		Namespace:          &c5c3v1alpha1.ServiceNamespaceSpec{Name: "compute"},
+		HypervisorOperator: &c5c3v1alpha1.ServiceNovaHypervisorOperatorSpec{},
+	}
+	c := newControlPlaneMapperClient(t, cp)
+	mapper := secretToControlPlaneMapper(c)
+
+	creds := func(namespace string) *corev1.Secret {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: "cp-nova-hypervisor-operator-credentials", Namespace: namespace,
+		}}
+	}
+
+	g.Expect(mapper(context.Background(), creds("compute"))).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "cp"}}),
+		"a rotation in the Nova namespace wakes the ControlPlane")
+	g.Expect(mapper(context.Background(), creds("unrelated"))).To(BeEmpty(),
+		"the same name in a namespace the ControlPlane does not occupy wakes nothing")
 }
 
 // --- storeToControlPlaneMapper (#476, #605) ---
