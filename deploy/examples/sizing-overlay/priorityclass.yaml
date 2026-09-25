@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Example PriorityClass for the CobaltCore operators and platform workloads.
+#
+# This directory is an example to copy. No script applies it;
+# tests/unit/deploy/sizing_overlay_example_test.sh renders it. The value ranks
+# the pods above tenant workloads (priority 0 without a class) for preemption
+# and node-pressure eviction, and stays far below the system-* classes
+# (2000000000 and up) that cluster-critical pods such as the Flux controllers
+# use.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: cobaltcore-platform
+value: 1000000
+globalDefault: false
+description: "CobaltCore operators and platform workloads; ranked above tenant workloads for preemption and node-pressure eviction"
