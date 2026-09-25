@@ -23,6 +23,7 @@ import (
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
 
@@ -304,4 +305,33 @@ func TestBuildRelayDeployment_RendersResourceDefaults(t *testing.T) {
 	deploy := buildRelayDeployment(cr)
 
 	g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
+}
+
+// spec.relay's node placement reaches the relay pod template verbatim.
+func TestBuildRelayDeployment_RendersNodePlacement(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := relayOVNCentral()
+	placement := commonv1.NodePlacementSpec{
+		NodeSelector: map[string]string{"node-role.kubernetes.io/network": ""},
+		Tolerations:  []corev1.Toleration{{Key: "network", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
+		Affinity: &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
+				Weight:          100,
+				PodAffinityTerm: corev1.PodAffinityTerm{TopologyKey: "kubernetes.io/hostname"},
+			}},
+		}},
+	}
+	cr.Spec.Relay.NodePlacementSpec = placement
+
+	spec := buildRelayDeployment(cr).Spec.Template.Spec
+
+	g.Expect(spec.NodeSelector).To(Equal(placement.NodeSelector))
+	g.Expect(spec.Tolerations).To(Equal(placement.Tolerations))
+	g.Expect(spec.Affinity).To(Equal(placement.Affinity))
+
+	// Unset, the relay renders none of them.
+	unset := buildRelayDeployment(relayOVNCentral()).Spec.Template.Spec
+	g.Expect(unset.NodeSelector).To(BeNil())
+	g.Expect(unset.Tolerations).To(BeNil())
+	g.Expect(unset.Affinity).To(BeNil())
 }

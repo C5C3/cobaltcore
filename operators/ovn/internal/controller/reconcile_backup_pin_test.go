@@ -142,7 +142,10 @@ spec:
               value: "14"
             image: ghcr.io/c5c3/ovn:26.03.2
             name: backup
-            resources: {}
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
               capabilities:
@@ -230,7 +233,10 @@ spec:
               value: "3"
             image: ghcr.io/c5c3/ovn:26.03.2
             name: backup
-            resources: {}
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
               capabilities:
@@ -335,7 +341,10 @@ spec:
               value: prod/ovn
             image: registry.example.com/backup-shifter@sha256:2222222222222222222222222222222222222222222222222222222222222222
             name: shifter
-            resources: {}
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
               capabilities:
@@ -366,7 +375,10 @@ spec:
               value: "14"
             image: ghcr.io/c5c3/ovn:26.03.2
             name: backup
-            resources: {}
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
               capabilities:

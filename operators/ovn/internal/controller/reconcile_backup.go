@@ -369,6 +369,11 @@ func backupPVC(cr *ovnv1alpha1.OVNCentral, backup ovnv1alpha1.OVNBackupSpec) *co
 // snapshot moves into an init container and the upload becomes the main one, so
 // a failed snapshot never reaches the upload and the Job's terminal condition
 // covers both halves: the pod is Failed whichever of the two exits non-zero.
+//
+// Both containers carry the pod settings spec.jobs resolves against
+// spec.northd.deployment, with the request floor as resources: ovsdb-client
+// holds each snapshot in memory, so the working set grows with the logical
+// model and a default limit would OOM-kill the run that outgrew it.
 func backupCronJob(cr *ovnv1alpha1.OVNCentral, backup ovnv1alpha1.OVNBackupSpec) *batchv1.CronJob {
 	labels := naming.ComponentLabels(centralAppName, cr.Name, componentBackup)
 
@@ -393,6 +398,7 @@ func backupCronJob(cr *ovnv1alpha1.OVNCentral, backup ovnv1alpha1.OVNBackupSpec)
 		podSpec.InitContainers = []corev1.Container{backupContainer(cr, backup)}
 		podSpec.Containers = []corev1.Container{shifterContainer(cr, backup.S3)}
 	}
+	job.ResolvePodSettingsWithRequestFloor(cr.Spec.Jobs, &cr.Spec.Northd.Deployment).Apply(&podSpec)
 
 	return &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{

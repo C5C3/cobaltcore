@@ -169,7 +169,7 @@ configuration.
 and sit ten apart so both ranges reach the five-replica ceiling without
 colliding. The database request floor reads its 100m CPU request from the
 shared `DefaultCPURequest` in `internal/common/types/workload.go` and sets its
-256Mi memory request in `raftResources`. The northd and relay containers get
+256Mi memory request in `WithRequestFloor`. The northd and relay containers get
 theirs from `WithResourceDefaults` and `MemoryForProcesses` in
 `internal/common/types/resources.go`: 368Mi at one thread, and 32Mi more per
 extra northd thread.

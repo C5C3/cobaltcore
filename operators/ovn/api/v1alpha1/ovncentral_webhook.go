@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -135,8 +136,8 @@ func (w *OVNCentralWebhook) Default(_ context.Context, _ *OVNCentral) error {
 // validating webhook also sees the finalizer-removal update reconcileDelete
 // issues, so rejecting it would wedge that CR in Terminating with no field left
 // to edit to repair it.
-func (w *OVNCentralWebhook) ValidateCreate(_ context.Context, obj *OVNCentral) (admission.Warnings, error) {
-	return nil, w.validate(obj, validateOVNCentralNameLength(obj.Name))
+func (w *OVNCentralWebhook) ValidateCreate(ctx context.Context, obj *OVNCentral) (admission.Warnings, error) {
+	return nil, w.validate(ctx, obj, validateOVNCentralNameLength(obj.Name))
 }
 
 // validateOVNCentralNameLength bounds metadata.name by the child object with the
@@ -159,27 +160,62 @@ func validateOVNCentralNameLength(name string) field.ErrorList {
 //
 // spec.targetClusterRef is compared across both revisions here, the webhook-layer
 // twin of the two transition CEL rules on OVNCentralSpec.
-func (w *OVNCentralWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *OVNCentral) (admission.Warnings, error) {
+//
+// An update to a CR that is being deleted and leaves its spec alone is admitted
+// without validation. That is the finalizer removal reconcileDelete issues, and
+// the rules below can reject an unchanged spec that was admitted earlier, such
+// as a PriorityClass deleted since. Rejecting the removal would hold the CR in
+// Terminating. A deleting CR whose spec changes is still validated. Default
+// leaves the object untouched, so the two specs compare as sent.
+func (w *OVNCentralWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *OVNCentral) (admission.Warnings, error) {
+	if newObj.DeletionTimestamp != nil && equality.Semantic.DeepEqual(oldObj.Spec, newObj.Spec) {
+		return nil, nil
+	}
+
 	updateErrs := validation.TargetClusterRefImmutable(
 		field.NewPath("spec", "targetClusterRef"),
 		oldObj.Spec.TargetClusterRef,
 		newObj.Spec.TargetClusterRef,
 	)
-	return warnBackupRetention(oldObj.Spec.Backup, newObj.Spec.Backup), w.validate(newObj, updateErrs)
+	return warnBackupRetention(oldObj.Spec.Backup, newObj.Spec.Backup), w.validate(ctx, newObj, updateErrs)
 }
 
 // validate runs all validation rules against the OVNCentral spec, accumulating
 // every violation so users see the full list in one admission response. extra
 // carries the errors accumulated by the caller (on create the metadata.name
 // bound, on update the targetClusterRef immutability check) so they aggregate
-// into the single Invalid error alongside the rest.
-func (w *OVNCentralWebhook) validate(c *OVNCentral, extra field.ErrorList) error {
+// into the single Invalid error alongside the rest. ctx is required for the
+// PriorityClass lookups, which are skipped when no reader is injected.
+func (w *OVNCentralWebhook) validate(ctx context.Context, c *OVNCentral, extra field.ErrorList) error {
 	specPath := field.NewPath("spec")
 
 	allErrs := validation.TargetClusterRef(specPath.Child("targetClusterRef"), c.Spec.TargetClusterRef)
 	allErrs = append(allErrs, validateImage(specPath.Child("image"), c.Spec.Image)...)
 	allErrs = append(allErrs, validateNodePortRanges(specPath, &c.Spec)...)
 	allErrs = append(allErrs, validateBackup(specPath.Child("backup"), c.Spec.Backup)...)
+
+	// Node selector grammar and tolerations of every workload that carries a
+	// placement, the priority class of both Raft databases, and the spec.jobs
+	// block of the backup CronJob.
+	for _, db := range []struct {
+		path *field.Path
+		spec *OVNDatabaseSpec
+	}{
+		{specPath.Child("northbound"), &c.Spec.Northbound},
+		{specPath.Child("southbound"), &c.Spec.Southbound},
+	} {
+		allErrs = append(allErrs, validation.NodePlacement(db.path, &db.spec.NodePlacementSpec)...)
+		if db.spec.PriorityClassName != nil {
+			allErrs = append(allErrs, validation.PriorityClassExists(ctx, w.Client,
+				db.path.Child("priorityClassName"), *db.spec.PriorityClassName)...)
+		}
+	}
+	allErrs = append(allErrs, validation.NodePlacement(
+		specPath.Child("northd", "deployment"), &c.Spec.Northd.Deployment.NodePlacementSpec)...)
+	if c.Spec.Relay != nil {
+		allErrs = append(allErrs, validation.NodePlacement(specPath.Child("relay"), &c.Spec.Relay.NodePlacementSpec)...)
+	}
+	allErrs = append(allErrs, validation.Job(ctx, w.Client, specPath.Child("jobs"), c.Spec.Jobs)...)
 
 	// TLS is not optional: the OVN databases carry the whole logical network
 	// model, so a listener without a certificate lets any pod that reaches the
