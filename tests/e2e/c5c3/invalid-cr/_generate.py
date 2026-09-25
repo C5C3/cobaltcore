@@ -62,6 +62,7 @@ LICENSE_HEADER = """\
 #   {neutron}             the spec.services.neutron entry (indent 4) or ""
 #   {cinder}              the spec.services.cinder entry (indent 4) or ""
 #   {nova}                the spec.services.nova entry (indent 4) or ""
+#   {sizing}              the whole spec.sizing block (indent 2) or ""
 #   {service_registrations}
 #                         the spec.korc.serviceRegistrations block (indent 4) or ""
 #
@@ -77,7 +78,7 @@ spec:
   openStackRelease: "2025.2"
 {region}{region_description}{global_extra_config}{infrastructure}  services:
     keystone:
-{keystone}{horizon}{glance}{placement}{barbican}{neutron}{cinder}{nova}  korc:
+{keystone}{horizon}{glance}{placement}{barbican}{neutron}{cinder}{nova}{sizing}  korc:
     adminCredential:
       cloudCredentialsRef:
         cloudName: admin
@@ -252,6 +253,8 @@ class Fixture:
     neutron: str = ""
     cinder: str = ""
     nova: str = ""
+    # The spec.sizing block (indent 2, trailing newline) or "".
+    sizing: str = ""
     # The spec.region line (indent 2, trailing newline) or "".
     region: str = ""
     # The spec.regionDescription line (indent 2, trailing newline) or "".
@@ -276,6 +279,7 @@ class Fixture:
             neutron=self.neutron,
             cinder=self.cinder,
             nova=self.nova,
+            sizing=self.sizing,
             service_registrations=self.service_registrations,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
@@ -427,9 +431,17 @@ FIXTURES: tuple[Fixture, ...] = (
     ),
     Fixture(
         filename="05-external-replicas.yaml",
-        comment="services.keystone.replicas is forbidden in External mode (CEL).",
+        comment=(
+            "spec.sizing.keystone.api.replicas is forbidden in External mode (webhook): no\n"
+            "Keystone workload is deployed, so there is nothing to size."
+        ),
         name="cp-external-replicas",
-        keystone=VALID_EXTERNAL_KEYSTONE + "      replicas: 3\n",
+        sizing=(
+            "  sizing:\n"
+            "    keystone:\n"
+            "      api:\n"
+            "        replicas: 3\n"
+        ),
     ),
     Fixture(
         filename="06-external-image.yaml",
@@ -2231,13 +2243,11 @@ FIXTURES: tuple[Fixture, ...] = (
     Fixture(
         filename="107-nova-console-knobs-while-disabled.yaml",
         comment=(
-            "services.nova.consoleProxy.replicas beside enabled: false violates the CEL rule\n"
-            "on ServiceNovaConsoleProxySpec. A disabled proxy has no Deployment to size, and\n"
-            "the Nova CRD rejects a spec.consoleProxy.deployment written on a disabled proxy,\n"
-            "so the value would have nowhere to land. The rule is intra-struct and has no\n"
+            "services.nova.consoleProxy.gateway beside enabled: false violates the CEL rule\n"
+            "on ServiceNovaConsoleProxySpec. A disabled proxy has no listener to expose, so\n"
+            "the value would have nowhere to land. The rule is intra-struct and has no\n"
             "webhook twin, so CRD schema validation answers and the step anchors on the CEL\n"
-            "message, `replicas and gateway must not be set when consoleProxy.enabled is\n"
-            "false`."
+            "message, `gateway must not be set when consoleProxy.enabled is false`."
         ),
         name="cp-nova-console-disabled",
         keystone="      mode: Managed\n",
@@ -2249,7 +2259,10 @@ FIXTURES: tuple[Fixture, ...] = (
             "    nova:\n"
             "      consoleProxy:\n"
             "        enabled: false\n"
-            "        replicas: 2\n"
+            "        gateway:\n"
+            "          hostname: nova-novnc.example.com\n"
+            "          parentRef:\n"
+            "            name: openstack-gw\n"
         ),
     ),
     Fixture(
@@ -2319,13 +2332,12 @@ FIXTURES: tuple[Fixture, ...] = (
     Fixture(
         filename="111-nova-console-gateway-while-disabled.yaml",
         comment=(
-            "services.nova.consoleProxy.gateway beside enabled: false violates the gateway\n"
-            "leg of the CEL rule on ServiceNovaConsoleProxySpec, the leg fixture 107 leaves\n"
-            "unexercised: a disabled proxy has no listener to publish, and the projection\n"
-            "drops the block, so the route would never exist. The gateway itself is valid and\n"
-            "sits at the root, so the rule is the ONLY violation; it has no webhook twin, and\n"
-            "the step anchors on the CEL message, `replicas and gateway must not be set when\n"
-            "consoleProxy.enabled is false`."
+            "services.nova.consoleProxy.gateway beside enabled: false violates the CEL rule\n"
+            "on ServiceNovaConsoleProxySpec that fixture 107 pins too: a disabled proxy has no\n"
+            "listener to publish, and the projection drops the block, so the route would\n"
+            "never exist. The gateway itself is valid and sits at the root, so the rule is\n"
+            "the ONLY violation; it has no webhook twin, and the step anchors on the CEL\n"
+            "message, `gateway must not be set when consoleProxy.enabled is false`."
         ),
         name="cp-nova-console-gw-disabled",
         keystone="      mode: Managed\n",
@@ -2495,6 +2507,214 @@ FIXTURES: tuple[Fixture, ...] = (
         placement=REMOTE_COMPUTE_PLACEMENT,
         neutron=REMOTE_COMPUTE_NEUTRON,
         nova=REMOTE_COMPUTE_NOVA,
+    ),
+    Fixture(
+        filename="119-sizing-profile-and-profileref.yaml",
+        comment=(
+            "spec.sizing names a built-in profile and a SizingProfile at once, which the CEL\n"
+            "rule on ControlPlaneSizingSpec rejects: the base of the resolved sizing would\n"
+            "be ambiguous. CRD schema validation answers before the webhook looks the\n"
+            "profile up, so the step anchors on the CEL message, `profile and profileRef are\n"
+            "mutually exclusive`."
+        ),
+        name="cp-sizing-profile-and-ref",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    profile: Minimal\n"
+            "    profileRef:\n"
+            "      name: c5c3-e2e-sizing-absent\n"
+        ),
+    ),
+    Fixture(
+        filename="120-sizing-profileref-missing.yaml",
+        comment=(
+            "spec.sizing.profileRef names a SizingProfile that does not exist (webhook-only):\n"
+            "the reconciler would resolve nothing to project. The step anchors on\n"
+            "`spec.sizing.profileRef.name: Not found`."
+        ),
+        name="cp-sizing-profileref-missing",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    profileRef:\n"
+            "      name: c5c3-e2e-sizing-absent\n"
+        ),
+    ),
+    Fixture(
+        filename="121-sizing-in-external.yaml",
+        comment=(
+            "spec.sizing is forbidden in External mode (webhook): no workload is deployed, so\n"
+            "a sizing profile has nothing to size. The step anchors on `forbidden when\n"
+            "services.keystone.mode is External (no workload is deployed)`."
+        ),
+        name="cp-sizing-external",
+        sizing=(
+            "  sizing:\n"
+            "    profile: Minimal\n"
+        ),
+    ),
+    Fixture(
+        filename="122-sizing-merged-request-above-limit.yaml",
+        comment=(
+            "The Minimal profile requests 50m CPU for the Keystone API, and the ControlPlane\n"
+            "limits it to 10m. Each value is valid on its own; the merged sizing is not, so\n"
+            "the webhook's check of the resolved sizing answers at\n"
+            "`spec.sizing.keystone.api.resources.requests.cpu`."
+        ),
+        name="cp-sizing-merged-limit",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    profile: Minimal\n"
+            "    keystone:\n"
+            "      api:\n"
+            "        resources:\n"
+            "          limits:\n"
+            "            cpu: 10m\n"
+        ),
+    ),
+    Fixture(
+        filename="123-sizing-autoscaling-zero-request.yaml",
+        comment=(
+            "A CPU utilization target beside a zero CPU request (webhook-only): the\n"
+            "HorizontalPodAutoscaler divides the pods' usage by the sum of their requests.\n"
+            "The step anchors on `spec.sizing.keystone.api.resources.requests.cpu` and\n"
+            "`while targetCPUUtilization is set`."
+        ),
+        name="cp-sizing-autoscaling-zero",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    keystone:\n"
+            "      api:\n"
+            "        resources:\n"
+            "          requests:\n"
+            '            cpu: "0"\n'
+            "        autoscaling:\n"
+            "          maxReplicas: 3\n"
+            "          targetCPUUtilization: 80\n"
+        ),
+    ),
+    Fixture(
+        filename="124-sizing-nova-console-proxy-while-disabled.yaml",
+        comment=(
+            "spec.sizing.nova.consoleProxy beside services.nova.consoleProxy.enabled: false\n"
+            "(webhook-only): a disabled proxy has no Deployment to size, and the Nova CRD\n"
+            "rejects a spec.consoleProxy.deployment written on a disabled proxy. The step\n"
+            "anchors on `must not be set when services.nova.consoleProxy.enabled is false`."
+        ),
+        name="cp-sizing-console-disabled",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        glance=VALID_GLANCE,
+        placement="    placement: {}\n",
+        neutron=VALID_NEUTRON,
+        nova=(
+            "    nova:\n"
+            "      consoleProxy:\n"
+            "        enabled: false\n"
+        ),
+        sizing=(
+            "  sizing:\n"
+            "    nova:\n"
+            "      consoleProxy:\n"
+            "        replicas: 2\n"
+        ),
+    ),
+    Fixture(
+        filename="125-sizing-database-replicas-two.yaml",
+        comment=(
+            "spec.sizing.database.replicas: 2 (webhook-only): two Galera nodes cannot hold a\n"
+            "majority, so a partition takes the database offline. The step anchors on\n"
+            "`spec.sizing.database.replicas` and `2 cannot hold a majority`."
+        ),
+        name="cp-sizing-db-two",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    database:\n"
+            "      replicas: 2\n"
+        ),
+    ),
+    Fixture(
+        filename="126-sizing-node-selector-bad-key.yaml",
+        comment=(
+            "A spec.sizing.nodeSelector key with a space is not a label key (webhook-only):\n"
+            "the schema cannot check the keys of a map, and every projected pod template\n"
+            "would be refused. The step anchors on `spec.sizing.nodeSelector` and `bad key`."
+        ),
+        name="cp-sizing-bad-selector",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    nodeSelector:\n"
+            '      "bad key": control\n'
+        ),
+    ),
+    Fixture(
+        filename="127-sizing-priority-class-missing.yaml",
+        comment=(
+            "spec.sizing.priorityClassName names no PriorityClass (webhook-only): every\n"
+            "projected pod would be refused at admission. The step anchors on\n"
+            "`spec.sizing.priorityClassName: Not found`."
+        ),
+        name="cp-sizing-missing-class",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    priorityClassName: c5c3-e2e-absent-priority-class\n"
+        ),
+    ),
+    Fixture(
+        filename="128-sizing-cache-memory-limit-too-low.yaml",
+        comment=(
+            "spec.sizing.cache.resources.limits.memory: 64Mi (webhook-only): the Memcached\n"
+            "operator requires maxMemoryMB (64) plus 32Mi. The step anchors on\n"
+            "`spec.sizing.cache.resources.limits.memory` and `memory limit must be at least\n"
+            "96Mi`."
+        ),
+        name="cp-sizing-cache-64mi",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    cache:\n"
+            "      resources:\n"
+            "        limits:\n"
+            "          memory: 64Mi\n"
+        ),
+    ),
+    Fixture(
+        filename="129-sizing-autoscaling-max-below-replicas.yaml",
+        comment=(
+            "An autoscaling maxReplicas below Standard's three Keystone API replicas\n"
+            "(webhook-only): without minReplicas the HPA minimum defaults to the replica\n"
+            "count, so the Keystone webhook would refuse the projected child. The step\n"
+            "anchors on `spec.sizing.keystone.api.autoscaling.maxReplicas` and\n"
+            "`maxReplicas must be >= replicas (3)`."
+        ),
+        name="cp-sizing-autoscaling-max",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    keystone:\n"
+            "      api:\n"
+            "        resources:\n"
+            "          requests:\n"
+            "            cpu: 100m\n"
+            "        autoscaling:\n"
+            "          maxReplicas: 2\n"
+            "          targetCPUUtilization: 80\n"
+        ),
     ),
 )
 

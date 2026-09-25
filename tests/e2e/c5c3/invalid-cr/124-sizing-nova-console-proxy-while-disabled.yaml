@@ -2,16 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# services.nova.consoleProxy.gateway beside enabled: false violates the CEL rule
-# on ServiceNovaConsoleProxySpec that fixture 107 pins too: a disabled proxy has no
-# listener to publish, and the projection drops the block, so the route would
-# never exist. The gateway itself is valid and sits at the root, so the rule is
-# the ONLY violation; it has no webhook twin, and the step anchors on the CEL
-# message, `gateway must not be set when consoleProxy.enabled is false`.
+# spec.sizing.nova.consoleProxy beside services.nova.consoleProxy.enabled: false
+# (webhook-only): a disabled proxy has no Deployment to size, and the Nova CRD
+# rejects a spec.consoleProxy.deployment written on a disabled proxy. The step
+# anchors on `must not be set when services.nova.consoleProxy.enabled is false`.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
-  name: cp-nova-console-gw-disabled
+  name: cp-sizing-console-disabled
 spec:
   openStackRelease: "2025.2"
   infrastructure:
@@ -48,10 +46,10 @@ spec:
     nova:
       consoleProxy:
         enabled: false
-        gateway:
-          hostname: console.example.com
-          parentRef:
-            name: openstack-gw
+  sizing:
+    nova:
+      consoleProxy:
+        replicas: 2
   korc:
     adminCredential:
       cloudCredentialsRef:

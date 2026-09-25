@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# priorityClassName names no PriorityClass (webhook-only): every projected pod
+# would be refused at admission. The error names `spec.priorityClassName` and
+# carries `Not found`.
+apiVersion: c5c3.io/v1alpha1
+kind: SizingProfile
+metadata:
+  name: c5c3-e2e-sizing-missing-class
+spec:
+  base: Minimal
+  priorityClassName: c5c3-e2e-absent-priority-class

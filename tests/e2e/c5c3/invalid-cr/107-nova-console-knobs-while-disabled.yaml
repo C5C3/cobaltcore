@@ -2,13 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# services.nova.consoleProxy.replicas beside enabled: false violates the CEL rule
-# on ServiceNovaConsoleProxySpec. A disabled proxy has no Deployment to size, and
-# the Nova CRD rejects a spec.consoleProxy.deployment written on a disabled proxy,
-# so the value would have nowhere to land. The rule is intra-struct and has no
+# services.nova.consoleProxy.gateway beside enabled: false violates the CEL rule
+# on ServiceNovaConsoleProxySpec. A disabled proxy has no listener to expose, so
+# the value would have nowhere to land. The rule is intra-struct and has no
 # webhook twin, so CRD schema validation answers and the step anchors on the CEL
-# message, `replicas and gateway must not be set when consoleProxy.enabled is
-# false`.
+# message, `gateway must not be set when consoleProxy.enabled is false`.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -49,7 +47,10 @@ spec:
     nova:
       consoleProxy:
         enabled: false
-        replicas: 2
+        gateway:
+          hostname: nova-novnc.example.com
+          parentRef:
+            name: openstack-gw
   korc:
     adminCredential:
       cloudCredentialsRef:

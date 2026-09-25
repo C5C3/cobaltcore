@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A CPU utilization target beside a zero CPU request (webhook-only): the
+# HorizontalPodAutoscaler divides the pods' usage by the sum of their requests.
+# The step anchors on `spec.sizing.keystone.api.resources.requests.cpu` and
+# `while targetCPUUtilization is set`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-sizing-autoscaling-zero
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+  sizing:
+    keystone:
+      api:
+        resources:
+          requests:
+            cpu: "0"
+        autoscaling:
+          maxReplicas: 3
+          targetCPUUtilization: 80
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

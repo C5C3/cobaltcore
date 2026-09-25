@@ -2,12 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# spec.sizing.keystone.api.replicas is forbidden in External mode (webhook): no
-# Keystone workload is deployed, so there is nothing to size.
+# spec.sizing is forbidden in External mode (webhook): no workload is deployed, so
+# a sizing profile has nothing to size. The step anchors on `forbidden when
+# services.keystone.mode is External (no workload is deployed)`.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
-  name: cp-external-replicas
+  name: cp-sizing-external
 spec:
   openStackRelease: "2025.2"
   services:
@@ -16,9 +17,7 @@ spec:
       external:
         authURL: https://keystone.example.com/v3
   sizing:
-    keystone:
-      api:
-        replicas: 3
+    profile: Minimal
   korc:
     adminCredential:
       cloudCredentialsRef:
