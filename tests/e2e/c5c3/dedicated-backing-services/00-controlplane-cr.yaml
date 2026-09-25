@@ -35,7 +35,6 @@ spec:
         - shared-memcached.invalid:11211
   services:
     keystone:
-      replicas: 1
       # Keystone opts out of BOTH shared instances and takes its own. The
       # clusterRef names are spelled out (rather than left to the derived
       # "{controlplane}-keystone-db" default) so the assertions pin exact names.
@@ -62,7 +61,6 @@ spec:
           backend: dogpile.cache.pymemcache
           replicas: 1
     horizon:
-      replicas: 1
       # The dashboard takes a cache of its own, so the suite proves the opt-in is
       # genuinely PER SERVICE: two services, two distinct dedicated caches.
       dedicatedBackingServices:
@@ -71,3 +69,10 @@ spec:
             name: cp-horizon-cache
           backend: dogpile.cache.pymemcache
           replicas: 1
+  sizing:
+    keystone:
+      api:
+        replicas: 1
+    horizon:
+      api:
+        replicas: 1

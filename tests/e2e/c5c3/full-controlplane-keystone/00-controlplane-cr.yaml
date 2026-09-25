@@ -56,9 +56,10 @@ spec:
   # so the full fresh-create chain schedules on a single-node kind cluster.
   # database.replicas:1 drives the operator's fresh-create MariaDB projection to
   # a single-instance non-Galera MariaDB; cache.replicas:1 to a single Memcached
-  # pod; services.keystone.replicas:1 to a single API pod. database.storageSize is
-  # pinned to 512Mi so the projected MariaDB requests a test-sized volume instead
-  # of the 100Gi CRD default (the production baseline) that CI never fills.
+  # pod; sizing.keystone.api.replicas:1 to a single API pod. database.storageSize
+  # is pinned to 512Mi so the projected MariaDB requests a test-sized volume
+  # instead of the Standard profile's 100Gi (the production baseline) that CI
+  # never fills.
   infrastructure:
     database:
       clusterRef:
@@ -96,15 +97,13 @@ spec:
       secretRef:
         name: controlplane-keystone-messaging
   services:
-    keystone:
-      replicas: 1
+    keystone: {}
     # Horizon: single dashboard replica; the secretKeyRef override points at
     # the per-CP ExternalSecret this suite applies
     # (02-horizon-secret-key-externalsecret.yaml) — the documented
     # multi-ControlPlane path, since the kind shim Secret is pinned to the
     # default identity.
     horizon:
-      replicas: 1
       secretKeyRef:
         name: controlplane-keystone-horizon-secret-key
         key: secret-key
@@ -112,7 +111,6 @@ spec:
     # provisions (deploy/flux-system/infrastructure/garage.yaml, ESO-synced
     # garage-s3-credentials Secret in the openstack namespace).
     glance:
-      replicas: 1
       backends:
         - name: default
           type: S3
@@ -126,8 +124,7 @@ spec:
     # Placement takes the bare shape Keystone does: it needs no backends and no
     # extra blocks, so a single API replica against the shared database and cache
     # is the whole declaration.
-    placement:
-      replicas: 1
+    placement: {}
     # Barbican takes a DEDICATED secret store, so the c5c3-operator provisions an
     # OpenBao instance of its own beside the child and attaches the store to it.
     # That is the point of declaring it here: the suite then exercises the whole
@@ -137,18 +134,16 @@ spec:
     # namespace to the openbao-operator, so no ControlPlane-owned OpenBaoTenant
     # is created beside the instance.
     barbican:
-      replicas: 1
       secretStore:
         dedicated: {}
     # The network service. Its central is the standalone OVNCentral that
     # 03-ovncentral-cr.yaml applies beside this CR; the ControlPlane only reads
     # that CR's readiness and never owns it. The centralRef namespace is left
-    # empty and defaults to the ControlPlane's own (openstack). workerReplicas
-    # sizes both RPC worker Deployments, so 1 keeps two worker pods on this
-    # single node instead of the six the CRD default would schedule.
+    # empty and defaults to the ControlPlane's own (openstack).
+    # sizing.neutron.workers.replicas sizes both RPC worker Deployments, so 1
+    # keeps two worker pods on this single node instead of the six the Standard
+    # profile would schedule.
     neutron:
-      replicas: 1
-      workerReplicas: 1
       ovn:
         centralRef:
           name: controlplane-keystone-ovn
@@ -158,7 +153,6 @@ spec:
     # one replica. The image-volume cache is on so the verify Job can prove a
     # second create-from-image reuses the cached volume.
     cinder:
-      replicas: 1
       backends:
         - name: nfs1
           type: NFS
@@ -184,11 +178,40 @@ spec:
     # provisions the account openstack-hypervisor-operator runs as and its auth
     # Secret, which 07-hypervisor-operator-verify-job.yaml authenticates with.
     nova:
-      replicas: 1
-      metadataReplicas: 1
-      schedulerReplicas: 1
-      conductorReplicas: 1
       hypervisorOperator: {}
+  sizing:
+    keystone:
+      api:
+        replicas: 1
+    horizon:
+      api:
+        replicas: 1
+    glance:
+      api:
+        replicas: 1
+    placement:
+      api:
+        replicas: 1
+    barbican:
+      api:
+        replicas: 1
+    neutron:
+      api:
+        replicas: 1
+      workers:
+        replicas: 1
+    cinder:
+      api:
+        replicas: 1
+    nova:
+      api:
+        replicas: 1
+      metadata:
+        replicas: 1
+      scheduler:
+        replicas: 1
+      conductor:
+        replicas: 1
   globalPolicyOverrides:
     rules:
       "identity:list_users": "role:admin"

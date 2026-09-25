@@ -1229,7 +1229,7 @@ spec:
             "$(kubectl get neutrons.neutron.openstack.c5c3.io "${NEUTRON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.ovn.centralRef.name}')"
           assert_eq "Neutron ovn centralRef namespace defaulted to the ControlPlane's own" "openstack" \
             "$(kubectl get neutrons.neutron.openstack.c5c3.io "${NEUTRON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.ovn.centralRef.namespace}')"
-          assert_eq "Neutron RPC workers sized from services.neutron.workerReplicas" "1" \
+          assert_eq "Neutron RPC workers sized from sizing.neutron.workers.replicas" "1" \
             "$(kubectl get neutrons.neutron.openstack.c5c3.io "${NEUTRON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.workers.deployment.replicas}')"
           assert_eq "Neutron CR owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of neutrons.neutron.openstack.c5c3.io "${NEUTRON_CR}")"
@@ -1331,7 +1331,7 @@ spec:
           assert_eq "Cinder internal tenant carries the registration's user" "${CINDER_ACCOUNT_USER}" \
             "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.internalTenant.userID}')"
 
-          assert_eq "Cinder API replicas sized from services.cinder.replicas" "1" \
+          assert_eq "Cinder API replicas sized from sizing.cinder.api.replicas" "1" \
             "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.api.deployment.replicas}')"
           assert_eq "Cinder CR owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of cinders.cinder.openstack.c5c3.io "${CINDER_CR}")"
@@ -1518,13 +1518,13 @@ spec:
           # the nova defaulting webhook (which only reaches an ABSENT block) can
           # say otherwise, and a projection that left them alone would run three
           # metadata APIs, three schedulers and three conductors on one node.
-          assert_eq "Nova API replicas sized from services.nova.replicas" "1" \
+          assert_eq "Nova API replicas sized from sizing.nova.api.replicas" "1" \
             "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.api.deployment.replicas}')"
-          assert_eq "Nova metadata replicas sized from services.nova.metadataReplicas" "1" \
+          assert_eq "Nova metadata replicas sized from sizing.nova.metadata.replicas" "1" \
             "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.metadata.deployment.replicas}')"
-          assert_eq "Nova scheduler replicas sized from services.nova.schedulerReplicas" "1" \
+          assert_eq "Nova scheduler replicas sized from sizing.nova.scheduler.replicas" "1" \
             "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.scheduler.deployment.replicas}')"
-          assert_eq "Nova conductor replicas sized from services.nova.conductorReplicas" "1" \
+          assert_eq "Nova conductor replicas sized from sizing.nova.conductor.replicas" "1" \
             "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.conductor.deployment.replicas}')"
           assert_eq "Nova CR owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of novas.nova.openstack.c5c3.io "${NOVA_CR}")"

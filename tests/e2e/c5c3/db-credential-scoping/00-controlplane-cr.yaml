@@ -35,9 +35,12 @@ spec:
   openStackRelease: "2025.2"
   services:
     keystone:
-      replicas: 1
       gateway:
         parentRef:
           name: openstack-gw
         hostname: keystone.127-0-0-1.nip.io
         path: /
+  sizing:
+    keystone:
+      api:
+        replicas: 1

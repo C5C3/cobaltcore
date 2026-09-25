@@ -49,8 +49,11 @@ spec:
       backend: dogpile.cache.pymemcache
       replicas: 1
   services:
+    keystone: {}
+  sizing:
     keystone:
-      replicas: 1
+      api:
+        replicas: 1
   korc:
     adminCredential:
       cloudCredentialsRef:

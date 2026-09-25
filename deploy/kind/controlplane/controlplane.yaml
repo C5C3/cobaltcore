@@ -26,21 +26,22 @@
 #   korc ... passwordSecretRef              -> keystone-admin / key "password"
 #   korc ... cloudCredentialsRef.cloudName  -> admin (secretName k-orc-clouds-yaml)
 #
-# keystone replicas are pinned to 1 to fit the single-node kind cluster; the
-# MariaDB and Memcached topology is pinned the same way via
-# spec.infrastructure.{database,cache}.replicas below. The CRD default for both is
-# 3 (a 3-node Galera cluster plus 3 Memcached pods, matching the production
-# baseline), which OOM-kills a laptop-sized single-node kind, so kind pins them to
-# 1: database.replicas:1 yields a single-instance non-Galera MariaDB (the operator
+# The keystone and horizon API replicas are pinned to 1 under spec.sizing to fit
+# the single-node kind cluster; the MariaDB and Memcached topology is pinned the
+# same way via spec.infrastructure.{database,cache}.replicas below. Left unset,
+# both take the ControlPlane's sizing, whose Standard profile gives 3 (a 3-node
+# Galera cluster plus 3 Memcached pods, matching the production baseline), which
+# OOM-kills a laptop-sized single-node kind, so kind pins them to 1:
+# database.replicas:1 yields a single-instance non-Galera MariaDB (the operator
 # derives Galera from replicas>1) and cache.replicas:1 a single Memcached pod.
 # deploy-infra makes these deploy-time configurable via CONTROLPLANE_DB_REPLICAS /
 # CONTROLPLANE_CACHE_REPLICAS (e.g. =3 for a Galera HA cluster on a bigger box; 2 is
 # rejected — Galera needs a quorum). database.replicas is immutable after creation.
 #
-# database.storageSize is pinned to 512Mi for the same reason: the CRD default is
-# 100Gi (the production volume in deploy/flux-system/infrastructure/mariadb.yaml),
-# which a kind/CI run never fills, so the projected MariaDB requests a test-sized
-# volume instead. deploy-infra makes it configurable via CONTROLPLANE_DB_STORAGE
+# database.storageSize is pinned to 512Mi for the same reason: the Standard sizing
+# profile gives 100Gi (the production volume in
+# deploy/flux-system/infrastructure/mariadb.yaml), which a kind/CI run never
+# fills, so the projected MariaDB requests a test-sized volume instead. deploy-infra makes it configurable via CONTROLPLANE_DB_STORAGE
 # (e.g. =100Gi to mirror production on a bigger box). Like replicas, storageSize is
 # immutable after creation (the mariadb-operator rejects resizing a live volume).
 #
@@ -69,7 +70,6 @@ spec:
       replicas: 1
   services:
     keystone:
-      replicas: 1
       # Expose the projected Keystone externally through the shared Envoy Gateway,
       # exactly like the per-service Quick Start's Keystone CR. The keystone-operator
       # attaches an HTTPRoute to Gateway/openstack-gw for this hostname; combined with
@@ -86,8 +86,9 @@ spec:
       # injects spec.services.keystone.publicEndpoint carrying the host port so
       # Keystone advertises the reachable URL in its catalog.
     # Horizon: the c5c3-operator projects a Horizon CR once the Keystone child is
-    # Ready (HorizonReady joins the aggregate chain after KeystoneReady). replicas
-    # is pinned to 1 for the single-node kind cluster. The dashboard is exposed
+    # Ready (HorizonReady joins the aggregate chain after KeystoneReady). Its
+    # replica count is pinned to 1 under spec.sizing.horizon for the single-node
+    # kind cluster. The dashboard is exposed
     # externally through the SAME shared Envoy Gateway as Keystone via a second
     # HTTPS listener the kind overlay adds for horizon.127-0-0-1.nip.io
     # (deploy/kind/base/openstack-gateway.yaml); the horizon-operator attaches an
@@ -98,8 +99,14 @@ spec:
     # deploy/openbao/bootstrap/write-bootstrap-secrets.sh); additional
     # ControlPlanes MUST set services.horizon.secretKeyRef to their own Secret.
     horizon:
-      replicas: 1
       gateway:
         parentRef:
           name: openstack-gw
         hostname: horizon.127-0-0-1.nip.io
+  sizing:
+    keystone:
+      api:
+        replicas: 1
+    horizon:
+      api:
+        replicas: 1
