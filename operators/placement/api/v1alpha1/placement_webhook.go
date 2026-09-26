@@ -438,20 +438,22 @@ func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra fie
 				fmt.Sprintf("maxReplicas must be >= spec.deployment.replicas (%d) when minReplicas is not set, because minReplicas defaults to spec.deployment.replicas", p.Spec.Deployment.Replicas),
 			))
 		}
-		// Defense-in-depth bounds checks for utilization targets alongside
-		// +kubebuilder:validation:Minimum=1 / Maximum=100 markers.
-		if p.Spec.Autoscaling.TargetCPUUtilization != nil && (*p.Spec.Autoscaling.TargetCPUUtilization < 1 || *p.Spec.Autoscaling.TargetCPUUtilization > 100) {
+		// Defense-in-depth lower bound for utilization targets alongside the
+		// +kubebuilder:validation:Minimum=1 markers. There is no upper bound,
+		// as in autoscaling/v2: a target the API pod can never reach is
+		// rejected below.
+		if p.Spec.Autoscaling.TargetCPUUtilization != nil && *p.Spec.Autoscaling.TargetCPUUtilization < 1 {
 			allErrs = append(allErrs, field.Invalid(
 				autoscalingPath.Child("targetCPUUtilization"),
 				*p.Spec.Autoscaling.TargetCPUUtilization,
-				"targetCPUUtilization must be between 1 and 100",
+				"targetCPUUtilization must be at least 1",
 			))
 		}
-		if p.Spec.Autoscaling.TargetMemoryUtilization != nil && (*p.Spec.Autoscaling.TargetMemoryUtilization < 1 || *p.Spec.Autoscaling.TargetMemoryUtilization > 100) {
+		if p.Spec.Autoscaling.TargetMemoryUtilization != nil && *p.Spec.Autoscaling.TargetMemoryUtilization < 1 {
 			allErrs = append(allErrs, field.Invalid(
 				autoscalingPath.Child("targetMemoryUtilization"),
 				*p.Spec.Autoscaling.TargetMemoryUtilization,
-				"targetMemoryUtilization must be between 1 and 100",
+				"targetMemoryUtilization must be at least 1",
 			))
 		}
 		if p.Spec.Autoscaling.TargetCPUUtilization == nil && p.Spec.Autoscaling.TargetMemoryUtilization == nil {
@@ -460,6 +462,7 @@ func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra fie
 				"at least one of targetCPUUtilization or targetMemoryUtilization must be set",
 			))
 		}
+		allErrs = append(allErrs, validation.AutoscalingBehavior(autoscalingPath.Child("behavior"), p.Spec.Autoscaling.Behavior)...)
 	}
 
 	// An HPA utilization target is measured against the summed requests of
@@ -467,6 +470,10 @@ func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra fie
 	// fails the metric or inflates it. The render-time default fills a positive
 	// request when the block names none.
 	allErrs = append(allErrs, validation.AutoscalingTargetRequests(specPath.Child("deployment", "resources"), p.Spec.Deployment.Resources, p.Spec.Autoscaling)...)
+	// A target above 100 needs a container of the API pod that may use more
+	// than it requests, so a target the containers' limits make unreachable
+	// is rejected.
+	allErrs = append(allErrs, validation.AutoscalingTargetsReachable(specPath.Child("autoscaling"), p.Spec.Autoscaling, p.Spec.Deployment.Resources)...)
 
 	// Defense-in-depth networkPolicy ingress check alongside the
 	// +kubebuilder:validation:XValidation CEL rule on NetworkPolicySpec.

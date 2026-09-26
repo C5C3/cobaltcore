@@ -10,6 +10,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -1259,8 +1260,6 @@ func TestValidate_Autoscaling_Invalid_CPUUtilizationOutOfRange(t *testing.T) {
 	}{
 		{"zero", 0},
 		{"negative", -1},
-		{"above_100", 101},
-		{"far_above", 150},
 	}
 
 	for _, tc := range cases {
@@ -1275,7 +1274,7 @@ func TestValidate_Autoscaling_Invalid_CPUUtilizationOutOfRange(t *testing.T) {
 			_, err := w.ValidateCreate(context.Background(), k)
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(err.Error()).To(ContainSubstring("targetCPUUtilization"))
-			g.Expect(err.Error()).To(ContainSubstring("between 1 and 100"))
+			g.Expect(err.Error()).To(ContainSubstring("must be at least 1"))
 		})
 	}
 }
@@ -1288,8 +1287,6 @@ func TestValidate_Autoscaling_Invalid_MemoryUtilizationOutOfRange(t *testing.T) 
 	}{
 		{"zero", 0},
 		{"negative", -1},
-		{"above_100", 101},
-		{"far_above", 150},
 	}
 
 	for _, tc := range cases {
@@ -1304,7 +1301,7 @@ func TestValidate_Autoscaling_Invalid_MemoryUtilizationOutOfRange(t *testing.T) 
 			_, err := w.ValidateCreate(context.Background(), k)
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(err.Error()).To(ContainSubstring("targetMemoryUtilization"))
-			g.Expect(err.Error()).To(ContainSubstring("between 1 and 100"))
+			g.Expect(err.Error()).To(ContainSubstring("must be at least 1"))
 		})
 	}
 }
@@ -3751,6 +3748,76 @@ func TestKeystoneValidate_AutoscalingTargetNeedsAPositiveRequest(t *testing.T) {
 	}
 	_, err = w.ValidateCreate(context.Background(), o)
 	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestKeystoneValidate_AutoscalingTargetsAndBehavior pins the target and behavior
+// checks. A CPU target above 100 is admitted, since a container without a CPU
+// limit may use more CPU than it requests; a zero target is rejected at the
+// lower bound. A memory target above 100 is rejected while no container of the
+// API pod names a memory limit above its request, because the render-time
+// default makes request and limit equal. A scale-down window above 3600 s is
+// rejected at its path.
+func TestKeystoneValidate_AutoscalingTargetsAndBehavior(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	with := func(a *AutoscalingSpec) *Keystone {
+		o := validKeystone()
+		o.Spec.Deployment.Resources = nil
+		a.MinReplicas = ptr.To(int32(1))
+		a.MaxReplicas = 5
+		o.Spec.Autoscaling = a
+		return o
+	}
+
+	_, err := w.ValidateCreate(context.Background(), with(&AutoscalingSpec{TargetCPUUtilization: ptr.To(int32(150))}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	_, err = w.ValidateCreate(context.Background(), with(&AutoscalingSpec{TargetCPUUtilization: ptr.To(int32(0))}))
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(ContainSubstring("targetCPUUtilization must be at least 1"))
+
+	o := with(&AutoscalingSpec{TargetMemoryUtilization: ptr.To(int32(150))})
+	_, err = w.ValidateCreate(context.Background(), o)
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(ContainSubstring("spec.autoscaling.targetMemoryUtilization"))
+	g.Expect(err.Error()).To(ContainSubstring("can never be reached"))
+
+	// The API container's own block decides the ceiling: a memory limit
+	// twice the request makes 150 reachable, and 201 is one above 200.
+	api := &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+	}
+	o = with(&AutoscalingSpec{TargetMemoryUtilization: ptr.To(int32(150))})
+	o.Spec.Deployment.Resources = api
+	_, err = w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	o = with(&AutoscalingSpec{TargetMemoryUtilization: ptr.To(int32(201))})
+	o.Spec.Deployment.Resources = api
+	_, err = w.ValidateCreate(context.Background(), o)
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(ContainSubstring("or a target of at most 200"))
+
+	// The federation proxy joins the API pod while spec.federation is set. A
+	// proxy block that names a memory request without a limit lets the pod
+	// use more memory than it requests, so the same target is reachable.
+	o = with(&AutoscalingSpec{TargetMemoryUtilization: ptr.To(int32(150))})
+	o.Spec.Federation = &FederationSpec{ProxyResources: &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")},
+	}}
+	_, err = w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	_, err = w.ValidateCreate(context.Background(), with(&AutoscalingSpec{
+		TargetCPUUtilization: ptr.To(int32(80)),
+		Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
+			ScaleDown: &autoscalingv2.HPAScalingRules{StabilizationWindowSeconds: ptr.To(int32(3601))},
+		},
+	}))
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(ContainSubstring("spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds"))
+	g.Expect(err.Error()).To(ContainSubstring("stabilizationWindowSeconds must be between 0 and 3600"))
 }
 
 // TestAPIPodSelector pins the exported selector to the labels the API
