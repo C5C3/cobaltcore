@@ -373,7 +373,9 @@ func novaComputeSecurityContext() *corev1.SecurityContext {
 // novaComputeEnv is the environment of the nova-compute container: the node's
 // identity from the downward API, and the bus URL and the one service
 // password from the contract, as oslo.config overrides so neither is written
-// to a ConfigMap.
+// to a ConfigMap. The node's address is also [libvirt]
+// live_migration_inbound_addr, the address a migration source dials for both
+// the libvirtd connection and the QEMU stream.
 func novaComputeEnv(secretName string) []corev1.EnvVar {
 	fieldRef := func(name, fieldPath string) corev1.EnvVar {
 		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
@@ -384,6 +386,7 @@ func novaComputeEnv(secretName string) []corev1.EnvVar {
 		fieldRef("OS_DEFAULT__HOST", "spec.nodeName"),
 		fieldRef("OS_DEFAULT__MY_IP", "status.hostIP"),
 		fieldRef("OS_VNC__SERVER_PROXYCLIENT_ADDRESS", "status.hostIP"),
+		fieldRef("OS_LIBVIRT__LIVE_MIGRATION_INBOUND_ADDR", "status.hostIP"),
 		{Name: "OS_DEFAULT__TRANSPORT_URL", ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},

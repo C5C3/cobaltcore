@@ -139,6 +139,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
+        - name: OS_LIBVIRT__LIVE_MIGRATION_INBOUND_ADDR
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
         - name: OS_DEFAULT__TRANSPORT_URL
           valueFrom:
             secretKeyRef:
@@ -386,6 +390,10 @@ spec:
             fieldRef:
               fieldPath: status.hostIP
         - name: OS_VNC__SERVER_PROXYCLIENT_ADDRESS
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: OS_LIBVIRT__LIVE_MIGRATION_INBOUND_ADDR
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
@@ -659,6 +667,10 @@ spec:
             fieldRef:
               fieldPath: status.hostIP
         - name: OS_VNC__SERVER_PROXYCLIENT_ADDRESS
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: OS_LIBVIRT__LIVE_MIGRATION_INBOUND_ADDR
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
