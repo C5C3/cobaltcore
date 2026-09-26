@@ -121,7 +121,8 @@ for the workloads in `openstack`, using four additions to the job:
 | `Upload the sizing measurement` | `always()`: uploads `_output/sizing/` as `sizing-e2e-controlplane`, `sizing-e2e-controlplane-sso` or `sizing-tempest-<service>-<release>`, kept 14 days |
 
 Without the label the three steps skip and the banner of the setup step prints
-`VPA recommender    : false`. The node budget of Link 6z leaves the
+`VPA recommender    : false`. [Sizing Calibration](../testing/sizing-calibration.md)
+describes how the artifacts turn into the sizing figures. The node budget of Link 6z leaves the
 metrics-server and recommender pods out, since the devstack it measures
 installs neither.
 

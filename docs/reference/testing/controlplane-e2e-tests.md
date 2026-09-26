@@ -474,7 +474,8 @@ Under the `ci:measure-sizing` label the `e2e-controlplane` job deploys with
 workload in `openstack` while this suite and the two after it run
 ([Sizing measurement](../ci-cd/ci-workflow.md#sizing-measurement)). The
 recommendations for the Minimal ControlPlane of this suite and its backing
-services are the input for the Minimal profile figures.
+services are the input for the Minimal profile figures
+([Sizing Calibration](sizing-calibration.md)).
 
 ### external-keystone
 
