@@ -155,3 +155,25 @@ spec:
             ($error != null): true
             (contains($error, 'spec.deployment.resources.requests.cpu')): true
             (contains($error, 'cpu request must be greater than zero')): true
+  # spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds above 3600
+  # must be rejected by the validating webhook, which mirrors the
+  # autoscaling/v2 bound the embedded type's schema does not carry.
+  - try:
+    - apply:
+        file: 15-autoscaling-behavior-window-above-max.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds')): true
+            (contains($error, 'stabilizationWindowSeconds must be between 0 and 3600')): true
+  # spec.autoscaling.targetMemoryUtilization above 100 must be rejected by the
+  # validating webhook while no container of the API pod names a memory limit
+  # above its request: the render-time default makes request and limit equal.
+  - try:
+    - apply:
+        file: 16-autoscaling-memory-target-unreachable.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.autoscaling.targetMemoryUtilization')): true
+            (contains($error, 'can never be reached')): true

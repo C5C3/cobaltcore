@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds above 3600
+# is rejected by the validating webhook alone. The embedded autoscaling/v2
+# type carries no kubebuilder bounds, so the schema admits it and the API
+# server would refuse the HPA only when the operator applies it, as a
+# reconcile error. The webhook mirrors the autoscaling/v2 bound instead.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-invalid-autoscaling-behavior
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/horizon
+    tag: "2025.2"
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  secretKeyRef:
+    name: horizon-secret-key
+    key: secret-key
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilization: 80
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 3601

@@ -96,3 +96,13 @@ spec:
             ($error != null): true
             (contains($error, 'spec.priorityClassName')): true
             (contains($error, 'Not found')): true
+  # An autoscaling policy period above autoscaling/v2's 1800 seconds, which the
+  # embedded type's schema admits (webhook-only).
+  - try:
+    - apply:
+        file: 07-autoscaling-behavior-period-above-max.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.keystone.api.autoscaling.behavior.scaleDown.policies[0].periodSeconds')): true
+            (contains($error, 'periodSeconds must be between 1 and 1800')): true

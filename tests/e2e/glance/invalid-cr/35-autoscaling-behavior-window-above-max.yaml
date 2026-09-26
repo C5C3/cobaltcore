@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds above 3600
+# is rejected by the validating webhook alone. The embedded autoscaling/v2
+# type carries no kubebuilder bounds, so the schema admits it and the API
+# server would refuse the HPA only when the operator applies it, as a
+# reconcile error. The webhook mirrors the autoscaling/v2 bound instead.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-invalid-autoscaling-behavior
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: glance-service-password
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilization: 80
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 3601

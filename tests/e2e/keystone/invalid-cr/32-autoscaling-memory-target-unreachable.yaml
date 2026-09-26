@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.autoscaling.targetMemoryUtilization of 150 with no resources block is
+# rejected by the validating webhook alone. A container whose block names no
+# memory renders the same figure as request and limit, so the API pod can
+# never use more than 100% of its memory request and the HPA would never
+# scale out. The schema admits any target of at least 1, so the reachability
+# rule is the only one broken.
+# Admission must reject this CR with an $error referencing the substrings
+# "spec.autoscaling.targetMemoryUtilization" and "can never be reached".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-autoscaling-memory-target
+spec:
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 3
+    targetMemoryUtilization: 150

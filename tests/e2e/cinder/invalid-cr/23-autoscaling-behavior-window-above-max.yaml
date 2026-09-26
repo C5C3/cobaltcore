@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds above 3600
+# is rejected by the validating webhook alone. The embedded autoscaling/v2
+# type carries no kubebuilder bounds, so the schema admits it and the API
+# server would refuse the HPA only when the operator applies it, as a
+# reconcile error. The webhook mirrors the autoscaling/v2 bound instead.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-invalid-autoscaling-behavior
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: openstack-rabbitmq
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilization: 80
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 3601

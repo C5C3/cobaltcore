@@ -2,14 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# spec.autoscaling.targetCPUUtilization above the CRD Maximum=100 marker.
-# The field is a utilization percentage of the container's CPU request, so
-# 150 asks the HPA to hold pods at a level the request cannot express. The
-# replica bounds are kept consistent so the marker is the only rule broken.
+# spec.autoscaling.targetMemoryUtilization of 150 with no resources block is
+# rejected by the validating webhook alone. A container whose block names no
+# memory renders the same figure as request and limit, so the API pod can
+# never use more than 100% of its memory request and the HPA would never
+# scale out. The schema admits any target of at least 1, so the reachability
+# rule is the only one broken.
 apiVersion: placement.openstack.c5c3.io/v1alpha1
 kind: Placement
 metadata:
-  name: placement-invalid-autoscaling-cpu
+  name: placement-invalid-autoscaling-memory-target
 spec:
   openStackRelease: "2025.2"
   deployment:
@@ -33,4 +35,4 @@ spec:
   autoscaling:
     minReplicas: 1
     maxReplicas: 3
-    targetCPUUtilization: 150
+    targetMemoryUtilization: 150

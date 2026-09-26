@@ -991,6 +991,26 @@ spec:
             ($error != null): true
             (contains($error, 'spec.sizing.keystone.api.autoscaling.maxReplicas')): true
             (contains($error, 'maxReplicas must be >= replicas (3)')): true
+    # A scale-up policy type autoscaling/v2 does not know, which the embedded
+    # type's schema admits (webhook-only).
+    - apply:
+        file: 130-sizing-autoscaling-behavior-policy-type.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.keystone.api.autoscaling.behavior.scaleUp.policies[0].type')): true
+            (contains($error, 'Unsupported value')): true
+            (contains($error, 'Replicas')): true
+    # A memory target above 100 that the merged sizing makes unreachable: no
+    # container of the Keystone API pod names a memory limit above its request
+    # (webhook-only).
+    - apply:
+        file: 131-sizing-autoscaling-memory-target-unreachable.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.keystone.api.autoscaling.targetMemoryUtilization')): true
+            (contains($error, 'can never be reached')): true
     # A 256-character spec.regionDescription is refused by the CRD's MaxLength 255
     # marker (K-ORC's bound on RegionResourceSpec.Description); there is no
     # webhook mirror, so the error is the API server's own.

@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An autoscaling scale-up policy of type Replicas (webhook-only): autoscaling/v2
+# knows Pods and Percent only, and the embedded type carries no enum, so the
+# schema admits it and every projected Keystone HPA would be refused at apply
+# time. The step anchors on
+# `spec.sizing.keystone.api.autoscaling.behavior.scaleUp.policies[0].type`,
+# `Unsupported value` and `Replicas`.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-sizing-behavior-policy
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+  sizing:
+    keystone:
+      api:
+        autoscaling:
+          maxReplicas: 3
+          targetCPUUtilization: 80
+          behavior:
+            scaleUp:
+              policies:
+              - type: Replicas
+                value: 1
+                periodSeconds: 15
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
