@@ -154,11 +154,14 @@ func clusterDescription(cr *novav1alpha1.NovaCompute) string {
 // console address); this file carries the paths the pod mounts, and the pod's
 // environment carries the node's name and address. The three optional
 // [libvirt] keys are rendered only when set, so Nova's own defaults apply
-// otherwise.
+// otherwise. The two live-migration keys are rendered for every CR: the
+// migration transport is TLS end to end, and the certificates are the host's.
 func novaComputePoolDefaults(cr *novav1alpha1.NovaCompute) map[string]map[string]string {
 	libvirt := map[string]string{
-		"virt_type":      effectiveVirtType(cr),
-		"connection_uri": "qemu:///system",
+		"virt_type":                      effectiveVirtType(cr),
+		"connection_uri":                 "qemu:///system",
+		"live_migration_scheme":          "tls",
+		"live_migration_with_native_tls": "true",
 	}
 	if mode := cr.Spec.Libvirt.CPUMode; mode != "" {
 		libvirt["cpu_mode"] = mode

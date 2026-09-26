@@ -34,7 +34,7 @@ func TestNovaComputePoolDefaults(t *testing.T) {
 
 	g.Expect(novaComputePoolDefaults(validNovaCompute())).To(Equal(map[string]map[string]string{
 		"DEFAULT":          {"compute_driver": "libvirt.LibvirtDriver", "state_path": "/var/lib/nova"},
-		"libvirt":          {"virt_type": "kvm", "connection_uri": "qemu:///system"},
+		"libvirt":          {"virt_type": "kvm", "connection_uri": "qemu:///system", "live_migration_scheme": "tls", "live_migration_with_native_tls": "true"},
 		"os_vif_ovs":       {"ovsdb_connection": "unix:/run/openvswitch/db.sock"},
 		"oslo_concurrency": {"lock_path": "/var/lib/nova/tmp"},
 		"vnc":              {"server_listen": "$my_ip"},
@@ -47,7 +47,17 @@ func TestNovaComputePoolDefaults(t *testing.T) {
 	g.Expect(novaComputePoolDefaults(custom)["libvirt"]).To(Equal(map[string]string{
 		"virt_type": "qemu", "connection_uri": "qemu:///system",
 		"cpu_mode": "custom", "cpu_models": "Haswell-noTSX,Skylake-Client", "images_type": "qcow2",
+		"live_migration_scheme": "tls", "live_migration_with_native_tls": "true",
 	}))
+
+	// The migration transport does not depend on spec.libvirt: an empty block
+	// still renders TLS.
+	zero := validNovaCompute()
+	zero.Spec.Libvirt = novav1alpha1.NovaComputeLibvirtSpec{}
+	g.Expect(novaComputePoolDefaults(zero)["libvirt"]).To(And(
+		HaveKeyWithValue("live_migration_scheme", "tls"),
+		HaveKeyWithValue("live_migration_with_native_tls", "true"),
+	))
 
 	hostModel := validNovaCompute()
 	hostModel.Spec.Libvirt.CPUMode = "host-model"
@@ -132,6 +142,9 @@ func TestReconcileNovaComputeConfig_RendersThePool(t *testing.T) {
 	g.Expect(r.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: pass.configMapName}, cm)).To(Succeed())
 	g.Expect(cm.Data[poolConfigFile]).To(ContainSubstring("compute_driver = fake.FakeDriverWithoutFakeNodes"))
 	g.Expect(cm.Data[poolConfigFile]).To(ContainSubstring("virt_type = qemu"))
+	// Overriding a reported [libvirt] key leaves the migration transport alone.
+	g.Expect(cm.Data[poolConfigFile]).To(ContainSubstring("live_migration_scheme = tls"))
+	g.Expect(cm.Data[poolConfigFile]).To(ContainSubstring("live_migration_with_native_tls = true"))
 	g.Expect(cm.Data[poolConfigFile]).NotTo(ContainSubstring("pw"))
 
 	// The override of an owned key is honored and reported.
@@ -139,6 +152,26 @@ func TestReconcileNovaComputeConfig_RendersThePool(t *testing.T) {
 	g.Expect(health).NotTo(BeNil())
 	g.Expect(health.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(health.Message).To(ContainSubstring("virt_type"))
+}
+
+// TestReconcileNovaComputeConfig_RendersTLSMigrationWithoutOverrides pins the
+// migration transport for a pool without spec.extraConfig: it needs no
+// override, and nothing is reported as overridden.
+func TestReconcileNovaComputeConfig_RendersTLSMigrationWithoutOverrides(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := validNovaCompute()
+	cr.Spec.ExtraConfig = nil
+	r, pass := runPoolConfig(t, cr, computeContractSecret("pw"))
+
+	cm := &corev1.ConfigMap{}
+	g.Expect(r.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: pass.configMapName}, cm)).To(Succeed())
+	g.Expect(cm.Data[poolConfigFile]).To(ContainSubstring("live_migration_scheme = tls"))
+	g.Expect(cm.Data[poolConfigFile]).To(ContainSubstring("live_migration_with_native_tls = true"))
+
+	health := novaComputeCondition(cr, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(health).NotTo(BeNil())
+	g.Expect(health.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(health.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
 }
 
 func TestReconcileNovaComputeConfig_HashFollowsTheContract(t *testing.T) {
