@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/onsi/gomega"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -427,6 +428,286 @@ func TestAutoscalingTargetRequests(t *testing.T) {
 		g.Expect(errs).To(gomega.HaveLen(2))
 		g.Expect(errs[0].Field).To(gomega.Equal("spec.deployment.resources.requests.cpu"))
 		g.Expect(errs[1].Field).To(gomega.Equal("spec.deployment.resources.requests.memory"))
+	})
+}
+
+func TestAutoscalingTargetsReachable(t *testing.T) {
+	path := field.NewPath("spec", "autoscaling")
+	cpu := func(target int32) *commonv1.AutoscalingSpec {
+		return &commonv1.AutoscalingSpec{MaxReplicas: 3, TargetCPUUtilization: ptr.To(target)}
+	}
+	mem := func(target int32) *commonv1.AutoscalingSpec {
+		return &commonv1.AutoscalingSpec{MaxReplicas: 3, TargetMemoryUtilization: ptr.To(target)}
+	}
+	block := func(requests, limits corev1.ResourceList) *corev1.ResourceRequirements {
+		return &corev1.ResourceRequirements{Requests: requests, Limits: limits}
+	}
+	list := func(name corev1.ResourceName, q string) corev1.ResourceList {
+		return corev1.ResourceList{name: resource.MustParse(q)}
+	}
+	memRequestAndLimit := block(list(corev1.ResourceMemory, "256Mi"), list(corev1.ResourceMemory, "512Mi"))
+
+	accepted := []struct {
+		name   string
+		a      *commonv1.AutoscalingSpec
+		blocks []*corev1.ResourceRequirements
+	}{
+		{name: "nil autoscaling", blocks: []*corev1.ResourceRequirements{nil}},
+		{name: "empty blocks", a: mem(150)},
+		{
+			name:   "targets of exactly 100 on a bounded pod",
+			a:      &commonv1.AutoscalingSpec{MaxReplicas: 3, TargetCPUUtilization: ptr.To(int32(100)), TargetMemoryUtilization: ptr.To(int32(100))},
+			blocks: []*corev1.ResourceRequirements{block(nil, corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")})},
+		},
+		{name: "nil block leaves cpu unbounded", a: cpu(150), blocks: []*corev1.ResourceRequirements{nil}},
+		{name: "memory limit twice the request reaches 200", a: mem(200), blocks: []*corev1.ResourceRequirements{memRequestAndLimit}},
+		{name: "memory request without a limit is unbounded", a: mem(500), blocks: []*corev1.ResourceRequirements{block(list(corev1.ResourceMemory, "256Mi"), nil)}},
+		// 1.15 has no exact binary floating-point form, and 1.15 × 100
+		// evaluates to 114.99999999999999 in float64.
+		{
+			name:   "cpu target exactly at a limit/request ratio of 1.15",
+			a:      cpu(115),
+			blocks: []*corev1.ResourceRequirements{block(list(corev1.ResourceCPU, "100m"), list(corev1.ResourceCPU, "115m"))},
+		},
+		{
+			name:   "memory target exactly at a limit/request ratio of 1.15",
+			a:      mem(115),
+			blocks: []*corev1.ResourceRequirements{block(list(corev1.ResourceMemory, "100Mi"), list(corev1.ResourceMemory, "115Mi"))},
+		},
+		// MilliValue overflows int64 on both: 10P needs ×10¹⁸, and 1Ei × 1000
+		// wraps to MinInt64.
+		{
+			name:   "memory limit of 20P over a 10P request reaches 150",
+			a:      mem(150),
+			blocks: []*corev1.ResourceRequirements{block(list(corev1.ResourceMemory, "10P"), list(corev1.ResourceMemory, "20P"))},
+		},
+		{
+			name:   "memory limit of 1Ei over a 512Mi request reaches 150",
+			a:      mem(150),
+			blocks: []*corev1.ResourceRequirements{block(list(corev1.ResourceMemory, "512Mi"), list(corev1.ResourceMemory, "1Ei"))},
+		},
+		// Each parses cheaply into a decimal scale of ±2e9; rounding it to
+		// milli-units would build a number of two billion digits.
+		{
+			name:   "memory limit of 1e2000000000 is unbounded, not materialised",
+			a:      mem(150),
+			blocks: []*corev1.ResourceRequirements{block(list(corev1.ResourceMemory, "1Gi"), list(corev1.ResourceMemory, "1e2000000000"))},
+		},
+		{
+			name:   "memory limit of 0e-2000000000 is unbounded, not materialised",
+			a:      mem(150),
+			blocks: []*corev1.ResourceRequirements{block(list(corev1.ResourceMemory, "1Gi"), list(corev1.ResourceMemory, "0e-2000000000"))},
+		},
+		{
+			name:   "cpu request of 1e2000000000 is unbounded, not materialised",
+			a:      cpu(150),
+			blocks: []*corev1.ResourceRequirements{block(list(corev1.ResourceCPU, "1e2000000000"), list(corev1.ResourceCPU, "1"))},
+		},
+		{
+			name:   "zero cpu request is left to AutoscalingTargetRequests",
+			a:      cpu(150),
+			blocks: []*corev1.ResourceRequirements{block(list(corev1.ResourceCPU, "0"), list(corev1.ResourceCPU, "100m"))},
+		},
+		{
+			name: "one unbounded block lifts the pod's ceiling",
+			a:    mem(150),
+			blocks: []*corev1.ResourceRequirements{
+				block(nil, list(corev1.ResourceMemory, "512Mi")),
+				block(list(corev1.ResourceMemory, "128Mi"), nil),
+			},
+		},
+	}
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(AutoscalingTargetsReachable(path, tc.a, tc.blocks...)).To(gomega.BeEmpty())
+		})
+	}
+
+	t.Run("nil block caps memory at its request", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetsReachable(path, mem(150), nil)
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.autoscaling.targetMemoryUtilization"))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("can never be reached"))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("100%"))
+	})
+
+	t.Run("memory target one above the limit ratio", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetsReachable(path, mem(201), memRequestAndLimit)
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.autoscaling.targetMemoryUtilization"))
+		g.Expect(errs[0].Detail).To(gomega.Equal(
+			"targetMemoryUtilization 201 can never be reached: no container of the API pod can use more than 200% " +
+				"of its memory request, because its memory limit caps it there; set a memory limit above the request, " +
+				"or a target of at most 200"))
+	})
+
+	t.Run("cpu target one above a limit/request ratio of 1.15", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetsReachable(path, cpu(116), block(list(corev1.ResourceCPU, "100m"), list(corev1.ResourceCPU, "115m")))
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.autoscaling.targetCPUUtilization"))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("more than 115% of its cpu request"))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("or a target of at most 115"))
+	})
+
+	t.Run("memory limit of 12P over a 10P request caps the target at 120", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetsReachable(path, mem(150), block(list(corev1.ResourceMemory, "10P"), list(corev1.ResourceMemory, "12P")))
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.autoscaling.targetMemoryUtilization"))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("more than 120% of its memory request"))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("or a target of at most 120"))
+	})
+
+	t.Run("cpu limit without a request caps cpu at 100", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetsReachable(path, cpu(150), block(nil, list(corev1.ResourceCPU, "500m")))
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.autoscaling.targetCPUUtilization"))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("targetCPUUtilization 150 can never be reached"))
+	})
+
+	t.Run("two bounded blocks report the larger ratio", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetsReachable(path, mem(250),
+			nil,
+			memRequestAndLimit,
+		)
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("or a target of at most 200"))
+	})
+
+	t.Run("both targets unreachable report cpu first", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingTargetsReachable(path,
+			&commonv1.AutoscalingSpec{MaxReplicas: 3, TargetCPUUtilization: ptr.To(int32(150)), TargetMemoryUtilization: ptr.To(int32(150))},
+			block(nil, list(corev1.ResourceCPU, "1")))
+		g.Expect(errs).To(gomega.HaveLen(2))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.autoscaling.targetCPUUtilization"))
+		g.Expect(errs[1].Field).To(gomega.Equal("spec.autoscaling.targetMemoryUtilization"))
+	})
+}
+
+func TestAutoscalingBehavior(t *testing.T) {
+	path := field.NewPath("spec", "autoscaling", "behavior")
+	down := func(r autoscalingv2.HPAScalingRules) *autoscalingv2.HorizontalPodAutoscalerBehavior {
+		return &autoscalingv2.HorizontalPodAutoscalerBehavior{ScaleDown: &r}
+	}
+	policy := func(typ autoscalingv2.HPAScalingPolicyType, value, period int32) []autoscalingv2.HPAScalingPolicy {
+		return []autoscalingv2.HPAScalingPolicy{{Type: typ, Value: value, PeriodSeconds: period}}
+	}
+	selectPolicy := func(s string) *autoscalingv2.ScalingPolicySelect {
+		return ptr.To(autoscalingv2.ScalingPolicySelect(s))
+	}
+
+	accepted := []struct {
+		name string
+		b    *autoscalingv2.HorizontalPodAutoscalerBehavior
+	}{
+		{name: "nil behavior"},
+		{name: "both directions nil", b: &autoscalingv2.HorizontalPodAutoscalerBehavior{}},
+		{name: "empty policies", b: down(autoscalingv2.HPAScalingRules{Policies: []autoscalingv2.HPAScalingPolicy{}})},
+		{name: "window 0", b: down(autoscalingv2.HPAScalingRules{StabilizationWindowSeconds: ptr.To(int32(0))})},
+		{name: "window 3600", b: down(autoscalingv2.HPAScalingRules{StabilizationWindowSeconds: ptr.To(int32(3600))})},
+		{name: "period 1", b: down(autoscalingv2.HPAScalingRules{Policies: policy(autoscalingv2.PodsScalingPolicy, 1, 1)})},
+		{name: "period 1800", b: down(autoscalingv2.HPAScalingRules{Policies: policy(autoscalingv2.PercentScalingPolicy, 100, 1800)})},
+		{name: "selectPolicy Disabled", b: down(autoscalingv2.HPAScalingRules{SelectPolicy: selectPolicy("Disabled")})},
+		{name: "zero tolerance", b: down(autoscalingv2.HPAScalingRules{Tolerance: ptr.To(resource.MustParse("0"))})},
+	}
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(AutoscalingBehavior(path, tc.b)).To(gomega.BeEmpty())
+		})
+	}
+
+	rejected := []struct {
+		name     string
+		b        *autoscalingv2.HorizontalPodAutoscalerBehavior
+		wantType field.ErrorType
+		wantPath string
+		wantSub  string
+	}{
+		{
+			name:     "window -1",
+			b:        down(autoscalingv2.HPAScalingRules{StabilizationWindowSeconds: ptr.To(int32(-1))}),
+			wantType: field.ErrorTypeInvalid,
+			wantPath: "spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds",
+			wantSub:  "stabilizationWindowSeconds must be between 0 and 3600",
+		},
+		{
+			name:     "window 3601 on scaleUp",
+			b:        &autoscalingv2.HorizontalPodAutoscalerBehavior{ScaleUp: &autoscalingv2.HPAScalingRules{StabilizationWindowSeconds: ptr.To(int32(3601))}},
+			wantType: field.ErrorTypeInvalid,
+			wantPath: "spec.autoscaling.behavior.scaleUp.stabilizationWindowSeconds",
+			wantSub:  "stabilizationWindowSeconds must be between 0 and 3600",
+		},
+		{
+			name:     "selectPolicy Sometimes",
+			b:        down(autoscalingv2.HPAScalingRules{SelectPolicy: selectPolicy("Sometimes")}),
+			wantType: field.ErrorTypeNotSupported,
+			wantPath: "spec.autoscaling.behavior.scaleDown.selectPolicy",
+			wantSub:  `Unsupported value: "Sometimes"`,
+		},
+		{
+			name:     "policy type Replicas",
+			b:        down(autoscalingv2.HPAScalingRules{Policies: policy("Replicas", 1, 15)}),
+			wantType: field.ErrorTypeNotSupported,
+			wantPath: "spec.autoscaling.behavior.scaleDown.policies[0].type",
+			wantSub:  `Unsupported value: "Replicas"`,
+		},
+		{
+			name:     "policy value 0",
+			b:        down(autoscalingv2.HPAScalingRules{Policies: policy(autoscalingv2.PodsScalingPolicy, 0, 15)}),
+			wantType: field.ErrorTypeInvalid,
+			wantPath: "spec.autoscaling.behavior.scaleDown.policies[0].value",
+			wantSub:  "value must be greater than zero",
+		},
+		{
+			name:     "policy period 0",
+			b:        down(autoscalingv2.HPAScalingRules{Policies: policy(autoscalingv2.PodsScalingPolicy, 1, 0)}),
+			wantType: field.ErrorTypeInvalid,
+			wantPath: "spec.autoscaling.behavior.scaleDown.policies[0].periodSeconds",
+			wantSub:  "periodSeconds must be between 1 and 1800",
+		},
+		{
+			name:     "policy period 1801",
+			b:        down(autoscalingv2.HPAScalingRules{Policies: policy(autoscalingv2.PodsScalingPolicy, 1, 1801)}),
+			wantType: field.ErrorTypeInvalid,
+			wantPath: "spec.autoscaling.behavior.scaleDown.policies[0].periodSeconds",
+			wantSub:  "periodSeconds must be between 1 and 1800",
+		},
+		{
+			name:     "tolerance -0.1",
+			b:        down(autoscalingv2.HPAScalingRules{Tolerance: ptr.To(resource.MustParse("-0.1"))}),
+			wantType: field.ErrorTypeInvalid,
+			wantPath: "spec.autoscaling.behavior.scaleDown.tolerance",
+			wantSub:  "tolerance must not be negative",
+		},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := AutoscalingBehavior(path, tc.b)
+			g.Expect(errs).To(gomega.HaveLen(1))
+			g.Expect(errs[0].Type).To(gomega.Equal(tc.wantType))
+			g.Expect(errs[0].Field).To(gomega.Equal(tc.wantPath))
+			g.Expect(errs[0].Error()).To(gomega.ContainSubstring(tc.wantSub))
+		})
+	}
+
+	t.Run("second policy reports its own index", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := AutoscalingBehavior(path, down(autoscalingv2.HPAScalingRules{Policies: []autoscalingv2.HPAScalingPolicy{
+			{Type: autoscalingv2.PodsScalingPolicy, Value: 1, PeriodSeconds: 15},
+			{Type: autoscalingv2.PercentScalingPolicy, Value: -5, PeriodSeconds: 15},
+		}}))
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.autoscaling.behavior.scaleDown.policies[1].value"))
 	})
 }
 
