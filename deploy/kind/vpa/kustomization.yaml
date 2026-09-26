@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Opt-in kind overlay for the VerticalPodAutoscaler recommender, applied only
+# when the operator explicitly requests it (WITH_VPA=true make deploy-infra).
+#
+# It exists for the sizing measurement: hack/ci-vpa-recommendations.sh creates
+# a recommendation-only VPA (updateMode "Off") for every workload in the
+# `openstack` namespace and records what the recommender recommends. The
+# `ci:measure-sizing` label switches that measurement on in CI, and
+# docs/reference/testing/sizing-calibration.md describes it.
+#
+# Bundles:
+#   1. The autoscaler HelmRepository source (upstream chart index).
+#   2. The vertical-pod-autoscaler HelmRelease, which installs the VPA CRDs
+#      and the recommender alone (release.yaml says why).
+#
+# There is NO inline namespace.yaml: the release installs into the
+# pre-existing `kube-system` Namespace. All resource references are local to
+# this overlay (no parent-directory `../../` paths), so
+# `kubectl apply -k deploy/kind/vpa` renders under kustomize's default
+# `LoadRestrictionsRootOnly` check without `--load-restrictor`
+# (kubernetes/kubectl#948), the same contract as the metrics-server overlay.
+#
+# Production overlays (deploy/flux-system/kustomization.yaml) never install
+# it. The recommender reads the resource-metrics API, so WITH_VPA=true also
+# installs the metrics-server overlay.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # HelmRepository (flux-system) + HelmRelease (kube-system) are local to
+  # this overlay — production overlays do not include them.
+  - source.yaml
+  - release.yaml

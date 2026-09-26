@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# vertical-pod-autoscaler HelmRelease: the VPA CRDs and the recommender for
+# the sizing measurement of hack/ci-vpa-recommendations.sh. Opt-in, reconciled
+# only when the vpa overlay is applied (WITH_VPA=true make deploy-infra).
+#
+# Only the recommender runs. The measurement creates every VPA with
+# updateMode "Off", which changes no pod, so neither the updater (it evicts
+# pods) nor the admission controller (it rewrites pod requests) has anything
+# to do. At one replica the chart turns leader election off.
+#
+# The chart renders `recommender.extraArgs` verbatim into the recommender's
+# args. The two floor flags replace the per-pod defaults of 25 millicores and
+# 250 MiB, which the recommender divides evenly among a pod's containers
+# (pkg/recommender/logic/recommender.go of VPA 1.8.0). Without them a
+# container using less than its share of the floor reports the floor instead
+# of its real use. `--memory-saver` keeps its default `false`, so the
+# recommender samples every pod from its start, whether or not a VPA selects
+# it yet.
+#
+# The chart version is bounded to one minor (0.13.x ships VPA 1.8.0) so the
+# recommender's behaviour stays fixed between measurements, the way the dizzy
+# overlay bounds its charts.
+#
+# Production overlays never install this release.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: vertical-pod-autoscaler
+  namespace: kube-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: vertical-pod-autoscaler
+      version: ">=0.13.0 <0.14.0"
+      sourceRef:
+        kind: HelmRepository
+        name: autoscaler
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    admissionController:
+      enabled: false
+    updater:
+      enabled: false
+    recommender:
+      replicas: 1
+      extraArgs:
+        - --pod-recommendation-min-cpu-millicores=1
+        - --pod-recommendation-min-memory-mb=1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
+    crds:
+      enabled: true

@@ -2070,6 +2070,60 @@ omission is explicit, the opt-in flag has a single documented name
 (`WITH_METRICS_SERVER`), and the kind overlay is self-contained under
 `deploy/kind/metrics-server/` so the production kustomization root is untouched.
 
+### VPA recommender (kind-only opt-in)
+
+**File:** `deploy/kind/vpa/kustomization.yaml`
+
+The [VerticalPodAutoscaler](https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler)
+recommender ships as a separate opt-in kind overlay. Neither the default
+`make deploy-infra` flow nor the production `deploy/flux-system/` overlay
+installs it.
+
+Its only consumer is the sizing measurement. `hack/ci-vpa-recommendations.sh`
+creates a VPA with `updateMode: "Off"` for every workload in the `openstack`
+namespace and records the recommender's CPU and memory targets. The
+`ci:measure-sizing` label runs that measurement in CI (see the
+[CI workflow](../ci-cd/ci-workflow.md) label table).
+
+Recommendation-only mode changes no pod, so the release installs the VPA CRDs
+and the recommender alone: the updater and the admission controller are
+disabled. At one replica the chart turns leader election off. The overlay
+ships no `Namespace`; the HelmRelease targets the pre-existing `kube-system`
+Namespace, and the `HelmRepository` lives in `flux-system`.
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `kube-system` (pre-existing; no inline Namespace) |
+| Chart | `vertical-pod-autoscaler` |
+| Version constraint | `>=0.13.0 <0.14.0` (0.13.0 ships VPA 1.8.0; the minor bound keeps the recommender's behaviour fixed between measurements) |
+| Source | `autoscaler` HelmRepository (`https://kubernetes.github.io/autoscaler`) |
+| Dependencies | metrics-server (the recommender reads the resource-metrics API) |
+
+**Kind-tuned values:**
+
+| Helm value | Override | Purpose |
+| --- | --- | --- |
+| `admissionController.enabled` | `false` | No VPA of the measurement rewrites pod requests |
+| `updater.enabled` | `false` | No VPA of the measurement evicts pods |
+| `recommender.replicas` | `1` | One recommender; the chart disables leader election |
+| `recommender.extraArgs` | `--pod-recommendation-min-cpu-millicores=1`, `--pod-recommendation-min-memory-mb=1` | The recommender divides a per-pod floor (25 millicores and 250 MiB by default) evenly among a pod's containers. With the default floor a container using less than its share reports the floor instead of its use |
+| `recommender.resources` | requests `50m` / `256Mi`, limit `512Mi` memory | Keeps the recommender itself small on the measured node |
+| `crds.enabled` | `true` | Installs `verticalpodautoscalers.autoscaling.k8s.io`, which the collector checks for |
+
+`--memory-saver` keeps its default `false`, so the recommender samples every
+pod from its start, whether or not a VPA selects it yet.
+
+When `WITH_VPA=true`, `hack/deploy-infra.sh` sets `WITH_METRICS_SERVER=true`,
+runs `kubectl apply -k deploy/kind/vpa` in Step 3 right after the
+metrics-server overlay, and appends `vertical-pod-autoscaler` to the Phase 3
+HelmRelease wait list. The banner prints the flag as `VPA recommender`.
+
+**Opt-in usage:**
+
+```bash
+WITH_VPA=true make deploy-infra
+```
+
 ### dizzy load/chaos stack (kind-only opt-in)
 
 **File:** `deploy/kind/dizzy/kustomization.yaml`
