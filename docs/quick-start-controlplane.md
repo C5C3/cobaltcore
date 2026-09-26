@@ -25,9 +25,7 @@ Same toolchain as the [Quick Start](./quick-start.md), plus:
 - `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
 - The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 6, plus two plugins for the other checks in that step: [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) for the placement call and [`python-barbicanclient`](https://docs.openstack.org/python-barbicanclient/latest/) for the `openstack secret` subcommands. The network commands in that step need no plugin: `openstack network` and `openstack subnet` ship with `python-openstackclient` itself
 - A stable internet connection while `make deploy-infra` clones K-ORC from GitHub
-- Roughly 8 GB RAM, 2 CPU cores, and 10 GB of free disk for a laptop-sized kind cluster
-- Room for the managed message bus on top of that: the RabbitMQ Cluster Operator requests 1 CPU and 2 Gi for the single broker pod Step 3 declares
-- Room for the compute service as well: its five Deployments (the API, the metadata API, the scheduler, the conductor, and the console proxy) request 100m CPU each and 512 MiB each (368 MiB for the console proxy) at one replica, 500m CPU and 2416 MiB together. The optional fake compute in Step 6 adds 50m CPU and 128Mi
+- A host with 4 CPU cores, 16 GB of memory for the container runtime, and 10 GB of free disk. On the `Minimal` sizing profile the full stack requests at most 4 CPU and 16 GiB; the [node budget gate](./reference/testing/controlplane-e2e-tests.md#node-budget-link-6z) of the e2e-controlplane CI job enforces that budget on the CI stack. The optional compute leg of Step 6 (the fake compute, the OVN chassis, and the metadata agent) runs beside that budget
 - `yq` v4.x on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
 
 Docker Desktop and Podman are both valid kind providers. When using Podman,
@@ -38,26 +36,19 @@ Step 2:
 export KIND_EXPERIMENTAL_PROVIDER=podman
 ```
 
-- The bundled kind `ControlPlane` CR pins its backing services to a single
-  instance (`spec.infrastructure.database.replicas: 1`, `cache.replicas: 1`) so
-  the fresh-create chain fits a single-node kind cluster.
-- `database.replicas: 1` yields a single-instance, non-Galera MariaDB and
-  `cache.replicas: 1` a single Memcached pod. Left unset, both take the
-  ControlPlane's sizing, whose `Standard` profile gives `3`: the production
-  baseline, which OOM-kills a laptop-sized kind.
+- The bundled kind `ControlPlane` CR names `spec.sizing.profile: Minimal`, so
+  the fresh-create chain fits a single-node kind cluster: a single-instance,
+  non-Galera MariaDB on a `512Mi` volume, a single Memcached pod, and one pod
+  per service component.
+- The `Standard` profile gives `3` of each and a `100Gi` volume: the
+  production baseline, which OOM-kills a laptop-sized kind.
 - On a bigger box, set `CONTROLPLANE_DB_REPLICAS=3` and/or
-  `CONTROLPLANE_CACHE_REPLICAS=N` for Step 2. `2` is rejected for the database:
-  Galera needs a quorum.
-- `database.replicas` is immutable after the CR is created, so change it on a
-  fresh environment (`make teardown-infra` first).
-
-- The bundled CR also pins the MariaDB volume to a test size
-  (`spec.infrastructure.database.storageSize: 512Mi`).
-- The `Standard` sizing profile gives `100Gi`, which a kind/CI run never fills,
-  so the managed MariaDB requests a small volume instead.
-- To mirror the production volume on a bigger box, set
-  `CONTROLPLANE_DB_STORAGE=100Gi` for Step 2. Any Kubernetes quantity in
-  `Mi`/`Gi`/`Ti` is accepted.
+  `CONTROLPLANE_CACHE_REPLICAS=N` for Step 2 to pin those fields over the
+  profile. `2` is rejected for the database: Galera needs a quorum.
+- To mirror the production volume, set `CONTROLPLANE_DB_STORAGE=100Gi` for
+  Step 2. Any Kubernetes quantity in `Mi`/`Gi`/`Ti` is accepted.
+- `database.replicas` and `database.storageSize` are immutable after the CR is
+  created, so change them on a fresh environment (`make teardown-infra` first).
 
 ```bash
 make install-test-deps
@@ -186,20 +177,10 @@ metadata:
   namespace: openstack
 spec:
   openStackRelease: "2025.2"
-  # Single-node backing services for kind. Omit these and both take the Standard
-  # sizing profile's 3 (a 3-node Galera MariaDB plus three Memcached pods), which
-  # OOM-kills a small kind.
   infrastructure:
-    database:
-      replicas: 1         # single-instance, non-Galera MariaDB (Galera = replicas > 1)
-      storageSize: 512Mi  # test-sized volume; omit for Standard's 100Gi (production)
-    cache:
-      replicas: 1     # single Memcached pod
     # The shared message bus. The webhook fills clusterRef.name with
     # openstack-rabbitmq, the RabbitmqCluster this ControlPlane then owns.
-    # One replica is what fits a single-node kind cluster.
-    messaging:
-      replicas: 1
+    messaging: {}
   services:
     keystone:
       # Drop publicEndpoint on the default port 443 — the operator then derives
@@ -291,34 +272,12 @@ spec:
         parentRef:
           name: openstack-gw
         hostname: nova.127-0-0-1.nip.io
-  # One pod per service API for the single-node kind cluster. Omit spec.sizing
-  # and every component takes the Standard profile's count: three for each API.
+  # One small node: a single-instance MariaDB on 512Mi, one Memcached pod, one
+  # broker pod, and one pod per service component. Omit spec.sizing and every
+  # component takes the Standard profile: three per API, a 3-node Galera
+  # MariaDB on 100Gi, three Memcached pods and three broker pods.
   sizing:
-    keystone:
-      api:
-        replicas: 1
-    horizon:
-      api:
-        replicas: 1
-    glance:
-      api:
-        replicas: 1
-    placement:
-      api:
-        replicas: 1
-    barbican:
-      api:
-        replicas: 1
-    neutron:
-      api:
-        replicas: 1
-      # Sizes both RPC worker Deployments. Omit it and each takes Standard's 3,
-      # so six idle worker pods land beside the rest of the control plane.
-      workers:
-        replicas: 1
-    nova:
-      api:
-        replicas: 1
+    profile: Minimal
 ```
 
 ```bash
@@ -446,8 +405,8 @@ its conductor and scheduler over the bus.
 ::: details Optional: block storage (needs WITH_NFS=true in Step 2)
 The `cinder` block adds the block-storage service on the two NFS exports the
 Step 2 overlay pre-creates. Drop the fragment into `spec.services` of either CR
-shape on this page, beside the `neutron` block, add `cinder: {api: {replicas: 1}}`
-to `spec.sizing` for a single API pod, and apply it again.
+shape on this page, beside the `neutron` block, and apply it again. The
+`Minimal` profile already runs one Cinder API pod.
 
 ```yaml
 # block-storage.yaml
@@ -517,17 +476,15 @@ spec:
       secretRef:
         name: keystone-db         # placeholder default — the operator replaces it
                                   # with {name}-keystone-db-credentials (managed mode)
-      replicas: 1                 # single-instance, non-Galera; omit for Standard's 3 (Galera)
-      storageSize: 512Mi          # test-sized volume; omit for Standard's 100Gi (production)
-    cache:
+      replicas: 1                 # stored from the Minimal profile (Standard: 3, Galera)
+      storageSize: 512Mi          # stored from the Minimal profile (Standard: 100Gi)
+    cache:                        # replicas follows the profile on every pass
       clusterRef:
         name: openstack-memcached
       backend: dogpile.cache.pymemcache
-      replicas: 1                 # single Memcached pod; omit for Standard's 3
-    messaging:
+    messaging:                    # replicas follows the profile on every pass
       clusterRef:
         name: openstack-rabbitmq  # RabbitmqCluster the operator provisions (managed mode)
-      replicas: 1                 # single broker pod; omit for Standard's 3
   services:
     keystone:
       publicEndpoint: https://keystone.127-0-0-1.nip.io:8443/v3
@@ -591,29 +548,7 @@ spec:
           name: openstack-gw          # same Gateway; tenth listener
         hostname: nova.127-0-0-1.nip.io
   sizing:
-    keystone:
-      api:
-        replicas: 1
-    horizon:
-      api:
-        replicas: 1
-    glance:
-      api:
-        replicas: 1
-    placement:
-      api:
-        replicas: 1
-    barbican:
-      api:
-        replicas: 1
-    neutron:
-      api:
-        replicas: 1
-      workers:
-        replicas: 1
-    nova:
-      api:
-        replicas: 1
+    profile: Minimal
   korc:
     adminCredential:
       cloudCredentialsRef:
