@@ -26,24 +26,17 @@
 #   korc ... passwordSecretRef              -> keystone-admin / key "password"
 #   korc ... cloudCredentialsRef.cloudName  -> admin (secretName k-orc-clouds-yaml)
 #
-# The keystone and horizon API replicas are pinned to 1 under spec.sizing to fit
-# the single-node kind cluster; the MariaDB and Memcached topology is pinned the
-# same way via spec.infrastructure.{database,cache}.replicas below. Left unset,
-# both take the ControlPlane's sizing, whose Standard profile gives 3 (a 3-node
-# Galera cluster plus 3 Memcached pods, matching the production baseline), which
-# OOM-kills a laptop-sized single-node kind, so kind pins them to 1:
-# database.replicas:1 yields a single-instance non-Galera MariaDB (the operator
-# derives Galera from replicas>1) and cache.replicas:1 a single Memcached pod.
-# deploy-infra makes these deploy-time configurable via CONTROLPLANE_DB_REPLICAS /
-# CONTROLPLANE_CACHE_REPLICAS (e.g. =3 for a Galera HA cluster on a bigger box; 2 is
-# rejected — Galera needs a quorum). database.replicas is immutable after creation.
-#
-# database.storageSize is pinned to 512Mi for the same reason: the Standard sizing
-# profile gives 100Gi (the production volume in
-# deploy/flux-system/infrastructure/mariadb.yaml), which a kind/CI run never
-# fills, so the projected MariaDB requests a test-sized volume instead. deploy-infra makes it configurable via CONTROLPLANE_DB_STORAGE
-# (e.g. =100Gi to mirror production on a bigger box). Like replicas, storageSize is
-# immutable after creation (the mariadb-operator rejects resizing a live volume).
+# spec.sizing.profile: Minimal sizes the whole stack for one small node: one
+# replica per API, a single-instance non-Galera MariaDB on a 512Mi volume, and a
+# single Memcached pod. The Standard profile gives 3 of each and a 100Gi volume
+# (a 3-node Galera cluster plus 3 Memcached pods, matching the production
+# baseline), which OOM-kills a laptop-sized single-node kind. deploy-infra pins a
+# backing-service field on top of the profile only when its knob is set:
+# CONTROLPLANE_DB_REPLICAS (e.g. =3 for a Galera HA cluster on a bigger box; 2 is
+# rejected — Galera needs a quorum), CONTROLPLANE_CACHE_REPLICAS and
+# CONTROLPLANE_DB_STORAGE (e.g. =100Gi to mirror production). database.replicas
+# and database.storageSize are immutable after creation (the mariadb-operator
+# rejects resizing a live volume).
 #
 # The projected Keystone is exposed externally via the shared Envoy Gateway
 # (services.keystone.gateway), so it is reachable from the host at
@@ -56,18 +49,6 @@ metadata:
   namespace: openstack
 spec:
   openStackRelease: "2025.2"
-  # Pin the projected backing services to a single instance for the single-node
-  # kind cluster (see the note above). Only replicas is set here; the c5c3-operator
-  # defaulting webhook fills database.clusterRef/database/secretRef and
-  # cache.clusterRef/backend, exactly as it does for the omitted fields listed
-  # above. deploy-infra overrides these from CONTROLPLANE_DB_REPLICAS /
-  # CONTROLPLANE_CACHE_REPLICAS when WITH_CONTROLPLANE_CR=true.
-  infrastructure:
-    database:
-      replicas: 1
-      storageSize: 512Mi
-    cache:
-      replicas: 1
   services:
     keystone:
       # Expose the projected Keystone externally through the shared Envoy Gateway,
@@ -86,9 +67,8 @@ spec:
       # injects spec.services.keystone.publicEndpoint carrying the host port so
       # Keystone advertises the reachable URL in its catalog.
     # Horizon: the c5c3-operator projects a Horizon CR once the Keystone child is
-    # Ready (HorizonReady joins the aggregate chain after KeystoneReady). Its
-    # replica count is pinned to 1 under spec.sizing.horizon for the single-node
-    # kind cluster. The dashboard is exposed
+    # Ready (HorizonReady joins the aggregate chain after KeystoneReady). The
+    # Minimal profile runs one dashboard replica. The dashboard is exposed
     # externally through the SAME shared Envoy Gateway as Keystone via a second
     # HTTPS listener the kind overlay adds for horizon.127-0-0-1.nip.io
     # (deploy/kind/base/openstack-gateway.yaml); the horizon-operator attaches an
@@ -103,10 +83,6 @@ spec:
         parentRef:
           name: openstack-gw
         hostname: horizon.127-0-0-1.nip.io
+  # One small node: see the note above.
   sizing:
-    keystone:
-      api:
-        replicas: 1
-    horizon:
-      api:
-        replicas: 1
+    profile: Minimal

@@ -3,14 +3,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify hack/deploy-infra.sh `render_controlplane_replicas` pins the projected
-# backing-service footprint from CONTROLPLANE_DB_REPLICAS / CONTROLPLANE_CACHE_REPLICAS
-# / CONTROLPLANE_DB_STORAGE and rejects an invalid footprint (non-numeric or < 1
+# Verify hack/deploy-infra.sh `render_controlplane_replicas` pins only the
+# backing-service fields whose knob is set (CONTROLPLANE_DB_REPLICAS /
+# CONTROLPLANE_CACHE_REPLICAS / CONTROLPLANE_DB_STORAGE), leaves the manifest
+# byte-identical when none is, and rejects an invalid footprint (non-numeric or < 1
 # replicas, the quorum-unsafe DB=2, or a malformed storage quantity) before the CR
-# is applied. Also guards that the checked-in bundled kind CR ships a single-node
-# topology (database.replicas=1, cache.replicas=1) with a test-sized volume
-# (database.storageSize=512Mi) so a laptop-sized single-node kind does not spin up a
-# 3-node Galera cluster or request a 100Gi volume it never fills.
+# is applied. Also guards that the checked-in bundled kind CR names
+# spec.sizing.profile: Minimal and pins none of the three fields, so the profile
+# gives a laptop-sized single-node kind one non-Galera MariaDB on a 512Mi volume
+# and one Memcached pod.
 #
 # Sources deploy-infra.sh and invokes the function in a subshell so we can assert
 # against a rendered tempfile without spinning up an actual cluster. The yq-backed
@@ -40,19 +41,20 @@ FIXTURE_CONTROLPLANE_NAME="controlplane"
 
 # Source the script and call render_controlplane_replicas in a subshell with the
 # given DB/cache replica values and DB storage size, mutating <manifest> in place.
-# The storage arg is optional (defaults to the single-node 512Mi) so the replica-only
-# call sites stay unchanged. Echoes combined output and returns the function's exit
-# status. The subshell isolates env mutations and the BASH_SOURCE guard at the bottom
-# of deploy-infra.sh keeps main from running when sourced.
+# An empty or omitted value leaves that knob unset. Echoes combined output and
+# returns the function's exit status. The subshell isolates env mutations and the
+# BASH_SOURCE guard at the bottom of deploy-infra.sh keeps main from running when
+# sourced.
 run_render() {
   local manifest="$1"
-  local db="$2"
-  local cache="$3"
-  local storage="${4:-512Mi}"
+  local db="${2:-}"
+  local cache="${3:-}"
+  local storage="${4:-}"
   (
-    export CONTROLPLANE_DB_REPLICAS="${db}"
-    export CONTROLPLANE_CACHE_REPLICAS="${cache}"
-    export CONTROLPLANE_DB_STORAGE="${storage}"
+    unset CONTROLPLANE_DB_REPLICAS CONTROLPLANE_CACHE_REPLICAS CONTROLPLANE_DB_STORAGE
+    [ -n "${db}" ] && export CONTROLPLANE_DB_REPLICAS="${db}"
+    [ -n "${cache}" ] && export CONTROLPLANE_CACHE_REPLICAS="${cache}"
+    [ -n "${storage}" ] && export CONTROLPLANE_DB_STORAGE="${storage}"
     export CONTROLPLANE_NAME="${FIXTURE_CONTROLPLANE_NAME}"
     # shellcheck source=/dev/null
     source "$DEPLOY_INFRA_SH"
@@ -61,39 +63,36 @@ run_render() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: the checked-in bundled CR ships a single-node topology.
+# Test 1: the checked-in bundled CR names Minimal and pins nothing.
 # ---------------------------------------------------------------------------
 test_bundled_cr_is_single_node() {
-  echo "Test: bundled kind ControlPlane CR pins database/cache replicas to 1 and storage to 512Mi"
+  echo "Test: bundled kind ControlPlane CR names the Minimal profile and pins no backing service"
 
   if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (3 checks skipped)"
-    SKIP=$((SKIP + 3))
+    echo "  SKIP: yq not installed (4 checks skipped)"
+    SKIP=$((SKIP + 4))
     return
   fi
 
-  assert_eq "bundled CR database.replicas is 1" \
-    "1" \
+  assert_eq "bundled CR spec.sizing.profile is Minimal" \
+    "Minimal" \
+    "$(yq -r 'select(.kind == "ControlPlane") | .spec.sizing.profile' "$BUNDLED_CR")"
+  assert_eq "bundled CR leaves database.replicas to the profile" \
+    "null" \
     "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.replicas' "$BUNDLED_CR")"
-  assert_eq "bundled CR cache.replicas is 1" \
-    "1" \
+  assert_eq "bundled CR leaves cache.replicas to the profile" \
+    "null" \
     "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.cache.replicas' "$BUNDLED_CR")"
-  assert_eq "bundled CR database.storageSize is 512Mi" \
-    "512Mi" \
+  assert_eq "bundled CR leaves database.storageSize to the profile" \
+    "null" \
     "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.storageSize' "$BUNDLED_CR")"
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: default footprint (both = 1) rewrites to integer 1/1.
+# Test 2: with no knob set the manifest is left byte-identical.
 # ---------------------------------------------------------------------------
 test_default_footprint() {
-  echo "Test: render_controlplane_replicas with 1/1/512Mi yields replicas 1/1 and storage 512Mi"
-
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (5 checks skipped)"
-    SKIP=$((SKIP + 5))
-    return
-  fi
+  echo "Test: render_controlplane_replicas with no knob set leaves the manifest unchanged"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -102,25 +101,65 @@ test_default_footprint() {
   cp "$BUNDLED_CR" "$out"
 
   local exit_code
-  run_render "$out" "1" "1" "512Mi" >/dev/null
+  run_render "$out" >/dev/null
   exit_code=$?
 
-  assert_eq "render exits 0 for 1/1/512Mi" "0" "$exit_code"
-  assert_eq "database.replicas is 1" \
-    "1" \
-    "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.replicas' "$out")"
-  # `... | tag` reports the node type; integer keeps the CRD schema happy.
-  assert_eq "database.replicas stays an integer node" \
-    "!!int" \
-    "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.replicas | tag' "$out")"
-  assert_eq "database.storageSize is 512Mi" \
-    "512Mi" \
-    "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.storageSize' "$out")"
-  # storageSize must stay a string node — an unquoted 512Mi is fine, but the CRD
-  # types it as string, so guard the node kind explicitly.
-  assert_eq "database.storageSize stays a string node" \
-    "!!str" \
-    "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.storageSize | tag' "$out")"
+  assert_eq "render exits 0 with no knob set" "0" "$exit_code"
+  if cmp -s "$BUNDLED_CR" "$out"; then
+    echo "  PASS: the rendered copy is byte-identical to the bundled CR"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: the rendered copy differs from the bundled CR"
+    diff "$BUNDLED_CR" "$out" | head -20
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Test 2b: each knob set alone pins its own field and nothing else.
+# ---------------------------------------------------------------------------
+test_single_knob_pins_only_its_field() {
+  echo "Test: each knob set alone pins its own field and nothing else"
+
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed (15 checks skipped)"
+    SKIP=$((SKIP + 15))
+    return
+  fi
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  local out="$tmp/cr.yaml"
+
+  # knob|db|cache|storage|the field it pins|its value|its node tag
+  local row knob db cache storage field value tag other exit_code
+  for row in \
+    "CONTROLPLANE_DB_REPLICAS|3|||database.replicas|3|!!int" \
+    "CONTROLPLANE_CACHE_REPLICAS||2||cache.replicas|2|!!int" \
+    "CONTROLPLANE_DB_STORAGE|||100Gi|database.storageSize|100Gi|!!str"; do
+    IFS='|' read -r knob db cache storage field value tag <<<"$row"
+    cp "$BUNDLED_CR" "$out"
+
+    run_render "$out" "$db" "$cache" "$storage" >/dev/null
+    exit_code=$?
+
+    assert_eq "render exits 0 for ${knob}=${value} alone" "0" "$exit_code"
+    assert_eq "${knob} alone: ${field} is ${value}" \
+      "$value" \
+      "$(yq -r "select(.kind == \"ControlPlane\") | .spec.infrastructure.${field}" "$out")"
+    # `... | tag` reports the node type; the CRD schema types the replica
+    # counts as integers and storageSize as a string.
+    assert_eq "${knob} alone: ${field} is a ${tag} node" \
+      "$tag" \
+      "$(yq -r "select(.kind == \"ControlPlane\") | .spec.infrastructure.${field} | tag" "$out")"
+    for other in database.replicas cache.replicas database.storageSize; do
+      [ "$other" = "$field" ] && continue
+      assert_eq "${knob} alone: ${other} stays with the profile" \
+        "null" \
+        "$(yq -r "select(.kind == \"ControlPlane\") | .spec.infrastructure.${other}" "$out")"
+    done
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -130,8 +169,8 @@ test_ha_override() {
   echo "Test: render_controlplane_replicas with 3/2/100Gi projects a Galera-sized footprint"
 
   if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (4 checks skipped)"
-    SKIP=$((SKIP + 4))
+    echo "  SKIP: yq not installed (5 checks skipped)"
+    SKIP=$((SKIP + 5))
     return
   fi
 
@@ -155,6 +194,11 @@ test_ha_override() {
   assert_eq "database.storageSize is 100Gi (production-sized override)" \
     "100Gi" \
     "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.storageSize' "$out")"
+  # storageSize must stay a string node — an unquoted 100Gi is fine, but the CRD
+  # types it as string, so guard the node kind explicitly.
+  assert_eq "database.storageSize stays a string node" \
+    "!!str" \
+    "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.storageSize | tag' "$out")"
 }
 
 # ---------------------------------------------------------------------------
@@ -202,11 +246,18 @@ test_invalid_footprint_rejected() {
   output="$(run_render "$out" "1" "1" "512")"
   exit_code=$?
   assert_nonzero_exit "unit-less CONTROLPLANE_DB_STORAGE=512 exits non-zero" "$exit_code"
+
+  # The storage size is validated when it is the only knob set, too.
+  output="$(run_render "$out" "" "" "512MB")"
+  exit_code=$?
+  assert_nonzero_exit "CONTROLPLANE_DB_STORAGE=512MB alone exits non-zero" "$exit_code"
+  assert_contains "the storage-only error surfaces the offending value" \
+    "$output" "CONTROLPLANE_DB_STORAGE='512MB'"
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: main() wires the knobs — the function is called, the env vars are
-# declared with a single-node default, and they are documented in the preamble.
+# Test 5: main() wires the knobs — the function is called and the env vars are
+# declared with an empty default, so an unset knob leaves the field to the profile.
 # Static text checks keep this independent of stub plumbing.
 # ---------------------------------------------------------------------------
 test_main_wires_knobs() {
@@ -214,12 +265,12 @@ test_main_wires_knobs() {
 
   assert_file_contains "render_controlplane_replicas is called from main()" \
     "$DEPLOY_INFRA_SH" "render_controlplane_replicas "
-  assert_file_contains "CONTROLPLANE_DB_REPLICAS defaults to 1" \
-    "$DEPLOY_INFRA_SH" 'CONTROLPLANE_DB_REPLICAS="${CONTROLPLANE_DB_REPLICAS:-1}"'
-  assert_file_contains "CONTROLPLANE_CACHE_REPLICAS defaults to 1" \
-    "$DEPLOY_INFRA_SH" 'CONTROLPLANE_CACHE_REPLICAS="${CONTROLPLANE_CACHE_REPLICAS:-1}"'
-  assert_file_contains "CONTROLPLANE_DB_STORAGE defaults to 512Mi" \
-    "$DEPLOY_INFRA_SH" 'CONTROLPLANE_DB_STORAGE="${CONTROLPLANE_DB_STORAGE:-512Mi}"'
+  assert_file_contains "CONTROLPLANE_DB_REPLICAS defaults to unset" \
+    "$DEPLOY_INFRA_SH" 'CONTROLPLANE_DB_REPLICAS="${CONTROLPLANE_DB_REPLICAS:-}"'
+  assert_file_contains "CONTROLPLANE_CACHE_REPLICAS defaults to unset" \
+    "$DEPLOY_INFRA_SH" 'CONTROLPLANE_CACHE_REPLICAS="${CONTROLPLANE_CACHE_REPLICAS:-}"'
+  assert_file_contains "CONTROLPLANE_DB_STORAGE defaults to unset" \
+    "$DEPLOY_INFRA_SH" 'CONTROLPLANE_DB_STORAGE="${CONTROLPLANE_DB_STORAGE:-}"'
 }
 
 # ---------------------------------------------------------------------------
@@ -227,6 +278,7 @@ test_main_wires_knobs() {
 # ---------------------------------------------------------------------------
 test_bundled_cr_is_single_node
 test_default_footprint
+test_single_knob_pins_only_its_field
 test_ha_override
 test_invalid_footprint_rejected
 test_main_wires_knobs
