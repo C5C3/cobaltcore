@@ -8,8 +8,8 @@ description: >-
   under tests/, and reproduce it locally against a kind cluster. Use when a CI
   e2e job fails (build-e2e-images, e2e-infra, e2e-operator, e2e-chaos,
   e2e-prometheus, e2e-controlplane, e2e-controlplane-sso,
-  e2e-external-keystone, e2e-operator-upgrade, e2e-multicluster,
-  e2e-ovn-overlay, tempest), when a job died without logs, when asked to
+  e2e-external-keystone, e2e-autoscaling, e2e-operator-upgrade,
+  e2e-multicluster, e2e-ovn-overlay, tempest), when a job died without logs, when asked to
   debug a chainsaw suite, or when reproducing an e2e failure locally.
 ---
 
@@ -50,6 +50,7 @@ from `.github/workflows/ci.yaml` when it looks stale.
 | `e2e-controlplane` | self-hosted, 240m | the full ControlPlane with eight services (keystone, horizon, glance, placement, barbican, neutron with a standalone OVNCentral + OVNChassis + metadata agent, cinder on the kind NFS export and shared broker, nova with a fake compute), ten operators + K-ORC. Three sequential chainsaw steps, each its own invocation so failFast cannot cascade: `tests/e2e/c5c3/full-controlplane-keystone/`, then `keystone-service-foreign-namespace/` (`chainsaw-report-keystone-service`), then `keystone-service/` (`chainsaw-report-keystone-service-own-namespace`); `E2E_REQUIRE_CONTROLPLANE_STACK=true` turns presence-guard SKIPs into failures | dumps `OPERATOR=c5c3`, `cinder`, `nova` (all read the `openstack` namespace; the registration suites print their own evidence in `catch`) + `e2e-controlplane-junit-report` |
 | `e2e-controlplane-sso` | self-hosted, 90m | `tests/e2e-controlplane-sso/` (federated ControlPlane `controlplane-sso`: websso, Keycloak, OpenLDAP) on keystone + horizon + c5c3 + K-ORC, glance/placement CRDs only | dump `OPERATOR=c5c3` + `e2e-controlplane-sso-junit-report` |
 | `e2e-external-keystone` | self-hosted, 90m | `tests/e2e/c5c3/external-keystone/`: External-mode ControlPlanes against a plain SQLite Keystone the operators do not own | dump `OPERATOR=c5c3` + `e2e-external-keystone-junit-report` |
+| `e2e-autoscaling` | self-hosted, 190m | `tests/e2e-autoscaling/` (ControlPlane `cp-autoscaling` on `credentialsMode: Static`, seven database-backed services, no Horizon) with `WITH_METRICS_SERVER=true`, ten operators + K-ORC: token load scales Keystone 1 → 3 → 1, an eviction at the minimum, `check-connection-cap.sh` per child at its HPA maximum | the suite's test-level `catch` (HPAs, `kubectl top pods`, both Jobs' logs, MariaDB connections per user) + dump `OPERATOR=c5c3` and one `OPERATOR_ONLY=1` pass per service operator + `e2e-autoscaling-junit-report` |
 | `e2e-multicluster` | self-hosted, 90m | `make e2e-multicluster` over `tests/e2e-multicluster/`: `cobaltcore-target` runs the infrastructure (`INFRA_ONLY=true` + the `deploy/target-cluster/target-cluster-access` chart), `cobaltcore-mgmt` runs keystone, barbican, ovn and neutron operators, which reach the target only through the chart's token in Secret `cobaltcore-target` in `c5c3-clusters` | two dumps (management `OPERATOR=keystone`; target without `OPERATOR`) + `e2e-multicluster-junit-report` |
 | `e2e-ovn-overlay` | self-hosted, 60m, `continue-on-error` | `make e2e-ovn-overlay` over `tests/e2e-ovn-overlay/` (own config) on `hack/kind-config-multinode.yaml` (one control plane, two workers), ovn-operator only; needs openvswitch + geneve on the host | dump `OPERATOR=ovn` + `e2e-ovn-overlay-junit-report` |
 | `tempest (<service>, <release>, …)` | self-hosted; 150m nova, 120m cinder, 68m others | matrix from `hack/ci-generate-tempest-matrix.sh`: keystone glance barbican neutron cinder nova × every `releases/*/`; the job's own steps apply the CRs from `tests/tempest/<svc>-<slug>/` and `kubectl wait` each, then `hack/ci-run-tempest.sh`. Runs only after e2e-infra, e2e-operator, e2e-chaos and e2e-prometheus finished without failure. The job name carries every matrix value | `tempest-<service>-<release>-results` (`tempest-results.xml` has the tracebacks the job log omits, `port-forward-<Svc>.log`; `tempest.conf` excluded — admin password) + dump `OPERATOR=keystone` (+ one `OPERATOR_ONLY=1` pass per compute-stack operator on nova/cinder) |
@@ -214,8 +215,8 @@ What a laptop can host decides the method:
 Family-specific constraints:
 
 - `make e2e-chaos` / `e2e-prometheus` / `e2e-controlplane` /
-  `e2e-controlplane-sso` carry preflights that name the missing opt-in —
-  trust their remediation hint.
+  `e2e-controlplane-sso` / `e2e-autoscaling` carry preflights that name the
+  missing opt-in — trust their remediation hint.
 - `make e2e-operator-upgrade` must run against a cluster **without** a
   pre-deployed keystone-operator (the suite installs the released baseline).
 - `e2e-multicluster` needs the two-cluster stack first:
@@ -324,7 +325,8 @@ means the pattern has no log signature and is recognised by hand.
   suite must also join a `test_dirs` list in ci.yaml. Suites that need a
   different cluster shape live outside `tests/e2e/` on purpose
   (`tests/e2e-multicluster/`, `tests/e2e-controlplane-sso/`,
-  `tests/e2e-operator-upgrade/`, `tests/e2e-ovn-overlay/`): `make e2e` and the
+  `tests/e2e-autoscaling/`, `tests/e2e-operator-upgrade/`,
+  `tests/e2e-ovn-overlay/`): `make e2e` and the
   `e2e-operator` legs sweep `tests/e2e/`.
 - A new known pattern goes into both places: a row in the tables above and,
   when the log carries a stable literal, a `SIGNATURES` row under the same

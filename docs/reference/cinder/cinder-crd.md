@@ -45,7 +45,7 @@ part of this spec. Volume backends attach through
 | `dbPurge` | [`DBPurgeSpec`](#dbpurgespec) | no | The recurring purge of the rows Cinder only soft-deletes. A nil block resolves exactly like an empty one: 30 days of retention, daily at `1 0 * * *`, not suspended |
 | `gateway` | `GatewaySpec` | no | External exposure through a Gateway API HTTPRoute on port 8776; requires `hostname` and `parentRef.name`. Setting it requires `keystoneEndpoint` (CEL rule): without it the API renders `auth_strategy = noauth`, so a Gateway would publish every volume operation unauthenticated |
 | `networkPolicy` | `NetworkPolicySpec` | no | Ingress restricted to TCP 8776 from the listed sources; egress auto-derived (DNS, database, cache, Keystone, Glance, Barbican, the broker port and the NFS exports). At least one ingress source is required (fail-closed) |
-| `autoscaling` | `AutoscalingSpec` | no | HPA bounds and CPU/memory utilization targets. It reaches the API Deployment alone |
+| `autoscaling` | `AutoscalingSpec` | no | HPA bounds, CPU/memory utilization targets and scaling behavior. It reaches the API Deployment alone |
 | `logging` | `LoggingSpec` | no | oslo.log derivation: `format` (`text`/`json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook to `text`/`INFO`/`debug: false` |
 | `policyOverrides` | `PolicySpec` | no | Custom oslo.policy rules. A CEL rule requires at least one of `rules` or `configMapRef`; when set, the operator renders `policy.yaml` and wires `[oslo_policy] policy_file` |
 | `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for options with no dedicated field. See [extraConfig](#extraconfig) |
