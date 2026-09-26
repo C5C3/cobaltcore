@@ -18,6 +18,11 @@
 # the hourly database dump off a node that is already running the whole
 # ControlPlane chain.
 #
+# The two databases and northd request 50m CPU, half the operator's 100m
+# default, so the central fits the node budget Link 6z enforces. Memory is not
+# named, so each database keeps the operator's 256Mi Raft floor and northd its
+# own default.
+#
 # The issuer is the cluster-scoped one the kind overlay ships
 # (deploy/flux-system/infrastructure/ovn-ca-issuer.yaml). OVN authenticates every
 # connection, so both databases and the client identity the Neutron pods mount
@@ -33,10 +38,19 @@ spec:
       name: openstack-ovn-ca-issuer
   northbound:
     replicas: 1
+    resources:
+      requests:
+        cpu: 50m
   southbound:
     replicas: 1
+    resources:
+      requests:
+        cpu: 50m
   northd:
     deployment:
       replicas: 1
+      resources:
+        requests:
+          cpu: 50m
   backup:
     suspend: true
