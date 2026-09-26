@@ -296,6 +296,7 @@ export default defineConfig({
               { text: 'dizzy Chaos Testing', link: '/reference/testing/dizzy-chaos-testing' },
               { text: 'Tempest Test Infrastructure', link: '/reference/testing/tempest-test-infrastructure' },
               { text: 'Reconcile Performance Benchmark', link: '/reference/testing/reconcile-performance-benchmark' },
+              { text: 'Sizing Calibration', link: '/reference/testing/sizing-calibration' },
             ],
           },
           {

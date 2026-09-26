@@ -2079,7 +2079,9 @@ recommender ships as a separate opt-in kind overlay. Neither the default
 `make deploy-infra` flow nor the production `deploy/flux-system/` overlay
 installs it.
 
-Its only consumer is the sizing measurement. `hack/ci-vpa-recommendations.sh`
+Its only consumer is the
+[sizing measurement](../testing/sizing-calibration.md).
+`hack/ci-vpa-recommendations.sh`
 creates a VPA with `updateMode: "Off"` for every workload in the `openstack`
 namespace and records the recommender's CPU and memory targets. The
 `ci:measure-sizing` label runs that measurement in CI (see the
