@@ -85,7 +85,7 @@ label asks for the rest.
 
 ### Labels
 
-Five labels add jobs. None of them ever removes one.
+Six labels add jobs. None of them ever removes one.
 
 | Label | Schedules |
 | --- | --- |
@@ -94,6 +94,7 @@ Five labels add jobs. None of them ever removes one.
 | `ci:chaos` | both `e2e-chaos` legs. `run-chaos` is an alias |
 | `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling` |
 | `ci:multicluster` | `e2e-multicluster` |
+| `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all twelve Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
 
 The `labeled` trigger means a label applied after the last push starts a run that
 evaluates the new label set. A label outside this set resolves to nothing: the
@@ -104,6 +105,25 @@ concurrency group of its own so it does not cancel the pipeline in flight. See
 On a `v*` tag push every flag is forced on. On a push to `main` the operator
 matrix keeps its publish semantics, driven by the `publish_legacy` class, so what
 a merge publishes is unchanged.
+
+### Sizing measurement
+
+The `ci:measure-sizing` label makes the `changes` job emit
+`measure-sizing=true`. `e2e-controlplane`, `e2e-controlplane-sso` and every
+`tempest` leg then record what a VerticalPodAutoscaler recommender recommends
+for the workloads in `openstack`, using four additions to the job:
+
+| Addition | What it does |
+| --- | --- |
+| `WITH_VPA` on `Setup E2E infrastructure` | `true` under the label, empty otherwise. `hack/deploy-infra.sh` installs metrics-server and the recommender of `deploy/kind/vpa`, and removes the MariaDB CRD's scale subresource so the database StatefulSet can carry a VPA |
+| `Start the sizing measurement` | Right after the setup: starts `hack/ci-vpa-recommendations.sh watch _output/sizing openstack` in the background. The watch applies an `updateMode: "Off"` VPA for every workload and saves each recommendation once a minute, so a workload a suite deletes keeps its last one |
+| `Collect the sizing measurement` | After the last suite step, `always()`: stops the watch, takes a last snapshot and writes `recommendations.tsv` and `recommendations.md`, printing the table to the log. It fails the job when nothing was recorded; `gh run rerun --failed` repeats such a leg. The tempest legs set `MEASURE_LEG=<service>-<release>` for the TSV's comment line |
+| `Upload the sizing measurement` | `always()`: uploads `_output/sizing/` as `sizing-e2e-controlplane`, `sizing-e2e-controlplane-sso` or `sizing-tempest-<service>-<release>`, kept 14 days |
+
+Without the label the three steps skip and the banner of the setup step prints
+`VPA recommender    : false`. The node budget of Link 6z leaves the
+metrics-server and recommender pods out, since the devstack it measures
+installs neither.
 
 ## Environment Variables
 
@@ -1288,6 +1308,11 @@ foreign-namespace pass, and the 90-minute ceiling of the last suite; the
 bring-up and foreign-namespace terms are estimates, so confirm them against the
 first green run of the leg and re-derive the wall if either overruns.
 
+Under `ci:measure-sizing` the job runs the
+[sizing measurement](#sizing-measurement): the watch starts after
+`Setup E2E infrastructure`, and the collect and upload steps follow
+`Run own-namespace registration E2E test` and publish `sizing-e2e-controlplane`.
+
 ### e2e-controlplane-sso
 
 Runs the `tests/e2e-controlplane-sso/` Chainsaw suite: the end-user SSO
@@ -1323,10 +1348,13 @@ one under review — which is why the `e2e_controlplane` path filter also watche
 | 3 | `load-e2e-images` composite | Restores `keystone-operator:dev`, `c5c3-operator:dev`, `keystone:2025.2`, `tempest:2025.2` from GHCR |
 | 4 | `kind load docker-image` | Loads the four images into kind |
 | 5 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=controlplane-keystone` |
+| 5a | Start the sizing measurement *(`ci:measure-sizing` only)* | Starts the background watch of [Sizing measurement](#sizing-measurement); step 5 then also carries `WITH_VPA` |
 | 6 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit; runs with `GITHUB_TOKEN` so the clone from `github.com` is authenticated (see [hack/ci-build-service-image.sh](#hack-ci-build-service-image-sh) for why) |
 | 7 | `hack/ci-deploy-operator.sh` (keystone) | Deploys the keystone-operator dev image into `keystone-system` |
 | 8 | `hack/ci-deploy-operator.sh` (c5c3) | Deploys the c5c3-operator dev image into `c5c3-system` |
 | 9 | `chainsaw test` | Runs the full-chain suite with `E2E_REQUIRE_CONTROLPLANE_STACK=true` |
+| 9a | Collect the sizing measurement (always) *(`ci:measure-sizing` only)* | Stops the watch and writes the report |
+| 9b | Upload the sizing measurement (always) *(`ci:measure-sizing` only)* | Uploads `_output/sizing/` as `sizing-e2e-controlplane-sso` (14-day retention) |
 | 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostics with `OPERATOR=c5c3` |
 | 11 | Upload JUnit report | Uploads `_output/reports/` as `e2e-controlplane-junit-report` (14-day retention) |
 | 12 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
@@ -1474,6 +1502,7 @@ with, see
 | 7 | `kind load docker-image` *(neutron leg only)* | Loads the two operator images, the neutron and OVN service images, and the tempest image the catalog Job runs in-cluster |
 | 8 | `kind load docker-image` *(nova and cinder legs)* | Loads the eight compute-stack refs both legs share in one call, so the layers the service images and the operator images each share are saved and imported once; each leg's glance pair and tempest image come from a step above, the cinder leg's from its own and the nova leg's from the glance one |
 | 9 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack. `WITH_MESSAGING` is set on the cinder and nova legs, `WITH_NFS` on the cinder leg and `WITH_OVN_KERNEL_MODULES` on the nova leg |
+| 9a | Start the sizing measurement *(`ci:measure-sizing` only)* | Starts the background watch of [Sizing measurement](#sizing-measurement); step 9 then also carries `WITH_VPA` |
 | 10 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
 | 11 | `hack/ci-deploy-operator.sh` ×2 *(neutron, nova and cinder legs)* | Deploys the ovn-operator into `ovn-system` and the neutron-operator into `neutron-system`; a Neutron never reaches Ready without a live OVNCentral, and all three legs run one |
 | 12 | `hack/ci-deploy-operator.sh` ×2 *(nova and cinder legs)* | Deploys the placement- and nova-operator, each into its own `<op>-system` Namespace; the glance-, ovn- and neutron-operator both legs also need come from the steps above |
@@ -1499,6 +1528,8 @@ with, see
 | 32 | Seed the flavors *(nova and cinder legs)* | Applies `*-flavor-seed-job.yaml` and waits 300 s for the `<matrix.service>-tempest-flavor-seed` Job; `tempest.conf` pins `[compute] flavor_ref` and `flavor_ref_alt` to the two ids it creates |
 | 33 | `hack/ci-run-tempest.sh` | Runs Tempest API tests with `CONFIG_DIR=matrix.config-dir`, `SERVICE_K8S_NAME=matrix.service-k8s-name`, and on the neutron, cinder and nova legs `NEUTRON_K8S_NAME=matrix.neutron-cr-name` (empty elsewhere, which disables the 9696 port-forward). The cinder leg adds `CINDER_K8S_NAME=matrix.cinder-cr-name`, `GLANCE_K8S_NAME=matrix.glance-cr-name` and `TEMPEST_CONCURRENCY=matrix.tempest-concurrency`; the script's optional-target row `Cinder:CINDER_K8S_NAME:8776:/healthcheck` turns the filled name into an 8776 port-forward polled on `/healthcheck`. Both compute-stack legs add `NOVA_K8S_NAME=matrix.nova-cr-name`, whose row `Nova:NOVA_K8S_NAME:8774:/` forwards 8774 and polls `/`, since Nova serves no `/healthcheck`, and `PLACEMENT_K8S_NAME=matrix.placement-cr-name`, whose row forwards 8778 and polls `/` for the same reason — both legs register a placement endpoint in their catalog and declare the service available, so the name has to resolve inside the container; the nova leg also sets `NOVA_CONSOLE_K8S_NAME=<matrix.nova-cr-name>-novncproxy`, whose row forwards 6080 and polls `/vnc_lite.html` for `test_novnc_bad_token` |
 | 34 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
+| 34a | Collect the sizing measurement (always) *(`ci:measure-sizing` only)* | Stops the watch and writes the report, with `MEASURE_LEG=<service>-<release>` |
+| 34b | Upload the sizing measurement (always) *(`ci:measure-sizing` only)* | Uploads `_output/sizing/` as `sizing-tempest-<service>-<release>` (14-day retention) |
 | 35 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
 | 36 | `hack/ci-dump-diagnostics.sh` ×5 or ×6 (always) *(nova and cinder legs)* | One `OPERATOR_ONLY=1` pass per extra operator: `nova`, `placement`, `ovn`, `neutron`, `glance`, and `cinder` on the cinder legs |
 | 37 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
@@ -2023,6 +2054,13 @@ Usage in a workflow job:
 The action takes no inputs. All configuration is handled by existing Makefile targets and
 environment variables.
 
+The `Deploy infrastructure stack` step threads the opt-in flags `WITH_CHAOS_MESH`,
+`WITH_PROMETHEUS`, `WITH_OVN_KERNEL_MODULES`, `WITH_NFS`, `WITH_METRICS_SERVER`,
+`WITH_VPA` and `WITH_MESSAGING` from the calling step's `env`; an unset flag
+reaches `hack/deploy-infra.sh` empty and takes its `false` default.
+`WITH_VPA=true` implies `WITH_METRICS_SERVER=true` inside the script, whatever
+the calling step sets.
+
 ## Composite Action: load-e2e-images
 
 `.github/actions/load-e2e-images/action.yaml`
@@ -2324,6 +2362,7 @@ The CI workflow depends on the following artifacts:
 | `hack/ci-deploy-korc.sh` | `e2e-operator` (c5c3 leg), `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone` jobs | Applies K-ORC from an authenticated clone at the pinned commit |
 | `hack/ci-deploy-operator.sh` | `e2e-operator`, `e2e-chaos`, `tempest`, `e2e-controlplane` jobs | Deploys operator via Helm; `e2e-controlplane` sets `OPERATOR_REPLICAS=1` |
 | `hack/ci-check-node-budget.sh` | `e2e-controlplane` job, through the full-chain suite's Link 6z | Fails when the pods on the kind node request more than 4000m CPU or 16Gi memory |
+| `hack/ci-vpa-recommendations.sh` | `e2e-controlplane`, `e2e-controlplane-sso`, `tempest` jobs under `ci:measure-sizing` | Records the VPA recommendations of the `openstack` workloads for the [sizing measurement](#sizing-measurement) |
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests |
 | `.github/actions/setup-test-deps/` | `chainsaw-lint` job, `setup-e2e-infra` composite action | Composite action for testdeps cache + `make install-test-deps` |
 | `.github/actions/setup-e2e-infra/` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Composite action for infra setup |

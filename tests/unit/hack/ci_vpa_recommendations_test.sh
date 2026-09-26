@@ -20,7 +20,10 @@
 #     millicores and MiB, reads --processes/--threads/--n-threads, writes "-"
 #     for what is unset, and prints the Markdown table;
 #   - report exits 1 without a snapshot and 2 on a malformed one, and a usage
-#     error exits 2 with the usage text.
+#     error exits 2 with the usage text;
+#   - e2e-controlplane, e2e-controlplane-sso and tempest pass WITH_VPA from the
+#     ci:measure-sizing label and start, collect and upload the measurement
+#     around their suites.
 #
 # Usage: bash tests/unit/hack/ci_vpa_recommendations_test.sh
 
@@ -29,6 +32,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VPA_SH="$PROJECT_ROOT/hack/ci-vpa-recommendations.sh"
+CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 PASS=0
 FAIL=0
@@ -519,6 +523,72 @@ test_usage_errors() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 10: the three measurement jobs wire the script
+# ---------------------------------------------------------------------------
+
+# step_index <step names, one per line> <name> — the 1-based position of the
+# first step with that name, or nothing.
+step_index() {
+  printf '%s\n' "$1" | awk -v n="$2" '$0 == n {print NR; exit}'
+}
+
+test_wiring() {
+  echo "Test: e2e-controlplane, e2e-controlplane-sso and tempest wire the measurement"
+
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed (28 checks skipped)"
+    SKIP=$((SKIP + 28))
+    return
+  fi
+
+  local job last artifact steps idx_setup idx_start idx_last idx_collect idx_upload idx_dump
+  local gate="needs.changes.outputs.measure-sizing == 'true'"
+  for job in e2e-controlplane e2e-controlplane-sso tempest; do
+    case "$job" in
+      e2e-controlplane)
+        last="Run own-namespace registration E2E test"
+        artifact="sizing-e2e-controlplane" ;;
+      e2e-controlplane-sso)
+        last="Run federated ControlPlane E2E test"
+        artifact="sizing-e2e-controlplane-sso" ;;
+      tempest)
+        last="Upload Tempest results"
+        artifact='sizing-tempest-${{ matrix.service }}-${{ matrix.release }}' ;;
+    esac
+    steps="$(yq -r ".jobs[\"$job\"].steps[].name // \"-\"" "$CI_YAML")"
+    idx_setup="$(step_index "$steps" "Setup E2E infrastructure")"
+    idx_start="$(step_index "$steps" "Start the sizing measurement")"
+    idx_last="$(step_index "$steps" "$last")"
+    idx_collect="$(step_index "$steps" "Collect the sizing measurement")"
+    idx_upload="$(step_index "$steps" "Upload the sizing measurement")"
+    idx_dump="$(step_index "$steps" "Dump diagnostic info")"
+
+    assert_eq "$job: setup passes WITH_VPA from the label" \
+      "\${{ $gate && 'true' || '' }}" \
+      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Setup E2E infrastructure\") | .env.WITH_VPA" "$CI_YAML")"
+    assert_eq "$job: the start step follows the setup step" "$((idx_setup + 1))" "${idx_start:-none}"
+    assert_eq "$job: the collect step follows the last suite step" "$((idx_last + 1))" "${idx_collect:-none}"
+    assert_eq "$job: the upload step follows the collect step" "$((idx_collect + 1))" "${idx_upload:-none}"
+    assert_eq "$job: the diagnostics dump follows the upload step" "$((idx_upload + 1))" "${idx_dump:-none}"
+    assert_eq "$job: the start step runs only under the label" "$gate" \
+      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Start the sizing measurement\") | .if" "$CI_YAML")"
+    assert_eq "$job: collect and upload run always under the label" \
+      "always() && $gate always() && $gate " \
+      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Collect the sizing measurement\" or .name == \"Upload the sizing measurement\") | .if" "$CI_YAML" | tr '\n' ' ')"
+    assert_eq "$job: the artifact name" "$artifact" \
+      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Upload the sizing measurement\") | .with.name" "$CI_YAML")"
+    assert_eq "$job: the artifact is kept 14 days" "14" \
+      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Upload the sizing measurement\") | .with[\"retention-days\"]" "$CI_YAML")"
+  done
+
+  assert_eq "only the tempest leg names MEASURE_LEG" \
+    'null null ${{ matrix.service }}-${{ matrix.release }} ' \
+    "$(for job in e2e-controlplane e2e-controlplane-sso tempest; do
+         yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Collect the sizing measurement\") | .env.MEASURE_LEG" "$CI_YAML"
+       done | tr '\n' ' ')"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 if [ -z "$JQ_BIN" ]; then
@@ -535,6 +605,7 @@ else
   test_report_errors
   test_usage_errors
 fi
+test_wiring
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

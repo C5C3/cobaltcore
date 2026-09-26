@@ -51,9 +51,11 @@ jobs:
   # loads, the suite it runs, the scripts it calls. Nothing runs because Go code
   # changed somewhere else.
   #
-  # Five labels add to that, and never subtract: ci:full runs everything,
+  # Six labels add to that, and never subtract: ci:full runs everything,
   # ci:tempest / ci:chaos / ci:controlplane / ci:multicluster switch on one area
-  # each. run-chaos is kept as an alias of ci:chaos.
+  # each, and ci:measure-sizing runs the VPA sizing measurement in
+  # e2e-controlplane, e2e-controlplane-sso and every Tempest leg. run-chaos is
+  # kept as an alias of ci:chaos.
   #
   # A change to the substrate every e2e job stands on (deploy/**, the infra
   # scripts, the shared composite actions) or to the workflow plumbing runs a
@@ -88,6 +90,7 @@ jobs:
       e2e-ovn-overlay: ${{ steps.result.outputs.e2e-ovn-overlay }}
       e2e-operator-upgrade: ${{ steps.result.outputs.e2e-operator-upgrade }}
       tempest: ${{ steps.result.outputs.tempest }}
+      measure-sizing: ${{ steps.result.outputs.measure-sizing }}
       actionlint: ${{ steps.result.outputs.actionlint }}
       changed-operators: ${{ steps.result.outputs.changed-operators }}
       changed-services: ${{ steps.result.outputs.changed-services }}
@@ -2529,6 +2532,18 @@ jobs:
           # node; that tunnel needs the openvswitch and geneve modules on the
           # runner host, which deploy-infra.sh modprobes under this switch.
           WITH_OVN_KERNEL_MODULES: "true"
+          # The ci:measure-sizing label installs the VPA recommender (and with
+          # it metrics-server) for the sizing measurement; empty otherwise.
+          WITH_VPA: ${{ needs.changes.outputs.measure-sizing == 'true' && 'true' || '' }}
+      # The sizing measurement of the ci:measure-sizing label
+      # (docs/reference/testing/sizing-calibration.md): a snapshot of the VPA
+      # recommendations for every workload in `openstack` once a minute, so a
+      # workload a suite deletes keeps its last recommendation. The background
+      # process outlives this step and runs until the collect step below stops
+      # it.
+      - name: Start the sizing measurement
+        if: needs.changes.outputs.measure-sizing == 'true'
+        run: mkdir -p _output/sizing && nohup hack/ci-vpa-recommendations.sh watch _output/sizing openstack >_output/sizing/watch.log 2>&1 &
       # Deploy K-ORC (CRDs + controller) from the upstream installer at the tag
       # pinned in deploy/flux-system/sources/k-orc.yaml.
       - name: Deploy K-ORC
@@ -2664,6 +2679,24 @@ jobs:
             tests/e2e/c5c3/keystone-service/
         env:
           E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      # Stops the watch, takes a last snapshot and writes the report. A
+      # failing last snapshot still reports what the watch recorded; a run
+      # that recorded nothing fails here and is re-run with
+      # `gh run rerun --failed`.
+      - name: Collect the sizing measurement
+        if: always() && needs.changes.outputs.measure-sizing == 'true'
+        run: |
+          kill "$(cat _output/sizing/watch.pid)" || true
+          hack/ci-vpa-recommendations.sh snapshot _output/sizing openstack ||
+            echo "::warning::the final sizing snapshot failed; reporting the watch's snapshots"
+          hack/ci-vpa-recommendations.sh report _output/sizing
+      - name: Upload the sizing measurement
+        if: always() && needs.changes.outputs.measure-sizing == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sizing-e2e-controlplane
+          path: _output/sizing/
+          retention-days: 14
       - name: Dump diagnostic info
         if: always()
         run: hack/ci-dump-diagnostics.sh
@@ -2775,6 +2808,18 @@ jobs:
           CONTROLPLANE_OPERATORS: external
           CONTROLPLANE_NAME: controlplane-sso
           WITH_CONTROLPLANE_CR: "false"
+          # The ci:measure-sizing label installs the VPA recommender (and with
+          # it metrics-server) for the sizing measurement; empty otherwise.
+          WITH_VPA: ${{ needs.changes.outputs.measure-sizing == 'true' && 'true' || '' }}
+      # The sizing measurement of the ci:measure-sizing label
+      # (docs/reference/testing/sizing-calibration.md): a snapshot of the VPA
+      # recommendations for every workload in `openstack` once a minute, so a
+      # workload a suite deletes keeps its last recommendation. The background
+      # process outlives this step and runs until the collect step below stops
+      # it.
+      - name: Start the sizing measurement
+        if: needs.changes.outputs.measure-sizing == 'true'
+        run: mkdir -p _output/sizing && nohup hack/ci-vpa-recommendations.sh watch _output/sizing openstack >_output/sizing/watch.log 2>&1 &
       - name: Deploy K-ORC
         env:
           # Authenticates the K-ORC clone from github.com; see the script.
@@ -2816,6 +2861,24 @@ jobs:
             tests/e2e-controlplane-sso/
         env:
           E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      # Stops the watch, takes a last snapshot and writes the report. A
+      # failing last snapshot still reports what the watch recorded; a run
+      # that recorded nothing fails here and is re-run with
+      # `gh run rerun --failed`.
+      - name: Collect the sizing measurement
+        if: always() && needs.changes.outputs.measure-sizing == 'true'
+        run: |
+          kill "$(cat _output/sizing/watch.pid)" || true
+          hack/ci-vpa-recommendations.sh snapshot _output/sizing openstack ||
+            echo "::warning::the final sizing snapshot failed; reporting the watch's snapshots"
+          hack/ci-vpa-recommendations.sh report _output/sizing
+      - name: Upload the sizing measurement
+        if: always() && needs.changes.outputs.measure-sizing == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sizing-e2e-controlplane-sso
+          path: _output/sizing/
+          retention-days: 14
       - name: Dump diagnostic info
         if: always()
         run: hack/ci-dump-diagnostics.sh
@@ -3721,6 +3784,18 @@ jobs:
           # this switch. The cinder leg deploys no chassis, so it leaves the
           # host's modules alone.
           WITH_OVN_KERNEL_MODULES: ${{ matrix.service == 'nova' && 'true' || '' }}
+          # The ci:measure-sizing label installs the VPA recommender (and with
+          # it metrics-server) for the sizing measurement; empty otherwise.
+          WITH_VPA: ${{ needs.changes.outputs.measure-sizing == 'true' && 'true' || '' }}
+      # The sizing measurement of the ci:measure-sizing label
+      # (docs/reference/testing/sizing-calibration.md): a snapshot of the VPA
+      # recommendations for every workload in `openstack` once a minute, so a
+      # workload a suite deletes keeps its last recommendation. The background
+      # process outlives this step and runs until the collect step below stops
+      # it.
+      - name: Start the sizing measurement
+        if: needs.changes.outputs.measure-sizing == 'true'
+        run: mkdir -p _output/sizing && nohup hack/ci-vpa-recommendations.sh watch _output/sizing openstack >_output/sizing/watch.log 2>&1 &
       # Use shared operator deployment script.
       - name: Deploy operator (keystone)
         run: hack/ci-deploy-operator.sh
@@ -4134,6 +4209,26 @@ jobs:
           path: |
             _output/tempest/
             !_output/tempest/config/tempest.conf
+          retention-days: 14
+      # Stops the watch, takes a last snapshot and writes the report. A
+      # failing last snapshot still reports what the watch recorded; a run
+      # that recorded nothing fails here and is re-run with
+      # `gh run rerun --failed`.
+      - name: Collect the sizing measurement
+        if: always() && needs.changes.outputs.measure-sizing == 'true'
+        env:
+          MEASURE_LEG: ${{ matrix.service }}-${{ matrix.release }}
+        run: |
+          kill "$(cat _output/sizing/watch.pid)" || true
+          hack/ci-vpa-recommendations.sh snapshot _output/sizing openstack ||
+            echo "::warning::the final sizing snapshot failed; reporting the watch's snapshots"
+          hack/ci-vpa-recommendations.sh report _output/sizing
+      - name: Upload the sizing measurement
+        if: always() && needs.changes.outputs.measure-sizing == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sizing-tempest-${{ matrix.service }}-${{ matrix.release }}
+          path: _output/sizing/
           retention-days: 14
       # Use shared diagnostic dump script.
       - name: Dump diagnostic info

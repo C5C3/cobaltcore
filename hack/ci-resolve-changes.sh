@@ -13,7 +13,9 @@
 #
 # Labels only ever ADD jobs. ci:full runs everything, ci:tempest / ci:chaos /
 # ci:controlplane / ci:multicluster switch on one area each. run-chaos is kept
-# as an alias of ci:chaos.
+# as an alias of ci:chaos. ci:measure-sizing, the sixth label, adds the VPA
+# sizing measurement to e2e-controlplane, e2e-controlplane-sso and every
+# Tempest leg.
 #
 # A `labeled` event for a label outside that set resolves to nothing at all
 # (noop=true), so adding a triage label to a pull request no longer cancels and
@@ -166,7 +168,7 @@ if [[ "${noop}" == "true" ]]; then
   for out in go docs helm target-cluster-chart has-e2e-operators e2e-infra \
     e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso \
     e2e-external-keystone e2e-autoscaling e2e-multicluster e2e-ovn-overlay \
-    e2e-operator-upgrade tempest changed-tempest changed-proxy \
+    e2e-operator-upgrade tempest measure-sizing changed-tempest changed-proxy \
     build-e2e-images actionlint; do
     emit "$out" false
   done
@@ -184,6 +186,13 @@ emit noop false
 # ---------------------------------------------------------------------------
 full=false
 has_label "ci:full" && full=true
+
+# ci:measure-sizing switches on the VPA sizing measurement
+# (hack/ci-vpa-recommendations.sh) and the three jobs it runs in:
+# e2e-controlplane, e2e-controlplane-sso and every Tempest leg. Neither ci:full
+# nor a tag push implies it, so the measurement runs only on request.
+measure=false
+has_label "ci:measure-sizing" && measure=true
 
 is_tag=false
 [[ "${GITHUB_REF:-}" == refs/tags/v* ]] && is_tag=true
@@ -291,11 +300,11 @@ cp_common=false
 if filter_on c5c3 || has_label "ci:controlplane"; then cp_common=true; fi
 
 cond="$cp_common"
-if filter_on tests_controlplane; then cond=true; fi
+if filter_on tests_controlplane || [[ "$measure" == "true" ]]; then cond=true; fi
 e2e_controlplane=$(or_force "$cond")
 
 cond="$cp_common"
-if filter_on tests_controlplane_sso; then cond=true; fi
+if filter_on tests_controlplane_sso || [[ "$measure" == "true" ]]; then cond=true; fi
 e2e_controlplane_sso=$(or_force "$cond")
 
 cond="$cp_common"
@@ -327,7 +336,7 @@ if filter_on tests_operator_upgrade || op_is_changed keystone; then cond=true; f
 e2e_operator_upgrade=$(or_force "$cond")
 
 cond=false
-if filter_on tempest_src || has_label "ci:tempest"; then cond=true; fi
+if filter_on tempest_src || has_label "ci:tempest" || [[ "$measure" == "true" ]]; then cond=true; fi
 tempest=$(or_force "$cond")
 
 cond=false
@@ -412,7 +421,7 @@ fi
 # the base images, the runner) exercises every leg; a config edit under
 # tests/tempest/<svc>-*/ narrows it to that service; the ci:tempest label
 # narrows it to the services the pull request touches, and falls back to
-# keystone when it touches none.
+# keystone when it touches none. ci:measure-sizing measures every leg.
 tempest_services=""
 if [[ "$tempest" == "true" ]]; then
   any_tempest_service_filter=false
@@ -420,7 +429,7 @@ if [[ "$tempest" == "true" ]]; then
     if filter_on "tempest_${svc}"; then any_tempest_service_filter=true; fi
   done
 
-  if [[ "$force" == "true" ]] || filter_on image_tempest || filter_on images_base ||
+  if [[ "$force" == "true" || "$measure" == "true" ]] || filter_on image_tempest || filter_on images_base ||
     { filter_on tempest_src && [[ "$any_tempest_service_filter" == "false" ]]; }; then
     tempest_services="$TEMPEST_ALL_SERVICES"
   else
@@ -471,6 +480,7 @@ emit e2e-multicluster "$e2e_multicluster"
 emit e2e-ovn-overlay "$e2e_ovn_overlay"
 emit e2e-operator-upgrade "$e2e_operator_upgrade"
 emit tempest "$tempest"
+emit measure-sizing "$measure"
 emit actionlint "$actionlint"
 
 emit changed-tempest "$changed_tempest"
