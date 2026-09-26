@@ -58,6 +58,11 @@
 #                        every other operator, whose charts do not expose the
 #                        value and whose additionalProperties:false values
 #                        schema rejects the unknown key.
+#   OPERATOR_REPLICAS  — Operator Deployment replica count, a positive integer
+#                        passed as --set replicas=<n>. Unset keeps the chart
+#                        default of 2. The e2e-controlplane job sets 1, so the
+#                        node budget of its full-chain suite counts one replica
+#                        per operator, as the kind devstack runs them.
 #
 # Reusable operator deployment script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -81,6 +86,12 @@ IMAGE_TAG="${IMAGE_TAG:-dev}"
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 FEDERATION_METADATA_ALLOW_CIDRS="${FEDERATION_METADATA_ALLOW_CIDRS:-}"
 BARBICAN_SECRET_STORE_GRANTS="${BARBICAN_SECRET_STORE_GRANTS:-}"
+OPERATOR_REPLICAS="${OPERATOR_REPLICAS:-}"
+# Checked before anything is applied, so an invalid count touches nothing.
+if [[ -n "${OPERATOR_REPLICAS}" ]] && [[ ! "${OPERATOR_REPLICAS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::OPERATOR_REPLICAS='${OPERATOR_REPLICAS}' is not a positive integer"
+  exit 1
+fi
 # dedicated release Namespace for the operator. The Keystone workload
 # CRs themselves are still reconciled in the `openstack` Namespace.
 NAMESPACE="${NAMESPACE:-keystone-system}"
@@ -139,6 +150,7 @@ fi
 # workflow YAML.
 echo "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to enable ServiceMonitor)"
 echo "Metadata allow CIDRs: ${FEDERATION_METADATA_ALLOW_CIDRS:-<none>} (set FEDERATION_METADATA_ALLOW_CIDRS to allow in-cluster IdP discovery)"
+echo "Operator replicas   : ${OPERATOR_REPLICAS:-<chart default>} (set OPERATOR_REPLICAS to override the chart's replicas)"
 helm_args=(
   --set "image.repository=${IMAGE_REPO}"
   --set "image.tag=${IMAGE_TAG}"
@@ -146,6 +158,9 @@ helm_args=(
 )
 if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
   helm_args+=(--set "monitoring.serviceMonitor.enabled=true")
+fi
+if [[ -n "${OPERATOR_REPLICAS}" ]]; then
+  helm_args+=(--set "replicas=${OPERATOR_REPLICAS}")
 fi
 # When set, allowlist those CIDRs on the operator's federation-metadata SSRF
 # dial guard (chart value federation.metadataAllowCidrs) so it may fetch an
