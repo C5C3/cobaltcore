@@ -1,0 +1,155 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane CR fixture for the e2e-autoscaling suite. It copies the
+# infrastructure, services and korc blocks of
+# tests/e2e/c5c3/full-controlplane-keystone/00-controlplane-cr.yaml, without
+# Horizon (it has no database) and without the hypervisor operator account.
+#
+# credentialsMode: Static is what gives the suite its connection caps. On the
+# default Dynamic mode the service operators create no MariaDB User CR, and the
+# OpenBao database role creates its users with no MAX_USER_CONNECTIONS, so the
+# caps the operators size from autoscaling.maxReplicas exist only on Static
+# users. Nothing seeds the Static KV paths, so the suite writes them before it
+# applies this CR.
+#
+# The Minimal profile gives every API one replica, one uWSGI process and
+# thread, and a 50m CPU request. On top of it:
+#   - Keystone runs two processes per pod and autoscales from one pod to
+#     three on a CPU target of 150% of its request. Its scale-down behavior
+#     removes every surplus pod within 15 s of the load ending, which the
+#     Kubernetes default of a 300 s window would not.
+#   - The six other database-backed APIs are pinned at their maximum:
+#     minReplicas equals maxReplicas, which the HPA controller enforces before
+#     it reads any metric.
+# The topology is set at creation, so every cap is sized from its maximum
+# before the first API pod starts.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-autoscaling
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+      credentialsMode: Static
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+    # The shared-rabbitmq broker of the kind messaging stack, on a vhost of
+    # this suite's own that tests/e2e/cinder/broker-vhost.sh creates together
+    # with this Secret.
+    messaging:
+      secretRef:
+        name: cp-autoscaling-messaging
+  services:
+    keystone: {}
+    glance:
+      backends:
+        - name: default
+          type: S3
+          isDefault: true
+          s3:
+            endpoint: "http://garage.shared-services.svc.cluster.local:3900"
+            bucket: glance-images
+            region: garage
+            credentialsSecretRef:
+              name: garage-s3-credentials
+    placement: {}
+    barbican:
+      secretStore:
+        dedicated: {}
+    neutron:
+      ovn:
+        centralRef:
+          name: cp-autoscaling-ovn
+    cinder:
+      backends:
+        - name: nfs1
+          type: NFS
+          nfs:
+            server: nfs-server.openstack.svc.cluster.local
+            path: /volumes
+          imageVolumeCache:
+            enabled: true
+      backupBackend:
+        name: nfsbk
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /backups
+    nova: {}
+  sizing:
+    profile: Minimal
+    keystone:
+      api:
+        processes: 2
+        threads: 1
+        autoscaling:
+          minReplicas: 1
+          maxReplicas: 3
+          targetCPUUtilization: 150
+          behavior:
+            scaleDown:
+              stabilizationWindowSeconds: 15
+              policies:
+                - type: Percent
+                  value: 100
+                  periodSeconds: 15
+    glance:
+      api:
+        autoscaling:
+          minReplicas: 2
+          maxReplicas: 2
+          targetCPUUtilization: 150
+    placement:
+      api:
+        autoscaling:
+          minReplicas: 2
+          maxReplicas: 2
+          targetCPUUtilization: 150
+    barbican:
+      api:
+        autoscaling:
+          minReplicas: 2
+          maxReplicas: 2
+          targetCPUUtilization: 150
+    neutron:
+      api:
+        autoscaling:
+          minReplicas: 2
+          maxReplicas: 2
+          targetCPUUtilization: 150
+    cinder:
+      api:
+        autoscaling:
+          minReplicas: 2
+          maxReplicas: 2
+          targetCPUUtilization: 150
+    nova:
+      api:
+        autoscaling:
+          minReplicas: 2
+          maxReplicas: 2
+          targetCPUUtilization: 150
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven

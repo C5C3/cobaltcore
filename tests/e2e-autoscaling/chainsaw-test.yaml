@@ -1,0 +1,556 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the API autoscaler on a full ControlPlane with
+# metrics-server: real token load scales Keystone from one pod to its HPA
+# maximum and back, the PodDisruptionBudget admits an eviction at the minimum,
+# and every database-backed API fits its SQL connection cap at its maximum.
+#
+# ── DECISION: the suite lives OUTSIDE tests/e2e/ ─────────────────────────────
+# For the reason tests/e2e-controlplane-sso/chainsaw-test.yaml gives: the
+# e2e-operator legs run `chainsaw test tests/e2e/<operator>/` and `make e2e`
+# runs all of tests/e2e/, and both would reach this suite on a cluster with no
+# ControlPlane stack and no metrics-server. It runs in its own CI job,
+# e2e-autoscaling, on a kind cluster of its own.
+#
+# ── DECISION: Static database credentials ────────────────────────────────────
+# The operators size each SQL user's max_user_connections from
+# autoscaling.maxReplicas, but only a Static user carries that cap: on the
+# default Dynamic mode they create no MariaDB User CR, and the OpenBao role
+# creates its users with no MAX_USER_CONNECTIONS. The ControlPlane therefore
+# runs credentialsMode: Static, and step 2 seeds the eight KV paths the
+# Static ExternalSecrets read, which nothing else seeds.
+#
+# ── DECISION: six APIs pinned at their maximum ───────────────────────────────
+# Keystone is the one API the suite loads and scales. Glance, Placement,
+# Barbican, Neutron, Cinder and Nova run minReplicas = maxReplicas = 2, which
+# the HPA controller enforces before it reads any metric, so their cap is
+# checked at the maximum without driving six more loads. An authenticated
+# request burst (step 8) makes every pinned pod open its database connections
+# first.
+#
+# What it proves, in order:
+#   1-3. metrics-server answers, the KV paths are seeded, and the ControlPlane
+#        (Minimal profile plus the autoscaling blocks of 00-controlplane-cr.yaml)
+#        reaches Ready.
+#   4.   The behavior block reaches the Keystone child and its HPA, all seven
+#        HPAs target 150% CPU, the budgets follow the HPA minimum, and the
+#        Keystone cap is sized from maxReplicas: (3+1)×2×(1+1)+2 = 18.
+#   5-7. Token load scales Keystone to three ready pods above a 150% peak, and
+#        the fleet fits its cap (check-connection-cap.sh).
+#   8-9. A request burst reaches every pinned API, each fits its cap, and the
+#        server-wide total stays below @@max_connections.
+#   10.  The load ends clean and Keystone is back at one pod within 240 s,
+#        which the default 300 s scale-down window would not allow.
+#   11.  At one pod the budget allows one disruption, and an Eviction of that
+#        pod is admitted.
+#   12.  Removing the behavior block restores the Kubernetes default.
+#
+# Every step pins its own timeout. The worst-case ceiling is their sum plus
+# the catch and the cleanup: 3 + 5 + 45 + 5 + 3 + 8 + 5 + 8 + 10 + 20 + 8 + 5
+# + 5 + 15 = 145 minutes. The 900 s load outlasts steps 6 and 7 at their
+# timeouts (13 minutes), so Keystone is still loaded when its cap is checked.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-autoscaling
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+    exec: 5m
+  # Runs when any step fails, before the cleanup of step 2.
+  catch:
+  - script:
+      timeout: 5m
+      shell: bash
+      content: |
+        echo "=== HPAs ==="
+        kubectl describe hpa -n openstack 2>&1 || true
+        echo "=== kubectl top pods ==="
+        kubectl top pods -n openstack 2>&1 || true
+        echo "=== Pods ==="
+        kubectl get pods -n openstack -o wide 2>&1 || true
+        echo "=== Events (last 60) ==="
+        kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -60 || true
+        echo "=== Load Job log ==="
+        kubectl logs job/autoscaling-keystone-loadgen -n openstack --tail=200 2>&1 || true
+        echo "=== Burst Job log ==="
+        kubectl logs job/autoscaling-service-burst -n openstack --tail=200 2>&1 || true
+        echo "=== MariaDB connections by user ==="
+        ./mariadb-sql.sh "SELECT USER, COUNT(*) FROM information_schema.PROCESSLIST GROUP BY USER" 2>&1 || true
+  steps:
+  # ── Step 1: metrics-server and the ControlPlane CRD ─────────────────────
+  - name: preflight
+    try:
+    - script:
+        timeout: 3m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+          deadline=$((SECONDS + 150))
+          until kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes >/dev/null 2>&1; do
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: metrics-server is not serving the resource-metrics API"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: metrics-server serves the resource-metrics API"
+          if ! kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1; then
+            echo "ERROR: the controlplanes.c5c3.io CRD is not installed"
+            exit 1
+          fi
+          echo "OK: the controlplanes.c5c3.io CRD is installed"
+  # ── Step 2: seed the Static credentials, apply the plane ────────────────
+  # The cleanup below runs when the test ends, whichever step it ended in.
+  - name: seed-and-apply
+    try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          # The OpenBao root token and bao_exec, as
+          # tests/e2e/c5c3/full-controlplane-keystone/chainsaw-test.yaml
+          # takes them.
+          export BAO_TOKEN
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            echo "ERROR: could not extract the OpenBao root token"; exit 1
+          fi
+          bao_exec() {
+            kubectl exec -n shared-services openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN="${BAO_TOKEN}" \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key "$@"
+          }
+          # The remote keys of reconcile_*dbcredentials.go, which the eso-tenant
+          # policy lets the namespace read. A Static user logs in as the child
+          # CR's name, so that is the username each path carries. The password
+          # is generated inside the OpenBao pod, as write_secret_if_missing in
+          # deploy/openbao/bootstrap/write-bootstrap-secrets.sh does, so no
+          # cleartext travels as an exec argument; an existing path is kept.
+          seed() { # <kv-path> <username>
+            bao_exec sh -c 'bao kv get "$1" >/dev/null 2>&1 || bao kv put "$1" username="$2" password="$(bao write -field=random_bytes sys/tools/random/32 format=hex)" >/dev/null' \
+              seed "$1" "$2"
+            echo "OK: seeded $1 (username $2)"
+          }
+          for svc in keystone glance placement barbican neutron cinder; do
+            seed "kv-v2/openstack/${svc}/openstack/cp-autoscaling/db" "cp-autoscaling-${svc}"
+          done
+          seed kv-v2/openstack/nova/openstack/cp-autoscaling/api-db cp-autoscaling-nova-api
+          seed kv-v2/openstack/nova/openstack/cp-autoscaling/db cp-autoscaling-nova
+
+          ../e2e/cinder/broker-vhost.sh create cp-autoscaling cp-autoscaling-messaging openstack
+          kubectl apply -f 01-ovncentral-cr.yaml
+          kubectl apply -f 00-controlplane-cr.yaml
+    cleanup:
+    - script:
+        timeout: 15m
+        shell: bash
+        content: |
+          kubectl delete job autoscaling-keystone-loadgen autoscaling-service-burst \
+            -n openstack --ignore-not-found 2>&1 || true
+          kubectl delete controlplane cp-autoscaling -n openstack \
+            --ignore-not-found --wait --timeout=10m 2>&1 || true
+          kubectl delete ovncentral cp-autoscaling-ovn -n openstack \
+            --ignore-not-found --wait --timeout=1m 2>&1 || true
+          # `|| true` is the helper's contract; see tests/e2e/cinder/broker-vhost.sh.
+          ../e2e/cinder/broker-vhost.sh delete cp-autoscaling || true
+          token="$(kubectl get secret openbao-init-keys -n shared-services \
+            -o jsonpath='{.data.init-output}' 2>/dev/null | base64 -d | jq -r '.root_token' 2>/dev/null || true)"
+          for path in keystone/openstack/cp-autoscaling/db glance/openstack/cp-autoscaling/db \
+            placement/openstack/cp-autoscaling/db barbican/openstack/cp-autoscaling/db \
+            neutron/openstack/cp-autoscaling/db cinder/openstack/cp-autoscaling/db \
+            nova/openstack/cp-autoscaling/api-db nova/openstack/cp-autoscaling/db; do
+            kubectl exec -n shared-services openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN="${token}" \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+              bao kv metadata delete "kv-v2/openstack/${path}" 2>&1 || true
+          done
+  # ── Step 3: the ControlPlane reaches Ready ──────────────────────────────
+  - name: controlplane-ready
+    try:
+    - assert:
+        timeout: 45m
+        resource:
+          apiVersion: c5c3.io/v1alpha1
+          kind: ControlPlane
+          metadata:
+            name: cp-autoscaling
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+  # ── Step 4: projection, HPA shape, budgets, Keystone's cap ──────────────
+  - name: projection-and-shape
+    try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          KEYSTONE=cp-autoscaling-keystone
+          PINNED=(glance placement barbican neutron cinder nova)
+          assert_eq() { # <what> <want> <got>
+            if [ "$3" != "$2" ]; then
+              echo "ERROR: $1: got '$3', want '$2'"; exit 1
+            fi
+            echo "OK: $1 = $2"
+          }
+          hpa_of() { # <child>
+            kubectl get hpa -n "${NS}" -l "app.kubernetes.io/instance=$1" -o jsonpath='{.items[0].metadata.name}'
+          }
+          deploy_of() { # <hpa>
+            kubectl get hpa "$1" -n "${NS}" -o jsonpath='{.spec.scaleTargetRef.name}'
+          }
+          ready_of() { # <deployment>
+            local n
+            n="$(kubectl get deployment "$1" -n "${NS}" -o jsonpath='{.status.readyReplicas}')"
+            echo "${n:-0}"
+          }
+
+          WANT_BEHAVIOR='{"policies":[{"periodSeconds":15,"type":"Percent","value":100}],"stabilizationWindowSeconds":15}'
+          assert_eq "Keystone child spec.autoscaling.behavior" "{\"scaleDown\":${WANT_BEHAVIOR}}" \
+            "$(kubectl get keystone "${KEYSTONE}" -n "${NS}" -o json | jq -cS '.spec.autoscaling.behavior')"
+          KS_HPA="$(hpa_of "${KEYSTONE}")"
+          assert_eq "Keystone HPA spec.behavior.scaleDown" "${WANT_BEHAVIOR}" \
+            "$(kubectl get hpa "${KS_HPA}" -n "${NS}" -o json \
+              | jq -cS '.spec.behavior.scaleDown | {policies, stabilizationWindowSeconds}')"
+
+          for child in "${KEYSTONE}" "${PINNED[@]/#/cp-autoscaling-}"; do
+            assert_eq "${child} HPA CPU averageUtilization" 150 \
+              "$(kubectl get hpa "$(hpa_of "${child}")" -n "${NS}" \
+                -o jsonpath='{.spec.metrics[?(@.resource.name=="cpu")].resource.target.averageUtilization}')"
+          done
+
+          # The HPA sets the pinned Deployments to two pods after the plane is
+          # Ready, and a Keystone that scaled up on its start-up CPU scales back
+          # within the 15 s window, so both are polled. keystone-hpa.sh
+          # explains drop-job-pods.
+          KS_DEPLOY="$(deploy_of "${KS_HPA}")"
+          declare -A PINNED_DEPLOY
+          for svc in "${PINNED[@]}"; do
+            PINNED_DEPLOY[${svc}]="$(deploy_of "$(hpa_of "cp-autoscaling-${svc}")")"
+          done
+          deadline=$((SECONDS + 240))
+          while :; do
+            ./keystone-hpa.sh drop-job-pods
+            pending=""
+            [ "$(ready_of "${KS_DEPLOY}")" = 1 ] || pending+=" ${KS_DEPLOY}"
+            for svc in "${PINNED[@]}"; do
+              d="${PINNED_DEPLOY[${svc}]}"
+              [ "$(ready_of "${d}")" = 2 ] || pending+=" ${d}"
+            done
+            [ -z "${pending}" ] && break
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              for d in ${pending}; do
+                echo "ERROR: ${d} has $(ready_of "${d}") ready replicas"
+              done
+              echo "ERROR: want 1 ready Keystone replica and 2 for every pinned API"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: ${KS_DEPLOY} runs one ready replica and every pinned API two"
+
+          # Every API budget is named like its HPA's scale-target Deployment.
+          assert_eq "Keystone PDB maxUnavailable" 1 \
+            "$(kubectl get pdb "${KS_DEPLOY}" -n "${NS}" -o jsonpath='{.spec.maxUnavailable}')"
+          for svc in "${PINNED[@]}"; do
+            d="${PINNED_DEPLOY[${svc}]}"
+            # The budget follows the HPA minimum of 2, not the one replica the
+            # Minimal profile projects.
+            assert_eq "${d} PDB minAvailable/maxUnavailable" "1/" \
+              "$(kubectl get pdb "${d}" -n "${NS}" -o jsonpath='{.spec.minAvailable}/{.spec.maxUnavailable}')"
+          done
+
+          # keystoneMaxUserConnections: (pods+1) × processes × (threads+1) + 2
+          # with pods = maxReplicas 3, two processes and one thread. Sized from
+          # the one projected replica it would be 10.
+          assert_eq "User ${KEYSTONE} spec.maxUserConnections" 18 \
+            "$(kubectl get users.k8s.mariadb.com "${KEYSTONE}" -n "${NS}" -o jsonpath='{.spec.maxUserConnections}')"
+  # ── Step 5: start the token load ────────────────────────────────────────
+  - name: start-load
+    try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl apply -f 02-keystone-loadgen-job.yaml
+          deadline=$((SECONDS + 150))
+          while :; do
+            phase="$(kubectl get pods -n openstack -l job-name=autoscaling-keystone-loadgen \
+              -o jsonpath='{.items[*].status.phase}')"
+            case "${phase}" in
+              *Running*) break ;;
+              *Failed*|*Succeeded*)
+                kubectl logs job/autoscaling-keystone-loadgen -n openstack 2>&1 || true
+                echo "ERROR: the load Job's pod ended before the load ran (${phase})"; exit 1 ;;
+            esac
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: the load Job's pod is not running (phase '${phase}')"; exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the load Job's pod is running"
+  # ── Step 6: Keystone scales out to its maximum ──────────────────────────
+  - name: scale-out
+    try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          HPA="$(./keystone-hpa.sh hpa)"
+          DEPLOY="$(./keystone-hpa.sh deploy)"
+          peak=0
+          deadline=$((SECONDS + 450))
+          while :; do
+            read -r desired util < <(kubectl get hpa "${HPA}" -n "${NS}" -o json \
+              | jq -r '"\(.status.desiredReplicas // 0) \(.status.currentMetrics[0].resource.current.averageUtilization // 0)"')
+            ready="$(kubectl get deployment "${DEPLOY}" -n "${NS}" -o jsonpath='{.status.readyReplicas}')"
+            ready="${ready:-0}"
+            [ "${util}" -gt "${peak}" ] && peak="${util}"
+            echo "t=${SECONDS}s desiredReplicas=${desired} readyReplicas=${ready} averageUtilization=${util}%"
+            if [ "${desired}" -eq 3 ] && [ "${ready}" -eq 3 ]; then
+              break
+            fi
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: Keystone did not reach three ready pods (desired ${desired}, ready ${ready})"; exit 1
+            fi
+            sleep 5
+          done
+          echo "peak averageUtilization: ${peak}%"
+          if [ "${peak}" -le 150 ]; then
+            echo "ERROR: the peak averageUtilization ${peak}% is not above the 150% target"; exit 1
+          fi
+          echo "OK: Keystone scaled out to three ready pods above a ${peak}% peak"
+  # ── Step 7: Keystone at its maximum fits its cap ────────────────────────
+  # A pod the HPA just added turns ready before kube-proxy has sent it a
+  # request, and uWSGI opens a worker's database connection on its first one,
+  # so the helper is retried while the load reaches the new pods. Every
+  # failure it names is a state the running load either converges out of or
+  # keeps: a MySQL error 1226 stays in the pod's log.
+  - name: keystone-at-maximum
+    try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          deadline=$((SECONDS + 240))
+          until ./check-connection-cap.sh cp-autoscaling-keystone cp-autoscaling-keystone; do
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: Keystone did not fit its connection cap at its maximum within 240 s"
+              exit 1
+            fi
+            echo "retrying in 15 s"
+            sleep 15
+          done
+  # ── Step 8: an authenticated burst against the pinned APIs ──────────────
+  - name: service-burst
+    try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+          JOB=autoscaling-service-burst
+          kubectl apply -f 03-service-burst-job.yaml
+          deadline=$((SECONDS + 450))
+          while :; do
+            state="$(kubectl get job "${JOB}" -n openstack \
+              -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}')"
+            case " ${state}" in
+              *" Complete "*) break ;;
+              *" Failed "*)
+                kubectl logs "job/${JOB}" -n openstack 2>&1 || true
+                echo "ERROR: the burst Job failed"; exit 1 ;;
+            esac
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: the burst Job did not complete"; exit 1
+            fi
+            sleep 5
+          done
+          LOG="$(kubectl logs "job/${JOB}" -n openstack)"
+          echo "${LOG}"
+          RESULTS="$(grep '^RESULT ' <<<"${LOG}" || true)"
+          if [ "$(grep -c . <<<"${RESULTS}")" -ne 6 ]; then
+            echo "ERROR: want six RESULT lines from the burst Job"; exit 1
+          fi
+          if grep -v ' fail=0$' <<<"${RESULTS}"; then
+            echo "ERROR: the burst Job reports failed requests"; exit 1
+          fi
+          echo "OK: every pinned API answered every request of the burst"
+  # ── Step 9: the pinned APIs at their maximum fit their caps ─────────────
+  - name: pinned-at-maximum
+    try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+          for svc in glance placement barbican neutron cinder; do
+            ./check-connection-cap.sh "cp-autoscaling-${svc}" "cp-autoscaling-${svc}"
+          done
+          ./check-connection-cap.sh cp-autoscaling-nova cp-autoscaling-nova-api cp-autoscaling-nova
+
+          # The server-wide budget the caps share.
+          out="$(./mariadb-sql.sh "SELECT (SELECT COUNT(*) FROM information_schema.PROCESSLIST), @@max_connections")"
+          read -r total max <<<"${out}"
+          echo "MariaDB: ${total} connections, max_connections ${max}"
+          if [ "${total}" -ge "${max}" ]; then
+            echo "ERROR: ${total} connections reach the server-wide max_connections of ${max}"; exit 1
+          fi
+          echo "OK: the server-wide total stays below max_connections"
+  # ── Step 10: the load ends clean, Keystone scales back in ───────────────
+  - name: load-result-and-scale-in
+    try:
+    - script:
+        timeout: 20m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          JOB=autoscaling-keystone-loadgen
+          deadline=$((SECONDS + 900))
+          while :; do
+            state="$(kubectl get job "${JOB}" -n "${NS}" \
+              -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}')"
+            case " ${state}" in
+              *" Complete "*) break ;;
+              *" Failed "*)
+                kubectl logs "job/${JOB}" -n "${NS}" 2>&1 || true
+                # The Job fails on a failed request (exit 1) and on fewer
+                # requests than its MIN_TOTAL (exit 3); see
+                # 02-keystone-loadgen-job.yaml.
+                echo "ERROR: the load Job failed"; exit 1 ;;
+            esac
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: the load Job did not complete"; exit 1
+            fi
+            sleep 5
+          done
+          t0=$(date +%s)
+          RESULT="$(kubectl logs "job/${JOB}" -n "${NS}" | grep '^RESULT ' || true)"
+          echo "${RESULT}"
+          if ! [[ "${RESULT}" =~ ^RESULT\ total=[0-9]+\ ok=[0-9]+\ fail=0$ ]]; then
+            echo "ERROR: the load Job reports no clean RESULT line"; exit 1
+          fi
+
+          # The projected behavior removes every surplus pod within 15 s of the
+          # recommendation dropping. The Kubernetes default holds them for a
+          # 300 s window, so a scale-in inside 240 s proves the behavior took
+          # effect. keystone-hpa.sh drop-job-pods removes the Completed Job
+          # pods the scale target selects on every poll, so the scale-in
+          # measured here is the behavior's alone.
+          DEPLOY="$(./keystone-hpa.sh deploy)"
+          while :; do
+            ./keystone-hpa.sh drop-job-pods
+            read -r replicas ready < <(kubectl get deployment "${DEPLOY}" -n "${NS}" -o json \
+              | jq -r '"\(.spec.replicas // 0) \(.status.readyReplicas // 0)"')
+            elapsed=$(( $(date +%s) - t0 ))
+            echo "t0+${elapsed}s replicas=${replicas} readyReplicas=${ready}"
+            if [ "${replicas}" -eq 1 ] && [ "${ready}" -eq 1 ]; then
+              break
+            fi
+            if [ "${elapsed}" -gt 240 ]; then
+              echo "ERROR: Keystone is not back at one pod 240 s after the load ended"; exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: Keystone back at one ready pod ${elapsed} s after the load ended"
+  # ── Step 11: the budget admits an eviction at the minimum ───────────────
+  - name: pdb-at-minimum
+    try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          KEYSTONE=cp-autoscaling-keystone
+          DEPLOY="$(./keystone-hpa.sh deploy)"
+          deadline=$((SECONDS + 120))
+          until [ "$(kubectl get pdb "${DEPLOY}" -n "${NS}" -o jsonpath='{.status.disruptionsAllowed}')" = 1 ]; do
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: PDB ${DEPLOY} allows $(kubectl get pdb "${DEPLOY}" -n "${NS}" \
+                -o jsonpath='{.status.disruptionsAllowed}') disruptions, want 1"; exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: PDB ${DEPLOY} allows one disruption at one pod"
+
+          SELECTOR="$(kubectl get deployment "${DEPLOY}" -n "${NS}" -o json \
+            | jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')"
+          POD="$(kubectl get pods -n "${NS}" -l "${SELECTOR}" -o json \
+            | jq -r '[.items[] | select(.metadata.deletionTimestamp == null)][0].metadata.name')"
+          if ! kubectl create --raw "/api/v1/namespaces/${NS}/pods/${POD}/eviction" -f - <<EOF
+          {"apiVersion": "policy/v1", "kind": "Eviction", "metadata": {"name": "${POD}", "namespace": "${NS}"}}
+          EOF
+          then
+            echo "ERROR: the eviction of ${POD} was refused"; exit 1
+          fi
+          echo
+          echo "OK: the eviction of ${POD} was admitted"
+
+          deadline=$((SECONDS + 360))
+          while :; do
+            ready="$(kubectl get pods -n "${NS}" -l "${SELECTOR}" -o json \
+              | jq -r --arg old "${POD}" '[.items[] | select(.metadata.name != $old and .metadata.deletionTimestamp == null)
+                  | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length')"
+            replicas="$(kubectl get deployment "${DEPLOY}" -n "${NS}" -o jsonpath='{.status.readyReplicas}')"
+            child="$(kubectl get keystone "${KEYSTONE}" -n "${NS}" \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+            if [ "${ready}" = 1 ] && [ "${replicas:-0}" = 1 ] && [ "${child}" = True ]; then
+              break
+            fi
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: after the eviction: ${ready} new ready pod(s), readyReplicas '${replicas}', Keystone Ready '${child}'"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: ${DEPLOY} is back at one ready pod and ${KEYSTONE} is Ready"
+  # ── Step 12: removing the behavior restores the default ─────────────────
+  - name: behavior-removal
+    try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          KEYSTONE=cp-autoscaling-keystone
+          kubectl patch controlplane cp-autoscaling -n "${NS}" --type=json \
+            -p '[{"op": "remove", "path": "/spec/sizing/keystone/api/autoscaling/behavior"}]'
+          HPA="$(./keystone-hpa.sh hpa)"
+          # Server-side apply drops the fields the operator owned, and the API
+          # server re-defaults any it keeps, so the HPA either carries no
+          # behavior or the default 300 s window.
+          deadline=$((SECONDS + 240))
+          while :; do
+            child="$(kubectl get keystone "${KEYSTONE}" -n "${NS}" -o json | jq -c '.spec.autoscaling.behavior')"
+            window="$(kubectl get hpa "${HPA}" -n "${NS}" -o json \
+              | jq -r 'if .spec.behavior == null then "absent" else .spec.behavior.scaleDown.stabilizationWindowSeconds end')"
+            echo "child behavior=${child} HPA scaleDown window=${window}"
+            if [ "${child}" = null ] && { [ "${window}" = 300 ] || [ "${window}" = absent ]; }; then
+              break
+            fi
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: the behavior removal did not reach the Keystone child and its HPA"; exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Keystone child carries no behavior and its HPA the default scale-down"

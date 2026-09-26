@@ -1,0 +1,150 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Authenticated request burst against the six APIs the e2e-autoscaling suite
+# pins at their HPA maximum of two pods. uWSGI opens a worker's database
+# connections on its first request, so without traffic a pinned pod would hold
+# no connection and the cap check that follows would prove nothing.
+#
+# The Job issues one token with the ControlPlane's application credential
+# (the per-CR k-orc-clouds-yaml Secret, cloud "admin") and reads the project id
+# and the internal catalog endpoint of each service type from it. It exits 2
+# with "catalog has no internal <type> endpoint" before it sends anything when
+# one is missing. For each type it then sends 60 GETs at a concurrency of 6,
+# each on a fresh connection (urllib sends Connection: close) so kube-proxy
+# spreads them over both pods, and each with X-Auth-Token:
+#
+#   image          /v2/images
+#   placement      /resource_providers
+#   key-manager    /v1/secrets
+#   network        /v2.0/networks
+#   block-storage  /<project_id>/volumes (the endpoint ends in /v3)
+#   compute        /servers (the endpoint ends in /v2.1)
+#
+# Only HTTP 200 counts as ok: a 401 or 403 is answered before the service
+# reaches its database and would make the connection check vacuous. The
+# script prints RESULT service=<type> total=60 ok=<n> fail=<n> per type and
+# exits 1 on any failure.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: autoscaling-service-burst
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: autoscaling-service-burst
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 420
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: autoscaling-service-burst
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: burst
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          command: ["python3", "-c"]
+          args:
+            - |
+              import concurrent.futures
+              import json
+              import sys
+              import urllib.error
+              import urllib.request
+
+              import yaml
+
+              SERVICES = [
+                  ("image", "/v2/images"),
+                  ("placement", "/resource_providers"),
+                  ("key-manager", "/v1/secrets"),
+                  ("network", "/v2.0/networks"),
+                  ("block-storage", "/{project_id}/volumes"),
+                  ("compute", "/servers"),
+              ]
+              REQUESTS = 60
+              CONCURRENCY = 6
+              TIMEOUT = 30
+              MAX_FAIL_LINES = 10
+
+              with open("/etc/openstack/clouds.yaml") as f:
+                  cloud = ((yaml.safe_load(f) or {}).get("clouds") or {}).get("admin") or {}
+              auth = cloud.get("auth") or {}
+              keys = ("auth_url", "application_credential_id", "application_credential_secret")
+              if cloud.get("auth_type") != "v3applicationcredential" or not all(auth.get(k) for k in keys):
+                  print("clouds.yaml cloud 'admin' is not v3applicationcredential", flush=True)
+                  sys.exit(2)
+
+              body = json.dumps({"auth": {"identity": {
+                  "methods": ["application_credential"],
+                  "application_credential": {
+                      "id": auth["application_credential_id"],
+                      "secret": auth["application_credential_secret"],
+                  },
+              }}}).encode()
+              request = urllib.request.Request(
+                  auth["auth_url"].rstrip("/") + "/auth/tokens", data=body, method="POST",
+                  headers={"Content-Type": "application/json"})
+              with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                  if response.status != 201:
+                      print("token request answered HTTP %d, want 201" % response.status, flush=True)
+                      sys.exit(1)
+                  token = response.headers["X-Subject-Token"]
+                  issued = json.loads(response.read().decode())["token"]
+              project_id = issued["project"]["id"]
+
+              urls = {}
+              for service_type, path in SERVICES:
+                  endpoint = next(
+                      (endpoint["url"]
+                       for entry in issued.get("catalog", []) if entry.get("type") == service_type
+                       for endpoint in entry.get("endpoints", []) if endpoint.get("interface") == "internal"),
+                      None)
+                  if endpoint is None:
+                      print("catalog has no internal %s endpoint" % service_type, flush=True)
+                      sys.exit(2)
+                  urls[service_type] = endpoint.rstrip("/") + path.format(project_id=project_id)
+
+
+              def get(url):
+                  request = urllib.request.Request(url, headers={"X-Auth-Token": token})
+                  try:
+                      with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                          response.read()
+                          return response.status, "HTTP %d" % response.status
+                  except urllib.error.HTTPError as err:
+                      return err.code, "HTTP %d" % err.code
+                  except Exception as err:  # timeouts and connection errors
+                      return None, "%s: %s" % (type(err).__name__, err)
+
+
+              failed = False
+              for service_type, _ in SERVICES:
+                  url = urls[service_type]
+                  print("GET %s x%d at concurrency %d" % (url, REQUESTS, CONCURRENCY), flush=True)
+                  with concurrent.futures.ThreadPoolExecutor(CONCURRENCY) as pool:
+                      results = list(pool.map(get, [url] * REQUESTS))
+                  ok = sum(1 for status, _ in results if status == 200)
+                  fail = len(results) - ok
+                  for _, detail in [r for r in results if r[0] != 200][:MAX_FAIL_LINES]:
+                      print("FAIL: %s %s" % (service_type, detail), flush=True)
+                  print("RESULT service=%s total=%d ok=%d fail=%d" % (service_type, len(results), ok, fail), flush=True)
+                  failed = failed or fail > 0
+              sys.exit(1 if failed else 0)
+          volumeMounts:
+            - name: clouds
+              mountPath: /etc/openstack
+              readOnly: true
+      volumes:
+        - name: clouds
+          secret:
+            secretName: k-orc-clouds-yaml
