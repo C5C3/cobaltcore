@@ -277,27 +277,26 @@ CONTROLPLANE_NAME="${CONTROLPLANE_NAME:-controlplane}"
 # Ignored unless WITH_CONTROLPLANE=true.
 CONTROLPLANE_OPERATORS="${CONTROLPLANE_OPERATORS:-flux}"
 
-# Single-node footprint of the ControlPlane-projected backing services. On the
+# Footprint of the ControlPlane-projected backing services. On the
 # WITH_CONTROLPLANE path the c5c3-operator provisions MariaDB and Memcached itself
-# from the ControlPlane CR; these knobs patch spec.infrastructure.{database,cache}
-# of the bundled CR before it is applied (WITH_CONTROLPLANE_CR=true).
-# Default 1 replica so a single-node kind gets a single-instance non-Galera MariaDB
-# and a single Memcached pod (the CRD default is 3, which spins up a 3-node Galera
-# cluster plus 3 Memcached pods and OOM-kills a laptop-sized kind).
+# from the ControlPlane CR. The bundled CR names spec.sizing.profile: Minimal,
+# which gives a single-instance non-Galera MariaDB on a 512Mi volume and a single
+# Memcached pod (Standard's 3 replicas spin up a 3-node Galera cluster plus 3
+# Memcached pods and OOM-kill a laptop-sized kind). Each knob, when set, pins its
+# field in spec.infrastructure.{database,cache} of the bundled CR before it is
+# applied (WITH_CONTROLPLANE_CR=true); unset leaves the field to the profile.
 #   CONTROLPLANE_DB_REPLICAS=3     — Galera HA cluster (2 is rejected by the c5c3
 #                                    validating webhook: Galera needs a quorum).
 #   CONTROLPLANE_CACHE_REPLICAS=N  — N Memcached pods.
-#   CONTROLPLANE_DB_STORAGE=100Gi  — per-replica MariaDB volume size (default 512Mi,
-#                                    a test-sized volume vs the 100Gi CRD default
-#                                    that a kind/CI run never fills). Must be a
+#   CONTROLPLANE_DB_STORAGE=100Gi  — per-replica MariaDB volume size. Must be a
 #                                    Kubernetes quantity in Mi/Gi/Ti.
 # database.replicas AND database.storageSize are IMMUTABLE after the ControlPlane CR
 # is created, so change them on a fresh environment (teardown-infra first);
 # cache.replicas is reconciled live.
 # Ignored unless WITH_CONTROLPLANE=true and WITH_CONTROLPLANE_CR=true.
-CONTROLPLANE_DB_REPLICAS="${CONTROLPLANE_DB_REPLICAS:-1}"
-CONTROLPLANE_CACHE_REPLICAS="${CONTROLPLANE_CACHE_REPLICAS:-1}"
-CONTROLPLANE_DB_STORAGE="${CONTROLPLANE_DB_STORAGE:-512Mi}"
+CONTROLPLANE_DB_REPLICAS="${CONTROLPLANE_DB_REPLICAS:-}"
+CONTROLPLANE_CACHE_REPLICAS="${CONTROLPLANE_CACHE_REPLICAS:-}"
+CONTROLPLANE_DB_STORAGE="${CONTROLPLANE_DB_STORAGE:-}"
 
 # Marks this cluster as one that runs third-party infrastructure only: MariaDB,
 # Memcached, OpenBao, ESO, cert-manager and the rest of the stack, but no CobaltCore
@@ -1926,20 +1925,22 @@ render_kind_config() {
   fi
 }
 
-# render_controlplane_replicas rewrites the ControlPlane backing-service knobs —
-# spec.infrastructure.{database,cache}.replicas and database.storageSize — of the
-# CR(s) named ${CONTROLPLANE_NAME} in the given manifest file, from
-# CONTROLPLANE_DB_REPLICAS / CONTROLPLANE_CACHE_REPLICAS / CONTROLPLANE_DB_STORAGE.
-# The values are validated first so an invalid footprint is rejected here, before
-# `kubectl apply`, rather than by the c5c3 validating webhook after the CR is sent:
-# the replica counts must be a positive integer, the database count may not be 2 (a
-# two-node Galera cluster cannot hold a quorum — the webhook rejects it), and the
-# storage size must match the CRD quantity pattern (digits + Mi/Gi/Ti). Returns
-# non-zero on an invalid footprint instead of exiting, so the caller decides how to
-# handle it; main() runs under `set -e`, so the bare call there still fails the
-# deploy fast. Name-scoped to the CR we just (possibly) renamed so a growing overlay
-# is not silently rewritten; tonumber keeps the replica values integers (the CRD
-# schema types replicas as integer) while storageSize stays a string.
+# render_controlplane_replicas pins the ControlPlane backing-service knobs that
+# are set — spec.infrastructure.{database,cache}.replicas and database.storageSize
+# from CONTROLPLANE_DB_REPLICAS / CONTROLPLANE_CACHE_REPLICAS /
+# CONTROLPLANE_DB_STORAGE — on the CR(s) named ${CONTROLPLANE_NAME} in the given
+# manifest file. An unset knob leaves its field to the CR's sizing profile, and
+# with no knob set the file is not touched at all. The set values are validated
+# first so an invalid footprint is rejected here, before `kubectl apply`, rather
+# than by the c5c3 validating webhook after the CR is sent: the replica counts
+# must be a positive integer, the database count may not be 2 (a two-node Galera
+# cluster cannot hold a quorum — the webhook rejects it), and the storage size
+# must match the CRD quantity pattern (digits + Mi/Gi/Ti). Returns non-zero on an
+# invalid footprint instead of exiting, so the caller decides how to handle it;
+# main() runs under `set -e`, so the bare call there still fails the deploy fast.
+# Name-scoped to the CR we just (possibly) renamed so a growing overlay is not
+# silently rewritten; tonumber keeps the replica values integers (the CRD schema
+# types replicas as integer) while storageSize stays a string.
 # Extracted from main() so it is unit-testable
 # (tests/unit/hack/deploy_infra_controlplane_replicas_test.sh).
 render_controlplane_replicas() {
@@ -1948,12 +1949,15 @@ render_controlplane_replicas() {
   local knob val
   for knob in CONTROLPLANE_DB_REPLICAS CONTROLPLANE_CACHE_REPLICAS; do
     val="${!knob}"
+    if [[ -z "${val}" ]]; then
+      continue
+    fi
     if [[ ! "${val}" =~ ^[0-9]+$ ]] || (( val < 1 )); then
       log "ERROR: ${knob}='${val}' is not a positive integer."
       return 1
     fi
   done
-  if (( CONTROLPLANE_DB_REPLICAS == 2 )); then
+  if [[ -n "${CONTROLPLANE_DB_REPLICAS}" ]] && (( CONTROLPLANE_DB_REPLICAS == 2 )); then
     log "ERROR: CONTROLPLANE_DB_REPLICAS=2 is rejected (Galera needs a quorum); use 1 (standalone) or >=3."
     return 1
   fi
@@ -1963,22 +1967,34 @@ render_controlplane_replicas() {
   # DatabaseSpec.StorageSize (internal/common/types/types.go) — the CRD field
   # CONTROLPLANE_DB_STORAGE is projected into; if that pattern changes, change
   # this one too.
-  if [[ ! "${CONTROLPLANE_DB_STORAGE}" =~ ^[0-9]+(Mi|Gi|Ti)$ ]]; then
+  if [[ -n "${CONTROLPLANE_DB_STORAGE}" ]] && [[ ! "${CONTROLPLANE_DB_STORAGE}" =~ ^[0-9]+(Mi|Gi|Ti)$ ]]; then
     log "ERROR: CONTROLPLANE_DB_STORAGE='${CONTROLPLANE_DB_STORAGE}' is not a valid quantity (expected digits + Mi/Gi/Ti, e.g. 512Mi)."
     return 1
   fi
 
-  # `with(paths; update)` binds the select clause once and runs all three
-  # assignments against each matched node, so the CR-scoping predicate is not
-  # repeated per field (and cannot drift between them). tonumber keeps the
-  # replica values integers (the CRD schema types replicas as integer) while
-  # storageSize stays a string. A select that matches nothing is a no-op, so the
-  # rewrite stays idempotent on an already-scaled or unrelated overlay.
+  # One assignment per set knob. `with(paths; update)` binds the select clause
+  # once and runs the assignments against each matched node, so the CR-scoping
+  # predicate is not repeated per field (and cannot drift between them). A
+  # select that matches nothing is a no-op, so the rewrite stays idempotent on
+  # an already-scaled or unrelated overlay. With no knob set yq never runs, so
+  # the manifest stays byte-identical.
+  local updates=()
+  if [[ -n "${CONTROLPLANE_DB_REPLICAS}" ]]; then
+    updates+=('.spec.infrastructure.database.replicas = (strenv(CONTROLPLANE_DB_REPLICAS) | tonumber)')
+  fi
+  if [[ -n "${CONTROLPLANE_CACHE_REPLICAS}" ]]; then
+    updates+=('.spec.infrastructure.cache.replicas = (strenv(CONTROLPLANE_CACHE_REPLICAS) | tonumber)')
+  fi
+  if [[ -n "${CONTROLPLANE_DB_STORAGE}" ]]; then
+    updates+=('.spec.infrastructure.database.storageSize = strenv(CONTROLPLANE_DB_STORAGE)')
+  fi
+  if (( ${#updates[@]} == 0 )); then
+    return 0
+  fi
+  local joined
+  joined="$(printf ' | %s' "${updates[@]}")"
   CONTROLPLANE_DB_REPLICAS="${CONTROLPLANE_DB_REPLICAS}" CONTROLPLANE_CACHE_REPLICAS="${CONTROLPLANE_CACHE_REPLICAS}" CONTROLPLANE_DB_STORAGE="${CONTROLPLANE_DB_STORAGE}" CONTROLPLANE_NAME="${CONTROLPLANE_NAME}" yq -i \
-    'with(select(.kind == "ControlPlane" and .metadata.name == strenv(CONTROLPLANE_NAME));
-       .spec.infrastructure.database.replicas = (strenv(CONTROLPLANE_DB_REPLICAS) | tonumber)
-       | .spec.infrastructure.cache.replicas = (strenv(CONTROLPLANE_CACHE_REPLICAS) | tonumber)
-       | .spec.infrastructure.database.storageSize = strenv(CONTROLPLANE_DB_STORAGE))' \
+    "with(select(.kind == \"ControlPlane\" and .metadata.name == strenv(CONTROLPLANE_NAME)); ${joined# | })" \
     "${manifest}"
 }
 
@@ -2282,7 +2298,7 @@ main() {
   log "Infrastructure only : ${INFRA_ONLY} (set INFRA_ONLY=true for a target cluster that runs no CobaltCore operator)"
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     log "ControlPlane operators : ${CONTROLPLANE_OPERATORS} (flux = published chart + K-ORC Flux source; external = operators deployed out of band)"
-    log "ControlPlane backing   : MariaDB replicas=${CONTROLPLANE_DB_REPLICAS} (>1 = Galera) storage=${CONTROLPLANE_DB_STORAGE}, Memcached replicas=${CONTROLPLANE_CACHE_REPLICAS} (override via CONTROLPLANE_DB_REPLICAS / CONTROLPLANE_DB_STORAGE / CONTROLPLANE_CACHE_REPLICAS)"
+    log "ControlPlane backing   : MariaDB replicas=${CONTROLPLANE_DB_REPLICAS:-<profile>} (>1 = Galera) storage=${CONTROLPLANE_DB_STORAGE:-<profile>}, Memcached replicas=${CONTROLPLANE_CACHE_REPLICAS:-<profile>} (unset = the CR's sizing profile; pin via CONTROLPLANE_DB_REPLICAS / CONTROLPLANE_DB_STORAGE / CONTROLPLANE_CACHE_REPLICAS)"
   fi
   log ""
 
@@ -3269,13 +3285,13 @@ main() {
         log "  Set ControlPlane publicEndpoint to https://keystone.127-0-0-1.nip.io:${KIND_HOST_PORT}/v3 (KIND_HOST_PORT override)."
       fi
 
-      # Project the single-node footprint onto the bundled CR. The bundled CR
-      # already carries replicas: 1 and storageSize: 512Mi for the backing services;
-      # this makes the values deploy-time configurable (CONTROLPLANE_DB_REPLICAS /
-      # CONTROLPLANE_CACHE_REPLICAS / CONTROLPLANE_DB_STORAGE) without editing the
-      # tracked manifest.
+      # Pin the backing-service knobs that are set onto the bundled CR. The
+      # bundled CR names spec.sizing.profile: Minimal, which already sizes the
+      # backing services for one node; a set knob (CONTROLPLANE_DB_REPLICAS /
+      # CONTROLPLANE_CACHE_REPLICAS / CONTROLPLANE_DB_STORAGE) overrides its field
+      # without editing the tracked manifest.
       render_controlplane_replicas "${cp_manifest}"
-      log "  Set ControlPlane backing-service footprint: MariaDB replicas=${CONTROLPLANE_DB_REPLICAS} (>1 = Galera) storage=${CONTROLPLANE_DB_STORAGE}, Memcached replicas=${CONTROLPLANE_CACHE_REPLICAS}."
+      log "  Set ControlPlane backing-service footprint: MariaDB replicas=${CONTROLPLANE_DB_REPLICAS:-<profile>} (>1 = Galera) storage=${CONTROLPLANE_DB_STORAGE:-<profile>}, Memcached replicas=${CONTROLPLANE_CACHE_REPLICAS:-<profile>}."
 
       # Apply the ControlPlane CR. Retry briefly: the c5c3-operator validating webhook
       # may need a moment after the chart install before it accepts the CR.
