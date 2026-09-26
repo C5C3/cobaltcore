@@ -1626,11 +1626,14 @@ spec:
           # plane stays out of the sum: the OVN chassis, the metadata agent and
           # the fake compute stand in for a hypervisor, which the budget of the
           # control plane, its backing services, the operators and the platform
-          # stack does not cover. The kind node is larger than that budget, so
-          # only a job that sets E2E_NODE_BUDGET=true enforces it; a local run
-          # on a busier cluster prints a SKIP line.
+          # stack does not cover. The metrics-server and VPA recommender pods
+          # that a `ci:measure-sizing` run installs (WITH_VPA=true) stay out
+          # too: they are opt-in measurement pods the default devstack lacks.
+          # The kind node is larger than that budget, so only a job that sets
+          # E2E_NODE_BUDGET=true enforces it; a local run on a busier cluster
+          # prints a SKIP line.
           if [ "${E2E_NODE_BUDGET:-false}" = "true" ]; then
-            if ! NODE_BUDGET_SELECTOR='app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute)' \
+            if ! NODE_BUDGET_SELECTOR='app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute,metrics-server,vertical-pod-autoscaler)' \
                 ../../../../hack/ci-check-node-budget.sh; then
               echo "ERROR: the stack requests more than the node budget (table above)"
               exit 1

@@ -279,8 +279,9 @@ paths any other chassis or metadata agent would share.
 
 6z. **Node budget** — under `E2E_NODE_BUDGET=true`,
    `hack/ci-check-node-budget.sh` sums the effective requests of every pod on
-   the kind node except the compute-node data plane and fails above 4000m CPU
-   or 16Gi memory. Without the variable the link prints a SKIP line. See
+   the kind node except the compute-node data plane and the opt-in measurement
+   pods, and fails above 4000m CPU or 16Gi memory. Without the variable the
+   link prints a SKIP line. See
    [Node budget (Link 6z)](#node-budget-link-6z).
 
 6a. **Service status** — `status.services[]` reports eight entries, ready, in the
@@ -443,11 +444,13 @@ and changes nothing:
 | `NODE_BUDGET_SELECTOR` | empty (count every pod) | Label selector passed to `kubectl get pods -l`; only the pods it matches count |
 
 The suite sets `NODE_BUDGET_SELECTOR` to
-`app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute)`.
+`app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute,metrics-server,vertical-pod-autoscaler)`.
 Those are the OVN chassis, the metadata agent and the fake compute of the
 compute leg. They stand in for a hypervisor, which lies outside a budget for
 the control plane, its backing services, the operators and the platform stack.
-Everything else counts, including `kube-system`, the OVN central,
+metrics-server and the VPA recommender are the opt-in measurement pods a
+`ci:measure-sizing` run installs; the default devstack the budget covers has
+neither. Everything else counts, including `kube-system`, the OVN central,
 the kind NFS export, the shared RabbitMQ broker and K-ORC.
 
 The link enforces the budget only when `E2E_NODE_BUDGET=true`, which the
@@ -459,7 +462,7 @@ on a busier cluster does not fail. To enforce it against a local stack, run
 the suite with the variable set, or call the script directly:
 
 ```bash
-NODE_BUDGET_SELECTOR='app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute)' \
+NODE_BUDGET_SELECTOR='app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute,metrics-server,vertical-pod-autoscaler)' \
   hack/ci-check-node-budget.sh
 ```
 
