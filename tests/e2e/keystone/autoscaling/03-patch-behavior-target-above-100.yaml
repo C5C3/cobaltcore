@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to raise the CPU target above 100 and to set a scale-down behavior.
+# The API pod has no CPU limit, so it may use more CPU than it requests and a
+# target of 150 is reachable. The operator copies spec.autoscaling.behavior
+# verbatim into the HPA's spec.behavior.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-autoscaling
+  namespace: openstack
+spec:
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 6
+    targetCPUUtilization: 150
+    targetMemoryUtilization: 70
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 60
+        policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 30

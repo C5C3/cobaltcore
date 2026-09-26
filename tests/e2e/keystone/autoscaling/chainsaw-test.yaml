@@ -10,6 +10,8 @@
 #     minReplicas is unset, so the budget keeps minAvailable: 1
 #   - Add memory metric (CPU: 80%, Memory: 70%)
 #   - Lower minReplicas to 1 (HPA minReplicas: 1, PDB maxUnavailable: 1)
+#   - Raise the CPU target to 150% and set a scale-down behavior (both
+#     reach the HPA)
 #   - Disable autoscaling (HPA deleted, PDB back at minAvailable: 1)
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -165,11 +167,50 @@ spec:
           spec:
             maxUnavailable: 1
             (minAvailable == null): true
-  # ── Step 7: Disable autoscaling ──────────────────────────────────────────
+  # ── Step 7: Raise the CPU target above 100 and set a behavior ───────────
   - try:
     - patch:
-        file: 03-patch-disable-autoscaling.yaml
-  # ── Step 8: Assert HPA deleted, condition updated, budget restored ───────
+        file: 03-patch-behavior-target-above-100.yaml
+  # ── Step 8: Assert the target and the behavior reached the HPA ───────────
+  # The API pod has no CPU limit, so a CPU target of 150% of its request is
+  # admitted, and the operator copies spec.autoscaling.behavior verbatim
+  # into the HPA's spec.behavior.
+  - try:
+    - assert:
+        resource:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: keystone-autoscaling
+            namespace: openstack
+          spec:
+            minReplicas: 1
+            maxReplicas: 6
+            metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                target:
+                  type: Utilization
+                  averageUtilization: 150
+            - type: Resource
+              resource:
+                name: memory
+                target:
+                  type: Utilization
+                  averageUtilization: 70
+            behavior:
+              scaleDown:
+                stabilizationWindowSeconds: 60
+                policies:
+                - type: Pods
+                  value: 1
+                  periodSeconds: 30
+  # ── Step 9: Disable autoscaling ──────────────────────────────────────────
+  - try:
+    - patch:
+        file: 04-patch-disable-autoscaling.yaml
+  # ── Step 10: Assert HPA deleted, condition updated, budget restored ──────
   - try:
     - assert:
         resource:
