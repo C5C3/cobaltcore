@@ -6,7 +6,9 @@
 # References the production flux-system kustomization and patches
 # the OpenBao HelmRelease to standalone mode (1 replica, HA disabled,
 # no retry_join peers, standard storage class) suitable for a
-# single-node kind cluster.
+# single-node kind cluster. It also sizes the operators, OpenBao and the
+# Flux controllers for the one 4 vCPU / 16 GiB node the devstack targets,
+# which the e2e-controlplane job checks with hack/ci-check-node-budget.sh.
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -65,6 +67,12 @@ patches:
                 service_registration "kubernetes" {}
             dataStorage:
               storageClass: standard
+            # The production release asks 250m. One idle standalone server
+            # needs far less, and the node budget counts requests. Only the
+            # CPU request is lowered: the memory request and limit stay.
+            resources:
+              requests:
+                cpu: 100m
 
   # Memcached operator: disable webhooks in kind to avoid cert-manager
   # webhook TLS provisioning issues (liveness probe kills the container
@@ -94,6 +102,12 @@ patches:
   # no longer applies. The suspend is still required because the published
   # chart and the locally built dev image cannot share the same release
   # name without one overwriting the other.
+  #
+  # One replica instead of the chart default of 2, so the devstack stays
+  # within the node budget. The CONTROLPLANE_OPERATORS=flux path of
+  # hack/deploy-infra.sh installs the chart with these values; the CI jobs
+  # that install the operator themselves pass OPERATOR_REPLICAS=1 to
+  # hack/ci-deploy-operator.sh instead.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -108,11 +122,14 @@ patches:
         namespace: keystone-system
       spec:
         suspend: true
+        values:
+          replicas: 1
 
   # horizon-operator: suspend Flux management in kind for the same reason as
   # keystone-operator above — the e2e CI job installs it manually with a
   # locally built dev image, and the published chart and the dev image cannot
-  # share the same release name without one overwriting the other.
+  # share the same release name without one overwriting the other. It runs
+  # one replica, like keystone-operator.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -127,11 +144,14 @@ patches:
         namespace: horizon-system
       spec:
         suspend: true
+        values:
+          replicas: 1
 
   # glance-operator: suspend Flux management in kind for the same reason as
   # keystone-operator above — the e2e CI job installs it manually with a
   # locally built dev image, and the published chart and the dev image cannot
-  # share the same release name without one overwriting the other.
+  # share the same release name without one overwriting the other. It runs
+  # one replica, like keystone-operator.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -146,11 +166,14 @@ patches:
         namespace: glance-system
       spec:
         suspend: true
+        values:
+          replicas: 1
 
   # placement-operator: suspend Flux management in kind for the same reason as
   # keystone-operator above — the e2e CI job installs it manually with a
   # locally built dev image, and the published chart and the dev image cannot
-  # share the same release name without one overwriting the other.
+  # share the same release name without one overwriting the other. It runs
+  # one replica, like keystone-operator.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -165,11 +188,14 @@ patches:
         namespace: placement-system
       spec:
         suspend: true
+        values:
+          replicas: 1
 
   # barbican-operator: suspend Flux management in kind for the same reason as
   # keystone-operator above — the e2e CI job installs it manually with a
   # locally built dev image, and the published chart and the dev image cannot
-  # share the same release name without one overwriting the other.
+  # share the same release name without one overwriting the other. It runs
+  # one replica, like keystone-operator.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -184,11 +210,14 @@ patches:
         namespace: barbican-system
       spec:
         suspend: true
+        values:
+          replicas: 1
 
   # ovn-operator: suspend Flux management in kind for the same reason as
   # keystone-operator above — the e2e CI job installs it manually with a
   # locally built dev image, and the published chart and the dev image cannot
-  # share the same release name without one overwriting the other.
+  # share the same release name without one overwriting the other. It runs
+  # one replica, like keystone-operator.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -203,11 +232,14 @@ patches:
         namespace: ovn-system
       spec:
         suspend: true
+        values:
+          replicas: 1
 
   # neutron-operator: suspend Flux management in kind for the same reason as
   # keystone-operator above — the e2e CI job installs it manually with a
   # locally built dev image, and the published chart and the dev image cannot
-  # share the same release name without one overwriting the other.
+  # share the same release name without one overwriting the other. It runs
+  # one replica, like keystone-operator.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -222,11 +254,14 @@ patches:
         namespace: neutron-system
       spec:
         suspend: true
+        values:
+          replicas: 1
 
   # cinder-operator: suspend Flux management in kind for the same reason as
   # keystone-operator above — the e2e CI job installs it manually with a
   # locally built dev image, and the published chart and the dev image cannot
-  # share the same release name without one overwriting the other.
+  # share the same release name without one overwriting the other. It runs
+  # one replica, like keystone-operator.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -241,11 +276,14 @@ patches:
         namespace: cinder-system
       spec:
         suspend: true
+        values:
+          replicas: 1
 
   # nova-operator: suspend Flux management in kind for the same reason as
   # keystone-operator above — the e2e CI job installs it manually with a
   # locally built dev image, and the published chart and the dev image cannot
-  # share the same release name without one overwriting the other.
+  # share the same release name without one overwriting the other. It runs
+  # one replica, like keystone-operator.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -260,6 +298,28 @@ patches:
         namespace: nova-system
       spec:
         suspend: true
+        values:
+          replicas: 1
+
+  # c5c3-operator: one replica, like keystone-operator. Unlike the service
+  # operators it is not suspended here: hack/deploy-infra.sh suspends it at
+  # runtime unless CONTROLPLANE_OPERATORS=flux, and that flux path relies on
+  # the base applying it active.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: c5c3-operator
+      namespace: c5c3-system
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: c5c3-operator
+        namespace: c5c3-system
+      spec:
+        values:
+          replicas: 1
 
   # k-orc: suspend the Flux Kustomization in kind for the same reason as the
   # operator HelmReleases above. The e2e-controlplane CI job installs K-ORC out
@@ -288,6 +348,56 @@ patches:
         namespace: flux-system
       spec:
         suspend: true
+
+  # Flux controllers: the upstream manifests ask 100m CPU per controller.
+  # Each entry lowers that request to 25m with the JSON6902 recipe of
+  # docs/reference/infrastructure/infrastructure-manifests.md, which the
+  # flux-operator applies to the Deployment it renders. `add` on
+  # resources/requests/cpu replaces that one member and leaves the memory
+  # request and the limits in place, so nothing is throttled harder.
+  - target:
+      group: fluxcd.controlplane.io
+      version: v1
+      kind: FluxInstance
+      name: flux
+      namespace: flux-system
+    patch: |
+      apiVersion: fluxcd.controlplane.io/v1
+      kind: FluxInstance
+      metadata:
+        name: flux
+        namespace: flux-system
+      spec:
+        kustomize:
+          patches:
+            - target:
+                kind: Deployment
+                name: source-controller
+              patch: |
+                - op: add
+                  path: /spec/template/spec/containers/0/resources/requests/cpu
+                  value: 25m
+            - target:
+                kind: Deployment
+                name: kustomize-controller
+              patch: |
+                - op: add
+                  path: /spec/template/spec/containers/0/resources/requests/cpu
+                  value: 25m
+            - target:
+                kind: Deployment
+                name: helm-controller
+              patch: |
+                - op: add
+                  path: /spec/template/spec/containers/0/resources/requests/cpu
+                  value: 25m
+            - target:
+                kind: Deployment
+                name: notification-controller
+              patch: |
+                - op: add
+                  path: /spec/template/spec/containers/0/resources/requests/cpu
+                  value: 25m
 
   # The Chaos Mesh kind-tuning patch (containerd runtime, dashboard disabled,
   # reduced resource requests) lives in the opt-in deploy/kind/chaos-mesh/
