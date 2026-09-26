@@ -12,6 +12,7 @@ import (
 	"sort"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -725,20 +726,22 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 				fmt.Sprintf("maxReplicas must be >= spec.deployment.replicas (%d) when minReplicas is not set, because minReplicas defaults to spec.deployment.replicas", k.Spec.Deployment.Replicas),
 			))
 		}
-		// Defense-in-depth bounds checks for utilization targets
-		// alongside +kubebuilder:validation:Minimum=1 and +kubebuilder:validation:Maximum=100 markers.
-		if k.Spec.Autoscaling.TargetCPUUtilization != nil && (*k.Spec.Autoscaling.TargetCPUUtilization < 1 || *k.Spec.Autoscaling.TargetCPUUtilization > 100) {
+		// Defense-in-depth lower bound for utilization targets alongside the
+		// +kubebuilder:validation:Minimum=1 markers. There is no upper bound,
+		// as in autoscaling/v2: a target the API pod can never reach is
+		// rejected below.
+		if k.Spec.Autoscaling.TargetCPUUtilization != nil && *k.Spec.Autoscaling.TargetCPUUtilization < 1 {
 			allErrs = append(allErrs, field.Invalid(
 				autoscalingPath.Child("targetCPUUtilization"),
 				*k.Spec.Autoscaling.TargetCPUUtilization,
-				"targetCPUUtilization must be between 1 and 100",
+				"targetCPUUtilization must be at least 1",
 			))
 		}
-		if k.Spec.Autoscaling.TargetMemoryUtilization != nil && (*k.Spec.Autoscaling.TargetMemoryUtilization < 1 || *k.Spec.Autoscaling.TargetMemoryUtilization > 100) {
+		if k.Spec.Autoscaling.TargetMemoryUtilization != nil && *k.Spec.Autoscaling.TargetMemoryUtilization < 1 {
 			allErrs = append(allErrs, field.Invalid(
 				autoscalingPath.Child("targetMemoryUtilization"),
 				*k.Spec.Autoscaling.TargetMemoryUtilization,
-				"targetMemoryUtilization must be between 1 and 100",
+				"targetMemoryUtilization must be at least 1",
 			))
 		}
 		if k.Spec.Autoscaling.TargetCPUUtilization == nil && k.Spec.Autoscaling.TargetMemoryUtilization == nil {
@@ -747,6 +750,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 				"at least one of targetCPUUtilization or targetMemoryUtilization must be set",
 			))
 		}
+		allErrs = append(allErrs, validation.AutoscalingBehavior(autoscalingPath.Child("behavior"), k.Spec.Autoscaling.Behavior)...)
 	}
 
 	// An HPA utilization target is measured against the summed requests of
@@ -754,10 +758,16 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 	// fails the metric or inflates it. The render-time default fills a positive
 	// request when the block names none.
 	allErrs = append(allErrs, validation.AutoscalingTargetRequests(specPath.Child("deployment", "resources"), k.Spec.Deployment.Resources, k.Spec.Autoscaling)...)
+	apiPod := []*corev1.ResourceRequirements{k.Spec.Deployment.Resources}
 	if k.Spec.Federation != nil {
 		allErrs = append(allErrs, validation.AutoscalingTargetRequests(
 			specPath.Child("federation", "proxyResources"), k.Spec.Federation.ProxyResources, k.Spec.Autoscaling)...)
+		apiPod = append(apiPod, k.Spec.Federation.ProxyResources)
 	}
+	// A target above 100 needs a container of the API pod that may use more
+	// than it requests, so a target the containers' limits make unreachable
+	// is rejected.
+	allErrs = append(allErrs, validation.AutoscalingTargetsReachable(specPath.Child("autoscaling"), k.Spec.Autoscaling, apiPod...)...)
 
 	// Defense-in-depth networkPolicy ingress check alongside the
 	// +kubebuilder:validation:XValidation CEL rule on NetworkPolicySpec.
