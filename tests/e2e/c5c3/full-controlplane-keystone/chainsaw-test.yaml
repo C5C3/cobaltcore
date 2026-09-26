@@ -125,6 +125,12 @@
 #                        beside the plane then give the compute service a host to
 #                        place on and an agent to answer its instances.
 #   6. Aggregate       — ControlPlane Ready=True (reason AllReady).
+#   6z. Node budget    — hack/ci-check-node-budget.sh sums the effective
+#                        requests of every pod on the kind node except the
+#                        compute-node data plane (OVN chassis, metadata agent,
+#                        fake compute) and fails above 4000m CPU or 16Gi
+#                        memory. Enforced under E2E_NODE_BUDGET=true (the
+#                        e2e-controlplane job); otherwise it prints a SKIP line.
 #   7. API reachable   — Keystone /v3 returns HTTP 200; `openstack token issue`,
 #                        `openstack catalog list` (identity, image, placement,
 #                        key-manager, network AND block-storage), an image upload
@@ -1613,6 +1619,25 @@ spec:
           wait_cp_condition Ready 300
           assert_eq "Aggregate Ready reason" "AllReady" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
+
+          # ── Link 6z: node budget ───────────────────────────────────────────
+          # With the whole plane Ready, the pods on the kind node must request
+          # no more than one 4 vCPU / 16 GiB node offers. The compute-node data
+          # plane stays out of the sum: the OVN chassis, the metadata agent and
+          # the fake compute stand in for a hypervisor, which the budget of the
+          # control plane, its backing services, the operators and the platform
+          # stack does not cover. The kind node is larger than that budget, so
+          # only a job that sets E2E_NODE_BUDGET=true enforces it; a local run
+          # on a busier cluster prints a SKIP line.
+          if [ "${E2E_NODE_BUDGET:-false}" = "true" ]; then
+            if ! NODE_BUDGET_SELECTOR='app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute)' \
+                ../../../../hack/ci-check-node-budget.sh; then
+              echo "ERROR: the stack requests more than the node budget (table above)"
+              exit 1
+            fi
+          else
+            echo "SKIP: node budget gate (set E2E_NODE_BUDGET=true to enforce)"
+          fi
 
           # ── Link 6a: status.services[] reports all eight services ready ────
           # keystone [0], horizon [1], glance [2], placement [3], barbican [4],
