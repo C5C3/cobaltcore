@@ -88,7 +88,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | [db-credential-scoping](#db-credential-scoping) | `controlplane` | Per-CR OpenBao-backed service DB credential projection |
 | [dedicated-backing-services](#dedicated-backing-services) | `cp` (ephemeral namespace) | Opt-in per-service dedicated database/cache: provisioning, ownership, sizing, and collective readiness gating |
 | [sizing-profile](#sizing-profile) | `cp` (ephemeral namespace) + `SizingProfile` `sizing-<namespace>` | Sizing from a cluster-scoped `SizingProfile`: the managed backing services take the resolved sizing, a profile edit reaches them, and a deleted profile turns `SizingReady` False |
-| [messaging](#messaging) | `cp` (ephemeral namespace) | The shared RabbitMQ bus: provisioned from `spec.infrastructure.messaging` with no service declared, owned, sized from `replicas`, gating `InfrastructureReady` on `AllReplicasReady`, and frozen against removal |
+| [messaging](#messaging) | `cp` (ephemeral namespace) | The shared RabbitMQ bus: provisioned from `spec.infrastructure.messaging` with no service declared, owned, sized from the `Minimal` profile, gating `InfrastructureReady` on `AllReplicasReady`, and frozen against removal |
 | [dedicated-namespaces](#dedicated-namespaces) | `cp` (ephemeral namespace) | Per-service dedicated namespaces: Managed/External lifecycles, backing-service placement, ownership labels, per-namespace tenant stores, and the deletion sweep |
 | [multi-controlplane](#multi-controlplane) | `controlplane-a`, `controlplane-b` | Per-CR admin-credential isolation across two tenants; rotation non-interference |
 | [secret-store-scoping](#secret-store-scoping) | — (namespace-only) | Per-ControlPlane OpenBao identity via a namespaced `SecretStore`; OpenBao-enforced cross-tenant isolation |
@@ -110,10 +110,10 @@ paths any other chassis or metadata agent would share.
 1. **Infrastructure** — owned MariaDB (`openstack-db`) and Memcached
    (`openstack-memcached`) created and owned by the ControlPlane;
    `InfrastructureReady=True`. The shared bus is referenced brownfield against a
-   vhost of this suite's own on the kind broker, so no broker is projected: the
-   RabbitMQ Cluster Operator's default 1 CPU / 2Gi broker request does not fit
-   the single 4-vCPU CI node beside the seven services and the OVN control
-   plane. `tests/e2e/cinder/broker-vhost.sh create` takes that vhost on
+   vhost of this suite's own on the kind broker, so no broker is projected: a
+   projected broker would count against the 4 CPU / 16 GiB
+   [node budget](#node-budget-link-6z) beside the kind broker the job already
+   runs. `tests/e2e/cinder/broker-vhost.sh create` takes that vhost on
    `shared-rabbitmq` and renders its transport URL into the
    `controlplane-keystone-messaging` Secret; the suite's `finally` block calls
    the helper with `delete`, which tolerates a broker that is absent or
@@ -193,7 +193,7 @@ paths any other chassis or metadata agent would share.
    `controlplane-keystone-neutron-messaging` the ControlPlane delivers and the
    child references brownfield, the `spec.ovn.centralRef` whose empty namespace
    resolved to the ControlPlane's own, and `spec.workers.deployment.replicas`
-   taken from `sizing.neutron.workers.replicas`; `NeutronReady=True`.
+   taken from the `Minimal` profile; `NeutronReady=True`.
 
 5j. **Network catalog** — owned K-ORC network Service plus an internal and a
    public Endpoint, both advertising the in-cluster Neutron API
@@ -213,7 +213,7 @@ paths any other chassis or metadata agent would share.
    peer carries: the `glanceEndpoint` and `keyManager.barbican.endpoint` of the
    sibling services, the `internalTenant` project and user IDs read off the
    registration's `status.account` rather than hardcoded, the API replica count
-   taken from `sizing.cinder.api.replicas`, the two satellites `nfs1`
+   taken from the `Minimal` profile, the two satellites `nfs1`
    (`CinderBackend`) and `nfsbk` (`CinderBackupBackend`) carrying the bare entry
    names and attached by `cinderRef`, and `status.volumeServices[0].host`
    reporting `controlplane-keystone-cinder@nfs1`, the host identity the volumes
@@ -275,6 +275,12 @@ paths any other chassis or metadata agent would share.
    longer than the step can wait.
 
 6. **Aggregate** — `Ready=True` with reason `AllReady`.
+
+6z. **Node budget** — under `E2E_NODE_BUDGET=true`,
+   `hack/ci-check-node-budget.sh` sums the effective requests of every pod on
+   the kind node except the compute-node data plane and fails above 4000m CPU
+   or 16Gi memory. Without the variable the link prints a SKIP line. See
+   [Node budget (Link 6z)](#node-budget-link-6z).
 
 6a. **Service status** — `status.services[]` reports eight entries, ready, in the
    order `setServicesStatus` emits them: keystone, horizon, glance, placement,
@@ -404,6 +410,60 @@ advertises a chassis role nothing serves. With the shared
 rather than inherited: chainsaw applies the suite's `exec` budget to each script
 operation, so an unpinned `catch` or `finally` would each carry 30 minutes of
 their own.
+
+#### Node budget (Link 6z)
+
+The full ControlPlane stack on the `Minimal` sizing profile has to fit one
+4 vCPU / 16 GiB node. The kind node of the self-hosted runner is larger than
+that, so a stack that outgrows the target would still schedule there. Link 6z
+turns the target into a check. Right after the aggregate `Ready=True` of
+Link 6, the suite runs `hack/ci-check-node-budget.sh`, which reads the cluster
+and changes nothing:
+
+- It expects exactly one node and exits 2 otherwise.
+- It lists every pod on that node that is neither `Succeeded` nor `Failed`,
+  across all namespaces.
+- It computes each pod's effective request per resource with the scheduler's
+  rule: the larger of the container sum plus the `restartPolicy: Always` init
+  containers and the largest other init container, which counts together with
+  the `restartPolicy: Always` init containers declared before it, plus
+  `spec.overhead`. A missing request counts as 0.
+- It prints one row per pod (`NAMESPACE/POD`, CPU in millicores, memory in
+  MiB, sorted by CPU), then a `TOTAL` and a `BUDGET` row.
+- It exits 0 within budget, and 1 with one
+  `ci-check-node-budget: over budget: cpu <total>m > <budget>m` or
+  `… memory <total>Mi > <budget>Mi` line per exceeded resource. It exits 2 when
+  it cannot measure: a failing `kubectl`, an unparsable quantity, or no `jq`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `NODE_BUDGET_CPU` | `4000m` | CPU budget, a Kubernetes quantity |
+| `NODE_BUDGET_MEMORY` | `16Gi` | Memory budget, a Kubernetes quantity |
+| `NODE_BUDGET_SELECTOR` | empty (count every pod) | Label selector passed to `kubectl get pods -l`; only the pods it matches count |
+
+The suite sets `NODE_BUDGET_SELECTOR` to
+`app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute)`.
+Those are the OVN chassis, the metadata agent and the fake compute of the
+compute leg. They stand in for a hypervisor, which lies outside a budget for
+the control plane, its backing services, the operators and the platform stack.
+Everything else counts, including `kube-system`, the OVN central,
+the kind NFS export, the shared RabbitMQ broker and K-ORC.
+
+The link enforces the budget only when `E2E_NODE_BUDGET=true`, which the
+`e2e-controlplane` job sets on the full-chain step. That job also exports
+`OPERATOR_REPLICAS=1`, so every operator runs one replica, as in the kind
+devstack. Without the variable the link prints
+`SKIP: node budget gate (set E2E_NODE_BUDGET=true to enforce)`, so a local run
+on a busier cluster does not fail. To enforce it against a local stack, run
+the suite with the variable set, or call the script directly:
+
+```bash
+NODE_BUDGET_SELECTOR='app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute)' \
+  hack/ci-check-node-budget.sh
+```
+
+The gate proves that the requests fit. The larger CI node does not reproduce
+the CPU contention of a real 4 vCPU host.
 
 ### external-keystone
 
@@ -562,7 +622,7 @@ ControlPlane first and the profile last on every exit path.
 Asserts the shared
 [RabbitMQ message bus](../c5c3/controlplane-crd.md#messagingspec): a
 `ControlPlane` that declares `spec.infrastructure.messaging` in managed mode
-(`clusterRef: cp-rabbitmq`, `replicas: 1`) and **no service at all**
+(`clusterRef: cp-rabbitmq`) and **no service at all**
 (`services: {}`). A broker that appears can only come from the messaging block
 itself, which is the distinction the suite exists to pin: a database and a cache
 follow the services that consume them, the bus does not.
@@ -578,7 +638,7 @@ What it checks on a live cluster:
 - it carries a **controller owner reference with `blockOwnerDeletion`** from the
   ControlPlane, the teardown contract the sibling dedicated-backing-services
   suite pins for MariaDB and Memcached;
-- its `spec.replicas` is `1`, taken from the declared block;
+- its `spec.replicas` is `1`, taken from the fixture's `Minimal` profile;
 - it reaches `AllReplicasReady=True` within 600s. The RabbitMQ Cluster Operator
   publishes no `Ready` condition, so this is the condition the reconciler gates
   on as well;
@@ -616,10 +676,11 @@ doomed wait for a broker the cluster can never create.
 Two things are left unasserted on purpose. **Consumer wiring** is one: no service
 reads the bus yet, so the suite stops at the provisioned, owned, sized, ready
 broker, and the transport-URL projection into a service's oslo.messaging config
-lands with the first consumer. **Pod resources** are the other: the fixture pins
-none, so the broker comes up on the operator's defaults (1 CPU and 2Gi per pod,
-a 10Gi PVC). A pod that will not schedule on the CI node is a finding to report;
-the fixture stays as it is.
+lands with the first consumer. **Pod resources** are the other: the `Minimal`
+profile sizes the broker at 100m CPU and 512Mi per pod, limited at 512Mi,
+instead of the operator's default of 1 CPU and 2Gi, and the PVC stays at the
+operator's 10Gi. A pod that will not schedule on the CI node is a finding to
+report; the fixture stays as it is.
 
 ### dedicated-namespaces
 
@@ -949,6 +1010,7 @@ tests/e2e/c5c3/
 - [CI Workflow](../ci-cd/ci-workflow.md) — The dedicated `e2e-controlplane` job
 - [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md) — `WITH_CONTROLPLANE` deployment wiring
 - `tests/e2e/chainsaw-config.yaml` — Shared Chainsaw configuration
+- `hack/ci-check-node-budget.sh` — The node budget gate of Link 6z
 
 ### federated-controlplane
 

@@ -189,8 +189,8 @@ Each is the only automated check on the invariant it pins — operational
 independence and the fail-closed write path — and a regression in either goes red
 on a leg that reports green. Moving them onto the pod leg means taking the Cinder
 stack, the NFS export and the broker there with them, which the blocking leg's
-4-vCPU runner has not been sized for; it is tracked as a follow-up rather than
-done here. The
+`blacksmith-4vcpu-ubuntu-2404` runner has not been sized for; it is tracked as
+a follow-up rather than done here. The
 `ovn` leg is the third one, on the `self-hosted` runners as well and
 `continue-on-error` like the network one. It sets `WITH_OVN_KERNEL_MODULES=true` so
 `hack/deploy-infra.sh` modprobes `openvswitch` and `geneve` on the host (the chassis
