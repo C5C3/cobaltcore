@@ -165,7 +165,7 @@ if [[ "${noop}" == "true" ]]; then
   emit noop true
   for out in go docs helm target-cluster-chart has-e2e-operators e2e-infra \
     e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso \
-    e2e-external-keystone e2e-multicluster e2e-ovn-overlay \
+    e2e-external-keystone e2e-autoscaling e2e-multicluster e2e-ovn-overlay \
     e2e-operator-upgrade tempest changed-tempest changed-proxy \
     build-e2e-images actionlint; do
     emit "$out" false
@@ -278,14 +278,14 @@ cond=false
 if filter_on tests_prometheus; then cond=true; fi
 e2e_prometheus=$(or_force "$cond")
 
-# The three ControlPlane jobs share two triggers: a change to operators/c5c3/**
+# The four ControlPlane jobs share two triggers: a change to operators/c5c3/**
 # (they are the real tests of that operator, whose own e2e leg carries only the
 # sibling CRDs) and the ci:controlplane label. Each adds its own suite filter on
 # top.
 #
 # Deliberately FILTER_c5c3 rather than membership of op_changed: a shared Go
-# change puts every operator in that set, and these three jobs are the most
-# expensive in the pipeline (up to 220 minutes each). A shared change still runs
+# change puts every operator in that set, and these four jobs are the most
+# expensive in the pipeline (up to 240 minutes each). A shared change still runs
 # the c5c3 e2e leg; ci:controlplane or ci:full asks for the full chain.
 cp_common=false
 if filter_on c5c3 || has_label "ci:controlplane"; then cp_common=true; fi
@@ -301,6 +301,10 @@ e2e_controlplane_sso=$(or_force "$cond")
 cond="$cp_common"
 if filter_on tests_external_keystone; then cond=true; fi
 e2e_external_keystone=$(or_force "$cond")
+
+cond="$cp_common"
+if filter_on tests_autoscaling; then cond=true; fi
+e2e_autoscaling=$(or_force "$cond")
 
 cond=false
 if filter_on tests_multicluster || has_label "ci:multicluster"; then cond=true; fi
@@ -439,6 +443,7 @@ build_e2e_images=false
 if [[ "$has_e2e_operators" == "true" || "$e2e_chaos" == "true" ||
   "$e2e_prometheus" == "true" || "$e2e_controlplane" == "true" ||
   "$e2e_controlplane_sso" == "true" || "$e2e_external_keystone" == "true" ||
+  "$e2e_autoscaling" == "true" ||
   "$e2e_multicluster" == "true" || "$e2e_ovn_overlay" == "true" ||
   "$e2e_operator_upgrade" == "true" || "$tempest" == "true" ]]; then
   build_e2e_images=true
@@ -461,6 +466,7 @@ emit e2e-prometheus "$e2e_prometheus"
 emit e2e-controlplane "$e2e_controlplane"
 emit e2e-controlplane-sso "$e2e_controlplane_sso"
 emit e2e-external-keystone "$e2e_external_keystone"
+emit e2e-autoscaling "$e2e_autoscaling"
 emit e2e-multicluster "$e2e_multicluster"
 emit e2e-ovn-overlay "$e2e_ovn_overlay"
 emit e2e-operator-upgrade "$e2e_operator_upgrade"

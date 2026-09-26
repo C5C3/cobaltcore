@@ -154,13 +154,14 @@ test_ci_yaml_wires_all_four_sides() {
   assert_filter_is_wired tests_controlplane e2e-controlplane
   assert_filter_is_wired tests_controlplane_sso e2e-controlplane-sso
   assert_filter_is_wired tests_external_keystone e2e-external-keystone
+  assert_filter_is_wired tests_autoscaling e2e-autoscaling
 
-  # The three jobs run on three separate clusters and each owns its own suite,
+  # The four jobs run on four separate clusters and each owns its own suite,
   # so each gates on an output of its own. A file-wide grep would let a typo in
-  # any one of them hide behind the other two, which is exactly the
+  # any one of them hide behind the other three, which is exactly the
   # permanently-skipped job this file exists to catch.
   local job
-  for job in e2e-controlplane e2e-controlplane-sso e2e-external-keystone; do
+  for job in e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling; do
     assert_contains "$job gates on its own output" \
       "$(job_block "$job")" "needs.changes.outputs.${job} == 'true'"
   done
@@ -220,6 +221,18 @@ test_filter_covers_the_machinery_and_the_suites() {
   assert_contains "the External-mode suite has a filter of its own" \
     "$block" "tests/e2e/c5c3/external-keystone/**"
 
+  # The autoscaling job also runs on the metrics-server overlay it deploys and
+  # on the shared HPA code the suite drives.
+  block=$(filter_block tests_autoscaling)
+  assert_contains "the autoscaling suite has a filter of its own" \
+    "$block" "tests/e2e-autoscaling/**"
+  assert_contains "the autoscaling filter lists the metrics-server overlay" \
+    "$block" "deploy/kind/metrics-server/**"
+  assert_contains "the autoscaling filter lists the HPA builder" \
+    "$block" "internal/common/deployment/builders.go"
+  assert_contains "the autoscaling filter lists the HPA flow" \
+    "$block" "internal/common/deployment/hpa_flow.go"
+
   # The sidecar reaches the keystone e2e leg through image_proxy; the SSO suite
   # pins it to the locally built :dev tag and is scheduled by its own filter.
   block=$(filter_block image_proxy)
@@ -255,6 +268,20 @@ test_job_runs_all_three_suites() {
     "3" "$(grep -c 'E2E_REQUIRE_CONTROLPLANE_STACK: "true"' <<<"$block")"
 }
 
+test_autoscaling_job_runs_its_suite() {
+  echo "Test: the autoscaling job runs its suite on a cluster with metrics-server"
+
+  local block
+  block=$(job_block e2e-autoscaling)
+  assert_not_empty "the job exists" "$block"
+  assert_contains "the job runs the autoscaling suite" \
+    "$block" "tests/e2e-autoscaling/"
+  assert_contains "the job deploys metrics-server" \
+    "$block" 'WITH_METRICS_SERVER: "true"'
+  assert_contains "the job seeds the suite's ControlPlane name" \
+    "$block" "CONTROLPLANE_NAME: cp-autoscaling"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -268,6 +295,7 @@ test_resolve_script_errors_without_operators
 test_ci_yaml_wires_all_four_sides
 test_filter_covers_the_machinery_and_the_suites
 test_job_runs_all_three_suites
+test_autoscaling_job_runs_its_suite
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

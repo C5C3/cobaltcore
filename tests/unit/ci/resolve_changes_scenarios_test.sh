@@ -69,7 +69,7 @@ expect_all() {
 }
 
 # The jobs a cheap change must never schedule.
-EXPENSIVE="e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-multicluster tempest"
+EXPENSIVE="e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling e2e-multicluster tempest"
 
 SENTINEL_TARGETS='{"target":["__none__"]}'
 SENTINEL_OPERATORS='{"operator":["__none__"]}'
@@ -96,7 +96,7 @@ test_c5c3_change_runs_the_controlplane_trio() {
   # are where that operator is actually exercised.
   scenario "a c5c3 operator change" refs/heads/main FILTER_c5c3=true
   expect e2e-operators '{"operator":["c5c3"]}'
-  expect_all true e2e-controlplane e2e-controlplane-sso e2e-external-keystone
+  expect_all true e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling
   expect_all false e2e-chaos tempest e2e-multicluster e2e-prometheus
 }
 
@@ -176,7 +176,14 @@ test_special_suites_run_only_their_own_job() {
 
   scenario "a ControlPlane SSO suite edit" refs/heads/main FILTER_tests_controlplane_sso=true
   expect e2e-controlplane-sso true
-  expect_all false e2e-controlplane e2e-external-keystone
+  expect_all false e2e-controlplane e2e-external-keystone e2e-autoscaling
+
+  # The autoscaling filter also carries the metrics-server overlay and the
+  # shared HPA code, which schedule this job and none of its siblings.
+  scenario "an autoscaling suite edit" refs/heads/main FILTER_tests_autoscaling=true
+  expect e2e-autoscaling true
+  expect build-e2e-images true
+  expect_all false e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-chaos tempest
 }
 
 # ---------------------------------------------------------------------------
@@ -338,7 +345,7 @@ test_ci_chaos_and_its_alias() {
 test_ci_controlplane_and_multicluster() {
   scenario "ci:controlplane on a glance pull request" refs/heads/main \
     FILTER_glance=true PR_LABELS='["ci:controlplane"]'
-  expect_all true e2e-controlplane e2e-controlplane-sso e2e-external-keystone
+  expect_all true e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling
 
   scenario "ci:multicluster on its own" refs/heads/main PR_LABELS='["ci:multicluster"]'
   expect e2e-multicluster true
@@ -359,6 +366,7 @@ test_non_ci_label_resolves_to_nothing() {
   expect go false
   expect has-e2e-operators false
   expect build-e2e-images false
+  expect e2e-autoscaling false
   expect test-targets "$SENTINEL_TARGETS"
   expect e2e-operators "$SENTINEL_OPERATORS"
   expect changed-operators '[]'
@@ -485,7 +493,7 @@ test_outputs_are_complete() {
   local expected key
   expected="noop go docs helm target-cluster-chart e2e-infra e2e-chaos
     e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone
-    e2e-multicluster e2e-operator-upgrade tempest actionlint changed-tempest
+    e2e-autoscaling e2e-multicluster e2e-operator-upgrade tempest actionlint changed-tempest
     changed-proxy build-e2e-images has-e2e-operators changed-operators
     changed-services tempest-services test-targets e2e-operators"
   for key in $expected; do
