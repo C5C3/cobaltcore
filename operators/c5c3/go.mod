@@ -13,7 +13,7 @@ require (
 	github.com/c5c3/cobaltcore/operators/nova v0.0.0-00010101000000-000000000000
 	github.com/c5c3/cobaltcore/operators/ovn v0.0.0-00010101000000-000000000000
 	github.com/c5c3/cobaltcore/operators/placement v0.0.0-00010101000000-000000000000
-	github.com/dc-tec/openbao-operator v0.0.0-20260922111451-ef96ef2ddcaa
+	github.com/dc-tec/openbao-operator v0.0.0-20260926195753-817dc121b2df
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/go-logr/logr v1.4.4
 	github.com/k-orc/openstack-resource-controller/v2 v2.5.1-0.20260917133841-ae545905edc2
