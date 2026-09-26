@@ -9,6 +9,7 @@ import (
 
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -175,6 +176,46 @@ func TestBuildHPA_ExplicitMinAndBothMetrics(t *testing.T) {
 
 	g.Expect(hpa.Spec.MinReplicas).To(gomega.HaveValue(gomega.Equal(int32(2))))
 	g.Expect(hpa.Spec.Metrics).To(gomega.HaveLen(2))
+}
+
+// Without a behavior block the HPA carries none, so Kubernetes' defaults
+// decide the scaling speed.
+func TestBuildHPA_NoBehaviorRendersNil(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	hpa := BuildHPA("ns", "ks", nil, &commonv1.DeploymentSpec{Replicas: 1}, &commonv1.AutoscalingSpec{
+		MaxReplicas:          3,
+		TargetCPUUtilization: ptr.To(int32(150)),
+	})
+
+	g.Expect(hpa.Spec.Behavior).To(gomega.BeNil())
+	g.Expect(hpa.Spec.Metrics[0].Resource.Target.AverageUtilization).To(gomega.HaveValue(gomega.Equal(int32(150))))
+}
+
+// A set behavior block reaches the HPA unchanged, as a copy: changing the
+// rendered HPA must not write through to the CR's spec.
+func TestBuildHPA_CopiesBehavior(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	in := &commonv1.AutoscalingSpec{
+		MaxReplicas:          3,
+		TargetCPUUtilization: ptr.To(int32(150)),
+		Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
+			ScaleDown: &autoscalingv2.HPAScalingRules{
+				StabilizationWindowSeconds: ptr.To(int32(15)),
+				Policies: []autoscalingv2.HPAScalingPolicy{
+					{Type: autoscalingv2.PercentScalingPolicy, Value: 100, PeriodSeconds: 15},
+				},
+			},
+		},
+	}
+	want := in.Behavior.DeepCopy()
+
+	hpa := BuildHPA("ns", "ks", nil, &commonv1.DeploymentSpec{Replicas: 1}, in)
+
+	g.Expect(hpa.Spec.Behavior).To(gomega.Equal(want))
+	*hpa.Spec.Behavior.ScaleDown.StabilizationWindowSeconds = 300
+	g.Expect(in.Behavior.ScaleDown.StabilizationWindowSeconds).To(gomega.HaveValue(gomega.Equal(int32(15))))
 }
 
 // The two default constraints spread across zones first and nodes second,

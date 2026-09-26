@@ -105,8 +105,10 @@ func BuildPDB(namespace, name string, labels, selector map[string]string, spec *
 // normalizes a zero-valued (webhook-bypassed) count to the default, so a
 // bypassed spec never yields an invalid minReplicas=0 the API server would
 // reject. Metrics are added for CPU and/or memory utilization based on the
-// autoscaling spec. name is used for both the HPA and its scale target
-// Deployment (the shared sub-resource naming convention).
+// autoscaling spec, and Behavior is a copy of autoscaling.Behavior (nil when
+// unset, which leaves the Kubernetes defaults in force). name is used for both
+// the HPA and its scale target Deployment (the shared sub-resource naming
+// convention).
 func BuildHPA(namespace, name string, labels map[string]string, spec *commonv1.DeploymentSpec, autoscaling *commonv1.AutoscalingSpec) *autoscalingv2.HorizontalPodAutoscaler {
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
@@ -122,6 +124,7 @@ func BuildHPA(namespace, name string, labels map[string]string, spec *commonv1.D
 			},
 			MinReplicas: ptr.To(EffectiveMinReplicas(spec, autoscaling)),
 			MaxReplicas: autoscaling.MaxReplicas,
+			Behavior:    autoscaling.Behavior.DeepCopy(),
 		},
 	}
 

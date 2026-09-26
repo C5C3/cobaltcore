@@ -6,6 +6,7 @@ package types
 
 import (
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -232,19 +233,37 @@ type AutoscalingSpec struct {
 	// The HPA measures it against the summed CPU requests of every container
 	// in the API pod, so while it is set the webhook rejects a zero or
 	// negative CPU request, or a limit the request would be copied from.
+	// A value above 100 is valid wherever a container may use more CPU than
+	// it requests. The webhook rejects a target that no container's CPU limit
+	// lets the pod reach.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=100
 	TargetCPUUtilization *int32 `json:"targetCPUUtilization,omitempty"`
 
 	// TargetMemoryUtilization is the target average memory utilization (percentage).
 	// The HPA measures it against the summed memory requests of every
 	// container in the API pod, so while it is set the webhook rejects a zero
 	// or negative memory request, or a limit the request would be copied from.
+	// A value above 100 is valid wherever a container may use more memory
+	// than it requests. A container whose block names no memory renders the
+	// same figure as request and limit, so the webhook rejects a target that
+	// no container's memory limit lets the pod reach.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=100
 	TargetMemoryUtilization *int32 `json:"targetMemoryUtilization,omitempty"`
+
+	// Behavior configures how fast the HorizontalPodAutoscaler scales up and
+	// down. The operator copies the block verbatim into the HPA's
+	// spec.behavior. A direction left unset takes the Kubernetes default:
+	// scale up at once, and scale down after a 300 s stabilization window.
+	// tolerance is a Kubernetes quantity: write it as a string or a
+	// milli-value ("0.05" or 50m), because the CRD schema rejects a bare
+	// decimal such as 0.05. It needs Kubernetes 1.33 or newer: an older API
+	// server refuses the HPA the operator applies, whose schema lacks the
+	// field, and one with the feature gate HPAConfigurableTolerance off drops
+	// it.
+	// +optional
+	Behavior *autoscalingv2.HorizontalPodAutoscalerBehavior `json:"behavior,omitempty"`
 }
 
 // NetworkPolicySpec defines network isolation for the service API pods.

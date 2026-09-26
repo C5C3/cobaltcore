@@ -10,6 +10,7 @@ package types
 
 import (
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/api/autoscaling/v2"
 	"k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +33,11 @@ func (in *AutoscalingSpec) DeepCopyInto(out *AutoscalingSpec) {
 		in, out := &in.TargetMemoryUtilization, &out.TargetMemoryUtilization
 		*out = new(int32)
 		**out = **in
+	}
+	if in.Behavior != nil {
+		in, out := &in.Behavior, &out.Behavior
+		*out = new(v2.HorizontalPodAutoscalerBehavior)
+		(*in).DeepCopyInto(*out)
 	}
 }
 
