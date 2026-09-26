@@ -657,6 +657,34 @@ e2e-controlplane-sso:
 	@kubectl get crd horizons.horizon.openstack.c5c3.io >/dev/null 2>&1 || { echo 'the horizon-operator is not installed; run `OPERATOR=horizon IMAGE_REPO=ghcr.io/c5c3/horizon-operator NAMESPACE=horizon-system hack/ci-deploy-operator.sh` first' >&2; exit 1; }
 	E2E_REQUIRE_CONTROLPLANE_STACK=true chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e-controlplane-sso/
 
+.PHONY: e2e-autoscaling
+# e2e-autoscaling runs the API autoscaler suite on a full ControlPlane: token
+# load scales Keystone from one pod to its HPA maximum and back, the
+# PodDisruptionBudget admits an eviction at the minimum, and every
+# database-backed API is checked against its SQL connection cap at its maximum.
+# The suite lives OUTSIDE tests/e2e/ so the per-CR e2e-operator matrix and
+# `make e2e` do not sweep it up (see tests/e2e-autoscaling/chainsaw-test.yaml).
+#
+# It needs metrics-server on top of the ControlPlane stack, so the three
+# preflights are kept separate: a missing metrics API must not read as a
+# missing ControlPlane stack — see review pattern
+# .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
+# This target satisfies the CI-to-Makefile parity expected by
+# .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
+# developers can reproduce the e2e-autoscaling CI job locally.
+#
+# The suite creates a ControlPlane named cp-autoscaling, so the OpenBao
+# bootstrap must have seeded that CR's admin-password path: deploy the stack
+# with the command the remediation lines name, then K-ORC and the ten
+# operators, as the CI job does.
+E2E_AUTOSCALING_INFRA := WITH_METRICS_SERVER=true WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=cp-autoscaling WITH_NFS=true WITH_MESSAGING=true
+e2e-autoscaling:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable; run `$(E2E_AUTOSCALING_INFRA) make deploy-infra` first' >&2; exit 1; }
+	@kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1 || { echo 'the c5c3 ControlPlane stack is not installed; run `$(E2E_AUTOSCALING_INFRA) make deploy-infra` (and deploy K-ORC + the operators) first' >&2; exit 1; }
+	@kubectl get --raw /apis/metrics.k8s.io/v1beta1 >/dev/null 2>&1 || { echo 'metrics-server is not serving the resource-metrics API; run `$(E2E_AUTOSCALING_INFRA) make deploy-infra` first' >&2; exit 1; }
+	@mkdir -p _output/reports
+	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e-autoscaling/
+
 .PHONY: e2e-operator-upgrade
 # e2e-operator-upgrade runs the keystone-operator helm-upgrade-in-place suite:
 # it fetches the last released chart+image from GHCR, installs it as the
