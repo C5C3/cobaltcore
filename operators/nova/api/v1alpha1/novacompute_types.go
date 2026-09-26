@@ -154,7 +154,8 @@ type NovaComputeSpec struct {
 
 	// ExtraConfig provides free-form INI sections merged over the pool's
 	// rendered config. It is the per-pool override surface. The keys the pods
-	// take from their environment or their mounts are rejected at admission.
+	// take from their environment or their mounts, and the keys that select the
+	// live-migration transport, are rejected at admission.
 	// +optional
 	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
 
