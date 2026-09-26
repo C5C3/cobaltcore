@@ -292,8 +292,8 @@ validating webhook is unavailable.
 | `spec.credentialKeys.maxActiveKeys` | Minimum: 3 | — |
 | `spec.autoscaling.maxReplicas` | Minimum: 1 | — |
 | `spec.autoscaling.minReplicas` | Minimum: 1 | — |
-| `spec.autoscaling.targetCPUUtilization` | Range: 1–100 | — |
-| `spec.autoscaling.targetMemoryUtilization` | Range: 1–100 | — |
+| `spec.autoscaling.targetCPUUtilization` | Minimum: 1 | — |
+| `spec.autoscaling.targetMemoryUtilization` | Minimum: 1 | — |
 | `spec.uwsgi.processes` | Minimum: 1 | — |
 | `spec.uwsgi.threads` | Minimum: 1 | — |
 | `spec.uwsgi.harakiri` | Minimum: 1 | — |
@@ -336,8 +336,9 @@ evict the one pod the HPA may leave running; above one it keeps
 | --- | --- | --- | --- | --- |
 | `minReplicas` | `*int32` | No | `spec.deployment.replicas` | Lower bound for the number of replicas. Minimum: 1. Defaults to `spec.deployment.replicas` when unset, allowing the HPA to scale down to the static replica count. The PodDisruptionBudget follows this bound: `maxUnavailable: 1` at one, `minAvailable: 1` above. |
 | `maxReplicas` | `int32` | Yes | — | Upper bound for the number of replicas. Minimum: 1. |
-| `targetCPUUtilization` | `*int32` | No\* | — | Target average CPU utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. While it is set, the webhook rejects a zero or negative CPU request on the API pod's containers. |
-| `targetMemoryUtilization` | `*int32` | No\* | — | Target average memory utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. While it is set, the webhook rejects a zero or negative memory request on the API pod's containers. |
+| `targetCPUUtilization` | `*int32` | No\* | — | Target average CPU utilization as a percentage of the CPU request. Minimum: 1, no maximum. A value above 100 is valid while a container of the API pod may use more CPU than it requests, which holds for any container without a CPU limit. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. While it is set, the webhook rejects a zero or negative CPU request on the API pod's containers, and a target above 100 that the containers' CPU limits make unreachable. |
+| `targetMemoryUtilization` | `*int32` | No\* | — | Target average memory utilization as a percentage of the memory request. Minimum: 1, no maximum. A container whose block names no memory renders the same figure as request and limit, so a value above 100 needs a container that names a memory limit above its request, or a memory request without a limit. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. While it is set, the webhook rejects a zero or negative memory request on the API pod's containers, and a target above 100 that the containers' memory limits make unreachable. |
+| `behavior` | [`*autoscalingv2.HorizontalPodAutoscalerBehavior`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/horizontal-pod-autoscaler-v2/#HorizontalPodAutoscalerSpec) | No | `nil` | Scale-up and scale-down rules (`stabilizationWindowSeconds`, `selectPolicy`, `policies`, `tolerance`). The operator copies the block verbatim into the HPA's `spec.behavior`. A direction left unset takes the Kubernetes default: scale up at once, scale down after a 300 s stabilization window. `tolerance` is a Kubernetes quantity: write it as a string or a milli-value (`"0.05"` or `50m`), because the CRD schema rejects a bare decimal such as `0.05`. It needs Kubernetes 1.33 or newer: an older API server refuses the HPA the operator applies, whose schema lacks the field, and one with the feature gate `HPAConfigurableTolerance` off drops it. The webhook applies the `autoscaling/v2` bounds at admission (see [Validation](#validating-webhook)). |
 
 \* At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required
 (enforced by CEL XValidation).
@@ -350,6 +351,17 @@ rejects a zero or negative request for the resource it measures, in
 names only a limit is checked on the limit, because the API server copies it
 into the request. A block that names neither passes: the operator's
 render-time default fills a positive request.
+
+A target above 100 is reachable only while some container of the API pod may
+use more than it requests. The webhook works out each container's ceiling
+under the render-time default: a block that names neither request nor limit
+is unbounded for CPU and capped at its request for memory, a request without a
+limit is unbounded, a limit without a request caps usage at the request the
+API server copies from it, and a request with a limit caps usage at
+limit/request. When every container is capped and the target exceeds the
+largest cap, the webhook rejects it with `can never be reached`. Since the
+operators set no default CPU limit, a CPU target above 100 passes unless a
+CPU limit is set on every container of the pod.
 
 ### HPA Resource Mapping
 
@@ -365,6 +377,7 @@ The HPA created from this spec has the following shape:
 | `spec.minReplicas` | `autoscaling.minReplicas` (or `spec.deployment.replicas` if unset) |
 | `spec.maxReplicas` | `autoscaling.maxReplicas` |
 | `spec.metrics` | CPU and/or memory `Resource` metrics based on which targets are set |
+| `spec.behavior` | A copy of `autoscaling.behavior` (unset when the CR sets none, so the Kubernetes defaults apply) |
 | `ownerReferences` | Points to the Keystone CR (controller: true) |
 
 ### Example
@@ -387,6 +400,13 @@ spec:
     maxReplicas: 10
     targetCPUUtilization: 80
     targetMemoryUtilization: 70
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 60
+        policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 30
 ```
 
 ---
@@ -1534,8 +1554,10 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Autoscaling minReplicas minimum | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas < 1` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Autoscaling min exceeds max | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas > maxReplicas` when set. |
 | Autoscaling maxReplicas vs replicas | `spec.autoscaling.maxReplicas` | `field.Invalid` | `minReplicas` is unset and `spec.deployment.replicas > autoscaling.maxReplicas`. Would otherwise produce an HPA the API server rejects, because `minReplicas` defaults to `spec.deployment.replicas`. |
-| Autoscaling CPU utilization range | `spec.autoscaling.targetCPUUtilization` | `field.Invalid` | Value outside `1..100` when set. |
-| Autoscaling memory utilization range | `spec.autoscaling.targetMemoryUtilization` | `field.Invalid` | Value outside `1..100` when set. |
+| Autoscaling CPU utilization minimum | `spec.autoscaling.targetCPUUtilization` | `field.Invalid` | Value below 1 when set (`targetCPUUtilization must be at least 1`). Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. There is no upper bound, as in `autoscaling/v2`. |
+| Autoscaling memory utilization minimum | `spec.autoscaling.targetMemoryUtilization` | `field.Invalid` | Value below 1 when set (`targetMemoryUtilization must be at least 1`). Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. There is no upper bound, as in `autoscaling/v2`. |
+| Autoscaling target unreachable | `spec.autoscaling.targetCPUUtilization`, `spec.autoscaling.targetMemoryUtilization` | `field.Invalid` | A target above 100 that no container of the API pod can reach, because every container's limit caps its usage below it (`can never be reached`). The containers are the `keystone` container and, while `spec.federation` is set, the federation proxy; a block that names no memory caps memory at its request. Webhook-only: the rule reads the resources blocks. |
+| Autoscaling behavior bounds | `spec.autoscaling.behavior.<scaleUp\|scaleDown>.*` | `field.Invalid` / `field.NotSupported` | The `autoscaling/v2` rules for each set direction: `stabilizationWindowSeconds` outside 0..3600, a `selectPolicy` other than `Max`, `Min` or `Disabled` (NotSupported), a policy `type` other than `Pods` or `Percent` (NotSupported), a policy `value` of zero or below, a policy `periodSeconds` outside 1..1800, and a negative `tolerance`. An empty `policies` list passes; the API server defaults it. Webhook-only: the embedded upstream type carries no markers, so without this check a bad value would surface only as a reconcile error when the operator applies the HPA. |
 | Autoscaling no metric targets | `spec.autoscaling` | `field.Required` | Neither `targetCPUUtilization` nor `targetMemoryUtilization` is set. Defense-in-depth alongside the CEL XValidation rule. |
 | Autoscaling target over a zero request | `spec.deployment.resources.requests.<cpu\|memory>`, or `limits.<cpu\|memory>` when no request is named | `field.Invalid` | A zero or negative request, or a zero or negative limit the API server would copy into the request, for the resource a set `targetCPUUtilization` or `targetMemoryUtilization` measures. The HPA divides the pods' usage by the sum of their containers' requests, so a zero request fails the metric or inflates it. A block that names neither passes, because the render-time default fills a positive request. Webhook-only: a `resource.Quantity` floor has no marker. |
 | Autoscaling target over a zero proxy request | `spec.federation.proxyResources.requests.<cpu\|memory>`, or `limits.<cpu\|memory>` | `field.Invalid` | The same rule for the federation proxy sidecar, which joins the API pod while `spec.federation` is set. |
@@ -1728,6 +1750,8 @@ is pinned by a Chainsaw step.
 | `jobs-resources-request-above-limit-rejected` | `28-jobs-resources-request-above-limit.yaml` | `spec.jobs.resources` request within limit (webhook) | Error containing "spec.jobs.resources.requests.memory", "Invalid value" and "memory request must not exceed limit" |
 | `deployment-toleration-empty-key-equal-rejected` | `29-deployment-toleration-empty-key-equal.yaml` | `spec.deployment.tolerations` empty key requires `Exists` (webhook) | Error containing "spec.deployment.tolerations[0].operator", "Invalid value" and "operator must be Exists when" |
 | `autoscaling-cpu-request-zero-rejected` | `30-autoscaling-cpu-request-zero.yaml` | `spec.deployment.resources` positive CPU request under a CPU target (webhook) | Error containing "spec.deployment.resources.requests.cpu" and "cpu request must be greater than zero" |
+| `autoscaling-behavior-window-above-max-rejected` | `31-autoscaling-behavior-window-above-max.yaml` | `spec.autoscaling.behavior` `autoscaling/v2` bounds (webhook) | Error containing "spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds" and "stabilizationWindowSeconds must be between 0 and 3600" |
+| `autoscaling-memory-target-unreachable-rejected` | `32-autoscaling-memory-target-unreachable.yaml` | Memory target above 100 that no container of the API pod can reach (webhook) | Error containing "spec.autoscaling.targetMemoryUtilization" and "can never be reached" |
 
 Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
 so each is applied as an UPDATE of the base CR and is rejected by the

@@ -20,7 +20,7 @@ chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 | `secretKeyRef` | `SecretRefSpec` | yes | Secret holding the Django `SECRET_KEY`; `key` defaults to `secret-key`. Injected as the `HORIZON_SECRET_KEY` env var, never into the ConfigMap |
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 8080; requires `hostname` and `parentRef.name` |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 8080 from the listed sources; egress auto-derived (DNS, the Keystone endpoint port, cache ports). At least one ingress source is required (fail-closed) |
-| `autoscaling` | `*AutoscalingSpec` | no | HPA bounds and CPU/memory utilization targets |
+| `autoscaling` | `*AutoscalingSpec` | no | HPA bounds, CPU/memory utilization targets and scaling behavior |
 | `logging` | `*LoggingSpec` | no | Django `LOGGING` dictConfig derivation: root `level`, `debug`, `perLoggerLevels`. Defaulted to `text`/`INFO`/`debug: false` |
 | `extraConfig` | `map[string]JSON` | no | Free-form Django settings rendered after the operator defaults (user values win). `SECRET_KEY` is rejected by the webhook. Overrides of operator-owned settings (for example `STATIC_ROOT`, `COMPRESS_OFFLINE`) are honored but reported via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event |
 | `websso` | `*WebSSOSpec` | no | Federated single-sign-on choices on the login page. When nil the operator renders no `WEBSSO_*` settings and the dashboard offers local credentials only. The c5c3 ControlPlane projects this from the federation backends attached to its Keystone child |

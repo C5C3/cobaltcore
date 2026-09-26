@@ -2814,6 +2814,7 @@ func (r *KeystoneReconciler) reconcileHPA(ctx context.Context,
 | `scaleTargetRef.name` | `{name}` |
 | `minReplicas` | `spec.autoscaling.minReplicas` (falls back to `spec.deployment.replicas` when nil) |
 | `maxReplicas` | `spec.autoscaling.maxReplicas` |
+| `behavior` | A copy of `spec.autoscaling.behavior` (nil when unset, leaving the Kubernetes defaults in force) |
 
 **Metrics:**
 

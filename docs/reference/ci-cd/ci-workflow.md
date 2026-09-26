@@ -92,7 +92,7 @@ Five labels add jobs. None of them ever removes one.
 | `ci:full` | everything, and builds every image |
 | `ci:tempest` | the Tempest legs of the services the pull request touches, plus the legs that deploy a changed `ovn` or `placement` operator (neither has a leg of its own), or the keystone legs when it touches none |
 | `ci:chaos` | both `e2e-chaos` legs. `run-chaos` is an alias |
-| `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone` |
+| `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling` |
 | `ci:multicluster` | `e2e-multicluster` |
 
 The `labeled` trigger means a label applied after the last push starts a run that
@@ -201,6 +201,8 @@ E2E Jobs (pull requests only, depend on build-e2e-images):
                      if: needs.changes.outputs.e2e-controlplane == 'true'
   e2e-external-keystone > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-controlplane == 'true'
+  e2e-autoscaling > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+                     if: needs.changes.outputs.e2e-autoscaling == 'true'
   e2e-ovn-overlay > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-ovn-overlay == 'true'
   tempest ────────> needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
@@ -1336,6 +1338,56 @@ one under review — which is why the `e2e_controlplane` path filter also watche
 `c5c3-operator:dev` from the image map: built in this run when `operators/c5c3/**`
 changed, and otherwise the digest behind `ghcr.io/c5c3/c5c3-operator:latest`, so both
 dev images exist even for a full-chain-test-only change.
+
+### e2e-autoscaling
+
+Runs the `tests/e2e-autoscaling/` Chainsaw suite on a full ControlPlane with
+metrics-server: token load scales Keystone from one pod to its HPA maximum and
+back, the PodDisruptionBudget admits an eviction at the minimum, and every
+database-backed API fits its SQL connection cap at its HPA maximum. See
+[e2e-autoscaling](../testing/controlplane-e2e-tests.md#e2e-autoscaling) for
+what each step asserts. The suite lives outside `tests/e2e/`, so neither the
+`e2e-operator` legs nor `make e2e` sweep it up, and the job brings up a kind
+cluster of its own: the ControlPlane webhook permits one ControlPlane per
+namespace, and no other ControlPlane job deploys metrics-server.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs only when `e2e-autoscaling == 'true'`, the upstream
+`build-e2e-images` job succeeded, and no dependency failed or was cancelled.
+Forked pull requests skip it, as they do every self-hosted job.
+
+The `setup-e2e-infra` composite action threads `WITH_METRICS_SERVER` from the
+step `env` to `hack/deploy-infra.sh`, which deploys the kind metrics-server
+overlay (`deploy/kind/metrics-server/`) the HPAs read their CPU utilization
+from. The job passes `CONTROLPLANE_NAME: cp-autoscaling`, so the OpenBao
+bootstrap seeds the admin-password path of the suite's ControlPlane, and opts
+into NFS and the shared broker as `e2e-controlplane` does.
+
+`timeout-minutes: 190` covers about 40 minutes of bring-up, as
+`e2e-controlplane` estimates it, plus the suite's 145-minute ceiling (the sum
+of its step, catch and cleanup timeouts) and a few minutes of margin. Both terms
+are estimates to confirm against the first green run.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 3 | `hack/ci-resolve-ovn-version.sh` | Exports `OVN_VERSION` from the pin in `images/ovn/Dockerfile` |
+| 4 | `load-e2e-images` composite | Restores the ten operator `:dev` images, the `keystone`, `glance`, `placement`, `barbican`, `neutron`, `cinder` and `nova` images at `2025.2`, `ovn:${OVN_VERSION}` and `tempest:2025.2` |
+| 5 | `kind load docker-image` | Loads the nineteen images into kind |
+| 6 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=cp-autoscaling WITH_CONTROLPLANE_CR=false WITH_NFS=true WITH_MESSAGING=true WITH_METRICS_SERVER=true` |
+| 7 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit, with `GITHUB_TOKEN` |
+| 8 | `hack/ci-deploy-operator.sh` ×10 | Deploys the keystone, horizon, glance, placement, barbican, ovn, neutron, cinder, nova and c5c3 operators, in `e2e-controlplane`'s order |
+| 9 | `chainsaw test` | Runs `tests/e2e-autoscaling/` |
+| 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostics with `OPERATOR=c5c3`, then with `OPERATOR_ONLY=1` for keystone, glance, placement, barbican, neutron, cinder and nova |
+| 11 | Upload JUnit report | Uploads `_output/reports/` as `e2e-autoscaling-junit-report` (14-day retention) |
+| 12 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+
+**Path filter:** the shared ControlPlane triggers (`FILTER_c5c3` or the
+`ci:controlplane` label) plus `tests_autoscaling`: `tests/e2e-autoscaling/**`,
+`deploy/kind/metrics-server/**`, `internal/common/deployment/builders.go` and
+`internal/common/deployment/hpa_flow.go`. `ci:full` and a `v*` tag force it on,
+and a labeled no-op resolves it to `false`.
 
 ### e2e-external-keystone
 
