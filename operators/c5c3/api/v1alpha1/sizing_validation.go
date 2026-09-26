@@ -46,6 +46,10 @@ type sizingComponent struct {
 	priorityClassName *string
 	spread            []SpreadConstraintSpec
 	autoscaling       *commonv1.AutoscalingSpec
+	// sidecarResources are the resources of the other containers an API
+	// component's pod runs (the Keystone federation proxy), which an
+	// autoscaling target is measured against too.
+	sidecarResources []*corev1.ResourceRequirements
 }
 
 func containerComponent(path *field.Path, c *ContainerSizingSpec) sizingComponent {
@@ -79,10 +83,10 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 		tolerations:       s.Tolerations,
 		priorityClassName: s.PriorityClassName,
 	}}
-	api := func(path *field.Path, a *APISizingSpec) {
+	api := func(path *field.Path, a *APISizingSpec, sidecars ...*corev1.ResourceRequirements) {
 		if a != nil {
 			c := deploymentComponent(path, &a.DeploymentSizingSpec)
-			c.autoscaling = a.Autoscaling
+			c.autoscaling, c.sidecarResources = a.Autoscaling, sidecars
 			out = append(out, c)
 		}
 	}
@@ -119,7 +123,11 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 	container(fldPath.Child("secretStore"), s.SecretStore)
 	if ks := s.Keystone; ks != nil {
 		p := fldPath.Child("keystone")
-		api(p.Child("api"), ks.API)
+		var proxy []*corev1.ResourceRequirements
+		if fp := ks.FederationProxy; fp != nil && fp.Resources != nil {
+			proxy = append(proxy, fp.Resources)
+		}
+		api(p.Child("api"), ks.API, proxy...)
 		jobs(p.Child("jobs"), ks.Jobs)
 		container(p.Child("federationProxy"), ks.FederationProxy)
 	}
@@ -175,15 +183,19 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 // validateSizingSpec checks the values of one SizingSpec as written, for the
 // ControlPlane's spec.sizing and a SizingProfile's spec alike. It runs the
 // checks the schema cannot express (requests within limits, the label grammar
-// of node selectors and tolerations, the Galera quorum and the Memcached
-// memory floor) and the webhook twins of the markers on the spread entries and
-// the database volume size.
+// of node selectors and tolerations, the autoscaling behavior bounds the
+// autoscaling/v2 API enforces, the Galera quorum and the Memcached memory
+// floor) and the webhook twins of the markers on the spread entries and the
+// database volume size.
 func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 	var allErrs field.ErrorList
 	for _, c := range sizingComponents(fldPath, s) {
 		allErrs = append(allErrs, validation.RequestsWithinLimits(c.path.Child("resources"), c.resources)...)
 		allErrs = append(allErrs, validation.NodeSelectorLabels(c.path.Child("nodeSelector"), c.nodeSelector)...)
 		allErrs = append(allErrs, validation.Tolerations(c.path.Child("tolerations"), c.tolerations)...)
+		if c.autoscaling != nil {
+			allErrs = append(allErrs, validation.AutoscalingBehavior(c.path.Child("autoscaling", "behavior"), c.autoscaling.Behavior)...)
+		}
 		for i, sc := range c.spread {
 			scPath := c.path.Child("spreadConstraints").Index(i)
 			if sc.MaxSkew < 1 {
@@ -222,11 +234,11 @@ func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 // validateResolvedSizing checks a merged SizingSpec, the one a ControlPlane
 // actually projects: a request a profile sets may exceed a limit the
 // ControlPlane sets, a request of zero may meet an autoscaling target set
-// elsewhere, or a replica count may exceed a maxReplicas set elsewhere. It
-// checks requests within limits on every component, and every API autoscaling
-// block against its component's requests and replica count. The Keystone
-// federation proxy runs in the API pods, so its resources meet the Keystone
-// target too.
+// elsewhere, a limit may make a target above 100 unreachable, or a replica
+// count may exceed a maxReplicas set elsewhere. It checks requests within
+// limits on every component, and every API autoscaling block against its
+// component's requests, limits and replica count. The Keystone federation
+// proxy runs in the API pods, so its resources meet the Keystone target too.
 //
 // The replica check is the child webhooks' rule: without minReplicas the HPA
 // minimum defaults to the projected replica count (commonv1.DefaultReplicas
@@ -238,6 +250,8 @@ func validateResolvedSizing(fldPath *field.Path, s *SizingSpec) field.ErrorList 
 		rrPath := c.path.Child("resources")
 		allErrs = append(allErrs, validation.RequestsWithinLimits(rrPath, c.resources)...)
 		allErrs = append(allErrs, validation.AutoscalingTargetRequests(rrPath, c.resources, c.autoscaling)...)
+		allErrs = append(allErrs, validation.AutoscalingTargetsReachable(c.path.Child("autoscaling"), c.autoscaling,
+			append([]*corev1.ResourceRequirements{c.resources}, c.sidecarResources...)...)...)
 		if a := c.autoscaling; a != nil && a.MinReplicas == nil {
 			if replicas := ptr.Deref(c.replicas, commonv1.DefaultReplicas); replicas > a.MaxReplicas {
 				allErrs = append(allErrs, field.Invalid(c.path.Child("autoscaling", "maxReplicas"), a.MaxReplicas,

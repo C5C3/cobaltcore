@@ -7,13 +7,16 @@
 package controller
 
 import (
+	"context"
 	"testing"
 
 	. "github.com/onsi/gomega"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/validation"
@@ -182,6 +185,66 @@ func TestProjectDeployment(t *testing.T) {
 		projectDeployment(&d, c5c3v1alpha1.PodPlacementSpec{}, nil, 3, selector)
 		g.Expect(d.Affinity).NotTo(BeNil())
 		g.Expect(d.TerminationGracePeriodSeconds).To(Equal(ptr.To[int64](60)))
+	})
+}
+
+// TestProjectAPI_CarriesAutoscalingBehavior pins that the regenerated
+// deepcopy carries spec.sizing.<service>.api.autoscaling.behavior to the
+// child as a copy, and that an unset block projects none.
+func TestProjectAPI_CarriesAutoscalingBehavior(t *testing.T) {
+	selector := keystonev1alpha1.APIPodSelector("cp-keystone")
+	withBehavior := func() *c5c3v1alpha1.APISizingSpec {
+		api := apiReplicas(1)
+		api.Autoscaling = &commonv1.AutoscalingSpec{
+			MinReplicas:          ptr.To[int32](1),
+			MaxReplicas:          3,
+			TargetCPUUtilization: ptr.To[int32](150),
+			Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
+				ScaleDown: &autoscalingv2.HPAScalingRules{
+					StabilizationWindowSeconds: ptr.To[int32](15),
+					Policies: []autoscalingv2.HPAScalingPolicy{
+						{Type: autoscalingv2.PercentScalingPolicy, Value: 100, PeriodSeconds: 15},
+					},
+				},
+			},
+		}
+		return api
+	}
+
+	t.Run("a set behavior reaches the child as a copy", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := withBehavior()
+		var d commonv1.DeploymentSpec
+		_, autoscaling := projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, api, selector)
+		g.Expect(autoscaling).To(Equal(api.Autoscaling))
+		*autoscaling.Behavior.ScaleDown.StabilizationWindowSeconds = 300
+		g.Expect(api.Autoscaling.Behavior.ScaleDown.StabilizationWindowSeconds).To(HaveValue(Equal(int32(15))),
+			"changing the child's copy must leave the ControlPlane's block unchanged")
+	})
+
+	t.Run("an unset autoscaling projects nil", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		var d commonv1.DeploymentSpec
+		_, autoscaling := projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, apiReplicas(1), selector)
+		g.Expect(autoscaling).To(BeNil())
+		_, autoscaling = projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, nil, selector)
+		g.Expect(autoscaling).To(BeNil())
+	})
+
+	t.Run("the Keystone child carries the behavior", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := keystoneTestScheme(t)
+		cp := keystoneControlPlane()
+		cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{
+			Keystone: &c5c3v1alpha1.KeystoneSizingSpec{API: withBehavior()},
+		})
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.reconcileKeystone(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		k := getProjectedKeystone(t, c, cp)
+		g.Expect(k.Spec.Autoscaling.Behavior).To(Equal(withBehavior().Autoscaling.Behavior))
 	})
 }
 

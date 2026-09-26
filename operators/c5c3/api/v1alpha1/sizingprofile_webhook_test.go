@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -81,6 +82,18 @@ func TestSizingProfileValidateCreate(t *testing.T) {
 			name: "a priority class naming no PriorityClass",
 			spec: SizingSpec{Nova: &NovaSizingSpec{Jobs: &JobSizingSpec{PriorityClassName: ptr.To("missing")}}},
 			want: `spec.nova.jobs.priorityClassName: Not found: "missing"`,
+		},
+		{
+			name: "an autoscaling policy period above 1800 seconds",
+			spec: keystoneAPI(APISizingSpec{Autoscaling: &commonv1.AutoscalingSpec{
+				MaxReplicas:          3,
+				TargetCPUUtilization: ptr.To[int32](80),
+				Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{ScaleDown: &autoscalingv2.HPAScalingRules{
+					Policies: []autoscalingv2.HPAScalingPolicy{{Type: autoscalingv2.PodsScalingPolicy, Value: 1, PeriodSeconds: 1801}},
+				}},
+			}}),
+			want: "spec.keystone.api.autoscaling.behavior.scaleDown.policies[0].periodSeconds: Invalid value: 1801: " +
+				"periodSeconds must be between 1 and 1800",
 		},
 	}
 	for _, tc := range tests {
