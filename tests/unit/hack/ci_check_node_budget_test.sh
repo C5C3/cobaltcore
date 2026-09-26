@@ -423,7 +423,7 @@ test_pod_selector() {
   local tmp selector
   tmp="$(new_tmp)"
   trap 'rm -rf "$tmp"' RETURN
-  selector='app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute)'
+  selector='app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute,metrics-server,vertical-pod-autoscaler)'
 
   STUB_PODS_JSON='{"items":[]}'
   run_budget "$tmp" "NODE_BUDGET_SELECTOR=$selector" >/dev/null
@@ -446,7 +446,7 @@ test_wiring() {
   assert_file_contains_fixed "the suite runs the gate script" \
     "$SUITE" "../../../../hack/ci-check-node-budget.sh"
   assert_file_contains_fixed "the suite excludes the compute-node data plane" \
-    "$SUITE" "NODE_BUDGET_SELECTOR='app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute)'"
+    "$SUITE" "NODE_BUDGET_SELECTOR='app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute,metrics-server,vertical-pod-autoscaler)'"
   assert_file_contains_fixed "the suite enforces only under E2E_NODE_BUDGET=true" \
     "$SUITE" 'if [ "${E2E_NODE_BUDGET:-false}" = "true" ]; then'
   assert_file_contains_fixed "the suite prints a SKIP line otherwise" \
