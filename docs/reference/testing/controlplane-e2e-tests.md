@@ -469,6 +469,13 @@ NODE_BUDGET_SELECTOR='app.kubernetes.io/name notin (ovnchassis,neutronmetadataag
 The gate proves that the requests fit. The larger CI node does not reproduce
 the CPU contention of a real 4 vCPU host.
 
+Under the `ci:measure-sizing` label the `e2e-controlplane` job deploys with
+`WITH_VPA=true` and records what a VPA recommender recommends for every
+workload in `openstack` while this suite and the two after it run
+([Sizing measurement](../ci-cd/ci-workflow.md#sizing-measurement)). The
+recommendations for the Minimal ControlPlane of this suite and its backing
+services are the input for the Minimal profile figures.
+
 ### external-keystone
 
 Proves the External-mode adoption contract against a Keystone the operator does

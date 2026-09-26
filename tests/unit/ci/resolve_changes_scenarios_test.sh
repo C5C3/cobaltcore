@@ -352,6 +352,45 @@ test_ci_controlplane_and_multicluster() {
   expect has-e2e-operators false
 }
 
+test_ci_measure_sizing_runs_the_measurement_jobs() {
+  # The measurement runs in the ControlPlane pair and in every Tempest leg,
+  # whatever the pull request touches, and adds nothing else.
+  scenario "ci:measure-sizing on a docs-only pull request" refs/heads/main \
+    FILTER_docs=true PR_LABELS='["ci:measure-sizing"]'
+  expect_all true measure-sizing e2e-controlplane e2e-controlplane-sso tempest \
+    build-e2e-images
+  expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
+  expect_all false e2e-external-keystone e2e-autoscaling e2e-multicluster \
+    e2e-chaos e2e-prometheus has-e2e-operators noop
+
+  scenario "a ci:measure-sizing label event" refs/heads/main \
+    FILTER_docs=true EVENT_ACTION=labeled EVENT_LABEL=ci:measure-sizing \
+    PR_LABELS='["ci:measure-sizing"]'
+  expect noop false
+  expect measure-sizing true
+}
+
+test_measure_sizing_is_never_implied() {
+  # The measurement costs fourteen self-hosted jobs, so only its own label
+  # asks for it: not ci:full, not a tag push, not a plain pull request.
+  scenario "ci:full without ci:measure-sizing" refs/heads/main \
+    FILTER_glance=true PR_LABELS='["ci:full"]'
+  expect measure-sizing false
+  expect tempest true
+
+  scenario "a v* tag push, for the measurement" refs/tags/v1.2.3
+  expect measure-sizing false
+
+  scenario "a glance pull request without labels" refs/heads/main FILTER_glance=true
+  expect measure-sizing false
+
+  scenario "a non-CI label event, for the measurement" refs/heads/main \
+    FILTER_glance=true EVENT_ACTION=labeled EVENT_LABEL=bug \
+    PR_LABELS='["bug","ci:measure-sizing"]'
+  expect noop true
+  expect measure-sizing false
+}
+
 # ---------------------------------------------------------------------------
 # The labeled no-op
 # ---------------------------------------------------------------------------
@@ -493,7 +532,7 @@ test_outputs_are_complete() {
   local expected key
   expected="noop go docs helm target-cluster-chart e2e-infra e2e-chaos
     e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone
-    e2e-autoscaling e2e-multicluster e2e-operator-upgrade tempest actionlint changed-tempest
+    e2e-autoscaling e2e-multicluster e2e-operator-upgrade tempest measure-sizing actionlint changed-tempest
     changed-proxy build-e2e-images has-e2e-operators changed-operators
     changed-services tempest-services test-targets e2e-operators"
   for key in $expected; do
@@ -536,6 +575,8 @@ test_ci_full_runs_everything
 test_ci_tempest_follows_the_touched_service
 test_ci_chaos_and_its_alias
 test_ci_controlplane_and_multicluster
+test_ci_measure_sizing_runs_the_measurement_jobs
+test_measure_sizing_is_never_implied
 test_non_ci_label_resolves_to_nothing
 test_ci_label_event_is_not_a_noop
 test_tag_push_forces_everything
