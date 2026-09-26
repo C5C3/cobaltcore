@@ -226,9 +226,10 @@ var OwnedConfigKeys = []config.OwnedKey{
 // The Rejected entries are the ones the pod takes from its environment or its
 // mounts. An override of any of them is inert at runtime or names a socket or
 // directory the pod does not carry, and the password entries would copy the
-// service-user password into a ConfigMap. The [libvirt] entries are reported,
-// not rejected: each has a typed spec.libvirt field, and an override is honored
-// and surfaced through ExtraConfigHealthy.
+// service-user password into a ConfigMap. The four [libvirt] tuning entries are
+// reported, not rejected: each has a typed spec.libvirt field, and an override
+// is honored and surfaced through ExtraConfigHealthy. The live-migration entries
+// are Rejected, because they select whether a migration is encrypted.
 //
 // [DEFAULT] compute_driver and [vnc] server_listen are rendered as defaults and
 // are not owned: the e2e suites run the fake driver through spec.extraConfig,
@@ -244,12 +245,18 @@ var NovaComputeOwnedConfigKeys = []config.OwnedKey{
 	{Section: "oslo_concurrency", Key: "lock_path", Rejected: true, OwnedBy: "the /var/lib/nova host mount", Impact: "the locks live on the host mount; another path names a directory the container cannot write"},
 
 	// [libvirt] — the connection is the socket the pod mounts; the four
-	// tuning keys are typed fields.
+	// tuning keys are typed fields; the live-migration keys fix the transport
+	// to TLS.
 	{Section: "libvirt", Key: "connection_uri", Rejected: true, OwnedBy: "the /run/libvirt host mount", Impact: "the pod reaches the node's libvirtd over the mounted socket; another URI addresses a daemon the pod cannot reach"},
 	{Section: "libvirt", Key: "virt_type", OwnedBy: "spec.libvirt.virtType"},
 	{Section: "libvirt", Key: "cpu_mode", OwnedBy: "spec.libvirt.cpuMode"},
 	{Section: "libvirt", Key: "cpu_models", OwnedBy: "spec.libvirt.cpuModels"},
 	{Section: "libvirt", Key: "images_type", OwnedBy: "spec.libvirt.imagesType"},
+	{Section: "libvirt", Key: "live_migration_scheme", Rejected: true, OwnedBy: "operator-computed", Impact: "tls makes the source libvirtd reach the destination over TLS; another scheme sends the migration connection in clear or to a port libvirtd does not listen on"},
+	{Section: "libvirt", Key: "live_migration_with_native_tls", Rejected: true, OwnedBy: "operator-computed", Impact: "the switch encrypts the guest memory and disk stream with QEMU's TLS; turning it off sends that stream in clear"},
+	{Section: "libvirt", Key: "live_migration_uri", Rejected: true, OwnedBy: "operator-computed", Impact: "a set URI replaces the one nova builds from live_migration_scheme and can take the migration connection off TLS"},
+	{Section: "libvirt", Key: "live_migration_tunnelled", Rejected: true, OwnedBy: "operator-computed", Impact: "nova-compute refuses to start with tunnelled and native TLS migration both enabled"},
+	{Section: "libvirt", Key: "live_migration_inbound_addr", Rejected: true, OwnedBy: "status.hostIP (downward API)", Impact: "the address is env-injected via OS_LIBVIRT__LIVE_MIGRATION_INBOUND_ADDR; a file override is ignored at runtime"},
 
 	// [os_vif_ovs]
 	{Section: "os_vif_ovs", Key: "ovsdb_connection", Rejected: true, OwnedBy: "the /run/openvswitch host mount", Impact: "os-vif plugs instance ports over the mounted socket of the node's Open vSwitch; another address plugs them into a switch this node does not run"},

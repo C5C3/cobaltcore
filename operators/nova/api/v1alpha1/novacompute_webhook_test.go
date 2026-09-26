@@ -197,6 +197,41 @@ func TestNovaComputeWebhook_ValidateCreate_RejectsEachRule(t *testing.T) {
 			want: "spec.extraConfig[placement][password]",
 		},
 		{
+			name: "live_migration_scheme in extraConfig",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.ExtraConfig = map[string]map[string]string{"libvirt": {"live_migration_scheme": "tcp"}}
+			},
+			want: "spec.extraConfig[libvirt][live_migration_scheme]: Forbidden: live_migration_scheme is managed via operator-computed and must not be set in extraConfig",
+		},
+		{
+			name: "live_migration_with_native_tls in extraConfig",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.ExtraConfig = map[string]map[string]string{"libvirt": {"live_migration_with_native_tls": "false"}}
+			},
+			want: "spec.extraConfig[libvirt][live_migration_with_native_tls]: Forbidden: live_migration_with_native_tls is managed via operator-computed and must not be set in extraConfig",
+		},
+		{
+			name: "live_migration_uri in extraConfig",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.ExtraConfig = map[string]map[string]string{"libvirt": {"live_migration_uri": "qemu+tcp://%s/system"}}
+			},
+			want: "spec.extraConfig[libvirt][live_migration_uri]: Forbidden: live_migration_uri is managed via operator-computed and must not be set in extraConfig",
+		},
+		{
+			name: "live_migration_tunnelled in extraConfig",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.ExtraConfig = map[string]map[string]string{"libvirt": {"live_migration_tunnelled": "true"}}
+			},
+			want: "spec.extraConfig[libvirt][live_migration_tunnelled]: Forbidden: live_migration_tunnelled is managed via operator-computed and must not be set in extraConfig",
+		},
+		{
+			name: "live_migration_inbound_addr in extraConfig",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.ExtraConfig = map[string]map[string]string{"libvirt": {"live_migration_inbound_addr": "192.0.2.10"}}
+			},
+			want: "spec.extraConfig[libvirt][live_migration_inbound_addr]: Forbidden: live_migration_inbound_addr is managed via status.hostIP (downward API) and must not be set in extraConfig",
+		},
+		{
 			name: "newline in an extraConfig value",
 			edit: func(nc *NovaCompute) {
 				nc.Spec.ExtraConfig = map[string]map[string]string{"DEFAULT": {"debug": "true\n[x]"}}
@@ -310,6 +345,37 @@ func TestNovaComputeWebhook_CatalogCheck(t *testing.T) {
 		g.Expect(warnings).To(Equal(admission.Warnings{"extraConfig catalog check skipped: Nova openstack/nova not found"}))
 	})
 
+	t.Run("a live-migration key is rejected without the Nova", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w, _ := novaComputeWebhookWith()
+		nc := validNovaCompute()
+		nc.Spec.ExtraConfig = map[string]map[string]string{"libvirt": {"live_migration_scheme": "tcp"}}
+		warnings, err := w.ValidateCreate(context.Background(), nc)
+		expectInvalid(t, err, "spec.extraConfig[libvirt][live_migration_scheme]: Forbidden: "+
+			"live_migration_scheme is managed via operator-computed and must not be set in extraConfig")
+		g.Expect(warnings).To(Equal(admission.Warnings{"extraConfig catalog check skipped: Nova openstack/nova not found"}))
+	})
+
+	t.Run("an unowned live-migration option is admitted without a warning", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w, _ := novaComputeWebhookWith(referencedNova())
+		nc := validNovaCompute()
+		nc.Spec.ExtraConfig = map[string]map[string]string{"libvirt": {"live_migration_permit_auto_converge": "true"}}
+		warnings, err := w.ValidateCreate(context.Background(), nc)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(BeEmpty())
+	})
+
+	t.Run("an empty libvirt section is admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w, _ := novaComputeWebhookWith(referencedNova())
+		nc := validNovaCompute()
+		nc.Spec.ExtraConfig = map[string]map[string]string{"libvirt": {}}
+		warnings, err := w.ValidateCreate(context.Background(), nc)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(BeEmpty())
+	})
+
 	t.Run("an empty overlay reads nothing and warns nothing", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		w, reader := novaComputeWebhookWith()
@@ -390,6 +456,38 @@ func TestNovaComputeWebhook_ValidateUpdate(t *testing.T) {
 		newObj.Spec.ExtraConfig = map[string]map[string]string{"DEFAULT": {"cpu_allocation_ration": "16.0"}}
 		_, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
 		expectInvalid(t, err, "no such option in the nova 2025.2 option catalog")
+	})
+
+	t.Run("adding a live-migration key is rejected", func(t *testing.T) {
+		w, _ := novaComputeWebhookWith(referencedNova())
+		oldObj := validNovaCompute()
+		newObj := oldObj.DeepCopy()
+		newObj.Spec.ExtraConfig = map[string]map[string]string{"libvirt": {"live_migration_with_native_tls": "false"}}
+		_, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		expectInvalid(t, err, "spec.extraConfig[libvirt][live_migration_with_native_tls]: Forbidden: "+
+			"live_migration_with_native_tls is managed via operator-computed and must not be set in extraConfig")
+	})
+
+	// A pool admitted before the live-migration keys were rejected still
+	// carries one. Its finalizer removal leaves the spec alone and must pass, or
+	// the CR stays in Terminating; a spec edit on it is still validated.
+	t.Run("a deleting pool that carries a now-rejected key releases its finalizer", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w, _ := novaComputeWebhookWith(referencedNova())
+		stale := validNovaCompute()
+		stale.Spec.ExtraConfig = map[string]map[string]string{"libvirt": {"live_migration_tunnelled": "false"}}
+		stale.Finalizers = []string{"nova.openstack.c5c3.io/compute-drain"}
+		stale.DeletionTimestamp = ptr.To(metav1.Now())
+
+		released := stale.DeepCopy()
+		released.Finalizers = nil
+		_, err := w.ValidateUpdate(context.Background(), stale, released)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		edited := released.DeepCopy()
+		edited.Spec.NodeSelector = map[string]string{"openstack.c5c3.io/nova-compute-pool": "b"}
+		_, err = w.ValidateUpdate(context.Background(), stale, edited)
+		expectInvalid(t, err, "spec.extraConfig[libvirt][live_migration_tunnelled]: Forbidden")
 	})
 
 	t.Run("an overlong name is not re-checked on update", func(t *testing.T) {

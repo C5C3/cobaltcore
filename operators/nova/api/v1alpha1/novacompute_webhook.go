@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -112,7 +113,19 @@ func validateNovaComputeNameLength(name string) field.ErrorList {
 // NovaComputeSpec. The extraConfig catalog check re-runs only when the overlay
 // changed, so a CR whose overlay went stale against a newer catalog is not
 // rejected by an unrelated update such as a selector change.
+//
+// An update to a CR that is being deleted and leaves its spec alone is admitted
+// without validation. That is the drain finalizer's removal, and the rules
+// below can reject an unchanged spec that was admitted earlier: an operator
+// upgrade that rejects an owned key the CR still carries. Rejecting the removal
+// would hold the CR in Terminating with nothing left to edit. A deleting CR
+// whose spec changes is still validated. Default leaves the object untouched,
+// so the two specs compare as sent.
 func (w *NovaComputeWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *NovaCompute) (admission.Warnings, error) {
+	if newObj.DeletionTimestamp != nil && equality.Semantic.DeepEqual(oldObj.Spec, newObj.Spec) {
+		return nil, nil
+	}
+
 	updateErrs := validation.TargetClusterRefImmutable(
 		field.NewPath("spec", "targetClusterRef"),
 		oldObj.Spec.TargetClusterRef,
