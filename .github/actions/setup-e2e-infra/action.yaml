@@ -42,6 +42,15 @@
 # hack/deploy-infra.sh's `${WITH_METRICS_SERVER:-false}` default keeps
 # metrics-server out of the install.
 #
+# WITH_VPA is threaded the same way so the e2e-controlplane,
+# e2e-controlplane-sso and tempest jobs can opt in to the kind-only VPA
+# recommender when the `ci:measure-sizing` label runs the sizing measurement.
+# WITH_VPA=true implies metrics-server inside hack/deploy-infra.sh, whatever
+# WITH_METRICS_SERVER the calling job sets. When the calling job leaves
+# WITH_VPA unset or empty, `${{ env.WITH_VPA }}` resolves to an empty string
+# and hack/deploy-infra.sh's `${WITH_VPA:-false}` default keeps the
+# recommender out of the install.
+#
 # WITH_MESSAGING is threaded the same way so the Cinder e2e legs can opt in to
 # the kind-only `shared-rabbitmq` broker in `openstack`. When the calling job
 # leaves WITH_MESSAGING unset, `${{ env.WITH_MESSAGING }}` resolves to an empty
@@ -98,6 +107,8 @@ runs:
         WITH_NFS: ${{ env.WITH_NFS }}
         # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_METRICS_SERVER: ${{ env.WITH_METRICS_SERVER }}
+        # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
+        WITH_VPA: ${{ env.WITH_VPA }}
         # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_MESSAGING: ${{ env.WITH_MESSAGING }}
         # ControlPlane opt-in flags — empty when caller does not set them;

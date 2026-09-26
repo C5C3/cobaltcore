@@ -144,6 +144,15 @@ WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 # WITH_METRICS_SERVER=true to install it.
 WITH_METRICS_SERVER="${WITH_METRICS_SERVER:-false}"
 
+# Gates the opt-in VPA recommender kind overlay (deploy/kind/vpa), which the
+# sizing measurement of hack/ci-vpa-recommendations.sh reads its
+# recommendations from. Defaults to false so the kind Quick Start stays
+# minimal; set WITH_VPA=true to install it. The recommender reads the
+# resource-metrics API and has nothing to recommend without it, so
+# WITH_VPA=true also installs metrics-server.
+WITH_VPA="${WITH_VPA:-false}"
+if [[ "${WITH_VPA}" == "true" ]]; then WITH_METRICS_SERVER=true; fi
+
 # Gates the opt-in dizzy kind overlay (deploy/kind/dizzy) which installs
 # VictoriaMetrics + Grafana for dizzy load/chaos runs. Defaults to false so the
 # kind Quick Start stays minimal; set WITH_DIZZY=true to install.
@@ -2290,6 +2299,7 @@ main() {
   log "OVN kernel modules  : ${WITH_OVN_KERNEL_MODULES} (set WITH_OVN_KERNEL_MODULES=true to modprobe openvswitch and geneve on the host)"
   log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
   log "metrics-server      : ${WITH_METRICS_SERVER} (set WITH_METRICS_SERVER=true to install)"
+  log "VPA recommender    : ${WITH_VPA} (set WITH_VPA=true to install the recommender and metrics-server)"
   log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
   log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the kind NFS server + csi-driver-nfs, and to modprobe nfsd/nfs/nfsv4 on the host)"
   log "Message bus         : ${WITH_MESSAGING} (set WITH_MESSAGING=true for the kind-only shared-rabbitmq broker)"
@@ -2462,6 +2472,14 @@ main() {
   if [[ "${WITH_METRICS_SERVER}" == "true" ]]; then
     kubectl apply -k "${REPO_ROOT}/deploy/kind/metrics-server"
     log "metrics-server kind overlay applied (WITH_METRICS_SERVER=true)."
+  fi
+
+  # Opt-in VPA recommender overlay for the sizing measurement, applied right
+  # after metrics-server, whose resource-metrics API the recommender reads.
+  # Self-contained like the overlays above, so no `--load-restrictor` flag.
+  if [[ "${WITH_VPA}" == "true" ]]; then
+    kubectl apply -k "${REPO_ROOT}/deploy/kind/vpa"
+    log "VPA recommender kind overlay applied (WITH_VPA=true)."
   fi
 
   # Opt-in dizzy overlay (VictoriaMetrics + Grafana). Layered on top of the base
@@ -2798,6 +2816,10 @@ main() {
   if [[ "${WITH_METRICS_SERVER}" == "true" ]]; then
     helm_releases+=(metrics-server)
   fi
+  # vertical-pod-autoscaler follows metrics-server, which WITH_VPA implies.
+  if [[ "${WITH_VPA}" == "true" ]]; then
+    helm_releases+=(vertical-pod-autoscaler)
+  fi
   # dizzy-victoria-metrics and dizzy-grafana are appended last so the relative
   # ordering of the base releases is preserved exactly. wait_for_helmreleases
   # resolves each release's namespace dynamically, so the names suffice.
@@ -2917,6 +2939,23 @@ main() {
   # Invalidate kubectl's client-side discovery cache so that the newly
   # registered CRDs are visible to kubectl apply.
   kubectl api-resources > /dev/null 2>&1 || true
+
+  # The sizing measurement puts a VPA on every workload, the database
+  # StatefulSet included. The recommender accepts only a targetRef that is the
+  # topmost well-known or scalable controller, and the MariaDB CRD serves a
+  # scale subresource without a labelSelectorPath: a VPA on the StatefulSet is
+  # ConfigUnsupported because its MariaDB owner is scalable, and a VPA on the
+  # MariaDB finds no pod selector. Dropping the subresource on the kind cluster
+  # makes the StatefulSet the topmost controller. Nothing in the kind stack
+  # scales a MariaDB through /scale, and the mariadb-operator-crds HelmRelease
+  # has no drift detection that would restore it before a chart upgrade.
+  if [[ "${WITH_VPA}" == "true" ]]; then
+    kubectl get crd mariadbs.k8s.mariadb.com -o json \
+      | jq 'del(.spec.versions[].subresources.scale)' \
+      | kubectl replace -f - > /dev/null
+    log "MariaDB CRD scale subresource removed for the VPA recommender (WITH_VPA=true)."
+  fi
+
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     # The c5c3 ControlPlane provisions MariaDB/Memcached itself (managed mode), so
     # render the infrastructure overlay and drop those two CRs before applying —

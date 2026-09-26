@@ -2117,6 +2117,13 @@ When `WITH_VPA=true`, `hack/deploy-infra.sh` sets `WITH_METRICS_SERVER=true`,
 runs `kubectl apply -k deploy/kind/vpa` in Step 3 right after the
 metrics-server overlay, and appends `vertical-pod-autoscaler` to the Phase 3
 HelmRelease wait list. The banner prints the flag as `VPA recommender`.
+Once the MariaDB CRD is established, the script also removes the scale
+subresource from `mariadbs.k8s.mariadb.com`. The recommender only accepts a
+VPA on the topmost well-known or scalable controller, and the MariaDB scale
+subresource has no pod selector, so without the removal the database
+StatefulSet cannot be measured. The mariadb-operator-crds HelmRelease has no
+drift detection, so the change lasts until the next chart upgrade, and
+nothing in the kind stack scales a MariaDB through the subresource.
 
 **Opt-in usage:**
 
