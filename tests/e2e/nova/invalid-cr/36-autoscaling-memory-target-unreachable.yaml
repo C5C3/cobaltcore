@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.autoscaling.targetMemoryUtilization of 150 with no resources block is
+# rejected by the validating webhook alone. A container whose block names no
+# memory renders the same figure as request and limit, so the API pod can
+# never use more than 100% of its memory request and the HPA would never
+# scale out. The schema admits any target of at least 1, so the reachability
+# rule is the only one broken.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-invalid
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  apiDatabase:
+    clusterRef:
+      name: mariadb
+    database: nova_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: mariadb
+    database: nova
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: memcached
+  messaging:
+    clusterRef:
+      name: rabbitmq
+  keystoneEndpoint: http://keystone.openstack.svc:5000
+  serviceUser:
+    secretRef:
+      name: nova-service-user
+  metadata:
+    sharedSecretRef:
+      name: nova-metadata-secret
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 3
+    targetMemoryUtilization: 150

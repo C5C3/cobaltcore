@@ -2716,6 +2716,56 @@ FIXTURES: tuple[Fixture, ...] = (
             "          targetCPUUtilization: 80\n"
         ),
     ),
+    Fixture(
+        filename="130-sizing-autoscaling-behavior-policy-type.yaml",
+        comment=(
+            "An autoscaling scale-up policy of type Replicas (webhook-only): autoscaling/v2\n"
+            "knows Pods and Percent only, and the embedded type carries no enum, so the\n"
+            "schema admits it and every projected Keystone HPA would be refused at apply\n"
+            "time. The step anchors on\n"
+            "`spec.sizing.keystone.api.autoscaling.behavior.scaleUp.policies[0].type`,\n"
+            "`Unsupported value` and `Replicas`."
+        ),
+        name="cp-sizing-behavior-policy",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    keystone:\n"
+            "      api:\n"
+            "        autoscaling:\n"
+            "          maxReplicas: 3\n"
+            "          targetCPUUtilization: 80\n"
+            "          behavior:\n"
+            "            scaleUp:\n"
+            "              policies:\n"
+            "              - type: Replicas\n"
+            "                value: 1\n"
+            "                periodSeconds: 15\n"
+        ),
+    ),
+    Fixture(
+        filename="131-sizing-autoscaling-memory-target-unreachable.yaml",
+        comment=(
+            "A Keystone API memory target of 150 while the merged sizing names no memory\n"
+            "(webhook-only): the render-time default makes the memory request and limit\n"
+            "equal, so the pod can never use more than 100% of its request and the HPA\n"
+            "would never scale out. The step anchors on\n"
+            "`spec.sizing.keystone.api.autoscaling.targetMemoryUtilization` and `can never\n"
+            "be reached`."
+        ),
+        name="cp-sizing-memory-unreachable",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    keystone:\n"
+            "      api:\n"
+            "        autoscaling:\n"
+            "          maxReplicas: 3\n"
+            "          targetMemoryUtilization: 150\n"
+        ),
+    ),
 )
 
 

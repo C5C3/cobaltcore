@@ -518,6 +518,44 @@ FIXTURES: tuple[Fixture, ...] = (
             "    targetCPUUtilization: 80\n"
         ),
     ),
+    Fixture(
+        filename="23-autoscaling-behavior-window-above-max.yaml",
+        comment=(
+            "spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds above 3600\n"
+            "is rejected by the validating webhook alone. The embedded autoscaling/v2\n"
+            "type carries no kubebuilder bounds, so the schema admits it and the API\n"
+            "server would refuse the HPA only when the operator applies it, as a\n"
+            "reconcile error. The webhook mirrors the autoscaling/v2 bound instead."
+        ),
+        name="cinder-invalid-autoscaling-behavior",
+        extra=(
+            "  autoscaling:\n"
+            "    minReplicas: 1\n"
+            "    maxReplicas: 3\n"
+            "    targetCPUUtilization: 80\n"
+            "    behavior:\n"
+            "      scaleDown:\n"
+            "        stabilizationWindowSeconds: 3601\n"
+        ),
+    ),
+    Fixture(
+        filename="24-autoscaling-memory-target-unreachable.yaml",
+        comment=(
+            "spec.autoscaling.targetMemoryUtilization of 150 with no resources block is\n"
+            "rejected by the validating webhook alone. A container whose block names no\n"
+            "memory renders the same figure as request and limit, so the API pod can\n"
+            "never use more than 100% of its memory request and the HPA would never\n"
+            "scale out. The schema admits any target of at least 1, so the reachability\n"
+            "rule is the only one broken."
+        ),
+        name="cinder-invalid-autoscaling-memory-target",
+        extra=(
+            "  autoscaling:\n"
+            "    minReplicas: 1\n"
+            "    maxReplicas: 3\n"
+            "    targetMemoryUtilization: 150\n"
+        ),
+    ),
 )
 
 
