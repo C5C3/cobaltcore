@@ -316,11 +316,14 @@ func skeletonSizing(v reflect.Value) {
 
 // fillSizing sets every field of v: pointers are allocated, strings, integers
 // and maps take a value, and slices one element, recursively. Resources take
-// a CPU request, since a Quantity cannot be filled field by field.
+// a CPU request and any other Quantity takes 1, since a Quantity cannot be
+// filled field by field.
 func fillSizing(v reflect.Value) {
 	switch kind := v.Kind(); {
 	case v.Type() == reflect.TypeOf(corev1.ResourceRequirements{}):
 		v.Set(reflect.ValueOf(*resources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}, nil)))
+	case v.Type() == reflect.TypeOf(resource.Quantity{}):
+		v.Set(reflect.ValueOf(resource.MustParse("1")))
 	case kind == reflect.Pointer:
 		v.Set(reflect.New(v.Type().Elem()))
 		fillSizing(v.Elem())
