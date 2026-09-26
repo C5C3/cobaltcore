@@ -33,9 +33,9 @@
 #     suite would validate the sidecar already published on main rather than
 #     the one under review.
 #
-# Single-replica topology across database, cache, Keystone and Horizon so the
-# fresh-create chain schedules on a single-node kind cluster; storageSize is
-# pinned to 512Mi rather than the 100Gi CRD production default.
+# The Minimal sizing profile gives database, cache, Keystone and Horizon one
+# replica each and the database a 512Mi volume, so the fresh-create chain
+# schedules on a single-node kind cluster.
 # region controlplane-cr
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
@@ -52,13 +52,10 @@ spec:
       database: keystone
       secretRef:
         name: keystone-db
-      replicas: 1
-      storageSize: 512Mi
     cache:
       clusterRef:
         name: openstack-memcached
       backend: dogpile.cache.pymemcache
-      replicas: 1
   services:
     keystone:
       gateway:
@@ -83,12 +80,7 @@ spec:
         name: controlplane-sso-horizon-secret-key
         key: secret-key
   sizing:
-    keystone:
-      api:
-        replicas: 1
-    horizon:
-      api:
-        replicas: 1
+    profile: Minimal
   korc:
     adminCredential:
       cloudCredentialsRef:

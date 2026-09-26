@@ -14,8 +14,8 @@
 #   - it is OWNED by the ControlPlane (a controller owner reference with
 #     blockOwnerDeletion), the garbage-collection contract the sibling
 #     dedicated-backing-services suite pins for MariaDB and Memcached;
-#   - it is SIZED from the block: spec.replicas on the RabbitmqCluster comes from
-#     spec.infrastructure.messaging.replicas;
+#   - it is SIZED from the resolved sizing: spec.replicas on the RabbitmqCluster
+#     comes from the fixture's Minimal profile (1);
 #   - the brownfield shared database and cache provision NOTHING, so the broker is
 #     the only backing-service instance in the namespace;
 #   - readiness is GATED on the broker. The RabbitMQ Cluster Operator sets no
@@ -240,12 +240,12 @@ spec:
           # carries no namespace, so it lands in the ephemeral one.
           kubectl apply -n "${CP_NS}" -f 00-controlplane-cr.yaml
 
-          # ── The bus is provisioned, owned, and sized from the block ────────
+          # ── The bus is provisioned, owned, and sized from the profile ──────
           # The fixture declares no service, so a broker appearing here can only
           # come from spec.infrastructure.messaging itself.
           wait_exists rabbitmqcluster "${BUS}" 120
           assert_owned rabbitmqcluster "${BUS}"
-          assert_eq "RabbitmqCluster replica count comes from spec.infrastructure.messaging" "1" \
+          assert_eq "RabbitmqCluster replica count comes from the Minimal profile" "1" \
             "$(kubectl get rabbitmqcluster "${BUS}" -n "${CP_NS}" -o 'jsonpath={.spec.replicas}')"
 
           # ── The brownfield SHARED database and cache provision NOTHING ─────
@@ -352,9 +352,10 @@ spec:
           kubectl describe rabbitmqcluster cp-rabbitmq -n "${NAMESPACE}" 2>&1 || true
           echo "=== All backing-service CRs in the namespace ==="
           kubectl get rabbitmqcluster,mariadb,memcached -n "${NAMESPACE}" 2>&1 || true
-          # The broker's own pods and volumes: the operator defaults request 1 CPU
-          # and 2Gi per pod on a 10Gi PVC, so an unschedulable pod or an unbound
-          # claim is the first thing to look at on a single-node cluster.
+          # The broker's own pods and volumes: the Minimal profile requests 100m
+          # CPU and 512Mi per pod on the operator's default 10Gi PVC, so an
+          # unschedulable pod or an unbound claim is the first thing to look at
+          # on a single-node cluster.
           echo "=== Pods and PVCs in the namespace ==="
           kubectl get pods,pvc -n "${NAMESPACE}" -o wide 2>&1 || true
           # The cluster-operator labels a broker's pods with the RabbitmqCluster
