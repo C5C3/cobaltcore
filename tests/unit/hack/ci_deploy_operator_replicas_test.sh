@@ -9,7 +9,9 @@
 #     echoes the count in the banner;
 #   - an unset knob adds no replicas flag, so the chart default of 2 applies;
 #   - OPERATOR_REPLICAS=0 and OPERATOR_REPLICAS=two exit 1 with an ::error::
-#     line before anything is applied.
+#     line before anything is applied;
+#   - the e2e-controlplane job sets OPERATOR_REPLICAS=1 for its operator
+#     deploy steps.
 #
 # Follows tests/unit/hack/ci_deploy_operator_federation_cidrs_test.sh.
 #
@@ -20,6 +22,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DEPLOY_SH="$PROJECT_ROOT/hack/ci-deploy-operator.sh"
+CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 PASS=0
 FAIL=0
@@ -154,11 +157,28 @@ test_replicas_invalid() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 4: the e2e-controlplane job runs one replica per operator
+# ---------------------------------------------------------------------------
+test_ci_wiring() {
+  echo "Test: e2e-controlplane sets OPERATOR_REPLICAS=1"
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed (2 checks skipped)"
+    SKIP=$((SKIP + 2))
+    return
+  fi
+  assert_eq "the job-level env sets OPERATOR_REPLICAS to 1" "1" \
+    "$(yq '.jobs["e2e-controlplane"].env.OPERATOR_REPLICAS' "$CI_YAML")"
+  assert_eq "no other job sets OPERATOR_REPLICAS" "e2e-controlplane" \
+    "$(yq '[.jobs | to_entries[] | select(.value.env.OPERATOR_REPLICAS != null) | .key] | join(",")' "$CI_YAML")"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_replicas_set
 test_replicas_unset
 test_replicas_invalid
+test_ci_wiring
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -17,7 +17,10 @@
 #   - two nodes, a failing node listing and a failing pod listing exit 2 with
 #     their message;
 #   - NODE_BUDGET_SELECTOR reaches kubectl as one -l argument, and no -l is
-#     passed when it is empty.
+#     passed when it is empty;
+#   - the full-chain suite runs the gate as Link 6z with the compute-node
+#     exclusion under E2E_NODE_BUDGET=true and prints a SKIP line otherwise,
+#     and the e2e-controlplane job sets E2E_NODE_BUDGET=true on that step.
 #
 # Usage: bash tests/unit/hack/ci_check_node_budget_test.sh
 
@@ -26,6 +29,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 BUDGET_SH="$PROJECT_ROOT/hack/ci-check-node-budget.sh"
+SUITE="$PROJECT_ROOT/tests/e2e/c5c3/full-controlplane-keystone/chainsaw-test.yaml"
+CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 PASS=0
 FAIL=0
@@ -433,6 +438,30 @@ test_pod_selector() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 12: Link 6z and the e2e-controlplane job wire the gate
+# ---------------------------------------------------------------------------
+test_wiring() {
+  echo "Test: the full-chain suite and the e2e-controlplane job wire the gate"
+
+  assert_file_contains_fixed "the suite runs the gate script" \
+    "$SUITE" "../../../../hack/ci-check-node-budget.sh"
+  assert_file_contains_fixed "the suite excludes the compute-node data plane" \
+    "$SUITE" "NODE_BUDGET_SELECTOR='app.kubernetes.io/name notin (ovnchassis,neutronmetadataagent,nova-fake-compute)'"
+  assert_file_contains_fixed "the suite enforces only under E2E_NODE_BUDGET=true" \
+    "$SUITE" 'if [ "${E2E_NODE_BUDGET:-false}" = "true" ]; then'
+  assert_file_contains_fixed "the suite prints a SKIP line otherwise" \
+    "$SUITE" "SKIP: node budget gate (set E2E_NODE_BUDGET=true to enforce)"
+
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed (1 check skipped)"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+  assert_eq "the full-chain step of e2e-controlplane sets E2E_NODE_BUDGET=true" "true" \
+    "$(yq '.jobs["e2e-controlplane"].steps[] | select(.name == "Run full ControlPlane chain E2E test") | .env.E2E_NODE_BUDGET' "$CI_YAML")"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 if [ -z "$JQ_BIN" ]; then
@@ -453,6 +482,7 @@ else
   test_pods_listing_fails
   test_pod_selector
 fi
+test_wiring
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

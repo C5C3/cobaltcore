@@ -2426,6 +2426,12 @@ jobs:
     permissions:
       contents: read
       packages: read
+    # One replica per operator, as the kind devstack runs them, so the node
+    # budget the full-chain suite enforces (Link 6z) counts a devstack-shaped
+    # footprint. The ten `Deploy <op>-operator` steps pass it on to
+    # hack/ci-deploy-operator.sh; the other e2e jobs keep the chart default of 2.
+    env:
+      OPERATOR_REPLICAS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Create kind cluster
@@ -2614,6 +2620,8 @@ jobs:
           NAMESPACE: c5c3-system
       # E2E_REQUIRE_CONTROLPLANE_STACK=true flips the suite's presence guard from
       # SKIP to a hard failure, so missing wiring cannot go green.
+      # E2E_NODE_BUDGET=true turns Link 6z from a SKIP line into the gate that
+      # fails when the stack requests more than 4000m CPU or 16Gi memory.
       - name: Run full ControlPlane chain E2E test
         run: |
           mkdir -p _output/reports
@@ -2621,6 +2629,7 @@ jobs:
             tests/e2e/c5c3/full-controlplane-keystone/
         env:
           E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+          E2E_NODE_BUDGET: "true"
       # The foreign-namespace registration suite runs against the same cluster but
       # in its own invocation, so its failure cannot cascade into the full-chain
       # result above. A distinct report name keeps that run's JUnit XML intact.
