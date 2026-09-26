@@ -6,8 +6,9 @@
 #
 # A Keystone-only managed plane: the suite needs a live identity plane to
 # register against and nothing else, so no Horizon, Glance, Placement or
-# Barbican. Backing services are kind-sized (single replica, small volume) so the
-# whole thing schedules on one node beside the full-chain suite's stack.
+# Barbican. The Minimal sizing profile sizes the backing services (single
+# replica, small volume) so the whole thing schedules on one node beside the
+# full-chain suite's stack.
 #
 # The CR carries NO metadata.namespace. Chainsaw runs the suite in its own
 # ephemeral namespace and the test applies this CR into it, which is what gives
@@ -41,19 +42,14 @@ spec:
       database: keystone
       secretRef:
         name: keystone-db
-      replicas: 1
-      storageSize: 512Mi
     cache:
       clusterRef:
         name: openstack-memcached
       backend: dogpile.cache.pymemcache
-      replicas: 1
   services:
     keystone: {}
   sizing:
-    keystone:
-      api:
-        replicas: 1
+    profile: Minimal
   korc:
     adminCredential:
       cloudCredentialsRef:

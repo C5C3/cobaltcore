@@ -43,6 +43,4 @@ spec:
         hostname: keystone.127-0-0-1.nip.io
         path: /
   sizing:
-    keystone:
-      api:
-        replicas: 1
+    profile: Minimal

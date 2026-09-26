@@ -26,8 +26,8 @@
 # The SHARED infrastructure block is MANAGED (clusterRef), so the operator
 # provisions its backing services — and, because backing services follow the
 # service, it provisions them in each SERVICE's namespace, which is what the suite
-# asserts. The instances are kind-sized (single non-Galera replica, small volume)
-# so they schedule on a single-node cluster.
+# asserts. The Minimal sizing profile sizes the instances (single non-Galera
+# replica, small volume) so they schedule on a single-node cluster.
 #
 # The region markers are consumed by a VitePress code-import in
 # docs/guides/dedicated-service-namespaces.md — the guide embeds this fixture
@@ -46,13 +46,10 @@ spec:
       database: keystone
       secretRef:
         name: keystone-db
-      replicas: 1
-      storageSize: 512Mi
     cache:
       clusterRef:
         name: openstack-memcached
       backend: dogpile.cache.pymemcache
-      replicas: 1
   services:
     keystone:
       namespace:
@@ -81,18 +78,7 @@ spec:
         name: "@PLACEMENT_NS@"
         lifecycle: Managed
   sizing:
-    keystone:
-      api:
-        replicas: 1
-    horizon:
-      api:
-        replicas: 1
-    glance:
-      api:
-        replicas: 1
-    placement:
-      api:
-        replicas: 1
+    profile: Minimal
   korc:
     adminCredential:
       cloudCredentialsRef:

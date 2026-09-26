@@ -52,14 +52,10 @@ spec:
   # Link 5 asserts this literal on the adopted Region CR, and Link 7b reads it
   # back through `openstack region show`.
   regionDescription: CobaltCore e2e region
-  # Single-replica topology across database, cache, and the Keystone Deployment
-  # so the full fresh-create chain schedules on a single-node kind cluster.
-  # database.replicas:1 drives the operator's fresh-create MariaDB projection to
-  # a single-instance non-Galera MariaDB; cache.replicas:1 to a single Memcached
-  # pod; sizing.keystone.api.replicas:1 to a single API pod. database.storageSize
-  # is pinned to 512Mi so the projected MariaDB requests a test-sized volume
-  # instead of the Standard profile's 100Gi (the production baseline) that CI
-  # never fills.
+  # The Minimal sizing profile (spec.sizing below) gives the full fresh-create
+  # chain a single-node topology: a single-instance non-Galera MariaDB on a
+  # 512Mi volume instead of the Standard profile's 3-node Galera on 100Gi, a
+  # single Memcached pod, and one pod per service Deployment.
   infrastructure:
     database:
       clusterRef:
@@ -67,13 +63,10 @@ spec:
       database: keystone
       secretRef:
         name: keystone-db
-      replicas: 1
-      storageSize: 512Mi
     cache:
       clusterRef:
         name: openstack-memcached
       backend: dogpile.cache.pymemcache
-      replicas: 1
     # The shared message bus, referenced brownfield against a REAL broker: the
     # shared-rabbitmq the kind messaging stack runs in the openstack namespace
     # (deploy/kind/messaging, WITH_MESSAGING=true on the CI job). The Secret
@@ -89,10 +82,9 @@ spec:
     # broker that answers.
     #
     # A managed clusterRef is still not used: it would project a RabbitmqCluster
-    # whose pod requests the RabbitMQ Cluster Operator's default 1 CPU and 2Gi,
-    # which does not fit the single 4-vCPU CI node beside seven services and the
-    # OVN control plane (the keystone db-sync Job and OVN northd never
-    # scheduled). The managed projection is what tests/e2e/c5c3/messaging/ proves.
+    # beside the kind broker this job already runs, and that second broker
+    # would count against the node budget Link 6z enforces. The managed
+    # projection is what tests/e2e/c5c3/messaging/ proves.
     messaging:
       secretRef:
         name: controlplane-keystone-messaging
@@ -140,8 +132,8 @@ spec:
     # 03-ovncentral-cr.yaml applies beside this CR; the ControlPlane only reads
     # that CR's readiness and never owns it. The centralRef namespace is left
     # empty and defaults to the ControlPlane's own (openstack).
-    # sizing.neutron.workers.replicas sizes both RPC worker Deployments, so 1
-    # keeps two worker pods on this single node instead of the six the Standard
+    # The Minimal profile runs one replica of each RPC worker Deployment, so two
+    # worker pods land on this single node instead of the six the Standard
     # profile would schedule.
     neutron:
       ovn:
@@ -179,39 +171,10 @@ spec:
     # Secret, which 07-hypervisor-operator-verify-job.yaml authenticates with.
     nova:
       hypervisorOperator: {}
+  # One small node: the budget gate of Link 6z holds the whole stack to 4 CPU
+  # and 16 GiB of requests.
   sizing:
-    keystone:
-      api:
-        replicas: 1
-    horizon:
-      api:
-        replicas: 1
-    glance:
-      api:
-        replicas: 1
-    placement:
-      api:
-        replicas: 1
-    barbican:
-      api:
-        replicas: 1
-    neutron:
-      api:
-        replicas: 1
-      workers:
-        replicas: 1
-    cinder:
-      api:
-        replicas: 1
-    nova:
-      api:
-        replicas: 1
-      metadata:
-        replicas: 1
-      scheduler:
-        replicas: 1
-      conductor:
-        replicas: 1
+    profile: Minimal
   globalPolicyOverrides:
     rules:
       "identity:list_users": "role:admin"

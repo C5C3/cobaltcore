@@ -48,19 +48,14 @@ spec:
       database: keystone
       secretRef:
         name: keystone-db
-      # Pin a test-sized volume instead of the Standard profile's 100Gi.
-      storageSize: 512Mi
     cache:
       clusterRef:
         name: openstack-memcached
       backend: dogpile.cache.pymemcache
-      replicas: 3
   services:
     keystone: {}
   sizing:
-    keystone:
-      api:
-        replicas: 3
+    profile: Minimal
   korc:
     adminCredential:
       cloudCredentialsRef:

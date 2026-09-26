@@ -69,6 +69,11 @@ spec:
             name: cp-horizon-cache
           backend: dogpile.cache.pymemcache
           replicas: 1
+  # No profile, unlike the other fixtures: Minimal would give a dedicated
+  # instance that leaves a field unset the same 1 replica and 512Mi pinned
+  # above, and the suite could not tell the dedicated block from the
+  # fallback. Standard falls back to 3 replicas and 100Gi, so the asserted
+  # values can only come from the dedicated block.
   sizing:
     keystone:
       api:

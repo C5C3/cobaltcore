@@ -37,13 +37,10 @@ spec:
       database: keystone
       secretRef:
         name: keystone-db
-      # Pin a test-sized volume instead of the Standard profile's 100Gi.
-      storageSize: 512Mi
     cache:
       clusterRef:
         name: openstack-memcached
       backend: dogpile.cache.pymemcache
-      replicas: 3
   services:
     keystone: {}
     # Barbican with a DEDICATED secret store, so the teardown has the widest
@@ -56,12 +53,7 @@ spec:
       secretStore:
         dedicated: {}
   sizing:
-    keystone:
-      api:
-        replicas: 1
-    barbican:
-      api:
-        replicas: 1
+    profile: Minimal
   korc:
     adminCredential:
       cloudCredentialsRef:

@@ -22,11 +22,12 @@
 # cache follow their consumers; the bus does not, and an empty services block is
 # the sharpest statement of that difference.
 #
-# replicas is 1 because the e2e clusters are single-node kind. No resources are
-# pinned, because spec.infrastructure.messaging projects none: image, resources,
-# persistence and tls stay at the RabbitMQ Cluster Operator's defaults (1 CPU and
-# 2Gi per pod, a 10Gi PVC). If those defaults do not schedule on the CI node, that
-# is a finding to report, not something to patch around in this fixture.
+# The Minimal sizing profile sizes the bus for the single-node kind e2e clusters:
+# one replica requesting 100m CPU and 512Mi, limited at 512Mi, instead of the
+# RabbitMQ Cluster Operator's default of 1 CPU and 2Gi per pod. Image,
+# persistence and tls stay at the operator's defaults (a 10Gi PVC). If the bus
+# does not schedule on the CI node, that is a finding to report, not something
+# to patch around in this fixture.
 #
 # There is no korc block: the defaulting webhook materializes it, as in the
 # sibling c5c3 fixtures.
@@ -50,5 +51,6 @@ spec:
     messaging:
       clusterRef:
         name: cp-rabbitmq
-      replicas: 1
   services: {}
+  sizing:
+    profile: Minimal
