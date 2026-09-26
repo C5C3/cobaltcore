@@ -131,6 +131,33 @@ func TestResolvePodSettings_PodAntiAffinityOnlyFallbackYieldsNone(t *testing.T) 
 	g.Expect(s.Placement.Affinity).To(gomega.BeNil())
 }
 
+// A Job container whose block names no memory gets jobMemory, 368Mi, as request
+// and limit. The figure is pinned rather than read from
+// commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, 1), so a
+// refitted service formula leaves the Jobs alone.
+func TestResolvePodSettings_JobMemoryIsPinned(t *testing.T) {
+	g := gomega.NewWithT(t)
+	want := resource.MustParse("368Mi")
+
+	for name, spec := range map[string]*commonv1.JobSpec{
+		"no spec.jobs":     nil,
+		"no resources":     {},
+		"a CPU-only block": {JobBaseSpec: commonv1.JobBaseSpec{Resources: &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m")}}}},
+	} {
+		s := ResolvePodSettings(spec, nil)
+		g.Expect(s.Resources.Requests[corev1.ResourceMemory]).To(gomega.Equal(want), name)
+		g.Expect(s.Resources.Limits[corev1.ResourceMemory]).To(gomega.Equal(want), name)
+	}
+
+	// The figure comes from jobMemory: moving it moves the Job, whatever the
+	// formula at one process says.
+	saved := jobMemory
+	t.Cleanup(func() { jobMemory = saved })
+	jobMemory = resource.MustParse("1Gi")
+	s := ResolvePodSettings(nil, nil)
+	g.Expect(s.Resources.Limits[corev1.ResourceMemory]).To(gomega.Equal(resource.MustParse("1Gi")))
+}
+
 // A limit the block names decides that resource: no request is added beside
 // it, and the CPU the block leaves out gets the default request.
 func TestResolvePodSettings_LimitOnlyResources(t *testing.T) {

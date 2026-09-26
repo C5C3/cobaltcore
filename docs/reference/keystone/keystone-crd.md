@@ -245,12 +245,14 @@ with their own figures:
 
 | Container | Block | CPU request | Memory |
 | --- | --- | --- | --- |
-| Every container and init container of a Job or CronJob pod | [`spec.jobs.resources`](#jobspec) | `100m` | `368Mi` request and limit (one single-threaded process) |
+| Every container and init container of a Job or CronJob pod | [`spec.jobs.resources`](#jobspec) | `100m` | `368Mi` request and limit, fixed |
 | The OVN backup and Neutron `ovn-db-sync` pods | `spec.jobs.resources` of those CRs | `100m` | `256Mi` request, no limit (the working set grows with the logical model) |
 | The `federation-proxy` sidecar | [`spec.federation.proxyResources`](#federationspec) | `25m` | `256Mi` request and limit |
 | The Glance `cache-maintenance` sidecar | `spec.imageCache.maintenanceResources` | `25m` | `256Mi` request and limit |
 
-No Job figure is measured yet. If a Job is OOM-killed at `368Mi`, raise
+The Job memory does not follow the service formula. The sizing measurement's
+VPA recommender samples once a minute and cannot size a pod that lives for
+seconds, so no Job figure is measured. If a Job is OOM-killed at `368Mi`, raise
 `spec.jobs.resources.limits.memory`: the changed pod template re-runs the
 failed Job.
 

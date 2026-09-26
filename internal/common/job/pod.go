@@ -12,6 +12,13 @@ import (
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
+// jobMemory is the memory request and limit of a Job or CronJob container
+// whose spec.jobs block names no memory. It is fixed rather than taken from the
+// service formula at one process: the sizing measurement's VPA recommender
+// samples once a minute and cannot size a pod that lives for seconds, so a
+// formula refitted to the measured service containers must not move it.
+var jobMemory = resource.MustParse("368Mi")
+
 // PodSettings is the resolved pod-level configuration of a Job or CronJob pod.
 // The zero value renders no resources, no priority class and no placement.
 type PodSettings struct {
@@ -28,8 +35,8 @@ type PodSettings struct {
 // no fallback), per the rule commonv1.JobSpec documents:
 //
 //   - Resources: the per-resource rule of commonv1.WithResourceDefaults with
-//     the figure of one single-threaded process (a 100m CPU request, 368Mi
-//     memory as request and limit);
+//     a CPU request of commonv1.DefaultCPURequest() (100m) and a fixed 368Mi
+//     memory as request and limit;
 //   - PriorityClassName: spec's value when the pointer is non-nil, "" included,
 //     else the fallback's, else none;
 //   - NodeSelector and Tolerations: spec's value when non-nil, an empty map
@@ -42,7 +49,7 @@ type PodSettings struct {
 // block.
 func ResolvePodSettings(spec *commonv1.JobSpec, fallback *commonv1.DeploymentSpec) PodSettings {
 	s := resolvePodSettings(spec, fallback)
-	s.Resources = commonv1.WithResourceDefaults(jobResources(spec), resource.Quantity{})
+	s.Resources = commonv1.WithResourceDefaults(jobResources(spec), jobMemory.DeepCopy())
 	return s
 }
 
