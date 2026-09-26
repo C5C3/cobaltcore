@@ -2288,8 +2288,8 @@ Production ships no equivalent object. A production `ControlPlane` declares
 | Dependencies | the RabbitMQ Cluster Operator (Phase 3b) and the `rabbitmqclusters.rabbitmq.com` CRD (the Step 5 `wait_for_crds` list) |
 
 **Sizing.** The cluster operator requests 1 CPU and 2Gi per pod by default.
-That request does not fit beside the rest of the stack on the 4-vCPU kind
-node: it takes the last schedulable CPU and the next pod stays `Pending` on
+That request does not fit beside the rest of the stack on the self-hosted
+runner's kind node: it takes the last schedulable CPU and the next pod stays `Pending` on
 `Insufficient cpu`. `tests/e2e-chaos/neutron-broker-outage` records the same
 finding for its own broker. The e2e suites push little traffic through the
 bus, so `100m` and `512Mi` carry them. Memory is limited at the request.

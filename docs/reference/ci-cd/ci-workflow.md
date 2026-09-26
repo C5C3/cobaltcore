@@ -842,10 +842,10 @@ default: the suites mount their volumes as inline CSI volumes from the kind NFS
 export, and each one takes its own vhost on the `shared-rabbitmq` broker. The
 chainsaw step runs with `--parallel 2`, as the `neutron` and `nova` legs do. A
 cinder suite brings up three or four Deployments, a db-sync Job and a probe
-pod, and four of those at once do not fit on a 4-vCPU node; the other legs keep
-the shared config's `parallel: 4`. Chart-level suites live in
-`tests/e2e/cinder-operator/`, which the `-operator` directory probe appends to
-`tests/e2e/cinder/`. The leg runs on a `self-hosted` runner, like every leg but
+pod, and four of those at once do not fit on the kind node of the self-hosted
+runner; the other legs keep the shared config's `parallel: 4`. Chart-level
+suites live in `tests/e2e/cinder-operator/`, which the `-operator` directory
+probe appends to `tests/e2e/cinder/`. The leg runs on a `self-hosted` runner, like every leg but
 `keystone`, and one diagnostics dump covers it, because it deploys a single
 operator. See [Cinder E2E Test Suites](../testing/cinder-e2e-tests.md).
 
@@ -1259,7 +1259,16 @@ the way the cinder `e2e-operator` leg does.
 
 The suite runs with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"`, which flips its
 presence guard from a silent SKIP to a hard failure — so a broken operator/CRD
-deployment fails the build instead of going green. Like `e2e-prometheus`, the
+deployment fails the build instead of going green. The same step sets
+`E2E_NODE_BUDGET: "true"`, which turns the suite's Link 6z from a SKIP line
+into the [node budget gate](../testing/controlplane-e2e-tests.md#node-budget-link-6z):
+once the plane is `Ready`, `hack/ci-check-node-budget.sh` sums the effective
+requests of the pods on the kind node, without the compute-node data plane, and
+fails the step above 4000m CPU or 16Gi memory. The job-level `env` sets
+`OPERATOR_REPLICAS: "1"`, which the ten `Deploy <op>-operator` steps pass to
+`hack/ci-deploy-operator.sh`, so every operator runs one replica, as in the kind
+devstack, and the gate counts that footprint. The other e2e jobs keep the chart
+default of two. Like `e2e-prometheus`, the
 job runs with `continue-on-error: false`, and it uses a 240-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + ten operators +
 OpenBao + ESO + K-ORC on one node is resource-heavy, and its three chainsaw
@@ -2261,7 +2270,8 @@ The CI workflow depends on the following artifacts:
 | `hack/ci-dump-diagnostics.sh` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Shared diagnostic dump |
 | `hack/ci-build-service-image.sh` | `build-e2e-images` job | Builds OpenStack service images from an authenticated clone of the upstream source |
 | `hack/ci-deploy-korc.sh` | `e2e-operator` (c5c3 leg), `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone` jobs | Applies K-ORC from an authenticated clone at the pinned commit |
-| `hack/ci-deploy-operator.sh` | `e2e-operator`, `e2e-chaos`, `tempest` jobs | Deploys operator via Helm |
+| `hack/ci-deploy-operator.sh` | `e2e-operator`, `e2e-chaos`, `tempest`, `e2e-controlplane` jobs | Deploys operator via Helm; `e2e-controlplane` sets `OPERATOR_REPLICAS=1` |
+| `hack/ci-check-node-budget.sh` | `e2e-controlplane` job, through the full-chain suite's Link 6z | Fails when the pods on the kind node request more than 4000m CPU or 16Gi memory |
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests |
 | `.github/actions/setup-test-deps/` | `chainsaw-lint` job, `setup-e2e-infra` composite action | Composite action for testdeps cache + `make install-test-deps` |
 | `.github/actions/setup-e2e-infra/` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Composite action for infra setup |

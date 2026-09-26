@@ -227,7 +227,9 @@ failing — each step detects the work it already completed and skips it:
 deploy/kind/
 ├── base/
 │   └── kustomization.yaml          References ../../flux-system/
-│                                    Patches OpenBao HelmRelease → standalone mode
+│                                    Patches OpenBao HelmRelease → standalone mode, 100m CPU
+│                                    Patches operator HelmReleases → 1 replica
+│                                    Patches FluxInstance → 25m CPU per Flux controller
 └── infrastructure/
     └── kustomization.yaml          References ../../flux-system/infrastructure/
                                      Patches MariaDB CR → 1 replica, no Galera, 1Gi memory
@@ -235,8 +237,11 @@ deploy/kind/
 ```
 
 The overlays reference the production FluxCD manifests as their base and apply
-strategic merge patches to reduce resource requirements for a single-node kind cluster
-(~7GB RAM, 2 vCPUs).
+strategic merge patches to reduce resource requirements for a single-node kind
+cluster. With the ControlPlane on the `Minimal` sizing profile, the full stack
+requests at most 4 CPU and 16 GiB of memory, which the
+[node budget gate](../testing/controlplane-e2e-tests.md#node-budget-link-6z)
+of the `e2e-controlplane` job enforces.
 
 ### Base Overlay Patches (OpenBao)
 
@@ -246,6 +251,18 @@ strategic merge patches to reduce resource requirements for a single-node kind c
 | HA enabled | `true` | `false` |
 | Raft config | `retry_join` with 3 peers | No `retry_join` (standalone) |
 | Storage class | `local-path` | `standard` |
+| CPU request | `250m` | `100m` |
+
+### Base Overlay Patches (operators and Flux)
+
+| Setting | Production | Kind |
+| --- | --- | --- |
+| Operator HelmReleases (`spec.values.replicas`) | `2` (chart default) | `1` |
+| Flux controllers (CPU request) | `100m` (upstream manifests) | `25m`, through `spec.kustomize.patches` on the FluxInstance |
+
+The overlay applies the nine service-operator HelmReleases suspended and the
+`c5c3-operator` one active, because the `CONTROLPLANE_OPERATORS=flux` path
+relies on it. The patches lower requests and change no limit.
 
 ### Infrastructure Overlay Patches
 
@@ -260,8 +277,8 @@ strategic merge patches to reduce resource requirements for a single-node kind c
 | Resources | operator defaults (none) | memory request and limit `1Gi`, no CPU |
 
 The memory request takes the single database out of the BestEffort class, which
-the kernel OOM killer drains first when parallel e2e suites exhaust a 4-vCPU
-runner; every service workload already requests between 368Mi and 2Gi of
+the kernel OOM killer drains first when parallel e2e suites exhaust the memory
+of the kind node; every service workload already requests between 368Mi and 2Gi of
 memory, and no service container carries a default CPU limit. The CPU fields
 stay unset on purpose: a 500m request left pods Pending on the keystone leg
 (#970), and a limit would throttle the liveness probe the overlay relaxes.

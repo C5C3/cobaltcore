@@ -36,7 +36,7 @@ after its driver alone would be one object several suites apply, delete and
 re-point at each other's `Cinder`. The CI leg narrows Chainsaw to
 `--parallel 2` instead of the shared config's four: a cinder suite is three or
 four Deployments, a db-sync Job and a probe pod, and four of those at once do
-not fit a 4-vCPU kind node.
+not fit the kind node of the self-hosted runner.
 
 ### One RabbitMQ vhost per suite
 
