@@ -1652,7 +1652,10 @@ Neither the ControlPlane nor a `SizingProfile` exposes node or pod affinity.
 `BuiltinSizing` returns a fresh copy of a profile on every call; an empty or
 unknown name returns `Standard`. "none" means the profile sets nothing, so the
 child operator's own default applies. Neither profile sets placement, spread,
-autoscaling, or a priority class. The `Minimal` figures are estimates.
+autoscaling, or a priority class. The `Minimal` figures are estimates that keep
+the full stack within one 4 vCPU / 16 GiB node, which the
+[node budget gate](../testing/controlplane-e2e-tests.md#node-budget-link-6z) of
+the `e2e-controlplane` job checks.
 
 | Component | Standard | Minimal |
 | --- | --- | --- |

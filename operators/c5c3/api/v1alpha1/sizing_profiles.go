@@ -26,8 +26,10 @@ const minimalServiceCPURequest = "50m"
 // ControlPlane without sizing always projected, and sets nothing else: every
 // other value stays with the child operators' render-time defaults and the
 // backing-service operators' defaults. Minimal sizes every component for a
-// single small node. Its figures are estimates; #1112 tunes them against one
-// 4 vCPU / 16 GiB node and #1097 calibrates both profiles.
+// single small node. Its figures are estimates that keep the full stack
+// within one 4 vCPU / 16 GiB node, which the node budget gate of the
+// e2e-controlplane job (hack/ci-check-node-budget.sh) checks; #1097
+// calibrates both profiles from measured usage.
 func BuiltinSizing(name SizingProfileName) SizingSpec {
 	if name == SizingProfileMinimal {
 		return minimalSizing()
