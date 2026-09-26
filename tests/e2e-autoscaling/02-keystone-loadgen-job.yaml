@@ -1,0 +1,144 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Token load that drives the Keystone HPA of the e2e-autoscaling suite from one
+# pod to its maximum of three.
+#
+# Four threads POST /v3/auth/tokens with the ControlPlane's application
+# credential for 900 s. The credential comes from the per-CR k-orc-clouds-yaml
+# Secret (cloud "admin", auth_type v3applicationcredential), and its auth_url
+# is the in-cluster Keystone Service, http://cp-autoscaling-keystone.openstack.svc:5000/v3.
+# Every request runs on a fresh connection (urllib sends Connection: close),
+# so kube-proxy spreads the load across the pods the HPA adds.
+#
+# The Keystone side of each request is a bcrypt check. Four requests in flight
+# keep at most four uWSGI processes busy, far above the 150% target of a 50m
+# CPU request, and leave the rest of the node to the plane. The 900 s outlast
+# the scale-out and the at-maximum check that follows it, so Keystone is still
+# loaded when its connection cap is checked.
+#
+# Only HTTP 201 counts as ok. Any other status, a timeout or a connection
+# error counts as a failure and prints a FAIL: line (the first 50 of them).
+# The script prints RESULT total=<n> ok=<n> fail=<n>, exits 1 on any failure,
+# 3 when fewer than 300 requests completed, and 2 when the clouds.yaml cloud
+# is not the application credential it expects.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: autoscaling-keystone-loadgen
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: autoscaling-keystone-loadgen
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1200
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: autoscaling-keystone-loadgen
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: loadgen
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          command: ["python3", "-c"]
+          args:
+            - |
+              import json
+              import sys
+              import threading
+              import time
+              import urllib.error
+              import urllib.request
+
+              import yaml
+
+              DURATION = 900
+              THREADS = 4
+              TIMEOUT = 30
+              MIN_TOTAL = 300
+              MAX_FAIL_LINES = 50
+
+              with open("/etc/openstack/clouds.yaml") as f:
+                  cloud = ((yaml.safe_load(f) or {}).get("clouds") or {}).get("admin") or {}
+              auth = cloud.get("auth") or {}
+              keys = ("auth_url", "application_credential_id", "application_credential_secret")
+              if cloud.get("auth_type") != "v3applicationcredential" or not all(auth.get(k) for k in keys):
+                  print("clouds.yaml cloud 'admin' is not v3applicationcredential", flush=True)
+                  sys.exit(2)
+
+              url = auth["auth_url"].rstrip("/") + "/auth/tokens"
+              body = json.dumps({"auth": {"identity": {
+                  "methods": ["application_credential"],
+                  "application_credential": {
+                      "id": auth["application_credential_id"],
+                      "secret": auth["application_credential_secret"],
+                  },
+              }}}).encode()
+              print("POST %s from %d threads for %d s" % (url, THREADS, DURATION), flush=True)
+
+              lock = threading.Lock()
+              counts = {"total": 0, "ok": 0, "fail": 0}
+              deadline = time.monotonic() + DURATION
+
+
+              def record(ok, detail):
+                  with lock:
+                      counts["total"] += 1
+                      if ok:
+                          counts["ok"] += 1
+                          return
+                      counts["fail"] += 1
+                      if counts["fail"] <= MAX_FAIL_LINES:
+                          print("FAIL: %s" % detail, flush=True)
+
+
+              def worker():
+                  while time.monotonic() < deadline:
+                      request = urllib.request.Request(
+                          url, data=body, method="POST",
+                          headers={"Content-Type": "application/json"})
+                      try:
+                          with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                              response.read()
+                              record(response.status == 201, "HTTP %d" % response.status)
+                      except urllib.error.HTTPError as err:
+                          record(False, "HTTP %d" % err.code)
+                      except Exception as err:  # timeouts and connection errors
+                          record(False, "%s: %s" % (type(err).__name__, err))
+
+
+              threads = [threading.Thread(target=worker, daemon=True) for _ in range(THREADS)]
+              for thread in threads:
+                  thread.start()
+              # The Job completes within a second of the last request, so its
+              # Complete condition marks the end of the load.
+              next_progress = time.monotonic() + 60
+              while any(thread.is_alive() for thread in threads):
+                  time.sleep(1)
+                  if time.monotonic() >= next_progress:
+                      next_progress += 60
+                      with lock:
+                          print("progress total=%(total)d ok=%(ok)d fail=%(fail)d" % counts, flush=True)
+
+              print("RESULT total=%(total)d ok=%(ok)d fail=%(fail)d" % counts, flush=True)
+              if counts["fail"]:
+                  sys.exit(1)
+              if counts["total"] < MIN_TOTAL:
+                  sys.exit(3)
+          volumeMounts:
+            - name: clouds
+              mountPath: /etc/openstack
+              readOnly: true
+      volumes:
+        - name: clouds
+          secret:
+            secretName: k-orc-clouds-yaml

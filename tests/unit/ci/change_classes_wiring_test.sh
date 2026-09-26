@@ -212,7 +212,7 @@ test_every_job_gates_on_its_own_flag() {
 
   local job
   for job in e2e-infra e2e-chaos e2e-prometheus e2e-controlplane \
-    e2e-controlplane-sso e2e-external-keystone e2e-multicluster \
+    e2e-controlplane-sso e2e-external-keystone e2e-autoscaling e2e-multicluster \
     e2e-operator-upgrade tempest actionlint; do
     assert_contains "$job gates on needs.changes.outputs.$job" \
       "$(job_block "$job")" "needs.changes.outputs.${job} == 'true'"

@@ -83,6 +83,7 @@ jobs:
       e2e-controlplane: ${{ steps.result.outputs.e2e-controlplane }}
       e2e-controlplane-sso: ${{ steps.result.outputs.e2e-controlplane-sso }}
       e2e-external-keystone: ${{ steps.result.outputs.e2e-external-keystone }}
+      e2e-autoscaling: ${{ steps.result.outputs.e2e-autoscaling }}
       e2e-multicluster: ${{ steps.result.outputs.e2e-multicluster }}
       e2e-ovn-overlay: ${{ steps.result.outputs.e2e-ovn-overlay }}
       e2e-operator-upgrade: ${{ steps.result.outputs.e2e-operator-upgrade }}
@@ -248,8 +249,8 @@ jobs:
             # ---------------------------------------------------------------
             # Suites that live in a job of their own. Each filter names exactly
             # the suite its job runs, so an edit schedules that job and no
-            # other. The ControlPlane suites are split three ways because they
-            # run on three separate clusters.
+            # other. The ControlPlane suites are split four ways because they
+            # run on four separate clusters.
             # ---------------------------------------------------------------
             tests_controlplane:
               - 'tests/e2e/c5c3/full-controlplane-keystone/**'
@@ -261,6 +262,13 @@ jobs:
               - 'tests/e2e-controlplane-sso/**'
             tests_external_keystone:
               - 'tests/e2e/c5c3/external-keystone/**'
+            # The autoscaling suite, the metrics-server overlay its job
+            # deploys, and the shared HPA code it drives.
+            tests_autoscaling:
+              - 'tests/e2e-autoscaling/**'
+              - 'deploy/kind/metrics-server/**'
+              - 'internal/common/deployment/builders.go'
+              - 'internal/common/deployment/hpa_flow.go'
             tests_chaos:
               - 'tests/e2e-chaos/**'
             tests_multicluster:
@@ -422,6 +430,7 @@ jobs:
           FILTER_tests_controlplane: ${{ steps.filter.outputs.tests_controlplane }}
           FILTER_tests_controlplane_sso: ${{ steps.filter.outputs.tests_controlplane_sso }}
           FILTER_tests_external_keystone: ${{ steps.filter.outputs.tests_external_keystone }}
+          FILTER_tests_autoscaling: ${{ steps.filter.outputs.tests_autoscaling }}
           FILTER_tests_chaos: ${{ steps.filter.outputs.tests_chaos }}
           FILTER_tests_multicluster: ${{ steps.filter.outputs.tests_multicluster }}
           FILTER_tests_ovn_overlay: ${{ steps.filter.outputs.tests_ovn_overlay }}
@@ -2814,6 +2823,222 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-controlplane-sso-junit-report
+          path: _output/reports/
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
+
+  # Autoscaling E2E: the API HorizontalPodAutoscalers on a full ControlPlane
+  # with metrics-server. Token load scales Keystone from one pod to its HPA
+  # maximum and back, the PodDisruptionBudget admits an eviction at the
+  # minimum, and every database-backed API is checked against its SQL
+  # connection cap at its maximum (tests/e2e-autoscaling/).
+  #
+  # A SEPARATE job with a kind cluster of its own: the ControlPlane webhook
+  # permits one ControlPlane per namespace, and this suite needs the
+  # metrics-server overlay no other ControlPlane job deploys. It runs on the
+  # shared ControlPlane triggers (a c5c3 change or ci:controlplane) and on its
+  # own tests_autoscaling filter.
+  #
+  # timeout-minutes: 190 covers ~40m of bring-up, as e2e-controlplane
+  # estimates it, plus the 145m ceiling of the suite (the sum of its step,
+  # catch and cleanup timeouts) and a few minutes of margin. Both terms are
+  # estimates; confirm them against the first green run of this job.
+  e2e-autoscaling:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork != true &&
+      needs.changes.outputs.e2e-autoscaling == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: self-hosted
+    timeout-minutes: 190
+    continue-on-error: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
+      # out of this workflow.
+      - name: Resolve OVN version
+        run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
+      # The dev operator images, the service images of the seven APIs the
+      # ControlPlane projects (no Horizon), the OVN daemon image for the
+      # standalone central, and the OpenStack-client (tempest) image the load
+      # and burst Jobs run.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
+            ${{ env.IMAGE_PREFIX }}/glance-operator:dev
+            ${{ env.IMAGE_PREFIX }}/placement-operator:dev
+            ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
+            ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
+            ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
+            ${{ env.IMAGE_PREFIX }}/cinder-operator:dev
+            ${{ env.IMAGE_PREFIX }}/nova-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/glance:2025.2
+            ${{ env.IMAGE_PREFIX }}/placement:2025.2
+            ${{ env.IMAGE_PREFIX }}/barbican:2025.2
+            ${{ env.IMAGE_PREFIX }}/neutron:2025.2
+            ${{ env.IMAGE_PREFIX }}/cinder:2025.2
+            ${{ env.IMAGE_PREFIX }}/nova:2025.2
+            ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
+            ${{ env.IMAGE_PREFIX }}/tempest:2025.2
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
+      # CONTROLPLANE_NAME must match the fixture CR (cp-autoscaling) so the
+      # OpenBao bootstrap seeds the per-CR admin-password path the chain reads.
+      # Cinder mounts its NFS shares from the kind NFS export and the plane
+      # takes a vhost of its own on the shared broker, as on e2e-controlplane.
+      # WITH_METRICS_SERVER deploys the metrics-server overlay the HPAs read
+      # their CPU utilization from.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CONTROLPLANE: "true"
+          CONTROLPLANE_OPERATORS: external
+          CONTROLPLANE_NAME: cp-autoscaling
+          WITH_CONTROLPLANE_CR: "false"
+          WITH_NFS: "true"
+          WITH_MESSAGING: "true"
+          WITH_METRICS_SERVER: "true"
+      - name: Deploy K-ORC
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: hack/ci-deploy-korc.sh
+      # The service operators go first, in e2e-controlplane's order, so every
+      # CRD the c5c3-operator projects or watches exists before it starts.
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy horizon-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: horizon
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+          NAMESPACE: horizon-system
+      - name: Deploy glance-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: glance
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
+          NAMESPACE: glance-system
+      - name: Deploy placement-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: placement
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
+          NAMESPACE: placement-system
+      # BARBICAN_SECRET_STORE_GRANTS stays unset, as on e2e-controlplane: the
+      # ControlPlane projects the TokenRequest grant for the dedicated
+      # instance it creates.
+      - name: Deploy barbican-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: barbican
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
+          NAMESPACE: barbican-system
+      - name: Deploy ovn-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ovn
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
+          NAMESPACE: ovn-system
+      - name: Deploy neutron-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: neutron
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
+          NAMESPACE: neutron-system
+      - name: Deploy cinder-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
+      - name: Deploy nova-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: nova
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/nova-operator
+          NAMESPACE: nova-system
+      - name: Deploy c5c3-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: c5c3
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator
+          NAMESPACE: c5c3-system
+      - name: Run autoscaling E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            tests/e2e-autoscaling/
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: c5c3
+      # The dump above covers c5c3-system and the shared sections. The script
+      # reads a single OPERATOR, hence one pass per service operator whose
+      # child the suite scales; OPERATOR_ONLY keeps each pass to the sections
+      # that differ.
+      - name: Dump service operator diagnostic info
+        if: always()
+        run: |
+          for op in keystone glance placement barbican neutron cinder nova; do
+            OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
+          done
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-autoscaling-junit-report
           path: _output/reports/
           retention-days: 14
       # Last step of the job, so the dump above still had a cluster to read;

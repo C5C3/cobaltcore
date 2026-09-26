@@ -385,6 +385,40 @@ spec:
   such as Keystone's federation proxy or Glance's image-cache maintenance
   container. A block that names no request gets a positive default at render
   time.
+- A target may exceed 100. The operators set no default CPU limit, so an API
+  pod regularly uses several times its CPU request, and a CPU target of 80% of
+  a 50m request scales out on almost any traffic. A CPU target such as 150 or
+  300 matches what the pods can really use. Memory differs: a container whose
+  block names no memory renders the same figure as request and limit, so it
+  can never use more than 100% of its request. The webhook rejects a target
+  that no container of the API pod can reach, with `can never be reached`; a
+  memory target above 100 needs a container that names a memory limit above
+  its request, or a memory request without a limit.
+- `behavior` tunes how fast the HPA scales. The operator copies the block into
+  the HPA's `spec.behavior` and sets no default of its own, so without it
+  Kubernetes scales up at once and scales down after a 300-second
+  stabilization window. The webhook applies the `autoscaling/v2` bounds at
+  admission (window 0 to 3600 s, policy period 1 to 1800 s). `tolerance` is a
+  Kubernetes quantity: write it as a string or a milli-value (`"0.05"` or
+  `50m`), because the CRD schema rejects a bare decimal such as `0.05`. It
+  needs Kubernetes 1.33 or newer. This block keeps the default scale-up and
+  releases one surplus pod per 30 seconds once the load has stayed low for a
+  minute:
+
+  ```yaml
+  spec:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilization: 150
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 30
+  ```
 - The generated HPA references `deploy/keystone` and uses the Kubernetes standard
   `metrics-server`. The Quick Start kind cluster does **not** ship one by default —
   the HPA will sit at `unknown/80%` until a resource-metrics API is available.

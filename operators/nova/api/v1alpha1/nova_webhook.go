@@ -715,20 +715,22 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 				fmt.Sprintf("maxReplicas must be >= spec.api.deployment.replicas (%d) when minReplicas is not set, because minReplicas defaults to spec.api.deployment.replicas", n.Spec.API.Deployment.Replicas),
 			))
 		}
-		// Defense-in-depth bounds checks for utilization targets alongside
-		// +kubebuilder:validation:Minimum=1 / Maximum=100 markers.
-		if n.Spec.Autoscaling.TargetCPUUtilization != nil && (*n.Spec.Autoscaling.TargetCPUUtilization < 1 || *n.Spec.Autoscaling.TargetCPUUtilization > 100) {
+		// Defense-in-depth lower bound for utilization targets alongside the
+		// +kubebuilder:validation:Minimum=1 markers. There is no upper bound,
+		// as in autoscaling/v2: a target the API pod can never reach is
+		// rejected below.
+		if n.Spec.Autoscaling.TargetCPUUtilization != nil && *n.Spec.Autoscaling.TargetCPUUtilization < 1 {
 			allErrs = append(allErrs, field.Invalid(
 				autoscalingPath.Child("targetCPUUtilization"),
 				*n.Spec.Autoscaling.TargetCPUUtilization,
-				"targetCPUUtilization must be between 1 and 100",
+				"targetCPUUtilization must be at least 1",
 			))
 		}
-		if n.Spec.Autoscaling.TargetMemoryUtilization != nil && (*n.Spec.Autoscaling.TargetMemoryUtilization < 1 || *n.Spec.Autoscaling.TargetMemoryUtilization > 100) {
+		if n.Spec.Autoscaling.TargetMemoryUtilization != nil && *n.Spec.Autoscaling.TargetMemoryUtilization < 1 {
 			allErrs = append(allErrs, field.Invalid(
 				autoscalingPath.Child("targetMemoryUtilization"),
 				*n.Spec.Autoscaling.TargetMemoryUtilization,
-				"targetMemoryUtilization must be between 1 and 100",
+				"targetMemoryUtilization must be at least 1",
 			))
 		}
 		if n.Spec.Autoscaling.TargetCPUUtilization == nil && n.Spec.Autoscaling.TargetMemoryUtilization == nil {
@@ -737,6 +739,7 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 				"at least one of targetCPUUtilization or targetMemoryUtilization must be set",
 			))
 		}
+		allErrs = append(allErrs, validation.AutoscalingBehavior(autoscalingPath.Child("behavior"), n.Spec.Autoscaling.Behavior)...)
 	}
 
 	// An HPA utilization target is measured against the summed requests of
@@ -744,6 +747,10 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 	// fails the metric or inflates it. The render-time default fills a positive
 	// request when the block names none.
 	allErrs = append(allErrs, validation.AutoscalingTargetRequests(specPath.Child("api", "deployment", "resources"), n.Spec.API.Deployment.Resources, n.Spec.Autoscaling)...)
+	// A target above 100 needs a container of the API pod that may use more
+	// than it requests, so a target the containers' limits make unreachable
+	// is rejected.
+	allErrs = append(allErrs, validation.AutoscalingTargetsReachable(specPath.Child("autoscaling"), n.Spec.Autoscaling, n.Spec.API.Deployment.Resources)...)
 
 	// Defense-in-depth networkPolicy ingress check alongside the
 	// +kubebuilder:validation:XValidation CEL rule on NetworkPolicySpec.

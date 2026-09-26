@@ -30,9 +30,8 @@ Two rule groups have no fixture here:
   map as the level branch, one predicate apart, so only the level is pinned.
 
 Several bounds markers are the mirror image of one that is pinned: the Minimum
-on preStopSleepSeconds and on the two autoscaling replica fields, and the
-Maximum on targetMemoryUtilization. The corpus carries one fixture per marker
-class rather than one per field.
+on preStopSleepSeconds and on the two autoscaling replica fields. The corpus
+carries one fixture per marker class rather than one per field.
 
 Every fixture name stays within MaxBarbicanNameLength (43 characters). The bound
 is checked on every create, so a longer name would put a second, unrelated error
@@ -560,19 +559,21 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
     ),
     Fixture(
-        filename="26-autoscaling-cpu-utilization-above-max.yaml",
+        filename="26-autoscaling-memory-target-unreachable.yaml",
         comment=(
-            "spec.autoscaling.targetCPUUtilization above the CRD Maximum=100 marker. The\n"
-            "field is a utilization percentage of the container's CPU request, so 150\n"
-            "asks the HPA to hold pods at a level the request cannot express. The replica\n"
-            "bounds are kept consistent so the marker is the only rule broken."
+            "spec.autoscaling.targetMemoryUtilization of 150 with no resources block is\n"
+            "rejected by the validating webhook alone. A container whose block names no\n"
+            "memory renders the same figure as request and limit, so the API pod can\n"
+            "never use more than 100% of its memory request and the HPA would never\n"
+            "scale out. The schema admits any target of at least 1, so the reachability\n"
+            "rule is the only one broken."
         ),
-        name="barbican-invalid-autoscaling-cpu",
+        name="barbican-invalid-autoscaling-memory-target",
         extra=(
             "  autoscaling:\n"
             "    minReplicas: 1\n"
             "    maxReplicas: 3\n"
-            "    targetCPUUtilization: 150\n"
+            "    targetMemoryUtilization: 150\n"
         ),
     ),
     Fixture(
@@ -982,6 +983,26 @@ FIXTURES: tuple[Fixture, ...] = (
             "    minReplicas: 1\n"
             "    maxReplicas: 5\n"
             "    targetCPUUtilization: 80\n"
+        ),
+    ),
+    Fixture(
+        filename="52-autoscaling-behavior-window-above-max.yaml",
+        comment=(
+            "spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds above 3600\n"
+            "is rejected by the validating webhook alone. The embedded autoscaling/v2\n"
+            "type carries no kubebuilder bounds, so the schema admits it and the API\n"
+            "server would refuse the HPA only when the operator applies it, as a\n"
+            "reconcile error. The webhook mirrors the autoscaling/v2 bound instead."
+        ),
+        name="barbican-invalid-autoscaling-behavior",
+        extra=(
+            "  autoscaling:\n"
+            "    minReplicas: 1\n"
+            "    maxReplicas: 3\n"
+            "    targetCPUUtilization: 80\n"
+            "    behavior:\n"
+            "      scaleDown:\n"
+            "        stabilizationWindowSeconds: 3601\n"
         ),
     ),
 )

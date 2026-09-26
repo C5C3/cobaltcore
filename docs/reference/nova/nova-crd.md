@@ -48,7 +48,7 @@ copy under the name `status.computeConfigSecretRef` gives.
 | `dbArchive` | [`DBArchiveSpec`](#dbarchivespec) | no | The recurring archive that moves Nova's soft-deleted rows into the shadow tables. A nil block resolves like an empty one: `@daily`, 1000 rows per table per batch, one second between batches, no retention window, not suspended |
 | `gateway` | `GatewaySpec` | no | External exposure of the API through a Gateway API HTTPRoute on port 8774; requires `hostname` and `parentRef.name` |
 | `networkPolicy` | `NetworkPolicySpec` | no | Ingress restricted to TCP 8774, 8775 and 6080 from the listed sources; egress auto-derived. At least one ingress source is required (fail-closed). See [Network policy](#network-policy) |
-| `autoscaling` | `AutoscalingSpec` | no | HPA bounds and CPU/memory utilization targets. It reaches the API Deployment alone |
+| `autoscaling` | `AutoscalingSpec` | no | HPA bounds, CPU/memory utilization targets and scaling behavior. It reaches the API Deployment alone |
 | `logging` | `LoggingSpec` | no | oslo.log derivation: `format` (`text`/`json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook to `text`/`INFO`/`debug: false` |
 | `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for options with no dedicated field. See [extraConfig](#extraconfig) |
 | `secretStoreRef` | `SecretStoreRefSpec` | no | Selects the External Secrets store `SecretsReady` is resolved against: `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required `name`. When omitted the shared cluster-scoped `openbao-cluster-store` is used |

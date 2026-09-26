@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -114,6 +115,17 @@ func TestValidateSizingSpec(t *testing.T) {
 			}}},
 		},
 		{
+			name: "an autoscaling policy type the HPA does not know",
+			spec: keystoneAPI(APISizingSpec{Autoscaling: &commonv1.AutoscalingSpec{
+				MaxReplicas:          3,
+				TargetCPUUtilization: ptr.To[int32](80),
+				Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{ScaleUp: &autoscalingv2.HPAScalingRules{
+					Policies: []autoscalingv2.HPAScalingPolicy{{Type: "Replicas", Value: 1, PeriodSeconds: 15}},
+				}},
+			}}),
+			wantErr: []string{`spec.sizing.keystone.api.autoscaling.behavior.scaleUp.policies[0].type: Unsupported value: "Replicas"`},
+		},
+		{
 			name: "spread entries that break each marker",
 			spec: SizingSpec{Nova: &NovaSizingSpec{Scheduler: &WorkerSizingSpec{DeploymentSizingSpec: DeploymentSizingSpec{
 				SpreadConstraints: []SpreadConstraintSpec{{MaxSkew: 0, WhenUnsatisfiable: "Sometimes"}},
@@ -183,6 +195,24 @@ func TestValidateResolvedSizing(t *testing.T) {
 
 		// Without a Keystone target the proxy's zero request is harmless.
 		resolved.Keystone.API.Autoscaling = nil
+		g.Expect(validateResolvedSizing(path, &resolved)).To(BeEmpty())
+	})
+
+	t.Run("a memory target above 100 the Keystone API pod cannot reach", func(t *testing.T) {
+		g := NewWithT(t)
+		api := APISizingSpec{Autoscaling: &commonv1.AutoscalingSpec{
+			MinReplicas: ptr.To[int32](1), MaxReplicas: 3, TargetMemoryUtilization: ptr.To[int32](150),
+		}}
+		resolved := MergeSizing(BuiltinSizing(SizingProfileMinimal), keystoneAPI(api))
+		errs := validateResolvedSizing(path, &resolved)
+		g.Expect(errs).To(HaveLen(1))
+		g.Expect(errs[0].Field).To(Equal("spec.sizing.keystone.api.autoscaling.targetMemoryUtilization"))
+		g.Expect(errs[0].Detail).To(ContainSubstring("can never be reached"))
+
+		// A federation proxy that names a memory request without a limit may
+		// use more memory than it requests, so the pod can reach the target.
+		resolved.Keystone.FederationProxy = &ContainerSizingSpec{Resources: resources(
+			corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")}, nil)}
 		g.Expect(validateResolvedSizing(path, &resolved)).To(BeEmpty())
 	})
 

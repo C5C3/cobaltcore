@@ -2022,8 +2022,11 @@ tutorials do not need. The production `deploy/flux-system/` overlay also does
 not install it: managed distributions ship their own metrics-server, and
 production clusters bring their own.
 
-The overlay's sole consumer is the
-[Autoscaling (HPA) recipe](../../guides/advanced-configuration.md#autoscaling-hpa):
+The overlay backs the
+[Autoscaling (HPA) recipe](../../guides/advanced-configuration.md#autoscaling-hpa)
+and the `e2e-autoscaling` CI job, which deploys it with
+`WITH_METRICS_SERVER=true` to drive a Keystone HPA from one pod to its maximum
+(see [e2e-autoscaling](../testing/controlplane-e2e-tests.md#e2e-autoscaling)):
 the operator-generated `HorizontalPodAutoscaler` reads CPU/memory utilisation
 from the resource-metrics API, and without a metrics-server it reports
 `unknown/80%` and never scales.

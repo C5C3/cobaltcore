@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds above 3600
+# is rejected by the validating webhook alone. The embedded autoscaling/v2
+# type carries no kubebuilder bounds, so the schema admits it and the API
+# server would refuse the HPA only when the operator applies it, as a
+# reconcile error. The webhook mirrors the autoscaling/v2 bound instead.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-invalid
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/nova
+    tag: "2025.2"
+  apiDatabase:
+    clusterRef:
+      name: mariadb
+    database: nova_api
+    secretRef:
+      name: nova-api-db
+  database:
+    clusterRef:
+      name: mariadb
+    database: nova
+    secretRef:
+      name: nova-db
+  cache:
+    clusterRef:
+      name: memcached
+  messaging:
+    clusterRef:
+      name: rabbitmq
+  keystoneEndpoint: http://keystone.openstack.svc:5000
+  serviceUser:
+    secretRef:
+      name: nova-service-user
+  metadata:
+    sharedSecretRef:
+      name: nova-metadata-secret
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilization: 80
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 3601

@@ -802,6 +802,47 @@ FIXTURES: list[Fixture] = [
 # substrings "spec.deployment.resources.requests.cpu" and "cpu request must be
 # greater than zero".""",
     ),
+    Fixture(
+        filename="31-autoscaling-behavior-window-above-max.yaml",
+        name="invalid-autoscaling-behavior",
+        trailing=(
+            "  autoscaling:\n"
+            "    minReplicas: 1\n"
+            "    maxReplicas: 3\n"
+            "    targetCPUUtilization: 80\n"
+            "    behavior:\n"
+            "      scaleDown:\n"
+            "        stabilizationWindowSeconds: 3601\n"
+        ),
+        comment="""\
+# spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds above 3600
+# is rejected by the validating webhook alone. The embedded autoscaling/v2
+# type carries no kubebuilder bounds, so the schema admits it and the API
+# server would refuse the HPA only when the operator applies it, as a
+# reconcile error. The webhook mirrors the autoscaling/v2 bound instead.
+# Admission must reject this CR with an $error referencing the substrings
+# "spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds" and
+# "stabilizationWindowSeconds must be between 0 and 3600".""",
+    ),
+    Fixture(
+        filename="32-autoscaling-memory-target-unreachable.yaml",
+        name="invalid-autoscaling-memory-target",
+        trailing=(
+            "  autoscaling:\n"
+            "    minReplicas: 1\n"
+            "    maxReplicas: 3\n"
+            "    targetMemoryUtilization: 150\n"
+        ),
+        comment="""\
+# spec.autoscaling.targetMemoryUtilization of 150 with no resources block is
+# rejected by the validating webhook alone. A container whose block names no
+# memory renders the same figure as request and limit, so the API pod can
+# never use more than 100% of its memory request and the HPA would never
+# scale out. The schema admits any target of at least 1, so the reachability
+# rule is the only one broken.
+# Admission must reject this CR with an $error referencing the substrings
+# "spec.autoscaling.targetMemoryUtilization" and "can never be reached".""",
+    ),
 ]
 
 

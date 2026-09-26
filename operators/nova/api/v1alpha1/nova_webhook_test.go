@@ -12,6 +12,7 @@ import (
 
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -592,20 +593,12 @@ func TestNovaValidateCreate_RejectionTable(t *testing.T) {
 			wantSub:  "minReplicas must be at least 1",
 		},
 		{
-			name: "autoscaling CPU target above 100 rejected",
-			mutate: func(o *Nova) {
-				o.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: ptr.To(int32(101))}
-			},
-			wantPath: "spec.autoscaling.targetCPUUtilization",
-			wantSub:  "targetCPUUtilization must be between 1 and 100",
-		},
-		{
 			name: "autoscaling zero memory target rejected",
 			mutate: func(o *Nova) {
 				o.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 5, TargetMemoryUtilization: ptr.To(int32(0))}
 			},
 			wantPath: "spec.autoscaling.targetMemoryUtilization",
-			wantSub:  "targetMemoryUtilization must be between 1 and 100",
+			wantSub:  "targetMemoryUtilization must be at least 1",
 		},
 		{
 			name: "api gateway without a hostname rejected",
@@ -895,7 +888,8 @@ func TestNovaValidateCreate_ExplicitAndOmittedStaticCredentialsModeAccepted(t *t
 // The accepted side of the autoscaling bounds. An HPA whose floor falls back to
 // the API replica count and whose ceiling equals it is a valid HPA, and 100 and 1
 // percent are in range; an off-by-one on any of them would refuse a CR the API
-// server takes.
+// server takes. A CPU target above 100 is in range too: without a CPU limit the
+// API pod may use more CPU than it requests.
 func TestNovaValidateCreate_AutoscalingAtItsBoundsAccepted(t *testing.T) {
 	g := gomega.NewWithT(t)
 	w := &NovaWebhook{}
@@ -908,6 +902,16 @@ func TestNovaValidateCreate_AutoscalingAtItsBoundsAccepted(t *testing.T) {
 	}
 
 	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	obj = validNova()
+	obj.Spec.API.Deployment.Resources = nil
+	obj.Spec.Autoscaling = &AutoscalingSpec{
+		MaxReplicas:          obj.Spec.API.Deployment.Replicas,
+		TargetCPUUtilization: ptr.To(int32(150)),
+	}
+
+	_, err = w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
@@ -1820,6 +1824,66 @@ func TestNovaValidate_AutoscalingTargetNeedsAPositiveRequest(t *testing.T) {
 
 	_, err = w.ValidateCreate(context.Background(), withTarget())
 	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// TestNovaValidate_AutoscalingTargetsAndBehavior pins the target and behavior
+// checks. A CPU target above 100 is admitted, since a container without a CPU
+// limit may use more CPU than it requests; a zero target is rejected at the
+// lower bound. A memory target above 100 is rejected while no container of the
+// API pod names a memory limit above its request, because the render-time
+// default makes request and limit equal. A scale-down window above 3600 s is
+// rejected at its path.
+func TestNovaValidate_AutoscalingTargetsAndBehavior(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &NovaWebhook{}
+	with := func(a *AutoscalingSpec) *Nova {
+		o := validNova()
+		o.Spec.API.Deployment.Resources = nil
+		a.MinReplicas = ptr.To(int32(1))
+		a.MaxReplicas = 5
+		o.Spec.Autoscaling = a
+		return o
+	}
+
+	_, err := w.ValidateCreate(context.Background(), with(&AutoscalingSpec{TargetCPUUtilization: ptr.To(int32(150))}))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	_, err = w.ValidateCreate(context.Background(), with(&AutoscalingSpec{TargetCPUUtilization: ptr.To(int32(0))}))
+	g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(gomega.ContainSubstring("targetCPUUtilization must be at least 1"))
+
+	o := with(&AutoscalingSpec{TargetMemoryUtilization: ptr.To(int32(150))})
+	_, err = w.ValidateCreate(context.Background(), o)
+	g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.autoscaling.targetMemoryUtilization"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("can never be reached"))
+
+	// The API container's own block decides the ceiling: a memory limit
+	// twice the request makes 150 reachable, and 201 is one above 200.
+	api := &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+	}
+	o = with(&AutoscalingSpec{TargetMemoryUtilization: ptr.To(int32(150))})
+	o.Spec.API.Deployment.Resources = api
+	_, err = w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	o = with(&AutoscalingSpec{TargetMemoryUtilization: ptr.To(int32(201))})
+	o.Spec.API.Deployment.Resources = api
+	_, err = w.ValidateCreate(context.Background(), o)
+	g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(gomega.ContainSubstring("or a target of at most 200"))
+
+	_, err = w.ValidateCreate(context.Background(), with(&AutoscalingSpec{
+		TargetCPUUtilization: ptr.To(int32(80)),
+		Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
+			ScaleDown: &autoscalingv2.HPAScalingRules{StabilizationWindowSeconds: ptr.To(int32(3601))},
+		},
+	}))
+	g.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("stabilizationWindowSeconds must be between 0 and 3600"))
 }
 
 // TestPodSelectors pins each exported selector to the labels the pods of its

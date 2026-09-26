@@ -168,6 +168,30 @@ FIXTURES: tuple[Fixture, ...] = (
         name="c5c3-e2e-sizing-missing-class",
         spec="  priorityClassName: c5c3-e2e-absent-priority-class\n",
     ),
+    Fixture(
+        filename="07-autoscaling-behavior-period-above-max.yaml",
+        comment=(
+            "An autoscaling scale-down policy with periodSeconds: 1801 (webhook-only):\n"
+            "autoscaling/v2 caps a policy period at 1800 seconds, and the embedded type\n"
+            "carries no bounds, so the schema admits it. The error names\n"
+            "`spec.keystone.api.autoscaling.behavior.scaleDown.policies[0].periodSeconds`\n"
+            "and carries `periodSeconds must be between 1 and 1800`."
+        ),
+        name="c5c3-e2e-sizing-behavior-period",
+        spec=(
+            "  keystone:\n"
+            "    api:\n"
+            "      autoscaling:\n"
+            "        maxReplicas: 3\n"
+            "        targetCPUUtilization: 80\n"
+            "        behavior:\n"
+            "          scaleDown:\n"
+            "            policies:\n"
+            "            - type: Pods\n"
+            "              value: 1\n"
+            "              periodSeconds: 1801\n"
+        ),
+    ),
 )
 
 

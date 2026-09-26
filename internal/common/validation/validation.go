@@ -27,10 +27,13 @@ import (
 	"strings"
 
 	"github.com/robfig/cron/v3"
+	"gopkg.in/inf.v0"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -448,6 +451,189 @@ func AutoscalingTargetRequests(fldPath *field.Path, rr *corev1.ResourceRequireme
 		}
 		errs = append(errs, field.Invalid(path, q.String(), fmt.Sprintf(
 			"%s %s must be greater than zero while %s is set: %s", t.name, kind, t.field, reason)))
+	}
+	return errs
+}
+
+// AutoscalingTargetsReachable rejects a utilization target in a that is above
+// 100 and that the containers of the API pod can never reach. Each element of
+// blocks is the resources block of one container; fldPath is the autoscaling
+// path.
+//
+// A target above 100 needs a container that may use more than it requests.
+// Each block's ceiling follows the render-time rule of WithResourceDefaults:
+// a nil block, or one that names the resource neither as request nor as
+// limit, is unbounded for cpu and has ratio 1 for memory (the default renders
+// the same memory as request and limit). A block that names only a request is
+// unbounded. A block that names only a limit has ratio 1, because the API
+// server copies the limit into the request. A block that names both has ratio
+// limit/request; a request of zero or below counts as unbounded, since
+// AutoscalingTargetRequests reports it. So does a limit or request written
+// with a decimal exponent beyond ±30, such as 1e40 or 0e-40, because rounding
+// it to milli-units would build a number with that many digits.
+//
+// The pod's ceiling is the largest block ratio. It bounds the summed
+// utilization from above, so the check never rejects a reachable target. The
+// ratios are compared in integers, so a target of exactly 100 × limit /
+// request passes whatever the ratio. When every block is bounded and the
+// target exceeds the ceiling, the target is rejected at fldPath.<field>. A nil
+// a, a target that is nil or at most 100, and an empty blocks return none.
+func AutoscalingTargetsReachable(fldPath *field.Path, a *commonv1.AutoscalingSpec, blocks ...*corev1.ResourceRequirements) field.ErrorList {
+	if a == nil || len(blocks) == 0 {
+		return nil
+	}
+	targets := []struct {
+		name   corev1.ResourceName
+		target *int32
+		field  string
+	}{
+		{name: corev1.ResourceCPU, target: a.TargetCPUUtilization, field: "targetCPUUtilization"},
+		{name: corev1.ResourceMemory, target: a.TargetMemoryUtilization, field: "targetMemoryUtilization"},
+	}
+	var errs field.ErrorList
+	for _, t := range targets {
+		if t.target == nil || *t.target <= 100 {
+			continue
+		}
+		// pct is the largest whole target a bounded block reaches,
+		// floor(100 × limit / request). A whole target is reachable exactly
+		// when it is at most pct.
+		target := inf.NewDec(int64(*t.target), 0)
+		var pct *inf.Dec
+		reachable := false
+		for _, rr := range blocks {
+			limit, request, bounded := blockCeiling(t.name, rr)
+			if !bounded {
+				reachable = true
+				break
+			}
+			p := new(inf.Dec).Mul(limit, inf.NewDec(100, 0))
+			p.QuoRound(p, request, 0, inf.RoundFloor)
+			if p.Cmp(target) >= 0 {
+				reachable = true
+				break
+			}
+			if pct == nil || p.Cmp(pct) > 0 {
+				pct = p
+			}
+		}
+		if reachable {
+			continue
+		}
+		errs = append(errs, field.Invalid(fldPath.Child(t.field), *t.target, fmt.Sprintf(
+			"%s %d can never be reached: no container of the API pod can use more than %d%% of its %s request, "+
+				"because its %s limit caps it there; set a %s limit above the request, or a target of at most %d",
+			t.field, *t.target, pct, t.name, t.name, t.name, pct)))
+	}
+	return errs
+}
+
+// blockCeiling returns the largest multiple of its request a container sized
+// by rr can use of resource name, as the fraction limit/request in
+// milli-units, under the rule AutoscalingTargetsReachable documents. bounded
+// is false when the container has no such ceiling.
+func blockCeiling(name corev1.ResourceName, rr *corev1.ResourceRequirements) (limit, request *inf.Dec, bounded bool) {
+	var req, lim resource.Quantity
+	var hasRequest, hasLimit bool
+	if rr != nil {
+		req, hasRequest = rr.Requests[name]
+		lim, hasLimit = rr.Limits[name]
+	}
+	one := inf.NewDec(1, 0)
+	switch {
+	case !hasRequest && !hasLimit:
+		return one, one, name == corev1.ResourceMemory
+	case !hasLimit:
+		return nil, nil, false
+	case !hasRequest:
+		return one, one, true
+	case req.Sign() <= 0:
+		return nil, nil, false
+	}
+	limDec, reqDec := lim.AsDec(), req.AsDec()
+	if outsideCeilingScale(limDec) || outsideCeilingScale(reqDec) {
+		return nil, nil, false
+	}
+	// Round both up to whole milli-units, as MilliValue and the HPA do,
+	// without the int64 overflow of MilliValue.
+	return new(inf.Dec).Round(limDec, 3, inf.RoundCeil), new(inf.Dec).Round(reqDec, 3, inf.RoundCeil), true
+}
+
+// ceilingMaxScale bounds the decimal scale of a quantity blockCeiling rounds
+// to milli-units. Rounding shifts it by 3 - scale digits, and inf.Dec builds
+// 10^shift as a big.Int: 1e2000000000 parses cheaply into scale -2e9, and
+// the zero 0e-2000000000 into scale 2e9, so either would build a number of
+// two billion digits. A parsed nonzero quantity has a scale of at most 9,
+// and one below -30 is at least 10^31, which no container is sized with.
+const ceilingMaxScale = 30
+
+// outsideCeilingScale reports whether d is too far from milli-units for
+// blockCeiling to round.
+func outsideCeilingScale(d *inf.Dec) bool {
+	return d.Scale() < -ceilingMaxScale || d.Scale() > ceilingMaxScale
+}
+
+// The bounds the autoscaling/v2 API validation applies to a scaling rule.
+// The API server's validation package cannot be imported, so they are
+// restated here.
+const (
+	maxStabilizationWindowSeconds = 3600
+	maxScalingPolicyPeriodSeconds = 1800
+)
+
+// AutoscalingBehavior checks a spec.autoscaling.behavior block against the
+// rules the autoscaling/v2 API validation applies when the operator writes
+// the HorizontalPodAutoscaler, so a bad value fails at admission and not as a
+// reconcile error. fldPath is the behavior path. For each set direction
+// (scaleUp, then scaleDown) it rejects a stabilizationWindowSeconds outside
+// 0..3600, a selectPolicy other than Max, Min or Disabled, a policy type
+// other than Pods or Percent, a policy value of zero or below, a policy
+// periodSeconds outside 1..1800, and a negative tolerance. A nil b, an unset
+// direction and an empty policies list return none: the API server defaults
+// an empty list.
+func AutoscalingBehavior(fldPath *field.Path, b *autoscalingv2.HorizontalPodAutoscalerBehavior) field.ErrorList {
+	if b == nil {
+		return nil
+	}
+	errs := scalingRules(fldPath.Child("scaleUp"), b.ScaleUp)
+	return append(errs, scalingRules(fldPath.Child("scaleDown"), b.ScaleDown)...)
+}
+
+// scalingRules checks one direction of a behavior block for
+// AutoscalingBehavior. A nil r returns none.
+func scalingRules(fldPath *field.Path, r *autoscalingv2.HPAScalingRules) field.ErrorList {
+	if r == nil {
+		return nil
+	}
+	var errs field.ErrorList
+	if w := r.StabilizationWindowSeconds; w != nil && (*w < 0 || *w > maxStabilizationWindowSeconds) {
+		errs = append(errs, field.Invalid(fldPath.Child("stabilizationWindowSeconds"), *w,
+			fmt.Sprintf("stabilizationWindowSeconds must be between 0 and %d", maxStabilizationWindowSeconds)))
+	}
+	if sp := r.SelectPolicy; sp != nil {
+		supported := []autoscalingv2.ScalingPolicySelect{
+			autoscalingv2.MaxChangePolicySelect, autoscalingv2.MinChangePolicySelect, autoscalingv2.DisabledPolicySelect,
+		}
+		if !slices.Contains(supported, *sp) {
+			errs = append(errs, field.NotSupported(fldPath.Child("selectPolicy"), *sp, supported))
+		}
+	}
+	supportedTypes := []autoscalingv2.HPAScalingPolicyType{autoscalingv2.PodsScalingPolicy, autoscalingv2.PercentScalingPolicy}
+	for i, p := range r.Policies {
+		pp := fldPath.Child("policies").Index(i)
+		if !slices.Contains(supportedTypes, p.Type) {
+			errs = append(errs, field.NotSupported(pp.Child("type"), p.Type, supportedTypes))
+		}
+		if p.Value <= 0 {
+			errs = append(errs, field.Invalid(pp.Child("value"), p.Value, "value must be greater than zero"))
+		}
+		if p.PeriodSeconds < 1 || p.PeriodSeconds > maxScalingPolicyPeriodSeconds {
+			errs = append(errs, field.Invalid(pp.Child("periodSeconds"), p.PeriodSeconds,
+				fmt.Sprintf("periodSeconds must be between 1 and %d", maxScalingPolicyPeriodSeconds)))
+		}
+	}
+	if tol := r.Tolerance; tol != nil && tol.Sign() < 0 {
+		errs = append(errs, field.Invalid(fldPath.Child("tolerance"), tol.String(), "tolerance must not be negative"))
 	}
 	return errs
 }

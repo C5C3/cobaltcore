@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An autoscaling scale-down policy with periodSeconds: 1801 (webhook-only):
+# autoscaling/v2 caps a policy period at 1800 seconds, and the embedded type
+# carries no bounds, so the schema admits it. The error names
+# `spec.keystone.api.autoscaling.behavior.scaleDown.policies[0].periodSeconds`
+# and carries `periodSeconds must be between 1 and 1800`.
+apiVersion: c5c3.io/v1alpha1
+kind: SizingProfile
+metadata:
+  name: c5c3-e2e-sizing-behavior-period
+spec:
+  base: Minimal
+  keystone:
+    api:
+      autoscaling:
+        maxReplicas: 3
+        targetCPUUtilization: 80
+        behavior:
+          scaleDown:
+            policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 1801

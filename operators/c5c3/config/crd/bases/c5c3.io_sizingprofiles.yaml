@@ -60,6 +60,165 @@ spec:
                         description: Autoscaling adds a HorizontalPodAutoscaler; it
                           replaces as a whole.
                         properties:
+                          behavior:
+                            description: |-
+                              Behavior configures how fast the HorizontalPodAutoscaler scales up and
+                              down. The operator copies the block verbatim into the HPA's
+                              spec.behavior. A direction left unset takes the Kubernetes default:
+                              scale up at once, and scale down after a 300 s stabilization window.
+                              tolerance is a Kubernetes quantity: write it as a string or a
+                              milli-value ("0.05" or 50m), because the CRD schema rejects a bare
+                              decimal such as 0.05. It needs Kubernetes 1.33 or newer: an older API
+                              server refuses the HPA the operator applies, whose schema lacks the
+                              field, and one with the feature gate HPAConfigurableTolerance off drops
+                              it.
+                            properties:
+                              scaleDown:
+                                description: |-
+                                  scaleDown is scaling policy for scaling Down.
+                                  If not set, the default value is to allow to scale down to minReplicas pods, with a
+                                  300 second stabilization window (i.e., the highest recommendation for
+                                  the last 300sec is used).
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                              scaleUp:
+                                description: |-
+                                  scaleUp is scaling policy for scaling Up.
+                                  If not set, the default value is the higher of:
+                                    * increase no more than 4 pods per 60 seconds
+                                    * double the number of pods per 60 seconds
+                                  No stabilization is used.
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                            type: object
                           maxReplicas:
                             description: MaxReplicas is the upper bound for the number
                               of replicas.
@@ -81,8 +240,10 @@ spec:
                               The HPA measures it against the summed CPU requests of every container
                               in the API pod, so while it is set the webhook rejects a zero or
                               negative CPU request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more CPU than
+                              it requests. The webhook rejects a target that no container's CPU limit
+                              lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                           targetMemoryUtilization:
@@ -91,8 +252,11 @@ spec:
                               The HPA measures it against the summed memory requests of every
                               container in the API pod, so while it is set the webhook rejects a zero
                               or negative memory request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more memory
+                              than it requests. A container whose block names no memory renders the
+                              same figure as request and limit, so the webhook rejects a target that
+                              no container's memory limit lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                         required:
@@ -418,6 +582,165 @@ spec:
                         description: Autoscaling adds a HorizontalPodAutoscaler; it
                           replaces as a whole.
                         properties:
+                          behavior:
+                            description: |-
+                              Behavior configures how fast the HorizontalPodAutoscaler scales up and
+                              down. The operator copies the block verbatim into the HPA's
+                              spec.behavior. A direction left unset takes the Kubernetes default:
+                              scale up at once, and scale down after a 300 s stabilization window.
+                              tolerance is a Kubernetes quantity: write it as a string or a
+                              milli-value ("0.05" or 50m), because the CRD schema rejects a bare
+                              decimal such as 0.05. It needs Kubernetes 1.33 or newer: an older API
+                              server refuses the HPA the operator applies, whose schema lacks the
+                              field, and one with the feature gate HPAConfigurableTolerance off drops
+                              it.
+                            properties:
+                              scaleDown:
+                                description: |-
+                                  scaleDown is scaling policy for scaling Down.
+                                  If not set, the default value is to allow to scale down to minReplicas pods, with a
+                                  300 second stabilization window (i.e., the highest recommendation for
+                                  the last 300sec is used).
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                              scaleUp:
+                                description: |-
+                                  scaleUp is scaling policy for scaling Up.
+                                  If not set, the default value is the higher of:
+                                    * increase no more than 4 pods per 60 seconds
+                                    * double the number of pods per 60 seconds
+                                  No stabilization is used.
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                            type: object
                           maxReplicas:
                             description: MaxReplicas is the upper bound for the number
                               of replicas.
@@ -439,8 +762,10 @@ spec:
                               The HPA measures it against the summed CPU requests of every container
                               in the API pod, so while it is set the webhook rejects a zero or
                               negative CPU request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more CPU than
+                              it requests. The webhook rejects a target that no container's CPU limit
+                              lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                           targetMemoryUtilization:
@@ -449,8 +774,11 @@ spec:
                               The HPA measures it against the summed memory requests of every
                               container in the API pod, so while it is set the webhook rejects a zero
                               or negative memory request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more memory
+                              than it requests. A container whose block names no memory renders the
+                              same figure as request and limit, so the webhook rejects a target that
+                              no container's memory limit lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                         required:
@@ -1206,6 +1534,165 @@ spec:
                         description: Autoscaling adds a HorizontalPodAutoscaler; it
                           replaces as a whole.
                         properties:
+                          behavior:
+                            description: |-
+                              Behavior configures how fast the HorizontalPodAutoscaler scales up and
+                              down. The operator copies the block verbatim into the HPA's
+                              spec.behavior. A direction left unset takes the Kubernetes default:
+                              scale up at once, and scale down after a 300 s stabilization window.
+                              tolerance is a Kubernetes quantity: write it as a string or a
+                              milli-value ("0.05" or 50m), because the CRD schema rejects a bare
+                              decimal such as 0.05. It needs Kubernetes 1.33 or newer: an older API
+                              server refuses the HPA the operator applies, whose schema lacks the
+                              field, and one with the feature gate HPAConfigurableTolerance off drops
+                              it.
+                            properties:
+                              scaleDown:
+                                description: |-
+                                  scaleDown is scaling policy for scaling Down.
+                                  If not set, the default value is to allow to scale down to minReplicas pods, with a
+                                  300 second stabilization window (i.e., the highest recommendation for
+                                  the last 300sec is used).
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                              scaleUp:
+                                description: |-
+                                  scaleUp is scaling policy for scaling Up.
+                                  If not set, the default value is the higher of:
+                                    * increase no more than 4 pods per 60 seconds
+                                    * double the number of pods per 60 seconds
+                                  No stabilization is used.
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                            type: object
                           maxReplicas:
                             description: MaxReplicas is the upper bound for the number
                               of replicas.
@@ -1227,8 +1714,10 @@ spec:
                               The HPA measures it against the summed CPU requests of every container
                               in the API pod, so while it is set the webhook rejects a zero or
                               negative CPU request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more CPU than
+                              it requests. The webhook rejects a target that no container's CPU limit
+                              lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                           targetMemoryUtilization:
@@ -1237,8 +1726,11 @@ spec:
                               The HPA measures it against the summed memory requests of every
                               container in the API pod, so while it is set the webhook rejects a zero
                               or negative memory request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more memory
+                              than it requests. A container whose block names no memory renders the
+                              same figure as request and limit, so the webhook rejects a target that
+                              no container's memory limit lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                         required:
@@ -1487,6 +1979,165 @@ spec:
                         description: Autoscaling adds a HorizontalPodAutoscaler; it
                           replaces as a whole.
                         properties:
+                          behavior:
+                            description: |-
+                              Behavior configures how fast the HorizontalPodAutoscaler scales up and
+                              down. The operator copies the block verbatim into the HPA's
+                              spec.behavior. A direction left unset takes the Kubernetes default:
+                              scale up at once, and scale down after a 300 s stabilization window.
+                              tolerance is a Kubernetes quantity: write it as a string or a
+                              milli-value ("0.05" or 50m), because the CRD schema rejects a bare
+                              decimal such as 0.05. It needs Kubernetes 1.33 or newer: an older API
+                              server refuses the HPA the operator applies, whose schema lacks the
+                              field, and one with the feature gate HPAConfigurableTolerance off drops
+                              it.
+                            properties:
+                              scaleDown:
+                                description: |-
+                                  scaleDown is scaling policy for scaling Down.
+                                  If not set, the default value is to allow to scale down to minReplicas pods, with a
+                                  300 second stabilization window (i.e., the highest recommendation for
+                                  the last 300sec is used).
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                              scaleUp:
+                                description: |-
+                                  scaleUp is scaling policy for scaling Up.
+                                  If not set, the default value is the higher of:
+                                    * increase no more than 4 pods per 60 seconds
+                                    * double the number of pods per 60 seconds
+                                  No stabilization is used.
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                            type: object
                           maxReplicas:
                             description: MaxReplicas is the upper bound for the number
                               of replicas.
@@ -1508,8 +2159,10 @@ spec:
                               The HPA measures it against the summed CPU requests of every container
                               in the API pod, so while it is set the webhook rejects a zero or
                               negative CPU request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more CPU than
+                              it requests. The webhook rejects a target that no container's CPU limit
+                              lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                           targetMemoryUtilization:
@@ -1518,8 +2171,11 @@ spec:
                               The HPA measures it against the summed memory requests of every
                               container in the API pod, so while it is set the webhook rejects a zero
                               or negative memory request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more memory
+                              than it requests. A container whose block names no memory renders the
+                              same figure as request and limit, so the webhook rejects a target that
+                              no container's memory limit lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                         required:
@@ -1690,6 +2346,165 @@ spec:
                         description: Autoscaling adds a HorizontalPodAutoscaler; it
                           replaces as a whole.
                         properties:
+                          behavior:
+                            description: |-
+                              Behavior configures how fast the HorizontalPodAutoscaler scales up and
+                              down. The operator copies the block verbatim into the HPA's
+                              spec.behavior. A direction left unset takes the Kubernetes default:
+                              scale up at once, and scale down after a 300 s stabilization window.
+                              tolerance is a Kubernetes quantity: write it as a string or a
+                              milli-value ("0.05" or 50m), because the CRD schema rejects a bare
+                              decimal such as 0.05. It needs Kubernetes 1.33 or newer: an older API
+                              server refuses the HPA the operator applies, whose schema lacks the
+                              field, and one with the feature gate HPAConfigurableTolerance off drops
+                              it.
+                            properties:
+                              scaleDown:
+                                description: |-
+                                  scaleDown is scaling policy for scaling Down.
+                                  If not set, the default value is to allow to scale down to minReplicas pods, with a
+                                  300 second stabilization window (i.e., the highest recommendation for
+                                  the last 300sec is used).
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                              scaleUp:
+                                description: |-
+                                  scaleUp is scaling policy for scaling Up.
+                                  If not set, the default value is the higher of:
+                                    * increase no more than 4 pods per 60 seconds
+                                    * double the number of pods per 60 seconds
+                                  No stabilization is used.
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                            type: object
                           maxReplicas:
                             description: MaxReplicas is the upper bound for the number
                               of replicas.
@@ -1711,8 +2526,10 @@ spec:
                               The HPA measures it against the summed CPU requests of every container
                               in the API pod, so while it is set the webhook rejects a zero or
                               negative CPU request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more CPU than
+                              it requests. The webhook rejects a target that no container's CPU limit
+                              lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                           targetMemoryUtilization:
@@ -1721,8 +2538,11 @@ spec:
                               The HPA measures it against the summed memory requests of every
                               container in the API pod, so while it is set the webhook rejects a zero
                               or negative memory request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more memory
+                              than it requests. A container whose block names no memory renders the
+                              same figure as request and limit, so the webhook rejects a target that
+                              no container's memory limit lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                         required:
@@ -2155,6 +2975,165 @@ spec:
                         description: Autoscaling adds a HorizontalPodAutoscaler; it
                           replaces as a whole.
                         properties:
+                          behavior:
+                            description: |-
+                              Behavior configures how fast the HorizontalPodAutoscaler scales up and
+                              down. The operator copies the block verbatim into the HPA's
+                              spec.behavior. A direction left unset takes the Kubernetes default:
+                              scale up at once, and scale down after a 300 s stabilization window.
+                              tolerance is a Kubernetes quantity: write it as a string or a
+                              milli-value ("0.05" or 50m), because the CRD schema rejects a bare
+                              decimal such as 0.05. It needs Kubernetes 1.33 or newer: an older API
+                              server refuses the HPA the operator applies, whose schema lacks the
+                              field, and one with the feature gate HPAConfigurableTolerance off drops
+                              it.
+                            properties:
+                              scaleDown:
+                                description: |-
+                                  scaleDown is scaling policy for scaling Down.
+                                  If not set, the default value is to allow to scale down to minReplicas pods, with a
+                                  300 second stabilization window (i.e., the highest recommendation for
+                                  the last 300sec is used).
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                              scaleUp:
+                                description: |-
+                                  scaleUp is scaling policy for scaling Up.
+                                  If not set, the default value is the higher of:
+                                    * increase no more than 4 pods per 60 seconds
+                                    * double the number of pods per 60 seconds
+                                  No stabilization is used.
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                            type: object
                           maxReplicas:
                             description: MaxReplicas is the upper bound for the number
                               of replicas.
@@ -2176,8 +3155,10 @@ spec:
                               The HPA measures it against the summed CPU requests of every container
                               in the API pod, so while it is set the webhook rejects a zero or
                               negative CPU request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more CPU than
+                              it requests. The webhook rejects a target that no container's CPU limit
+                              lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                           targetMemoryUtilization:
@@ -2186,8 +3167,11 @@ spec:
                               The HPA measures it against the summed memory requests of every
                               container in the API pod, so while it is set the webhook rejects a zero
                               or negative memory request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more memory
+                              than it requests. A container whose block names no memory renders the
+                              same figure as request and limit, so the webhook rejects a target that
+                              no container's memory limit lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                         required:
@@ -2562,6 +3546,165 @@ spec:
                         description: Autoscaling adds a HorizontalPodAutoscaler; it
                           replaces as a whole.
                         properties:
+                          behavior:
+                            description: |-
+                              Behavior configures how fast the HorizontalPodAutoscaler scales up and
+                              down. The operator copies the block verbatim into the HPA's
+                              spec.behavior. A direction left unset takes the Kubernetes default:
+                              scale up at once, and scale down after a 300 s stabilization window.
+                              tolerance is a Kubernetes quantity: write it as a string or a
+                              milli-value ("0.05" or 50m), because the CRD schema rejects a bare
+                              decimal such as 0.05. It needs Kubernetes 1.33 or newer: an older API
+                              server refuses the HPA the operator applies, whose schema lacks the
+                              field, and one with the feature gate HPAConfigurableTolerance off drops
+                              it.
+                            properties:
+                              scaleDown:
+                                description: |-
+                                  scaleDown is scaling policy for scaling Down.
+                                  If not set, the default value is to allow to scale down to minReplicas pods, with a
+                                  300 second stabilization window (i.e., the highest recommendation for
+                                  the last 300sec is used).
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                              scaleUp:
+                                description: |-
+                                  scaleUp is scaling policy for scaling Up.
+                                  If not set, the default value is the higher of:
+                                    * increase no more than 4 pods per 60 seconds
+                                    * double the number of pods per 60 seconds
+                                  No stabilization is used.
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                            type: object
                           maxReplicas:
                             description: MaxReplicas is the upper bound for the number
                               of replicas.
@@ -2583,8 +3726,10 @@ spec:
                               The HPA measures it against the summed CPU requests of every container
                               in the API pod, so while it is set the webhook rejects a zero or
                               negative CPU request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more CPU than
+                              it requests. The webhook rejects a target that no container's CPU limit
+                              lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                           targetMemoryUtilization:
@@ -2593,8 +3738,11 @@ spec:
                               The HPA measures it against the summed memory requests of every
                               container in the API pod, so while it is set the webhook rejects a zero
                               or negative memory request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more memory
+                              than it requests. A container whose block names no memory renders the
+                              same figure as request and limit, so the webhook rejects a target that
+                              no container's memory limit lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                         required:
@@ -3467,6 +4615,165 @@ spec:
                         description: Autoscaling adds a HorizontalPodAutoscaler; it
                           replaces as a whole.
                         properties:
+                          behavior:
+                            description: |-
+                              Behavior configures how fast the HorizontalPodAutoscaler scales up and
+                              down. The operator copies the block verbatim into the HPA's
+                              spec.behavior. A direction left unset takes the Kubernetes default:
+                              scale up at once, and scale down after a 300 s stabilization window.
+                              tolerance is a Kubernetes quantity: write it as a string or a
+                              milli-value ("0.05" or 50m), because the CRD schema rejects a bare
+                              decimal such as 0.05. It needs Kubernetes 1.33 or newer: an older API
+                              server refuses the HPA the operator applies, whose schema lacks the
+                              field, and one with the feature gate HPAConfigurableTolerance off drops
+                              it.
+                            properties:
+                              scaleDown:
+                                description: |-
+                                  scaleDown is scaling policy for scaling Down.
+                                  If not set, the default value is to allow to scale down to minReplicas pods, with a
+                                  300 second stabilization window (i.e., the highest recommendation for
+                                  the last 300sec is used).
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                              scaleUp:
+                                description: |-
+                                  scaleUp is scaling policy for scaling Up.
+                                  If not set, the default value is the higher of:
+                                    * increase no more than 4 pods per 60 seconds
+                                    * double the number of pods per 60 seconds
+                                  No stabilization is used.
+                                properties:
+                                  policies:
+                                    description: |-
+                                      policies is a list of potential scaling polices which can be used during scaling.
+                                      If not set, use the default values:
+                                      - For scale up: allow doubling the number of pods, or an absolute change of 4 pods in a 15s window.
+                                      - For scale down: allow all pods to be removed in a 15s window.
+                                    items:
+                                      description: HPAScalingPolicy is a single policy
+                                        which must hold true for a specified past
+                                        interval.
+                                      properties:
+                                        periodSeconds:
+                                          description: |-
+                                            periodSeconds specifies the window of time for which the policy should hold true.
+                                            PeriodSeconds must be greater than zero and less than or equal to 1800 (30 min).
+                                          format: int32
+                                          type: integer
+                                        type:
+                                          description: type is used to specify the
+                                            scaling policy.
+                                          type: string
+                                        value:
+                                          description: |-
+                                            value contains the amount of change which is permitted by the policy.
+                                            It must be greater than zero
+                                          format: int32
+                                          type: integer
+                                      required:
+                                      - periodSeconds
+                                      - type
+                                      - value
+                                      type: object
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  selectPolicy:
+                                    description: |-
+                                      selectPolicy is used to specify which policy should be used.
+                                      If not set, the default value Max is used.
+                                    type: string
+                                  stabilizationWindowSeconds:
+                                    description: |-
+                                      stabilizationWindowSeconds is the number of seconds for which past recommendations should be
+                                      considered while scaling up or scaling down.
+                                      StabilizationWindowSeconds must be greater than or equal to zero and less than or equal to 3600 (one hour).
+                                      If not set, use the default values:
+                                      - For scale up: 0 (i.e. no stabilization is done).
+                                      - For scale down: 300 (i.e. the stabilization window is 300 seconds long).
+                                    format: int32
+                                    type: integer
+                                  tolerance:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: |-
+                                      tolerance is the tolerance on the ratio between the current and desired
+                                      metric value under which no updates are made to the desired number of
+                                      replicas (e.g. 0.01 for 1%). Must be greater than or equal to zero. If not
+                                      set, the default cluster-wide tolerance is applied (by default 10%).
+
+                                      For example, if autoscaling is configured with a memory consumption target of 100Mi,
+                                      and scale-down and scale-up tolerances of 5% and 1% respectively, scaling will be
+                                      triggered when the actual consumption falls below 95Mi or exceeds 101Mi.
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                type: object
+                            type: object
                           maxReplicas:
                             description: MaxReplicas is the upper bound for the number
                               of replicas.
@@ -3488,8 +4795,10 @@ spec:
                               The HPA measures it against the summed CPU requests of every container
                               in the API pod, so while it is set the webhook rejects a zero or
                               negative CPU request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more CPU than
+                              it requests. The webhook rejects a target that no container's CPU limit
+                              lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                           targetMemoryUtilization:
@@ -3498,8 +4807,11 @@ spec:
                               The HPA measures it against the summed memory requests of every
                               container in the API pod, so while it is set the webhook rejects a zero
                               or negative memory request, or a limit the request would be copied from.
+                              A value above 100 is valid wherever a container may use more memory
+                              than it requests. A container whose block names no memory renders the
+                              same figure as request and limit, so the webhook rejects a target that
+                              no container's memory limit lets the pod reach.
                             format: int32
-                            maximum: 100
                             minimum: 1
                             type: integer
                         required:
