@@ -258,6 +258,7 @@ monitoring            kube-prometheus-stack-prometheus-*   Ready (kind-only; WIT
 monitoring            kube-prometheus-stack-grafana-*      Ready (kind-only; WITH_PROMETHEUS=true; see Step 4c)
 monitoring            kube-prometheus-stack-operator-*     Ready (kind-only; WITH_PROMETHEUS=true; see Step 4c)
 kube-system           metrics-server-*                     Ready (kind-only; WITH_METRICS_SERVER=true)
+kube-system           vertical-pod-autoscaler-recommender-*  Ready (kind-only; WITH_VPA=true)
 dizzy                 dizzy-victoria-metrics-server-*      Ready (kind-only; WITH_DIZZY=true)
 dizzy                 dizzy-grafana-*                      Ready (kind-only; WITH_DIZZY=true)
 ```
@@ -354,6 +355,11 @@ for the `metrics-server` HelmRelease to become Ready. It is the prerequisite
 for the [Autoscaling (HPA) recipe](./guides/advanced-configuration.md#autoscaling-hpa):
 without it the generated HorizontalPodAutoscaler reports `unknown/80%` and never
 scales.
+
+`WITH_VPA=true make deploy-infra` installs metrics-server too, together with
+the kind-only VPA recommender at `deploy/kind/vpa/` that the CI sizing
+measurement reads
+([VPA recommender](./reference/infrastructure/infrastructure-manifests.md#vpa-recommender-kind-only-opt-in)).
 :::
 
 ::: tip Enabling the dizzy load/chaos stack
