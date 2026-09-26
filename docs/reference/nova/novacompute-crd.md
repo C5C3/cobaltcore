@@ -40,7 +40,7 @@ compute service is deleted after the pod is gone.
 | `libvirt` | [`NovaComputeLibvirtSpec`](#novacomputelibvirtspec) | no | `{}` | The `[libvirt]` options the pool renders |
 | `updateStrategy` | [`NovaComputeUpdateStrategy`](#novacomputeupdatestrategy) | no | `{}` | Paces the DaemonSet rollout |
 | `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits of the `nova-compute` container, applied to the `wait-for-chassis` init container too. Nil renders none |
-| `extraConfig` | `map[string]map[string]string` | no | none | INI sections merged over the rendered `compute-pool.conf`. It is the per-pool override surface. The keys the pod takes from its environment or its mounts are rejected at admission (see [NovaComputeOwnedConfigKeys](#owned-keys)) |
+| `extraConfig` | `map[string]map[string]string` | no | none | INI sections merged over the rendered `compute-pool.conf`. It is the per-pool override surface. The keys the pod takes from its environment or its mounts, and the keys that select the live-migration transport, are rejected at admission (see [NovaComputeOwnedConfigKeys](#owned-keys)) |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSet and its ConfigMaps are created on. The CR, its status and its finalizers stay on the management cluster. Immutable. See [Target Clusters](../target-clusters.md) |
 
 ### NovaRef
@@ -127,6 +127,12 @@ applied beside it) skips the check with the single warning
 `spec.extraConfig` reads nothing and warns nothing. On update the check runs
 again only when `spec.extraConfig` changed.
 
+An update to a CR that is being deleted and leaves the spec unchanged is
+admitted without validation. That is the drain finalizer's removal, and an
+unchanged spec admitted earlier can fail today's rules, such as an owned key a
+later operator rejects; rejecting the removal would hold the CR in Terminating
+with nothing left to edit.
+
 ### Owned keys
 
 `NovaComputeOwnedConfigKeys` in `operators/nova/api/v1alpha1/config_ownership.go`
@@ -140,6 +146,11 @@ lists the keys of `compute-pool.conf` the operator owns.
 | `DEFAULT` | `state_path` | rejected | the `/var/lib/nova` host mount |
 | `oslo_concurrency` | `lock_path` | rejected | the `/var/lib/nova` host mount |
 | `libvirt` | `connection_uri` | rejected | the `/run/libvirt` host mount |
+| `libvirt` | `live_migration_scheme` | rejected | operator-computed |
+| `libvirt` | `live_migration_with_native_tls` | rejected | operator-computed |
+| `libvirt` | `live_migration_uri` | rejected | operator-computed |
+| `libvirt` | `live_migration_tunnelled` | rejected | operator-computed |
+| `libvirt` | `live_migration_inbound_addr` | rejected | `OS_LIBVIRT__LIVE_MIGRATION_INBOUND_ADDR` from `status.hostIP` |
 | `os_vif_ovs` | `ovsdb_connection` | rejected | the `/run/openvswitch` host mount |
 | `vnc` | `server_proxyclient_address` | rejected | `OS_VNC__SERVER_PROXYCLIENT_ADDRESS` from `status.hostIP` |
 | `keystone_authtoken`, `service_user`, `placement`, `neutron`, `cinder` | `password` | rejected | `OS_<SECTION>__PASSWORD` from the compute contract |
@@ -357,6 +368,119 @@ Warning event `AggregateKept` naming the keys: deleting it would drop them, and
 the aggregate the zone gets back would come without them. An unmarked aggregate
 is never deleted.
 
+### Live migration
+
+Every pool live-migrates over libvirt TLS, and QEMU encrypts the guest's memory
+and disk stream as well. `compute-pool.conf` carries
+`[libvirt] live_migration_scheme = tls` and
+`live_migration_with_native_tls = true` whatever `spec.libvirt` holds. The pod
+sets `[libvirt] live_migration_inbound_addr` to the node's address through
+`OS_LIBVIRT__LIVE_MIGRATION_INBOUND_ADDR`, from `status.hostIP`. The
+destination hands that address to the source, which dials
+`qemu+tls://<node IP>/system` and sends the QEMU stream to the same address, so
+no host has to resolve another host's Node name.
+
+`spec.extraConfig` cannot set `live_migration_scheme`,
+`live_migration_with_native_tls`, `live_migration_uri`,
+`live_migration_tunnelled` or `live_migration_inbound_addr` (see
+[Owned keys](#owned-keys)). The other `live_migration_*` options (bandwidth,
+downtime, completion timeout, post-copy, auto-converge, and
+`live_migration_parallel_connections` on 2026.1) stay open to it and are
+checked against the option catalog.
+
+The pod mounts no certificate. Nova migrates peer to peer: `nova-compute` talks
+only to its local libvirtd over `/run/libvirt`, and that libvirtd opens the
+connection to the destination with the host's own client certificate.
+
+The host image and its owner provide what each host owes, and the pool
+configures none of it:
+
+- libvirtd listening for TLS on port 16514.
+- The CA, the certificate and the key at libvirt's default paths, which
+  kvm-node-agent writes from the Secret `tls-libvirt-<node>`: the CA at
+  `/etc/pki/CA/cacert.pem` and `/etc/pki/qemu/ca-cert.pem`, the certificate at
+  `/etc/pki/libvirt/servercert.pem` and `/etc/pki/qemu/server-cert.pem`, and
+  the key at `/etc/pki/libvirt/private/serverkey.pem` and
+  `/etc/pki/qemu/server-key.pem`. The client certificate and key in both
+  directories link to the server ones.
+- TCP 16514 and QEMU's migration ports, 49152 to 49215 by default, open between
+  every pair of nodes that can migrate to each other and closed to every other
+  source.
+
+Two controllers issue that certificate, and they compete.
+openstack-hypervisor-operator creates the cert-manager Certificate
+`libvirt-<node>`, with the Secret `tls-libvirt-<node>`, for every Node labelled
+`nova.openstack.cloud.sap/virt-driver`. kvm-node-agent creates a Certificate of
+the same name in its own namespace while the node's
+`Hypervisor.spec.createCertManagerCertificate` is true, and it installs any
+Secret named `tls-libvirt-<node>`, in any namespace. With both in one
+namespace, the two controllers overwrite each other's spec on every pass and
+cert-manager reissues the certificate each time. With two namespaces, the agent
+installs whichever Secret changed last, and the host alternates between two
+CAs.
+
+That Secret is the host's trust root for migration. Whoever can write a Secret
+named `tls-libvirt-<node>`, in any namespace of the compute cluster, picks the
+CA the node's libvirtd trusts, and a client certificate from that CA gets full
+access to it: root on the hypervisor. As long as kvm-node-agent installs these
+Secrets from every namespace, the deployment confines them to the certificate
+namespace, for example with a ValidatingAdmissionPolicy that denies a
+`tls-libvirt-*` Secret anywhere else.
+
+A compute cluster runs with openstack-hypervisor-operator's certificate. It
+lives 47 days, carries the node's InternalIP and ExternalIP addresses as IP
+SANs, and comes from the Issuer that the operator's `--certificate-issuer-name`
+names in its `--certificate-namespace`. The deployment provides that Issuer.
+`Hypervisor.spec.createCertManagerCertificate` stays false, its default, on
+every Hypervisor. The operator issues its certificate for every hypervisor node
+unconditionally. The agent's certificate is opt-in, and upstream marks its
+8-hour lifetime as a testing value. The pool reads no `kvm.cloud.sap` object
+and does not enforce this choice.
+
+One CA spans a migration domain. Each host trusts only `/etc/pki/CA/cacert.pem`,
+the `ca.crt` of its own Secret, and Nova may pick any compute of the Nova as the
+destination, including one in another pool or on another compute cluster.
+Every node that can be a migration peer has to chain to the same CA and reach
+the others on the ports above. Node sets that cannot meet this are kept apart
+by availability zone.
+
+The CA also decides who else gets in. libvirtd checks no client subject by
+default, so any client certificate that chains to `/etc/pki/CA/cacert.pem`
+gets full access to the node's libvirtd on port 16514. The Issuer behind
+`--certificate-issuer-name` therefore holds a CA dedicated to libvirt
+migration, which signs nothing else and is shared with no other Issuer. In
+`--certificate-namespace`, only openstack-hypervisor-operator and cert-manager
+create Certificates and CertificateRequests, because anyone who can create one
+there obtains such a client certificate. `tls_allowed_dn_list` in
+`libvirtd.conf` can narrow the accepted clients further, to the subject the
+node certificates carry (`O=nova`, `CN=<node>`).
+
+Reading one of these Secrets grants the same access as writing one. The key in
+`tls-libvirt-<node>` is also the node's client key, so whoever can read one of
+these Secrets, or the CA Secret behind the Issuer, can connect to every libvirtd
+in the migration domain. `tls_allowed_dn_list` does not stop that, because the
+stolen certificate carries a node subject. In `--certificate-namespace`, only
+cert-manager, openstack-hypervisor-operator and kvm-node-agent read Secrets.
+kvm-node-agent reads them in every namespace, so a compromised node or agent
+token reaches every migration peer of that node. The CobaltCore operators read
+Secrets in every namespace the target-cluster-access chart's `namespaces` lists,
+so `--certificate-namespace` stays out of that list. A local pool cannot keep
+that boundary. It needs the nova chart installed cluster-scoped (see
+`NodesForbidden` under [Conditions](#conditions)), and every operator chart
+left at its default `rbac.namespaceScoped=false` reads Secrets in every
+namespace of the management cluster, so each of these operators can read every
+node key and the CA there.
+
+To check a node, read the `TLSCertificateInstalled` condition of its
+`Hypervisor` on the compute cluster. kvm-node-agent sets it once it has written
+the Secret into the host's PKI. Then move an ACTIVE server off the node:
+
+```bash
+kubectl get hypervisor <node> \
+  -o jsonpath='{.status.conditions[?(@.type=="TLSCertificateInstalled")].status}'
+openstack server migrate --live-migration <server>
+```
+
 ### The drain
 
 Leaving the pool is the drain. It starts when a node stops matching the
@@ -368,6 +492,8 @@ selector, when its Node is deleted, or for every node when the CR is deleted:
 2. The pool never migrates an instance. On a compute cluster,
    openstack-hypervisor-operator's Eviction, started through
    `Hypervisor.spec.maintenance`, empties the host; without it the owner does.
+   The Eviction live-migrates an ACTIVE server without block migration, which
+   needs [Live migration](#live-migration).
 3. When Nova counts no server on the host, the node goes `Releasing` and its pod
    is released.
 4. Once the pod is gone the pool deletes the compute service. Nova removes the
