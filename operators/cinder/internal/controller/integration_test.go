@@ -759,17 +759,37 @@ func TestIntegrationCinder_BackendLifecycle(t *testing.T) {
 			metav1.ConditionFalse, eventuallyLongTimeout)
 		g.Expect(detaching.Reason).To(Equal(conditionReasonDetaching))
 
-		// The volume service has to be gone before the registry entry is
-		// removed: a running cinder-volume reports itself back within seconds.
-		g.Eventually(func() bool {
-			return apierrors.IsNotFound(c.Get(ctx, volumeKey, &appsv1.Deployment{}))
-		}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
-			"the volume Deployment should be stopped before the service is unregistered")
-
 		removeJobKey := client.ObjectKey{
 			Namespace: ns,
 			Name:      integrationCinderName + "-" + integrationBackendName + "-" + componentServiceRemove,
 		}
+
+		// The volume service has to be gone before the registry entry is
+		// removed: a running cinder-volume reports itself back within seconds.
+		// The Deployment is deleted in the foreground, so the API server keeps
+		// it under foregroundDeletion until the garbage collector has reaped its
+		// pods. envtest runs no garbage collector, so the test drops that
+		// finalizer itself, after checking that no Job started in the meantime.
+		terminating := &appsv1.Deployment{}
+		g.Eventually(func() bool {
+			return c.Get(ctx, volumeKey, terminating) == nil && terminating.DeletionTimestamp != nil
+		}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
+			"the volume Deployment should be deleted before the service is unregistered")
+		g.Expect(terminating.Finalizers).To(ContainElement(metav1.FinalizerDeleteDependents),
+			"only a foreground delete keeps the Deployment until its pods are gone")
+		g.Consistently(func() bool {
+			return apierrors.IsNotFound(c.Get(ctx, removeJobKey, &batchv1.Job{}))
+		}, 2*time.Second, pollInterval).Should(BeTrue(),
+			"the service-remove Job must wait for the volume pods to terminate")
+		reaped := terminating.DeepCopy()
+		controllerutil.RemoveFinalizer(reaped, metav1.FinalizerDeleteDependents)
+		g.Expect(c.Patch(ctx, reaped, client.MergeFrom(terminating))).To(Succeed(),
+			"release the volume Deployment as the garbage collector would")
+		g.Eventually(func() bool {
+			return apierrors.IsNotFound(c.Get(ctx, volumeKey, &appsv1.Deployment{}))
+		}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
+			"the volume Deployment should leave once its finalizer is gone")
+
 		removeJob := &batchv1.Job{}
 		eventuallyExists(t, ctx, c, removeJobKey, removeJob, "service-remove Job", eventuallyLongTimeout)
 		g.Expect(removeJob.Spec.Template.Spec.Containers[0].Command).
