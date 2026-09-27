@@ -224,8 +224,10 @@ releases it. A running `cinder-volume` reports itself into the service registry
 every few seconds, so an entry removed while the process still runs comes back.
 The order is therefore fixed: the volume Deployment is deleted, a later pass
 finds it gone and runs the `<cinder>-<name>-service-remove` Job, the projected
-Secrets are swept, and only then is the finalizer released. While that runs, the
-backend reports `Ready=False` under the reason `Detaching`.
+Secrets are swept, and only then is the finalizer released. The Deployment is
+deleted with foreground propagation, so the API server keeps it until its pods
+have exited, and the Job never starts beside a terminating `cinder-volume`.
+While that runs, the backend reports `Ready=False` under the reason `Detaching`.
 
 The Job runs `cinder-manage service remove cinder-volume <cinder>@<name>`.
 Exit code 2 is "host not found", which is the state of a backend whose

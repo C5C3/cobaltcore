@@ -198,8 +198,10 @@ operators build on them rather than reopening them:
   belong to the parent. `CinderBackend` is the reference, held by
   `cinder.openstack.c5c3.io/service-remove`. The release runs in stages, one
   pass each. The backend's `cinder-volume` Deployment is deleted first, because
-  a running service re-registers itself every few seconds. A later pass finds
-  the Deployment gone and runs a `service-remove` Job, tolerating exit code 2.
+  a running service re-registers itself every few seconds. The delete uses
+  foreground propagation: a background delete makes the Deployment NotFound
+  while its pods still run. A later pass finds the Deployment gone and runs a
+  `service-remove` Job, tolerating exit code 2.
   The backend's projected Secrets are swept, and the finalizer goes last.
   `Owns(&batchv1.Job{})` on the parent's controller is what wakes the next
   stage once that Job finishes. See

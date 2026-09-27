@@ -319,8 +319,15 @@ func volumeServiceStatuses(cinder *cinderv1alpha1.Cinder, backends []backendProj
 // pruneVolumeDeployments deletes the volume Deployments of backends this Cinder
 // no longer projects: a backend that was detached, renamed or skipped keeps no
 // process, and one left running would keep re-registering the host identity the
-// detach removes. It returns the names it deleted in this pass, which is what
-// the detach flow waits out before it unregisters anything.
+// detach removes. It returns the names it deleted in this pass or found still
+// terminating, which is what the detach flow waits out before it unregisters
+// anything.
+//
+// The delete is a foreground one. A background delete removes the Deployment
+// at once and leaves its pods to the garbage collector, so the next pass, which
+// the delete event itself enqueues, reads NotFound while the cinder-volume is
+// still reporting in. In the foreground the API server keeps the Deployment
+// until its pods are gone, so NotFound means the process has exited.
 func (r *CinderReconciler) pruneVolumeDeployments(ctx context.Context, children client.Client,
 	cinder *cinderv1alpha1.Cinder, backends []backendProjection,
 ) (map[string]struct{}, error) {
@@ -345,7 +352,12 @@ func (r *CinderReconciler) pruneVolumeDeployments(ctx context.Context, children 
 		if _, ok := projected[name]; ok {
 			continue
 		}
-		if err := client.IgnoreNotFound(children.Delete(ctx, &list.Items[i])); err != nil {
+		if list.Items[i].DeletionTimestamp != nil {
+			stopped[name] = struct{}{}
+			continue
+		}
+		if err := client.IgnoreNotFound(children.Delete(ctx, &list.Items[i],
+			client.PropagationPolicy(metav1.DeletePropagationForeground))); err != nil {
 			return nil, fmt.Errorf("deleting unprojected volume Deployment %s: %w", name, err)
 		}
 		stopped[name] = struct{}{}
@@ -359,8 +371,8 @@ func (r *CinderReconciler) pruneVolumeDeployments(ctx context.Context, children 
 // needs and the name of a service-remove Job that has permanently failed, which
 // the caller turns into the VolumeServicesReady condition.
 //
-// stopped names the volume Deployments this very pass deleted, so a detach never
-// unregisters a process that was still running a moment ago.
+// stopped names the volume Deployments this very pass deleted or found still
+// terminating, so a detach never unregisters a process that is still running.
 func (r *CinderReconciler) reconcileDetachingBackends(ctx context.Context, children client.Client,
 	cinder *cinderv1alpha1.Cinder, art configArtifacts, stopped map[string]struct{},
 ) (ctrl.Result, string, error) {
@@ -400,23 +412,26 @@ func (r *CinderReconciler) reconcileDetachingBackends(ctx context.Context, child
 // The order is what makes the removal stick. A running cinder-volume reports
 // itself to the registry every few seconds, so an entry removed while the
 // process still runs comes back; the Deployment therefore has to be gone before
-// the Job runs, and the pass that deletes it returns rather than continuing.
+// the Job runs, and the pass that deletes it returns rather than continuing. The
+// delete is a foreground one (see pruneVolumeDeployments), so the Deployment
+// stays readable until its pods have exited.
 func (r *CinderReconciler) detachBackend(ctx context.Context, children client.Client,
 	cinder *cinderv1alpha1.Cinder, backend *cinderv1alpha1.CinderBackend, art configArtifacts,
 	stopped map[string]struct{},
 ) (ctrl.Result, string, error) {
 	key := client.ObjectKey{Namespace: cinder.Namespace, Name: volumeDeploymentName(cinder, backend.Name)}
 	if _, justStopped := stopped[key.Name]; justStopped {
-		// The volume service was stopped in this very pass, so its pods are still
-		// terminating and would report themselves back into the registry after the
-		// removal. The Job waits for a pass that finds the Deployment already gone.
+		// The volume service is stopping, so its pods are still terminating and
+		// would report themselves back into the registry after the removal. The
+		// Job waits for a pass that finds the Deployment already gone.
 		return ctrl.Result{RequeueAfter: commonreconcile.RequeueDeploymentPolling}, "", nil
 	}
 
 	var deploy appsv1.Deployment
 	switch err := children.Get(ctx, key, &deploy); {
 	case err == nil:
-		if err := client.IgnoreNotFound(children.Delete(ctx, &deploy)); err != nil {
+		if err := client.IgnoreNotFound(children.Delete(ctx, &deploy,
+			client.PropagationPolicy(metav1.DeletePropagationForeground))); err != nil {
 			return ctrl.Result{}, "", fmt.Errorf("deleting volume Deployment %s: %w", key.Name, err)
 		}
 		return ctrl.Result{RequeueAfter: commonreconcile.RequeueDeploymentPolling}, "", nil

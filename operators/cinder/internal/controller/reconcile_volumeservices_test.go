@@ -22,6 +22,8 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/job"
@@ -360,6 +362,71 @@ func TestReconcileVolumeServices_DetachStopsTheProcessFirst(t *testing.T) {
 	g.Expect(apierrors.IsNotFound(r.Get(ctx, objectKey("cinder-nfs-service-remove"), &batchv1.Job{}))).
 		To(BeTrue(), "the Job must not run while the process it unregisters is still up")
 	g.Expect(backend.Finalizers).To(ContainElement(CinderBackendServiceRemoveFinalizer))
+}
+
+// TestReconcileVolumeServices_DetachWaitsForTheVolumePods covers the pass the
+// delete event enqueues right after the one that stops the volume service. A
+// Deployment deleted in the background is NotFound there while its cinder-volume
+// pod still runs, and that process writes the removed registry entry back on its
+// next report. The fake client ignores propagation, so the interceptor stands in
+// for the API server: a foreground delete leaves the Deployment under
+// foregroundDeletion, and the test removes that finalizer the way the garbage
+// collector does once the pods are gone.
+func TestReconcileVolumeServices_DetachWaitsForTheVolumePods(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cinder := workloadCinder()
+	deploymentDeletes := 0
+	c := cinderFakeClientBuilder(cinder, detachingBackend("nfs"),
+		readyVolumeDeployment(cinder, testBackendProjection("nfs"))).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				do := &client.DeleteOptions{}
+				do.ApplyOptions(opts)
+				live, ok := obj.(*appsv1.Deployment)
+				if ok {
+					deploymentDeletes++
+				}
+				if !ok || live.DeletionTimestamp != nil || do.PropagationPolicy == nil ||
+					*do.PropagationPolicy != metav1.DeletePropagationForeground {
+					return cl.Delete(ctx, obj, opts...)
+				}
+				controllerutil.AddFinalizer(live, metav1.FinalizerDeleteDependents)
+				if err := cl.Update(ctx, live); err != nil {
+					return err
+				}
+				return cl.Delete(ctx, live, opts...)
+			},
+		}).Build()
+	r := &CinderReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(50)}
+	volumeKey := objectKey("cinder-volume-nfs")
+	removeJobKey := objectKey("cinder-nfs-service-remove")
+
+	for pass := 1; pass <= 2; pass++ {
+		res, err := r.reconcileVolumeServices(ctx, r.Client, cinder, nil,
+			workloadArtifacts(), workloadDigests{}, testEgressPort)
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, removeJobKey, &batchv1.Job{}))).To(BeTrue(),
+			"pass %d must not unregister a cinder-volume whose pod is still terminating", pass)
+	}
+	g.Expect(deploymentDeletes).To(Equal(1), "a terminating Deployment is waited for, not deleted again")
+
+	terminating := &appsv1.Deployment{}
+	g.Expect(r.Get(ctx, volumeKey, terminating)).To(Succeed(),
+		"a foreground delete keeps the Deployment readable until its pods are gone")
+	g.Expect(terminating.DeletionTimestamp).NotTo(BeNil())
+	controllerutil.RemoveFinalizer(terminating, metav1.FinalizerDeleteDependents)
+	g.Expect(r.Update(ctx, terminating)).To(Succeed())
+
+	res, err := r.reconcileVolumeServices(ctx, r.Client, cinder, nil,
+		workloadArtifacts(), workloadDigests{}, testEgressPort)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
+	g.Expect(r.Get(ctx, removeJobKey, &batchv1.Job{})).To(Succeed(),
+		"the Job runs once the Deployment has left with its pods")
 }
 
 // TestReconcileVolumeServices_DetachRunsTheRemoveJob covers the second pass: the
