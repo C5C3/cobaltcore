@@ -21,10 +21,10 @@ func TestMemoryForProcesses(t *testing.T) {
 		want       string
 	}{
 		{name: "one process, one thread", perProcess: DefaultMemoryPerProcess(), processes: 1, threads: 1, want: "368Mi"},
-		{name: "default uWSGI counts", perProcess: DefaultMemoryPerProcess(), processes: 2, threads: 1, want: "512Mi"},
-		{name: "four processes", perProcess: DefaultMemoryPerProcess(), processes: 4, threads: 1, want: "800Mi"},
-		{name: "four processes, two threads", perProcess: DefaultMemoryPerProcess(), processes: 4, threads: 2, want: "928Mi"},
-		{name: "glance per-process figure", perProcess: resource.MustParse("400Mi"), processes: 2, threads: 1, want: "1Gi"},
+		{name: "default uWSGI counts", perProcess: DefaultMemoryPerProcess(), processes: 2, threads: 1, want: "720Mi"},
+		{name: "four processes", perProcess: DefaultMemoryPerProcess(), processes: 4, threads: 1, want: "1424Mi"},
+		{name: "four processes, two threads", perProcess: DefaultMemoryPerProcess(), processes: 4, threads: 2, want: "1552Mi"},
+		{name: "glance per-process figure", perProcess: resource.MustParse("1Gi"), processes: 2, threads: 1, want: "2064Mi"},
 		{name: "zero counts clamp to one", perProcess: DefaultMemoryPerProcess(), processes: 0, threads: 0, want: "368Mi"},
 		{name: "negative counts clamp to one", perProcess: DefaultMemoryPerProcess(), processes: -3, threads: -1, want: "368Mi"},
 	} {
@@ -39,12 +39,14 @@ func TestMemoryForProcesses(t *testing.T) {
 // The result must be structurally equal to the parsed literal, not only
 // semantically: reconciler tests compare rendered containers with Equal
 // (reflect.DeepEqual), and resource.MustParse caches its input string for
-// some figures ("1Gi") that a Quantity built by arithmetic does not carry.
+// some figures ("1Gi") that a Quantity built by arithmetic does not carry. No
+// default figure is a whole Gi, so the first case picks a per-process figure
+// that makes one: 16Mi + 2 × 504Mi = 1Gi.
 func TestMemoryForProcesses_ReturnsTheCanonicalForm(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	g.Expect(MemoryForProcesses(resource.MustParse("400Mi"), 2, 1)).To(gomega.Equal(resource.MustParse("1Gi")))
-	g.Expect(MemoryForProcesses(DefaultMemoryPerProcess(), 2, 1)).To(gomega.Equal(resource.MustParse("512Mi")))
+	g.Expect(MemoryForProcesses(resource.MustParse("504Mi"), 2, 1)).To(gomega.Equal(resource.MustParse("1Gi")))
+	g.Expect(MemoryForProcesses(DefaultMemoryPerProcess(), 2, 1)).To(gomega.Equal(resource.MustParse("720Mi")))
 }
 
 func TestDefaultMemoryPerProcess_ReturnsACopy(t *testing.T) {
@@ -54,14 +56,14 @@ func TestDefaultMemoryPerProcess_ReturnsACopy(t *testing.T) {
 	q.Add(resource.MustParse("1Gi"))
 
 	next := DefaultMemoryPerProcess()
-	g.Expect(next.Cmp(resource.MustParse("144Mi"))).To(gomega.BeZero())
+	g.Expect(next.Cmp(resource.MustParse("352Mi"))).To(gomega.BeZero())
 }
 
 func TestWithResourceDefaults(t *testing.T) {
 	q := resource.MustParse
 	mem512 := q("512Mi")
 	defaults := corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: q("100m"), corev1.ResourceMemory: q("512Mi")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: q("70m"), corev1.ResourceMemory: q("512Mi")},
 		Limits:   corev1.ResourceList{corev1.ResourceMemory: q("512Mi")},
 	}
 
@@ -84,7 +86,7 @@ func TestWithResourceDefaults(t *testing.T) {
 			in:     &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: q("1Gi")}},
 			memory: mem512,
 			want: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceCPU: q("100m")},
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("70m")},
 				Limits:   corev1.ResourceList{corev1.ResourceMemory: q("1Gi")},
 			},
 		},
@@ -93,7 +95,7 @@ func TestWithResourceDefaults(t *testing.T) {
 			in:     &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: q("2Gi")}},
 			memory: mem512,
 			want: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceMemory: q("2Gi"), corev1.ResourceCPU: q("100m")},
+				Requests: corev1.ResourceList{corev1.ResourceMemory: q("2Gi"), corev1.ResourceCPU: q("70m")},
 			},
 		},
 		{
@@ -119,7 +121,7 @@ func TestWithResourceDefaults(t *testing.T) {
 			in:     &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceEphemeralStorage: q("1Gi")}},
 			memory: mem512,
 			want: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceCPU: q("100m"), corev1.ResourceMemory: q("512Mi")},
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("70m"), corev1.ResourceMemory: q("512Mi")},
 				Limits:   corev1.ResourceList{corev1.ResourceEphemeralStorage: q("1Gi"), corev1.ResourceMemory: q("512Mi")},
 			},
 		},
@@ -138,7 +140,7 @@ func TestWithResourceDefaults(t *testing.T) {
 			in:     nil,
 			memory: resource.Quantity{},
 			want: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceCPU: q("100m"), corev1.ResourceMemory: q("368Mi")},
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("70m"), corev1.ResourceMemory: q("368Mi")},
 				Limits:   corev1.ResourceList{corev1.ResourceMemory: q("368Mi")},
 			},
 		},
@@ -197,7 +199,7 @@ func TestWithResourceDefaults_ReturnsACopy(t *testing.T) {
 	first.Limits[corev1.ResourceMemory] = resource.MustParse("8Gi")
 
 	next := WithResourceDefaults(nil, resource.MustParse("512Mi"))
-	g.Expect(next.Requests[corev1.ResourceCPU]).To(gomega.Equal(resource.MustParse("100m")))
+	g.Expect(next.Requests[corev1.ResourceCPU]).To(gomega.Equal(resource.MustParse("70m")))
 	g.Expect(next.Requests[corev1.ResourceMemory]).To(gomega.Equal(resource.MustParse("512Mi")))
 	g.Expect(next.Limits[corev1.ResourceMemory]).To(gomega.Equal(resource.MustParse("512Mi")))
 }
@@ -264,7 +266,7 @@ func TestWithRequestFloor_EmptyBlock(t *testing.T) {
 			got := WithRequestFloor(tc.in)
 
 			g.Expect(got.Requests).To(gomega.Equal(corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceCPU:    resource.MustParse("70m"),
 				corev1.ResourceMemory: resource.MustParse("256Mi"),
 			}))
 			g.Expect(got.Limits).To(gomega.BeNil())
@@ -284,7 +286,7 @@ func TestWithRequestFloor_LimitOnlyAndCopy(t *testing.T) {
 	want := in.DeepCopy()
 
 	got := WithRequestFloor(in)
-	g.Expect(got.Requests).To(gomega.Equal(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}))
+	g.Expect(got.Requests).To(gomega.Equal(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("70m")}))
 	g.Expect(got.Limits).To(gomega.Equal(corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}))
 
 	got.Requests[corev1.ResourceCPU] = resource.MustParse("4")

@@ -1292,7 +1292,7 @@ spec:
                       Resources defines the CPU and memory requests and limits for the
                       container. The operator never writes defaults into this field; it resolves
                       them when it renders the pod, per resource: a CPU the block names neither
-                      as request nor as limit gets a 100m request and no limit, and a memory the
+                      as request nor as limit gets a 70m request and no limit, and a memory the
                       block names neither way gets one figure as both request and limit, sized
                       from the process and thread count the container runs (see the operator's
                       CRD reference). A resource the block names is used as written, and

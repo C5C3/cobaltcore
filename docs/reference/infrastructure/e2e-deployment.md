@@ -278,8 +278,8 @@ relies on it. The patches lower requests and change no limit.
 
 The memory request takes the single database out of the BestEffort class, which
 the kernel OOM killer drains first when parallel e2e suites exhaust the memory
-of the kind node; every service workload already requests between 368Mi and 2Gi of
-memory, and no service container carries a default CPU limit. The CPU fields
+of the kind node; every service workload already requests between 368Mi and
+2064Mi of memory, and no service container carries a default CPU limit. The CPU fields
 stay unset on purpose: a 500m request left pods Pending on the keystone leg
 (#970), and a limit would throttle the liveness probe the overlay relaxes.
 

@@ -1185,7 +1185,7 @@ func TestBuildPodDisruptionBudget_ZeroReplicas(t *testing.T) {
 
 // TestBuildKeystoneDeployment_RendersResourceDefaults verifies the render-time
 // defaults: memory follows the uWSGI process and thread count, the CPU gets a
-// 100m request and no limit, and a resource the block names is used as
+// 70m request and no limit, and a resource the block names is used as
 // written with nothing added beside it.
 func TestBuildKeystoneDeployment_RendersResourceDefaults(t *testing.T) {
 	for _, tc := range []struct {
@@ -1196,14 +1196,14 @@ func TestBuildKeystoneDeployment_RendersResourceDefaults(t *testing.T) {
 		{
 			name:   "default uWSGI counts",
 			mutate: func(*keystonev1alpha1.Keystone) {},
-			want:   testutil.RenderedResourceDefaults("512Mi"),
+			want:   testutil.RenderedResourceDefaults("720Mi"),
 		},
 		{
 			name: "four processes",
 			mutate: func(ks *keystonev1alpha1.Keystone) {
 				ks.Spec.UWSGI = &keystonev1alpha1.UWSGISpec{Processes: 4}
 			},
-			want: testutil.RenderedResourceDefaults("800Mi"),
+			want: testutil.RenderedResourceDefaults("1424Mi"),
 		},
 		{
 			name: "memory limit only",
@@ -1213,7 +1213,7 @@ func TestBuildKeystoneDeployment_RendersResourceDefaults(t *testing.T) {
 				}
 			},
 			want: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("70m")},
 				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
 			},
 		},
@@ -1268,7 +1268,7 @@ func TestReconcileDeployment_NilResources(t *testing.T) {
 
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	container := deploy.Spec.Template.Spec.Containers[0]
-	g.Expect(container.Resources).To(Equal(testutil.RenderedResourceDefaults("512Mi")))
+	g.Expect(container.Resources).To(Equal(testutil.RenderedResourceDefaults("720Mi")))
 }
 
 func TestReconcileDeployment_PDBEnsureError(t *testing.T) {

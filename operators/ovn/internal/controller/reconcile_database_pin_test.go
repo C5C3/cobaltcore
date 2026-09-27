@@ -274,7 +274,7 @@ spec:
           timeoutSeconds: 5
         resources:
           requests:
-            cpu: 100m
+            cpu: 70m
             memory: 256Mi
         securityContext:
           allowPrivilegeEscalation: false
@@ -437,7 +437,7 @@ spec:
           timeoutSeconds: 5
         resources:
           requests:
-            cpu: 100m
+            cpu: 70m
             memory: 256Mi
         securityContext:
           allowPrivilegeEscalation: false

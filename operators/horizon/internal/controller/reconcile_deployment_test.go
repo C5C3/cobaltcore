@@ -344,14 +344,14 @@ func TestBuildHorizonService_Port8080(t *testing.T) {
 
 // TestBuildHorizonDeployment_RendersResourceDefaults verifies that a CR whose
 // spec.deployment.resources names nothing renders the defaults for the fixed
-// two uWSGI processes: a 100m CPU request, no CPU limit, and 512Mi as memory
+// two uWSGI processes: a 70m CPU request, no CPU limit, and 720Mi as memory
 // request and limit.
 func TestBuildHorizonDeployment_RendersResourceDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	deploy := buildHorizonDeployment(testHorizon(), "cm", "")
 
-	g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("512Mi")))
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("720Mi")))
 }
 
 // TestBuildPodDisruptionBudget_FollowsTheHPAMinimum pins the budget to the

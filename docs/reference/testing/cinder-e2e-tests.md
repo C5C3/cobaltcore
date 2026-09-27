@@ -358,7 +358,7 @@ replica count for every workload would scale them along.
 
 **Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`, `02-patch-scale-up.yaml`, `03-patch-scale-to-one.yaml`
 
-**Design note:** The suite sets `spec.concurrent: false`. Step 3 holds 700m of
+**Design note:** The suite sets `spec.concurrent: false`. Step 3 holds 490m of
 CPU requests on the single node `hack/kind-config.yaml` declares: five API pods,
 the scheduler and the volume service. Run alone, before the concurrent suites
 start, that peak fits.

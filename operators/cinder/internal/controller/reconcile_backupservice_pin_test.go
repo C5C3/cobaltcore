@@ -99,7 +99,7 @@ spec:
           limits:
             memory: 2Gi
           requests:
-            cpu: 100m
+            cpu: 70m
             memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: false

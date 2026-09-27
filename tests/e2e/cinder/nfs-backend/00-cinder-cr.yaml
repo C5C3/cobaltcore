@@ -10,7 +10,7 @@
 # how the storage path is exercised on a cluster that runs no identity service.
 #
 # One API replica. The probes reach the Service, so a second pod would only
-# lengthen the bring-up and hold another 100m on the single kind node.
+# lengthen the bring-up and hold another 70m on the single kind node.
 #
 # The volume and backup blocks are absent, so the schema default of three
 # replicas never applies to them: naming either block would mean spelling out

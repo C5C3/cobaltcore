@@ -14,7 +14,7 @@ spec:
   deployment:
     replicas: 3
     # The operator sets no CPU limit, so this block exists for its memory: it
-    # gives the keystone-API pod a 1Gi limit, twice the 512Mi it gets by
+    # gives the keystone-API pod a 1Gi limit, above the 720Mi it gets by
     # default at two uWSGI processes, as headroom for the Tempest run.
     resources:
       requests:

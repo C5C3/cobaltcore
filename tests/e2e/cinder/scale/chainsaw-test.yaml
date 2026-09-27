@@ -18,8 +18,8 @@
 # agrees.
 #
 # spec.concurrent is false because of the CPU the scale-up requests. Every
-# Cinder pod carries the shared 100m request (internal/common/types/workload.go),
-# so step 3 holds 700m on the single node hack/kind-config.yaml declares: five
+# Cinder pod carries the shared 70m request (internal/common/types/workload.go),
+# so step 3 holds 490m on the single node hack/kind-config.yaml declares: five
 # API pods, the scheduler and the volume service. Run alone, before the
 # concurrent suites start, the peak fits the node.
 #

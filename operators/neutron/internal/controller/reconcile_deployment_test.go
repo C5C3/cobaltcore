@@ -424,26 +424,26 @@ func TestReconcileDeployment_RollingUpdateHoldsUntilTheImageIsDrained(t *testing
 }
 
 // TestBuildNeutronDeployment_RendersResourceDefaults verifies that a CR whose
-// spec.deployment.resources names nothing renders a 100m CPU request, no CPU
-// limit, and a memory request and limit sized from spec.apiServer.uwsgi: 512Mi
-// at the default counts of an absent spec.apiServer, 800Mi at four processes,
-// and 928Mi at four processes of two threads.
+// spec.deployment.resources names nothing renders a 70m CPU request, no CPU
+// limit, and a memory request and limit sized from spec.apiServer.uwsgi: 720Mi
+// at the default counts of an absent spec.apiServer, 1424Mi at four processes,
+// and 1552Mi at four processes of two threads.
 func TestBuildNeutronDeployment_RendersResourceDefaults(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		apiServer *neutronv1alpha1.APIServerSpec
 		want      string
 	}{
-		{name: "default uWSGI counts", want: "512Mi"},
+		{name: "default uWSGI counts", want: "720Mi"},
 		{
 			name:      "four processes",
 			apiServer: &neutronv1alpha1.APIServerSpec{UWSGI: &neutronv1alpha1.UWSGISpec{Processes: 4}},
-			want:      "800Mi",
+			want:      "1424Mi",
 		},
 		{
 			name:      "four processes of two threads",
 			apiServer: &neutronv1alpha1.APIServerSpec{UWSGI: &neutronv1alpha1.UWSGISpec{Processes: 4, Threads: 2}},
-			want:      "928Mi",
+			want:      "1552Mi",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

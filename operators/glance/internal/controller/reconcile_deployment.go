@@ -680,11 +680,12 @@ func glanceLaunchCommand(glance *glancev1alpha1.Glance) []string {
 // glanceMemoryPerProcess is the memory one Glance API process adds on top of
 // the shared base, in place of the shared per-process figure. The glance-api
 // container carries the S3 store driver (boto3/botocore), which raises both the
-// per-process import footprint and the per-request allocation churn: two
-// workers already idle near 360Mi and, under concurrent image traffic, overrun
-// a 512Mi limit within a minute, an OOM-kill crash loop the gateway surfaces as
-// waves of 503s.
-var glanceMemoryPerProcess = resource.MustParse("400Mi")
+// per-process import footprint and the per-request allocation churn. The
+// figure comes from the VPA recommendations of CI run 36339033005
+// (2026-09-27): two processes serving the image traffic of the cinder Tempest
+// leg on 2026.1 reached a 2063 MiB target (docs/reference/testing/
+// sizing-calibration.md).
+var glanceMemoryPerProcess = resource.MustParse("1Gi")
 
 // glanceAPIMemory returns the memory the API container gets as request and
 // limit when spec.deployment.resources names no memory. It is sized from the

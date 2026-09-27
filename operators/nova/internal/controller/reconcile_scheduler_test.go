@@ -248,7 +248,7 @@ func TestAMQPPortEnv(t *testing.T) {
 
 // TestBuildSchedulerDeployment_RendersResourceDefaults verifies that the
 // scheduler memory follows spec.scheduler.workers, one single-threaded process
-// per worker: 512Mi at the default two and 656Mi at three, beside a 100m CPU
+// per worker: 720Mi at the default two and 1072Mi at three, beside a 70m CPU
 // request and no CPU limit.
 func TestBuildSchedulerDeployment_RendersResourceDefaults(t *testing.T) {
 	for _, tc := range []struct {
@@ -256,8 +256,8 @@ func TestBuildSchedulerDeployment_RendersResourceDefaults(t *testing.T) {
 		workers *int32
 		want    string
 	}{
-		{name: "default workers", want: "512Mi"},
-		{name: "three workers", workers: ptr.To(int32(3)), want: "656Mi"},
+		{name: "default workers", want: "720Mi"},
+		{name: "three workers", workers: ptr.To(int32(3)), want: "1072Mi"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)

@@ -365,7 +365,7 @@ func TestRaftResources_UnsetBlockGetsTheRequestFloor(t *testing.T) {
 			got := commonv1.WithRequestFloor(tc.spec)
 
 			g.Expect(got.Requests).To(HaveLen(2))
-			g.Expect(got.Requests.Cpu().String()).To(Equal("100m"))
+			g.Expect(got.Requests.Cpu().String()).To(Equal("70m"))
 			g.Expect(got.Requests.Memory().String()).To(Equal("256Mi"))
 			g.Expect(got.Limits).To(BeEmpty(), "the floor sets no limit")
 		})
@@ -393,7 +393,7 @@ func TestRaftResources_FillsEachUnnamedResource(t *testing.T) {
 			name: "memory limit only gains the CPU request",
 			spec: &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: q("1Gi")}},
 			want: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceCPU: q("100m")},
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("70m")},
 				Limits:   corev1.ResourceList{corev1.ResourceMemory: q("1Gi")},
 			},
 		},
@@ -401,7 +401,7 @@ func TestRaftResources_FillsEachUnnamedResource(t *testing.T) {
 			name: "memory request only gains the CPU request",
 			spec: &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: q("512Mi")}},
 			want: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceMemory: q("512Mi"), corev1.ResourceCPU: q("100m")},
+				Requests: corev1.ResourceList{corev1.ResourceMemory: q("512Mi"), corev1.ResourceCPU: q("70m")},
 			},
 		},
 	}
@@ -465,7 +465,7 @@ func TestRaftResources_BlockWithoutCPUOrMemoryGetsTheFloorBesideIt(t *testing.T)
 
 			got := commonv1.WithRequestFloor(tc.spec)
 
-			g.Expect(got.Requests.Cpu().String()).To(Equal("100m"))
+			g.Expect(got.Requests.Cpu().String()).To(Equal("70m"))
 			g.Expect(got.Requests.Memory().String()).To(Equal("256Mi"))
 			for name, q := range want.Requests {
 				g.Expect(got.Requests).To(HaveKeyWithValue(name, q), "the block's own requests are kept")
@@ -484,7 +484,7 @@ func TestRaftResources_ClaimsAloneStillGetTheFloor(t *testing.T) {
 
 	got := commonv1.WithRequestFloor(&corev1.ResourceRequirements{Claims: claims})
 
-	g.Expect(got.Requests.Cpu().String()).To(Equal("100m"))
+	g.Expect(got.Requests.Cpu().String()).To(Equal("70m"))
 	g.Expect(got.Requests.Memory().String()).To(Equal("256Mi"))
 	g.Expect(got.Limits).To(BeEmpty())
 	g.Expect(got.Claims).To(Equal(claims))
@@ -506,7 +506,7 @@ func TestRaftResources_ReturnsACopy(t *testing.T) {
 	floor.Requests[corev1.ResourceCPU] = resource.MustParse("4")
 	floor.Requests[corev1.ResourceMemory] = resource.MustParse("8Gi")
 	next := commonv1.WithRequestFloor(nil)
-	g.Expect(next.Requests.Cpu().String()).To(Equal("100m"))
+	g.Expect(next.Requests.Cpu().String()).To(Equal("70m"))
 	g.Expect(next.Requests.Memory().String()).To(Equal("256Mi"))
 }
 
@@ -520,7 +520,7 @@ func TestRaftStatefulSet_MembersRequestTheFloorWhenTheCRSetsNone(t *testing.T) {
 	for _, db := range []raftDB{northboundDB(cr), southboundDB(cr)} {
 		c := raftStatefulSet(cr, db).Spec.Template.Spec.Containers[0]
 		g.Expect(c.Name).To(Equal("ovsdb"))
-		g.Expect(c.Resources.Requests.Cpu().String()).To(Equal("100m"), db.suffix)
+		g.Expect(c.Resources.Requests.Cpu().String()).To(Equal("70m"), db.suffix)
 		g.Expect(c.Resources.Requests.Memory().String()).To(Equal("256Mi"), db.suffix)
 		g.Expect(c.Resources.Limits).To(BeEmpty(), db.suffix)
 	}

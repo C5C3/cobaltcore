@@ -552,7 +552,7 @@ func ovsdbContainer(cr *ovnv1alpha1.OVNCentral, db raftDB) corev1.Container {
 		Name:    "ovsdb",
 		Image:   effectiveImage(cr.Spec.Image).Reference(),
 		Command: []string{"/bin/bash", "-c", "exec " + path.Join(centralScriptDir, runScriptKey(db))},
-		// The request floor (a 100m CPU and a 256Mi memory request for each
+		// The request floor (a 70m CPU and a 256Mi memory request for each
 		// resource the block does not name, and never a limit) differs from
 		// chassisResources on purpose. A member without requests runs
 		// BestEffort, which makes it the first pod the kubelet evicts under node

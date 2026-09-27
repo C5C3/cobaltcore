@@ -72,7 +72,7 @@ spec:
             name: ovn-db-sync
             resources:
               requests:
-                cpu: 100m
+                cpu: 70m
                 memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
@@ -165,7 +165,7 @@ spec:
             name: ovn-db-sync
             resources:
               requests:
-                cpu: 100m
+                cpu: 70m
                 memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
@@ -258,7 +258,7 @@ spec:
             name: ovn-db-sync
             resources:
               requests:
-                cpu: 100m
+                cpu: 70m
                 memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false

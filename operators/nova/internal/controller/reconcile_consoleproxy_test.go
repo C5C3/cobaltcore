@@ -309,7 +309,7 @@ func TestReconcileConsoleProxy_DeleteFailureWrapsTheError(t *testing.T) {
 
 // TestBuildConsoleProxyDeployment_RendersResourceDefaults verifies that the
 // console proxy, one single-threaded process, renders 368Mi as memory request
-// and limit beside a 100m CPU request and no CPU limit, both for the webhook's
+// and limit beside a 70m CPU request and no CPU limit, both for the webhook's
 // block and for the consoleProxyDeploymentSpec fallback a CR that bypassed
 // admission renders from.
 func TestBuildConsoleProxyDeployment_RendersResourceDefaults(t *testing.T) {

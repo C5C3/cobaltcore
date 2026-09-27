@@ -144,7 +144,7 @@ spec:
             name: backup
             resources:
               requests:
-                cpu: 100m
+                cpu: 70m
                 memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
@@ -235,7 +235,7 @@ spec:
             name: backup
             resources:
               requests:
-                cpu: 100m
+                cpu: 70m
                 memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
@@ -343,7 +343,7 @@ spec:
             name: shifter
             resources:
               requests:
-                cpu: 100m
+                cpu: 70m
                 memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false
@@ -377,7 +377,7 @@ spec:
             name: backup
             resources:
               requests:
-                cpu: 100m
+                cpu: 70m
                 memory: 256Mi
             securityContext:
               allowPrivilegeEscalation: false

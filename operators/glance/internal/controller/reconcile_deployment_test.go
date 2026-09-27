@@ -1088,12 +1088,12 @@ func TestReconcileDeployment_EmptyPhaseNoFlipStampsEndpoint(t *testing.T) {
 }
 
 // TestBuildGlanceDeployment_RendersResourceDefaults verifies that a CR whose
-// spec.deployment.resources names nothing renders 400Mi per process in both
-// launch modes, beside a 100m CPU request and no CPU limit. Two uWSGI processes
-// at 2026.1 and two eventlet workers at 2025.2 both come to 1Gi. A
+// spec.deployment.resources names nothing renders 1Gi per process in both
+// launch modes, beside a 70m CPU request and no CPU limit. Two uWSGI processes
+// at 2026.1 and two eventlet workers at 2025.2 both come to 2064Mi. A
 // spec.apiServer that sets four eventlet workers and one uWSGI process shows
-// that each release counts only its own launch mode: 624Mi at 2026.1, 1824Mi at
-// 2025.2.
+// that each release counts only its own launch mode: 1040Mi at 2026.1, 4112Mi
+// at 2025.2.
 func TestBuildGlanceDeployment_RendersResourceDefaults(t *testing.T) {
 	splitCounts := &glancev1alpha1.APIServerSpec{
 		Workers: ptr.To(int32(4)),
@@ -1105,15 +1105,15 @@ func TestBuildGlanceDeployment_RendersResourceDefaults(t *testing.T) {
 		apiServer *glancev1alpha1.APIServerSpec
 		want      string
 	}{
-		{name: "uWSGI defaults", release: "2026.1", want: "1Gi"},
-		{name: "eventlet defaults", release: "2025.2", want: "1Gi"},
-		{name: "uWSGI counts uwsgi.processes", release: "2026.1", apiServer: splitCounts, want: "624Mi"},
-		{name: "eventlet counts workers", release: "2025.2", apiServer: splitCounts, want: "1824Mi"},
+		{name: "uWSGI defaults", release: "2026.1", want: "2064Mi"},
+		{name: "eventlet defaults", release: "2025.2", want: "2064Mi"},
+		{name: "uWSGI counts uwsgi.processes", release: "2026.1", apiServer: splitCounts, want: "1040Mi"},
+		{name: "eventlet counts workers", release: "2025.2", apiServer: splitCounts, want: "4112Mi"},
 		{
 			name:      "uWSGI counts threads",
 			release:   "2026.1",
 			apiServer: &glancev1alpha1.APIServerSpec{UWSGI: &glancev1alpha1.UWSGISpec{Processes: 2, Threads: 2}},
-			want:      "1088Mi",
+			want:      "2128Mi",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

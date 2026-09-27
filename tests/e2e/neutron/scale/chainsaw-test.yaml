@@ -16,7 +16,7 @@
 #
 # spec.concurrent is false because of the CPU the scale-up requests, not
 # because of host paths. Every Neutron API and worker pod carries the shared
-# 100m request (internal/common/types/workload.go), so step 3 holds 700m on the
+# 70m request (internal/common/types/workload.go), so step 3 holds 490m on the
 # single node hack/kind-config.yaml declares: five API pods and the two workers.
 # The e2e-operator neutron leg runs at --parallel 2, and beside the
 # release-upgrade suite (one API pod, two workers and its db-expand Job) the

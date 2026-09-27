@@ -187,24 +187,24 @@ func overlayKeys(deploy *appsv1.Deployment) []string {
 
 // TestBuildConductorDeployment_RendersResourceDefaults verifies that the
 // conductor memory follows spec.conductor.workers, one single-threaded process
-// per worker, beside a 100m CPU request and no CPU limit: 512Mi at the default
-// two, 656Mi at three, and still 512Mi when only spec.scheduler.workers moves.
+// per worker, beside a 70m CPU request and no CPU limit: 720Mi at the default
+// two, 1072Mi at three, and still 720Mi when only spec.scheduler.workers moves.
 func TestBuildConductorDeployment_RendersResourceDefaults(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(nova *novav1alpha1.Nova)
 		want   string
 	}{
-		{name: "default workers", mutate: func(*novav1alpha1.Nova) {}, want: "512Mi"},
+		{name: "default workers", mutate: func(*novav1alpha1.Nova) {}, want: "720Mi"},
 		{
 			name:   "three conductor workers",
 			mutate: func(nova *novav1alpha1.Nova) { nova.Spec.Conductor.Workers = ptr.To(int32(3)) },
-			want:   "656Mi",
+			want:   "1072Mi",
 		},
 		{
 			name:   "three scheduler workers",
 			mutate: func(nova *novav1alpha1.Nova) { nova.Spec.Scheduler.Workers = ptr.To(int32(3)) },
-			want:   "512Mi",
+			want:   "720Mi",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

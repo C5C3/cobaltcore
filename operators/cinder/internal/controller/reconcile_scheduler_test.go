@@ -192,7 +192,7 @@ func TestReconcileScheduler_ApplyFailureWrapsTheError(t *testing.T) {
 
 // TestBuildSchedulerDeployment_RendersResourceDefaults verifies that the
 // scheduler, one single-threaded process, renders 368Mi as memory request and
-// limit beside a 100m CPU request and no CPU limit when its block names nothing.
+// limit beside a 70m CPU request and no CPU limit when its block names nothing.
 func TestBuildSchedulerDeployment_RendersResourceDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 

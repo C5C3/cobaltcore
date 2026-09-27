@@ -351,7 +351,7 @@ func agentDaemonSetName(cr *neutronv1alpha1.NeutronMetadataAgent) string {
 
 // effectiveAgentResources resolves the requests and limits of both agent
 // containers through the shared per-resource rule: a CPU spec.resources names
-// neither as request nor as limit gets a 100m request and no limit, a memory it
+// neither as request nor as limit gets a 70m request and no limit, a memory it
 // names neither way gets the figure for one single-threaded process as request
 // and limit, and anything else it sets is kept. A CR that names nothing
 // therefore lands in the Burstable QoS class rather than in BestEffort.

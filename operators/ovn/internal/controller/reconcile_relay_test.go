@@ -296,7 +296,7 @@ func TestReconcileRelay_ClearedSpecDeletesTheCertificate(t *testing.T) {
 
 // TestBuildRelayDeployment_RendersResourceDefaults verifies that a relay whose
 // spec.relay.resources is nil renders the defaults for one single-threaded
-// process: 368Mi as memory request and limit, a 100m CPU request, no CPU limit.
+// process: 368Mi as memory request and limit, a 70m CPU request, no CPU limit.
 func TestBuildRelayDeployment_RendersResourceDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cr := relayOVNCentral()

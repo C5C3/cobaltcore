@@ -57,7 +57,7 @@ func TestResolvePodSettings_NoSpecNoFallback(t *testing.T) {
 	s := ResolvePodSettings(nil, nil)
 
 	g.Expect(s.Resources).To(gomega.Equal(corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("70m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
 		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
 	}))
 	g.Expect(s.PriorityClassName).To(gomega.BeEmpty())
@@ -168,7 +168,7 @@ func TestResolvePodSettings_LimitOnlyResources(t *testing.T) {
 	}}, nil)
 
 	g.Expect(s.Resources.Limits).To(gomega.Equal(corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}))
-	g.Expect(s.Resources.Requests).To(gomega.Equal(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}))
+	g.Expect(s.Resources.Requests).To(gomega.Equal(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("70m")}))
 }
 
 // Writing to the resolved placement never reaches spec.jobs or the API
@@ -198,7 +198,7 @@ func TestResolvePodSettingsWithRequestFloor(t *testing.T) {
 
 	s := ResolvePodSettingsWithRequestFloor(nil, nil)
 	g.Expect(s.Resources.Requests).To(gomega.Equal(corev1.ResourceList{
-		corev1.ResourceCPU:    resource.MustParse("100m"),
+		corev1.ResourceCPU:    resource.MustParse("70m"),
 		corev1.ResourceMemory: resource.MustParse("256Mi"),
 	}))
 	g.Expect(s.Resources.Limits).To(gomega.BeNil())
@@ -229,8 +229,8 @@ func TestPodSettingsApply_EveryContainer(t *testing.T) {
 
 	// Each container holds its own copy of the resources.
 	ps.Containers[0].Resources.Requests[corev1.ResourceCPU] = resource.MustParse("4")
-	g.Expect(ps.Containers[1].Resources.Requests[corev1.ResourceCPU]).To(gomega.Equal(resource.MustParse("100m")))
-	g.Expect(s.Resources.Requests[corev1.ResourceCPU]).To(gomega.Equal(resource.MustParse("100m")))
+	g.Expect(ps.Containers[1].Resources.Requests[corev1.ResourceCPU]).To(gomega.Equal(resource.MustParse("70m")))
+	g.Expect(s.Resources.Requests[corev1.ResourceCPU]).To(gomega.Equal(resource.MustParse("70m")))
 }
 
 func TestPodSettingsApply_NilPodSpec(t *testing.T) {

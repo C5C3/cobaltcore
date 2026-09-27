@@ -14,13 +14,14 @@
 #
 # spec.api.uwsgi.processes raises the worker count above the webhook default,
 # and every uWSGI worker is a process carrying its own Python interpreter. With
-# spec.api.deployment.resources left unset the defaulting webhook fills in the
-# shared 512Mi limit (internal/common/types/workload.go), which four nova-api
-# workers do not fit: in run 35500414345 the kernel OOM-killed them at roughly
-# 165 MiB resident each, the CR never reported Ready, and all four tempest legs
-# spent their full 900s wait before failing with nothing to say why. The floor
-# below is tied to the process count, so raising one without the other fails
-# here instead of on a runner.
+# spec.api.deployment.resources left unset, the former shared 512Mi limit did
+# not fit four nova-api workers: in run 35500414345 the kernel OOM-killed them
+# at roughly 165 MiB resident each, the CR never reported Ready, and all four
+# tempest legs spent their full 900s wait before failing with nothing to say
+# why. The operator now sizes an unset block from the process count
+# (internal/common/types/resources.go: 16Mi + 4 × 352Mi = 1424Mi at four), but
+# both legs name their own. The floor below is tied to the process count, so
+# raising one without the other fails here instead of on a runner.
 
 # Minimum memory, in MiB, a Nova CR must grant per uWSGI worker.
 NOVA_API_MIB_PER_WORKER=256
