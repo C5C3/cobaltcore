@@ -50,6 +50,18 @@ declared_filters() {
   ' "$CI_YAML"
 }
 
+# Echo the path globs filter <name> lists under the paths-filter step, one per
+# line, without their quotes.
+filter_paths() {
+  awk -v key="            $1:" '
+    /^          filters: \|$/ { in_filters = 1; next }
+    in_filters && /^      [a-z-]/ { exit }
+    in_filters && $0 == key { in_key = 1; next }
+    in_key && /^            [a-z0-9_]+:$/ { exit }
+    in_key && /^              - / { sub(/^              - /, ""); print }
+  ' "$CI_YAML" | tr -d "'"
+}
+
 # Echo every filter name handed to the resolve step as FILTER_<name>.
 wired_filters() {
   grep -oE '^          FILTER_[a-z0-9_]+:' "$CI_YAML" | sed 's/^ *FILTER_//;s/:$//'
@@ -290,6 +302,18 @@ test_tempest_matrix_is_narrowed_by_service() {
     "$PROJECT_ROOT/hack/ci-generate-tempest-matrix.sh" "TEMPEST_SERVICES"
 }
 
+test_tempest_pins_switch_tempest_on() {
+  echo "Test: a bump of the Tempest pins runs the Tempest legs"
+
+  # images_base rebuilds the Tempest image when releases/** changes, but only
+  # tempest_src switches the tempest job on. Without the pin file in
+  # tempest_src, a plugin bump merges without a leg running it (#1127).
+  assert_contains "tempest_src lists the Tempest and plugin pins" \
+    "$(filter_paths tempest_src)" "releases/*/test-refs.yaml"
+  assert_contains "images_base still rebuilds the Tempest image on a pin bump" \
+    "$(filter_paths images_base)" "releases/**"
+}
+
 test_actionlint_job_is_pinned() {
   echo "Test: the actionlint job pins and verifies the binary it installs"
 
@@ -344,6 +368,7 @@ test_always_on_gates_skip_a_noop_run
 test_test_matrices_come_from_the_resolver
 test_concurrency_isolates_a_noop_label_event
 test_tempest_matrix_is_narrowed_by_service
+test_tempest_pins_switch_tempest_on
 test_actionlint_job_is_pinned
 test_no_job_reads_an_unexported_output
 

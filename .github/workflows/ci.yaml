@@ -203,6 +203,9 @@ jobs:
               - 'hack/ci-run-tempest.sh'
               - 'hack/ci-build-tempest-image.sh'
               - 'hack/ci-generate-tempest-matrix.sh'
+              # The Tempest and plugin pins. images_base rebuilds the image on
+              # a bump; this entry runs the suites against it.
+              - 'releases/*/test-refs.yaml'
             tempest_keystone:
               - 'tests/tempest/keystone-*/**'
             tempest_glance:
