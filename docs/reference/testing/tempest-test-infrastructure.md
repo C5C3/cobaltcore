@@ -385,7 +385,20 @@ carries a `# tracked-by:` / `# re-evaluate-on:` comment pair:
 On every `keystone-tempest-plugin` bump, re-run the excluded RBAC groups against
 the new plugin and drop any pattern upstream has fixed. The `re-evaluate-on`
 version is per-release (`> 0.19.0` for 2025.2, `> 0.20.0` for 2026.1), matching
-the plugin pinned in that release's `test-refs.yaml`. The barbican legs follow
+the plugin pinned in that release's `test-refs.yaml`.
+
+The RBAC suite runs only when the plugin sees scope enforcement. From 0.22.0 on
+it reads `[identity-feature-enabled] enforce_scope`, which both keystone
+`tempest.conf` files set to `true`. Plugin 0.21.0 read only Tempest's
+`[enforce_scope] keystone`, which they leave unset, and skipped all 325 RBAC
+classes. The first 0.22.0 run failed three tests the release's default policy
+answers differently from the plugin, and a group tracked by
+[#1127](https://github.com/C5C3/cobaltcore/issues/1127) excludes them:
+`test_ec2_credential` on both releases, where a reader persona gets `201`
+creating its own EC2 credential and the plugin expects `403`, and on 2025.2
+`test_limit.DomainAdminTests.test_identity_list_limits`, where a domain admin
+listing limits sees one of the two limits the test created. The group carries
+`re-evaluate-on: keystone-tempest-plugin > 0.22.0` in both release lists. The barbican legs follow
 the same convention for their one exclude,
 `barbican_tempest_plugin\.tests\.api\.test_quotas\.ProjectQuotasTest\.test_manage_project_quotas`.
 The plugin runs that test with a credential that holds only
