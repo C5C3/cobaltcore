@@ -82,53 +82,53 @@ func TestBuiltinSizing_StandardMatchesTodaysConstants(t *testing.T) {
 
 func TestBuiltinSizing_MinimalCarriesTable(t *testing.T) {
 	g := NewWithT(t)
-	cpu50 := "50m"
+	serviceCPU := "15m"
 	leaves := sizingLeaves(t, BuiltinSizing(SizingProfileMinimal))
 
 	for _, svc := range []string{"keystone", "glance", "placement", "barbican", "neutron", "cinder", "nova"} {
 		g.Expect(leaves).To(HaveKeyWithValue(svc+"/api/replicas", float64(1)), svc)
 		g.Expect(leaves).To(HaveKeyWithValue(svc+"/api/processes", float64(1)), svc)
 		g.Expect(leaves).To(HaveKeyWithValue(svc+"/api/threads", float64(1)), svc)
-		g.Expect(leaves).To(HaveKeyWithValue(svc+"/api/resources/requests/cpu", cpu50), svc)
-		g.Expect(leaves).To(HaveKeyWithValue(svc+"/jobs/resources/requests/cpu", cpu50), svc)
+		g.Expect(leaves).To(HaveKeyWithValue(svc+"/api/resources/requests/cpu", serviceCPU), svc)
+		g.Expect(leaves).To(HaveKeyWithValue(svc+"/jobs/resources/requests/cpu", serviceCPU), svc)
 	}
 	g.Expect(leaves).To(HaveKeyWithValue("horizon/api/replicas", float64(1)))
-	g.Expect(leaves).To(HaveKeyWithValue("horizon/api/resources/requests/cpu", cpu50))
+	g.Expect(leaves).To(HaveKeyWithValue("horizon/api/resources/requests/cpu", serviceCPU))
 	g.Expect(leaves).NotTo(HaveKey("horizon/api/processes"))
 	g.Expect(leaves).To(HaveKeyWithValue("neutron/workers/replicas", float64(1)))
-	g.Expect(leaves).To(HaveKeyWithValue("neutron/workers/resources/requests/cpu", cpu50))
+	g.Expect(leaves).To(HaveKeyWithValue("neutron/workers/resources/requests/cpu", serviceCPU))
 	g.Expect(leaves).To(HaveKeyWithValue("cinder/scheduler/replicas", float64(1)))
-	g.Expect(leaves).To(HaveKeyWithValue("cinder/scheduler/resources/requests/cpu", cpu50))
-	g.Expect(leaves).To(HaveKeyWithValue("cinder/volume/resources/requests/cpu", cpu50))
-	g.Expect(leaves).To(HaveKeyWithValue("cinder/backup/resources/requests/cpu", cpu50))
+	g.Expect(leaves).To(HaveKeyWithValue("cinder/scheduler/resources/requests/cpu", serviceCPU))
+	g.Expect(leaves).To(HaveKeyWithValue("cinder/volume/resources/requests/cpu", serviceCPU))
+	g.Expect(leaves).To(HaveKeyWithValue("cinder/backup/resources/requests/cpu", serviceCPU))
 	g.Expect(leaves).To(HaveKeyWithValue("nova/metadata/replicas", float64(1)))
 	g.Expect(leaves).To(HaveKeyWithValue("nova/metadata/processes", float64(1)))
 	g.Expect(leaves).To(HaveKeyWithValue("nova/metadata/threads", float64(1)))
-	g.Expect(leaves).To(HaveKeyWithValue("nova/metadata/resources/requests/cpu", cpu50))
+	g.Expect(leaves).To(HaveKeyWithValue("nova/metadata/resources/requests/cpu", serviceCPU))
 	for _, c := range []string{"scheduler", "conductor"} {
 		g.Expect(leaves).To(HaveKeyWithValue("nova/"+c+"/replicas", float64(1)), c)
 		g.Expect(leaves).To(HaveKeyWithValue("nova/"+c+"/workers", float64(1)), c)
-		g.Expect(leaves).To(HaveKeyWithValue("nova/"+c+"/resources/requests/cpu", cpu50), c)
+		g.Expect(leaves).To(HaveKeyWithValue("nova/"+c+"/resources/requests/cpu", serviceCPU), c)
 	}
 	g.Expect(leaves).To(HaveKeyWithValue("nova/consoleProxy/replicas", float64(1)))
-	g.Expect(leaves).To(HaveKeyWithValue("nova/consoleProxy/resources/requests/cpu", cpu50))
+	g.Expect(leaves).To(HaveKeyWithValue("nova/consoleProxy/resources/requests/cpu", serviceCPU))
 
 	g.Expect(leaves).To(HaveKeyWithValue("database/replicas", float64(1)))
 	g.Expect(leaves).To(HaveKeyWithValue("database/storageSize", "512Mi"))
-	g.Expect(leaves).To(HaveKeyWithValue("database/resources/requests/cpu", "100m"))
+	g.Expect(leaves).To(HaveKeyWithValue("database/resources/requests/cpu", "65m"))
 	g.Expect(leaves).To(HaveKeyWithValue("database/resources/requests/memory", "1Gi"))
 	g.Expect(leaves).To(HaveKeyWithValue("database/resources/limits/memory", "1Gi"))
 	g.Expect(leaves).To(HaveKeyWithValue("cache/replicas", float64(1)))
-	g.Expect(leaves).To(HaveKeyWithValue("cache/resources/requests/cpu", cpu50))
-	g.Expect(leaves).To(HaveKeyWithValue("cache/resources/requests/memory", "128Mi"))
-	g.Expect(leaves).To(HaveKeyWithValue("cache/resources/limits/memory", "128Mi"))
+	g.Expect(leaves).To(HaveKeyWithValue("cache/resources/requests/cpu", "15m"))
+	g.Expect(leaves).To(HaveKeyWithValue("cache/resources/requests/memory", "96Mi"))
+	g.Expect(leaves).To(HaveKeyWithValue("cache/resources/limits/memory", "96Mi"))
 	g.Expect(leaves).To(HaveKeyWithValue("messaging/replicas", float64(1)))
-	g.Expect(leaves).To(HaveKeyWithValue("messaging/resources/requests/cpu", "100m"))
+	g.Expect(leaves).To(HaveKeyWithValue("messaging/resources/requests/cpu", "815m"))
 	g.Expect(leaves).To(HaveKeyWithValue("messaging/resources/requests/memory", "512Mi"))
 	g.Expect(leaves).To(HaveKeyWithValue("messaging/resources/limits/memory", "512Mi"))
-	g.Expect(leaves).To(HaveKeyWithValue("secretStore/resources/requests/cpu", cpu50))
-	g.Expect(leaves).To(HaveKeyWithValue("secretStore/resources/requests/memory", "256Mi"))
-	g.Expect(leaves).To(HaveKeyWithValue("secretStore/resources/limits/memory", "256Mi"))
+	g.Expect(leaves).To(HaveKeyWithValue("secretStore/resources/requests/cpu", "35m"))
+	g.Expect(leaves).To(HaveKeyWithValue("secretStore/resources/requests/memory", "64Mi"))
+	g.Expect(leaves).To(HaveKeyWithValue("secretStore/resources/limits/memory", "64Mi"))
 
 	// Neither profile sets placement, spread, autoscaling or a priority class,
 	// and the federation proxy keeps the Keystone operator's own default.
@@ -158,7 +158,7 @@ func TestBuiltinSizing_ReturnsFreshCopy(t *testing.T) {
 		g.Expect(next.Database.StorageSize).NotTo(Equal("1Ti"), string(name))
 		g.Expect(next.NodeSelector).To(BeNil(), string(name))
 		if next.Cache.Resources != nil {
-			g.Expect(next.Cache.Resources.Limits.Memory().String()).To(Equal("128Mi"), string(name))
+			g.Expect(next.Cache.Resources.Limits.Memory().String()).To(Equal("96Mi"), string(name))
 		}
 	}
 }

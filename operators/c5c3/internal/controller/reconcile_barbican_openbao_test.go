@@ -267,8 +267,8 @@ func TestEnsureBarbicanOpenBao_SecretStoreSizing(t *testing.T) {
 	instance := getBarbicanOpenBaoCluster(t, r, cp)
 	g.Expect(instance.Spec.Replicas).To(Equal(int32(1)))
 	g.Expect(instance.Spec.Resources).NotTo(BeNil())
-	g.Expect(instance.Spec.Resources.Requests.Cpu().String()).To(Equal("50m"))
-	g.Expect(instance.Spec.Resources.Limits.Memory().String()).To(Equal("256Mi"))
+	g.Expect(instance.Spec.Resources.Requests.Cpu().String()).To(Equal("35m"))
+	g.Expect(instance.Spec.Resources.Limits.Memory().String()).To(Equal("64Mi"))
 
 	// Switching to Standard re-projects the owned instance without resources.
 	cp.Spec.Sizing = nil

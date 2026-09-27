@@ -10,7 +10,7 @@
 #
 #   - the managed backing services take the resolved sizing: the dedicated
 #     MariaDB runs one replica with Minimal's 1Gi memory limit, and the
-#     dedicated Memcached takes Minimal's 128Mi memory limit;
+#     dedicated Memcached takes Minimal's 96Mi memory limit;
 #   - the ControlPlane reports SizingReady=True;
 #   - an edit of the profile reaches the Memcached it sizes within 60 s,
 #     through the watch the ControlPlane controller keeps on SizingProfiles;
@@ -171,7 +171,7 @@ spec:
           wait_jsonpath "dedicated MariaDB takes Minimal's memory limit" mariadb "${DEDICATED_DB}" "${CP_NS}" \
             '{.spec.resources.limits.memory}' 1Gi 30
           wait_jsonpath "dedicated Memcached takes Minimal's memory limit" memcached "${DEDICATED_CACHE}" "${CP_NS}" \
-            '{.spec.resources.limits.memory}' 128Mi 180
+            '{.spec.resources.limits.memory}' 96Mi 180
 
           # ── An edit of the profile reaches the Memcached it sizes ─────────
           kubectl patch sizingprofile "${PROFILE}" --type=merge \

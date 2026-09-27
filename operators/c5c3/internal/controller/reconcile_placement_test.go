@@ -1585,7 +1585,7 @@ func TestReconcilePlacement_SizingProjectsAndClears(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	pl := getProjectedPlacement(t, r.Client, cp)
 	g.Expect(pl.Spec.Deployment.Replicas).To(Equal(int32(2)))
-	g.Expect(pl.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(pl.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("15m"))
 	g.Expect(pl.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
 		Equal(placementv1alpha1.APIPodSelector(pl.Name)))
 	g.Expect(pl.Spec.APIServer).To(Equal(&placementv1alpha1.APIServerSpec{UWSGI: &commonv1.UWSGISpec{Processes: 1, Threads: 1}}))

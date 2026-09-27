@@ -2382,10 +2382,10 @@ func TestReconcileGlance_SizingProjectsByLaunchMode(t *testing.T) {
 			gl := getProjectedGlance(t, r.Client, cp)
 			g.Expect(gl.Spec.APIServer).To(Equal(tc.want))
 			g.Expect(gl.Spec.Deployment.Replicas).To(Equal(int32(2)))
-			g.Expect(gl.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+			g.Expect(gl.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("15m"))
 			g.Expect(gl.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
 				Equal(glancev1alpha1.APIPodSelector(gl.Name)))
-			g.Expect(gl.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
+			g.Expect(gl.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("15m"))
 		})
 	}
 }

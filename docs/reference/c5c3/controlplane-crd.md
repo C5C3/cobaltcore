@@ -1652,30 +1652,37 @@ Neither the ControlPlane nor a `SizingProfile` exposes node or pod affinity.
 `BuiltinSizing` returns a fresh copy of a profile on every call; an empty or
 unknown name returns `Standard`. "none" means the profile sets nothing, so the
 child operator's own default applies. Neither profile sets placement, spread,
-autoscaling, or a priority class. The `Minimal` figures are estimates that keep
-the full stack within one 4 vCPU / 16 GiB node, which the
+autoscaling, or a priority class. The `Minimal` figures are measured: they come
+from the VPA recommendations of a CI run, by the rules
+[Sizing Calibration](../testing/sizing-calibration.md) records. They keep the
+full stack within one 4 vCPU / 16 GiB node, which the
 [node budget gate](../testing/controlplane-e2e-tests.md#node-budget-link-6z) of
 the `e2e-controlplane` job checks.
 
 | Component | Standard | Minimal |
 | --- | --- | --- |
-| `keystone.api`, `glance.api`, `placement.api`, `barbican.api`, `neutron.api`, `cinder.api`, `nova.api` | replicas 3 | replicas 1, processes 1, threads 1, requests.cpu 50m |
-| `horizon.api` | replicas 3 | replicas 1, requests.cpu 50m |
-| `neutron.workers` | replicas 3 | replicas 1, requests.cpu 50m |
-| `cinder.scheduler` | replicas 1 | replicas 1, requests.cpu 50m |
-| `cinder.volume`, `cinder.backup` | none | requests.cpu 50m |
-| `nova.metadata` | replicas 1 | replicas 1, processes 1, threads 1, requests.cpu 50m |
-| `nova.scheduler`, `nova.conductor` | replicas 1 | replicas 1, workers 1, requests.cpu 50m |
-| `nova.consoleProxy` | replicas 1 | replicas 1, requests.cpu 50m |
-| `<service>.jobs` | none | requests.cpu 50m |
-| `database` | replicas 3, storageSize 100Gi | replicas 1, storageSize 512Mi, requests cpu 100m / memory 1Gi, limits memory 1Gi |
-| `cache` | replicas 3 | replicas 1, requests cpu 50m / memory 128Mi, limits memory 128Mi |
-| `messaging` | replicas 3 | replicas 1, requests cpu 100m / memory 512Mi, limits memory 512Mi |
-| `secretStore` | none | requests cpu 50m / memory 256Mi, limits memory 256Mi |
+| `keystone.api`, `glance.api`, `placement.api`, `barbican.api`, `neutron.api`, `cinder.api`, `nova.api` | replicas 3 | replicas 1, processes 1, threads 1, requests.cpu 15m |
+| `horizon.api` | replicas 3 | replicas 1, requests.cpu 15m |
+| `neutron.workers` | replicas 3 | replicas 1, requests.cpu 15m |
+| `cinder.scheduler` | replicas 1 | replicas 1, requests.cpu 15m |
+| `cinder.volume`, `cinder.backup` | none | requests.cpu 15m |
+| `nova.metadata` | replicas 1 | replicas 1, processes 1, threads 1, requests.cpu 15m |
+| `nova.scheduler`, `nova.conductor` | replicas 1 | replicas 1, workers 1, requests.cpu 15m |
+| `nova.consoleProxy` | replicas 1 | replicas 1, requests.cpu 15m |
+| `<service>.jobs` | none | requests.cpu 15m |
+| `database` | replicas 3, storageSize 100Gi | replicas 1, storageSize 512Mi, requests cpu 65m / memory 1Gi, limits memory 1Gi |
+| `cache` | replicas 3 | replicas 1, requests cpu 15m / memory 96Mi, limits memory 96Mi |
+| `messaging` | replicas 3 | replicas 1, requests cpu 815m / memory 512Mi, limits memory 512Mi |
+| `secretStore` | none | requests cpu 35m / memory 64Mi, limits memory 64Mi |
 
 A profile sizes service pods by counts and CPU requests only. Service memory
 stays with the child's per-process formula, so a lower process count lowers the
 memory the child renders.
+
+The resolved sizing is validated as a whole, so a `Minimal` request must not
+exceed a limit the ControlPlane sets on the same component. A ControlPlane that
+sets a `messaging` CPU limit below `815m` under `Minimal` is rejected on its next
+update until the limit rises or the request is overridden.
 
 ### Merge rules
 

@@ -141,7 +141,7 @@ func TestSizingProfileValidateCreate_RejectsReferencingControlPlane(t *testing.T
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ControlPlane tenant-a/cp: spec.sizing.keystone.api.resources.requests.cpu"))
 
-	// Restoring it with values the plane fits is admitted: Minimal requests 50m.
+	// Restoring it with values the plane fits is admitted: Minimal requests 15m.
 	_, err = w.ValidateCreate(context.Background(), sizingProfile("site", SizingProfileMinimal, SizingSpec{}))
 	g.Expect(err).NotTo(HaveOccurred())
 }
@@ -165,7 +165,7 @@ func TestSizingProfileValidateUpdate_RejectsReferencingControlPlane(t *testing.T
 	g.Expect(err.Error()).NotTo(ContainSubstring("tenant-b"))
 
 	// Switching the base to Minimal instead keeps the plane valid: Minimal
-	// requests 50m, below its 100m limit.
+	// requests 15m, below its 100m limit.
 	_, err = w.ValidateUpdate(context.Background(), oldP, sizingProfile("site", SizingProfileMinimal, SizingSpec{}))
 	g.Expect(err).NotTo(HaveOccurred())
 }

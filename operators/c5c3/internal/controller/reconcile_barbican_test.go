@@ -2380,10 +2380,10 @@ func TestReconcileBarbican_SizingProjectsComponents(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	b := getProjectedBarbican(t, r.Client, cp)
 	g.Expect(b.Spec.Deployment.Replicas).To(Equal(int32(2)))
-	g.Expect(b.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(b.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("15m"))
 	g.Expect(b.Spec.Deployment.PriorityClassName).To(BeNil(), "an empty class opts the API out of the top-level class")
 	g.Expect(b.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
 		Equal(barbicanv1alpha1.APIPodSelector(b.Name)))
 	g.Expect(b.Spec.APIServer).To(Equal(&barbicanv1alpha1.APIServerSpec{UWSGI: &commonv1.UWSGISpec{Processes: 1, Threads: 1}}))
-	g.Expect(b.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(b.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("15m"))
 }

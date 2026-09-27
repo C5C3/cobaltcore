@@ -1246,7 +1246,7 @@ func TestReconcileKeystone_SizingProjectsComponents(t *testing.T) {
 	k := getProjectedKeystone(t, c, cp)
 	d := k.Spec.Deployment
 	g.Expect(d.Replicas).To(Equal(int32(2)))
-	g.Expect(d.Resources.Requests.Cpu().String()).To(Equal("50m"), "the Minimal CPU request")
+	g.Expect(d.Resources.Requests.Cpu().String()).To(Equal("15m"), "the Minimal CPU request")
 	g.Expect(d.NodeSelector).To(Equal(map[string]string{"pool": "control"}))
 	g.Expect(d.PriorityClassName).To(Equal(ptr.To("high")))
 	g.Expect(d.TopologySpreadConstraints).To(HaveLen(1))
@@ -1254,6 +1254,6 @@ func TestReconcileKeystone_SizingProjectsComponents(t *testing.T) {
 	g.Expect(k.Spec.UWSGI).To(Equal(&commonv1.UWSGISpec{Processes: 1, Threads: 1}))
 	g.Expect(k.Spec.Autoscaling.MaxReplicas).To(Equal(int32(5)))
 	g.Expect(k.Spec.Jobs.PriorityClassName).To(Equal(ptr.To("batch")))
-	g.Expect(k.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(k.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("15m"))
 	g.Expect(k.Spec.Federation.ProxyResources.Requests.Cpu().String()).To(Equal("20m"))
 }

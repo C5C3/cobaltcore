@@ -2484,15 +2484,15 @@ func TestReconcileNeutron_SizingProjectsComponents(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	nn := getProjectedNeutron(t, r.Client, cp)
 	g.Expect(nn.Spec.Deployment.Replicas).To(Equal(int32(2)))
-	g.Expect(nn.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(nn.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("15m"))
 	g.Expect(nn.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
 		Equal(neutronv1alpha1.APIPodSelector(nn.Name)))
 	g.Expect(nn.Spec.APIServer).To(Equal(&neutronv1alpha1.APIServerSpec{UWSGI: &commonv1.UWSGISpec{Processes: 1, Threads: 1}}))
 	w := nn.Spec.Workers.Deployment
 	g.Expect(w.Replicas).To(Equal(int32(1)))
-	g.Expect(w.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(w.Resources.Requests.Cpu().String()).To(Equal("15m"))
 	g.Expect(w.NodeSelector).To(Equal(map[string]string{"pool": "control"}))
 	g.Expect(w.TopologySpreadConstraints).To(BeNil())
 	g.Expect(nn.Spec.Jobs.PriorityClassName).To(Equal(ptr.To("batch")))
-	g.Expect(nn.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(nn.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("15m"))
 }

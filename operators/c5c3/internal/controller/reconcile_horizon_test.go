@@ -1182,7 +1182,7 @@ func TestReconcileHorizon_SizingProjectsAndClears(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	h := getProjectedHorizon(t, r.Client, cp)
 	g.Expect(h.Spec.Deployment.Replicas).To(Equal(int32(2)))
-	g.Expect(h.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(h.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("15m"))
 	g.Expect(h.Spec.Deployment.NodeSelector).To(Equal(map[string]string{"pool": "control"}))
 	g.Expect(h.Spec.Deployment.Tolerations).To(HaveLen(1))
 	g.Expect(h.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(

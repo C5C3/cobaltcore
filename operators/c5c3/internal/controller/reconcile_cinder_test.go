@@ -2577,8 +2577,8 @@ func TestReconcileCinder_SizingProjectsComponents(t *testing.T) {
 		Equal(cinderv1alpha1.SchedulerPodSelector(cn.Name)))
 	g.Expect(cn.Spec.Volume.Deployment.Replicas).To(Equal(int32(1)))
 	g.Expect(cn.Spec.Volume.Deployment.NodeSelector).To(Equal(map[string]string{"storage": "nfs"}))
-	g.Expect(cn.Spec.Volume.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(cn.Spec.Volume.Deployment.Resources.Requests.Cpu().String()).To(Equal("15m"))
 	g.Expect(cn.Spec.Backup.Deployment.Replicas).To(Equal(int32(1)))
-	g.Expect(cn.Spec.Backup.Deployment.Resources.Requests.Cpu().String()).To(Equal("50m"))
-	g.Expect(cn.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(cn.Spec.Backup.Deployment.Resources.Requests.Cpu().String()).To(Equal("15m"))
+	g.Expect(cn.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("15m"))
 }

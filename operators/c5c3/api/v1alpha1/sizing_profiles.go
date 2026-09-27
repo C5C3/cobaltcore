@@ -15,8 +15,9 @@ import (
 )
 
 // minimalServiceCPURequest is the CPU request of every service pod and Job
-// under the Minimal profile.
-const minimalServiceCPURequest = "50m"
+// under the Minimal profile: the median of the services' CPU targets in the
+// e2e-controlplane job of CI run 36339033005, rounded up to 5m.
+const minimalServiceCPURequest = "15m"
 
 // BuiltinSizing returns the sizing of the built-in profile name, as a fresh
 // value on every call so a caller can never change the next caller's result.
@@ -26,10 +27,10 @@ const minimalServiceCPURequest = "50m"
 // ControlPlane without sizing always projected, and sets nothing else: every
 // other value stays with the child operators' render-time defaults and the
 // backing-service operators' defaults. Minimal sizes every component for a
-// single small node. Its figures are estimates that keep the full stack
-// within one 4 vCPU / 16 GiB node, which the node budget gate of the
-// e2e-controlplane job (hack/ci-check-node-budget.sh) checks; #1097
-// calibrates both profiles from measured usage.
+// single small node. Its figures come from the VPA recommendations of CI run
+// 36339033005 (2026-09-27, docs/reference/testing/sizing-calibration.md) and
+// keep the full stack within one 4 vCPU / 16 GiB node, which the node budget
+// gate of the e2e-controlplane job (hack/ci-check-node-budget.sh) checks.
 func BuiltinSizing(name SizingProfileName) SizingSpec {
 	if name == SizingProfileMinimal {
 		return minimalSizing()
@@ -81,8 +82,10 @@ func standardSizing() SizingSpec {
 }
 
 // minimalSizing is the Minimal profile: one replica, one process and one
-// thread per component, small CPU requests for the service pods, and CPU and
-// memory for the backing services. Service memory stays with the child
+// thread per component, the measured Minimal CPU request for the service pods,
+// and the measured CPU and memory of the backing services, never below the
+// memory floor each one's configuration depends on (1Gi database, 96Mi cache,
+// 512Mi broker, 64Mi secret store). Service memory stays with the child
 // operators' per-process formula, so a lower process count lowers it.
 func minimalSizing() SizingSpec {
 	api := func() *APISizingSpec {
@@ -105,17 +108,17 @@ func minimalSizing() SizingSpec {
 		Database: &DatabaseSizingSpec{
 			Replicas:         ptr.To[int32](1),
 			StorageSize:      "512Mi",
-			PinnedSizingSpec: PinnedSizingSpec{ContainerSizingSpec: memoryBound("100m", "1Gi")},
+			PinnedSizingSpec: PinnedSizingSpec{ContainerSizingSpec: memoryBound("65m", "1Gi")},
 		},
 		Cache: &CacheSizingSpec{
 			Replicas:            ptr.To[int32](1),
-			ContainerSizingSpec: memoryBound("50m", "128Mi"),
+			ContainerSizingSpec: memoryBound("15m", "96Mi"),
 		},
 		Messaging: &ScaledSizingSpec{
 			Replicas:         ptr.To[int32](1),
-			PinnedSizingSpec: PinnedSizingSpec{ContainerSizingSpec: memoryBound("100m", "512Mi")},
+			PinnedSizingSpec: PinnedSizingSpec{ContainerSizingSpec: memoryBound("815m", "512Mi")},
 		},
-		SecretStore: ptr.To(memoryBound("50m", "256Mi")),
+		SecretStore: ptr.To(memoryBound("35m", "64Mi")),
 		Keystone:    &KeystoneSizingSpec{API: api(), Jobs: jobs()},
 		Horizon:     &HorizonSizingSpec{API: &HorizonAPISizingSpec{DeploymentSizingSpec: minimalDeployment()}},
 		Glance:      &APIServiceSizingSpec{API: api(), Jobs: jobs()},

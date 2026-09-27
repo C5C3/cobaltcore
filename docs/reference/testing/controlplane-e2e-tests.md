@@ -617,7 +617,7 @@ database and cache stating no replica count and no volume size. It asserts that:
 - the defaulting webhook stored the profile's database sizing (`replicas: 1`,
   `storageSize: 512Mi`) on the dedicated database block;
 - the dedicated MariaDB runs one replica with `Minimal`'s 1Gi memory limit, the
-  dedicated Memcached takes the 128Mi one, and `SizingReady` is `True`;
+  dedicated Memcached takes the 96Mi one, and `SizingReady` is `True`;
 - patching the profile's `cache.resources` to a 192Mi limit reaches the
   Memcached within 60 s, through the watch the controller keeps on the kind;
 - deleting the profile turns `SizingReady` `False` with reason
@@ -689,7 +689,7 @@ Two things are left unasserted on purpose. **Consumer wiring** is one: no servic
 reads the bus yet, so the suite stops at the provisioned, owned, sized, ready
 broker, and the transport-URL projection into a service's oslo.messaging config
 lands with the first consumer. **Pod resources** are the other: the `Minimal`
-profile sizes the broker at 100m CPU and 512Mi per pod, limited at 512Mi,
+profile sizes the broker at 815m CPU and 512Mi per pod, limited at 512Mi,
 instead of the operator's default of 1 CPU and 2Gi, and the PVC stays at the
 operator's 10Gi. A pod that will not schedule on the CI node is a finding to
 report; the fixture stays as it is.

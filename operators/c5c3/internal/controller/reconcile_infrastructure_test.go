@@ -2803,7 +2803,7 @@ func TestEnsureMariaDB_Sizing(t *testing.T) {
 		g.Expect(m.Spec.Replicas).To(Equal(int32(1)))
 		g.Expect(m.Spec.Galera.Enabled).To(BeFalse())
 		g.Expect(m.Spec.Storage.Size.String()).To(Equal("512Mi"))
-		g.Expect(m.Spec.Resources.Requests.Cpu().String()).To(Equal("100m"))
+		g.Expect(m.Spec.Resources.Requests.Cpu().String()).To(Equal("65m"))
 		g.Expect(m.Spec.Resources.Limits.Memory().String()).To(Equal("1Gi"))
 		g.Expect(m.Spec.NodeSelector).To(Equal(map[string]string{"pool": "infra"}))
 		g.Expect(m.Spec.PriorityClassName).To(Equal(ptr.To("infra-critical")))
@@ -2958,7 +2958,7 @@ func TestEnsureMemcached_Sizing(t *testing.T) {
 		g.Expect(replicas).To(Equal(int64(1)), "an unset count follows the sizing")
 		res, found := memcachedResources(g, u)
 		g.Expect(found).To(BeTrue())
-		g.Expect(res).To(HaveKeyWithValue("limits", map[string]interface{}{"memory": "128Mi"}))
+		g.Expect(res).To(HaveKeyWithValue("limits", map[string]interface{}{"memory": "96Mi"}))
 		// Placement is never written: the Memcached CRD has none.
 		g.Expect(u.Object["spec"]).NotTo(HaveKey("nodeSelector"))
 		g.Expect(u.Object["spec"]).NotTo(HaveKey("tolerations"))
@@ -2973,7 +2973,7 @@ func TestEnsureMemcached_Sizing(t *testing.T) {
 		g.Expect(updates).To(Equal(1))
 		u, _, _ = getMemcached(g, c, cp.Namespace)
 		res, _ = memcachedResources(g, u)
-		g.Expect(res).To(HaveKeyWithValue("limits", map[string]interface{}{"memory": "128Mi"}))
+		g.Expect(res).To(HaveKeyWithValue("limits", map[string]interface{}{"memory": "96Mi"}))
 
 		// A sizing without resources removes them; a zero count floors to 3.
 		_, err = r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, cp.Namespace)
