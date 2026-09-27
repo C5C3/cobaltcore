@@ -68,7 +68,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `image_ovn`, `image_proxy`, `image_tempest` | the OVN, federation-proxy and Tempest image sources | the `ovn` and `keystone` e2e legs; the Tempest image rebuild |
 | `go_common` | `internal/**`, `go.work*`, `operators/Dockerfile`, `.golangci.yml` | every operator's Go gates, every `e2e-operator` leg, `e2e-operator-upgrade` |
 | `images_base` | `images/python-base/**`, `images/venv-builder/**`, `releases/**`, `scripts/**`, `overrides/**` | every service image, both Tempest images, every service operator's e2e leg |
-| `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts | `tempest`, narrowed to the services whose configuration changed |
+| `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts, the Tempest and plugin pins in `releases/*/test-refs.yaml` | `tempest`, narrowed to the services whose configuration changed; a pin bump runs every service |
 | `tests_e2e_<op>` | `tests/e2e/<op>/**`, `tests/e2e/<op>-operator/**` | that operator's `e2e-operator` leg |
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
 | `tests_chaos`, `tests_multicluster`, `tests_operator_upgrade`, `tests_prometheus` | each suite's own tree | the job that runs it |
