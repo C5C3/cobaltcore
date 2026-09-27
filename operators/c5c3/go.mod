@@ -18,7 +18,7 @@ require (
 	github.com/go-logr/logr v1.4.4
 	github.com/k-orc/openstack-resource-controller/v2 v2.5.1-0.20260917133841-ae545905edc2
 	github.com/mariadb-operator/mariadb-operator v0.38.1
-	github.com/onsi/gomega v1.43.0
+	github.com/onsi/gomega v1.44.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	golang.org/x/text v0.42.0
