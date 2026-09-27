@@ -34,7 +34,7 @@ part of this spec. Volume backends attach through
 | `scheduler` | [`CinderSchedulerSpec`](#cinderschedulerspec) | no | The scheduler Deployment's pod-level block |
 | `volume` | [`CinderVolumeSpec`](#cindervolumespec) | no | The pod-level block every `cinder-volume` Deployment runs with |
 | `backup` | [`CinderBackupSpec`](#cinderbackupspec) | no | The backup Deployment's pod-level block |
-| `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, the db-purge CronJob, and the volume-service removal Jobs. A field left unset falls back to `spec.api.deployment`; unset resources default to a `100m` CPU request and `368Mi` memory as request and limit |
+| `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, the db-purge CronJob, and the volume-service removal Jobs. A field left unset falls back to `spec.api.deployment`; unset resources default to a `70m` CPU request and `368Mi` memory as request and limit |
 | `keystoneEndpoint` | `string` | no | The Keystone auth URL rendered as `[keystone_authtoken] auth_url`; pattern `^https?://`, and the webhook also requires a parseable URL with a host. Cinder validates a token on every request server-side, so it must be reachable from inside the cluster. Required together with `serviceUser` (CEL rule); omitting both deploys the service without the Keystone integration, which renders `auth_strategy = noauth` |
 | `keystonePublicEndpoint` | `string` | no | The browser-facing Keystone base URL rendered as `www_authenticate_uri`, the address a 401 points unauthenticated clients at. When empty the operator falls back to `keystoneEndpoint` at render time (`EffectiveKeystonePublicEndpoint`), correct only when the internal and public URLs coincide |
 | `serviceUser` | [`ServiceUserSpec`](#serviceuserspec) | no | The Keystone service account and the Secret holding its password. Required exactly when `keystoneEndpoint` is set |
@@ -58,7 +58,7 @@ The API is the only Deployment that scales horizontally.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | `replicas: 3` | Pod-level knobs: `replicas`, `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and memory sized from `spec.api.uwsgi`, 512Mi as request and limit at its defaults, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds` (30), `preStopSleepSeconds` (5), `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). It is also the fallback of `spec.jobs` |
+| `deployment` | `DeploymentSpec` | no | `replicas: 3` | Pod-level knobs: `replicas`, `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and memory sized from `spec.api.uwsgi`, 720Mi as request and limit at its defaults, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds` (30), `preStopSleepSeconds` (5), `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). It is also the fallback of `spec.jobs` |
 | `uwsgi` | `UWSGISpec` | no | materialized | uWSGI parameters: `processes` (2), `threads` (1), `httpKeepAlive` (true), `harakiri` and `httpKeepAliveTimeout` (both omitted when unset). The defaulting webhook materializes the block, so the API always runs with the documented values |
 
 ### CinderSchedulerSpec
@@ -95,7 +95,7 @@ beside whatever else it sets, or admission rejects it.
 
 The same two CEL rules apply, with the same consequence for a present block.
 When the block names no memory, the reconciler renders a fixed `2Gi` as memory
-request and limit, beside the 100m CPU request and no CPU limit every container
+request and limit, beside the 70m CPU request and no CPU limit every container
 gets. The figure follows the chunk size: a backup reads the volume in chunks of
 `spec.fileSize` bytes and compresses each chunk in memory, so under a 512Mi
 limit the process is killed mid-backup and the restarted service begins the

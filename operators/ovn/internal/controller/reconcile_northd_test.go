@@ -147,7 +147,7 @@ func TestEffectiveNorthd_NormalizesTheReplicaCountAndLeavesTheCRAlone(t *testing
 
 // TestBuildNorthdDeployment_RendersResourceDefaults verifies the render-time
 // defaults of the northd container: one process at the default single thread
-// comes to 368Mi as memory request and limit beside a 100m CPU request and no
+// comes to 368Mi as memory request and limit beside a 70m CPU request and no
 // CPU limit, four threads come to 464Mi, and a block that names only a memory
 // limit keeps it, gains the CPU request, and gets no memory request beside the
 // limit.
@@ -166,7 +166,7 @@ func TestBuildNorthdDeployment_RendersResourceDefaults(t *testing.T) {
 				Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
 			},
 			want: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("70m")},
 				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
 			},
 		},

@@ -200,7 +200,7 @@ than three.
 
 Four suites opt out of the defaults for a reason of their own. `scale`,
 `gateway-quick-start-smoke` and `compute-node-pool` set `concurrent: false`, the
-first because its peak of ten pods at the shared 100m request holds 1000m on the
+first because its peak of ten pods at the shared 70m request holds 700m on the
 single kind node, the second because it and `console-proxy` claim the same
 console hostname on the one Gateway, and the third because its chassis and
 nova-compute pods own host paths on the one node (see

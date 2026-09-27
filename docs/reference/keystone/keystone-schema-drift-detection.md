@@ -316,7 +316,7 @@ period.
 3. **Schema-check Job resources.** The schema-check Job takes its resources,
    priority class and node placement from `spec.jobs`, falling back to
    `spec.deployment` (see [JobSpec](./keystone-crd.md#jobspec)). Unset, it
-   requests `100m` CPU and runs with `368Mi` memory as request and limit.
+   requests `70m` CPU and runs with `368Mi` memory as request and limit.
 
 4. **Transient connectivity failures.** The `backoffLimit: 2` provides limited retry
    for transient database connectivity issues. If the database is temporarily

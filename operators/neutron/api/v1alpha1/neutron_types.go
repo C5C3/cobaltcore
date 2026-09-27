@@ -108,9 +108,9 @@ type NeutronSpec struct {
 	// ovn-db-sync CronJob. A field left unset falls back to spec.deployment:
 	// the priority class, the node selector, the tolerations, and the node
 	// affinity (never the pod (anti-)affinity). An empty value opts out of the
-	// fallback. Unset resources default to a 100m CPU request and 368Mi memory
+	// fallback. Unset resources default to a 70m CPU request and 368Mi memory
 	// as request and limit; ovn-db-sync, whose working set grows with the
-	// logical model, gets a 100m CPU and a 256Mi memory request and no limit
+	// logical model, gets a 70m CPU and a 256Mi memory request and no limit
 	// instead.
 	// +optional
 	Jobs *commonv1.JobSpec `json:"jobs,omitempty"`

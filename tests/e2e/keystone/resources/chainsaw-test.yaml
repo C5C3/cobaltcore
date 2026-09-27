@@ -5,15 +5,15 @@
 # Chainsaw E2E test for spec.resources defaulting and propagation.
 # Validates that:
 #   - A Keystone CR without explicit resources renders the reconcile-time
-#     defaults on the Deployment: 100m CPU and 512Mi memory requests, a 512Mi
+#     defaults on the Deployment: 70m CPU and 720Mi memory requests, a 720Mi
 #     memory limit, and no CPU limit
 #   - A running keystone Pod keeps no CPU limit and runs Burstable, so the
 #     openstack tenant's LimitRange adds no CPU limit either
-#   - The db-sync Job renders the Job defaults: a 100m CPU request, 368Mi
+#   - The db-sync Job renders the Job defaults: a 70m CPU request, 368Mi
 #     memory as request and limit, and no CPU limit
 #   - Patching spec.resources updates the Deployment container resources
 #   - Removing spec.resources again and raising spec.uwsgi.processes to 4 moves
-#     the rendered memory to 800Mi, still with a 100m CPU request and no CPU
+#     the rendered memory to 1424Mi, still with a 70m CPU request and no CPU
 #     limit, so the defaults follow the process count through the real webhook
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -56,10 +56,10 @@ spec:
                 - name: keystone
                   resources:
                     requests:
-                      memory: 512Mi
-                      cpu: 100m
+                      memory: 720Mi
+                      cpu: 70m
                     limits:
-                      memory: 512Mi
+                      memory: 720Mi
                 # A partial match would accept a CPU limit beside the memory
                 # limit, so its absence is asserted on its own.
                 (length(containers[?name == 'keystone'].resources.limits.cpu) == `0`): true
@@ -97,7 +97,7 @@ spec:
                 - name: db-sync
                   resources:
                     requests:
-                      cpu: 100m
+                      cpu: 70m
                       memory: 368Mi
                     limits:
                       memory: 368Mi
@@ -197,10 +197,10 @@ spec:
                 - name: keystone
                   resources:
                     requests:
-                      memory: 800Mi
-                      cpu: 100m
+                      memory: 1424Mi
+                      cpu: 70m
                     limits:
-                      memory: 800Mi
+                      memory: 1424Mi
                 (length(containers[?name == 'keystone'].resources.limits.cpu) == `0`): true
     catch:
     - command:

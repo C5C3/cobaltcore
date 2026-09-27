@@ -35,7 +35,7 @@ type PodSettings struct {
 // no fallback), per the rule commonv1.JobSpec documents:
 //
 //   - Resources: the per-resource rule of commonv1.WithResourceDefaults with
-//     a CPU request of commonv1.DefaultCPURequest() (100m) and a fixed 368Mi
+//     a CPU request of commonv1.DefaultCPURequest() (70m) and a fixed 368Mi
 //     memory as request and limit;
 //   - PriorityClassName: spec's value when the pointer is non-nil, "" included,
 //     else the fallback's, else none;
@@ -54,7 +54,7 @@ func ResolvePodSettings(spec *commonv1.JobSpec, fallback *commonv1.DeploymentSpe
 }
 
 // ResolvePodSettingsWithRequestFloor applies the rule of ResolvePodSettings,
-// but resolves Resources through commonv1.WithRequestFloor: a 100m CPU and a
+// but resolves Resources through commonv1.WithRequestFloor: a 70m CPU and a
 // 256Mi memory request and no limit. It is for the Jobs whose working set
 // grows with the data they process (the OVN backup, Neutron's
 // ovn-db-sync-util), which a default limit would OOM-kill once the logical

@@ -141,10 +141,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            memory: 512Mi
+            memory: 720Mi
           requests:
-            cpu: 100m
-            memory: 512Mi
+            cpu: 70m
+            memory: 720Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -333,10 +333,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            memory: 512Mi
+            memory: 720Mi
           requests:
-            cpu: 100m
-            memory: 512Mi
+            cpu: 70m
+            memory: 720Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -521,10 +521,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            memory: 512Mi
+            memory: 720Mi
           requests:
-            cpu: 100m
-            memory: 512Mi
+            cpu: 70m
+            memory: 720Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

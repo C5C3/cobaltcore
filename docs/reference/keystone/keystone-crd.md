@@ -179,7 +179,7 @@ Groups the pod-level knobs for the Keystone API Deployment under `spec.deploymen
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `replicas` | `int32` | No | `3` | Number of Keystone API replicas. Minimum: 1. The webhook provides a secondary default of 3 when zero. |
-| `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See [Resource defaults](#resource-defaults) | CPU and memory requests and limits for the Keystone API container. The operator never writes defaults into this field. It resolves them per resource when it renders the pod: `100m` CPU request, no CPU limit, and `512Mi` memory request and limit at the default uWSGI counts. The effective values show on the Deployment and its Pods, not on the CR. |
+| `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See [Resource defaults](#resource-defaults) | CPU and memory requests and limits for the Keystone API container. The operator never writes defaults into this field. It resolves them per resource when it renders the pod: `70m` CPU request, no CPU limit, and `720Mi` memory request and limit at the default uWSGI counts. The effective values show on the Deployment and its Pods, not on the CR. |
 | `topologySpreadConstraints` | [`[]corev1.TopologySpreadConstraint`](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) | No | See [below](#topologyspreadconstraints) | Scheduler hints for spreading pods across zones and nodes. `nil` injects two defaults (zone + hostname, MaxSkew=1, `ScheduleAnyway`); a non-nil value (including `[]`) is used verbatim. |
 | `priorityClassName` | `*string` | No | `nil` | PriorityClass attached to the Keystone API pod spec. When set, the webhook verifies the class exists; when unset, no priority class is configured. |
 | `terminationGracePeriodSeconds` | `*int64` | No | `nil` | Grace period (seconds) granted to Keystone API pods between SIGTERM and SIGKILL during rolling updates. When `nil`, the reconciler applies `30` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `10`. Must be strictly greater than `preStopSleepSeconds`. Drives the PodSpec `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields). |
@@ -194,7 +194,7 @@ Groups the pod-level knobs for the Keystone API Deployment under `spec.deploymen
 The operator resolves container resources when it renders the pod and never
 writes them into the CR. It fills each resource on its own:
 
-- A CPU the block names neither as request nor as limit gets a `100m` request
+- A CPU the block names neither as request nor as limit gets a `70m` request
   and no limit.
 - A memory the block names neither as request nor as limit gets one figure as
   both request and limit.
@@ -211,17 +211,22 @@ memory.
 The memory figure follows the process and thread count the container runs:
 
 ```text
-224Mi + processes × (perProcess + (threads − 1) × 32Mi)
+16Mi + processes × (perProcess + (threads − 1) × 32Mi)
 ```
 
-`perProcess` is `144Mi`, and `processes` and `threads` below 1 count as 1. For
+`perProcess` is `352Mi`, and `processes` and `threads` below 1 count as 1. For
 Keystone they come from `spec.uwsgi`, so the default two processes of one thread
-come to `512Mi`, `processes: 4` to `800Mi`, and `processes: 4, threads: 2` to
-`928Mi`. A later change of `spec.uwsgi` moves the memory with it. Other
-services use the same rule with their own counts; their CRD references name the
-figure. The constants are estimates that later measurements calibrate, so an
-operator upgrade may change them for every container whose block leaves memory
-unset.
+come to `720Mi`, `processes: 4` to `1424Mi`, and `processes: 4, threads: 2` to
+`1552Mi`. A later change of `spec.uwsgi` moves the memory with it. Other
+services use the same rule with their own counts, and Glance counts `1Gi` per
+process instead of `352Mi`; their CRD references name the figure.
+
+The `16Mi` base, the `352Mi` and `1Gi` per process and the `70m` CPU request
+are measured: a CI run derived them from VPA recommendations, as
+[Sizing Calibration](../testing/sizing-calibration.md) describes. No measured
+run sets more than one thread, so the `32Mi` thread term is still an estimate.
+A later calibration can move any of these figures, so an operator upgrade may
+change them for every container whose block leaves CPU or memory unset.
 
 Read the effective values from the Deployment or its Pods:
 
@@ -245,16 +250,17 @@ with their own figures:
 
 | Container | Block | CPU request | Memory |
 | --- | --- | --- | --- |
-| Every container and init container of a Job or CronJob pod | [`spec.jobs.resources`](#jobspec) | `100m` | `368Mi` request and limit, fixed |
-| The OVN backup and Neutron `ovn-db-sync` pods | `spec.jobs.resources` of those CRs | `100m` | `256Mi` request, no limit (the working set grows with the logical model) |
+| Every container and init container of a Job or CronJob pod | [`spec.jobs.resources`](#jobspec) | `70m` | `368Mi` request and limit, fixed |
+| The OVN backup and Neutron `ovn-db-sync` pods | `spec.jobs.resources` of those CRs | `70m` | `256Mi` request, no limit (the working set grows with the logical model) |
 | The `federation-proxy` sidecar | [`spec.federation.proxyResources`](#federationspec) | `25m` | `256Mi` request and limit |
 | The Glance `cache-maintenance` sidecar | `spec.imageCache.maintenanceResources` | `25m` | `256Mi` request and limit |
 
-The Job memory does not follow the service formula. The sizing measurement's
-VPA recommender samples once a minute and cannot size a pod that lives for
-seconds, so no Job figure is measured. If a Job is OOM-killed at `368Mi`, raise
-`spec.jobs.resources.limits.memory`: the changed pod template re-runs the
-failed Job.
+The Job memory does not follow the service formula and stays pinned at
+`368Mi`. The sizing measurement's VPA recommender samples once a minute and
+cannot size a pod that lives for seconds, so no Job figure is measured. The
+`70m` CPU request is the service default. If a Job is OOM-killed at `368Mi`,
+raise `spec.jobs.resources.limits.memory`: the changed pod template re-runs
+the failed Job.
 
 ### CEL Validation Rules
 
@@ -727,7 +733,7 @@ ever sees the object.
 | Container image | `{spec.image.repository}:{spec.image.tag}` |
 | Container command | `["keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "trust_flush"]` + `args` |
 | Container securityContext | `restrictedSecurityContext()` (PSS Restricted) |
-| Container resources | `spec.jobs.resources`, resolved per resource (`100m` CPU request, `368Mi` memory request and limit by default); see [JobSpec](#jobspec) |
+| Container resources | `spec.jobs.resources`, resolved per resource (`70m` CPU request, `368Mi` memory request and limit by default); see [JobSpec](#jobspec) |
 | `spec.jobTemplate.spec.template.spec.priorityClassName` | `spec.jobs.priorityClassName`, else `spec.deployment.priorityClassName` |
 | `nodeSelector`, `tolerations`, `affinity` | `spec.jobs`, else `spec.deployment` (of the affinity, only `nodeAffinity`) |
 | `ownerReferences` | Points to the Keystone CR (controller: true) |
@@ -1420,7 +1426,7 @@ The Job pod rule:
 
 | Setting | Taken from `spec.jobs` when | Otherwise |
 | --- | --- | --- |
-| `resources` | always | Per resource: a `100m` CPU request and no CPU limit, and `368Mi` as memory request and limit. A block that names a resource keeps it as written. |
+| `resources` | always | Per resource: a `70m` CPU request and no CPU limit, and `368Mi` as memory request and limit. A block that names a resource keeps it as written. |
 | `priorityClassName` | the field is set, `""` included (explicit opt-out) | the fallback Deployment's `priorityClassName`, else none |
 | `nodeSelector` | the field is set, `{}` included (opt-out) | a copy of the fallback Deployment's `nodeSelector` |
 | `tolerations` | the field is set, `[]` included (opt-out) | a copy of the fallback Deployment's `tolerations` |
@@ -1434,7 +1440,7 @@ so this adds nothing to the pod's footprint.
 
 Two Jobs size with their data rather than with a process count and resolve
 `resources` through the request floor instead: the OVN backup and Neutron's
-`ovn-db-sync`. They get a `100m` CPU and a `256Mi` memory request and no limit.
+`ovn-db-sync`. They get a `70m` CPU and a `256Mi` memory request and no limit.
 
 The fallback Deployment per CR:
 

@@ -196,7 +196,7 @@ type NovaSpec struct {
 	// upgrade phases, and the db-archive CronJob. A field left unset falls
 	// back to spec.api.deployment: the priority class, the node selector, the
 	// tolerations, and the node affinity (never the pod (anti-)affinity). An
-	// empty value opts out of the fallback. Unset resources default to a 100m
+	// empty value opts out of the fallback. Unset resources default to a 70m
 	// CPU request and 368Mi memory as request and limit.
 	// +optional
 	Jobs *commonv1.JobSpec `json:"jobs,omitempty"`

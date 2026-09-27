@@ -4,7 +4,7 @@
 
 # Patch that raises spec.uwsgi.processes to 4 and removes spec.deployment.resources.
 # With no block left, the reconciler renders the defaults again, sized for four
-# processes: 800Mi memory request and limit, a 100m CPU request, no CPU limit.
+# processes: 1424Mi memory request and limit, a 70m CPU request, no CPU limit.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:

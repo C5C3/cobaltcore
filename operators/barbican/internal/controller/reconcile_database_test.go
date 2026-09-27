@@ -542,7 +542,7 @@ func TestBarbicanJobs_PodSettings(t *testing.T) {
 		}
 	}
 	defaults := corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("70m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
 		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
 	}
 

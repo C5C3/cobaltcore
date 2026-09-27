@@ -90,7 +90,7 @@ type OVNCentralSpec struct {
 	// falls back to spec.northd.deployment: the priority class, the node
 	// selector, the tolerations, and the node affinity (never the pod
 	// (anti-)affinity). An empty value opts out of the fallback. Unset
-	// resources resolve to the request floor, a 100m CPU and a 256Mi memory
+	// resources resolve to the request floor, a 70m CPU and a 256Mi memory
 	// request and no limit, because ovsdb-client snapshots both databases and
 	// its working set grows with the logical model.
 	// +optional
@@ -210,14 +210,14 @@ type OVNDatabaseSpec struct {
 	// Resources defines the CPU and memory requests and limits for the
 	// ovsdb-server container. The operator never writes defaults into this
 	// field; it resolves them when it renders the pod, per resource: a CPU the
-	// block names neither as request nor as limit gets a 100m request, and a
+	// block names neither as request nor as limit gets a 70m request, and a
 	// memory it names neither way gets a 256Mi request, both without a limit, so
 	// each Raft member runs in the Burstable QoS class rather than BestEffort,
 	// the class the kubelet evicts first under node memory pressure. There is no
 	// default limit because the database grows with the number of logical ports:
 	// size the memory request, and any limit, from that count. A resource the
 	// block names is used as written, and anything else it sets is kept. In a
-	// namespace whose LimitRange sets a default limit below 100m CPU or 256Mi
+	// namespace whose LimitRange sets a default limit below 70m CPU or 256Mi
 	// memory, set it explicitly: the floor's request would exceed the limit the
 	// LimitRange fills in, and the member pod is rejected.
 	// +optional
@@ -293,7 +293,7 @@ type OVNRelaySpec struct {
 
 	// Resources defines the CPU and memory requests and limits for the relay
 	// container. The operator resolves defaults per resource when it renders the
-	// pod: a CPU the block names neither as request nor as limit gets a 100m
+	// pod: a CPU the block names neither as request nor as limit gets a 70m
 	// request and no limit, and a memory it names neither way gets 368Mi as both
 	// request and limit. Anything else the block sets is kept.
 	// +optional

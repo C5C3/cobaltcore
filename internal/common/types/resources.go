@@ -9,31 +9,32 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-// Memory sizing constants for the service containers. They are estimates that
-// the VPA run of #1097 calibrates. They start from the working sets of CI job
-// 107440936441 (e2e-controlplane): API pods at two processes ran at 156 MiB
-// (Placement) to 383 MiB (Neutron), single-process Neutron workers at 266 and
-// 281 MiB. A nova-api worker settles near 130 MiB. At the default two
-// processes the formula keeps the former 512Mi limit. The vars are exposed
-// only through DefaultMemoryPerProcess and MemoryForProcesses, which return
-// copies, so no caller can mutate a shared default.
+// Memory sizing constants for the service containers, derived from the VPA
+// recommendations of CI run 36339033005 (2026-09-27), whose Tempest legs ran
+// the services at one, two and four processes (docs/reference/testing/
+// sizing-calibration.md). The steepest rise between two measured process
+// counts, Neutron's API from two to four processes, sets the per-process
+// figure; the largest target at one process, 363 MiB, sets the base. The vars
+// are exposed only through DefaultMemoryPerProcess and MemoryForProcesses,
+// which return copies, so no caller can mutate a shared default.
 var (
 	// memoryBase is the part of the figure that does not grow with the
 	// process count: the interpreter, the imported service code and the
 	// master process.
-	memoryBase = resource.MustParse("224Mi")
+	memoryBase = resource.MustParse("16Mi")
 	// memoryPerExtraThread is what each thread beyond the first adds to a
-	// process.
+	// process. No measured run sets threads above one, so it stays an
+	// estimate.
 	memoryPerExtraThread = resource.MustParse("32Mi")
 	// defaultMemoryPerProcess is what one single-threaded service process
 	// adds on top of memoryBase.
-	defaultMemoryPerProcess = resource.MustParse("144Mi")
+	defaultMemoryPerProcess = resource.MustParse("352Mi")
 )
 
-// DefaultMemoryPerProcess returns a copy of the memory one service process adds (144Mi).
+// DefaultMemoryPerProcess returns a copy of the memory one service process adds (352Mi).
 func DefaultMemoryPerProcess() resource.Quantity { return defaultMemoryPerProcess.DeepCopy() }
 
-// MemoryForProcesses returns 224Mi + processes × (perProcess + (threads-1) × 32Mi),
+// MemoryForProcesses returns 16Mi + processes × (perProcess + (threads-1) × 32Mi),
 // clamping processes and threads below 1 to 1.
 //
 // The result is in canonical form, the same value resource.MustParse returns

@@ -164,7 +164,7 @@ func TestBuildWorkload_RendersNodePlacement(t *testing.T) {
 }
 
 // A block that names no CPU and no memory renders the per-resource defaults:
-// the caller's DefaultMemory as memory request and limit, a 100m CPU request,
+// the caller's DefaultMemory as memory request and limit, a 70m CPU request,
 // no CPU limit. A zero DefaultMemory falls back to one single-threaded process.
 func TestBuildWorkload_ResourceDefaults(t *testing.T) {
 	for _, tc := range []struct {
@@ -177,7 +177,7 @@ func TestBuildWorkload_ResourceDefaults(t *testing.T) {
 			name:          "nil block",
 			defaultMemory: resource.MustParse("512Mi"),
 			want: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("512Mi")},
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("70m"), corev1.ResourceMemory: resource.MustParse("512Mi")},
 				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
 			},
 		},
@@ -185,7 +185,7 @@ func TestBuildWorkload_ResourceDefaults(t *testing.T) {
 			name:      "zero default memory",
 			resources: &corev1.ResourceRequirements{},
 			want: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("70m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
 				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
 			},
 		},

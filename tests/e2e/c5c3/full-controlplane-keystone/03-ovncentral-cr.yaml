@@ -18,7 +18,7 @@
 # the hourly database dump off a node that is already running the whole
 # ControlPlane chain.
 #
-# The two databases and northd request 50m CPU, half the operator's 100m
+# The two databases and northd request 50m CPU, below the operator's 70m
 # default, so the central fits the node budget Link 6z enforces. Memory is not
 # named, so each database keeps the operator's 256Mi Raft floor and northd its
 # own default.

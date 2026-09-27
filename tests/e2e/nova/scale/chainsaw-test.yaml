@@ -16,8 +16,8 @@
 # would catch it.
 #
 # spec.concurrent is false because of the CPU the scale-up requests. Every Nova
-# pod carries the shared 100m request (internal/common/types/workload.go), so
-# step 3 holds 1000m on the single node hack/kind-config.yaml declares: five
+# pod carries the shared 70m request (internal/common/types/workload.go), so
+# step 3 holds 700m on the single node hack/kind-config.yaml declares: five
 # API pods, two schedulers, the conductor, the metadata API and the console
 # proxy. Run alone, before the concurrent suites start, the peak fits the node.
 #

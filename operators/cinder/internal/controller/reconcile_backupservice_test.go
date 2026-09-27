@@ -327,7 +327,7 @@ func TestReconcileBackupService_ApplyFailureWrapsTheError(t *testing.T) {
 }
 
 // TestBuildBackupDeployment_RendersResourceDefaults verifies that cinder-backup
-// renders its fixed 2Gi as memory request and limit, beside a 100m CPU request
+// renders its fixed 2Gi as memory request and limit, beside a 70m CPU request
 // and no CPU limit, when spec.backup.deployment.resources names nothing: its
 // footprint follows the backup chunk size, not a process count.
 func TestBuildBackupDeployment_RendersResourceDefaults(t *testing.T) {

@@ -43,9 +43,9 @@ const (
 
 // defaultCPURequest is exposed only through DefaultCPURequest, which returns a
 // copy so no caller can mutate the shared default.
-var defaultCPURequest = resource.MustParse("100m")
+var defaultCPURequest = resource.MustParse("70m")
 
-// DefaultCPURequest returns a copy of the 100m CPU request WithResourceDefaults
+// DefaultCPURequest returns a copy of the 70m CPU request WithResourceDefaults
 // gives a container whose block names no CPU. It is also the CPU half of the
 // OVN Raft request floor.
 func DefaultCPURequest() resource.Quantity { return defaultCPURequest.DeepCopy() }
@@ -74,10 +74,10 @@ type JobBaseSpec struct {
 	// Resources defines the CPU and memory requests and limits of every
 	// container and init container of the CR's Job and CronJob pods. The
 	// operator resolves them per resource when it renders the pod: a CPU the
-	// block names neither as request nor as limit gets a 100m request and no
+	// block names neither as request nor as limit gets a 70m request and no
 	// limit, and a memory the block names neither way gets 368Mi as both
 	// request and limit. Jobs that size with their data rather than with a
-	// process count (the OVN backup and Neutron's ovn-db-sync) get a 100m CPU
+	// process count (the OVN backup and Neutron's ovn-db-sync) get a 70m CPU
 	// and 256Mi memory request and no limit instead. A resource the block
 	// names is used as written.
 	// +optional
@@ -131,7 +131,7 @@ type DeploymentSpec struct {
 	// Resources defines the CPU and memory requests and limits for the
 	// container. The operator never writes defaults into this field; it resolves
 	// them when it renders the pod, per resource: a CPU the block names neither
-	// as request nor as limit gets a 100m request and no limit, and a memory the
+	// as request nor as limit gets a 70m request and no limit, and a memory the
 	// block names neither way gets one figure as both request and limit, sized
 	// from the process and thread count the container runs (see the operator's
 	// CRD reference). A resource the block names is used as written, and

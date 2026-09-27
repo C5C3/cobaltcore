@@ -825,9 +825,9 @@ func TestNovaStatusEndpoint(t *testing.T) {
 }
 
 // TestBuildAPIDeployment_RendersResourceDefaults verifies that an admitted CR
-// whose spec.api.deployment.resources names nothing renders a 100m CPU request,
-// no CPU limit, and a memory request and limit sized from spec.api.uwsgi: 512Mi
-// at the default counts, 800Mi at four processes, and still 512Mi when only
+// whose spec.api.deployment.resources names nothing renders a 70m CPU request,
+// no CPU limit, and a memory request and limit sized from spec.api.uwsgi: 720Mi
+// at the default counts, 1424Mi at four processes, and still 720Mi when only
 // spec.metadata.uwsgi moves.
 func TestBuildAPIDeployment_RendersResourceDefaults(t *testing.T) {
 	for _, tc := range []struct {
@@ -835,16 +835,16 @@ func TestBuildAPIDeployment_RendersResourceDefaults(t *testing.T) {
 		mutate func(nova *novav1alpha1.Nova)
 		want   string
 	}{
-		{name: "default uWSGI counts", mutate: func(*novav1alpha1.Nova) {}, want: "512Mi"},
+		{name: "default uWSGI counts", mutate: func(*novav1alpha1.Nova) {}, want: "720Mi"},
 		{
 			name:   "four API processes",
 			mutate: func(nova *novav1alpha1.Nova) { nova.Spec.API.UWSGI.Processes = 4 },
-			want:   "800Mi",
+			want:   "1424Mi",
 		},
 		{
 			name:   "four metadata processes",
 			mutate: func(nova *novav1alpha1.Nova) { nova.Spec.Metadata.UWSGI.Processes = 4 },
-			want:   "512Mi",
+			want:   "720Mi",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

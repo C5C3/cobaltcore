@@ -197,7 +197,7 @@ func TestReconcileWorkers_ApplyFailureNamesTheDeployment(t *testing.T) {
 
 // TestBuildWorkerDeployment_RendersResourceDefaults verifies that both worker
 // Deployments, one single-threaded process each, render 368Mi as memory
-// request and limit beside a 100m CPU request and no CPU limit when
+// request and limit beside a 70m CPU request and no CPU limit when
 // spec.workers.deployment.resources names nothing.
 func TestBuildWorkerDeployment_RendersResourceDefaults(t *testing.T) {
 	for _, component := range []string{componentPeriodicWorkers, componentOVNMaintenanceWorker} {

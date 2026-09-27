@@ -21,8 +21,8 @@ stores are **not** part of this spec — they attach out-of-band through
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` ∈ {1,2}). Governs the API launch mode (eventlet below `2026.1`, uWSGI from `2026.1`) and install/upgrade schema tracking. Kept separate from the image tag so digest-pinned images still resolve a schema and launch mode |
-| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 100m CPU request, no CPU limit, and memory sized at 400Mi per process, 1Gi as request and limit at the defaults of both launch modes, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)) |
-| `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, and the db-purge CronJob. A field left unset falls back to `spec.deployment`; unset resources default to a `100m` CPU request and `368Mi` memory as request and limit |
+| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and memory sized at 1Gi per process, 2064Mi as request and limit at the defaults of both launch modes, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)) |
+| `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, and the db-purge CronJob. A field left unset falls back to `spec.deployment`; unset resources default to a `70m` CPU request and `368Mi` memory as request and limit |
 | `image` | `ImageSpec` | yes | Container image; exactly one of `tag` or `digest` (shared CEL rule, re-checked by the webhook) |
 | `database` | `DatabaseSpec` | yes | MariaDB connection. Exactly one of `clusterRef` (managed) or `host` (brownfield); `credentialsMode` (`Static` \| `Dynamic`, where `Dynamic` requires `clusterRef`), `secretRef`, and optional `tls`. Mutual-exclusivity and the Dynamic-requires-clusterRef rule are inherited from `commonv1.DatabaseSpec` |
 | `cache` | `CacheSpec` | yes | Memcached backing the Glance image cache. Exactly one of `clusterRef` (managed) or `servers` (brownfield) |
@@ -754,11 +754,13 @@ them here would freeze today's values into the stored CR.
 The webhook writes no `spec.deployment.resources` either. The reconciler
 resolves them per resource when it renders the Deployment (see the
 [resource defaults](../keystone/keystone-crd.md#resource-defaults)) and sizes
-memory at 400Mi per process instead of the shared 144Mi. The glance-api
-container carries the boto3-weighted S3 store driver, whose two workers idle
-near 360Mi and overrun 512Mi under concurrent image traffic. Two uWSGI
-processes (2026.1 and later) and two eventlet workers (2025.2) both come to 1Gi
-as memory request and limit.
+memory at 1Gi per process instead of the shared 352Mi. The glance-api
+container carries the boto3-weighted S3 store driver. In the calibration run,
+two processes serving the image traffic of the Cinder Tempest leg on 2026.1
+reached a VPA memory target of 2063 MiB (see
+[Sizing Calibration](../testing/sizing-calibration.md)).
+Two uWSGI processes (2026.1 and later) and two eventlet workers (2025.2) both
+come to 2064Mi as memory request and limit.
 
 The defaulting webhook leaves `spec.dbPurge` untouched for the same reason:
 its fields are resolved at reconcile time (see

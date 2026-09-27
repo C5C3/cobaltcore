@@ -4,7 +4,7 @@
 
 # Keystone CR fixture for the resources E2E test.
 # No explicit spec.resources. The webhook writes none into the CR, and the
-# reconciler renders 100m CPU and 512Mi memory requests, a 512Mi memory limit
+# reconciler renders 70m CPU and 720Mi memory requests, a 720Mi memory limit
 # and no CPU limit on the Deployment.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

@@ -421,7 +421,7 @@ func TestAgentSelectorLabels_NarrowByComponent(t *testing.T) {
 
 // TestBuildAgentDaemonSet_RendersResourceDefaults verifies that both agent
 // containers, the wait-for-chassis init container and the agent, render 368Mi
-// as memory request and limit beside a 100m CPU request and no CPU limit when
+// as memory request and limit beside a 70m CPU request and no CPU limit when
 // spec.resources names nothing.
 func TestBuildAgentDaemonSet_RendersResourceDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)

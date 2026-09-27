@@ -779,7 +779,7 @@ subsequent reconciles.
 4. **Upgrade Job resources.** The upgrade Jobs take their resources, priority
    class and node placement from `spec.jobs`, falling back to
    `spec.deployment` (see [JobSpec](./keystone-crd.md#jobspec)). Unset, each
-   requests `100m` CPU and runs with `368Mi` memory as request and limit.
+   requests `70m` CPU and runs with `368Mi` memory as request and limit.
 
 5. **Image compatibility required.** The `db_sync --expand`, `--migrate`, and
    `--contract` flags must be supported by the Keystone container image. If the

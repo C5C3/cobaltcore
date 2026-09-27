@@ -10,7 +10,7 @@
 #     Service that publishes not-ready addresses (a member joins through peers
 #     it can resolve, so a Service that waited for readiness would deadlock the
 #     cluster) and behind one NodePort Service per member
-#   - member 0 of each database requests the 100m/256Mi floor and runs
+#   - member 0 of each database requests the 70m/256Mi floor and runs
 #     Burstable, since the CR leaves resources unset
 #   - each database's members carry the two soft (ScheduleAnyway) spread
 #     constraints, which leave all three schedulable on the one kind node
@@ -184,7 +184,7 @@ spec:
             name: ovn-basic-nb-0
             namespace: openstack
           spec:
-            (containers[?name == 'ovsdb'].resources.requests.cpu | [0]): 100m
+            (containers[?name == 'ovsdb'].resources.requests.cpu | [0]): 70m
             (containers[?name == 'ovsdb'].resources.requests.memory | [0]): 256Mi
           status:
             qosClass: Burstable
@@ -196,7 +196,7 @@ spec:
             name: ovn-basic-sb-0
             namespace: openstack
           spec:
-            (containers[?name == 'ovsdb'].resources.requests.cpu | [0]): 100m
+            (containers[?name == 'ovsdb'].resources.requests.cpu | [0]): 70m
             (containers[?name == 'ovsdb'].resources.requests.memory | [0]): 256Mi
           status:
             qosClass: Burstable

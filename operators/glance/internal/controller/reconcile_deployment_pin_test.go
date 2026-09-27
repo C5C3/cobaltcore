@@ -112,10 +112,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            memory: 1Gi
+            memory: 2064Mi
           requests:
-            cpu: 100m
-            memory: 1Gi
+            cpu: 70m
+            memory: 2064Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -252,10 +252,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            memory: 1Gi
+            memory: 2064Mi
           requests:
-            cpu: 100m
-            memory: 1Gi
+            cpu: 70m
+            memory: 2064Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -410,10 +410,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            memory: 1Gi
+            memory: 2064Mi
           requests:
-            cpu: 100m
-            memory: 1Gi
+            cpu: 70m
+            memory: 2064Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -635,10 +635,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            memory: 1Gi
+            memory: 2064Mi
           requests:
-            cpu: 100m
-            memory: 1Gi
+            cpu: 70m
+            memory: 2064Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -814,10 +814,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            memory: 1Gi
+            memory: 2064Mi
           requests:
-            cpu: 100m
-            memory: 1Gi
+            cpu: 70m
+            memory: 2064Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -972,10 +972,10 @@ spec:
           timeoutSeconds: 10
         resources:
           limits:
-            memory: 1Gi
+            memory: 2064Mi
           requests:
-            cpu: 100m
-            memory: 1Gi
+            cpu: 70m
+            memory: 2064Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

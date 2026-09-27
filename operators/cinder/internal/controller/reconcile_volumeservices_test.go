@@ -553,7 +553,7 @@ func TestBuildServiceRemoveJob_MountsTheDatabaseTLSKeypair(t *testing.T) {
 
 // TestBuildVolumeDeployment_RendersResourceDefaults verifies that a
 // cinder-volume, one single-threaded process, renders 368Mi as memory request
-// and limit beside a 100m CPU request and no CPU limit when its block names
+// and limit beside a 70m CPU request and no CPU limit when its block names
 // nothing.
 func TestBuildVolumeDeployment_RendersResourceDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)

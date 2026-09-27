@@ -184,7 +184,7 @@ func TestSyncJob_RendersPodSettings(t *testing.T) {
 		g.Expect(spec.PriorityClassName).To(Equal("high"))
 		g.Expect(spec.NodeSelector).To(Equal(map[string]string{"pool": "jobs"}))
 		g.Expect(spec.Containers[0].Resources.Requests).To(Equal(corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceCPU:    resource.MustParse("70m"),
 			corev1.ResourceMemory: resource.MustParse("368Mi"),
 		}))
 		g.Expect(spec.Containers[0].Resources.Limits).To(Equal(corev1.ResourceList{

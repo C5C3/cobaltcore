@@ -1547,7 +1547,7 @@ spec:
                       Resources defines the CPU and memory requests and limits for the
                       container. The operator never writes defaults into this field; it resolves
                       them when it renders the pod, per resource: a CPU the block names neither
-                      as request nor as limit gets a 100m request and no limit, and a memory the
+                      as request nor as limit gets a 70m request and no limit, and a memory the
                       block names neither way gets one figure as both request and limit, sized
                       from the process and thread count the container runs (see the operator's
                       CRD reference). A resource the block names is used as written, and
@@ -2017,9 +2017,9 @@ spec:
                   ovn-db-sync CronJob. A field left unset falls back to spec.deployment:
                   the priority class, the node selector, the tolerations, and the node
                   affinity (never the pod (anti-)affinity). An empty value opts out of the
-                  fallback. Unset resources default to a 100m CPU request and 368Mi memory
+                  fallback. Unset resources default to a 70m CPU request and 368Mi memory
                   as request and limit; ovn-db-sync, whose working set grows with the
-                  logical model, gets a 100m CPU and a 256Mi memory request and no limit
+                  logical model, gets a 70m CPU and a 256Mi memory request and no limit
                   instead.
                 properties:
                   affinity:
@@ -2961,10 +2961,10 @@ spec:
                       Resources defines the CPU and memory requests and limits of every
                       container and init container of the CR's Job and CronJob pods. The
                       operator resolves them per resource when it renders the pod: a CPU the
-                      block names neither as request nor as limit gets a 100m request and no
+                      block names neither as request nor as limit gets a 70m request and no
                       limit, and a memory the block names neither way gets 368Mi as both
                       request and limit. Jobs that size with their data rather than with a
-                      process count (the OVN backup and Neutron's ovn-db-sync) get a 100m CPU
+                      process count (the OVN backup and Neutron's ovn-db-sync) get a 70m CPU
                       and 256Mi memory request and no limit instead. A resource the block
                       names is used as written.
                     properties:
@@ -4808,7 +4808,7 @@ spec:
                           Resources defines the CPU and memory requests and limits for the
                           container. The operator never writes defaults into this field; it resolves
                           them when it renders the pod, per resource: a CPU the block names neither
-                          as request nor as limit gets a 100m request and no limit, and a memory the
+                          as request nor as limit gets a 70m request and no limit, and a memory the
                           block names neither way gets one figure as both request and limit, sized
                           from the process and thread count the container runs (see the operator's
                           CRD reference). A resource the block names is used as written, and
