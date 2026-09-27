@@ -33,3 +33,9 @@ keystone_tempest_plugin\.tests\.rbac\.v3\.test_domain\..*\.test_identity_update_
 keystone_tempest_plugin\.tests\.rbac\.v3\.test_endpoint\..*\.test_identity_delete_endpoint
 keystone_tempest_plugin\.tests\.rbac\.v3\.test_endpoint\..*\.test_identity_get_endpoint
 keystone_tempest_plugin\.tests\.rbac\.v3\.test_endpoint\..*\.test_identity_update_endpoint
+# tracked-by: https://github.com/C5C3/cobaltcore/issues/1127
+# re-evaluate-on: keystone-tempest-plugin > 0.22.0
+# test_ec2_credential: a reader persona gets 201 creating its own EC2 credential,
+# which Keystone's default ec2_create_credential policy admits; the plugin expects 403
+keystone_tempest_plugin\.tests\.rbac\.v3\.test_ec2_credential\.ProjectReaderTests\.test_identity_ec2_create_credential
+keystone_tempest_plugin\.tests\.rbac\.v3\.test_ec2_credential\.SystemReaderTests\.test_identity_ec2_create_credential
