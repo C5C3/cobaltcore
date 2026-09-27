@@ -925,7 +925,7 @@ spec:
             ($error != null): true
             (contains($error, 'spec.sizing')): true
             (contains($error, 'forbidden when services.keystone.mode is External (no workload is deployed)')): true
-    # Minimal's 50m Keystone request against a 10m limit the ControlPlane sets: each
+    # Minimal's 15m Keystone request against a 10m limit the ControlPlane sets: each
     # value is valid alone, the merged sizing is not (webhook-only).
     - apply:
         file: 122-sizing-merged-request-above-limit.yaml

@@ -2877,7 +2877,7 @@ func TestReconcileNova_SizingProjectsComponents(t *testing.T) {
 	g.Expect(nv.Spec.Metadata.UWSGI).To(Equal(&commonv1.UWSGISpec{Processes: 1, Threads: 4}))
 	g.Expect(nv.Spec.Scheduler.Workers).To(Equal(ptr.To[int32](1)))
 	g.Expect(nv.Spec.Conductor.Workers).To(Equal(ptr.To[int32](3)))
-	g.Expect(nv.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(nv.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("15m"))
 
 	for name, d := range map[string]commonv1.DeploymentSpec{
 		"api":          nv.Spec.API.Deployment,
@@ -2886,7 +2886,7 @@ func TestReconcileNova_SizingProjectsComponents(t *testing.T) {
 		"consoleProxy": *nv.Spec.ConsoleProxy.Deployment,
 	} {
 		g.Expect(d.NodeSelector).To(Equal(map[string]string{"pool": "control"}), name)
-		g.Expect(d.Resources.Requests.Cpu().String()).To(Equal("50m"), name)
+		g.Expect(d.Resources.Requests.Cpu().String()).To(Equal("15m"), name)
 	}
 	g.Expect(nv.Spec.Conductor.Deployment.NodeSelector).To(Equal(map[string]string{"pool": "db-adjacent"}),
 		"a component's own node selector replaces the top-level one")

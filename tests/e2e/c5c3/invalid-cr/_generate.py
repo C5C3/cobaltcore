@@ -2559,7 +2559,7 @@ FIXTURES: tuple[Fixture, ...] = (
     Fixture(
         filename="122-sizing-merged-request-above-limit.yaml",
         comment=(
-            "The Minimal profile requests 50m CPU for the Keystone API, and the ControlPlane\n"
+            "The Minimal profile requests 15m CPU for the Keystone API, and the ControlPlane\n"
             "limits it to 10m. Each value is valid on its own; the merged sizing is not, so\n"
             "the webhook's check of the resolved sizing answers at\n"
             "`spec.sizing.keystone.api.resources.requests.cpu`."

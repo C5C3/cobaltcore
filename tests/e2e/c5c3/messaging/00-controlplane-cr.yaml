@@ -23,7 +23,7 @@
 # the sharpest statement of that difference.
 #
 # The Minimal sizing profile sizes the bus for the single-node kind e2e clusters:
-# one replica requesting 100m CPU and 512Mi, limited at 512Mi, instead of the
+# one replica requesting 815m CPU and 512Mi, limited at 512Mi, instead of the
 # RabbitMQ Cluster Operator's default of 1 CPU and 2Gi per pod. Image,
 # persistence and tls stay at the operator's defaults (a 10Gi PVC). If the bus
 # does not schedule on the CI node, that is a finding to report, not something
