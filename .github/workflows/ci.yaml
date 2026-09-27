@@ -33,7 +33,7 @@ env:
   # Pin tool versions for CI reproducibility (single source of truth).
   CONTROLLER_GEN_VERSION: v0.22.0
   GOFUMPT_VERSION: v0.12.0
-  GOLANGCI_LINT_VERSION: v2.13.2
+  GOLANGCI_LINT_VERSION: v2.14.0
 
 # A `labeled` event for a label that does not steer CI gets a group of its own,
 # so adding `bug` or `documentation` to a pull request no longer cancels the
