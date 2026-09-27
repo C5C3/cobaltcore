@@ -9,8 +9,9 @@ A CobaltCore CR that names no resources gets its CPU and memory from
 render-time defaults, and a ControlPlane on the Minimal
 [sizing profile](../c5c3/controlplane-crd.md) gets fixed figures for its
 service pods and backing services. This page describes how those figures are
-measured with a VerticalPodAutoscaler (VPA) recommender in CI and how a
-script derives them from the measurement.
+measured with a VerticalPodAutoscaler (VPA) recommender in CI, how a script
+derives them from the measurement, and which run the figures in the code come
+from.
 
 ## What is measured
 
@@ -205,25 +206,395 @@ step `s` means rounding up to the next multiple of `s`, and a job is the
    miss means the 4 vCPU / 16 GiB target is not reachable with measured
    figures, and the figures stay as they are until that is decided.
 
-## Current figures
+## Recorded run
 
-No calibration run is recorded yet. The figures in the code are these
-estimates:
+The figures in the code come from this run:
 
-| Key | Value | Origin |
+| Item | Value |
+| --- | --- |
+| Run | [36339033005](https://github.com/C5C3/cobaltcore/actions/runs/36339033005), attempt 1, on 2026-09-27 |
+| Measured commit | `4ebf79968dc3b9dbec072199f72ee6858f4a864e`, the merge of pull request #1123 with `main` |
+| Recommender | `registry.k8s.io/autoscaling/vpa-recommender:1.8.0` |
+| Link 6z total | `3480m` CPU and `14754Mi` of memory |
+| Derivation | `python3 hack/derive-sizing-figures.py --budget-total 3480m,14754Mi _output/sizing-run` |
+| Projection | `projected: 2885m 15474Mi of 4000m 16384Mi` |
+
+The two keystone Tempest legs of the run failed on three RBAC tests
+([#1127](https://github.com/C5C3/cobaltcore/issues/1127)); the suite ran to its
+end, so their recommendations are complete. An earlier run of the same pull
+request, 36307184647, recorded no `MariaDB` row, because the MariaDB CRD still
+served its scale subresource, and is not used.
+
+## Derivation output
+
+The derivation printed this Markdown for the recorded run.
+
+### Derived figures
+
+| Constant | Value |
+| --- | --- |
+| `memoryBase` | 16Mi |
+| `defaultMemoryPerProcess` | 352Mi |
+| `glanceMemoryPerProcess` | 1Gi |
+| `defaultCPURequest` | 70m |
+| `minimalServiceCPURequest` | 15m |
+| `minimalDatabase` | 65m,1Gi |
+| `minimalCache` | 15m,96Mi |
+| `minimalMessaging` | 815m,512Mi |
+| `minimalSecretStore` | 35m,64Mi |
+| `sidecarCPURequest` | 25m |
+| `sidecarMemory` | 256Mi |
+
+Input: 196 rows from 14 job runs. T is the memory target less 32Mi per extra thread of each process.
+
+### Memory formula
+
+| p | M(p), the largest T (MiB) | 16Mi + p × 352Mi |
 | --- | --- | --- |
-| `memoryBase` | `224Mi` | Working sets of CI job 107440936441 |
-| `defaultMemoryPerProcess` | `144Mi` | Working sets of CI job 107440936441 |
-| `glanceMemoryPerProcess` | `400Mi` | Glance API with the S3 store driver under image traffic |
-| `defaultCPURequest` | `100m` | Set when the default CPU limit was dropped |
-| `minimalServiceCPURequest` | `50m` | Chosen to pass the node budget gate |
-| `minimalDatabase` | `100m`, `1Gi` | Chosen to pass the node budget gate |
-| `minimalCache` | `50m`, `128Mi` | Chosen to pass the node budget gate |
-| `minimalMessaging` | `100m`, `512Mi` | Chosen to pass the node budget gate |
-| `minimalSecretStore` | `50m`, `256Mi` | Chosen to pass the node budget gate |
-| `sidecarCPURequest` | `25m` | Fixed sidecar budget |
-| `sidecarMemory` | `256Mi` | Fixed sidecar budget |
+| 1 | 363 | 368 |
+| 2 | 363 | 720 |
+| 4 | 1052 | 1424 |
 
-A recorded run replaces this section with its run ID, date, commit and
-recommender image, the Markdown the derivation printed, and the old and new
-value of every constant.
+The steepest slope between two process counts is 344.5Mi, which rounds up to 352Mi.
+
+These containers have a fixed memory figure and stay out of the fit: `Cinder/backup/backup`.
+
+### Glance
+
+| Job | Leg | Workload | p | t | T (MiB) | (T − memoryBase) / p |
+| --- | --- | --- | --- | --- | --- | --- |
+| e2e-controlplane | - | controlplane-keystone-glance | 1 | 1 | 284 | 268 |
+| tempest | cinder-2025.2 | glance-cinder-tempest-2025-2 | 2 | 1 | 1484 | 734 |
+| tempest | cinder-2026.1 | glance-cinder-tempest-2026-1 | 2 | 1 | 2063 | 1023.5 |
+| tempest | glance-2025.2 | glance-tempest-2025-2 | 2 | 1 | 156 | 70 |
+| tempest | nova-2025.2 | glance-nova-tempest-2025-2 | 2 | 1 | 423 | 203.5 |
+| tempest | nova-2026.1 | glance-nova-tempest-2026-1 | 2 | 1 | 363 | 173.5 |
+
+### Render-time CPU request
+
+| Key (owner_kind/component/container) | Largest CPU target (m) |
+| --- | --- |
+| `Barbican/api/barbican-api` | 11 |
+| `Cinder/api/cinder-api` | 182 |
+| `Cinder/backup/backup` | 1101 |
+| `Cinder/scheduler/scheduler` | 78 |
+| `Cinder/volume-nfs1/volume-nfs1` | 296 |
+| `Glance/api/glance-api` | 627 |
+| `Keystone/api/keystone` | 1938 |
+| `Keystone/api/trust-flush` | 0 |
+| `Neutron/api/neutron-api` | 1836 |
+| `Neutron/ovn-maintenance-worker/ovn-maintenance-worker` | 35 |
+| `Neutron/periodic-workers/periodic-workers` | 23 |
+| `NeutronMetadataAgent/metadata-agent/metadata-agent` | 23 |
+| `Nova/api/nova-api` | 247 |
+| `Nova/conductor/conductor` | 203 |
+| `Nova/metadata/nova-metadata` | 11 |
+| `Nova/novncproxy/novncproxy` | 11 |
+| `Nova/scheduler/scheduler` | 63 |
+| `OVNCentral/nb/ovsdb` | 49 |
+| `OVNCentral/northd/northd` | 35 |
+| `OVNCentral/sb/ovsdb` | 63 |
+| `Placement/api/placement-api` | 49 |
+
+Median of 21 keys: 63m, so `defaultCPURequest` is 70m.
+
+### Minimal service CPU request
+
+| Key (owner_kind/component/container) | Largest CPU target (m) |
+| --- | --- |
+| `Barbican/api/barbican-api` | 11 |
+| `Cinder/api/cinder-api` | 11 |
+| `Cinder/backup/backup` | 716 |
+| `Cinder/scheduler/scheduler` | 35 |
+| `Cinder/volume-nfs1/volume-nfs1` | 49 |
+| `Glance/api/glance-api` | 23 |
+| `Horizon/api/horizon` | 271 |
+| `Keystone/api/keystone` | 296 |
+| `Neutron/api/neutron-api` | 11 |
+| `Neutron/ovn-maintenance-worker/ovn-maintenance-worker` | 11 |
+| `Neutron/periodic-workers/periodic-workers` | 11 |
+| `Nova/api/nova-api` | 11 |
+| `Nova/conductor/conductor` | 864 |
+| `Nova/metadata/nova-metadata` | 11 |
+| `Nova/novncproxy/novncproxy` | 11 |
+| `Nova/scheduler/scheduler` | 35 |
+| `Placement/api/placement-api` | 11 |
+
+Median of 17 keys: 11m, which rounds up to 15m.
+
+### Minimal backing services
+
+| Kind | Workload | Container | CPU target (m) | Memory target (MiB) | Figure |
+| --- | --- | --- | --- | --- | --- |
+| MariaDB | openstack-db | mariadb | 63 | 489 | 65m, 1Gi |
+| Memcached | openstack-memcached | memcached | 11 | 23 | 15m, 96Mi |
+| RabbitmqCluster | shared-rabbitmq-server | rabbitmq | 813 | 175 | 815m, 512Mi |
+| OpenBaoCluster | controlplane-keystone-barbican-bao | openbao | 35 | 61 | 35m, 64Mi |
+| OpenBaoCluster | openbao-instance | openbao | 35 | 48 | 35m, 64Mi |
+
+### Sidecar
+
+| Job | Leg | Workload | CPU target (m) | Memory target (MiB) |
+| --- | --- | --- | --- | --- |
+| e2e-controlplane-sso | - | controlplane-sso-keystone | 11 | 75 |
+
+### Budget projection
+
+The Link 6z total of the measured e2e-controlplane node was 3480m CPU and 14754Mi of memory. These e2e-controlplane containers take the Minimal figures:
+
+| Workload | Container | Pods | CPU request (m) | Memory request (MiB) |
+| --- | --- | --- | --- | --- |
+| controlplane-keystone-barbican | barbican-api | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-barbican-bao | openbao | 1 | - → 35 | - → 64 |
+| controlplane-keystone-cinder | cinder-api | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-cinder-backup | backup | 1 | 50 → 15 | 2048 → 2048 |
+| controlplane-keystone-cinder-scheduler | scheduler | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-cinder-volume-nfs1 | volume-nfs1 | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-glance | glance-api | 1 | 50 → 15 | 624 → 1040 |
+| controlplane-keystone-horizon | horizon | 1 | 50 → 15 | 512 → 720 |
+| controlplane-keystone-keystone | keystone | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-neutron | neutron-api | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-neutron-ovn-maintenance-worker | ovn-maintenance-worker | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-neutron-periodic-workers | periodic-workers | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-nova | nova-api | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-nova-conductor | conductor | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-nova-metadata | nova-metadata | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-nova-novncproxy | novncproxy | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-nova-scheduler | scheduler | 1 | 50 → 15 | 368 → 368 |
+| controlplane-keystone-placement | placement-api | 1 | 50 → 15 | 368 → 368 |
+| openbao-instance | openbao | 1 | - → 35 | - → 64 |
+| openstack-db | mariadb | 1 | 100 → 65 | 1024 → 1024 |
+| openstack-memcached | memcached | 1 | 50 → 15 | 128 → 96 |
+
+| minimalServiceCPURequest | Projected CPU | Projected memory |
+| --- | --- | --- |
+| 15m | 2885m | 15474Mi |
+
+The node budget is 4000m CPU and 16384Mi of memory.
+
+### Input rows
+
+| job | leg | namespace | owner_kind | component | workload | container | class | p | t | cpu_target_m | memory_target_mi | T |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| e2e-controlplane | - | openstack | - | - | controlplane-keystone-fake-compute | nova-compute | ignored | - | - | 11 | 175 | - |
+| e2e-controlplane | - | openstack | - | - | nfs-server | nfs-server | ignored | - | - | 11 | 75 | - |
+| e2e-controlplane | - | openstack | Barbican | api | controlplane-keystone-barbican | barbican-api | formula | 1 | 1 | 11 | 138 | 138 |
+| e2e-controlplane | - | openstack | Cinder | api | controlplane-keystone-cinder | cinder-api | formula | 1 | 1 | 11 | 175 | 175 |
+| e2e-controlplane | - | openstack | Cinder | backup | controlplane-keystone-cinder-backup | backup | formula, fixed memory | 1 | 1 | 716 | 260 | 260 |
+| e2e-controlplane | - | openstack | Cinder | scheduler | controlplane-keystone-cinder-scheduler | scheduler | formula | 1 | 1 | 35 | 156 | 156 |
+| e2e-controlplane | - | openstack | Cinder | volume-nfs1 | controlplane-keystone-cinder-volume-nfs1 | volume-nfs1 | formula | 1 | 1 | 49 | 309 | 309 |
+| e2e-controlplane | - | openstack | Glance | api | controlplane-keystone-glance | glance-api | glance | 1 | 1 | 23 | 284 | 284 |
+| e2e-controlplane | - | openstack | Horizon | api | controlplane-keystone-horizon | horizon | formula | 2 | 1 | 11 | 260 | 260 |
+| e2e-controlplane | - | openstack | Keystone | api | controlplane-keystone-keystone | keystone | formula | 1 | 1 | 126 | 156 | 156 |
+| e2e-controlplane | - | openstack | MariaDB | - | openstack-db | mariadb | backing | - | - | 63 | 489 | - |
+| e2e-controlplane | - | openstack | Memcached | - | openstack-memcached | memcached | backing | - | - | 11 | 23 | - |
+| e2e-controlplane | - | openstack | Neutron | api | controlplane-keystone-neutron | neutron-api | formula | 1 | 1 | 11 | 237 | 237 |
+| e2e-controlplane | - | openstack | Neutron | ovn-maintenance-worker | controlplane-keystone-neutron-ovn-maintenance-worker | ovn-maintenance-worker | formula | 1 | 1 | 11 | 309 | 309 |
+| e2e-controlplane | - | openstack | Neutron | periodic-workers | controlplane-keystone-neutron-periodic-workers | periodic-workers | formula | 1 | 1 | 11 | 335 | 335 |
+| e2e-controlplane | - | openstack | NeutronMetadataAgent | metadata-agent | controlplane-keystone-agent-metadata-agent | metadata-agent | formula | 1 | 1 | 11 | 175 | 175 |
+| e2e-controlplane | - | openstack | Nova | api | controlplane-keystone-nova | nova-api | formula | 1 | 1 | 11 | 215 | 215 |
+| e2e-controlplane | - | openstack | Nova | conductor | controlplane-keystone-nova-conductor | conductor | formula | 1 | 1 | 864 | 284 | 284 |
+| e2e-controlplane | - | openstack | Nova | metadata | controlplane-keystone-nova-metadata | nova-metadata | formula | 1 | 1 | 11 | 156 | 156 |
+| e2e-controlplane | - | openstack | Nova | novncproxy | controlplane-keystone-nova-novncproxy | novncproxy | formula | 1 | 1 | 11 | 138 | 138 |
+| e2e-controlplane | - | openstack | Nova | scheduler | controlplane-keystone-nova-scheduler | scheduler | formula | 1 | 1 | 35 | 156 | 156 |
+| e2e-controlplane | - | openstack | OVNCentral | nb | controlplane-keystone-ovn-nb | ovsdb | ignored | - | - | 23 | 11 | - |
+| e2e-controlplane | - | openstack | OVNCentral | northd | controlplane-keystone-ovn-northd | northd | formula | 1 | 1 | 23 | 11 | 11 |
+| e2e-controlplane | - | openstack | OVNCentral | sb | controlplane-keystone-ovn-sb | ovsdb | ignored | - | - | 23 | 23 | - |
+| e2e-controlplane | - | openstack | OVNChassis | ovn-controller | controlplane-keystone-chassis-ovn-controller | ovn-controller | ignored | - | - | 23 | 11 | - |
+| e2e-controlplane | - | openstack | OVNChassis | ovs | controlplane-keystone-chassis-ovs | ovs-vswitchd | ignored | - | - | 23 | 11 | - |
+| e2e-controlplane | - | openstack | OVNChassis | ovs | controlplane-keystone-chassis-ovs | ovsdb-server | ignored | - | - | 23 | 11 | - |
+| e2e-controlplane | - | openstack | OpenBaoCluster | - | controlplane-keystone-barbican-bao | openbao | backing | - | - | 35 | 61 | - |
+| e2e-controlplane | - | openstack | OpenBaoCluster | - | openbao-instance | openbao | backing | - | - | 35 | 48 | - |
+| e2e-controlplane | - | openstack | Placement | api | controlplane-keystone-placement | placement-api | formula | 1 | 1 | 11 | 105 | 105 |
+| e2e-controlplane | - | openstack | RabbitmqCluster | rabbitmq | shared-rabbitmq-server | rabbitmq | backing | - | - | 813 | 175 | - |
+| e2e-controlplane-sso | - | openstack | - | - | keycloak | keycloak | ignored | - | - | 1737 | 684 | - |
+| e2e-controlplane-sso | - | openstack | - | - | openldap | openldap | ignored | - | - | 11 | 777 | - |
+| e2e-controlplane-sso | - | openstack | Horizon | api | controlplane-sso-horizon | horizon | formula | 2 | 1 | 271 | 260 | 260 |
+| e2e-controlplane-sso | - | openstack | Keystone | api | controlplane-sso-keystone | federation-proxy | sidecar | - | - | 11 | 75 | - |
+| e2e-controlplane-sso | - | openstack | Keystone | api | controlplane-sso-keystone | keystone | formula | 1 | 1 | 296 | 175 | 175 |
+| e2e-controlplane-sso | - | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 78 | 215 | - |
+| e2e-controlplane-sso | - | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 11 | 23 | - |
+| e2e-controlplane-sso | - | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 35 | 48 | - |
+| tempest | barbican-2025.2 | openstack | Barbican | api | barbican-tempest-2025-2 | barbican-api | formula | 4 | 1 | 11 | 489 | 489 |
+| tempest | barbican-2025.2 | openstack | Keystone | api | keystone-barbican-tempest-2025-2 | keystone | formula | 2 | 1 | 126 | 284 | 284 |
+| tempest | barbican-2025.2 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 49 | 237 | - |
+| tempest | barbican-2025.2 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | barbican-2025.2 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 11 | 23 | - |
+| tempest | barbican-2025.2 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 35 | 48 | - |
+| tempest | barbican-2026.1 | openstack | Keystone | api | keystone-barbican-tempest-2026-1 | keystone | formula | 2 | 1 | 93 | 284 | 284 |
+| tempest | barbican-2026.1 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 63 | 237 | - |
+| tempest | barbican-2026.1 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | barbican-2026.1 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 11 | 23 | - |
+| tempest | barbican-2026.1 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 35 | 48 | - |
+| tempest | cinder-2025.2 | openstack | - | - | nfs-server | nfs-server | ignored | - | - | 11 | 75 | - |
+| tempest | cinder-2025.2 | openstack | - | - | nova-cinder-tempest-2025-2-fake-compute | nova-compute | ignored | - | - | 23 | 175 | - |
+| tempest | cinder-2025.2 | openstack | Cinder | api | cinder-tempest-2025-2 | cinder-api | formula | 4 | 1 | 182 | 684 | 684 |
+| tempest | cinder-2025.2 | openstack | Cinder | backup | cinder-tempest-2025-2-backup | backup | formula, fixed memory | 1 | 1 | 977 | 335 | 335 |
+| tempest | cinder-2025.2 | openstack | Cinder | scheduler | cinder-tempest-2025-2-scheduler | scheduler | formula | 1 | 1 | 78 | 156 | 156 |
+| tempest | cinder-2025.2 | openstack | Cinder | volume-nfs1 | cinder-tempest-2025-2-volume-nfs1 | volume-nfs1 | formula | 1 | 1 | 182 | 363 | 363 |
+| tempest | cinder-2025.2 | openstack | Glance | api | glance-cinder-tempest-2025-2 | glance-api | glance | 2 | 1 | 143 | 1484 | 1484 |
+| tempest | cinder-2025.2 | openstack | Keystone | api | keystone-cinder-tempest-2025-2 | keystone | formula | 2 | 1 | 163 | 284 | 284 |
+| tempest | cinder-2025.2 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 182 | 600 | - |
+| tempest | cinder-2025.2 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | cinder-2025.2 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 11 | 23 | - |
+| tempest | cinder-2025.2 | openstack | Neutron | api | neutron-cinder-tempest-2025-2 | neutron-api | formula | 4 | 1 | 379 | 826 | 826 |
+| tempest | cinder-2025.2 | openstack | Neutron | ovn-maintenance-worker | neutron-cinder-tempest-2025-2-ovn-maintenance-worker | ovn-maintenance-worker | formula | 1 | 1 | 11 | 309 | 309 |
+| tempest | cinder-2025.2 | openstack | Neutron | periodic-workers | neutron-cinder-tempest-2025-2-periodic-workers | periodic-workers | formula | 1 | 1 | 11 | 335 | 335 |
+| tempest | cinder-2025.2 | openstack | Nova | api | nova-cinder-tempest-2025-2 | nova-api | formula | 4 | 1 | 126 | 729 | 729 |
+| tempest | cinder-2025.2 | openstack | Nova | conductor | nova-cinder-tempest-2025-2-conductor | conductor | formula | 2 | 1 | 182 | 284 | 284 |
+| tempest | cinder-2025.2 | openstack | Nova | metadata | nova-cinder-tempest-2025-2-metadata | nova-metadata | formula | 2 | 1 | 11 | 309 | 309 |
+| tempest | cinder-2025.2 | openstack | Nova | novncproxy | nova-cinder-tempest-2025-2-novncproxy | novncproxy | formula | 1 | 1 | 11 | 138 | 138 |
+| tempest | cinder-2025.2 | openstack | Nova | scheduler | nova-cinder-tempest-2025-2-scheduler | scheduler | formula | 2 | 1 | 49 | 237 | 237 |
+| tempest | cinder-2025.2 | openstack | OVNCentral | nb | ovn-cinder-tempest-2025-2-nb | ovsdb | ignored | - | - | 23 | 11 | - |
+| tempest | cinder-2025.2 | openstack | OVNCentral | northd | ovn-cinder-tempest-2025-2-northd | northd | formula | 1 | 1 | 23 | 11 | 11 |
+| tempest | cinder-2025.2 | openstack | OVNCentral | sb | ovn-cinder-tempest-2025-2-sb | ovsdb | ignored | - | - | 23 | 11 | - |
+| tempest | cinder-2025.2 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 35 | 48 | - |
+| tempest | cinder-2025.2 | openstack | Placement | api | placement-cinder-tempest-2025-2 | placement-api | formula | 2 | 1 | 23 | 195 | 195 |
+| tempest | cinder-2025.2 | openstack | RabbitmqCluster | rabbitmq | shared-rabbitmq-server | rabbitmq | ignored | - | - | 23 | 175 | - |
+| tempest | cinder-2026.1 | openstack | - | - | nfs-server | nfs-server | ignored | - | - | 11 | 75 | - |
+| tempest | cinder-2026.1 | openstack | - | - | nova-cinder-tempest-2026-1-fake-compute | nova-compute | ignored | - | - | 23 | 175 | - |
+| tempest | cinder-2026.1 | openstack | Cinder | api | cinder-tempest-2026-1 | cinder-api | formula | 4 | 1 | 182 | 641 | 641 |
+| tempest | cinder-2026.1 | openstack | Cinder | backup | cinder-tempest-2026-1-backup | backup | formula, fixed memory | 1 | 1 | 1101 | 309 | 309 |
+| tempest | cinder-2026.1 | openstack | Cinder | scheduler | cinder-tempest-2026-1-scheduler | scheduler | formula | 1 | 1 | 63 | 156 | 156 |
+| tempest | cinder-2026.1 | openstack | Cinder | volume-nfs1 | cinder-tempest-2026-1-volume-nfs1 | volume-nfs1 | formula | 1 | 1 | 296 | 335 | 335 |
+| tempest | cinder-2026.1 | openstack | Glance | api | glance-cinder-tempest-2026-1 | glance-api | glance | 2 | 1 | 627 | 2063 | 2063 |
+| tempest | cinder-2026.1 | openstack | Keystone | api | keystone-cinder-tempest-2026-1 | keystone | formula | 2 | 1 | 271 | 284 | 284 |
+| tempest | cinder-2026.1 | openstack | Keystone | api | keystone-cinder-tempest-2026-1 | trust-flush | formula | 1 | 1 | 0 | 1 | 1 |
+| tempest | cinder-2026.1 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 182 | 600 | - |
+| tempest | cinder-2026.1 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | cinder-2026.1 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 11 | 23 | - |
+| tempest | cinder-2026.1 | openstack | Neutron | api | neutron-cinder-tempest-2026-1 | neutron-api | formula | 4 | 1 | 296 | 777 | 777 |
+| tempest | cinder-2026.1 | openstack | Neutron | ovn-maintenance-worker | neutron-cinder-tempest-2026-1-ovn-maintenance-worker | ovn-maintenance-worker | formula | 1 | 1 | 11 | 309 | 309 |
+| tempest | cinder-2026.1 | openstack | Neutron | periodic-workers | neutron-cinder-tempest-2026-1-periodic-workers | periodic-workers | formula | 1 | 1 | 23 | 260 | 260 |
+| tempest | cinder-2026.1 | openstack | Nova | api | nova-cinder-tempest-2026-1 | nova-api | formula | 4 | 1 | 49 | 684 | 684 |
+| tempest | cinder-2026.1 | openstack | Nova | conductor | nova-cinder-tempest-2026-1-conductor | conductor | formula | 2 | 1 | 93 | 284 | 284 |
+| tempest | cinder-2026.1 | openstack | Nova | metadata | nova-cinder-tempest-2026-1-metadata | nova-metadata | formula | 2 | 1 | 11 | 309 | 309 |
+| tempest | cinder-2026.1 | openstack | Nova | novncproxy | nova-cinder-tempest-2026-1-novncproxy | novncproxy | formula | 1 | 1 | 11 | 138 | 138 |
+| tempest | cinder-2026.1 | openstack | Nova | scheduler | nova-cinder-tempest-2026-1-scheduler | scheduler | formula | 2 | 1 | 35 | 260 | 260 |
+| tempest | cinder-2026.1 | openstack | OVNCentral | nb | ovn-cinder-tempest-2026-1-nb | ovsdb | ignored | - | - | 23 | 23 | - |
+| tempest | cinder-2026.1 | openstack | OVNCentral | northd | ovn-cinder-tempest-2026-1-northd | northd | formula | 1 | 1 | 23 | 11 | 11 |
+| tempest | cinder-2026.1 | openstack | OVNCentral | sb | ovn-cinder-tempest-2026-1-sb | ovsdb | ignored | - | - | 23 | 11 | - |
+| tempest | cinder-2026.1 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 35 | 61 | - |
+| tempest | cinder-2026.1 | openstack | Placement | api | placement-cinder-tempest-2026-1 | placement-api | formula | 2 | 1 | 23 | 195 | 195 |
+| tempest | cinder-2026.1 | openstack | RabbitmqCluster | rabbitmq | shared-rabbitmq-server | rabbitmq | ignored | - | - | 23 | 195 | - |
+| tempest | glance-2025.2 | openstack | Glance | api | glance-tempest-2025-2 | glance-api | glance | 2 | 1 | 23 | 156 | 156 |
+| tempest | glance-2025.2 | openstack | Keystone | api | keystone-glance-tempest-2025-2 | keystone | formula | 2 | 1 | 143 | 284 | 284 |
+| tempest | glance-2025.2 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 63 | 215 | - |
+| tempest | glance-2025.2 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | glance-2025.2 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 11 | 23 | - |
+| tempest | glance-2025.2 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 35 | 48 | - |
+| tempest | glance-2026.1 | openstack | Keystone | api | keystone-glance-tempest-2026-1 | keystone | formula | 2 | 1 | 126 | 284 | 284 |
+| tempest | glance-2026.1 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 93 | 309 | - |
+| tempest | glance-2026.1 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | glance-2026.1 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 11 | 23 | - |
+| tempest | glance-2026.1 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 49 | 48 | - |
+| tempest | keystone-2025.2 | openstack | Keystone | api | keystone-tempest-2025-2 | keystone | formula | 2 | 1 | 1938 | 335 | 335 |
+| tempest | keystone-2025.2 | openstack | Keystone | api | keystone-tempest-2025-2 | trust-flush | formula | 1 | 1 | 0 | 1 | 1 |
+| tempest | keystone-2025.2 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 442 | 215 | - |
+| tempest | keystone-2025.2 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | keystone-2025.2 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 49 | 61 | - |
+| tempest | keystone-2025.2 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 49 | 48 | - |
+| tempest | keystone-2026.1 | openstack | Keystone | api | keystone-tempest-2026-1 | keystone | formula | 2 | 1 | 1938 | 335 | 335 |
+| tempest | keystone-2026.1 | openstack | Keystone | api | keystone-tempest-2026-1 | trust-flush | formula | 1 | 1 | 0 | 1 | 1 |
+| tempest | keystone-2026.1 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 442 | 215 | - |
+| tempest | keystone-2026.1 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | keystone-2026.1 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 49 | 61 | - |
+| tempest | keystone-2026.1 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 49 | 48 | - |
+| tempest | neutron-2025.2 | openstack | Keystone | api | keystone-neutron-tempest-2025-2 | keystone | formula | 2 | 1 | 511 | 284 | 284 |
+| tempest | neutron-2025.2 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 627 | 561 | - |
+| tempest | neutron-2025.2 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | neutron-2025.2 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 11 | 23 | - |
+| tempest | neutron-2025.2 | openstack | Neutron | api | neutron-tempest-2025-2 | neutron-api | formula | 4 | 1 | 1836 | 991 | 991 |
+| tempest | neutron-2025.2 | openstack | Neutron | ovn-maintenance-worker | neutron-tempest-2025-2-ovn-maintenance-worker | ovn-maintenance-worker | formula | 1 | 1 | 23 | 335 | 335 |
+| tempest | neutron-2025.2 | openstack | Neutron | periodic-workers | neutron-tempest-2025-2-periodic-workers | periodic-workers | formula | 1 | 1 | 11 | 335 | 335 |
+| tempest | neutron-2025.2 | openstack | OVNCentral | nb | ovn-neutron-tempest-2025-2-nb | ovsdb | ignored | - | - | 35 | 11 | - |
+| tempest | neutron-2025.2 | openstack | OVNCentral | northd | ovn-neutron-tempest-2025-2-northd | northd | formula | 1 | 1 | 35 | 11 | 11 |
+| tempest | neutron-2025.2 | openstack | OVNCentral | sb | ovn-neutron-tempest-2025-2-sb | ovsdb | ignored | - | - | 35 | 23 | - |
+| tempest | neutron-2025.2 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 35 | 48 | - |
+| tempest | neutron-2026.1 | openstack | Keystone | api | keystone-neutron-tempest-2026-1 | keystone | formula | 2 | 1 | 671 | 284 | 284 |
+| tempest | neutron-2026.1 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 548 | 600 | - |
+| tempest | neutron-2026.1 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | neutron-2026.1 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 23 | 23 | - |
+| tempest | neutron-2026.1 | openstack | Neutron | api | neutron-tempest-2026-1 | neutron-api | formula | 4 | 1 | 1737 | 991 | 991 |
+| tempest | neutron-2026.1 | openstack | Neutron | ovn-maintenance-worker | neutron-tempest-2026-1-ovn-maintenance-worker | ovn-maintenance-worker | formula | 1 | 1 | 35 | 309 | 309 |
+| tempest | neutron-2026.1 | openstack | Neutron | periodic-workers | neutron-tempest-2026-1-periodic-workers | periodic-workers | formula | 1 | 1 | 11 | 260 | 260 |
+| tempest | neutron-2026.1 | openstack | OVNCentral | nb | ovn-neutron-tempest-2026-1-nb | ovsdb | ignored | - | - | 49 | 11 | - |
+| tempest | neutron-2026.1 | openstack | OVNCentral | northd | ovn-neutron-tempest-2026-1-northd | northd | formula | 1 | 1 | 35 | 11 | 11 |
+| tempest | neutron-2026.1 | openstack | OVNCentral | sb | ovn-neutron-tempest-2026-1-sb | ovsdb | ignored | - | - | 63 | 23 | - |
+| tempest | neutron-2026.1 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 49 | 48 | - |
+| tempest | nova-2025.2 | openstack | - | - | nova-tempest-2025-2-fake-compute | nova-compute | ignored | - | - | 78 | 175 | - |
+| tempest | nova-2025.2 | openstack | Glance | api | glance-nova-tempest-2025-2 | glance-api | glance | 2 | 1 | 35 | 423 | 423 |
+| tempest | nova-2025.2 | openstack | Keystone | api | keystone-nova-tempest-2025-2 | keystone | formula | 2 | 1 | 350 | 309 | 309 |
+| tempest | nova-2025.2 | openstack | Keystone | api | keystone-nova-tempest-2025-2 | trust-flush | formula | 1 | 1 | 0 | 1 | 1 |
+| tempest | nova-2025.2 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 410 | 684 | - |
+| tempest | nova-2025.2 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | nova-2025.2 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 23 | 23 | - |
+| tempest | nova-2025.2 | openstack | Neutron | api | neutron-nova-tempest-2025-2 | neutron-api | formula | 4 | 1 | 716 | 1052 | 1052 |
+| tempest | nova-2025.2 | openstack | Neutron | ovn-maintenance-worker | neutron-nova-tempest-2025-2-ovn-maintenance-worker | ovn-maintenance-worker | formula | 1 | 1 | 23 | 309 | 309 |
+| tempest | nova-2025.2 | openstack | Neutron | periodic-workers | neutron-nova-tempest-2025-2-periodic-workers | periodic-workers | formula | 1 | 1 | 11 | 335 | 335 |
+| tempest | nova-2025.2 | openstack | NeutronMetadataAgent | metadata-agent | neutron-nova-tempest-2025-2-agent-metadata-agent | metadata-agent | formula | 1 | 1 | 23 | 175 | 175 |
+| tempest | nova-2025.2 | openstack | Nova | api | nova-tempest-2025-2 | nova-api | formula | 4 | 1 | 143 | 826 | 826 |
+| tempest | nova-2025.2 | openstack | Nova | conductor | nova-tempest-2025-2-conductor | conductor | formula | 2 | 1 | 203 | 309 | 309 |
+| tempest | nova-2025.2 | openstack | Nova | metadata | nova-tempest-2025-2-metadata | nova-metadata | formula | 2 | 1 | 11 | 309 | 309 |
+| tempest | nova-2025.2 | openstack | Nova | novncproxy | nova-tempest-2025-2-novncproxy | novncproxy | formula | 1 | 1 | 11 | 138 | 138 |
+| tempest | nova-2025.2 | openstack | Nova | scheduler | nova-tempest-2025-2-scheduler | scheduler | formula | 2 | 1 | 63 | 260 | 260 |
+| tempest | nova-2025.2 | openstack | OVNCentral | nb | ovn-nova-tempest-2025-2-nb | ovsdb | ignored | - | - | 35 | 23 | - |
+| tempest | nova-2025.2 | openstack | OVNCentral | northd | ovn-nova-tempest-2025-2-northd | northd | formula | 1 | 1 | 35 | 11 | 11 |
+| tempest | nova-2025.2 | openstack | OVNCentral | sb | ovn-nova-tempest-2025-2-sb | ovsdb | ignored | - | - | 35 | 23 | - |
+| tempest | nova-2025.2 | openstack | OVNChassis | ovn-controller | ovn-nova-tempest-2025-2-chassis-ovn-controller | ovn-controller | ignored | - | - | 23 | 11 | - |
+| tempest | nova-2025.2 | openstack | OVNChassis | ovs | ovn-nova-tempest-2025-2-chassis-ovs | ovs-vswitchd | ignored | - | - | 23 | 23 | - |
+| tempest | nova-2025.2 | openstack | OVNChassis | ovs | ovn-nova-tempest-2025-2-chassis-ovs | ovsdb-server | ignored | - | - | 23 | 11 | - |
+| tempest | nova-2025.2 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 49 | 48 | - |
+| tempest | nova-2025.2 | openstack | Placement | api | placement-nova-tempest-2025-2 | placement-api | formula | 2 | 1 | 35 | 195 | 195 |
+| tempest | nova-2025.2 | openstack | RabbitmqCluster | rabbitmq | shared-rabbitmq-server | rabbitmq | ignored | - | - | 35 | 195 | - |
+| tempest | nova-2026.1 | openstack | - | - | nova-tempest-2026-1-fake-compute | nova-compute | ignored | - | - | 93 | 175 | - |
+| tempest | nova-2026.1 | openstack | Glance | api | glance-nova-tempest-2026-1 | glance-api | glance | 2 | 1 | 11 | 363 | 363 |
+| tempest | nova-2026.1 | openstack | Keystone | api | keystone-nova-tempest-2026-1 | keystone | formula | 2 | 1 | 350 | 309 | 309 |
+| tempest | nova-2026.1 | openstack | Keystone | api | keystone-nova-tempest-2026-1 | trust-flush | formula | 1 | 1 | 0 | 1 | 1 |
+| tempest | nova-2026.1 | openstack | MariaDB | - | openstack-db | mariadb | ignored | - | - | 323 | 729 | - |
+| tempest | nova-2026.1 | openstack | MariaDB | - | openstack-db-metrics | exporter | ignored | - | - | 11 | 11 | - |
+| tempest | nova-2026.1 | openstack | Memcached | - | openstack-memcached | memcached | ignored | - | - | 23 | 23 | - |
+| tempest | nova-2026.1 | openstack | Neutron | api | neutron-nova-tempest-2026-1 | neutron-api | formula | 4 | 1 | 627 | 991 | 991 |
+| tempest | nova-2026.1 | openstack | Neutron | ovn-maintenance-worker | neutron-nova-tempest-2026-1-ovn-maintenance-worker | ovn-maintenance-worker | formula | 1 | 1 | 23 | 309 | 309 |
+| tempest | nova-2026.1 | openstack | Neutron | periodic-workers | neutron-nova-tempest-2026-1-periodic-workers | periodic-workers | formula | 1 | 1 | 11 | 260 | 260 |
+| tempest | nova-2026.1 | openstack | NeutronMetadataAgent | metadata-agent | neutron-nova-tempest-2026-1-agent-metadata-agent | metadata-agent | formula | 1 | 1 | 11 | 156 | 156 |
+| tempest | nova-2026.1 | openstack | Nova | api | nova-tempest-2026-1 | nova-api | formula | 4 | 1 | 247 | 826 | 826 |
+| tempest | nova-2026.1 | openstack | Nova | conductor | nova-tempest-2026-1-conductor | conductor | formula | 2 | 1 | 203 | 309 | 309 |
+| tempest | nova-2026.1 | openstack | Nova | metadata | nova-tempest-2026-1-metadata | nova-metadata | formula | 2 | 1 | 11 | 309 | 309 |
+| tempest | nova-2026.1 | openstack | Nova | novncproxy | nova-tempest-2026-1-novncproxy | novncproxy | formula | 1 | 1 | 11 | 138 | 138 |
+| tempest | nova-2026.1 | openstack | Nova | scheduler | nova-tempest-2026-1-scheduler | scheduler | formula | 2 | 1 | 63 | 363 | 363 |
+| tempest | nova-2026.1 | openstack | OVNCentral | nb | ovn-nova-tempest-2026-1-nb | ovsdb | ignored | - | - | 35 | 11 | - |
+| tempest | nova-2026.1 | openstack | OVNCentral | northd | ovn-nova-tempest-2026-1-northd | northd | formula | 1 | 1 | 23 | 11 | 11 |
+| tempest | nova-2026.1 | openstack | OVNCentral | sb | ovn-nova-tempest-2026-1-sb | ovsdb | ignored | - | - | 35 | 23 | - |
+| tempest | nova-2026.1 | openstack | OVNChassis | ovn-controller | ovn-nova-tempest-2026-1-chassis-ovn-controller | ovn-controller | ignored | - | - | 23 | 11 | - |
+| tempest | nova-2026.1 | openstack | OVNChassis | ovs | ovn-nova-tempest-2026-1-chassis-ovs | ovs-vswitchd | ignored | - | - | 23 | 11 | - |
+| tempest | nova-2026.1 | openstack | OVNChassis | ovs | ovn-nova-tempest-2026-1-chassis-ovs | ovsdb-server | ignored | - | - | 23 | 11 | - |
+| tempest | nova-2026.1 | openstack | OpenBaoCluster | - | openbao-instance | openbao | ignored | - | - | 49 | 48 | - |
+| tempest | nova-2026.1 | openstack | Placement | api | placement-nova-tempest-2026-1 | placement-api | formula | 2 | 1 | 49 | 195 | 195 |
+| tempest | nova-2026.1 | openstack | RabbitmqCluster | rabbitmq | shared-rabbitmq-server | rabbitmq | ignored | - | - | 49 | 195 | - |
+
+## Old and new values
+
+| Constant | Before the run | From the run |
+| --- | --- | --- |
+| `memoryBase` | `224Mi` | `16Mi` |
+| `defaultMemoryPerProcess` | `144Mi` | `352Mi` |
+| `glanceMemoryPerProcess` | `400Mi` | `1Gi` |
+| `defaultCPURequest` | `100m` | `70m` |
+| `minimalServiceCPURequest` | `50m` | `15m` |
+| `minimalDatabase` | `100m`, `1Gi` | `65m`, `1Gi` |
+| `minimalCache` | `50m`, `128Mi` | `15m`, `96Mi` |
+| `minimalMessaging` | `100m`, `512Mi` | `815m`, `512Mi` |
+| `minimalSecretStore` | `50m`, `256Mi` | `35m`, `64Mi` |
+| `sidecarCPURequest` | `25m` | `25m` |
+| `sidecarMemory` | `256Mi` | `256Mi` |
+
+The old figures were estimates: the memory formula from the working sets of CI
+job 107440936441, `glanceMemoryPerProcess` from the Glance API with the S3 store
+driver under image traffic, `defaultCPURequest` from when the default CPU limit
+was dropped, and the `Minimal` figures chosen to pass the node budget gate.
+
+The formula still renders `368Mi` at one process, so a single-process service
+keeps its memory. At two processes it renders `720Mi` instead of `512Mi`, and at
+four `1424Mi` instead of `800Mi`. A Glance API renders `1040Mi` at one process and
+`2064Mi` at two.
