@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
@@ -235,8 +236,8 @@ func responseError(status int, message string) error {
 // ConfigMap, Deployment, ServiceAccount), the barbican API, the openbao.org API
 // the managed mode reads the instance from, the external-secrets v1 group the
 // credential gate reads to attribute a missing Secret, the Gateway API types the
-// httproute step projects, and the MariaDB types the Barbican finalizer path
-// tears down.
+// httproute step projects, the MariaDB types the Barbican finalizer path
+// tears down, and the VerticalPodAutoscaler types the VPA step applies.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
@@ -245,6 +246,7 @@ func testScheme() *runtime.Scheme {
 	_ = esov1.SchemeBuilder.AddToScheme(s)
 	_ = gatewayv1.Install(s)
 	_ = mariadbv1alpha1.AddToScheme(s)
+	_ = vpav1.AddToScheme(s)
 	return s
 }
 

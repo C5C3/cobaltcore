@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -381,4 +382,51 @@ func TestIntegration_WebhookDefaultsServiceUser(t *testing.T) {
 	g.Expect(got.Spec.ServiceUser.UserDomainName).To(Equal("Default"))
 	g.Expect(got.Spec.ServiceUser.ProjectDomainName).To(Equal("Default"))
 	g.Expect(got.Spec.ServiceUser.SecretRef.Key).To(Equal("password"))
+}
+
+// TestIntegration_CRD_CELOnly_VerticalAutoscaling pins the CEL rules of
+// verticalAutoscaling on the Barbican CRD against an envtest API server
+// with NO validating webhook installed, so the webhook twins cannot mask a
+// missing rule.
+func TestIntegration_CRD_CELOnly_VerticalAutoscaling(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(o *Barbican)
+		wantSub string
+	}{
+		{
+			name: "foreign-resource",
+			mutate: func(o *Barbican) {
+				o.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantSub: "minAllowed may only name cpu and memory",
+		},
+		{
+			name: "beside-autoscaling",
+			mutate: func(o *Barbican) {
+				cpu := int32(80)
+				o.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: &cpu}
+				o.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Off"}
+			},
+			wantSub: "spec.deployment.verticalAutoscaling cannot be set while spec.autoscaling scales the same Deployment",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := newNamespace(t, ctx, c, "celonly-vpa-")
+			o := integrationBarbican("vpa-"+tc.name, ns)
+			tc.mutate(o)
+
+			err := c.Create(ctx, o)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
 }

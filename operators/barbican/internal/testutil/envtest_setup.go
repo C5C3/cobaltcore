@@ -15,6 +15,7 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -144,9 +145,9 @@ func barbicanPaths() (crdDir, webhookDir string) {
 // buildControllerScheme creates a runtime.Scheme that includes all types the
 // BarbicanReconciler and BarbicanSecretStoreReconciler need: Barbican API types,
 // core K8s types, ESO (credential gates and store watches), Gateway API
-// (HTTPRoute), MariaDB (database provisioning and the cluster watch), and
-// openbao-operator (the OpenBaoCluster a managed store provisions against). It
-// is created fresh per test.
+// (HTTPRoute), MariaDB (database provisioning and the cluster watch),
+// openbao-operator (the OpenBaoCluster a managed store provisions against),
+// and the VerticalPodAutoscaler (the VPA step). It is created fresh per test.
 func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
 	return commonenvtest.BuildScheme(
 		// External operator types the reconcilers register.
@@ -154,6 +155,8 @@ func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 		gatewayv1.Install,
 		mariadbv1alpha1.AddToScheme,
 		openbaov1alpha1.AddToScheme,
+		// VerticalPodAutoscaler types for the VPA step and its Owns leg.
+		vpav1.AddToScheme,
 		// Barbican types.
 		addToScheme,
 	)

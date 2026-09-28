@@ -46,6 +46,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"HTTPRoute":          conditionTypeHTTPRouteReady,
 	"HealthCheck":        conditionTypeBarbicanAPIReady,
 	"HPA":                "HPAReady",
+	"VPA":                "VPAReady",
 	"NetworkPolicy":      conditionTypeNetworkPolicyReady,
 	"DBClean":            conditionTypeDBCleanReady,
 }
