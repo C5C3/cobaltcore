@@ -62,6 +62,8 @@ spec:
               ref: adding it, removing it, or renaming it after creation is rejected at the
               schema layer, so the guarantee holds even when the validating webhook is
               down. Moving a service between clusters is not a supported mutation.
+              A VerticalPodAutoscaler beside the HPA would act on the utilization signal
+              the HPA scales on, so the two are rejected together.
             properties:
               apiServer:
                 description: |-
@@ -4222,6 +4224,9 @@ spec:
             - message: targetClusterRef is immutable
               rule: '!has(self.targetClusterRef) || !has(oldSelf.targetClusterRef)
                 || self.targetClusterRef.name == oldSelf.targetClusterRef.name'
+            - message: spec.deployment.verticalAutoscaling cannot be set while spec.autoscaling
+                scales the same Deployment
+              rule: '!(has(self.autoscaling) && has(self.deployment) && has(self.deployment.verticalAutoscaling))'
           status:
             description: GlanceStatus defines the observed state of Glance.
             properties:

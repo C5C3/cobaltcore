@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,10 +49,12 @@ func testScheme() *runtime.Scheme {
 	_ = clientgoscheme.AddToScheme(s)
 	_ = glancev1alpha1.AddToScheme(s)
 	_ = esov1.SchemeBuilder.AddToScheme(s)
-	// Gateway API and MariaDB types back the HTTPRoute and database
-	// finalize/provision paths the controller and workload steps exercise.
+	// Gateway API, MariaDB and VerticalPodAutoscaler types back the HTTPRoute,
+	// database finalize/provision and VPA paths the controller and workload
+	// steps exercise.
 	_ = gatewayv1.Install(s)
 	_ = mariadbv1alpha1.AddToScheme(s)
+	_ = vpav1.AddToScheme(s)
 	return s
 }
 

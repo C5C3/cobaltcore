@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -35,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
@@ -98,6 +100,9 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				// envtest loads the fake HTTPRoute CRD, so the kind is available.
 				// Mirror what SetupWithManager would set from the RESTMapper.
 				gatewayAPIAvailable: true,
+				// The fake VerticalPodAutoscaler CRD loads into every envtest too,
+				// so the VPA latch is true as it would be at startup.
+				vpaAvailable: true,
 			}
 			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&glancev1alpha1.Glance{}, builder.WithPredicates(watch.CRUpdatePredicate())).
@@ -107,6 +112,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				Owns(&corev1.Secret{}).
 				Owns(&policyv1.PodDisruptionBudget{}).
 				Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
+				Owns(&vpav1.VerticalPodAutoscaler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 				Owns(&networkingv1.NetworkPolicy{}).
 				Owns(&batchv1.Job{}).
 				Owns(&gatewayv1.HTTPRoute{}).
