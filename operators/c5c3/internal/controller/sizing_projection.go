@@ -104,20 +104,52 @@ func projectScaled(
 	projectPod(d, top, pinned)
 }
 
+// projectWorkers is projectScaled plus the verticalAutoscaling block of the
+// worker Deployments, which a nil c clears.
+func projectWorkers(
+	d *commonv1.DeploymentSpec, top c5c3v1alpha1.PodPlacementSpec, c *c5c3v1alpha1.WorkersSizingSpec, defaultReplicas int32,
+) {
+	var scaled *c5c3v1alpha1.ScaledSizingSpec
+	var vertical *commonv1.VerticalAutoscalingSpec
+	if c != nil {
+		scaled = &c.ScaledSizingSpec
+		vertical = c.VerticalAutoscaling
+	}
+	projectScaled(d, top, scaled, defaultReplicas)
+	d.VerticalAutoscaling = vertical.DeepCopy()
+}
+
+// projectPinnedDeployment is projectPod plus the verticalAutoscaling block of
+// a Deployment with a fixed replica count, which a nil c clears.
+func projectPinnedDeployment(d *commonv1.DeploymentSpec, top c5c3v1alpha1.PodPlacementSpec, c *c5c3v1alpha1.PinnedDeploymentSizingSpec) {
+	var pinned *c5c3v1alpha1.PinnedSizingSpec
+	var vertical *commonv1.VerticalAutoscalingSpec
+	if c != nil {
+		pinned = &c.PinnedSizingSpec
+		vertical = c.VerticalAutoscaling
+	}
+	projectPod(d, top, pinned)
+	d.VerticalAutoscaling = vertical.DeepCopy()
+}
+
 // projectDeployment is projectScaled plus the spread constraints, completed
-// with selector, the pod selector the child's webhook requires.
+// with selector, the pod selector the child's webhook requires, and the
+// verticalAutoscaling block, which a nil c clears.
 func projectDeployment(
 	d *commonv1.DeploymentSpec, top c5c3v1alpha1.PodPlacementSpec, c *c5c3v1alpha1.DeploymentSizingSpec,
 	defaultReplicas int32, selector map[string]string,
 ) {
 	var scaled *c5c3v1alpha1.ScaledSizingSpec
 	var spread []c5c3v1alpha1.SpreadConstraintSpec
+	var vertical *commonv1.VerticalAutoscalingSpec
 	if c != nil {
 		scaled = &c.ScaledSizingSpec
 		spread = c.SpreadConstraints
+		vertical = c.VerticalAutoscaling
 	}
 	projectScaled(d, top, scaled, defaultReplicas)
 	d.TopologySpreadConstraints = completeSpread(spread, selector)
+	d.VerticalAutoscaling = vertical.DeepCopy()
 }
 
 // projectAPI projects a service API component onto its Deployment d and

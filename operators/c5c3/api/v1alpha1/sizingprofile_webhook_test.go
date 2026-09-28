@@ -185,6 +185,35 @@ func TestSizingProfileValidateUpdate_RejectsMaxReplicasBelowReferencingReplicas(
 		"ControlPlane tenant-a/cp: spec.sizing.keystone.api.autoscaling.maxReplicas: Invalid value: 2"))
 }
 
+// A profile that opts a component into a VPA the referencing ControlPlane puts
+// an HPA on is rejected, naming the ControlPlane.
+func TestSizingProfileValidateUpdate_RejectsVerticalAutoscalingBesideReferencingAutoscaling(t *testing.T) {
+	g := NewWithT(t)
+	cp := referencingControlPlane("tenant-a", "cp", "site", "1")
+	api := withResourcesAPI(resources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}, nil))
+	api.Autoscaling = &commonv1.AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: ptr.To[int32](80)}
+	cp.Spec.Sizing.Glance = &APIServiceSizingSpec{API: &api}
+	w := &SizingProfileWebhook{Client: fake.NewClientBuilder().WithScheme(sizingScheme(t)).WithObjects(cp).Build()}
+	vertical := SizingSpec{Glance: &APIServiceSizingSpec{API: &APISizingSpec{DeploymentSizingSpec: DeploymentSizingSpec{
+		VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"},
+	}}}}
+
+	_, err := w.ValidateUpdate(context.Background(), sizingProfile("site", SizingProfileStandard, SizingSpec{}),
+		sizingProfile("site", SizingProfileStandard, vertical))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("ControlPlane tenant-a/cp: spec.sizing.glance.api.verticalAutoscaling: Forbidden: " +
+		"autoscaling and verticalAutoscaling cannot both be set on one component"))
+
+	// Opting another component in leaves the plane valid.
+	vertical.Glance = nil
+	vertical.Placement = &APIServiceSizingSpec{API: &APISizingSpec{DeploymentSizingSpec: DeploymentSizingSpec{
+		VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"},
+	}}}
+	_, err = w.ValidateUpdate(context.Background(), sizingProfile("site", SizingProfileStandard, SizingSpec{}),
+		sizingProfile("site", SizingProfileStandard, vertical))
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 func TestSizingProfileValidateUpdate_AdmitsWhenUnreferenced(t *testing.T) {
 	g := NewWithT(t)
 	unrelated := referencingControlPlane("tenant-b", "cp", "other", "10m")

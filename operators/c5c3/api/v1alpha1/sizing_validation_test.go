@@ -79,8 +79,8 @@ func TestValidateSizingSpec(t *testing.T) {
 		},
 		{
 			name: "a bad component toleration",
-			spec: SizingSpec{Cinder: &CinderSizingSpec{Volume: &PinnedSizingSpec{PodPlacementSpec: PodPlacementSpec{
-				Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpEqual, Value: "x"}},
+			spec: SizingSpec{Cinder: &CinderSizingSpec{Volume: &PinnedDeploymentSizingSpec{PinnedSizingSpec: PinnedSizingSpec{
+				PodPlacementSpec: PodPlacementSpec{Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpEqual, Value: "x"}}},
 			}}}},
 			wantErr: []string{"spec.sizing.cinder.volume.tolerations[0].operator"},
 		},
@@ -134,6 +134,59 @@ func TestValidateSizingSpec(t *testing.T) {
 				"spec.sizing.nova.scheduler.spreadConstraints[0].maxSkew: Invalid value: 0",
 				"spec.sizing.nova.scheduler.spreadConstraints[0].topologyKey: Required value",
 				"spec.sizing.nova.scheduler.spreadConstraints[0].whenUnsatisfiable: Unsupported value",
+			},
+		},
+		{
+			name: "autoscaling beside verticalAutoscaling on one API",
+			spec: keystoneAPI(APISizingSpec{
+				DeploymentSizingSpec: DeploymentSizingSpec{VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"}},
+				Autoscaling:          &commonv1.AutoscalingSpec{MaxReplicas: 3, TargetCPUUtilization: ptr.To[int32](80)},
+			}),
+			wantErr: []string{"spec.sizing.keystone.api.verticalAutoscaling: Forbidden: autoscaling and verticalAutoscaling cannot both be set on one component"},
+		},
+		{
+			name: "verticalAutoscaling on the workers, the scheduler and the volume",
+			spec: SizingSpec{
+				Neutron: &NeutronSizingSpec{Workers: &WorkersSizingSpec{
+					VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"},
+				}},
+				Cinder: &CinderSizingSpec{
+					Scheduler: &DeploymentSizingSpec{VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{
+						UpdateMode: "Auto", MinReplicas: ptr.To[int32](1),
+					}},
+					Volume: &PinnedDeploymentSizingSpec{VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Initial"}},
+				},
+			},
+		},
+		{
+			name: "a foreign verticalAutoscaling resource on the workers",
+			spec: SizingSpec{Neutron: &NeutronSizingSpec{Workers: &WorkersSizingSpec{
+				VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				},
+			}}},
+			wantErr: []string{`spec.sizing.neutron.workers.verticalAutoscaling.minAllowed[ephemeral-storage]: Unsupported value`},
+		},
+		{
+			name: "verticalAutoscaling minAllowed above maxAllowed on the volume",
+			spec: SizingSpec{Cinder: &CinderSizingSpec{Volume: &PinnedDeploymentSizingSpec{
+				VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+					MaxAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				},
+			}}},
+			wantErr: []string{`spec.sizing.cinder.volume.verticalAutoscaling.minAllowed[cpu]: Invalid value: "2": must not exceed maxAllowed`},
+		},
+		{
+			name: "verticalAutoscaling updateMode and minReplicas out of range on the conductor",
+			spec: SizingSpec{Nova: &NovaSizingSpec{Conductor: &WorkerSizingSpec{DeploymentSizingSpec: DeploymentSizingSpec{
+				VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Sometimes", MinReplicas: ptr.To[int32](0)},
+			}}}},
+			wantErr: []string{
+				`spec.sizing.nova.conductor.verticalAutoscaling.updateMode: Unsupported value: "Sometimes"`,
+				"spec.sizing.nova.conductor.verticalAutoscaling.minReplicas: Invalid value: 0: must be at least 1",
 			},
 		},
 	}
@@ -244,6 +297,26 @@ func TestValidateResolvedSizing(t *testing.T) {
 		g.Expect(errs).To(HaveLen(1))
 		g.Expect(errs[0].Field).To(Equal("spec.sizing.horizon.api.autoscaling.maxReplicas"))
 		g.Expect(errs[0].Detail).To(ContainSubstring("replicas (3)"))
+	})
+
+	t.Run("a profile's verticalAutoscaling meets the ControlPlane's autoscaling", func(t *testing.T) {
+		g := NewWithT(t)
+		profile := SizingSpec{Glance: &APIServiceSizingSpec{API: &APISizingSpec{DeploymentSizingSpec: DeploymentSizingSpec{
+			VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"},
+		}}}}
+		api := withResourcesAPI(resources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}, nil))
+		api.Autoscaling = &commonv1.AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: ptr.To[int32](80)}
+		plane := SizingSpec{Glance: &APIServiceSizingSpec{API: &api}}
+
+		// Each block alone is valid; only the merge puts both on one component.
+		g.Expect(validateSizingSpec(path, &profile)).To(BeEmpty())
+		g.Expect(validateSizingSpec(path, &plane)).To(BeEmpty())
+		resolved := MergeSizing(MergeSizing(BuiltinSizing(SizingProfileStandard), profile), plane)
+		errs := validateResolvedSizing(path, &resolved)
+		g.Expect(errs).To(HaveLen(1))
+		g.Expect(errs[0].Type).To(Equal(field.ErrorTypeForbidden))
+		g.Expect(errs[0].Field).To(Equal("spec.sizing.glance.api.verticalAutoscaling"))
+		g.Expect(errs[0].Detail).To(Equal("autoscaling and verticalAutoscaling cannot both be set on one component"))
 	})
 
 	t.Run("both built-in profiles resolve valid", func(t *testing.T) {
@@ -465,6 +538,38 @@ func TestValidateCreate_SizingRejections(t *testing.T) {
 			for _, want := range tc.want {
 				g.Expect(err.Error()).To(ContainSubstring(want))
 			}
+		})
+	}
+}
+
+// A ControlPlane that puts an HPA on a component its referenced SizingProfile
+// opts into a VPA is rejected at the merged path, and so is the reverse.
+func TestValidateCreate_SizingVerticalAutoscalingMeetsProfileAutoscaling(t *testing.T) {
+	vertical := SizingSpec{Glance: &APIServiceSizingSpec{API: &APISizingSpec{DeploymentSizingSpec: DeploymentSizingSpec{
+		VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"},
+	}}}}
+	api := withResourcesAPI(resources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}, nil))
+	api.Autoscaling = &commonv1.AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: ptr.To[int32](80)}
+	horizontal := SizingSpec{Glance: &APIServiceSizingSpec{API: &api}}
+
+	for _, tc := range []struct {
+		name           string
+		profile, plane SizingSpec
+	}{
+		{name: "profile VPA, plane HPA", profile: vertical, plane: horizontal},
+		{name: "profile HPA, plane VPA", profile: horizontal, plane: vertical},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			c := fake.NewClientBuilder().WithScheme(sizingScheme(t)).
+				WithObjects(sizingProfile("site", SizingProfileStandard, tc.profile)).Build()
+			cp := managedControlPlane()
+			cp.Spec.Sizing = &ControlPlaneSizingSpec{ProfileRef: &SizingProfileRef{Name: "site"}, SizingSpec: tc.plane}
+
+			_, err := (&ControlPlaneWebhook{Client: c}).ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(
+				"spec.sizing.glance.api.verticalAutoscaling: Forbidden: autoscaling and verticalAutoscaling cannot both be set on one component"))
 		})
 	}
 }

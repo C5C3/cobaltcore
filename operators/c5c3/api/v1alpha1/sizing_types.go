@@ -151,6 +151,29 @@ type DeploymentSizingSpec struct {
 	// SpreadConstraints replace the Deployment's default spread.
 	// +optional
 	SpreadConstraints []SpreadConstraintSpec `json:"spreadConstraints,omitempty"`
+
+	// VerticalAutoscaling adds a VerticalPodAutoscaler; it replaces as a whole.
+	// +optional
+	VerticalAutoscaling *commonv1.VerticalAutoscalingSpec `json:"verticalAutoscaling,omitempty"`
+}
+
+// WorkersSizingSpec sizes the RPC worker Deployments of a service.
+type WorkersSizingSpec struct {
+	ScaledSizingSpec `json:",inline"`
+
+	// VerticalAutoscaling adds a VerticalPodAutoscaler; it replaces as a whole.
+	// +optional
+	VerticalAutoscaling *commonv1.VerticalAutoscalingSpec `json:"verticalAutoscaling,omitempty"`
+}
+
+// PinnedDeploymentSizingSpec sizes and places a Deployment with a fixed
+// replica count.
+type PinnedDeploymentSizingSpec struct {
+	PinnedSizingSpec `json:",inline"`
+
+	// VerticalAutoscaling adds a VerticalPodAutoscaler; it replaces as a whole.
+	// +optional
+	VerticalAutoscaling *commonv1.VerticalAutoscalingSpec `json:"verticalAutoscaling,omitempty"`
 }
 
 // ProcessSizingSpec sets the uWSGI process and thread counts.
@@ -167,6 +190,7 @@ type ProcessSizingSpec struct {
 }
 
 // APISizingSpec sizes a service API Deployment.
+// +kubebuilder:validation:XValidation:rule="!(has(self.autoscaling) && has(self.verticalAutoscaling))",message="autoscaling and verticalAutoscaling cannot both be set on one component"
 type APISizingSpec struct {
 	DeploymentSizingSpec `json:",inline"`
 	ProcessSizingSpec    `json:",inline"`
@@ -177,6 +201,7 @@ type APISizingSpec struct {
 }
 
 // HorizonAPISizingSpec sizes the dashboard Deployment.
+// +kubebuilder:validation:XValidation:rule="!(has(self.autoscaling) && has(self.verticalAutoscaling))",message="autoscaling and verticalAutoscaling cannot both be set on one component"
 type HorizonAPISizingSpec struct {
 	DeploymentSizingSpec `json:",inline"`
 
@@ -247,7 +272,7 @@ type NeutronSizingSpec struct {
 	API *APISizingSpec `json:"api,omitempty"`
 	// Workers sizes both RPC worker Deployments.
 	// +optional
-	Workers *ScaledSizingSpec `json:"workers,omitempty"`
+	Workers *WorkersSizingSpec `json:"workers,omitempty"`
 	// Jobs sizes the Job pods.
 	// +optional
 	Jobs *JobSizingSpec `json:"jobs,omitempty"`
@@ -263,10 +288,10 @@ type CinderSizingSpec struct {
 	Scheduler *DeploymentSizingSpec `json:"scheduler,omitempty"`
 	// Volume sizes every volume Deployment.
 	// +optional
-	Volume *PinnedSizingSpec `json:"volume,omitempty"`
+	Volume *PinnedDeploymentSizingSpec `json:"volume,omitempty"`
 	// Backup sizes the backup Deployment.
 	// +optional
-	Backup *PinnedSizingSpec `json:"backup,omitempty"`
+	Backup *PinnedDeploymentSizingSpec `json:"backup,omitempty"`
 	// Jobs sizes the Job pods.
 	// +optional
 	Jobs *JobSizingSpec `json:"jobs,omitempty"`

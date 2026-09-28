@@ -19,8 +19,8 @@ import (
 //     replaces the base. An empty one inherits, because the defaulting
 //     webhook's JSON round trip drops an empty map or list, so "empty" cannot
 //     mean "clear".
-//   - autoscaling: a set override replaces the whole block, since its bounds
-//     and targets only make sense together.
+//   - autoscaling and verticalAutoscaling: a set override replaces the whole
+//     block, since its bounds and targets only make sense together.
 //   - blocks: a nil override keeps the base, a nil base takes the override,
 //     and two set blocks merge recursively.
 func MergeSizing(base, override SizingSpec) SizingSpec {
@@ -145,6 +145,17 @@ func mergeDeployment(b, o *DeploymentSizingSpec) {
 	if len(o.SpreadConstraints) > 0 {
 		b.SpreadConstraints = o.SpreadConstraints
 	}
+	b.VerticalAutoscaling = mergeValue(b.VerticalAutoscaling, o.VerticalAutoscaling)
+}
+
+func mergeWorkers(b, o *WorkersSizingSpec) {
+	mergeScaled(&b.ScaledSizingSpec, &o.ScaledSizingSpec)
+	b.VerticalAutoscaling = mergeValue(b.VerticalAutoscaling, o.VerticalAutoscaling)
+}
+
+func mergePinnedDeployment(b, o *PinnedDeploymentSizingSpec) {
+	mergePinned(&b.PinnedSizingSpec, &o.PinnedSizingSpec)
+	b.VerticalAutoscaling = mergeValue(b.VerticalAutoscaling, o.VerticalAutoscaling)
 }
 
 func mergeProcess(b, o *ProcessSizingSpec) {
@@ -208,15 +219,15 @@ func mergeAPIService(b, o *APIServiceSizingSpec) {
 
 func mergeNeutron(b, o *NeutronSizingSpec) {
 	b.API = mergeBlock(b.API, o.API, mergeAPI)
-	b.Workers = mergeBlock(b.Workers, o.Workers, mergeScaled)
+	b.Workers = mergeBlock(b.Workers, o.Workers, mergeWorkers)
 	b.Jobs = mergeBlock(b.Jobs, o.Jobs, mergeJob)
 }
 
 func mergeCinder(b, o *CinderSizingSpec) {
 	b.API = mergeBlock(b.API, o.API, mergeAPI)
 	b.Scheduler = mergeBlock(b.Scheduler, o.Scheduler, mergeDeployment)
-	b.Volume = mergeBlock(b.Volume, o.Volume, mergePinned)
-	b.Backup = mergeBlock(b.Backup, o.Backup, mergePinned)
+	b.Volume = mergeBlock(b.Volume, o.Volume, mergePinnedDeployment)
+	b.Backup = mergeBlock(b.Backup, o.Backup, mergePinnedDeployment)
 	b.Jobs = mergeBlock(b.Jobs, o.Jobs, mergeJob)
 }
 

@@ -68,7 +68,7 @@ func standardSizing() SizingSpec {
 		Barbican:  &APIServiceSizingSpec{API: api()},
 		Neutron: &NeutronSizingSpec{
 			API:     api(),
-			Workers: &ScaledSizingSpec{Replicas: ptr.To(commonv1.DefaultReplicas)},
+			Workers: &WorkersSizingSpec{ScaledSizingSpec: ScaledSizingSpec{Replicas: ptr.To(commonv1.DefaultReplicas)}},
 		},
 		Cinder: &CinderSizingSpec{API: api(), Scheduler: &cinderScheduler},
 		Nova: &NovaSizingSpec{
@@ -98,8 +98,8 @@ func minimalSizing() SizingSpec {
 		d := minimalDeployment()
 		return &d
 	}
-	pinned := func() *PinnedSizingSpec {
-		return &PinnedSizingSpec{ContainerSizingSpec: cpuRequest(minimalServiceCPURequest)}
+	pinned := func() *PinnedDeploymentSizingSpec {
+		return &PinnedDeploymentSizingSpec{PinnedSizingSpec: PinnedSizingSpec{ContainerSizingSpec: cpuRequest(minimalServiceCPURequest)}}
 	}
 	jobs := func() *JobSizingSpec {
 		return &JobSizingSpec{ContainerSizingSpec: cpuRequest(minimalServiceCPURequest)}
@@ -126,7 +126,7 @@ func minimalSizing() SizingSpec {
 		Barbican:    &APIServiceSizingSpec{API: api(), Jobs: jobs()},
 		Neutron: &NeutronSizingSpec{
 			API:     api(),
-			Workers: ptr.To(minimalDeployment().ScaledSizingSpec),
+			Workers: &WorkersSizingSpec{ScaledSizingSpec: minimalDeployment().ScaledSizingSpec},
 			Jobs:    jobs(),
 		},
 		Cinder: &CinderSizingSpec{
