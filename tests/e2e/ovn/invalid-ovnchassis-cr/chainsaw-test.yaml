@@ -191,3 +191,43 @@ spec:
             ($error != null): true
             (contains($error, 'spec.ovs.revalidatorThreads')): true
             (contains($error, 'should be greater than or equal to 1')): true
+  # A foreign spec.verticalAutoscaling.minAllowed key must be rejected by the
+  # CEL rule on VerticalAutoscalingSpec.
+  - try:
+    - apply:
+        file: 15-vertical-autoscaling-foreign-resource.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.verticalAutoscaling')): true
+            (contains($error, 'minAllowed may only name cpu and memory')): true
+  # spec.verticalAutoscaling.minAllowed above maxAllowed must be rejected by the
+  # validating webhook (webhook-only).
+  - try:
+    - apply:
+        file: 16-vertical-autoscaling-min-above-max.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.verticalAutoscaling.minAllowed[cpu]')): true
+            (contains($error, 'must not exceed maxAllowed')): true
+  # spec.verticalAutoscaling.updateMode outside the enum must be rejected by the
+  # Enum marker.
+  - try:
+    - apply:
+        file: 17-vertical-autoscaling-update-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.verticalAutoscaling.updateMode')): true
+            (contains($error, 'Unsupported value')): true
+  # spec.verticalAutoscaling.minReplicas: 0 must be rejected by the Minimum=1
+  # marker.
+  - try:
+    - apply:
+        file: 18-vertical-autoscaling-min-replicas-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.verticalAutoscaling.minReplicas')): true
+            (contains($error, 'should be greater than or equal to 1')): true

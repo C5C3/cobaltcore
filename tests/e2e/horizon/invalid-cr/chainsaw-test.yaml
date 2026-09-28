@@ -177,3 +177,53 @@ spec:
             ($error != null): true
             (contains($error, 'spec.autoscaling.targetMemoryUtilization')): true
             (contains($error, 'can never be reached')): true
+  # spec.deployment.verticalAutoscaling beside spec.autoscaling must be rejected
+  # by the CEL rule on the spec root, which answers before the webhook twin.
+  - try:
+    - apply:
+        file: 17-vertical-autoscaling-beside-autoscaling.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.deployment.verticalAutoscaling')): true
+            (contains($error, 'cannot be set while spec.autoscaling scales the same Deployment')): true
+  # A foreign spec.deployment.verticalAutoscaling.minAllowed key must be
+  # rejected by the CEL rule on VerticalAutoscalingSpec.
+  - try:
+    - apply:
+        file: 18-vertical-autoscaling-foreign-resource.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.deployment.verticalAutoscaling')): true
+            (contains($error, 'minAllowed may only name cpu and memory')): true
+  # spec.deployment.verticalAutoscaling.minAllowed above maxAllowed must be
+  # rejected by the validating webhook (webhook-only).
+  - try:
+    - apply:
+        file: 19-vertical-autoscaling-min-above-max.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.deployment.verticalAutoscaling.minAllowed[cpu]')): true
+            (contains($error, 'must not exceed maxAllowed')): true
+  # spec.deployment.verticalAutoscaling.updateMode outside the enum must be
+  # rejected by the Enum marker.
+  - try:
+    - apply:
+        file: 20-vertical-autoscaling-update-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.deployment.verticalAutoscaling.updateMode')): true
+            (contains($error, 'Unsupported value')): true
+  # spec.deployment.verticalAutoscaling.minReplicas: 0 must be rejected by the
+  # Minimum=1 marker.
+  - try:
+    - apply:
+        file: 21-vertical-autoscaling-min-replicas-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.deployment.verticalAutoscaling.minReplicas')): true
+            (contains($error, 'should be greater than or equal to 1')): true

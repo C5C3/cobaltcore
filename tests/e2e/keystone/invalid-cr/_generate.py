@@ -843,6 +843,78 @@ FIXTURES: list[Fixture] = [
 # Admission must reject this CR with an $error referencing the substrings
 # "spec.autoscaling.targetMemoryUtilization" and "can never be reached".""",
     ),
+    Fixture(
+        filename="33-vertical-autoscaling-beside-autoscaling.yaml",
+        name="invalid-vpa-beside-autoscaling",
+        deployment_extra="""\
+    verticalAutoscaling:
+      updateMode: "Off"
+""",
+        trailing="""\
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilization: 80
+""",
+        comment="""\
+# spec.deployment.verticalAutoscaling beside spec.autoscaling violates the CEL
+# rule on the spec root; the webhook mirrors it. Every HPA scales on the
+# utilization a VPA changes, so the two are rejected on one Deployment. The API
+# server reports the rule at spec, with the block's path in the message.""",
+    ),
+    Fixture(
+        filename="34-vertical-autoscaling-foreign-resource.yaml",
+        name="invalid-vpa-foreign-resource",
+        deployment_extra="""\
+    verticalAutoscaling:
+      updateMode: "Off"
+      minAllowed:
+        ephemeral-storage: 1Gi
+""",
+        comment="""\
+# spec.deployment.verticalAutoscaling.minAllowed naming ephemeral-storage
+# violates the CEL rule on VerticalAutoscalingSpec; the webhook mirrors it. The
+# VPA the operator writes controls cpu and memory only.""",
+    ),
+    Fixture(
+        filename="35-vertical-autoscaling-min-above-max.yaml",
+        name="invalid-vpa-min-above-max",
+        deployment_extra="""\
+    verticalAutoscaling:
+      updateMode: "Off"
+      minAllowed:
+        cpu: "2"
+      maxAllowed:
+        cpu: "1"
+""",
+        comment="""\
+# spec.deployment.verticalAutoscaling.minAllowed.cpu above maxAllowed.cpu is
+# rejected by the validating webhook alone: CEL cannot compare quantities across
+# two maps.""",
+    ),
+    Fixture(
+        filename="36-vertical-autoscaling-update-mode.yaml",
+        name="invalid-vpa-update-mode",
+        deployment_extra="""\
+    verticalAutoscaling:
+      updateMode: Sometimes
+""",
+        comment="""\
+# spec.deployment.verticalAutoscaling.updateMode outside Off, Initial, Recreate
+# and Auto violates the Enum marker; the webhook mirrors it.""",
+    ),
+    Fixture(
+        filename="37-vertical-autoscaling-min-replicas-zero.yaml",
+        name="invalid-vpa-min-replicas-zero",
+        deployment_extra="""\
+    verticalAutoscaling:
+      updateMode: Auto
+      minReplicas: 0
+""",
+        comment="""\
+# spec.deployment.verticalAutoscaling.minReplicas of zero violates the Minimum=1
+# marker; the webhook mirrors it.""",
+    ),
 ]
 
 

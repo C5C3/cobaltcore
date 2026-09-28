@@ -229,3 +229,43 @@ spec:
             (contains($error, 'spec.northbound.tolerations[0].operator')): true
             (contains($error, 'Invalid value')): true
             (contains($error, 'operator must be Exists when')): true
+  # A foreign spec.northbound.verticalAutoscaling.minAllowed key must be
+  # rejected by the CEL rule on VerticalAutoscalingSpec.
+  - try:
+    - apply:
+        file: 19-vertical-autoscaling-foreign-resource.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.northbound.verticalAutoscaling')): true
+            (contains($error, 'minAllowed may only name cpu and memory')): true
+  # spec.northbound.verticalAutoscaling.minAllowed above maxAllowed must be
+  # rejected by the validating webhook (webhook-only).
+  - try:
+    - apply:
+        file: 20-vertical-autoscaling-min-above-max.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.northbound.verticalAutoscaling.minAllowed[cpu]')): true
+            (contains($error, 'must not exceed maxAllowed')): true
+  # spec.northbound.verticalAutoscaling.updateMode outside the enum must be
+  # rejected by the Enum marker.
+  - try:
+    - apply:
+        file: 21-vertical-autoscaling-update-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.northbound.verticalAutoscaling.updateMode')): true
+            (contains($error, 'Unsupported value')): true
+  # spec.northbound.verticalAutoscaling.minReplicas: 0 must be rejected by the
+  # Minimum=1 marker.
+  - try:
+    - apply:
+        file: 22-vertical-autoscaling-min-replicas-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.northbound.verticalAutoscaling.minReplicas')): true
+            (contains($error, 'should be greater than or equal to 1')): true

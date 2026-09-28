@@ -556,6 +556,91 @@ FIXTURES: tuple[Fixture, ...] = (
             "    targetMemoryUtilization: 150\n"
         ),
     ),
+    Fixture(
+        filename="25-vertical-autoscaling-beside-autoscaling.yaml",
+        comment=(
+            "spec.api.deployment.verticalAutoscaling beside spec.autoscaling violates the\n"
+            "CEL rule on the spec root; the webhook mirrors it. Every HPA scales on the\n"
+            "utilization a VPA changes, so the two are rejected on one Deployment. The API\n"
+            "server reports the rule at spec, with the block's path in the message."
+        ),
+        name="cinder-vpa-beside-autoscaling",
+        extra=(
+            "  api:\n"
+            "    deployment:\n"
+            "      verticalAutoscaling:\n"
+            "        updateMode: \"Off\"\n"
+            "  autoscaling:\n"
+            "    minReplicas: 1\n"
+            "    maxReplicas: 3\n"
+            "    targetCPUUtilization: 80\n"
+        ),
+    ),
+    Fixture(
+        filename="26-vertical-autoscaling-foreign-resource.yaml",
+        comment=(
+            "spec.api.deployment.verticalAutoscaling.minAllowed naming ephemeral-storage\n"
+            "violates the CEL rule on VerticalAutoscalingSpec; the webhook mirrors it. The\n"
+            "VPA the operator writes controls cpu and memory only."
+        ),
+        name="cinder-vpa-foreign-resource",
+        extra=(
+            "  api:\n"
+            "    deployment:\n"
+            "      verticalAutoscaling:\n"
+            "        updateMode: \"Off\"\n"
+            "        minAllowed:\n"
+            "          ephemeral-storage: 1Gi\n"
+        ),
+    ),
+    Fixture(
+        filename="27-vertical-autoscaling-min-above-max.yaml",
+        comment=(
+            "spec.api.deployment.verticalAutoscaling.minAllowed.cpu above maxAllowed.cpu is\n"
+            "rejected by the validating webhook alone: CEL cannot compare quantities across\n"
+            "two maps."
+        ),
+        name="cinder-vpa-min-above-max",
+        extra=(
+            "  api:\n"
+            "    deployment:\n"
+            "      verticalAutoscaling:\n"
+            "        updateMode: \"Off\"\n"
+            "        minAllowed:\n"
+            "          cpu: \"2\"\n"
+            "        maxAllowed:\n"
+            "          cpu: \"1\"\n"
+        ),
+    ),
+    Fixture(
+        filename="28-vertical-autoscaling-update-mode.yaml",
+        comment=(
+            "spec.api.deployment.verticalAutoscaling.updateMode outside Off, Initial,\n"
+            "Recreate and Auto violates the Enum marker; the webhook mirrors it."
+        ),
+        name="cinder-vpa-update-mode",
+        extra=(
+            "  api:\n"
+            "    deployment:\n"
+            "      verticalAutoscaling:\n"
+            "        updateMode: Sometimes\n"
+        ),
+    ),
+    Fixture(
+        filename="29-vertical-autoscaling-min-replicas-zero.yaml",
+        comment=(
+            "spec.api.deployment.verticalAutoscaling.minReplicas of zero violates the\n"
+            "Minimum=1 marker; the webhook mirrors it."
+        ),
+        name="cinder-vpa-min-replicas-zero",
+        extra=(
+            "  api:\n"
+            "    deployment:\n"
+            "      verticalAutoscaling:\n"
+            "        updateMode: Auto\n"
+            "        minReplicas: 0\n"
+        ),
+    ),
 )
 
 

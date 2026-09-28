@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.verticalAutoscaling.minAllowed.cpu above maxAllowed.cpu is rejected by
+# the validating webhook alone: CEL cannot compare quantities across two maps.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: pool
+spec:
+  novaRef:
+    name: nova
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: a
+  verticalAutoscaling:
+    updateMode: "Off"
+    minAllowed:
+      cpu: "2"
+    maxAllowed:
+      cpu: "1"

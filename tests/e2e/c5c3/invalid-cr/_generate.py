@@ -2766,6 +2766,105 @@ FIXTURES: tuple[Fixture, ...] = (
             "          targetMemoryUtilization: 150\n"
         ),
     ),
+    Fixture(
+        filename="132-sizing-vertical-autoscaling-beside-autoscaling.yaml",
+        comment=(
+            "A spec.sizing.keystone.api that sets both autoscaling and verticalAutoscaling\n"
+            "violates the CEL rule on the API sizing type; the webhook mirrors it on the\n"
+            "component and on the merged sizing. Every HPA scales on the utilization a VPA\n"
+            "changes."
+        ),
+        name="cp-sizing-vpa-beside-autoscaling",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    keystone:\n"
+            "      api:\n"
+            "        verticalAutoscaling:\n"
+            "          updateMode: \"Off\"\n"
+            "        autoscaling:\n"
+            "          maxReplicas: 3\n"
+            "          targetCPUUtilization: 80\n"
+        ),
+    ),
+    Fixture(
+        filename="133-sizing-vertical-autoscaling-foreign-resource.yaml",
+        comment=(
+            "spec.sizing.neutron.workers.verticalAutoscaling.minAllowed naming ephemeral-\n"
+            "storage violates the CEL rule on VerticalAutoscalingSpec; the webhook mirrors\n"
+            "it."
+        ),
+        name="cp-sizing-vpa-foreign-resource",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    neutron:\n"
+            "      workers:\n"
+            "        verticalAutoscaling:\n"
+            "          updateMode: \"Off\"\n"
+            "          minAllowed:\n"
+            "            ephemeral-storage: 1Gi\n"
+        ),
+    ),
+    Fixture(
+        filename="134-sizing-vertical-autoscaling-min-above-max.yaml",
+        comment=(
+            "spec.sizing.cinder.volume.verticalAutoscaling.minAllowed.cpu above\n"
+            "maxAllowed.cpu is rejected by the validating webhook alone: CEL cannot compare\n"
+            "quantities across two maps."
+        ),
+        name="cp-sizing-vpa-min-above-max",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    cinder:\n"
+            "      volume:\n"
+            "        verticalAutoscaling:\n"
+            "          updateMode: \"Off\"\n"
+            "          minAllowed:\n"
+            "            cpu: \"2\"\n"
+            "          maxAllowed:\n"
+            "            cpu: \"1\"\n"
+        ),
+    ),
+    Fixture(
+        filename="135-sizing-vertical-autoscaling-update-mode.yaml",
+        comment=(
+            "spec.sizing.nova.conductor.verticalAutoscaling.updateMode outside Off,\n"
+            "Initial, Recreate and Auto violates the Enum marker; the webhook mirrors it."
+        ),
+        name="cp-sizing-vpa-update-mode",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    nova:\n"
+            "      conductor:\n"
+            "        verticalAutoscaling:\n"
+            "          updateMode: Sometimes\n"
+        ),
+    ),
+    Fixture(
+        filename="136-sizing-vertical-autoscaling-min-replicas-zero.yaml",
+        comment=(
+            "spec.sizing.cinder.scheduler.verticalAutoscaling.minReplicas of zero violates\n"
+            "the Minimum=1 marker; the webhook mirrors it."
+        ),
+        name="cp-sizing-vpa-min-replicas-zero",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    cinder:\n"
+            "      scheduler:\n"
+            "        verticalAutoscaling:\n"
+            "          updateMode: Auto\n"
+            "          minReplicas: 0\n"
+        ),
+    ),
 )
 
 

@@ -358,6 +358,63 @@ FIXTURES: tuple[Fixture, ...] = (
             "      value: x\n"
         ),
     ),
+    Fixture(
+        filename="19-vertical-autoscaling-foreign-resource.yaml",
+        comment=(
+            "spec.northbound.verticalAutoscaling.minAllowed naming ephemeral-storage\n"
+            "violates the CEL rule on VerticalAutoscalingSpec; the webhook mirrors it. The\n"
+            "VPA the operator writes controls cpu and memory only."
+        ),
+        extra=(
+            "  northbound:\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: \"Off\"\n"
+            "      minAllowed:\n"
+            "        ephemeral-storage: 1Gi\n"
+        ),
+    ),
+    Fixture(
+        filename="20-vertical-autoscaling-min-above-max.yaml",
+        comment=(
+            "spec.northbound.verticalAutoscaling.minAllowed.cpu above maxAllowed.cpu is\n"
+            "rejected by the validating webhook alone: CEL cannot compare quantities across\n"
+            "two maps."
+        ),
+        extra=(
+            "  northbound:\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: \"Off\"\n"
+            "      minAllowed:\n"
+            "        cpu: \"2\"\n"
+            "      maxAllowed:\n"
+            "        cpu: \"1\"\n"
+        ),
+    ),
+    Fixture(
+        filename="21-vertical-autoscaling-update-mode.yaml",
+        comment=(
+            "spec.northbound.verticalAutoscaling.updateMode outside Off, Initial, Recreate\n"
+            "and Auto violates the Enum marker; the webhook mirrors it."
+        ),
+        extra=(
+            "  northbound:\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: Sometimes\n"
+        ),
+    ),
+    Fixture(
+        filename="22-vertical-autoscaling-min-replicas-zero.yaml",
+        comment=(
+            "spec.northbound.verticalAutoscaling.minReplicas of zero violates the Minimum=1\n"
+            "marker; the webhook mirrors it."
+        ),
+        extra=(
+            "  northbound:\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: Auto\n"
+            "      minReplicas: 0\n"
+        ),
+    ),
 )
 
 

@@ -516,6 +516,86 @@ FIXTURES: tuple[Fixture, ...] = (
             "    targetMemoryUtilization: 150\n"
         ),
     ),
+    Fixture(
+        filename="22-vertical-autoscaling-beside-autoscaling.yaml",
+        comment=(
+            "spec.deployment.verticalAutoscaling beside spec.autoscaling violates the CEL\n"
+            "rule on the spec root; the webhook mirrors it. Every HPA scales on the\n"
+            "utilization a VPA changes, so the two are rejected on one Deployment. The API\n"
+            "server reports the rule at spec, with the block's path in the message."
+        ),
+        name="neutron-vpa-beside-autoscaling",
+        extra=(
+            "  deployment:\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: \"Off\"\n"
+            "  autoscaling:\n"
+            "    minReplicas: 1\n"
+            "    maxReplicas: 3\n"
+            "    targetCPUUtilization: 80\n"
+        ),
+    ),
+    Fixture(
+        filename="23-vertical-autoscaling-foreign-resource.yaml",
+        comment=(
+            "spec.deployment.verticalAutoscaling.minAllowed naming ephemeral-storage\n"
+            "violates the CEL rule on VerticalAutoscalingSpec; the webhook mirrors it. The\n"
+            "VPA the operator writes controls cpu and memory only."
+        ),
+        name="neutron-vpa-foreign-resource",
+        extra=(
+            "  deployment:\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: \"Off\"\n"
+            "      minAllowed:\n"
+            "        ephemeral-storage: 1Gi\n"
+        ),
+    ),
+    Fixture(
+        filename="24-vertical-autoscaling-min-above-max.yaml",
+        comment=(
+            "spec.deployment.verticalAutoscaling.minAllowed.cpu above maxAllowed.cpu is\n"
+            "rejected by the validating webhook alone: CEL cannot compare quantities across\n"
+            "two maps."
+        ),
+        name="neutron-vpa-min-above-max",
+        extra=(
+            "  deployment:\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: \"Off\"\n"
+            "      minAllowed:\n"
+            "        cpu: \"2\"\n"
+            "      maxAllowed:\n"
+            "        cpu: \"1\"\n"
+        ),
+    ),
+    Fixture(
+        filename="25-vertical-autoscaling-update-mode.yaml",
+        comment=(
+            "spec.deployment.verticalAutoscaling.updateMode outside Off, Initial, Recreate\n"
+            "and Auto violates the Enum marker; the webhook mirrors it."
+        ),
+        name="neutron-vpa-update-mode",
+        extra=(
+            "  deployment:\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: Sometimes\n"
+        ),
+    ),
+    Fixture(
+        filename="26-vertical-autoscaling-min-replicas-zero.yaml",
+        comment=(
+            "spec.deployment.verticalAutoscaling.minReplicas of zero violates the Minimum=1\n"
+            "marker; the webhook mirrors it."
+        ),
+        name="neutron-vpa-min-replicas-zero",
+        extra=(
+            "  deployment:\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: Auto\n"
+            "      minReplicas: 0\n"
+        ),
+    ),
 )
 
 
