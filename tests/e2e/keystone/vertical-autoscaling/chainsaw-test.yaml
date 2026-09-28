@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for spec.deployment.verticalAutoscaling on a cluster that
+# does not serve the VerticalPodAutoscaler:
+#   - The opt-in is reported as VPAReady=False with reason VPANotInstalled,
+#     naming autoscaling.k8s.io, while the Deployment and the API converge, so
+#     the aggregate Ready stays False and nothing else is held back.
+#   - Removing the opt-in returns VPAReady=True with reason VPANotRequired and
+#     Ready=True.
+#
+# The e2e-autoscaling suite proves the other case, on a cluster with the VPA
+# overlay. This suite runs on the e2e-operator keystone leg, which deploys no
+# VPA; its first step fails rather than skips on a cluster that serves the
+# kind, because it would then prove nothing.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-vertical-autoscaling
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: the cluster serves no VerticalPodAutoscaler ─────────────────
+  - try:
+    - script:
+        content: |
+          set -eu
+          if kubectl api-resources --api-group=autoscaling.k8s.io -o name \
+            | grep -qx 'verticalpodautoscalers.autoscaling.k8s.io'; then
+            echo "ERROR: the cluster serves verticalpodautoscalers.autoscaling.k8s.io (deployed with WITH_VPA=true?)"
+            echo "ERROR: this suite proves the absent case and needs a cluster without the VPA overlay"
+            exit 1
+          fi
+          echo "OK: the cluster serves no VerticalPodAutoscaler"
+  # ── Step 2: Apply the Keystone CR that opts in ───────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 3: the opt-in is reported, everything else converges ────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-vertical
+            namespace: openstack
+          status:
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+            (conditions[?type == 'KeystoneAPIReady']):
+            - status: "True"
+            (conditions[?type == 'VPAReady']):
+            - status: "False"
+              reason: VPANotInstalled
+              (contains(message, 'autoscaling.k8s.io')): true
+            (conditions[?type == 'Ready']):
+            - status: "False"
+    - script:
+        content: |
+          set -eu
+          if out="$(kubectl get vpa -n $NAMESPACE 2>&1)"; then
+            echo "ERROR: kubectl get vpa answered: ${out}"
+            exit 1
+          fi
+          case "${out}" in
+            *"doesn't have a resource type"*) echo "OK: ${out}" ;;
+            *) echo "ERROR: unexpected answer: ${out}"; exit 1 ;;
+          esac
+  # ── Step 4: remove the opt-in ────────────────────────────────────────────
+  - try:
+    - patch:
+        file: 01-patch-disable-vertical-autoscaling.yaml
+  # ── Step 5: VPAReady turns True/VPANotRequired and Ready returns ─────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-vertical
+            namespace: openstack
+          status:
+            (conditions[?type == 'VPAReady']):
+            - status: "True"
+              reason: VPANotRequired
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
