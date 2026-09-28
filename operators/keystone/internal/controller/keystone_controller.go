@@ -266,8 +266,12 @@ type KeystoneReconciler struct {
 	// narrowing of the API Service selector on the live Service, and the
 	// informer cache can still hold the pre-narrowing state right after the
 	// narrowing write — a latch decided from it could widen the selector back.
-	// Nil in unit tests that construct the reconciler without a manager; those
-	// fall back to the (read-your-writes) fake client.
+	// getValidationErrorMessage reads the pods of a failed policy-validation Job
+	// through it too, one namespaced List per reconcile that finds the Job
+	// failed, so that the read does not start a cluster-wide pod informer the
+	// operator's RBAC cannot watch. Nil in unit tests that construct the
+	// reconciler without a manager; those fall back to the (read-your-writes)
+	// fake client.
 	apiReader client.Reader
 
 	// certManagerAvailable is set during SetupWithManager from the
@@ -382,6 +386,8 @@ var KeystoneRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // Required for getValidationErrorMessage to list pods of failed policy
 // validation Jobs and extract error details from terminated container state.
+// The List goes through the uncached API reader and never watches, which is
+// why the verbs stay get and list.
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete

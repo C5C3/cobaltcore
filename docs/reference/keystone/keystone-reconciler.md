@@ -2189,11 +2189,11 @@ invalid policy overrides are caught before reaching running pods. Two lifecycle 
 When a validation Job fails, the reconciler extracts a descriptive error message from the
 failed Pod's termination message:
 
-1. Lists Pods by `job-name` label selector in the Job's namespace.
+1. Lists Pods by `job-name` label selector in the Job's namespace, through the uncached API reader of the cluster that holds the Job. The operator never watches pods, so its RBAC grants `pods` only `get` and `list`.
 2. Sorts by creation timestamp (most recent first).
 3. Searches container termination messages for a non-empty `Terminated.Message`.
 4. Truncates to 500 characters if the message exceeds that length.
-5. Falls back to a `kubectl logs` reference if no termination message is available.
+5. Falls back to a `kubectl logs` reference if the reader cannot be resolved, the List fails, or no termination message is available.
 
 **Condition Contract:**
 
