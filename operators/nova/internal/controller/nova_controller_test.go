@@ -24,6 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -473,7 +474,7 @@ func terminatingRemoteNova(t *testing.T) (*NovaReconciler, *novav1alpha1.Nova) {
 // of the finalizer: no garbage collection cascade crosses the cluster boundary,
 // so the objects this CR projected have to be deleted by name from here, across
 // every API group they live in. One child per kind in NovaRemoteChildKinds is
-// seeded, the HPA and the three routes included, because a kind dropped from
+// seeded, the HPA, the VPA and the three routes included, because a kind dropped from
 // that list leaves its objects running on the target with nothing to report
 // it; a kind added to the list without a child here fails the kind check. What
 // the sweep leaves standing matters as much: a target cluster carries other
@@ -497,6 +498,7 @@ func TestReconcileDeleteRemoteChildren_SweepsEveryLabelledChild(t *testing.T) {
 		owned(&batchv1.CronJob{}, testNovaName+"-db-archive"),
 		owned(&policyv1.PodDisruptionBudget{}, testNovaName),
 		owned(&autoscalingv2.HorizontalPodAutoscaler{}, testNovaName),
+		owned(&vpav1.VerticalPodAutoscaler{}, testNovaName+"-conductor"),
 		owned(&networkingv1.NetworkPolicy{}, testNovaName),
 		// The API, the metadata API and the console proxy each carry a route.
 		owned(&gatewayv1.HTTPRoute{}, testNovaName),
@@ -660,6 +662,7 @@ func TestSubConditionTypes_PinsTheAggregatedVocabulary(t *testing.T) {
 		"DBArchiveReady",
 		"NovaAPIReady",
 		"HPAReady",
+		"VPAReady",
 		"NetworkPolicyReady",
 		"HTTPRouteReady",
 		"MetadataHTTPRouteReady",

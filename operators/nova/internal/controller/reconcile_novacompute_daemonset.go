@@ -131,6 +131,7 @@ func (r *NovaComputeReconciler) reconcileNovaComputeDaemonSet(ctx context.Contex
 		return ctrl.Result{}, nil
 	}
 
+	pass.daemonSetRendered = true
 	ds := buildNovaComputeDaemonSet(cr, pass.image, pass.secretName, pass.configMapName, pass.configHash, affinity)
 	live, ready, err := deployment.EnsureDaemonSet(ctx, children, r.Scheme, cr, ds)
 	if err != nil {

@@ -112,10 +112,12 @@ func TestReconcileNovaComputeDaemonSet_ProgressingMirrorsTheCounters(t *testing.
 	g := NewGomegaWithT(t)
 	cr := validNovaCompute()
 	r := newNovaComputeTestReconciler(nil, cr, ownedDaemonSet(t, cr, 3, 2))
+	pass := daemonSetPass()
 
-	result, err := r.reconcileNovaComputeDaemonSet(context.Background(), r.Client, cr, daemonSetPass())
+	result, err := r.reconcileNovaComputeDaemonSet(context.Background(), r.Client, cr, pass)
 
 	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(pass.daemonSetRendered).To(BeTrue(), "the VPA step targets the applied DaemonSet")
 	g.Expect(result.IsZero()).To(BeTrue(), "a rollout is not a wait: the aggregates and the drain still run")
 	cond := novaComputeCondition(cr, conditionTypeDaemonSetReady)
 	g.Expect(cond.Reason).To(Equal(conditionReasonDaemonSetProgressing))
@@ -150,10 +152,12 @@ func TestReconcileNovaComputeDaemonSet_ZeroTermsDeletesTheDaemonSet(t *testing.T
 	ctx := context.Background()
 	cr := deletingNovaCompute()
 	r := newNovaComputeTestReconciler(nil, cr, ownedDaemonSet(t, cr, 1, 1))
+	pass := daemonSetPass()
 
-	result, err := r.reconcileNovaComputeDaemonSet(ctx, r.Client, cr, daemonSetPass())
+	result, err := r.reconcileNovaComputeDaemonSet(ctx, r.Client, cr, pass)
 
 	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(pass.daemonSetRendered).To(BeFalse(), "the VPA step targets no deleted DaemonSet")
 	g.Expect(result.IsZero()).To(BeTrue())
 	g.Expect(apierrors.IsNotFound(r.Get(ctx, novaComputeDaemonSetKey, &appsv1.DaemonSet{}))).To(BeTrue())
 	cond := novaComputeCondition(cr, conditionTypeDaemonSetReady)

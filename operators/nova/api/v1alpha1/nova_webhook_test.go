@@ -781,6 +781,65 @@ func TestNovaValidateCreate_RejectionTable(t *testing.T) {
 			wantPath: "spec.extraConfig[DEFAULT][debug]",
 			wantSub:  "extraConfig key and value must not contain a newline or carriage return",
 		},
+		{
+			name: "verticalAutoscaling beside autoscaling rejected",
+			mutate: func(o *Nova) {
+				o.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: ptr.To(int32(80))}
+				o.Spec.API.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Off"}
+			},
+			wantPath: "spec.api.deployment.verticalAutoscaling",
+			wantSub:  "cannot be set while spec.autoscaling scales the same Deployment",
+		},
+		{
+			name: "verticalAutoscaling foreign resource rejected",
+			mutate: func(o *Nova) {
+				o.Spec.API.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantPath: "spec.api.deployment.verticalAutoscaling.minAllowed[ephemeral-storage]",
+			wantSub:  "Unsupported value",
+		},
+		{
+			name: "verticalAutoscaling minAllowed above maxAllowed rejected",
+			mutate: func(o *Nova) {
+				o.Spec.API.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+					MaxAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				}
+			},
+			wantPath: "spec.api.deployment.verticalAutoscaling.minAllowed[cpu]",
+			wantSub:  "must not exceed maxAllowed",
+		},
+		{
+			name: "verticalAutoscaling updateMode outside the enum rejected",
+			mutate: func(o *Nova) {
+				o.Spec.API.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Sometimes"}
+			},
+			wantPath: "spec.api.deployment.verticalAutoscaling.updateMode",
+			wantSub:  "Unsupported value",
+		},
+		{
+			name: "verticalAutoscaling minReplicas zero rejected",
+			mutate: func(o *Nova) {
+				o.Spec.API.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Auto", MinReplicas: ptr.To(int32(0))}
+			},
+			wantPath: "spec.api.deployment.verticalAutoscaling.minReplicas",
+			wantSub:  "must be at least 1",
+		},
+		{
+			name: "conductor verticalAutoscaling foreign resource rejected",
+			mutate: func(o *Nova) {
+				o.Spec.Conductor.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantPath: "spec.conductor.deployment.verticalAutoscaling.minAllowed[ephemeral-storage]",
+			wantSub:  "Unsupported value",
+		},
 	}
 
 	for _, tc := range tests {

@@ -54,6 +54,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"ConsoleHTTPRoute":    conditionTypeConsoleHTTPRouteReady,
 	"HealthCheck":         conditionTypeNovaAPIReady,
 	"HPA":                 "HPAReady",
+	"VPA":                 "VPAReady",
 	"NetworkPolicy":       conditionTypeNetworkPolicyReady,
 
 	// The NovaCompute pipeline. No name clashes with a Nova step, so one map
@@ -64,6 +65,7 @@ var subReconcilerConditionTypes = map[string]string{
 	stepDaemonSet:  conditionTypeDaemonSetReady,
 	stepAggregates: conditionTypeAggregatesReady,
 	stepServices:   conditionTypeServicesReady,
+	stepVPA:        "VPAReady",
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error
