@@ -20,6 +20,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/job"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
@@ -62,7 +63,7 @@ func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, chil
 	if err != nil {
 		msg := fmt.Sprintf("Policy validation failed: %v", err)
 		if errors.Is(err, job.ErrJobFailed) {
-			msg = getValidationErrorMessage(ctx, children, jobName, keystone.Namespace)
+			msg = r.getValidationErrorMessage(ctx, children, keystone, jobName)
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               conditionTypePolicyValidReady,
@@ -98,19 +99,36 @@ func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, chil
 // getValidationErrorMessage extracts a descriptive error message from the
 // failed validation Job's Pod termination message. It lists Pods by the
 // job-name label, finds the most recent Pod with a terminated container, and
-// returns the termination message (truncated to 500 chars). If no termination
-// message is available, it returns a fallback referencing the Job name for
-// manual log inspection.
-func getValidationErrorMessage(ctx context.Context, c client.Client, jobName, namespace string) string {
+// returns the termination message (truncated to 500 chars). If the reader
+// cannot be resolved, the List fails, or no termination message is available,
+// it returns a fallback referencing the Job name for manual log inspection.
+//
+// The Pods are read through the uncached API reader of the cluster that holds
+// the Job. The operator never watches pods: a read through the cached client
+// would start an informer holding every pod of the cluster for the life of the
+// process, and one the operator's RBAC denies the watch verb.
+func (r *KeystoneReconciler) getValidationErrorMessage(ctx context.Context, children client.Client,
+	keystone *keystonev1alpha1.Keystone, jobName string,
+) string {
 	fallback := fmt.Sprintf(
 		"Policy validation failed; check Job %s logs: kubectl logs -n %s job/%s",
-		jobName, namespace, jobName,
+		jobName, keystone.Namespace, jobName,
 	)
 
+	reader, err := commonmulticluster.ResolveChildrenAPIReader(ctx, r.Resolver, r.apiReader, keystone.Spec.TargetClusterRef)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed to resolve the pod reader for validation error extraction", "job", jobName)
+		return fallback
+	}
+	if reader == nil {
+		// No manager behind this reconciler (unit tests).
+		reader = children
+	}
+
 	var pods corev1.PodList
-	if err := c.List(
+	if err := reader.List(
 		ctx, &pods,
-		client.InNamespace(namespace),
+		client.InNamespace(keystone.Namespace),
 		client.MatchingLabels{"job-name": jobName},
 	); err != nil {
 		log.FromContext(ctx).Error(err, "failed to list pods for validation error extraction", "job", jobName)

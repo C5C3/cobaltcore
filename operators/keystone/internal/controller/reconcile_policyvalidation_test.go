@@ -13,6 +13,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,6 +22,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -363,6 +365,58 @@ func TestReconcilePolicyValidation_JobFailed_PolicyFixed_Recreates(t *testing.T)
 
 // --- Descriptive error extraction ---
 
+// policyValidationFallbackMessage is the condition message of a failed
+// validation Job whose termination message the operator could not read.
+const policyValidationFallbackMessage = "Policy validation failed; check Job test-keystone-policy-validation logs: " +
+	"kubectl logs -n default job/test-keystone-policy-validation"
+
+// terminatedValidationPod returns the failed validation Job's Pod, labeled the
+// way the Job controller labels it, with the given termination message on its
+// validator container.
+func terminatedValidationPod(message string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-keystone-policy-validation-abc12",
+			Namespace: "default",
+			Labels:    map[string]string{"job-name": "test-keystone-policy-validation"},
+		},
+		Status: corev1.PodStatus{
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: "validator",
+				State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{Message: message, ExitCode: 1},
+				},
+			}},
+		},
+	}
+}
+
+// failPodLists returns interceptor funcs that fail every Pod List with err and
+// pass every other List through to the fake client.
+func failPodLists(err error) interceptor.Funcs {
+	return interceptor.Funcs{
+		List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*corev1.PodList); ok {
+				return err
+			}
+			return cl.List(ctx, list, opts...)
+		},
+	}
+}
+
+// expectPolicyValidationFailed asserts the outcome every failed validation Job
+// shares: the error wraps job.ErrJobFailed and PolicyValidReady is
+// False/PolicyValidationFailed. It returns the condition's message.
+func expectPolicyValidationFailed(g Gomega, ks *keystonev1alpha1.Keystone, err error) string {
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, job.ErrJobFailed)).To(BeTrue())
+	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypePolicyValidReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonPolicyValidationFailed))
+	return cond.Message
+}
+
 // TestReconcilePolicyValidation_JobFailed_DescriptiveErrorMessage verifies that
 // when the validation Job fails, the PolicyValidReady condition message includes
 // the specific error output from the Pod's termination message, not a generic
@@ -377,37 +431,15 @@ func TestReconcilePolicyValidation_JobFailed_DescriptiveErrorMessage(t *testing.
 	// Create a Pod associated with the failed Job via the job-name label.
 	// The termination message is populated by the kubelet from stderr when
 	// terminationMessagePolicy=FallbackToLogsOnError is set on the container.
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-policy-validation-abc12",
-			Namespace: "default",
-			Labels:    map[string]string{"job-name": "test-keystone-policy-validation"},
-		},
-		Status: corev1.PodStatus{
-			ContainerStatuses: []corev1.ContainerStatus{{
-				Name: "validator",
-				State: corev1.ContainerState{
-					Terminated: &corev1.ContainerStateTerminated{
-						Message:  "oslopolicy-validator: error: Unknown action name 'identity:get_nonexistent'",
-						ExitCode: 1,
-					},
-				},
-			}},
-		},
-	}
+	pod := terminatedValidationPod("oslopolicy-validator: error: Unknown action name 'identity:get_nonexistent'")
 
 	r := newPolicyValidationTestReconciler(s, ks, failedJob, pod)
 
 	_, err := r.reconcilePolicyValidation(context.Background(), r.Client, ks, "keystone-config-abc123", "")
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, job.ErrJobFailed)).To(BeTrue())
 
-	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypePolicyValidReady)
-	g.Expect(cond).NotTo(BeNil())
-	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonPolicyValidationFailed))
-	g.Expect(cond.Message).To(HavePrefix("Policy validation failed: "))
-	g.Expect(cond.Message).To(ContainSubstring("Unknown action name 'identity:get_nonexistent'"))
+	msg := expectPolicyValidationFailed(g, ks, err)
+	g.Expect(msg).To(HavePrefix("Policy validation failed: "))
+	g.Expect(msg).To(ContainSubstring("Unknown action name 'identity:get_nonexistent'"))
 }
 
 // TestReconcilePolicyValidation_JobFailed_FallbackMessage verifies that when
@@ -425,15 +457,91 @@ func TestReconcilePolicyValidation_JobFailed_FallbackMessage(t *testing.T) {
 	r := newPolicyValidationTestReconciler(s, ks, failedJob)
 
 	_, err := r.reconcilePolicyValidation(context.Background(), r.Client, ks, "keystone-config-abc123", "")
-	g.Expect(err).To(HaveOccurred())
 
-	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypePolicyValidReady)
-	g.Expect(cond).NotTo(BeNil())
-	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonPolicyValidationFailed))
-	g.Expect(cond.Message).To(ContainSubstring("kubectl logs"))
-	g.Expect(cond.Message).To(ContainSubstring("test-keystone-policy-validation"))
-	g.Expect(cond.Message).To(ContainSubstring("default"))
+	g.Expect(expectPolicyValidationFailed(g, ks, err)).To(Equal(policyValidationFallbackMessage))
+}
+
+// TestReconcilePolicyValidation_JobFailed_ReadsPodsUncached verifies that the
+// Pods of the failed validation Job are read through the uncached API reader. A
+// List on the cached client would start a cluster-wide pod informer the RBAC
+// cannot watch, so the cached client here fails every Pod List and only a read
+// through apiReader finds the termination message.
+func TestReconcilePolicyValidation_JobFailed_ReadsPodsUncached(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := policyValidationTestScheme()
+	ks := policyValidationKeystoneWithPolicy()
+
+	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(ks, failedPolicyValidationJob(ks))
+	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{})
+	cb = cb.WithInterceptorFuncs(failPodLists(errors.New("the cached client must not list pods")))
+	r := &KeystoneReconciler{
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+	r.apiReader = fake.NewClientBuilder().WithScheme(s).
+		WithObjects(terminatedValidationPod("oslopolicy-validator: error: Unknown action name 'identity:get_nonexistent'")).
+		Build()
+
+	_, err := r.reconcilePolicyValidation(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+
+	msg := expectPolicyValidationFailed(g, ks, err)
+	g.Expect(msg).To(HavePrefix("Policy validation failed: "))
+	g.Expect(msg).To(ContainSubstring("Unknown action name 'identity:get_nonexistent'"))
+}
+
+// TestReconcilePolicyValidation_JobFailed_PodWithoutStatus_FallbackMessage
+// verifies that a Pod the kubelet has not reported a container on yet yields
+// the fallback message.
+func TestReconcilePolicyValidation_JobFailed_PodWithoutStatus_FallbackMessage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := policyValidationTestScheme()
+	ks := policyValidationKeystoneWithPolicy()
+	pod := terminatedValidationPod("")
+	pod.Status.ContainerStatuses = nil
+
+	r := newPolicyValidationTestReconciler(s, ks, failedPolicyValidationJob(ks), pod)
+
+	_, err := r.reconcilePolicyValidation(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+
+	g.Expect(expectPolicyValidationFailed(g, ks, err)).To(Equal(policyValidationFallbackMessage))
+}
+
+// TestReconcilePolicyValidation_JobFailed_TargetClusterUnresolvable_FallbackMessage
+// verifies that a target cluster that does not resolve yields the fallback
+// message. The terminated Pod sits in the cached client, so a fallback to it
+// would have reported the validator's error instead.
+func TestReconcilePolicyValidation_JobFailed_TargetClusterUnresolvable_FallbackMessage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := policyValidationTestScheme()
+	ks := policyValidationKeystoneWithPolicy()
+	ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "nowhere"}
+
+	r := newPolicyValidationTestReconciler(s, ks, failedPolicyValidationJob(ks),
+		terminatedValidationPod("oslopolicy-validator: error: Unknown action name 'identity:get_nonexistent'"))
+	r.Resolver = unresolvableResolver{}
+
+	_, err := r.reconcilePolicyValidation(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+
+	g.Expect(expectPolicyValidationFailed(g, ks, err)).To(Equal(policyValidationFallbackMessage))
+}
+
+// TestReconcilePolicyValidation_JobFailed_PodListError_FallbackMessage verifies
+// that a Pod List the API server rejects yields the fallback message, and that
+// the reconcile still reports the failed Job rather than the List error.
+func TestReconcilePolicyValidation_JobFailed_PodListError_FallbackMessage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := policyValidationTestScheme()
+	ks := policyValidationKeystoneWithPolicy()
+
+	r := newPolicyValidationTestReconciler(s, ks, failedPolicyValidationJob(ks))
+	r.apiReader = fake.NewClientBuilder().WithScheme(s).
+		WithInterceptorFuncs(failPodLists(apierrors.NewInternalError(errors.New("etcd is unavailable")))).
+		Build()
+
+	_, err := r.reconcilePolicyValidation(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+
+	g.Expect(expectPolicyValidationFailed(g, ks, err)).To(Equal(policyValidationFallbackMessage))
 }
 
 // --- Stale Job detection ---
