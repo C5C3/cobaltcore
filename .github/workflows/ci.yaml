@@ -268,13 +268,15 @@ jobs:
               - 'tests/e2e-controlplane-sso/**'
             tests_external_keystone:
               - 'tests/e2e/c5c3/external-keystone/**'
-            # The autoscaling suite, the metrics-server overlay its job
-            # deploys, and the shared HPA code it drives.
+            # The autoscaling suite, the metrics-server and VPA overlays its
+            # job deploys, and the shared HPA and VPA code it drives.
             tests_autoscaling:
               - 'tests/e2e-autoscaling/**'
               - 'deploy/kind/metrics-server/**'
+              - 'deploy/kind/vpa/**'
               - 'internal/common/deployment/builders.go'
               - 'internal/common/deployment/hpa_flow.go'
+              - 'internal/common/deployment/vpa_flow.go'
             tests_chaos:
               - 'tests/e2e-chaos/**'
             tests_multicluster:
@@ -2928,7 +2930,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 190
+    timeout-minutes: 205
     continue-on-error: false
     permissions:
       contents: read
@@ -2999,7 +3001,9 @@ jobs:
       # Cinder mounts its NFS shares from the kind NFS export and the plane
       # takes a vhost of its own on the shared broker, as on e2e-controlplane.
       # WITH_METRICS_SERVER deploys the metrics-server overlay the HPAs read
-      # their CPU utilization from.
+      # their CPU utilization from. WITH_VPA deploys the VPA overlay: its
+      # VerticalPodAutoscaler CRD is what the operators need to create the
+      # opt-in VPAs, and its recommender proves the targets are accepted.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
@@ -3010,6 +3014,7 @@ jobs:
           WITH_NFS: "true"
           WITH_MESSAGING: "true"
           WITH_METRICS_SERVER: "true"
+          WITH_VPA: "true"
       - name: Deploy K-ORC
         env:
           # Authenticates the K-ORC clone from github.com; see the script.

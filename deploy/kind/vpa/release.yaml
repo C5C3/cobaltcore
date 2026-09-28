@@ -2,14 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# vertical-pod-autoscaler HelmRelease: the VPA CRDs and the recommender for
-# the sizing measurement of hack/ci-vpa-recommendations.sh. Opt-in, reconciled
-# only when the vpa overlay is applied (WITH_VPA=true make deploy-infra).
+# vertical-pod-autoscaler HelmRelease: the VPA CRDs and the recommender. Opt-in,
+# reconciled only when the vpa overlay is applied (WITH_VPA=true make
+# deploy-infra). Two users apply it: the sizing measurement of
+# hack/ci-vpa-recommendations.sh, and the e2e-autoscaling leg, whose operators
+# create the opt-in VPAs of the ControlPlane and the OVNCentral and whose suite
+# waits for the recommender to serve them.
 #
-# Only the recommender runs. The measurement creates every VPA with
-# updateMode "Off", which changes no pod, so neither the updater (it evicts
-# pods) nor the admission controller (it rewrites pod requests) has anything
-# to do. At one replica the chart turns leader election off.
+# Only the recommender runs: neither the updater (it evicts pods) nor the
+# admission controller (it rewrites pod requests) is installed. The
+# measurement creates every VPA with updateMode "Off", which changes no pod.
+# The e2e-autoscaling leg also renders VPAs with updateMode "Auto" and
+# "Initial", but it checks only the VPA objects and the recommender's
+# recommendation; without those two components the modes change no pod here
+# either. At one replica the chart turns leader election off.
 #
 # The chart renders `recommender.extraArgs` verbatim into the recommender's
 # args. The two floor flags replace the per-pod defaults of 25 millicores and

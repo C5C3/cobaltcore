@@ -665,9 +665,10 @@ e2e-controlplane-sso:
 # The suite lives OUTSIDE tests/e2e/ so the per-CR e2e-operator matrix and
 # `make e2e` do not sweep it up (see tests/e2e-autoscaling/chainsaw-test.yaml).
 #
-# It needs metrics-server on top of the ControlPlane stack, so the three
-# preflights are kept separate: a missing metrics API must not read as a
-# missing ControlPlane stack — see review pattern
+# It needs metrics-server and the VerticalPodAutoscaler CRD on top of the
+# ControlPlane stack, so the four preflights are kept separate: a missing
+# metrics API or VPA CRD must not read as a missing ControlPlane stack — see
+# review pattern
 # .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
 # This target satisfies the CI-to-Makefile parity expected by
 # .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
@@ -677,11 +678,12 @@ e2e-controlplane-sso:
 # bootstrap must have seeded that CR's admin-password path: deploy the stack
 # with the command the remediation lines name, then K-ORC and the ten
 # operators, as the CI job does.
-E2E_AUTOSCALING_INFRA := WITH_METRICS_SERVER=true WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=cp-autoscaling WITH_NFS=true WITH_MESSAGING=true
+E2E_AUTOSCALING_INFRA := WITH_METRICS_SERVER=true WITH_VPA=true WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=cp-autoscaling WITH_NFS=true WITH_MESSAGING=true
 e2e-autoscaling:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable; run `$(E2E_AUTOSCALING_INFRA) make deploy-infra` first' >&2; exit 1; }
 	@kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1 || { echo 'the c5c3 ControlPlane stack is not installed; run `$(E2E_AUTOSCALING_INFRA) make deploy-infra` (and deploy K-ORC + the operators) first' >&2; exit 1; }
 	@kubectl get --raw /apis/metrics.k8s.io/v1beta1 >/dev/null 2>&1 || { echo 'metrics-server is not serving the resource-metrics API; run `$(E2E_AUTOSCALING_INFRA) make deploy-infra` first' >&2; exit 1; }
+	@kubectl get crd verticalpodautoscalers.autoscaling.k8s.io >/dev/null 2>&1 || { echo 'the VerticalPodAutoscaler CRD is not installed; run `$(E2E_AUTOSCALING_INFRA) make deploy-infra` first (WITH_VPA=true deploys it)' >&2; exit 1; }
 	@mkdir -p _output/reports
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e-autoscaling/
 
