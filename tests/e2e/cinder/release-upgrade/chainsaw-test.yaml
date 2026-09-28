@@ -21,6 +21,10 @@
 #   (5) The steady-state db-sync Job re-runs on :2026.1
 #   (6) The API on the new release answers, and every process in its service
 #       registry reports state up
+#   (7) The operator turned the migrate pod's verdict into the matching event on
+#       the Cinder (UpgradeCheckCompleted for exit 0, UpgradeCheckWarnings for
+#       exit 1 or 2), and read that pod without starting a pod informer: the
+#       cinder-operator log carries no "Failed to watch" line for *v1.Pod
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -553,4 +557,62 @@ spec:
           [ "$phase" = "Succeeded" ]
           echo "${OUT}" | grep -q 'UPGRADE-OK'
           echo "OK: the upgraded API serves and its service registry is healthy"
+    catch: *upgrade-dump
+  # ── Step 8: Assert the upgrade check reached the Cinder and no pod informer ran ─
+  # Step 5 proves the migrate pod wrote its verdict; this step proves the
+  # operator read it back and classified it: exit 0 is Normal
+  # UpgradeCheckCompleted, exit 1 and 2 are Warning UpgradeCheckWarnings, and
+  # any other pairing is a misread verdict. The operator's RBAC grants pods only
+  # get and list, so a pod read through the cached client starts an informer
+  # whose watch is denied, and the reflector logs "Failed to watch" for *v1.Pod
+  # on every retry. The migrate Job's terminal pass is the read, and it ran long
+  # before this step, so a count of zero is the guard against a cached pod read
+  # coming back.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -euo pipefail
+          NS=openstack
+          CR=cinder-upgrade
+
+          # The event was emitted on the migrate Job's terminal pass, which
+          # Step 4 waited out, so this is a short poll rather than a wait.
+          FOUND=""
+          DEADLINE=$(( $(date +%s) + 60 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            FOUND="$(kubectl get events -n "$NS" \
+              --field-selector "involvedObject.kind=Cinder,involvedObject.name=$CR" \
+              -o 'jsonpath={range .items[*]}{.reason}{" "}{.message}{"\n"}{end}' 2>/dev/null \
+              | grep -E '^(UpgradeCheckCompleted cinder-status upgrade check exit 0|UpgradeCheckWarnings cinder-status upgrade check exit [12])$' \
+              | head -n1 || true)"
+            [ -n "$FOUND" ] && break
+            sleep 5
+          done
+          if [ -z "$FOUND" ]; then
+            echo "FAIL: no UpgradeCheckCompleted event for exit 0 or UpgradeCheckWarnings event for exit 1 or 2 on Cinder $CR"
+            kubectl get events -n "$NS" --field-selector "involvedObject.kind=Cinder,involvedObject.name=$CR" 2>&1 || true
+            exit 1
+          fi
+          echo "OK: Cinder $CR carries the event '$FOUND'"
+
+          # --tail=-1 is required: with a selector kubectl defaults to 10 lines.
+          # A selector that matches no pod exits 0 with nothing on stdout, so an
+          # empty log fails the step instead of passing it vacuously.
+          LOGS="$(kubectl logs -n cinder-system -l app.kubernetes.io/name=cinder-operator --all-containers --tail=-1)"
+          if [ -z "$LOGS" ]; then
+            echo "FAIL: no cinder-operator log to count 'Failed to watch' lines in"
+            kubectl get pods -n cinder-system -o wide 2>&1 || true
+            exit 1
+          fi
+          PATTERN='"msg":"Failed to watch".*"type":"\*v1\.Pod"'
+          # grep -c prints 0 and exits 1 on no match.
+          COUNT="$(printf '%s\n' "$LOGS" | grep -Ec "$PATTERN" || true)"
+          if [ "$COUNT" != "0" ]; then
+            echo "FAIL: the cinder-operator log carries $COUNT 'Failed to watch' lines for *v1.Pod; a cached pod read started a pod informer"
+            printf '%s\n' "$LOGS" | grep -E -m1 "$PATTERN" || true
+            exit 1
+          fi
+          echo "OK: the cinder-operator log carries no 'Failed to watch' line for *v1.Pod"
     catch: *upgrade-dump

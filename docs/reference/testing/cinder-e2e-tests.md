@@ -162,7 +162,7 @@ deletions.
 | [network-policy](#network-policy) | `cinder-netpol` | Rendered NetworkPolicy: ingress on 8776, auto-derived DNS, database, cache, messaging and export egress, update and delete |
 | [deletion-cleanup](#deletion-cleanup) | `cinder-cleanup` | Finalizer cleanup of every owned child and the MariaDB CRs; both satellites survive the parent and release on `ServiceRemoveSkipped` |
 | [pod-security-restricted](#pod-security-restricted) | `cinder-pss` | Every Pod the reconciler projects admits under `pod-security.kubernetes.io/enforce=restricted`, with zero `FailedCreate` violations |
-| [release-upgrade](#release-upgrade) | `cinder-upgrade` | Cross-release upgrade 2025.2 to 2026.1: phase progression, the three phase Jobs, the three Deployments, the API on the new release |
+| [release-upgrade](#release-upgrade) | `cinder-upgrade` | Cross-release upgrade 2025.2 to 2026.1: phase progression, the three phase Jobs, the three Deployments, the API on the new release, the upgrade-check event read without a pod informer |
 | [maintenance-endpoint-isolation](#maintenance-endpoint-isolation) | `cinder-isolation` | db-purge and service-remove pods never become API Service backends, and the Service is never left without any |
 | [gateway-quick-start-smoke](#gateway-quick-start-smoke) | `cinder-smoke` | `curl -k https://cinder.127-0-0-1.nip.io/` answers HTTP 300 with the Cinder version document |
 | [metrics](#metrics) | — (operator-level) | cinder-operator chart renders and removes the ServiceMonitor |
@@ -545,6 +545,7 @@ already populated.
 | 5 | Assert the three phase Jobs ran on the new release | `assert` (10m) + `script` (2m) | Jobs `cinder-upgrade-db-expand`, `-db-migrate` and `-db-contract` each succeeded, and the migrate Job's pod carries the `cinder-status` verdict in its termination message |
 | 6 | Assert all three Deployments rolled onto :2026.1 | `assert` (10m) + `script` (5m) | The API, scheduler and volume Deployments are on `:2026.1` with a converged rollout, and the steady-state db-sync Job re-ran on the new image |
 | 7 | Assert the upgraded API answers and its registry is healthy | `script` (8m) | The probe pod reaches the API on the new release and every process in `/v3/os-services` reports state `up` |
+| 8 | Assert the upgrade check reached the Cinder and no pod informer ran | `script` (2m) | `cinder-upgrade` carries an `UpgradeCheckCompleted` event with `cinder-status upgrade check exit 0` or an `UpgradeCheckWarnings` event with exit 1 or 2, and the cinder-operator log holds no `Failed to watch` line for `*v1.Pod`, which a cached pod read would leave behind |
 
 **Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`, `03-patch-upgrade.yaml`
 
