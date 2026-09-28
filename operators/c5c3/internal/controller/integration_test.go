@@ -1542,7 +1542,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{
 		Barbican: &c5c3v1alpha1.APIServiceSizingSpec{API: apiReplicas(1)},
 		Neutron: &c5c3v1alpha1.NeutronSizingSpec{
-			Workers: &c5c3v1alpha1.ScaledSizingSpec{Replicas: ptr.To(int32(1))},
+			Workers: &c5c3v1alpha1.WorkersSizingSpec{ScaledSizingSpec: c5c3v1alpha1.ScaledSizingSpec{Replicas: ptr.To(int32(1))}},
 		},
 	})
 

@@ -6313,7 +6313,65 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
+                        x-kubernetes-validations:
+                        - message: autoscaling and verticalAutoscaling cannot both
+                            be set on one component
+                          rule: '!(has(self.autoscaling) && has(self.verticalAutoscaling))'
                       jobs:
                         description: Jobs sizes the Job pods.
                         properties:
@@ -6831,7 +6889,65 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
+                        x-kubernetes-validations:
+                        - message: autoscaling and verticalAutoscaling cannot both
+                            be set on one component
+                          rule: '!(has(self.autoscaling) && has(self.verticalAutoscaling))'
                       backup:
                         description: Backup sizes the backup Deployment.
                         properties:
@@ -6947,6 +7063,60 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
                       jobs:
                         description: Jobs sizes the Job pods.
@@ -7169,6 +7339,60 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
                       volume:
                         description: Volume sizes every volume Deployment.
@@ -7285,6 +7509,60 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
                     type: object
                   database:
@@ -7791,7 +8069,65 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
+                        x-kubernetes-validations:
+                        - message: autoscaling and verticalAutoscaling cannot both
+                            be set on one component
+                          rule: '!(has(self.autoscaling) && has(self.verticalAutoscaling))'
                       jobs:
                         description: Jobs sizes the Job pods.
                         properties:
@@ -8230,7 +8566,65 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
+                        x-kubernetes-validations:
+                        - message: autoscaling and verticalAutoscaling cannot both
+                            be set on one component
+                          rule: '!(has(self.autoscaling) && has(self.verticalAutoscaling))'
                     type: object
                   keystone:
                     description: Keystone sizes the Keystone components.
@@ -8610,7 +9004,65 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
+                        x-kubernetes-validations:
+                        - message: autoscaling and verticalAutoscaling cannot both
+                            be set on one component
+                          rule: '!(has(self.autoscaling) && has(self.verticalAutoscaling))'
                       federationProxy:
                         description: FederationProxy sizes the federation proxy sidecar.
                         properties:
@@ -9244,7 +9696,65 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
+                        x-kubernetes-validations:
+                        - message: autoscaling and verticalAutoscaling cannot both
+                            be set on one component
+                          rule: '!(has(self.autoscaling) && has(self.verticalAutoscaling))'
                       jobs:
                         description: Jobs sizes the Job pods.
                         properties:
@@ -9434,6 +9944,60 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
                     type: object
                   nodeSelector:
@@ -9820,7 +10384,65 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
+                        x-kubernetes-validations:
+                        - message: autoscaling and verticalAutoscaling cannot both
+                            be set on one component
+                          rule: '!(has(self.autoscaling) && has(self.verticalAutoscaling))'
                       conductor:
                         description: Conductor sizes the conductor Deployment.
                         properties:
@@ -9973,6 +10595,60 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                           workers:
                             description: Workers is the worker process count per pod.
                             format: int32
@@ -10131,6 +10807,60 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
                       jobs:
                         description: Jobs sizes the Job pods.
@@ -10363,6 +11093,60 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
                       scheduler:
                         description: Scheduler sizes the scheduler Deployment.
@@ -10516,6 +11300,60 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                           workers:
                             description: Workers is the worker process count per pod.
                             format: int32
@@ -10901,7 +11739,65 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          verticalAutoscaling:
+                            description: VerticalAutoscaling adds a VerticalPodAutoscaler;
+                              it replaces as a whole.
+                            properties:
+                              maxAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MaxAllowed maps to maxAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minAllowed:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: MinAllowed maps to minAllowed of the
+                                  VPA's container policy.
+                                maxProperties: 2
+                                type: object
+                              minReplicas:
+                                description: |-
+                                  MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                                  updater evicts only while at least 2 replicas run.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              updateMode:
+                                description: |-
+                                  UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                                  recommends, Initial sets requests at pod creation, Recreate and Auto
+                                  evict pods to apply them.
+                                enum:
+                                - "Off"
+                                - Initial
+                                - Recreate
+                                - Auto
+                                type: string
+                            required:
+                            - updateMode
+                            type: object
+                            x-kubernetes-validations:
+                            - message: minAllowed may only name cpu and memory
+                              rule: '!has(self.minAllowed) || self.minAllowed.all(k,
+                                k in [''cpu'',''memory''])'
+                            - message: maxAllowed may only name cpu and memory
+                              rule: '!has(self.maxAllowed) || self.maxAllowed.all(k,
+                                k in [''cpu'',''memory''])'
                         type: object
+                        x-kubernetes-validations:
+                        - message: autoscaling and verticalAutoscaling cannot both
+                            be set on one component
+                          rule: '!(has(self.autoscaling) && has(self.verticalAutoscaling))'
                       jobs:
                         description: Jobs sizes the Job pods.
                         properties:

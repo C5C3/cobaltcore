@@ -599,9 +599,9 @@ func (r *ControlPlaneReconciler) reconcileCinder(ctx context.Context, cp *c5c3v1
 	projectDeployment(&cn.Spec.Scheduler.Deployment, sizing.PodPlacementSpec, cdSizing.Scheduler,
 		cinderv1alpha1.DefaultSchedulerReplicas, cinderv1alpha1.SchedulerPodSelector(cn.Name))
 	cn.Spec.Volume.Deployment.Replicas = 1
-	projectPod(&cn.Spec.Volume.Deployment, sizing.PodPlacementSpec, cdSizing.Volume)
+	projectPinnedDeployment(&cn.Spec.Volume.Deployment, sizing.PodPlacementSpec, cdSizing.Volume)
 	cn.Spec.Backup.Deployment.Replicas = 1
-	projectPod(&cn.Spec.Backup.Deployment, sizing.PodPlacementSpec, cdSizing.Backup)
+	projectPinnedDeployment(&cn.Spec.Backup.Deployment, sizing.PodPlacementSpec, cdSizing.Backup)
 	cn.Spec.Jobs = projectJobs(cdSizing.Jobs)
 
 	// spec.dbPurge, spec.networkPolicy, spec.logging and spec.policyOverrides stay

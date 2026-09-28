@@ -175,6 +175,41 @@ func TestMergeSizing(t *testing.T) {
 			})),
 		},
 		{
+			name: "a set verticalAutoscaling replaces the whole block",
+			base: SizingSpec{Neutron: &NeutronSizingSpec{Workers: &WorkersSizingSpec{
+				ScaledSizingSpec: ScaledSizingSpec{Replicas: ptr.To[int32](2)},
+				VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{
+					UpdateMode: "Auto", MinReplicas: ptr.To[int32](1),
+					MaxAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				},
+			}}},
+			override: SizingSpec{Neutron: &NeutronSizingSpec{Workers: &WorkersSizingSpec{
+				VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"},
+			}}},
+			want: SizingSpec{Neutron: &NeutronSizingSpec{Workers: &WorkersSizingSpec{
+				ScaledSizingSpec:    ScaledSizingSpec{Replicas: ptr.To[int32](2)},
+				VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"},
+			}}},
+		},
+		{
+			name: "an unset verticalAutoscaling keeps the base block",
+			base: SizingSpec{Cinder: &CinderSizingSpec{
+				Scheduler: &DeploymentSizingSpec{VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Initial"}},
+				Backup:    &PinnedDeploymentSizingSpec{VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"}},
+			}},
+			override: SizingSpec{Cinder: &CinderSizingSpec{
+				Scheduler: &DeploymentSizingSpec{ScaledSizingSpec: ScaledSizingSpec{Replicas: ptr.To[int32](1)}},
+				Backup:    &PinnedDeploymentSizingSpec{},
+			}},
+			want: SizingSpec{Cinder: &CinderSizingSpec{
+				Scheduler: &DeploymentSizingSpec{
+					ScaledSizingSpec:    ScaledSizingSpec{Replicas: ptr.To[int32](1)},
+					VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Initial"},
+				},
+				Backup: &PinnedDeploymentSizingSpec{VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"}},
+			}},
+		},
+		{
 			name:     "an empty storageSize keeps the base",
 			base:     SizingSpec{Database: &DatabaseSizingSpec{StorageSize: "100Gi", Replicas: ptr.To[int32](3)}},
 			override: SizingSpec{Database: &DatabaseSizingSpec{Replicas: ptr.To[int32](1)}},

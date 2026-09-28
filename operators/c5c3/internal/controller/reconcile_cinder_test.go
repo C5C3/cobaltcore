@@ -2561,8 +2561,8 @@ func TestReconcileCinder_SizingProjectsComponents(t *testing.T) {
 	cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{Cinder: &c5c3v1alpha1.CinderSizingSpec{
 		API:       &c5c3v1alpha1.APISizingSpec{ProcessSizingSpec: c5c3v1alpha1.ProcessSizingSpec{Processes: ptr.To[int32](3)}},
 		Scheduler: &scheduler,
-		Volume: &c5c3v1alpha1.PinnedSizingSpec{PodPlacementSpec: c5c3v1alpha1.PodPlacementSpec{
-			NodeSelector: map[string]string{"storage": "nfs"},
+		Volume: &c5c3v1alpha1.PinnedDeploymentSizingSpec{PinnedSizingSpec: c5c3v1alpha1.PinnedSizingSpec{
+			PodPlacementSpec: c5c3v1alpha1.PodPlacementSpec{NodeSelector: map[string]string{"storage": "nfs"}},
 		}},
 	}})
 	r := newCinderTestReconciler(t, cp)

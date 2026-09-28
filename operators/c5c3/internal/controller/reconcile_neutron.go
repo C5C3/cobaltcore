@@ -413,7 +413,7 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 		nn.Spec.APIServer = &neutronv1alpha1.APIServerSpec{UWSGI: uwsgi}
 	}
 	nn.Spec.Autoscaling = autoscaling
-	projectScaled(&nn.Spec.Workers.Deployment, sizing.PodPlacementSpec, nnSizing.Workers, commonv1.DefaultReplicas)
+	projectWorkers(&nn.Spec.Workers.Deployment, sizing.PodPlacementSpec, nnSizing.Workers, commonv1.DefaultReplicas)
 	nn.Spec.Jobs = projectJobs(nnSizing.Jobs)
 
 	// The shared bus reaches the child as a BROWNFIELD secretRef naming the Secret

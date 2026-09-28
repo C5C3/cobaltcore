@@ -138,7 +138,21 @@ func TestBuiltinSizing_MinimalCarriesTable(t *testing.T) {
 		g.Expect(key).NotTo(ContainSubstring("priorityClassName"))
 		g.Expect(key).NotTo(ContainSubstring("spreadConstraints"))
 		g.Expect(key).NotTo(ContainSubstring("autoscaling"))
+		g.Expect(key).NotTo(ContainSubstring("verticalAutoscaling"))
 		g.Expect(key).NotTo(ContainSubstring("federationProxy"))
+	}
+}
+
+// Neither built-in profile opts a component into a VerticalPodAutoscaler: the
+// VPA needs a cluster that serves it, which no profile can assume.
+func TestBuiltinSizing_SetsNoVerticalAutoscaling(t *testing.T) {
+	for _, name := range []SizingProfileName{SizingProfileMinimal, SizingProfileStandard} {
+		t.Run(string(name), func(t *testing.T) {
+			g := NewWithT(t)
+			raw, err := json.Marshal(BuiltinSizing(name))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(string(raw)).NotTo(ContainSubstring("verticalAutoscaling"))
+		})
 	}
 }
 

@@ -46,6 +46,8 @@ type sizingComponent struct {
 	priorityClassName *string
 	spread            []SpreadConstraintSpec
 	autoscaling       *commonv1.AutoscalingSpec
+	// verticalAutoscaling is the component's VerticalPodAutoscaler opt-in.
+	verticalAutoscaling *commonv1.VerticalAutoscalingSpec
 	// sidecarResources are the resources of the other containers an API
 	// component's pod runs (the Keystone federation proxy), which an
 	// autoscaling target is measured against too.
@@ -64,7 +66,7 @@ func pinnedComponent(path *field.Path, p *PinnedSizingSpec) sizingComponent {
 
 func deploymentComponent(path *field.Path, d *DeploymentSizingSpec) sizingComponent {
 	c := pinnedComponent(path, &d.PinnedSizingSpec)
-	c.replicas, c.spread = d.Replicas, d.SpreadConstraints
+	c.replicas, c.spread, c.verticalAutoscaling = d.Replicas, d.SpreadConstraints, d.VerticalAutoscaling
 	return c
 }
 
@@ -98,6 +100,13 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 	pinned := func(path *field.Path, p *PinnedSizingSpec) {
 		if p != nil {
 			out = append(out, pinnedComponent(path, p))
+		}
+	}
+	pinnedDeployment := func(path *field.Path, p *PinnedDeploymentSizingSpec) {
+		if p != nil {
+			c := pinnedComponent(path, &p.PinnedSizingSpec)
+			c.verticalAutoscaling = p.VerticalAutoscaling
+			out = append(out, c)
 		}
 	}
 	container := func(path *field.Path, c *ContainerSizingSpec) {
@@ -150,7 +159,9 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 		p := fldPath.Child("neutron")
 		api(p.Child("api"), nn.API)
 		if w := nn.Workers; w != nil {
-			pinned(p.Child("workers"), &w.PinnedSizingSpec)
+			c := pinnedComponent(p.Child("workers"), &w.PinnedSizingSpec)
+			c.verticalAutoscaling = w.VerticalAutoscaling
+			out = append(out, c)
 		}
 		jobs(p.Child("jobs"), nn.Jobs)
 	}
@@ -158,8 +169,8 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 		p := fldPath.Child("cinder")
 		api(p.Child("api"), cd.API)
 		deployment(p.Child("scheduler"), cd.Scheduler)
-		pinned(p.Child("volume"), cd.Volume)
-		pinned(p.Child("backup"), cd.Backup)
+		pinnedDeployment(p.Child("volume"), cd.Volume)
+		pinnedDeployment(p.Child("backup"), cd.Backup)
 		jobs(p.Child("jobs"), cd.Jobs)
 	}
 	if nv := s.Nova; nv != nil {
@@ -184,9 +195,11 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 // ControlPlane's spec.sizing and a SizingProfile's spec alike. It runs the
 // checks the schema cannot express (requests within limits, the label grammar
 // of node selectors and tolerations, the autoscaling behavior bounds the
-// autoscaling/v2 API enforces, the Galera quorum and the Memcached memory
-// floor) and the webhook twins of the markers on the spread entries and the
-// database volume size.
+// autoscaling/v2 API enforces, a verticalAutoscaling minAllowed above its
+// maxAllowed, the Galera quorum and the Memcached memory floor), the webhook
+// twins of the markers on the spread entries, the database volume size and
+// the verticalAutoscaling block, and the rule that one component sets
+// autoscaling or verticalAutoscaling, not both.
 func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 	var allErrs field.ErrorList
 	for _, c := range sizingComponents(fldPath, s) {
@@ -196,6 +209,8 @@ func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 		if c.autoscaling != nil {
 			allErrs = append(allErrs, validation.AutoscalingBehavior(c.path.Child("autoscaling", "behavior"), c.autoscaling.Behavior)...)
 		}
+		allErrs = append(allErrs, validation.VerticalAutoscaling(c.path.Child("verticalAutoscaling"), c.verticalAutoscaling)...)
+		allErrs = append(allErrs, verticalAutoscalingBesideAutoscaling(c)...)
 		for i, sc := range c.spread {
 			scPath := c.path.Child("spreadConstraints").Index(i)
 			if sc.MaxSkew < 1 {
@@ -234,11 +249,13 @@ func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 // validateResolvedSizing checks a merged SizingSpec, the one a ControlPlane
 // actually projects: a request a profile sets may exceed a limit the
 // ControlPlane sets, a request of zero may meet an autoscaling target set
-// elsewhere, a limit may make a target above 100 unreachable, or a replica
-// count may exceed a maxReplicas set elsewhere. It checks requests within
-// limits on every component, and every API autoscaling block against its
-// component's requests, limits and replica count. The Keystone federation
-// proxy runs in the API pods, so its resources meet the Keystone target too.
+// elsewhere, a limit may make a target above 100 unreachable, a replica
+// count may exceed a maxReplicas set elsewhere, or one of the two may set
+// autoscaling where the other sets verticalAutoscaling on the same component.
+// It checks requests within limits and that exclusion on every component, and
+// every API autoscaling block against its component's requests, limits and
+// replica count. The Keystone federation proxy runs in the API pods, so its
+// resources meet the Keystone target too.
 //
 // The replica check is the child webhooks' rule: without minReplicas the HPA
 // minimum defaults to the projected replica count (commonv1.DefaultReplicas
@@ -249,6 +266,7 @@ func validateResolvedSizing(fldPath *field.Path, s *SizingSpec) field.ErrorList 
 	for _, c := range sizingComponents(fldPath, s) {
 		rrPath := c.path.Child("resources")
 		allErrs = append(allErrs, validation.RequestsWithinLimits(rrPath, c.resources)...)
+		allErrs = append(allErrs, verticalAutoscalingBesideAutoscaling(c)...)
 		allErrs = append(allErrs, validation.AutoscalingTargetRequests(rrPath, c.resources, c.autoscaling)...)
 		allErrs = append(allErrs, validation.AutoscalingTargetsReachable(c.path.Child("autoscaling"), c.autoscaling,
 			append([]*corev1.ResourceRequirements{c.resources}, c.sidecarResources...)...)...)
@@ -265,6 +283,19 @@ func validateResolvedSizing(fldPath *field.Path, s *SizingSpec) field.ErrorList 
 			fldPath.Child("keystone", "federationProxy", "resources"), ks.FederationProxy.Resources, ks.API.Autoscaling)...)
 	}
 	return allErrs
+}
+
+// verticalAutoscalingBesideAutoscaling rejects a component that sets both
+// autoscaling and verticalAutoscaling: every HPA scales on the utilization a
+// VPA changes. It is the webhook twin of the CEL rule on APISizingSpec and
+// HorizonAPISizingSpec, message for message, and runs on the merged sizing as
+// well, where a profile may set one block and the ControlPlane the other.
+func verticalAutoscalingBesideAutoscaling(c sizingComponent) field.ErrorList {
+	if c.autoscaling == nil || c.verticalAutoscaling == nil {
+		return nil
+	}
+	return field.ErrorList{field.Forbidden(c.path.Child("verticalAutoscaling"),
+		"autoscaling and verticalAutoscaling cannot both be set on one component")}
 }
 
 // sizingPriorityClass is one priority class name a SizingSpec sets, with the
