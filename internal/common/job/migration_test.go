@@ -6,6 +6,7 @@ package job
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
@@ -302,4 +304,105 @@ func TestRecordJobTerminalState_PatchFailureDefersAndEvents(t *testing.T) {
 	var ev string
 	g.Eventually(rec.Events).Should(gomega.Receive(&ev))
 	g.Expect(ev).To(gomega.ContainSubstring("Warning DeferReason"))
+}
+
+// terminatedJobPod returns a pod called name of the Job "check" (UID
+// "check-uid") in "ns", in phase, created at created, whose first container
+// terminated with message.
+func terminatedJobPod(name string, phase corev1.PodPhase, created time.Time, message string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: "ns", CreationTimestamp: metav1.NewTime(created),
+			Labels: map[string]string{naming.LabelKeyJobName: "check", batchv1.ControllerUidLabel: "check-uid"},
+		},
+		Status: corev1.PodStatus{Phase: phase, ContainerStatuses: []corev1.ContainerStatus{{
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Message: message}},
+		}}},
+	}
+}
+
+// TestTerminationMessage pins which pod of a retried Job the message comes
+// from. The fake client lists pods by name, so the retry cases put the expected
+// pod last once and first once: neither end of the List is always the right
+// one.
+func TestTerminationMessage(t *testing.T) {
+	now := time.Now()
+	observed := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "check", Namespace: "ns", UID: "check-uid"}}
+	// A restarted container's previous message ends in the newline echo wrote.
+	restarted := terminatedJobPod("check-a", corev1.PodSucceeded, now, "")
+	restarted.Status.ContainerStatuses[0].LastTerminationState.Terminated = &corev1.ContainerStateTerminated{Message: "previous\n"}
+	noStatus := terminatedJobPod("check-a", corev1.PodPending, now, "")
+	noStatus.Status.ContainerStatuses = nil
+	earlierJob := terminatedJobPod("check-z", corev1.PodSucceeded, now.Add(-time.Hour), "earlier Job")
+	earlierJob.Labels[batchv1.ControllerUidLabel] = "earlier-uid"
+	otherNamespace := terminatedJobPod("check-x", corev1.PodSucceeded, now, "foreign")
+	otherNamespace.Namespace = "other-ns"
+
+	cases := []struct {
+		name string
+		pods []client.Object
+		want string
+	}{
+		{name: "no pod", want: ""},
+		{name: "a pod without container statuses", pods: []client.Object{noStatus}, want: ""},
+		{
+			name: "a succeeded retry wins over a newer failed attempt",
+			pods: []client.Object{
+				terminatedJobPod("check-a", corev1.PodFailed, now, "failed"),
+				terminatedJobPod("check-z", corev1.PodSucceeded, now.Add(-time.Minute), "succeeded"),
+			},
+			want: "succeeded",
+		},
+		{
+			name: "without a success the newest attempt wins",
+			pods: []client.Object{
+				terminatedJobPod("check-a", corev1.PodFailed, now, "newer"),
+				terminatedJobPod("check-z", corev1.PodFailed, now.Add(-time.Minute), "older"),
+			},
+			want: "newer",
+		},
+		{
+			name: "the trailing newline echo writes is dropped",
+			pods: []client.Object{terminatedJobPod("check-a", corev1.PodSucceeded, now, "exit 0\n")},
+			want: "exit 0",
+		},
+		{name: "a restarted container reports its previous state", pods: []client.Object{restarted}, want: "previous"},
+		{
+			name: "pods of another Job are ignored",
+			pods: []client.Object{&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+				Name: "other", Namespace: "ns", Labels: map[string]string{naming.LabelKeyJobName: "other"},
+			}}},
+			want: "",
+		},
+		{
+			name: "a pod an earlier Job of the same name left behind is ignored",
+			pods: []client.Object{earlierJob, terminatedJobPod("check-a", corev1.PodFailed, now, "own")},
+			want: "own",
+		},
+		{
+			name: "a pod of the same Job name in another namespace is ignored",
+			pods: []client.Object{otherNamespace, terminatedJobPod("check-a", corev1.PodFailed, now, "own")},
+			want: "own",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			c := fake.NewClientBuilder().WithScheme(terminalScheme(t)).WithObjects(tc.pods...).Build()
+			got, err := TerminationMessage(context.Background(), c, observed)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(got).To(gomega.Equal(tc.want))
+		})
+	}
+
+	t.Run("a failing List is returned", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		c := fake.NewClientBuilder().WithScheme(terminalScheme(t)).WithInterceptorFuncs(interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return errors.New("pods are forbidden")
+			},
+		}).Build()
+		_, err := TerminationMessage(context.Background(), c, observed)
+		g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("pods are forbidden")))
+	})
 }

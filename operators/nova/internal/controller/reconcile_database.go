@@ -831,7 +831,7 @@ func (r *NovaReconciler) reportUpgradeCheck(ctx context.Context, children client
 	job.RecordJobTerminalState(ctx, r.Client, r.Recorder, nova,
 		upgradeCheckJobSuffix, observed, "UpgradeCheckEventEmissionDeferred",
 		func(string, time.Duration) {
-			message := r.jobPodTerminationMessage(ctx, children, nova, observed.Name)
+			message := r.jobPodTerminationMessage(ctx, children, nova, observed)
 			switch {
 			case message == "":
 				r.Recorder.Event(nova, corev1.EventTypeNormal, "UpgradeCheckCompleted",
@@ -860,7 +860,7 @@ func (r *NovaReconciler) reportCells(ctx context.Context, children client.Client
 	job.RecordJobTerminalState(ctx, r.Client, r.Recorder, nova,
 		cellsReportJobSuffix, observed, "CellsReportEmissionDeferred",
 		func(string, time.Duration) {
-			cells := parseCellsReport(r.jobPodTerminationMessage(ctx, children, nova, observed.Name))
+			cells := parseCellsReport(r.jobPodTerminationMessage(ctx, children, nova, observed))
 			if len(cells) == 0 {
 				r.Recorder.Event(nova, corev1.EventTypeNormal, "CellsReportUnavailable",
 					"the db-sync Job reported no cell map; status.cells is left unchanged")
@@ -887,32 +887,20 @@ func parseCellsReport(message string) []novav1alpha1.NovaCellStatus {
 	return cells
 }
 
-// jobPodTerminationMessage reads the termination message of a Job's pod: the
-// pod that succeeded when there is one, otherwise the newest the Job labels, its
-// first container, the current termination state or the previous one when the
-// container has already been restarted. It returns "" when there is no pod, no
-// message, or the read failed — the cases the callers report as unavailable. A
-// read error is logged rather than returned: neither the upgrade nor the
-// migration depends on the message.
-//
-// The pick matters because a migration Job runs its retries as new pods: a
-// db-sync that failed once leaves the failed attempt beside the one that
-// completed, and the failed one wrote no report. The list comes back in no
-// fixed order, and the per-Job-UID dedupe makes the first read the only one.
-//
-// The pods are read through the uncached API reader of the cluster that holds
-// them. The operator reads one pod's message once per Job and never watches
-// pods: a read through the cached client would start an informer holding every
-// pod of the cluster for the life of the process, and one the operator's RBAC
-// denies the watch verb.
+// jobPodTerminationMessage reads a Job's termination message through
+// job.TerminationMessage (see there for which pod is picked), using the
+// uncached reader of the cluster that holds the Job. It returns "" when there is
+// no message to report, including a reader that does not resolve and a failed
+// read; those errors are logged rather than returned, because neither the
+// upgrade nor the migration depends on the message.
 func (r *NovaReconciler) jobPodTerminationMessage(ctx context.Context, children client.Client,
-	nova *novav1alpha1.Nova, jobName string,
+	nova *novav1alpha1.Nova, observed *batchv1.Job,
 ) string {
 	reader, err := commonmulticluster.ResolveChildrenAPIReader(ctx, r.Resolver, r.apiReader, nova.Spec.TargetClusterRef)
 	if err != nil {
 		log.FromContext(ctx).Info("resolving the reader for the pods of a migration Job failed; "+
 			"its termination message is reported as unavailable",
-			"job", jobName, "err", err.Error())
+			"job", observed.Name, "err", err.Error())
 		return ""
 	}
 	if reader == nil {
@@ -920,37 +908,12 @@ func (r *NovaReconciler) jobPodTerminationMessage(ctx context.Context, children 
 		reader = children
 	}
 
-	var pods corev1.PodList
-	if err := reader.List(ctx, &pods, client.InNamespace(nova.Namespace),
-		client.MatchingLabels{"batch.kubernetes.io/job-name": jobName}); err != nil {
+	message, err := job.TerminationMessage(ctx, reader, observed)
+	if err != nil {
 		log.FromContext(ctx).Info("listing the pods of a migration Job failed; "+
 			"its termination message is reported as unavailable",
-			"job", jobName, "err", err.Error())
+			"job", observed.Name, "err", err.Error())
 		return ""
 	}
-	if len(pods.Items) == 0 {
-		return ""
-	}
-	pod := &pods.Items[0]
-	for i := range pods.Items {
-		candidate := &pods.Items[i]
-		if candidate.Status.Phase == corev1.PodSucceeded {
-			pod = candidate
-			break
-		}
-		if candidate.CreationTimestamp.After(pod.CreationTimestamp.Time) {
-			pod = candidate
-		}
-	}
-	statuses := pod.Status.ContainerStatuses
-	if len(statuses) == 0 {
-		return ""
-	}
-	if terminated := statuses[0].State.Terminated; terminated != nil && terminated.Message != "" {
-		return terminated.Message
-	}
-	if terminated := statuses[0].LastTerminationState.Terminated; terminated != nil {
-		return terminated.Message
-	}
-	return ""
+	return message
 }

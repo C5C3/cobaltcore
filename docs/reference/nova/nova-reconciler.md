@@ -202,11 +202,13 @@ cell's UUID at map time, and a per-cell `nova-manage cell_v2` command addresses
 the cell by UUID, so the report is the only place those identifiers can be read
 back from. The message is read off the Job's pod that succeeded, because a Job
 runs each retry as a pod of its own and a failed attempt wrote no report; a Job
-without a succeeded pod is read off its newest one. The pods are listed through
-the uncached API reader of the cluster that holds them: the operator reads one
-pod's message once per Job and never watches pods, and a read through the cached
-client would start an informer over every pod of the cluster that the
-operator's RBAC does not allow to watch. Every line is matched against
+without a succeeded pod is read off its newest one. Only pods carrying the Job's
+UID count, so a pod that an earlier Job of the same name left behind is never
+read. The pods are listed through the uncached API reader of the cluster that
+holds them: the operator reads one pod's message once per Job and never watches
+pods, and a read through the cached client would start an informer over every
+pod of the cluster that the operator's RBAC does not allow to watch. Every line
+is matched against
 `^([A-Za-z0-9_-]+)=([0-9a-f-]{36})$`,
 so stray `nova-manage` output on the same stream is dropped instead of being
 published as a cell. A report the operator cannot read leaves `status.cells` as

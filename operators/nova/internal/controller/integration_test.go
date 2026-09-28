@@ -503,9 +503,10 @@ func completeDBSync(t testing.TB, ctx context.Context, childClient client.Client
 	g := NewGomegaWithT(t)
 
 	dbSyncKey := client.ObjectKey{Namespace: ns, Name: name + "-" + dbSyncJobSuffix}
-	eventuallyExists(t, ctx, childClient, dbSyncKey, &batchv1.Job{}, "db-sync Job", eventuallyLongTimeout)
+	dbSync := &batchv1.Job{}
+	eventuallyExists(t, ctx, childClient, dbSyncKey, dbSync, "db-sync Job", eventuallyLongTimeout)
 
-	writeCellsReport(t, ctx, childClient, ns, dbSyncKey.Name)
+	writeCellsReport(t, ctx, childClient, dbSync)
 	g.Expect(simulators.SimulateJobComplete(ctx, childClient, dbSyncKey)).
 		To(Succeed(), "complete the db-sync Job")
 }
@@ -514,15 +515,18 @@ func completeDBSync(t testing.TB, ctx context.Context, childClient client.Client
 // the cell map into its termination message, the file the awk stage of the sync
 // script redirects its "<name>=<uuid>" lines into. envtest runs no Job
 // controller, so the pod and its status are the test's to produce.
-func writeCellsReport(t testing.TB, ctx context.Context, c client.Client, ns, jobName string) {
+func writeCellsReport(t testing.TB, ctx context.Context, c client.Client, dbSync *batchv1.Job) {
 	t.Helper()
 	g := NewGomegaWithT(t)
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName + "-pod",
-			Namespace: ns,
-			Labels:    map[string]string{"batch.kubernetes.io/job-name": jobName},
+			Name:      dbSync.Name + "-pod",
+			Namespace: dbSync.Namespace,
+			Labels: map[string]string{
+				naming.LabelKeyJobName:     dbSync.Name,
+				batchv1.ControllerUidLabel: string(dbSync.UID),
+			},
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
