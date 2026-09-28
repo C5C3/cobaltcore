@@ -711,6 +711,167 @@ func TestAutoscalingBehavior(t *testing.T) {
 	})
 }
 
+func TestVerticalAutoscaling(t *testing.T) {
+	path := field.NewPath("spec", "deployment", "verticalAutoscaling")
+	list := func(kv ...string) corev1.ResourceList {
+		rl := corev1.ResourceList{}
+		for i := 0; i < len(kv); i += 2 {
+			rl[corev1.ResourceName(kv[i])] = resource.MustParse(kv[i+1])
+		}
+		return rl
+	}
+
+	accepted := []struct {
+		name string
+		v    *commonv1.VerticalAutoscalingSpec
+	}{
+		{name: "nil block"},
+		{name: "updateMode Off", v: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"}},
+		{name: "every field", v: &commonv1.VerticalAutoscalingSpec{
+			UpdateMode: "Auto", MinReplicas: ptr.To(int32(1)),
+			MinAllowed: list("cpu", "100m", "memory", "128Mi"), MaxAllowed: list("cpu", "1", "memory", "1Gi"),
+		}},
+		{name: "min equals max", v: &commonv1.VerticalAutoscalingSpec{
+			UpdateMode: "Recreate", MinAllowed: list("cpu", "1"), MaxAllowed: list("cpu", "1000m"),
+		}},
+		{name: "bounds on different resources", v: &commonv1.VerticalAutoscalingSpec{
+			UpdateMode: "Initial", MinAllowed: list("cpu", "2"), MaxAllowed: list("memory", "1Gi"),
+		}},
+	}
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(VerticalAutoscaling(path, tc.v)).To(gomega.BeEmpty())
+		})
+	}
+
+	rejected := []struct {
+		name     string
+		v        *commonv1.VerticalAutoscalingSpec
+		wantType field.ErrorType
+		wantPath string
+		wantSub  string
+	}{
+		{
+			name:     "updateMode Sometimes",
+			v:        &commonv1.VerticalAutoscalingSpec{UpdateMode: "Sometimes"},
+			wantType: field.ErrorTypeNotSupported,
+			wantPath: "spec.deployment.verticalAutoscaling.updateMode",
+			wantSub:  `Unsupported value: "Sometimes"`,
+		},
+		{
+			name:     "empty updateMode",
+			v:        &commonv1.VerticalAutoscalingSpec{},
+			wantType: field.ErrorTypeNotSupported,
+			wantPath: "spec.deployment.verticalAutoscaling.updateMode",
+			wantSub:  `Unsupported value: ""`,
+		},
+		{
+			name:     "minReplicas 0",
+			v:        &commonv1.VerticalAutoscalingSpec{UpdateMode: "Auto", MinReplicas: ptr.To(int32(0))},
+			wantType: field.ErrorTypeInvalid,
+			wantPath: "spec.deployment.verticalAutoscaling.minReplicas",
+			wantSub:  "must be at least 1",
+		},
+		{
+			name:     "minAllowed names ephemeral-storage",
+			v:        &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off", MinAllowed: list("ephemeral-storage", "1Gi")},
+			wantType: field.ErrorTypeNotSupported,
+			wantPath: "spec.deployment.verticalAutoscaling.minAllowed[ephemeral-storage]",
+			wantSub:  `Unsupported value: "ephemeral-storage"`,
+		},
+		{
+			name:     "maxAllowed names a GPU",
+			v:        &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off", MaxAllowed: list("nvidia.com/gpu", "1")},
+			wantType: field.ErrorTypeNotSupported,
+			wantPath: "spec.deployment.verticalAutoscaling.maxAllowed[nvidia.com/gpu]",
+			wantSub:  `Unsupported value: "nvidia.com/gpu"`,
+		},
+		{
+			name:     "minAllowed.cpu above maxAllowed.cpu",
+			v:        &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off", MinAllowed: list("cpu", "2"), MaxAllowed: list("cpu", "1")},
+			wantType: field.ErrorTypeInvalid,
+			wantPath: "spec.deployment.verticalAutoscaling.minAllowed[cpu]",
+			wantSub:  "must not exceed maxAllowed",
+		},
+		// Each parses cheaply into a decimal scale of ±2e9; comparing it with
+		// the other bound would build a number of two billion digits.
+		{
+			name:     "maxAllowed.memory of 1e2000000000 is rejected, not compared",
+			v:        &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off", MinAllowed: list("memory", "1Gi"), MaxAllowed: list("memory", "1e2000000000")},
+			wantType: field.ErrorTypeInvalid,
+			wantPath: "spec.deployment.verticalAutoscaling.maxAllowed[memory]",
+			wantSub:  "must not use a decimal exponent beyond ±30",
+		},
+		{
+			name:     "minAllowed.cpu of 0e-2000000000 is rejected, not compared",
+			v:        &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off", MinAllowed: list("cpu", "0e-2000000000"), MaxAllowed: list("cpu", "1")},
+			wantType: field.ErrorTypeInvalid,
+			wantPath: "spec.deployment.verticalAutoscaling.minAllowed[cpu]",
+			wantSub:  "must not use a decimal exponent beyond ±30",
+		},
+		{
+			name:     "maxAllowed.cpu of 1e2000000000 is rejected without a minAllowed",
+			v:        &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off", MaxAllowed: list("cpu", "1e2000000000")},
+			wantType: field.ErrorTypeInvalid,
+			wantPath: "spec.deployment.verticalAutoscaling.maxAllowed[cpu]",
+			wantSub:  "must not use a decimal exponent beyond ±30",
+		},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := VerticalAutoscaling(path, tc.v)
+			g.Expect(errs).To(gomega.HaveLen(1))
+			g.Expect(errs[0].Type).To(gomega.Equal(tc.wantType))
+			g.Expect(errs[0].Field).To(gomega.Equal(tc.wantPath))
+			g.Expect(errs[0].Error()).To(gomega.ContainSubstring(tc.wantSub))
+		})
+	}
+
+	// A foreign key named in both lists is reported once per list and never
+	// compared: the comparison is defined for cpu and memory only.
+	t.Run("foreign key in both lists is not compared", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := VerticalAutoscaling(path, &commonv1.VerticalAutoscalingSpec{
+			UpdateMode: "Off", MinAllowed: list("pods", "10"), MaxAllowed: list("pods", "1"),
+		})
+		g.Expect(errs).To(gomega.HaveLen(2))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.deployment.verticalAutoscaling.minAllowed[pods]"))
+		g.Expect(errs[1].Field).To(gomega.Equal("spec.deployment.verticalAutoscaling.maxAllowed[pods]"))
+	})
+}
+
+func TestVerticalAutoscalingBesideAutoscaling(t *testing.T) {
+	path := field.NewPath("spec", "deployment", "verticalAutoscaling")
+	v := &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"}
+	a := &commonv1.AutoscalingSpec{MaxReplicas: 3, TargetCPUUtilization: ptr.To(int32(80))}
+
+	for _, tc := range []struct {
+		name string
+		v    *commonv1.VerticalAutoscalingSpec
+		a    *commonv1.AutoscalingSpec
+	}{
+		{name: "neither"},
+		{name: "vertical only", v: v},
+		{name: "horizontal only", a: a},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(VerticalAutoscalingBesideAutoscaling(path, tc.v, tc.a)).To(gomega.BeEmpty())
+		})
+	}
+
+	t.Run("both", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := VerticalAutoscalingBesideAutoscaling(path, v, a)
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeForbidden))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.deployment.verticalAutoscaling"))
+		g.Expect(errs[0].Detail).To(gomega.Equal("cannot be set while spec.autoscaling scales the same Deployment"))
+	})
+}
+
 func TestJob(t *testing.T) {
 	path := field.NewPath("spec", "jobs")
 	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).

@@ -565,10 +565,12 @@ func blockCeiling(name corev1.ResourceName, rr *corev1.ResourceRequirements) (li
 // the zero 0e-2000000000 into scale 2e9, so either would build a number of
 // two billion digits. A parsed nonzero quantity has a scale of at most 9,
 // and one below -30 is at least 10^31, which no container is sized with.
+// Comparing two quantities whose scales differ that much builds the same
+// number, so VerticalAutoscaling rejects such a bound before it compares.
 const ceilingMaxScale = 30
 
 // outsideCeilingScale reports whether d is too far from milli-units for
-// blockCeiling to round.
+// blockCeiling to round, or for VerticalAutoscaling to compare.
 func outsideCeilingScale(d *inf.Dec) bool {
 	return d.Scale() < -ceilingMaxScale || d.Scale() > ceilingMaxScale
 }
@@ -636,6 +638,74 @@ func scalingRules(fldPath *field.Path, r *autoscalingv2.HPAScalingRules) field.E
 		errs = append(errs, field.Invalid(fldPath.Child("tolerance"), tol.String(), "tolerance must not be negative"))
 	}
 	return errs
+}
+
+// verticalAutoscalingUpdateModes are the updateMode values a
+// verticalAutoscaling block accepts, the twin of the Enum marker on
+// commonv1.VerticalAutoscalingSpec.UpdateMode.
+var verticalAutoscalingUpdateModes = []string{"Off", "Initial", "Recreate", "Auto"}
+
+// verticalAutoscalingResources are the resource keys minAllowed and maxAllowed
+// accept, the twin of the two CEL rules on commonv1.VerticalAutoscalingSpec.
+var verticalAutoscalingResources = []string{string(corev1.ResourceCPU), string(corev1.ResourceMemory)}
+
+// VerticalAutoscaling checks a verticalAutoscaling block at fldPath. A nil v
+// returns none. It rejects an updateMode outside Off, Initial, Recreate and
+// Auto, a minReplicas below 1, a key of minAllowed or maxAllowed other than
+// cpu and memory, a cpu or memory bound whose decimal scale lies beyond
+// ceilingMaxScale, and a minAllowed[k] above maxAllowed[k] for a k both lists
+// name. The last two rules have no CEL twin: CEL cannot compare quantities
+// across two maps. A bound out of scale is never compared, since the
+// comparison would build the number it spells out (see ceilingMaxScale).
+func VerticalAutoscaling(fldPath *field.Path, v *commonv1.VerticalAutoscalingSpec) field.ErrorList {
+	if v == nil {
+		return nil
+	}
+	var errs field.ErrorList
+	if !slices.Contains(verticalAutoscalingUpdateModes, v.UpdateMode) {
+		errs = append(errs, field.NotSupported(fldPath.Child("updateMode"), v.UpdateMode, verticalAutoscalingUpdateModes))
+	}
+	if v.MinReplicas != nil && *v.MinReplicas < 1 {
+		errs = append(errs, field.Invalid(fldPath.Child("minReplicas"), *v.MinReplicas, "must be at least 1"))
+	}
+	for _, list := range []struct {
+		name string
+		rl   corev1.ResourceList
+	}{{name: "minAllowed", rl: v.MinAllowed}, {name: "maxAllowed", rl: v.MaxAllowed}} {
+		for _, k := range slices.Sorted(maps.Keys(list.rl)) {
+			if !slices.Contains(verticalAutoscalingResources, string(k)) {
+				errs = append(errs, field.NotSupported(fldPath.Child(list.name).Key(string(k)), string(k), verticalAutoscalingResources))
+				continue
+			}
+			if q := list.rl[k]; outsideCeilingScale(q.AsDec()) {
+				errs = append(errs, field.Invalid(fldPath.Child(list.name).Key(string(k)), q.String(),
+					fmt.Sprintf("must not use a decimal exponent beyond ±%d", ceilingMaxScale)))
+			}
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(v.MinAllowed)) {
+		minQ := v.MinAllowed[k]
+		maxQ, ok := v.MaxAllowed[k]
+		if !ok || !slices.Contains(verticalAutoscalingResources, string(k)) ||
+			outsideCeilingScale(minQ.AsDec()) || outsideCeilingScale(maxQ.AsDec()) {
+			continue
+		}
+		if minQ.Cmp(maxQ) > 0 {
+			errs = append(errs, field.Invalid(fldPath.Child("minAllowed").Key(string(k)), minQ.String(), "must not exceed maxAllowed"))
+		}
+	}
+	return errs
+}
+
+// VerticalAutoscalingBesideAutoscaling rejects a verticalAutoscaling block at
+// fldPath while spec.autoscaling scales the same Deployment: every HPA the
+// operators render scales on CPU or memory utilization, the signal a VPA
+// changes. Either block nil returns none.
+func VerticalAutoscalingBesideAutoscaling(fldPath *field.Path, v *commonv1.VerticalAutoscalingSpec, a *commonv1.AutoscalingSpec) field.ErrorList {
+	if v == nil || a == nil {
+		return nil
+	}
+	return field.ErrorList{field.Forbidden(fldPath, "cannot be set while spec.autoscaling scales the same Deployment")}
 }
 
 // Job checks a CR's spec.jobs block: requests within limits, an existing

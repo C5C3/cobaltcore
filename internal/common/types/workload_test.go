@@ -127,3 +127,25 @@ func TestJobSpec_IsFlat(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(string(empty)).To(gomega.MatchJSON(`{}`))
 }
+
+// The verticalAutoscaling block is an opt-in: Default never writes it, and an
+// unset block leaves no key behind, so a server-side apply of a DeploymentSpec
+// without it neither writes nor owns the field.
+func TestDeploymentSpec_VerticalAutoscalingIsOptIn(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	d := &DeploymentSpec{}
+	d.Default()
+	g.Expect(d.VerticalAutoscaling).To(gomega.BeNil())
+
+	raw, err := json.Marshal(d)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(string(raw)).NotTo(gomega.ContainSubstring("verticalAutoscaling"))
+
+	d.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Off"}
+	raw, err = json.Marshal(d)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	var got map[string]any
+	g.Expect(json.Unmarshal(raw, &got)).To(gomega.Succeed())
+	g.Expect(got).To(gomega.HaveKeyWithValue("verticalAutoscaling", map[string]any{"updateMode": "Off"}))
+}

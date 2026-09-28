@@ -119,6 +119,11 @@ func withDefaults(rr *corev1.ResourceRequirements, cpu, memory resource.Quantity
 // names no memory. WithRequestFloor hands out copies only.
 var memoryRequestFloor = resource.MustParse("256Mi")
 
+// MemoryRequestFloor returns a copy of the 256Mi memory request
+// WithRequestFloor gives a block that names no memory, the memory half of the
+// OVN Raft request floor.
+func MemoryRequestFloor() resource.Quantity { return memoryRequestFloor.DeepCopy() }
+
 // WithRequestFloor resolves the requests of a container whose working set
 // grows with its data rather than with a process count (an OVN Raft member,
 // the OVN backup, Neutron's ovn-db-sync), per resource, on a copy of rr (nil
@@ -146,7 +151,7 @@ func WithRequestFloor(rr *corev1.ResourceRequirements) corev1.ResourceRequiremen
 		quantity resource.Quantity
 	}{
 		{name: corev1.ResourceCPU, quantity: DefaultCPURequest()},
-		{name: corev1.ResourceMemory, quantity: memoryRequestFloor.DeepCopy()},
+		{name: corev1.ResourceMemory, quantity: MemoryRequestFloor()},
 	} {
 		if NamesResource(out, floor.name) {
 			continue

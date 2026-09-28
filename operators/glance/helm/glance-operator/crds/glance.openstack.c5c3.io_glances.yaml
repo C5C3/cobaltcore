@@ -1967,6 +1967,65 @@ spec:
                       - whenUnsatisfiable
                       type: object
                     type: array
+                  verticalAutoscaling:
+                    description: |-
+                      VerticalAutoscaling opts this Deployment into a VerticalPodAutoscaler
+                      that controls the requests of its containers. It is rejected beside
+                      spec.autoscaling when that block scales the same Deployment. On a
+                      cluster that does not serve autoscaling.k8s.io/v1
+                      VerticalPodAutoscaler, the CR reports VPAReady=False with reason
+                      VPANotInstalled.
+                    properties:
+                      maxAllowed:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: MaxAllowed maps to maxAllowed of the VPA's container
+                          policy.
+                        maxProperties: 2
+                        type: object
+                      minAllowed:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: MinAllowed maps to minAllowed of the VPA's container
+                          policy.
+                        maxProperties: 2
+                        type: object
+                      minReplicas:
+                        description: |-
+                          MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+                          updater evicts only while at least 2 replicas run.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      updateMode:
+                        description: |-
+                          UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+                          recommends, Initial sets requests at pod creation, Recreate and Auto
+                          evict pods to apply them.
+                        enum:
+                        - "Off"
+                        - Initial
+                        - Recreate
+                        - Auto
+                        type: string
+                    required:
+                    - updateMode
+                    type: object
+                    x-kubernetes-validations:
+                    - message: minAllowed may only name cpu and memory
+                      rule: '!has(self.minAllowed) || self.minAllowed.all(k, k in
+                        [''cpu'',''memory''])'
+                    - message: maxAllowed may only name cpu and memory
+                      rule: '!has(self.maxAllowed) || self.maxAllowed.all(k, k in
+                        [''cpu'',''memory''])'
                 type: object
                 x-kubernetes-validations:
                 - message: preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds

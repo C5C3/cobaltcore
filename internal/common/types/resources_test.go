@@ -59,6 +59,17 @@ func TestDefaultMemoryPerProcess_ReturnsACopy(t *testing.T) {
 	g.Expect(next.Cmp(resource.MustParse("352Mi"))).To(gomega.BeZero())
 }
 
+func TestMemoryRequestFloor_ReturnsACopy(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	q := MemoryRequestFloor()
+	g.Expect(q.Cmp(resource.MustParse("256Mi"))).To(gomega.BeZero())
+	q.Add(resource.MustParse("1Gi"))
+
+	next := MemoryRequestFloor()
+	g.Expect(next.Cmp(resource.MustParse("256Mi"))).To(gomega.BeZero())
+}
+
 func TestWithResourceDefaults(t *testing.T) {
 	q := resource.MustParse
 	mem512 := q("512Mi")
