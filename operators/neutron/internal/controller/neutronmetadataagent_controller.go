@@ -15,17 +15,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/gateway"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -74,7 +78,7 @@ const OVNChassisCentralRefIndexKey = "spec.centralRef.name"
 // agentSubConditionTypes lists the condition types set by the individual
 // NeutronMetadataAgent sub-reconcilers. The aggregate Ready condition is True
 // only when all of these are True. The agent runs no optional step: every one of
-// the three is set on every pass.
+// the four is set on every pass.
 //
 // It is a separate list from subConditionTypes because the two kinds carry
 // separate status contracts, while one instrumenter serves both pipelines. The
@@ -84,6 +88,7 @@ var agentSubConditionTypes = []string{
 	conditionTypeChassisReady,
 	"SecretsReady",
 	conditionTypeDaemonSetReady,
+	"VPAReady",
 }
 
 // agentSkeleton bundles the shared controller-skeleton glue (Ready aggregation,
@@ -103,14 +108,15 @@ var agentSkeleton = commonreconcile.Skeleton[*neutronv1alpha1.NeutronMetadataAge
 // that keeps running after its CR is gone.
 //
 // The list is short because the agent owns no state of its own: the DaemonSet,
-// the immutable config ConfigMaps its pods mount, and the derived transport-URL
-// Secret. The client Secret the pods mount beside it is not listed: cert-manager
+// the immutable config ConfigMaps its pods mount, the derived transport-URL
+// Secret, and the opt-in VerticalPodAutoscaler. The client Secret the pods mount beside it is not listed: cert-manager
 // issues it and the OVNCentral publishes it, and this controller only reads its
 // name off that central.
 var NeutronMetadataAgentRemoteChildKinds = []schema.GroupVersionKind{
 	appsv1.SchemeGroupVersion.WithKind("DaemonSet"),
 	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
 	corev1.SchemeGroupVersion.WithKind("Secret"),
+	deployment.VPAGVK,
 }
 
 // agentSecretNameExtractor is the controller-runtime IndexerFunc registered
@@ -215,6 +221,14 @@ type NeutronMetadataAgentReconciler struct {
 	// with. Nil means always-local: every CR keeps its children on the management
 	// cluster, which is what single-cluster tests and deployments want.
 	Resolver commonmulticluster.ClusterResolver
+
+	// vpaAvailable is set during SetupWithManager from the management
+	// cluster's RESTMapper and reports whether it serves the
+	// autoscaling.k8s.io/v1 VerticalPodAutoscaler kind. It gates the local VPA
+	// watch leg and answers commonmulticluster.ChildrenServeKind for local
+	// children, so reconcileVPA reports VPAReady=False/VPANotInstalled for an
+	// opt-in on a cluster without the VPA.
+	vpaAvailable bool
 }
 
 // The markers below repeat the set the Neutron reconciler carries, verbatim.
@@ -243,6 +257,7 @@ type NeutronMetadataAgentReconciler struct {
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=get
@@ -405,6 +420,9 @@ func (r *NeutronMetadataAgentReconciler) pipelineSteps(children client.Client,
 		{Name: "DaemonSet", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDaemonSet(ctx, children, cr, chassis, configMapName, transportDigest, sharedSecretDigest)
 		}},
+		{Name: "AgentVPA", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileVPA(ctx, children, cr)
+		}},
 	}
 }
 
@@ -459,6 +477,17 @@ func (r *NeutronMetadataAgentReconciler) setupWithOptions(mgr mcmanager.Manager,
 		return err
 	}
 
+	// Detect the VerticalPodAutoscaler CRD: verticalAutoscaling is an opt-in,
+	// so the operator must run on clusters without the VPA, where an
+	// unconditional Owns would fail the controller at Start.
+	r.vpaAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	setupLog := ctrl.Log.WithName("neutronmetadataagent-setup")
+	if r.vpaAvailable {
+		setupLog.Info("VerticalPodAutoscaler CRD detected; enabling VPA watch and reconciliation")
+	} else {
+		setupLog.Info("VerticalPodAutoscaler CRD not installed; VPA watch disabled, verticalAutoscaling will be reported through VPAReady")
+	}
+
 	// Every leg watching the management cluster carries both engage options
 	// below; see their definition for why an unpinned leg would stop watching it
 	// once a provider is configured.
@@ -483,12 +512,22 @@ func (r *NeutronMetadataAgentReconciler) setupWithOptions(mgr mcmanager.Manager,
 		Owns(&corev1.ConfigMap{}, engageLocal, engageNoProviders).
 		Owns(&corev1.Secret{}, engageLocal, engageNoProviders)
 
+	// The recommender rewrites status.recommendation about once a minute; only
+	// a spec change (drift from the applied VPA) wakes the CR.
+	if r.vpaAvailable {
+		b = b.Owns(&vpav1.VerticalPodAutoscaler{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			engageLocal, engageNoProviders)
+	}
+
 	// The same children, once more, on the clusters a CR can project onto. Owns
 	// cannot see them: an owner reference does not cross a cluster boundary, so
-	// the ownership labels are what maps a child back to its CR. No leg carries a
-	// predicate, mirroring what Owns admits locally.
+	// the ownership labels are what maps a child back to its CR. The VPA leg
+	// carries the same predicate as its local Owns; no other leg carries one,
+	// mirroring what Owns admits locally.
 	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &neutronv1alpha1.NeutronMetadataAgent{},
-		targets, NeutronMetadataAgentRemoteChildKinds, nil)
+		targets, NeutronMetadataAgentRemoteChildKinds, map[schema.GroupVersionKind][]mcbuilder.WatchesOption{
+			deployment.VPAGVK: {mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})},
+		})
 	if err != nil {
 		return err
 	}

@@ -124,6 +124,13 @@ type NeutronMetadataAgentSpec struct {
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
+	// VerticalAutoscaling opts the agent DaemonSet into a VerticalPodAutoscaler
+	// that controls the requests of its containers. On a cluster that does not
+	// serve autoscaling.k8s.io/v1 VerticalPodAutoscaler, the CR reports
+	// VPAReady=False with reason VPANotInstalled.
+	// +optional
+	VerticalAutoscaling *commonv1.VerticalAutoscalingSpec `json:"verticalAutoscaling,omitempty"`
+
 	// Logging configures oslo.log output for the agent container. When unset, the
 	// defaulting webhook materializes a LoggingSpec with Format=text, Level=INFO,
 	// Debug=false.

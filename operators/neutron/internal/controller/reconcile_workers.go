@@ -44,6 +44,22 @@ const (
 	componentOVNMaintenanceWorker = "ovn-maintenance-worker"
 )
 
+// neutronWorkers are the worker Deployments, each named by its component and
+// running its command. reconcileWorkers ensures them and neutronVPATargets
+// lists them, so a worker added here gets both.
+var neutronWorkers = []struct {
+	component string
+	command   []string
+}{
+	{componentPeriodicWorkers, neutronCommand("neutron-periodic-workers")},
+	{componentOVNMaintenanceWorker, neutronCommand("neutron-ovn-maintenance-worker")},
+}
+
+// workerDeploymentName names the worker Deployment of component.
+func workerDeploymentName(neutron *neutronv1alpha1.Neutron, component string) string {
+	return neutron.Name + "-" + component
+}
+
 // neutronWorkloadEnv returns the environment every Neutron process is started
 // with: the two oslo.config overrides that deliver the database URL and the
 // transport URL from their derived Secrets, so neither credential is written to
@@ -98,16 +114,8 @@ func (r *NeutronReconciler) reconcileWorkers(ctx context.Context, children clien
 	neutron *neutronv1alpha1.Neutron,
 	configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest string,
 ) (ctrl.Result, error) {
-	workers := []struct {
-		component string
-		command   []string
-	}{
-		{componentPeriodicWorkers, neutronCommand("neutron-periodic-workers")},
-		{componentOVNMaintenanceWorker, neutronCommand("neutron-ovn-maintenance-worker")},
-	}
-
 	allReady := true
-	for _, worker := range workers {
+	for _, worker := range neutronWorkers {
 		deploy := buildWorkerDeployment(neutron, worker.component, worker.command,
 			configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest)
 		ready, err := deployment.EnsureDeployment(ctx, children, r.Scheme, neutron, deploy)
@@ -141,7 +149,7 @@ func (r *NeutronReconciler) reconcileWorkers(ctx context.Context, children clien
 // buildWorkerDeployment constructs one worker Deployment. It carries the same
 // config, OVN identity, state directory and TLS projections as the API pods,
 // because both processes read the same two files. It differs from them in what
-// it leaves out: no ports, no probes, no autoscaling. Both workers are singleton
+// it leaves out: no ports, no probes, no HPA. Both workers are singleton
 // consumers of a work queue rather than request servers, so a readiness gate
 // would report nothing a client acts on, and an HPA has no request rate to scale
 // against.
@@ -151,7 +159,7 @@ func buildWorkerDeployment(neutron *neutronv1alpha1.Neutron, component string, c
 	volumes, mounts := neutronWorkloadVolumes(neutron, configMapName)
 	return deployment.BuildWorkload(deployment.WorkloadParams{
 		Namespace:      neutron.Namespace,
-		Name:           neutron.Name + "-" + component,
+		Name:           workerDeploymentName(neutron, component),
 		Labels:         componentLabels(neutron, component),
 		SelectorLabels: workerSelectorLabels(neutron, component),
 		PodAnnotations: neutronPodAnnotations(dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest),

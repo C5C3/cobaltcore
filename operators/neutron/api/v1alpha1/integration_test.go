@@ -8,12 +8,14 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -403,4 +405,95 @@ func TestIntegration_WebhookFinalizerRemovalAfterPriorityClassDeleted(t *testing
 	g.Eventually(func() bool {
 		return apierrors.IsNotFound(c.Get(ctx, key, &Neutron{}))
 	}).Should(BeTrue(), "the CR must be gone once its finalizer is removed")
+}
+
+// TestIntegration_CRD_CELOnly_VerticalAutoscaling pins the CEL rules of
+// verticalAutoscaling on the Neutron CRD against an envtest API server
+// with NO validating webhook installed, so the webhook twins cannot mask a
+// missing rule.
+func TestIntegration_CRD_CELOnly_VerticalAutoscaling(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(o *Neutron)
+		wantSub string
+	}{
+		{
+			name: "foreign-resource",
+			mutate: func(o *Neutron) {
+				o.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantSub: "minAllowed may only name cpu and memory",
+		},
+		{
+			name: "beside-autoscaling",
+			mutate: func(o *Neutron) {
+				cpu := int32(80)
+				o.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: &cpu}
+				o.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Off"}
+			},
+			wantSub: "spec.deployment.verticalAutoscaling cannot be set while spec.autoscaling scales the same Deployment",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := newNamespace(t, ctx, c, "celonly-vpa-")
+			o := integrationNeutron("vpa-"+tc.name, ns)
+			tc.mutate(o)
+
+			err := c.Create(ctx, o)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
+// TestIntegration_CRD_CELOnly_NeutronMetadataAgentVerticalAutoscaling pins the CEL rules of
+// verticalAutoscaling on the NeutronMetadataAgent CRD against an envtest API server
+// with NO validating webhook installed, so the webhook twins cannot mask a
+// missing rule.
+func TestIntegration_CRD_CELOnly_NeutronMetadataAgentVerticalAutoscaling(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(o *NeutronMetadataAgent)
+		wantSub string
+	}{
+		{
+			name: "foreign-resource",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantSub: "minAllowed may only name cpu and memory",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := newNamespace(t, ctx, c, "celonly-vpa-")
+			o := newCELOnlyAgent("vpa-"+tc.name, ns)
+			tc.mutate(o)
+
+			err := c.Create(ctx, o)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
+// newCELOnlyAgent is integrationAgent against a chassis name no test creates:
+// the CEL rules answer before any reference is resolved.
+func newCELOnlyAgent(name, namespace string) *NeutronMetadataAgent {
+	return integrationAgent(name, namespace, "chassis")
 }

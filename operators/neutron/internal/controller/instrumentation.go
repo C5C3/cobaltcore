@@ -59,10 +59,12 @@ var subReconcilerConditionTypes = map[string]string{
 	"HTTPRoute":          "HTTPRouteReady",
 	"HealthCheck":        "NeutronAPIReady",
 	"HPA":                "HPAReady",
+	"VPA":                "VPAReady",
 	"NetworkPolicy":      "NetworkPolicyReady",
 
 	"Chassis":   "ChassisReady",
 	"DaemonSet": "DaemonSetReady",
+	"AgentVPA":  "VPAReady",
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error
