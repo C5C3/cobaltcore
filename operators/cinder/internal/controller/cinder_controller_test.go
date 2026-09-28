@@ -540,6 +540,7 @@ func TestSubConditionTypes_PinsTheAggregatedVocabulary(t *testing.T) {
 		"DeploymentReady",
 		"CinderAPIReady",
 		"HPAReady",
+		"VPAReady",
 		"NetworkPolicyReady",
 		"HTTPRouteReady",
 		"DBPurgeReady",

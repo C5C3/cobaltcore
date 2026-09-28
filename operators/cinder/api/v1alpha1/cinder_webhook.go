@@ -527,6 +527,11 @@ func (w *CinderWebhook) validate(ctx context.Context, c *Cinder, extra field.Err
 		allErrs = append(allErrs, validation.AutoscalingBehavior(autoscalingPath.Child("behavior"), c.Spec.Autoscaling.Behavior)...)
 	}
 
+	// The HPA scales the API Deployment on the utilization a VPA would change,
+	// so the two are rejected together (the twin of the CEL rule on the spec).
+	allErrs = append(allErrs, validation.VerticalAutoscalingBesideAutoscaling(specPath.Child("api", "deployment", "verticalAutoscaling"),
+		c.Spec.API.Deployment.VerticalAutoscaling, c.Spec.Autoscaling)...)
+
 	// An HPA utilization target is measured against the summed requests of
 	// every container in the API pod, so a zero request under a target either
 	// fails the metric or inflates it. The render-time default fills a positive
@@ -699,6 +704,10 @@ func (w *CinderWebhook) validateDeploymentBlock(
 			selector,
 		)...)
 	}
+
+	// Defense-in-depth twins of the verticalAutoscaling markers and CEL rules,
+	// plus the minAllowed-above-maxAllowed rule CEL cannot express.
+	errs = append(errs, validation.VerticalAutoscaling(fldPath.Child("verticalAutoscaling"), d.VerticalAutoscaling)...)
 	return errs
 }
 

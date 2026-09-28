@@ -15,6 +15,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -567,4 +568,51 @@ func TestIntegration_WebhookRejectsUnknownExtraConfigOption(t *testing.T) {
 		"DEFAULT": {"glance_api_server": "http://glance.openstack.svc:9292"},
 	}
 	expectRejected(t, c.Create(ctx, cinder), "no such option in the cinder 2025.2 option catalog")
+}
+
+// TestIntegration_CRD_CELOnly_VerticalAutoscaling pins the CEL rules of
+// verticalAutoscaling on the Cinder CRD against an envtest API server
+// with NO validating webhook installed, so the webhook twins cannot mask a
+// missing rule.
+func TestIntegration_CRD_CELOnly_VerticalAutoscaling(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(o *Cinder)
+		wantSub string
+	}{
+		{
+			name: "foreign-resource",
+			mutate: func(o *Cinder) {
+				o.Spec.API.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantSub: "minAllowed may only name cpu and memory",
+		},
+		{
+			name: "beside-autoscaling",
+			mutate: func(o *Cinder) {
+				cpu := int32(80)
+				o.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: &cpu}
+				o.Spec.API.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Off"}
+			},
+			wantSub: "spec.api.deployment.verticalAutoscaling cannot be set while spec.autoscaling scales the same Deployment",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := newNamespace(t, ctx, c, "celonly-vpa-")
+			o := integrationCinder("vpa-"+tc.name, ns)
+			tc.mutate(o)
+
+			err := c.Create(ctx, o)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
 }

@@ -91,6 +91,8 @@ spec:
               request URL and validates no token at all. Publishing that through a Gateway
               hands every volume operation of every project to anyone who resolves the
               hostname, so the two are rejected together rather than deployed.
+              A VerticalPodAutoscaler beside the HPA would act on the utilization signal
+              the HPA scales on, so the two are rejected together.
             properties:
               api:
                 description: |-
@@ -8127,6 +8129,10 @@ spec:
                 auth_strategy = noauth, so a Gateway would serve every volume operation
                 unauthenticated'
               rule: '!has(self.gateway) || has(self.keystoneEndpoint)'
+            - message: spec.api.deployment.verticalAutoscaling cannot be set while
+                spec.autoscaling scales the same Deployment
+              rule: '!(has(self.autoscaling) && has(self.api) && has(self.api.deployment)
+                && has(self.api.deployment.verticalAutoscaling))'
           status:
             description: CinderStatus defines the observed state of Cinder.
             properties:
