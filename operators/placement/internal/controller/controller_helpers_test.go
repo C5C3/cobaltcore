@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,8 +41,8 @@ var placementRequest = reconcile.Request{
 // testScheme registers the types the fake client resolves in this package's
 // tests: core/apps (Secret, ConfigMap, Deployment), the placement API, the
 // external-secrets v1 group the credential gate reads to attribute a missing
-// Secret, and the Gateway API and MariaDB types the watches and the finalizer
-// path exercise.
+// Secret, the Gateway API and MariaDB types the watches and the finalizer
+// path exercise, and the VerticalPodAutoscaler types the VPA step applies.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
@@ -49,6 +50,7 @@ func testScheme() *runtime.Scheme {
 	_ = esov1.SchemeBuilder.AddToScheme(s)
 	_ = gatewayv1.Install(s)
 	_ = mariadbv1alpha1.AddToScheme(s)
+	_ = vpav1.AddToScheme(s)
 	return s
 }
 
