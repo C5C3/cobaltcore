@@ -305,6 +305,20 @@ rules:
       - update
       - patch
       - delete
+  # autoscaling.k8s.io - verticalpodautoscalers (the opt-in VPAs; the kind
+  # exists only where the VerticalPodAutoscaler is installed)
+  - apiGroups:
+      - autoscaling.k8s.io
+    resources:
+      - verticalpodautoscalers
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
   # networking.k8s.io - networkpolicies
   - apiGroups:
       - networking.k8s.io
