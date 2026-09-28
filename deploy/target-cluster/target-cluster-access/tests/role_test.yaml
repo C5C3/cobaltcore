@@ -49,12 +49,34 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 21
+          count: 22
         documentIndex: 0
       - lengthEqual:
           path: rules
-          count: 21
+          count: 22
         documentIndex: 1
+
+  # The opt-in VerticalPodAutoscalers of the placed workloads.
+  - it: should grant full CRUD on verticalpodautoscalers
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - autoscaling.k8s.io
+            resources:
+              - verticalpodautoscalers
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
 
   - it: should grant full CRUD on the two ESO generators
     set:
@@ -246,7 +268,7 @@ tests:
         documentIndex: 1
       - lengthEqual:
           path: rules
-          count: 21
+          count: 22
         documentIndex: 1
 
   # A namespace that hosts no node-level workload carries no DaemonSet write.
