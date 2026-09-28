@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -48,8 +49,9 @@ const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
 // testScheme registers the types the fake client resolves in this package's
 // tests: core (Secret), the Cinder API, the external-secrets v1 group the
 // credential gate reads to attribute a missing Secret, the Gateway API the route
-// step projects, and the MariaDB group the database step provisions and the
-// deletion path finalizes.
+// step projects, the MariaDB group the database step provisions and the
+// deletion path finalizes, and the VerticalPodAutoscaler group the VPA step
+// applies.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
@@ -57,6 +59,7 @@ func testScheme() *runtime.Scheme {
 	_ = esov1.SchemeBuilder.AddToScheme(s)
 	_ = gatewayv1.Install(s)
 	_ = mariadbv1alpha1.AddToScheme(s)
+	_ = vpav1.AddToScheme(s)
 	return s
 }
 
