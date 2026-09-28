@@ -27,11 +27,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
@@ -79,6 +82,9 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				// Gateway API kind is available to the reconciler. Mirror
 				// what SetupWithManager would set from the RESTMapper.
 				gatewayAPIAvailable: true,
+				// The fake VerticalPodAutoscaler CRD loads into every envtest too,
+				// so the VPA latch is true as it would be at startup.
+				vpaAvailable: true,
 			}
 			// Register the Horizon field indexer so secretToHorizonMapper's
 			// MatchingFields lookup works in integration tests, mirroring
@@ -93,6 +99,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				Owns(&corev1.ConfigMap{}).
 				Owns(&policyv1.PodDisruptionBudget{}).
 				Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
+				Owns(&vpav1.VerticalPodAutoscaler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 				Owns(&networkingv1.NetworkPolicy{}).
 				Owns(&gatewayv1.HTTPRoute{}).
 				Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(

@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -117,4 +118,51 @@ func TestIntegration_CRD_CELOnly_RejectsTargetClusterRefPresenceFlip(t *testing.
 	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
 		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
 	g.Expect(err.Error()).To(ContainSubstring("targetClusterRef is immutable"))
+}
+
+// TestIntegration_CRD_CELOnly_VerticalAutoscaling pins the CEL rules of
+// verticalAutoscaling on the Horizon CRD against an envtest API server
+// with NO validating webhook installed, so the webhook twins cannot mask a
+// missing rule.
+func TestIntegration_CRD_CELOnly_VerticalAutoscaling(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(o *Horizon)
+		wantSub string
+	}{
+		{
+			name: "foreign-resource",
+			mutate: func(o *Horizon) {
+				o.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantSub: "minAllowed may only name cpu and memory",
+		},
+		{
+			name: "beside-autoscaling",
+			mutate: func(o *Horizon) {
+				cpu := int32(80)
+				o.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: &cpu}
+				o.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Off"}
+			},
+			wantSub: "spec.deployment.verticalAutoscaling cannot be set while spec.autoscaling scales the same Deployment",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := newNamespace(t, ctx, c, "celonly-vpa-")
+			o := integrationHorizon("vpa-"+tc.name, ns)
+			tc.mutate(o)
+
+			err := c.Create(ctx, o)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
 }

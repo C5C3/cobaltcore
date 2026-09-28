@@ -28,17 +28,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/gateway"
 	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
@@ -88,6 +91,7 @@ var subConditionTypes = []string{
 	conditionTypeHTTPRouteReady,
 	conditionTypeHorizonAPIReady,
 	"HPAReady",
+	"VPAReady",
 	conditionTypeNetworkPolicyReady,
 }
 
@@ -138,6 +142,14 @@ type HorizonReconciler struct {
 	// nonetheless sets spec.gateway.
 	gatewayAPIAvailable bool
 
+	// vpaAvailable is set during SetupWithManager from the management
+	// cluster's RESTMapper and reports whether it serves the
+	// autoscaling.k8s.io/v1 VerticalPodAutoscaler kind. It gates the local VPA
+	// watch leg and answers commonmulticluster.ChildrenServeKind for local
+	// children, so reconcileVPA reports VPAReady=False/VPANotInstalled for an
+	// opt-in on a cluster without the VPA.
+	vpaAvailable bool
+
 	// MaxConcurrentReconciles bounds how many Horizon CRs reconcile
 	// concurrently. It is threaded from the --max-concurrent-reconciles flag
 	// (see internal/common/bootstrap) and applied to the controller's
@@ -180,6 +192,7 @@ var HorizonRemoteChildKinds = []schema.GroupVersionKind{
 	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
 	policyv1.SchemeGroupVersion.WithKind("PodDisruptionBudget"),
 	autoscalingv2.SchemeGroupVersion.WithKind("HorizontalPodAutoscaler"),
+	deployment.VPAGVK,
 	networkingv1.SchemeGroupVersion.WithKind("NetworkPolicy"),
 	httpRouteGVK,
 }
@@ -195,6 +208,7 @@ var HorizonRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // Required to create/update/delete HTTPRoutes that expose the dashboard externally.
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
@@ -385,6 +399,13 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 					},
 				},
 				{
+					Name:          "VPA",
+					ConditionType: "VPAReady",
+					Fn: func(ctx context.Context, h *horizonv1alpha1.Horizon) (ctrl.Result, error) {
+						return r.reconcileVPA(ctx, children, h)
+					},
+				},
+				{
 					Name:          "NetworkPolicy",
 					ConditionType: conditionTypeNetworkPolicyReady,
 					Fn: func(ctx context.Context, h *horizonv1alpha1.Horizon) (ctrl.Result, error) {
@@ -478,6 +499,16 @@ func (r *HorizonReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		setupLog.Info("Gateway API not installed; HTTPRoute watch disabled, spec.gateway will be rejected via HTTPRouteReady condition")
 	}
 
+	// Detect the VerticalPodAutoscaler CRD: verticalAutoscaling is an opt-in,
+	// so the operator must run on clusters without the VPA, where an
+	// unconditional Owns would fail the controller at Start.
+	r.vpaAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	if r.vpaAvailable {
+		setupLog.Info("VerticalPodAutoscaler CRD detected; enabling VPA watch and reconciliation")
+	} else {
+		setupLog.Info("VerticalPodAutoscaler CRD not installed; VPA watch disabled, verticalAutoscaling will be reported through VPAReady")
+	}
+
 	// Register the Horizon field indexer before Watches so
 	// secretToHorizonMapper can rely on it for its MatchingFields lookup. The
 	// index goes on the LOCAL field indexer, not mgr's: with a provider
@@ -527,12 +558,22 @@ func (r *HorizonReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		b = b.Owns(&gatewayv1.HTTPRoute{}, engageLocal, engageNoProviders)
 	}
 
+	// The recommender rewrites status.recommendation about once a minute; only
+	// a spec change (drift from the applied VPA) wakes the CR.
+	if r.vpaAvailable {
+		b = b.Owns(&vpav1.VerticalPodAutoscaler{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			engageLocal, engageNoProviders)
+	}
+
 	// The same children, once more, on the clusters a CR can project onto. Owns
 	// cannot see them: an owner reference does not cross a cluster boundary, so
-	// the ownership labels are what maps a child back to its CR. No leg carries
-	// a predicate, mirroring what Owns admits locally.
+	// the ownership labels are what maps a child back to its CR. The VPA leg
+	// carries the same predicate as its local Owns; no other leg carries one,
+	// mirroring what Owns admits locally.
 	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &horizonv1alpha1.Horizon{},
-		targets, HorizonRemoteChildKinds, nil)
+		targets, HorizonRemoteChildKinds, map[schema.GroupVersionKind][]mcbuilder.WatchesOption{
+			deployment.VPAGVK: {mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})},
+		})
 	if err != nil {
 		return err
 	}

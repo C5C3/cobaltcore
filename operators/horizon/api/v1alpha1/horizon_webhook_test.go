@@ -284,6 +284,49 @@ func TestValidateCreate_RejectionTable(t *testing.T) {
 			},
 			wantSub: "request must not exceed limit",
 		},
+		{
+			name: "verticalAutoscaling beside autoscaling rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: ptr.To(int32(80))}
+				h.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Off"}
+			},
+			wantSub: "spec.deployment.verticalAutoscaling: Forbidden: cannot be set while spec.autoscaling scales the same Deployment",
+		},
+		{
+			name: "verticalAutoscaling foreign resource rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantSub: `spec.deployment.verticalAutoscaling.minAllowed[ephemeral-storage]: Unsupported value: "ephemeral-storage"`,
+		},
+		{
+			name: "verticalAutoscaling minAllowed above maxAllowed rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+					MaxAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				}
+			},
+			wantSub: `spec.deployment.verticalAutoscaling.minAllowed[cpu]: Invalid value: "2": must not exceed maxAllowed`,
+		},
+		{
+			name: "verticalAutoscaling updateMode outside the enum rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Sometimes"}
+			},
+			wantSub: `spec.deployment.verticalAutoscaling.updateMode: Unsupported value: "Sometimes"`,
+		},
+		{
+			name: "verticalAutoscaling minReplicas zero rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Auto", MinReplicas: ptr.To(int32(0))}
+			},
+			wantSub: "spec.deployment.verticalAutoscaling.minReplicas: Invalid value: 0: must be at least 1",
+		},
 	}
 
 	for _, tc := range tests {

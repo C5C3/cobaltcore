@@ -13,6 +13,7 @@ import (
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -100,13 +101,16 @@ func horizonPaths() (crdDir, webhookDir string) {
 
 // buildControllerScheme creates a runtime.Scheme that includes all types
 // needed by the HorizonReconciler: Horizon API types, core K8s types, ESO
-// types, and Gateway API types. It is created fresh per test.
+// types, Gateway API types, and VerticalPodAutoscaler types. It is created
+// fresh per test.
 func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
 	return commonenvtest.BuildScheme(
 		// External operator types needed by the reconciler.
 		esov1.AddToScheme,
 		// Gateway API types for HTTPRoute reconciliation.
 		gatewayv1.Install,
+		// VerticalPodAutoscaler types for the VPA step and its Owns leg.
+		vpav1.AddToScheme,
 		// Horizon types.
 		addToScheme,
 	)
