@@ -54,6 +54,7 @@ Database ──► Scheduler ──► VolumeServices ──► BackupService �
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition | `HTTPRouteReady` |
 | HealthCheck | HTTP GET of the cluster-local `/healthcheck` through the shared TTL probe cache | `CinderAPIReady` |
 | HPA | Creates and deletes the HorizontalPodAutoscaler of the API Deployment | `HPAReady` |
+| VPA | [`reconcileVPA`](../keystone/keystone-reconciler.md#reconcilevpa) applies or removes the VerticalPodAutoscalers of the API, scheduler, volume and backup Deployments through the shared VPA flow; a detached backend or a removed backup target loses its VPA with its Deployment | `VPAReady` |
 | NetworkPolicy | Creates and deletes the NetworkPolicy (auto-derived egress, including the broker port and one rule for the NFS exports); refuses an empty ingress list (fail-closed) | `NetworkPolicyReady` |
 
 `DBConnectionSecret`, `TransportURLSecret` and `Config` reuse `SecretsReady`
@@ -85,6 +86,7 @@ and must not depool a Cinder whose API serves fine.
 | `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment` |
 | `CinderAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | errors propagate |
+| `VPAReady` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | errors propagate |
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled`, `CapabilityProbeFailed` |
 | `DBPurgeReady` | `DBPurgeScheduled`, `DBPurgeSuspended` | `DBPurgeJobFailed` |

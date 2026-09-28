@@ -461,6 +461,7 @@ resources and their dependencies:
 | `keystone.openstack.c5c3.io` | `keystones/finalizers` | update |
 | `apps` | `deployments` | get, list, watch, create, update, patch, delete |
 | `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
+| `autoscaling.k8s.io` | `verticalpodautoscalers` | get, list, watch, create, update, patch, delete |
 | `""` (core) | `services`, `configmaps`, `secrets`, `serviceaccounts` | get, list, watch, create, update, patch, delete |
 | `""` (core) | `events` | create, patch |
 | `""` (core) | `pods` | get, list |

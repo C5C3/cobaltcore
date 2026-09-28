@@ -1371,14 +1371,17 @@ dev images exist even for a full-chain-test-only change.
 ### e2e-autoscaling
 
 Runs the `tests/e2e-autoscaling/` Chainsaw suite on a full ControlPlane with
-metrics-server: token load scales Keystone from one pod to its HPA maximum and
-back, the PodDisruptionBudget admits an eviction at the minimum, and every
-database-backed API fits its SQL connection cap at its HPA maximum. See
+metrics-server and the VerticalPodAutoscaler: token load scales Keystone from
+one pod to its HPA maximum and back, the PodDisruptionBudget admits an eviction
+at the minimum, every database-backed API fits its SQL connection cap at its HPA
+maximum, and the operators create the VerticalPodAutoscalers the ControlPlane
+opts into. See
 [e2e-autoscaling](../testing/controlplane-e2e-tests.md#e2e-autoscaling) for
 what each step asserts. The suite lives outside `tests/e2e/`, so neither the
 `e2e-operator` legs nor `make e2e` sweep it up, and the job brings up a kind
 cluster of its own: the ControlPlane webhook permits one ControlPlane per
-namespace, and no other ControlPlane job deploys metrics-server.
+namespace, and no other ControlPlane job deploys metrics-server and the VPA
+unconditionally.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-autoscaling == 'true'`, the upstream
@@ -1388,12 +1391,16 @@ Forked pull requests skip it, as they do every self-hosted job.
 The `setup-e2e-infra` composite action threads `WITH_METRICS_SERVER` from the
 step `env` to `hack/deploy-infra.sh`, which deploys the kind metrics-server
 overlay (`deploy/kind/metrics-server/`) the HPAs read their CPU utilization
-from. The job passes `CONTROLPLANE_NAME: cp-autoscaling`, so the OpenBao
-bootstrap seeds the admin-password path of the suite's ControlPlane, and opts
-into NFS and the shared broker as `e2e-controlplane` does.
+from. It threads `WITH_VPA: "true"` the same way, which deploys the kind VPA
+overlay (`deploy/kind/vpa/`): the operators need its VerticalPodAutoscaler CRD
+to create the opt-in VPAs, and its recommender answers the Northbound
+database's VPA, which step 5 of the suite waits for. The job passes
+`CONTROLPLANE_NAME: cp-autoscaling`, so the OpenBao bootstrap seeds the
+admin-password path of the suite's ControlPlane, and opts into NFS and the
+shared broker as `e2e-controlplane` does.
 
-`timeout-minutes: 190` covers about 40 minutes of bring-up, as
-`e2e-controlplane` estimates it, plus the suite's 145-minute ceiling (the sum
+`timeout-minutes: 205` covers about 40 minutes of bring-up, as
+`e2e-controlplane` estimates it, plus the suite's 160-minute ceiling (the sum
 of its step, catch and cleanup timeouts) and a few minutes of margin. Both terms
 are estimates to confirm against the first green run.
 
@@ -1404,7 +1411,7 @@ are estimates to confirm against the first green run.
 | 3 | `hack/ci-resolve-ovn-version.sh` | Exports `OVN_VERSION` from the pin in `images/ovn/Dockerfile` |
 | 4 | `load-e2e-images` composite | Restores the ten operator `:dev` images, the `keystone`, `glance`, `placement`, `barbican`, `neutron`, `cinder` and `nova` images at `2025.2`, `ovn:${OVN_VERSION}` and `tempest:2025.2` |
 | 5 | `kind load docker-image` | Loads the nineteen images into kind |
-| 6 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=cp-autoscaling WITH_CONTROLPLANE_CR=false WITH_NFS=true WITH_MESSAGING=true WITH_METRICS_SERVER=true` |
+| 6 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=cp-autoscaling WITH_CONTROLPLANE_CR=false WITH_NFS=true WITH_MESSAGING=true WITH_METRICS_SERVER=true WITH_VPA=true` |
 | 7 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit, with `GITHUB_TOKEN` |
 | 8 | `hack/ci-deploy-operator.sh` ×10 | Deploys the keystone, horizon, glance, placement, barbican, ovn, neutron, cinder, nova and c5c3 operators, in `e2e-controlplane`'s order |
 | 9 | `chainsaw test` | Runs `tests/e2e-autoscaling/` |
@@ -1414,8 +1421,10 @@ are estimates to confirm against the first green run.
 
 **Path filter:** the shared ControlPlane triggers (`FILTER_c5c3` or the
 `ci:controlplane` label) plus `tests_autoscaling`: `tests/e2e-autoscaling/**`,
-`deploy/kind/metrics-server/**`, `internal/common/deployment/builders.go` and
-`internal/common/deployment/hpa_flow.go`. `ci:full` and a `v*` tag force it on,
+`deploy/kind/metrics-server/**`, `deploy/kind/vpa/**`,
+`internal/common/deployment/builders.go`,
+`internal/common/deployment/hpa_flow.go` and
+`internal/common/deployment/vpa_flow.go`. `ci:full` and a `v*` tag force it on,
 and a labeled no-op resolves it to `false`.
 
 ### e2e-external-keystone

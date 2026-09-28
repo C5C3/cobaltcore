@@ -61,6 +61,7 @@ The API is the only Deployment that scales horizontally.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | `DeploymentSpec` | no | `replicas: 3` | Pod-level knobs: `replicas`, `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and memory sized from `spec.api.uwsgi`, 720Mi as request and limit at its defaults, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds` (30), `preStopSleepSeconds` (5), `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). It is also the fallback of `spec.jobs` |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the Nova API Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). Rejected beside `spec.autoscaling`, which scales the same Deployment. On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `uwsgi` | `UWSGISpec` | no | materialized | uWSGI parameters: `processes` (2), `threads` (1), `httpKeepAlive` (true), `harakiri` and `httpKeepAliveTimeout` (both omitted when unset). The defaulting webhook materializes the block, so the API always runs with the documented values |
 
 ### NovaMetadataSpec
@@ -73,6 +74,7 @@ asked.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | `DeploymentSpec` | no | `replicas: 1` | The same pod-level knobs, node placement included, with memory sized from `spec.metadata.uwsgi` (720Mi at its defaults). The front end holds no state between requests, so the count may be raised |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the metadata Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `uwsgi` | `UWSGISpec` | no | materialized | The same uWSGI parameters as the API's |
 | `sharedSecretRef` | `SecretRefSpec` | yes | `key` to `shared_secret` | The Secret holding the value the Neutron metadata agent signs proxied requests with. The operator reads it rather than generating one: the same value has to reach the `NeutronMetadataAgent`, and a value only this side knows leaves every metadata request rejected |
 | `gateway` | `GatewaySpec` | no | | External exposure of the metadata API on a hostname of its own. Rarely wanted: the metadata agent dials the Service from inside the cluster |
@@ -82,6 +84,7 @@ asked.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | `DeploymentSpec` | no | `replicas: 1`, `terminationGracePeriodSeconds: 200` | The same pod-level knobs, node placement included, with memory sized from `workers`, one single-threaded process each: 720Mi at the default two, 1072Mi at three. Schedulers are peers that read the same host state out of Placement and hold nothing between requests, so the count may be raised |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the scheduler Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `workers` | `*int32` (Minimum=1) | no | `2` | `nova-scheduler` worker processes per pod, rendered into the scheduler's own overlay. Raising it multiplies the database and bus connections the pod holds |
 
 ### NovaConductorSpec
@@ -89,6 +92,7 @@ asked.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | `DeploymentSpec` | no | `replicas: 1`, `terminationGracePeriodSeconds: 200` | The same pod-level knobs, node placement included, with memory sized from `workers` like the scheduler's (720Mi at the default two) |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the conductor Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `workers` | `*int32` (Minimum=1) | no | `2` | `nova-conductor` worker processes per pod, rendered into the conductor's own overlay |
 
 The raised grace period is the one place these two blocks depart from the
@@ -109,6 +113,7 @@ before any mutating webhook runs.
 | --- | --- | --- | --- | --- |
 | `enabled` | `*bool` | no | `true` | Projects the proxy. Setting it to `false` deletes the Deployment, the Service, the HTTPRoute and the proxy's NetworkPolicy, renders `[vnc] enabled = false` in `nova.conf` and in the compute contract, and the defaulting webhook removes `consoleProxy.deployment` in the same request |
 | `deployment` | `*DeploymentSpec` | no | `replicas: 1` while enabled | The pod-level knobs, node placement included. The field is a pointer so an absent block stays absent: a value block would serialize as `deployment: {}` on every CR, the API server would fill it with three replicas, and the console rule below would fire on a block nobody wrote. For the same reason the defaulting webhook removes the block it materialized once the proxy is switched off, so a patch that sets only `enabled: false` is admitted. The proxy runs one single-threaded process, so a block that names neither CPU nor memory, or no block at all, renders a 70m CPU request, no CPU limit, and 368Mi as memory request and limit |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the console proxy Deployment while the proxy is enabled into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `gateway` | `GatewaySpec` | no | | External exposure of the proxy on a hostname of its own. The console URL is `https://<hostname>/vnc_lite.html?path=%3Ftoken%3D<token>`, and the WebSocket that follows the page opens on `/`, so the two cannot be split off the API's hostname by path. For the same reason `path` must be empty or `/` (webhook): a prefix route would match neither |
 
 ### ServiceUserSpec
@@ -799,8 +804,9 @@ messaging union rules, the messaging TLS rule, the archive and scheduler bounds,
 the two cross-database rules, the cell0 name rules, both `extraConfig` guards,
 the two `metadata.name` rules, the two empty-`name` reference rules
 (`spec.metadata.sharedSecretRef`, `spec.targetClusterRef`), the region
-control-character rule, the URL fields, the console gateway path, and the two
+control-character rule, the URL fields, the console gateway path, the two
 `spec.remoteCompute` rules (the `messaging.tls` requirement and the
-`https` pattern of its `keystoneEndpoint`, with and without a scheme).
+`https` pattern of its `keystoneEndpoint`, with and without a scheme), and the
+`verticalAutoscaling` rules.
 The functional suites that reconcile a Nova to Ready are described in
 [Nova E2E Test Suites](../testing/nova-e2e-tests.md).

@@ -1631,16 +1631,25 @@ The component blocks are built from these shapes:
 
 | Shape | Fields |
 | --- | --- |
-| `api` (Keystone, Glance, Placement, Barbican, Neutron, Cinder, Nova) | `replicas`, `resources`, `nodeSelector`, `tolerations`, `priorityClassName`, `spreadConstraints`, `processes`, `threads`, `autoscaling` |
+| `api` (Keystone, Glance, Placement, Barbican, Neutron, Cinder, Nova) | `replicas`, `resources`, `nodeSelector`, `tolerations`, `priorityClassName`, `spreadConstraints`, `processes`, `threads`, `autoscaling`, `verticalAutoscaling` |
 | `horizon.api` | the `api` fields without `processes` and `threads` |
 | `nova.metadata` | the `api` fields without `autoscaling` |
-| `nova.scheduler`, `nova.conductor` | `replicas`, `resources`, placement, `spreadConstraints`, `workers` |
-| `cinder.scheduler`, `nova.consoleProxy` | `replicas`, `resources`, placement, `spreadConstraints` |
+| `nova.scheduler`, `nova.conductor` | `replicas`, `resources`, placement, `spreadConstraints`, `workers`, `verticalAutoscaling` |
+| `cinder.scheduler`, `nova.consoleProxy` | `replicas`, `resources`, placement, `spreadConstraints`, `verticalAutoscaling` |
+| `neutron.workers` | `replicas`, `resources`, placement, `verticalAutoscaling` |
+| `cinder.volume`, `cinder.backup` | `resources`, placement, `verticalAutoscaling` |
 | `jobs` | `resources`, `priorityClassName` |
 | `spreadConstraints[]` | `maxSkew` (Minimum 1), `topologyKey` (MinLength 1), `whenUnsatisfiable` (`DoNotSchedule` \| `ScheduleAnyway`) |
 
 `processes`, `threads`, and `workers` have Minimum 1. `autoscaling` is the shared
-[`AutoscalingSpec`](../keystone/keystone-crd.md#autoscalingspec). A spread entry
+[`AutoscalingSpec`](../keystone/keystone-crd.md#autoscalingspec), and
+`verticalAutoscaling` the shared
+[`VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec).
+Every service component that runs a Deployment carries `verticalAutoscaling`;
+`database`, `cache`, `messaging` and `secretStore` never do, because their
+workloads belong to their own operators. An `api` component rejects
+`autoscaling` beside `verticalAutoscaling`, by a CEL rule and by the webhook:
+every HPA scales on the utilization a VPA changes. A spread entry
 carries no label selector: the ControlPlane completes it with the pod selector
 of the component's Deployment, which each service's api package exports
 (`APIPodSelector`, and `SchedulerPodSelector`, `MetadataPodSelector`,
@@ -1652,7 +1661,7 @@ Neither the ControlPlane nor a `SizingProfile` exposes node or pod affinity.
 `BuiltinSizing` returns a fresh copy of a profile on every call; an empty or
 unknown name returns `Standard`. "none" means the profile sets nothing, so the
 child operator's own default applies. Neither profile sets placement, spread,
-autoscaling, or a priority class. The `Minimal` figures are measured: they come
+autoscaling, vertical autoscaling, or a priority class. The `Minimal` figures are measured: they come
 from the VPA recommendations of a CI run, by the rules
 [Sizing Calibration](../testing/sizing-calibration.md) records. They keep the
 full stack within one 4 vCPU / 16 GiB node, which the
@@ -1697,14 +1706,18 @@ and returns a new value that aliases neither input:
 - `nodeSelector`, `tolerations`, and `spreadConstraints`: a non-empty override
   replaces the base, and an empty one inherits. The defaulting webhook's JSON
   round trip drops an empty map or list, so an empty value cannot mean "clear".
-- `autoscaling`: a set override replaces the whole block, since its bounds and
-  targets only make sense together.
+- `autoscaling` and `verticalAutoscaling`: a set override replaces the whole
+  block, since its bounds and targets only make sense together.
 - A component block: a nil override keeps the base, a nil base takes the
   override, and two set blocks merge recursively.
 
 `ResolveSizing` applies the built-in base, then the referenced `SizingProfile`,
 then the ControlPlane's own values. A `profileRef` whose profile cannot be read
 resolves the ControlPlane's values over `Standard`.
+
+The merged sizing is checked again: a component that the profile opts into a
+VPA and the ControlPlane puts an HPA on, or the reverse, is rejected with
+`autoscaling and verticalAutoscaling cannot both be set on one component`.
 
 ### Projection
 
@@ -1713,9 +1726,11 @@ the ControlPlane always projected), its resources, and its node selector,
 tolerations, and priority class, each falling back to the top-level value when
 the component sets none. A resolved priority class of `""` projects none, which
 is how a component opts out of the top-level class. Spread entries are completed
-with the child's pod selector. Every field is assigned on every pass, so
-clearing a value on the ControlPlane clears it on the child. Affinity, the
-rollout strategy, and the graceful-termination timings are never written.
+with the child's pod selector. A component's `verticalAutoscaling` reaches the
+`verticalAutoscaling` of the deployment block it sizes (`spec.deployment.*`
+below includes it). Every field is assigned on every pass, so clearing a value
+on the ControlPlane clears it on the child. Affinity, the rollout strategy, and
+the graceful-termination timings are never written.
 
 | `spec.sizing.` component | Child fields written |
 | --- | --- |
@@ -1724,9 +1739,9 @@ rollout strategy, and the graceful-termination timings are never written.
 | `horizon.api` | `spec.deployment.*`, `spec.autoscaling` |
 | `glance.api` | `spec.deployment.*`, `spec.autoscaling`; `processes` and `threads` as `spec.apiServer.uwsgi` from 2026.1, `processes` as `spec.apiServer.workers` below it (threads are not written there) |
 | `placement.api`, `barbican.api`, `neutron.api` | `spec.deployment.*`, `spec.apiServer.uwsgi` (only when a count is set), `spec.autoscaling` |
-| `neutron.workers` | `spec.workers.deployment`: replicas, resources, placement |
+| `neutron.workers` | `spec.workers.deployment`: replicas, resources, placement, `verticalAutoscaling` |
 | `cinder.api` / `cinder.scheduler` | `spec.api.deployment.*`, `spec.api.uwsgi`, `spec.autoscaling` / `spec.scheduler.deployment.*` |
-| `cinder.volume`, `cinder.backup` | `spec.volume.deployment` / `spec.backup.deployment`: resources and placement; the replica count stays 1 |
+| `cinder.volume`, `cinder.backup` | `spec.volume.deployment` / `spec.backup.deployment`: resources, placement and `verticalAutoscaling`; the replica count stays 1 |
 | `nova.api` / `nova.metadata` | `spec.api.deployment.*`, `spec.api.uwsgi`, `spec.autoscaling` / `spec.metadata.deployment.*`, `spec.metadata.uwsgi` |
 | `nova.scheduler`, `nova.conductor` | `spec.<component>.deployment.*`, `spec.<component>.workers` |
 | `nova.consoleProxy` | `spec.consoleProxy.deployment.*` whenever the proxy is enabled, including the default of an absent `services.nova.consoleProxy` |
@@ -1803,6 +1818,10 @@ spec:
   keystone:
     api:
       replicas: 2
+  neutron:
+    workers:
+      verticalAutoscaling:
+        updateMode: "Off"
 ```
 
 | Field | Type | Default | Description |
@@ -1820,7 +1839,8 @@ uncached API reader:
 - `Default` sets an empty `spec.base` to `Standard`.
 - Create checks the values with the same rules as `spec.sizing` (requests within
   limits, label keys of node selectors and tolerations, the Galera quorum, the
-  96Mi Memcached floor, the spread-entry markers), the `base` enum, and that
+  96Mi Memcached floor, the spread-entry markers, the `verticalAutoscaling`
+  rules), the `base` enum, and that
   every named PriorityClass exists. It then resolves the sizing of every
   ControlPlane that already references the profile against its values, as an
   update does: a restored profile meets ControlPlanes whose `spec.sizing` edits
@@ -1829,7 +1849,8 @@ uncached API reader:
   did not name, and, when the spec changed, resolves the sizing of every
   ControlPlane that references the profile against the new values. A merged value that fails (a request above a
   limit, an autoscaling target against a zero request, a `maxReplicas` below the
-  replica count) rejects the create or edit with an error naming
+  replica count, `autoscaling` beside `verticalAutoscaling` on one component)
+  rejects the create or edit with an error naming
   `ControlPlane <namespace>/<name>`. A failed List of ControlPlanes rejects it
   with an internal error (`listing ControlPlanes`).
 - Delete is not validated. A referenced profile can be deleted; the ControlPlanes
@@ -2660,6 +2681,8 @@ Keystone discipline:
 | `spec.sizing` and `SizingProfile spec`: every `replicas`, `processes`, `threads`, `workers` | Minimum: 1 |
 | `spec.sizing.database.storageSize`, `SizingProfile spec.database.storageSize` | Pattern `^[0-9]+(Mi\|Gi\|Ti)$` |
 | `spec.sizing` and `SizingProfile spec`: every `spreadConstraints[]` | `maxSkew` Minimum 1; `topologyKey` MinLength 1; `whenUnsatisfiable` Enum `DoNotSchedule`, `ScheduleAnyway` |
+| `spec.sizing` and `SizingProfile spec`: every `api` and `horizon.api` (CEL) | `!(has(self.autoscaling) && has(self.verticalAutoscaling))` → "autoscaling and verticalAutoscaling cannot both be set on one component" |
+| `spec.sizing` and `SizingProfile spec`: every `verticalAutoscaling` | `updateMode` Enum `Off`, `Initial`, `Recreate`, `Auto`; `minReplicas` Minimum 1; `minAllowed` and `maxAllowed` at most two keys, CEL: only `cpu` and `memory` (see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec)) |
 | `CredentialRotation spec.target` | Enum: `adminApplicationCredential`, `serviceAccountPassword` |
 | `CredentialRotation spec.keystoneService` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`; MinLength 1; MaxLength 253 |
 | `CredentialRotation` (CEL) | `target == 'serviceAccountPassword'` ⇒ `has(self.keystoneService)` → "keystoneService is required when target is serviceAccountPassword" |
@@ -2734,6 +2757,8 @@ short-circuit on the first error.
 | Sizing storage size | `spec.sizing.database.storageSize` | `field.Invalid` | Value does not match `^[0-9]+(Mi\|Gi\|Ti)$`. Twin of the CRD pattern. |
 | Sizing cache memory floor | `spec.sizing.cache.resources.limits.memory` | `field.Invalid` | A limit below `96Mi`. Message: `memory limit must be at least 96Mi: the Memcached operator requires maxMemoryMB (64) plus 32Mi`. **Webhook-only.** |
 | Sizing spread entries | `spec.sizing.<component>.spreadConstraints[i].{maxSkew,topologyKey,whenUnsatisfiable}` | `field.Invalid` / `field.Required` / `field.NotSupported` | `maxSkew` below 1, an empty `topologyKey`, or a `whenUnsatisfiable` outside `DoNotSchedule`, `ScheduleAnyway`. Twins of the CRD markers. |
+| Sizing vertical autoscaling beside autoscaling | `spec.sizing.<service>.api.verticalAutoscaling`, `spec.sizing.horizon.api.verticalAutoscaling` | `field.Forbidden` | The component sets both `autoscaling` and `verticalAutoscaling`, as written and on the merged sizing, so a profile's VPA meets a ControlPlane's HPA on the same component, and the reverse. Message: `autoscaling and verticalAutoscaling cannot both be set on one component`. Twin of the CEL rule on the API sizing types. |
+| Sizing vertical autoscaling values | `spec.sizing.<component>.verticalAutoscaling.*` | `field.NotSupported` / `field.Invalid` | The shared checks of `validation.VerticalAutoscaling`: an `updateMode` outside the enum, a `minReplicas` below 1, a `minAllowed` or `maxAllowed` key other than `cpu` and `memory`, a `cpu` or `memory` bound whose decimal exponent lies beyond ±30 (webhook-only), and a `minAllowed` above the `maxAllowed` of the same resource (webhook-only). |
 | Console-proxy sizing while disabled | `spec.sizing.nova.consoleProxy` | `field.Forbidden` | The block is set while `services.nova.consoleProxy.enabled` is `false`. Message: `must not be set when services.nova.consoleProxy.enabled is false`. **Webhook-only.** |
 | SizingProfile exists | `spec.sizing.profileRef.name` | `field.NotFound` / `field.InternalError` | No `SizingProfile` of that name exists (`NotFound`), or reading it failed (`InternalError`). A missing profile is reported on create and on an update that changes the name, so a ControlPlane whose profile was deleted later can still be updated, finalizer removal included. A failed read is reported on create and on every update that changes `spec.sizing`. **Webhook-only.** |
 | New dedicated database sizing resolved | `spec.services.<service>.dedicatedBackingServices.database.{replicas,storageSize}` | `field.Required` | On update, a managed dedicated database the old revision did not declare still has `replicas` or `storageSize` unset, because the SizingProfile `spec.sizing.profileRef` names does not exist. Both values freeze at creation, so restore the profile or set them explicitly. **Webhook-only.** |

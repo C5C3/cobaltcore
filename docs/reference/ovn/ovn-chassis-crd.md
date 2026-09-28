@@ -45,6 +45,7 @@ its registration in the old Southbound database.
 | `remoteProbeIntervalMs` | `int32` (Minimum=0) | no | `60000` | How long `ovn-controller` lets its Southbound connection sit idle before probing it. Zero disables the probe, which is what a chassis behind a connection-tracking middlebox needs when the probe is what tears the connection down |
 | `ovs` | [`*OVNChassisOVSSpec`](#ovnchassisovsspec) | no | `nil` | Tunes the `ovs-vswitchd` container: its resources and its revalidator thread count. When nil the operator renders no requests or limits for the container and pins 2 revalidator threads. The local `ovsdb-server` container beside it takes no resources from any field |
 | `controller` | [`*OVNChassisContainerSpec`](#ovnchassiscontainerspec) | no | `nil` | Tunes the `ovn-controller` container |
+| `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts both chassis DaemonSets, `{name}-ovs` and `{name}-ovn-controller`, one VPA each, into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSets are created on. The CR itself, its status and its finalizer stay on the management cluster. Immutable, enforced by two CEL transition rules and by the webhook. It has to name the same cluster the `OVNCentral` names. See [Target Clusters](../target-clusters.md) |
 
 ### OVNCentralRef
@@ -235,8 +236,8 @@ has to outlive the selection.
 
 ### Conditions
 
-Five sub-reconcilers each own one condition type. The aggregate `Ready` is `True`
-only when all five are. For the pipeline that sets them see
+Six sub-reconcilers each own one condition type. The aggregate `Ready` is `True`
+only when all six are. For the pipeline that sets them see
 [Reconciler Architecture](./ovn-reconciler.md).
 
 | Type | Status | Reason | Meaning |
@@ -262,6 +263,11 @@ only when all five are. For the pipeline that sets them see
 | `MaintenanceReady` | False | `MaintenanceError` | Running a Job, or dropping a deregistered node from the ConfigMap, failed |
 | `Ready` | True | `AllReady` | All five sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
+| `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
+| `VPAReady` | True | `VPANotRequired` | No workload opts in (`spec.verticalAutoscaling` unset); a VPA the CR created before is deleted |
+| `VPAReady` | False | `VPANotInstalled` | A workload opts in, but the cluster the children land on does not serve `autoscaling.k8s.io/v1` `VerticalPodAutoscaler`. Nothing is created, and the other conditions still converge |
+| `VPAReady` | False | `CapabilityProbeFailed` | The target cluster the CR names could not be probed for the kind |
+| `VPAReady` | False | `VPAError` | Listing, applying or deleting a VPA failed; the message carries the error |
 
 ## Sub-Resource Naming Convention
 

@@ -40,6 +40,7 @@ compute service is deleted after the pod is gone.
 | `libvirt` | [`NovaComputeLibvirtSpec`](#novacomputelibvirtspec) | no | `{}` | The `[libvirt]` options the pool renders |
 | `updateStrategy` | [`NovaComputeUpdateStrategy`](#novacomputeupdatestrategy) | no | `{}` | Paces the DaemonSet rollout |
 | `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits of the `nova-compute` container, applied to the `wait-for-chassis` init container too. Nil renders none |
+| `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the pool DaemonSet (`{name}-nova-compute`) for as long as the operator renders it into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `extraConfig` | `map[string]map[string]string` | no | none | INI sections merged over the rendered `compute-pool.conf`. It is the per-pool override surface. The keys the pod takes from its environment or its mounts, and the keys that select the live-migration transport, are rejected at admission (see [NovaComputeOwnedConfigKeys](#owned-keys)) |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSet and its ConfigMaps are created on. The CR, its status and its finalizers stay on the management cluster. Immutable. See [Target Clusters](../target-clusters.md) |
 
@@ -223,8 +224,8 @@ Pools of different Novas, or on different clusters, never conflict.
 
 ### Conditions
 
-Six steps each own one condition type. The aggregate `Ready` is `True` only when
-all six are. `ExtraConfigHealthy` reports on the overlay the owner writes and
+Seven steps each own one condition type. The aggregate `Ready` is `True` only when
+all seven are. `ExtraConfigHealthy` reports on the overlay the owner writes and
 stays out of the aggregate. For the pipeline see
 [Reconciler Architecture](./nova-reconciler.md#novacompute).
 
@@ -263,6 +264,11 @@ stays out of the aggregate. For the pipeline see
 | `ServicesReady` | False | `PodListError` | Listing the pods on a Releasing node failed |
 | `Ready` | True | `AllReady` | All six sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
+| `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
+| `VPAReady` | True | `VPANotRequired` | No workload opts in (`spec.verticalAutoscaling` unset); a VPA the CR created before is deleted |
+| `VPAReady` | False | `VPANotInstalled` | A workload opts in, but the cluster the children land on does not serve `autoscaling.k8s.io/v1` `VerticalPodAutoscaler`. Nothing is created, and the other conditions still converge |
+| `VPAReady` | False | `CapabilityProbeFailed` | The target cluster the CR names could not be probed for the kind |
+| `VPAReady` | False | `VPAError` | Listing, applying or deleting a VPA failed; the message carries the error |
 
 ## Sub-Resource Naming Convention
 

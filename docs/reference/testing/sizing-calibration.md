@@ -33,6 +33,13 @@ finds no pods. `WITH_VPA=true` therefore removes the scale subresource from
 the `MariaDB` CRD of the kind cluster, which makes the StatefulSet the
 topmost controller. Nothing in the kind stack scales a `MariaDB` through it.
 
+A measured workload must not opt into `verticalAutoscaling`. The operator's
+VPA would be a second VPA on the same pods, which upstream leaves undefined,
+and a VPA in any other mode than `"Off"` changes the requests the measurement
+derives its figures from. None of the three jobs' ControlPlanes sets the
+block, and the [built-in profiles](../c5c3/controlplane-crd.md) set it
+nowhere.
+
 The three jobs cover the process counts the profiles and the defaults run:
 
 | Job | Workloads | What it contributes |

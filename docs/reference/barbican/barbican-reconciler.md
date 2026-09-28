@@ -51,6 +51,7 @@ Secrets ─► DBConnectionSecret ─► SecretStores ─► Config ─► DBCle
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition. It renders no request timeout, since barbican answers short JSON requests and the gateway implementation's default is the right cap | `HTTPRouteReady` |
 | HealthCheck | HTTP GET of the cluster-local `/healthcheck` app through the shared TTL probe cache. The paste composite routes that path outside the authtoken pipeline, so a 2xx means the WSGI app serves requests without a token or a database round trip | `BarbicanAPIReady` |
 | HPA | Creates/deletes the HorizontalPodAutoscaler | `HPAReady` |
+| VPA | [`reconcileVPA`](../keystone/keystone-reconciler.md#reconcilevpa) applies or removes the VerticalPodAutoscaler of the API Deployment through the shared VPA flow; reports `VPANotInstalled` for an opt-in on a cluster without the VPA | `VPAReady` |
 | NetworkPolicy | Creates/deletes the NetworkPolicy (auto-derived DNS, database, Keystone, cache, and OpenBao egress); refuses an empty ingress list (fail-closed) | `NetworkPolicyReady` |
 
 `DBConnectionSecret` and `Config` reuse `SecretsReady` instead of a dedicated
@@ -94,6 +95,7 @@ sub-conditions are `True`, and `False` (`NotAllReady`) otherwise.
 | `DeploymentReady` | `DeploymentReady` | `WaitingForSecretStores`, `WaitingForDeployment` |
 | `BarbicanAPIReady` | `APIHealthy` | `APIUnhealthy`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed`, plus the shared pre-endpoint wait the probe flow sets before `status.endpoint` is stamped |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
+| `VPAReady` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled`, `CapabilityProbeFailed` |
 

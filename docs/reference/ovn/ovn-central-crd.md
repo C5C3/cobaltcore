@@ -52,6 +52,7 @@ member creates the database file. See
 | `electionTimerMs` | `int32` (Minimum=1000, Maximum=180000) | no | `1000` | How long a follower waits without hearing from the leader before it starts an election. Written into the database when it is created, so it is immutable through this field |
 | `inactivityProbeMs` | `int32` (Minimum=0) | no | `60000` | How long `ovsdb-server` lets a client connection sit idle before probing it. Zero disables the probe, which is what a client behind a connection-tracking middlebox needs when the probe is what tears the connection down |
 | `resources` | `*corev1.ResourceRequirements` | no | operator-resolved `70m` CPU, `256Mi` memory requests; no limit | Requests and limits for the `ovsdb` container. The floor is filled per resource: a CPU the block names neither as request nor as limit gets a 70m request, and a memory it names neither way gets a 256Mi request, both without a limit, so each Raft member runs in the Burstable QoS class. Other resources the block names, such as an `ephemeral-storage` limit, are kept beside the floor. A member without requests would run BestEffort, the class the kubelet evicts first under node memory pressure. There is no default limit because the database grows with the number of logical ports: size the memory request, and any limit, from that count. A resource the block names is used as written, and no request is added beside a limit the block sets. The floor is resolved at reconcile time and never written into the CR, so upgrading to an operator that changes it rolls the members once, one at a time. See [The request floor](#the-request-floor) for LimitRanges and the upgrade roll |
+| `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the member StatefulSet (`{name}-nb` or `{name}-sb`) into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). The operator fills `minAllowed` with the [request floor](#the-request-floor), `70m` CPU and `256Mi` memory, for each of the two resources the block's `minAllowed` does not name, so the VPA never moves a member below what the floor renders. A value the block names is kept, even one below the floor. On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled` |
 
 #### The request floor
 
@@ -149,6 +150,7 @@ backup volume, which have the same two knobs.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | The pod-level knobs of the northd Deployment: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and 368Mi as memory request and limit at one thread, plus 32Mi per extra thread, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). Three northd pods are one active instance and two standbys, so the count sizes failover. The block is also the fallback of `spec.jobs` |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the northd Deployment (`{name}-northd`) into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `threads` | `int32` (Minimum=1, Maximum=16) | no | `1` | Parallel logical-flow computation threads. Past a handful the lock contention inside northd eats the gain, so the ceiling stays low |
 
 ### OVNRelaySpec
@@ -163,6 +165,7 @@ resources, and renders the node placement fields verbatim.
 | --- | --- | --- | --- | --- |
 | `replicas` | `int32` (Minimum=1) | yes | — | The number of relay pods. Unlike the database replicas this is a plain scaling knob with no odd-count or immutability constraint |
 | `resources` | `*corev1.ResourceRequirements` | no | operator-resolved `70m` CPU request, `368Mi` memory request and limit | Requests and limits for the relay container. The operator resolves defaults per resource when it renders the pod: a CPU the block names neither as request nor as limit gets a 70m request and no limit, and a memory it names neither way gets 368Mi as both request and limit, the figure for one single-threaded process (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). Anything else the block sets is kept |
+| `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the relay Deployment (`{name}-sb-relay`) into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `nodeSelector` | `map[string]string` | no | `nil` | Restricts the relay pods to nodes that carry every listed label. The webhook checks the label grammar |
 | `tolerations` | `[]corev1.Toleration` | no | `nil` | Lets the relay pods onto nodes with matching taints. The webhook applies the API server's toleration rules |
 | `affinity` | `*corev1.Affinity` | no | `nil` | Node affinity and pod (anti-)affinity rules for the relay pods, rendered verbatim |
@@ -349,8 +352,8 @@ whose address is still being assembled.
 
 ### Conditions
 
-Seven sub-reconcilers each own one condition type. The aggregate `Ready` is
-`True` only when all seven are.
+Eight sub-reconcilers each own one condition type. The aggregate `Ready` is
+`True` only when all eight are.
 
 | Type | Status | Reason | Meaning |
 | --- | --- | --- | --- |
@@ -383,6 +386,11 @@ Seven sub-reconcilers each own one condition type. The aggregate `Ready` is
 | `BackupReady` | False | `WaitingForEndpoints` | Both database addresses reach the run as environment variables, and one is not published yet |
 | `Ready` | True | `AllReady` | All seven sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
+| `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
+| `VPAReady` | True | `VPANotRequired` | No workload opts in (every `verticalAutoscaling` block unset); a VPA the CR created before is deleted |
+| `VPAReady` | False | `VPANotInstalled` | A workload opts in, but the cluster the children land on does not serve `autoscaling.k8s.io/v1` `VerticalPodAutoscaler`. Nothing is created, and the other conditions still converge |
+| `VPAReady` | False | `CapabilityProbeFailed` | The target cluster the CR names could not be probed for the kind |
+| `VPAReady` | False | `VPAError` | Listing, applying or deleting a VPA failed; the message carries the error |
 
 northd, the relay, and the backup read the published addresses and nothing of
 each other's output, so they run as a parallel group after the endpoint step.

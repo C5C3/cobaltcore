@@ -297,6 +297,15 @@ helm upgrade --kube-context "$TARGET" --reuse-values \
   target-cluster-access deploy/target-cluster/target-cluster-access -n c5c3-access
 ```
 
+The same holds for `verticalpodautoscalers` in `autoscaling.k8s.io`, which the
+chart gained with the opt-in VerticalPodAutoscaler. On a target cluster that
+serves that kind, every service operator watches, lists and sweeps VPAs there,
+whether or not a CR opts in (see [Per-cluster capabilities](#per-cluster-capabilities)).
+Without the grant the VPA watch never syncs, which fails the cluster's
+engagement, and a forbidden list fails the teardown sweep and holds every
+placed CR in `Terminating`. Upgrade the release on every registered target
+cluster before the service operators, with the command above.
+
 The OVN chassis layer (issue #903) needs a namespace it can run a node-level
 workload in, and `privilegedNamespaces` is the one value that provides it. Every
 entry is a namespace from `values.namespaces`; each gets its Namespace labelled
@@ -974,9 +983,11 @@ in its own namespace at home to mint the K-ORC application credential.
 
 ## Per-cluster capabilities
 
-Two of the kinds these operators project are optional: the Gateway API
-`HTTPRoute`, and the cert-manager `Certificate` Keystone issues for a managed
-database client keypair. Whether a kind can be written is a property of the
+Three of the kinds these operators project are optional: the Gateway API
+`HTTPRoute`, the cert-manager `Certificate` Keystone issues for a managed
+database client keypair, and the `autoscaling.k8s.io/v1`
+`VerticalPodAutoscaler` of a workload that opts into vertical autoscaling.
+Whether a kind can be written is a property of the
 cluster the children land on, so that is the cluster asked. A CR without
 `targetClusterRef` takes the answer from the latch its operator probed against
 the management cluster's `RESTMapper` at setup, and a CRD installed there
@@ -988,12 +999,15 @@ reconcile writes the route.
 The verdict decides what the pass does. A `spec.gateway` set against a cluster
 that does not serve `HTTPRoute` holds `HTTPRouteReady=False` with reason
 `GatewayAPINotInstalled`, under a message naming the cluster that lacks the
-CRD. Keystone's Certificate delete, the one that runs when database TLS is
-switched off or pointed at a brownfield database, is skipped on a target
-without cert-manager, where no Certificate can exist. A probe that fails
+CRD. An opt-in `verticalAutoscaling` block against a cluster that does not
+serve the VPA holds `VPAReady=False` with reason `VPANotInstalled`, naming the
+workloads that opt in; nothing is listed or deleted there, and the other
+conditions still converge. Keystone's Certificate delete, the one that runs when
+database TLS is switched off or pointed at a brownfield database, is skipped on
+a target without cert-manager, where no Certificate can exist. A probe that fails
 instead of answering is its own outcome: a target API server that is
 unreachable, or throttling the discovery request, sets the sub-reconciler's own
-condition — `HTTPRouteReady` or `DatabaseTLSReady` — to `False` with reason
+condition (`HTTPRouteReady`, `DatabaseTLSReady` or `VPAReady`) to `False` with reason
 `CapabilityProbeFailed`, and the pass is retried with backoff. That condition is
 what keeps an aborted pass honest, since the aggregate `Ready` is re-computed
 and `status.observedGeneration` stamped on every exit path.

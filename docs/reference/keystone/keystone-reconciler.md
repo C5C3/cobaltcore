@@ -228,6 +228,7 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
 | `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
 | `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
+| `autoscaling.k8s.io` | `verticalpodautoscalers` | get, list, watch, create, update, patch, delete |
 | `gateway.networking.k8s.io` | `httproutes` | get, list, watch, create, update, patch, delete |
 | `gateway.networking.k8s.io` | `httproutes/status` | get |
 
@@ -391,6 +392,10 @@ Fernet and credential sub-reconciler sections for the full contract.
 │  ║  │ reconcileHPA │  │ reconcileBootstrap  │  │ reconcileTrustFlush    │  ║ │
 │  ║  │ Sets:HPAReady│  │ Sets: BootstrapReady│  │ Sets: TrustFlushReady  │  ║ │
 │  ║  └──────────────┘  └─────────────────────┘  └────────────────────────┘  ║ │
+│  ║  ┌──────────────┐                                                       ║ │
+│  ║  │ reconcileVPA │                                                       ║ │
+│  ║  │ Sets:VPAReady│                                                       ║ │
+│  ║  └──────────────┘                                                       ║ │
 │  ║                                                                         ║ │
 │  ║  g.Wait() → MergeCondition → ShortestRequeue                   ║ │
 │  ╚═══════════════════════════════╤═════════════════════════════════════════╝ │
@@ -571,6 +576,7 @@ output (other than conditions merged after the group completes).
 | `reconcileHTTPRoute` | CR spec | `HTTPRouteReady` | Deployment (ensures backend Service exists) | **yes (group 2)** |
 | `reconcileHealthCheck` | status.endpoint | `KeystoneAPIReady` | Deployment (sets endpoint) | **yes (group 2)** |
 | `reconcileHPA` | CR spec | `HPAReady` | Deployment (naming) | **yes (group 2)** |
+| `reconcileVPA` | CR spec | `VPAReady` | Deployment (naming) | **yes (group 2)** |
 | `reconcileBootstrap` | configMapName | `BootstrapReady` | Config, DB (runs its own Job) | **yes (group 2)** |
 | `reconcileTrustFlush` | configMapName | `TrustFlushReady` | Config | **yes (group 2)** |
 | `reconcilePasswordRotation` | `spec.passwordRotation` | `PasswordRotationReady` | Bootstrap (re-bootstrap is the downstream consumer) | no |
@@ -1483,6 +1489,7 @@ after a full reconcile loop, every condition in the status carries the correct
 | `KeystoneAPIReady` | `reconcileHealthCheck` | Keystone API responding to HTTP health check |
 | `HTTPRouteReady` | `reconcileHTTPRoute` | HTTPRoute accepted by Gateway, not required (no `spec.gateway`), Gateway API CRD missing on the cluster the children land on (reason `GatewayAPINotInstalled`), or that cluster could not be probed for the kind (reason `CapabilityProbeFailed`) |
 | `HPAReady` | `reconcileHPA` | HPA configured or not required |
+| `VPAReady` | `reconcileVPA` | VerticalPodAutoscaler configured (reason `VPAReady`) or not required (`VPANotRequired`), the VPA CRD missing on the cluster the children land on while `spec.deployment.verticalAutoscaling` is set (`VPANotInstalled`), that cluster not probeable (`CapabilityProbeFailed`), or a list, apply or delete failure (`VPAError`) |
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
 | `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required |
 | `PasswordRotationReady` | `reconcilePasswordRotation` | Model B admin-password rotation CronJob configured, or disabled/torn down |
@@ -2842,6 +2849,56 @@ directly to controller-runtime for exponential backoff.
 
 ---
 
+### reconcileVPA
+
+**File:** `operators/keystone/internal/controller/reconcile_vpa.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcileVPA(ctx context.Context, children client.Client,
+    keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+```
+
+**Purpose:** Manage the VerticalPodAutoscaler of the Keystone API Deployment
+through the shared `deployment.ReconcileVPAs` flow. The API Deployment is the
+one target, fed by `spec.deployment.verticalAutoscaling`. The flow runs three
+paths:
+
+1. **The children's cluster does not serve the kind.** Local children answer
+   from the `vpaAvailable` latch the controller set at startup, children on a
+   target cluster from a probe of that cluster on every pass. Nothing is
+   listed, applied or deleted. The condition is `VPAReady=True` with reason
+   `VPANotRequired` without an opt-in, and `VPAReady=False` with reason
+   `VPANotInstalled` with one.
+2. **The cluster serves the kind.** The flow lists the VPAs carrying
+   `commonLabels(keystone)`, applies the VPA of the opted-in Deployment via
+   SSA (`deployment.BuildVPA`, see [VPA Resource Mapping](keystone-crd.md#vpa-resource-mapping)),
+   and deletes every other listed VPA. The condition is `VPAReady=True` with
+   reason `VPAReady`, or `VPANotRequired` without an opt-in.
+3. **Error:** a failed probe sets `CapabilityProbeFailed`, a failed list,
+   apply or delete `VPAError`; each returns a wrapped error for backoff.
+
+**Condition Contract:**
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `True` | `VPANotRequired` | "no workload opts into vertical autoscaling" | — |
+| `True` | `VPAReady` | "VerticalPodAutoscalers are configured: `<names>`" | — |
+| `False` | `VPANotInstalled` | names `autoscaling.k8s.io/v1 VerticalPodAutoscaler` and the opted-in workloads | — |
+| `False` | `CapabilityProbeFailed` | "Probing the target cluster for the VerticalPodAutoscaler kind failed: `<error>`" | backoff |
+| `False` | `VPAError` | the failed operation and its error | backoff |
+
+**Watches:** `Owns(VerticalPodAutoscaler)` is registered only while the
+`vpaAvailable` latch is true, and it carries
+`predicate.GenerationChangedPredicate`, as does the remote child leg, so the
+recommender's status writes do not wake the Keystone CR.
+
+**Shared library calls:** `deployment.ReconcileVPAs()`,
+`multicluster.ChildrenServeKind()`, `apply.EnsureObject()`
+
+---
+
 ### reconcileBootstrap
 
 **File:** `operators/keystone/internal/controller/reconcile_bootstrap.go`
@@ -3765,6 +3822,7 @@ responsible for driving:
 | `HTTPRoute` | `HTTPRouteReady` |
 | `HealthCheck` | `KeystoneAPIReady` |
 | `HPA` | `HPAReady` |
+| `VPA` | `VPAReady` |
 | `Bootstrap` | `BootstrapReady` |
 | `TrustFlush` | `TrustFlushReady` |
 

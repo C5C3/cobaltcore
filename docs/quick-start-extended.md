@@ -357,8 +357,10 @@ without it the generated HorizontalPodAutoscaler reports `unknown/80%` and never
 scales.
 
 `WITH_VPA=true make deploy-infra` installs metrics-server too, together with
-the kind-only VPA recommender at `deploy/kind/vpa/` that the CI sizing
-measurement reads
+the VPA CRDs and the kind-only VPA recommender at `deploy/kind/vpa/`. The CI
+sizing measurement reads the recommender, and the `e2e-autoscaling` job
+deploys it so the operators create the VerticalPodAutoscalers a
+`verticalAutoscaling` block opts into
 ([VPA recommender](./reference/infrastructure/infrastructure-manifests.md#vpa-recommender-kind-only-opt-in)).
 :::
 
