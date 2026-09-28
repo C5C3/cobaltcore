@@ -273,6 +273,58 @@ FIXTURES: tuple[Fixture, ...] = (
             "    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000\n"
         ),
     ),
+    Fixture(
+        filename="13-vertical-autoscaling-foreign-resource.yaml",
+        comment=(
+            "spec.verticalAutoscaling.minAllowed naming ephemeral-storage violates the CEL\n"
+            "rule on VerticalAutoscalingSpec; the webhook mirrors it. The VPA the operator\n"
+            "writes controls cpu and memory only."
+        ),
+        extra=(
+            "  verticalAutoscaling:\n"
+            "    updateMode: \"Off\"\n"
+            "    minAllowed:\n"
+            "      ephemeral-storage: 1Gi\n"
+        ),
+    ),
+    Fixture(
+        filename="14-vertical-autoscaling-min-above-max.yaml",
+        comment=(
+            "spec.verticalAutoscaling.minAllowed.cpu above maxAllowed.cpu is rejected by\n"
+            "the validating webhook alone: CEL cannot compare quantities across two maps."
+        ),
+        extra=(
+            "  verticalAutoscaling:\n"
+            "    updateMode: \"Off\"\n"
+            "    minAllowed:\n"
+            "      cpu: \"2\"\n"
+            "    maxAllowed:\n"
+            "      cpu: \"1\"\n"
+        ),
+    ),
+    Fixture(
+        filename="15-vertical-autoscaling-update-mode.yaml",
+        comment=(
+            "spec.verticalAutoscaling.updateMode outside Off, Initial, Recreate and Auto\n"
+            "violates the Enum marker; the webhook mirrors it."
+        ),
+        extra=(
+            "  verticalAutoscaling:\n"
+            "    updateMode: Sometimes\n"
+        ),
+    ),
+    Fixture(
+        filename="16-vertical-autoscaling-min-replicas-zero.yaml",
+        comment=(
+            "spec.verticalAutoscaling.minReplicas of zero violates the Minimum=1 marker;\n"
+            "the webhook mirrors it."
+        ),
+        extra=(
+            "  verticalAutoscaling:\n"
+            "    updateMode: Auto\n"
+            "    minReplicas: 0\n"
+        ),
+    ),
 )
 
 

@@ -1005,6 +1005,88 @@ FIXTURES: tuple[Fixture, ...] = (
             "        stabilizationWindowSeconds: 3601\n"
         ),
     ),
+    Fixture(
+        filename="53-vertical-autoscaling-beside-autoscaling.yaml",
+        comment=(
+            "spec.deployment.verticalAutoscaling beside spec.autoscaling violates the CEL\n"
+            "rule on the spec root; the webhook mirrors it. Every HPA scales on the\n"
+            "utilization a VPA changes, so the two are rejected on one Deployment. The API\n"
+            "server reports the rule at spec, with the block's path in the message."
+        ),
+        name="barbican-vpa-beside-autoscaling",
+        deployment=(
+            "    replicas: 1\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: \"Off\""
+        ),
+        extra=(
+            "  autoscaling:\n"
+            "    minReplicas: 1\n"
+            "    maxReplicas: 3\n"
+            "    targetCPUUtilization: 80\n"
+        ),
+    ),
+    Fixture(
+        filename="54-vertical-autoscaling-foreign-resource.yaml",
+        comment=(
+            "spec.deployment.verticalAutoscaling.minAllowed naming ephemeral-storage\n"
+            "violates the CEL rule on VerticalAutoscalingSpec; the webhook mirrors it. The\n"
+            "VPA the operator writes controls cpu and memory only."
+        ),
+        name="barbican-vpa-foreign-resource",
+        deployment=(
+            "    replicas: 1\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: \"Off\"\n"
+            "      minAllowed:\n"
+            "        ephemeral-storage: 1Gi"
+        ),
+    ),
+    Fixture(
+        filename="55-vertical-autoscaling-min-above-max.yaml",
+        comment=(
+            "spec.deployment.verticalAutoscaling.minAllowed.cpu above maxAllowed.cpu is\n"
+            "rejected by the validating webhook alone: CEL cannot compare quantities across\n"
+            "two maps."
+        ),
+        name="barbican-vpa-min-above-max",
+        deployment=(
+            "    replicas: 1\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: \"Off\"\n"
+            "      minAllowed:\n"
+            "        cpu: \"2\"\n"
+            "      maxAllowed:\n"
+            "        cpu: \"1\""
+        ),
+    ),
+    Fixture(
+        filename="56-vertical-autoscaling-update-mode.yaml",
+        comment=(
+            "spec.deployment.verticalAutoscaling.updateMode outside Off, Initial, Recreate\n"
+            "and Auto violates the Enum marker; the webhook mirrors it."
+        ),
+        name="barbican-vpa-update-mode",
+        deployment=(
+            "    replicas: 1\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: Sometimes"
+        ),
+    ),
+    Fixture(
+        filename="57-vertical-autoscaling-min-replicas-zero.yaml",
+        comment=(
+            "spec.deployment.verticalAutoscaling.minReplicas of zero violates the Minimum=1\n"
+            "marker; the webhook mirrors it."
+        ),
+        name="barbican-vpa-min-replicas-zero",
+        deployment=(
+            "    replicas: 1\n"
+            "    verticalAutoscaling:\n"
+            "      updateMode: Auto\n"
+            "      minReplicas: 0"
+        ),
+    ),
 )
 
 

@@ -192,6 +192,89 @@ FIXTURES: tuple[Fixture, ...] = (
             "              periodSeconds: 1801\n"
         ),
     ),
+    Fixture(
+        filename="08-sizing-vertical-autoscaling-beside-autoscaling.yaml",
+        comment=(
+            "A spec.keystone.api that sets both autoscaling and verticalAutoscaling\n"
+            "violates the CEL rule on the API sizing type; the webhook mirrors it on the\n"
+            "component and on the merged sizing. Every HPA scales on the utilization a VPA\n"
+            "changes."
+        ),
+        name="c5c3-e2e-sizing-vpa-beside-autoscaling",
+        spec=(
+            "  keystone:\n"
+            "    api:\n"
+            "      verticalAutoscaling:\n"
+            "        updateMode: \"Off\"\n"
+            "      autoscaling:\n"
+            "        maxReplicas: 3\n"
+            "        targetCPUUtilization: 80\n"
+        ),
+    ),
+    Fixture(
+        filename="09-sizing-vertical-autoscaling-foreign-resource.yaml",
+        comment=(
+            "spec.neutron.workers.verticalAutoscaling.minAllowed naming ephemeral-storage\n"
+            "violates the CEL rule on VerticalAutoscalingSpec; the webhook mirrors it."
+        ),
+        name="c5c3-e2e-sizing-vpa-foreign-resource",
+        spec=(
+            "  neutron:\n"
+            "    workers:\n"
+            "      verticalAutoscaling:\n"
+            "        updateMode: \"Off\"\n"
+            "        minAllowed:\n"
+            "          ephemeral-storage: 1Gi\n"
+        ),
+    ),
+    Fixture(
+        filename="10-sizing-vertical-autoscaling-min-above-max.yaml",
+        comment=(
+            "spec.cinder.volume.verticalAutoscaling.minAllowed.cpu above maxAllowed.cpu is\n"
+            "rejected by the validating webhook alone: CEL cannot compare quantities across\n"
+            "two maps."
+        ),
+        name="c5c3-e2e-sizing-vpa-min-above-max",
+        spec=(
+            "  cinder:\n"
+            "    volume:\n"
+            "      verticalAutoscaling:\n"
+            "        updateMode: \"Off\"\n"
+            "        minAllowed:\n"
+            "          cpu: \"2\"\n"
+            "        maxAllowed:\n"
+            "          cpu: \"1\"\n"
+        ),
+    ),
+    Fixture(
+        filename="11-sizing-vertical-autoscaling-update-mode.yaml",
+        comment=(
+            "spec.nova.conductor.verticalAutoscaling.updateMode outside Off, Initial,\n"
+            "Recreate and Auto violates the Enum marker; the webhook mirrors it."
+        ),
+        name="c5c3-e2e-sizing-vpa-update-mode",
+        spec=(
+            "  nova:\n"
+            "    conductor:\n"
+            "      verticalAutoscaling:\n"
+            "        updateMode: Sometimes\n"
+        ),
+    ),
+    Fixture(
+        filename="12-sizing-vertical-autoscaling-min-replicas-zero.yaml",
+        comment=(
+            "spec.cinder.scheduler.verticalAutoscaling.minReplicas of zero violates the\n"
+            "Minimum=1 marker; the webhook mirrors it."
+        ),
+        name="c5c3-e2e-sizing-vpa-min-replicas-zero",
+        spec=(
+            "  cinder:\n"
+            "    scheduler:\n"
+            "      verticalAutoscaling:\n"
+            "        updateMode: Auto\n"
+            "        minReplicas: 0\n"
+        ),
+    ),
 )
 
 

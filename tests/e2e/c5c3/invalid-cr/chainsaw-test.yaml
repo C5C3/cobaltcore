@@ -1011,6 +1011,56 @@ spec:
             ($error != null): true
             (contains($error, 'spec.sizing.keystone.api.autoscaling.targetMemoryUtilization')): true
             (contains($error, 'can never be reached')): true
+    # A sizing verticalAutoscaling block that breaks a rule at
+    # spec.sizing.keystone.api must be rejected by the CEL rule on the API sizing
+    # type.
+    - apply:
+        file: 132-sizing-vertical-autoscaling-beside-autoscaling.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.keystone.api')): true
+            (contains($error, 'autoscaling and verticalAutoscaling cannot both be set on one component')): true
+    # A sizing verticalAutoscaling block that breaks a rule at
+    # spec.sizing.neutron.workers.verticalAutoscaling must be rejected by the CEL
+    # rule on VerticalAutoscalingSpec.
+    - apply:
+        file: 133-sizing-vertical-autoscaling-foreign-resource.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.neutron.workers.verticalAutoscaling')): true
+            (contains($error, 'minAllowed may only name cpu and memory')): true
+    # A sizing verticalAutoscaling block that breaks a rule at
+    # spec.sizing.cinder.volume.verticalAutoscaling.minAllowed[cpu] must be
+    # rejected by the validating webhook (webhook-only).
+    - apply:
+        file: 134-sizing-vertical-autoscaling-min-above-max.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.cinder.volume.verticalAutoscaling.minAllowed[cpu]')): true
+            (contains($error, 'must not exceed maxAllowed')): true
+    # A sizing verticalAutoscaling block that breaks a rule at
+    # spec.sizing.nova.conductor.verticalAutoscaling.updateMode must be rejected
+    # by the Enum marker.
+    - apply:
+        file: 135-sizing-vertical-autoscaling-update-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.nova.conductor.verticalAutoscaling.updateMode')): true
+            (contains($error, 'Unsupported value')): true
+    # A sizing verticalAutoscaling block that breaks a rule at
+    # spec.sizing.cinder.scheduler.verticalAutoscaling.minReplicas must be
+    # rejected by the Minimum=1 marker.
+    - apply:
+        file: 136-sizing-vertical-autoscaling-min-replicas-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.cinder.scheduler.verticalAutoscaling.minReplicas')): true
+            (contains($error, 'should be greater than or equal to 1')): true
     # A 256-character spec.regionDescription is refused by the CRD's MaxLength 255
     # marker (K-ORC's bound on RegionResourceSpec.Description); there is no
     # webhook mirror, so the error is the API server's own.

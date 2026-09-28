@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.verticalAutoscaling.minAllowed.cpu above maxAllowed.cpu is rejected by
+# the validating webhook alone: CEL cannot compare quantities across two maps.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: neutron-metadata-agent
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  chassisRef:
+    name: ovn-chassis
+  verticalAutoscaling:
+    updateMode: "Off"
+    minAllowed:
+      cpu: "2"
+    maxAllowed:
+      cpu: "1"

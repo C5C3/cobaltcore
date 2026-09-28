@@ -106,3 +106,57 @@ spec:
             ($error != null): true
             (contains($error, 'spec.keystone.api.autoscaling.behavior.scaleDown.policies[0].periodSeconds')): true
             (contains($error, 'periodSeconds must be between 1 and 1800')): true
+  # A sizing verticalAutoscaling block that breaks a rule at spec.keystone.api
+  # must be rejected by the CEL rule on the API sizing type.
+  - try:
+    - apply:
+        file: 08-sizing-vertical-autoscaling-beside-autoscaling.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.keystone.api')): true
+            (contains($error, 'autoscaling and verticalAutoscaling cannot both be set on one component')): true
+  # A sizing verticalAutoscaling block that breaks a rule at
+  # spec.neutron.workers.verticalAutoscaling must be rejected by the CEL rule on
+  # VerticalAutoscalingSpec.
+  - try:
+    - apply:
+        file: 09-sizing-vertical-autoscaling-foreign-resource.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.neutron.workers.verticalAutoscaling')): true
+            (contains($error, 'minAllowed may only name cpu and memory')): true
+  # A sizing verticalAutoscaling block that breaks a rule at
+  # spec.cinder.volume.verticalAutoscaling.minAllowed[cpu] must be rejected by
+  # the validating webhook (webhook-only).
+  - try:
+    - apply:
+        file: 10-sizing-vertical-autoscaling-min-above-max.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.cinder.volume.verticalAutoscaling.minAllowed[cpu]')): true
+            (contains($error, 'must not exceed maxAllowed')): true
+  # A sizing verticalAutoscaling block that breaks a rule at
+  # spec.nova.conductor.verticalAutoscaling.updateMode must be rejected by the
+  # Enum marker.
+  - try:
+    - apply:
+        file: 11-sizing-vertical-autoscaling-update-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.nova.conductor.verticalAutoscaling.updateMode')): true
+            (contains($error, 'Unsupported value')): true
+  # A sizing verticalAutoscaling block that breaks a rule at
+  # spec.cinder.scheduler.verticalAutoscaling.minReplicas must be rejected by
+  # the Minimum=1 marker.
+  - try:
+    - apply:
+        file: 12-sizing-vertical-autoscaling-min-replicas-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.cinder.scheduler.verticalAutoscaling.minReplicas')): true
+            (contains($error, 'should be greater than or equal to 1')): true

@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.deployment.verticalAutoscaling beside spec.autoscaling violates the CEL
+# rule on the spec root; the webhook mirrors it. Every HPA scales on the
+# utilization a VPA changes, so the two are rejected on one Deployment. The API
+# server reports the rule at spec, with the block's path in the message.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-vpa-beside-autoscaling
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+    verticalAutoscaling:
+      updateMode: "Off"
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: glance-service-password
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilization: 80

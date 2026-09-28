@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.verticalAutoscaling.minReplicas of zero violates the Minimum=1 marker;
+# the webhook mirrors it.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  verticalAutoscaling:
+    updateMode: Auto
+    minReplicas: 0
