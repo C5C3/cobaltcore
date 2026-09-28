@@ -19,6 +19,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -246,6 +247,8 @@ func TestReconcileDeleteRemoteChildren_SweepsEveryProjectedKind(t *testing.T) {
 			&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "test-horizon", Namespace: "default"}}),
 		ownedRemoteChild(t, terminating,
 			&gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "test-horizon", Namespace: "default"}}),
+		ownedRemoteChild(t, terminating,
+			&vpav1.VerticalPodAutoscaler{ObjectMeta: metav1.ObjectMeta{Name: "test-horizon", Namespace: "default"}}),
 	}
 	g.Expect(projected).To(HaveLen(len(HorizonRemoteChildKinds)),
 		"every kind the sweep covers needs a child here, or the list grew untested")

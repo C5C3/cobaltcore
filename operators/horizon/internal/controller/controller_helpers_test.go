@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -39,6 +40,7 @@ func testScheme() *runtime.Scheme {
 	_ = esov1.SchemeBuilder.AddToScheme(s)
 	_ = gatewayv1.Install(s)
 	_ = horizonv1alpha1.AddToScheme(s)
+	_ = vpav1.AddToScheme(s)
 	return s
 }
 

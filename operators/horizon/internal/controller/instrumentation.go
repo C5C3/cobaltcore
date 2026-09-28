@@ -31,6 +31,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"HTTPRoute":     conditionTypeHTTPRouteReady,
 	"HealthCheck":   conditionTypeHorizonAPIReady,
 	"HPA":           "HPAReady",
+	"VPA":           "VPAReady",
 	"NetworkPolicy": conditionTypeNetworkPolicyReady,
 }
 
