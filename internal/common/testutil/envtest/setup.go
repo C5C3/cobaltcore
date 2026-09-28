@@ -20,6 +20,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -142,7 +143,8 @@ func CommonFakeCRDDirs() []string {
 
 // CommonExternalSchemes returns the AddToScheme functions for the external API
 // groups a database-backed service operator's reconciler typically registers:
-// MariaDB, ESO v1 and v1alpha1, cert-manager, and Gateway API. Operators compose
+// MariaDB, ESO v1 and v1alpha1, cert-manager, Gateway API, and the
+// VerticalPodAutoscaler. Operators compose
 // these with their own CR types via BuildScheme; an operator that needs only a
 // subset (or additional single-consumer groups like K-ORC) composes the ones it
 // needs instead.
@@ -153,6 +155,7 @@ func CommonExternalSchemes() []func(*k8sruntime.Scheme) error {
 		esov1alpha1.AddToScheme,
 		certmanagerv1.AddToScheme,
 		gatewayv1.Install,
+		vpav1.AddToScheme,
 	}
 }
 

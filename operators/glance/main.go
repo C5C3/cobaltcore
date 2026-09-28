@@ -19,6 +19,7 @@ import (
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/glance/internal/controller"
 
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -34,6 +35,9 @@ var scheme = bootstrap.NewScheme(
 	// the Database/User/Grant CRs and watch the MariaDB cluster.
 	mariadbv1alpha1.AddToScheme,
 	gatewayv1.Install,
+	// VerticalPodAutoscaler types are required so reconcileVPA can apply and
+	// prune the opt-in VPAs and watch them.
+	vpav1.AddToScheme,
 	// +kubebuilder:scaffold:scheme
 )
 

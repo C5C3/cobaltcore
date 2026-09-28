@@ -18,6 +18,7 @@ import (
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/ovn/internal/controller"
 
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
@@ -28,6 +29,9 @@ var scheme = bootstrap.NewScheme(
 	// Certificates the databases and their clients present, and the teardown
 	// sweep lists them among the OVNCentral child kinds.
 	certmanagerv1.AddToScheme,
+	// VerticalPodAutoscaler types are required so reconcileVPA can apply and
+	// prune the opt-in VPAs and watch them.
+	vpav1.AddToScheme,
 	// +kubebuilder:scaffold:scheme
 )
 

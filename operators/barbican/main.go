@@ -20,6 +20,7 @@ import (
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/barbican/internal/controller"
 
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -38,6 +39,9 @@ var scheme = bootstrap.NewScheme(
 	// the OpenBaoCluster a managed store provisions against as a typed object and
 	// watch its Available condition.
 	openbaov1alpha1.AddToScheme,
+	// VerticalPodAutoscaler types are required so reconcileVPA can apply and
+	// prune the opt-in VPAs and watch them.
+	vpav1.AddToScheme,
 	// +kubebuilder:scaffold:scheme
 )
 
