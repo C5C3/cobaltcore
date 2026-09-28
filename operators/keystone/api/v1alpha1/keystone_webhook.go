@@ -753,6 +753,12 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 		allErrs = append(allErrs, validation.AutoscalingBehavior(autoscalingPath.Child("behavior"), k.Spec.Autoscaling.Behavior)...)
 	}
 
+	// Defense-in-depth twins of the verticalAutoscaling markers and CEL rules,
+	// plus the minAllowed-above-maxAllowed rule CEL cannot express.
+	verticalPath := specPath.Child("deployment", "verticalAutoscaling")
+	allErrs = append(allErrs, validation.VerticalAutoscaling(verticalPath, k.Spec.Deployment.VerticalAutoscaling)...)
+	allErrs = append(allErrs, validation.VerticalAutoscalingBesideAutoscaling(verticalPath, k.Spec.Deployment.VerticalAutoscaling, k.Spec.Autoscaling)...)
+
 	// An HPA utilization target is measured against the summed requests of
 	// every container in the API pod, so a zero request under a target either
 	// fails the metric or inflates it. The render-time default fills a positive
