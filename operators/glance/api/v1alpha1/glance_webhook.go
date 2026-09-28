@@ -672,6 +672,12 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 		allErrs = append(allErrs, validation.AutoscalingBehavior(autoscalingPath.Child("behavior"), g.Spec.Autoscaling.Behavior)...)
 	}
 
+	// Defense-in-depth twins of the verticalAutoscaling markers and CEL rules,
+	// plus the minAllowed-above-maxAllowed rule CEL cannot express.
+	verticalPath := specPath.Child("deployment", "verticalAutoscaling")
+	allErrs = append(allErrs, validation.VerticalAutoscaling(verticalPath, g.Spec.Deployment.VerticalAutoscaling)...)
+	allErrs = append(allErrs, validation.VerticalAutoscalingBesideAutoscaling(verticalPath, g.Spec.Deployment.VerticalAutoscaling, g.Spec.Autoscaling)...)
+
 	// An HPA utilization target is measured against the summed requests of
 	// every container in the API pod, so a zero request under a target either
 	// fails the metric or inflates it. The render-time default fills a positive

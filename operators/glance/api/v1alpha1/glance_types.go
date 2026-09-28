@@ -49,6 +49,9 @@ type GlanceList struct {
 // down. Moving a service between clusters is not a supported mutation.
 // +kubebuilder:validation:XValidation:rule="has(self.targetClusterRef) == has(oldSelf.targetClusterRef)",message="targetClusterRef is immutable"
 // +kubebuilder:validation:XValidation:rule="!has(self.targetClusterRef) || !has(oldSelf.targetClusterRef) || self.targetClusterRef.name == oldSelf.targetClusterRef.name",message="targetClusterRef is immutable"
+// A VerticalPodAutoscaler beside the HPA would act on the utilization signal
+// the HPA scales on, so the two are rejected together.
+// +kubebuilder:validation:XValidation:rule="!(has(self.autoscaling) && has(self.deployment) && has(self.deployment.verticalAutoscaling))",message="spec.deployment.verticalAutoscaling cannot be set while spec.autoscaling scales the same Deployment"
 type GlanceSpec struct {
 	// OpenStackRelease names the OpenStack release this operator deploys and
 	// drives. It governs two things: (a) the Glance API launch mode — the
@@ -293,7 +296,7 @@ type GlanceSpec struct {
 	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
 }
 
-// DeploymentSpec, AutoscalingSpec, NetworkPolicySpec,
+// DeploymentSpec, AutoscalingSpec, VerticalAutoscalingSpec, NetworkPolicySpec,
 // NetworkPolicyIngressSource, LoggingSpec, GatewaySpec, and
 // GatewayParentRefSpec are aliased to the shared commonv1 definitions —
 // commonv1 carries the canonical per-field godoc and validation markers.
@@ -302,6 +305,7 @@ type GlanceSpec struct {
 type (
 	DeploymentSpec             = commonv1.DeploymentSpec
 	AutoscalingSpec            = commonv1.AutoscalingSpec
+	VerticalAutoscalingSpec    = commonv1.VerticalAutoscalingSpec
 	NetworkPolicySpec          = commonv1.NetworkPolicySpec
 	NetworkPolicyIngressSource = commonv1.NetworkPolicyIngressSource
 	LoggingSpec                = commonv1.LoggingSpec
