@@ -63,7 +63,7 @@ func TestNovaComputePipelineSteps_OrderAndNames(t *testing.T) {
 		names = append(names, step.Name)
 	}
 
-	g.Expect(names).To(Equal([]string{"NovaRef", "Nodes", "PoolConfig", "DaemonSet", "Aggregates", "Services"}))
+	g.Expect(names).To(Equal([]string{"NovaRef", "Nodes", "PoolConfig", "DaemonSet", "ComputeVPA", "Aggregates", "Services"}))
 }
 
 func TestNovaComputeReconcile_AddsTheDrainFinalizerOnly(t *testing.T) {
@@ -499,6 +499,6 @@ func TestNovaComputeTeardownSteps(t *testing.T) {
 
 	holding := deletingPool(novaComputeDrainFinalizer)
 	holding.Status.Nodes = []novav1alpha1.NovaComputeNodeStatus{entry(testNodeName, novav1alpha1.NovaComputeNodeDraining)}
-	g.Expect(names(holding)).To(Equal([]string{"NovaRef", "Nodes", "PoolConfig", "DaemonSet", "Aggregates", "Services"}))
+	g.Expect(names(holding)).To(Equal([]string{"NovaRef", "Nodes", "PoolConfig", "DaemonSet", "ComputeVPA", "Aggregates", "Services"}))
 	g.Expect(names(deletingPool(novaComputeDrainFinalizer))).To(Equal([]string{"NovaRef", "Aggregates"}))
 }

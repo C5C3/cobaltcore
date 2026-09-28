@@ -121,7 +121,7 @@ func TestPipelineStepOrder(t *testing.T) {
 		members = append(members, sub.Name)
 	}
 	g.Expect(members).To(Equal([]string{
-		"HTTPRoute", "MetadataHTTPRoute", "ConsoleHTTPRoute", "HealthCheck", "HPA", "NetworkPolicy",
+		"HTTPRoute", "MetadataHTTPRoute", "ConsoleHTTPRoute", "HealthCheck", "HPA", "VPA", "NetworkPolicy",
 	}))
 }
 

@@ -13,6 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -253,6 +254,41 @@ func TestNovaComputeWebhook_ValidateCreate_RejectsEachRule(t *testing.T) {
 			name: "targetClusterRef with an empty name",
 			edit: func(nc *NovaCompute) { nc.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{} },
 			want: "spec.targetClusterRef.name",
+		},
+		{
+			name: "verticalAutoscaling foreign resource rejected",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			want: `spec.verticalAutoscaling.minAllowed[ephemeral-storage]: Unsupported value: "ephemeral-storage"`,
+		},
+		{
+			name: "verticalAutoscaling minAllowed above maxAllowed rejected",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+					MaxAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				}
+			},
+			want: `spec.verticalAutoscaling.minAllowed[cpu]: Invalid value: "2": must not exceed maxAllowed`,
+		},
+		{
+			name: "verticalAutoscaling updateMode outside the enum rejected",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Sometimes"}
+			},
+			want: `spec.verticalAutoscaling.updateMode: Unsupported value: "Sometimes"`,
+		},
+		{
+			name: "verticalAutoscaling minReplicas zero rejected",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Auto", MinReplicas: ptr.To(int32(0))}
+			},
+			want: "spec.verticalAutoscaling.minReplicas: Invalid value: 0: must be at least 1",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

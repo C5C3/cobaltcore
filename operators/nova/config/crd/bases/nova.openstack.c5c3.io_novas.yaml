@@ -89,6 +89,8 @@ spec:
               A compute on another cluster reaches the broker across a cluster boundary,
               with the broker credentials in the URL, and the messaging CA bundle is the
               only trust anchor either contract carries.
+              A VerticalPodAutoscaler beside the HPA would act on the utilization signal
+              the HPA scales on, so the two are rejected together.
             properties:
               api:
                 description: |-
@@ -10034,6 +10036,10 @@ spec:
             - message: 'remoteCompute requires messaging.tls: a compute on another
                 cluster verifies the broker against the messaging CA bundle'
               rule: '!has(self.remoteCompute) || has(self.messaging.tls)'
+            - message: spec.api.deployment.verticalAutoscaling cannot be set while
+                spec.autoscaling scales the same Deployment
+              rule: '!(has(self.autoscaling) && has(self.api) && has(self.api.deployment)
+                && has(self.api.deployment.verticalAutoscaling))'
           status:
             description: NovaStatus defines the observed state of Nova.
             properties:

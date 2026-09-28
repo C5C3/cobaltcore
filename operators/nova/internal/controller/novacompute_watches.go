@@ -14,7 +14,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -26,6 +29,8 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/gateway"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
@@ -185,6 +190,17 @@ func (r *NovaComputeReconciler) setupWithOptions(mgr mcmanager.Manager, opts crc
 		return err
 	}
 
+	// Detect the VerticalPodAutoscaler CRD: verticalAutoscaling is an opt-in,
+	// so the operator must run on clusters without the VPA, where an
+	// unconditional Owns would fail the controller at Start.
+	r.vpaAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	setupLog := ctrl.Log.WithName("novacompute-setup")
+	if r.vpaAvailable {
+		setupLog.Info("VerticalPodAutoscaler CRD detected; enabling VPA watch and reconciliation")
+	} else {
+		setupLog.Info("VerticalPodAutoscaler CRD not installed; VPA watch disabled, verticalAutoscaling will be reported through VPAReady")
+	}
+
 	engageLocal := commonmulticluster.EngageLocalCluster
 	engageNoProviders := commonmulticluster.EngageNoProviderClusters
 
@@ -200,8 +216,18 @@ func (r *NovaComputeReconciler) setupWithOptions(mgr mcmanager.Manager, opts crc
 		Owns(&appsv1.DaemonSet{}, engageLocal, engageNoProviders).
 		Owns(&corev1.ConfigMap{}, engageLocal, engageNoProviders)
 
+	// The recommender rewrites status.recommendation about once a minute; only
+	// a spec change (drift from the applied VPA) wakes the CR, locally and on
+	// the target clusters alike.
+	if r.vpaAvailable {
+		b = b.Owns(&vpav1.VerticalPodAutoscaler{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			engageLocal, engageNoProviders)
+	}
+
 	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &novav1alpha1.NovaCompute{},
-		targets, NovaComputeRemoteChildKinds, nil)
+		targets, NovaComputeRemoteChildKinds, map[schema.GroupVersionKind][]mcbuilder.WatchesOption{
+			deployment.VPAGVK: {mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})},
+		})
 	if err != nil {
 		return err
 	}

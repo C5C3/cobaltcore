@@ -238,6 +238,11 @@ func (in *NovaComputeSpec) DeepCopyInto(out *NovaComputeSpec) {
 		*out = new(corev1.ResourceRequirements)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.VerticalAutoscaling != nil {
+		in, out := &in.VerticalAutoscaling, &out.VerticalAutoscaling
+		*out = new(types.VerticalAutoscalingSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.ExtraConfig != nil {
 		in, out := &in.ExtraConfig, &out.ExtraConfig
 		*out = make(map[string]map[string]string, len(*in))

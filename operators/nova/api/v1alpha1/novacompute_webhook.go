@@ -212,6 +212,9 @@ func (w *NovaComputeWebhook) validate(nc *NovaCompute, extra field.ErrorList) er
 	allErrs = append(allErrs, validateNovaComputeNodeSelector(specPath.Child("nodeSelector"), nc.Spec.NodeSelector)...)
 	allErrs = append(allErrs, validateNovaComputeTolerations(specPath.Child("tolerations"), nc.Spec.Tolerations)...)
 	allErrs = append(allErrs, validateNovaComputeUpdateStrategy(specPath.Child("updateStrategy"), nc.Spec.UpdateStrategy)...)
+	// Defense-in-depth twins of the verticalAutoscaling markers and CEL rules,
+	// plus the minAllowed-above-maxAllowed rule CEL cannot express.
+	allErrs = append(allErrs, validation.VerticalAutoscaling(specPath.Child("verticalAutoscaling"), nc.Spec.VerticalAutoscaling)...)
 
 	// The webhook twin of the CEL rule on NovaComputeLibvirtSpec.
 	libvirt := nc.Spec.Libvirt

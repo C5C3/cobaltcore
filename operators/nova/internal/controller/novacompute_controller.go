@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
@@ -60,6 +61,7 @@ const (
 	stepDaemonSet  = "DaemonSet"
 	stepAggregates = "Aggregates"
 	stepServices   = "Services"
+	stepVPA        = "ComputeVPA"
 )
 
 // Condition types of the NovaCompute pipeline, one per step.
@@ -98,6 +100,7 @@ var novaComputeSubConditionTypes = []string{
 	conditionTypeDaemonSetReady,
 	conditionTypeAggregatesReady,
 	conditionTypeServicesReady,
+	"VPAReady",
 }
 
 // novaComputeSkeleton bundles the shared controller-skeleton glue with the
@@ -111,12 +114,14 @@ var novaComputeSkeleton = commonreconcile.Skeleton[*novav1alpha1.NovaCompute, no
 
 // NovaComputeRemoteChildKinds are the kinds a NovaCompute projects into its
 // namespace on the target cluster it names, and the kinds the deletion sweep
-// selects by ownership label. The contract Secret the pods mount is not listed:
+// selects by ownership label: the DaemonSet, its ConfigMaps and the opt-in
+// VerticalPodAutoscaler. The contract Secret the pods mount is not listed:
 // the Nova publishes it, or the ControlPlane mirrors it, and the teardown reaps
 // the ControlPlane's mirrors on its own (see reapComputeClusterMirrors).
 var NovaComputeRemoteChildKinds = []schema.GroupVersionKind{
 	appsv1.SchemeGroupVersion.WithKind("DaemonSet"),
 	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
+	deployment.VPAGVK,
 }
 
 // novaComputeNovaRefExtractor is the IndexerFunc registered under
@@ -160,6 +165,14 @@ type NovaComputeReconciler struct {
 	// a placed Nova is then reached through its cluster's service proxy and a
 	// local one with http.DefaultClient. Tests inject computeapitest.Fake.
 	HTTPClient healthcheck.HTTPDoer
+
+	// vpaAvailable is set during SetupWithManager from the management
+	// cluster's RESTMapper and reports whether it serves the
+	// autoscaling.k8s.io/v1 VerticalPodAutoscaler kind. It gates the local VPA
+	// watch leg and answers commonmulticluster.ChildrenServeKind for local
+	// children, so reconcileVPA reports VPAReady=False/VPANotInstalled for an
+	// opt-in on a cluster without the VPA.
+	vpaAvailable bool
 }
 
 // novaComputePass carries what one step hands a later one within a single
@@ -192,6 +205,11 @@ type novaComputePass struct {
 	configMapName string
 	configHash    string
 
+	// daemonSetRendered is set when the DaemonSet step applied the DaemonSet
+	// rather than deleting it, so the VPA step targets only a DaemonSet that
+	// exists.
+	daemonSetRendered bool
+
 	// aggregatesEnsured is set when the Aggregates step completed, which the
 	// teardown waits for so the last pool of a Nova removes the aggregates it
 	// created.
@@ -217,6 +235,8 @@ func (p *novaComputePass) computeClient(ctx context.Context) (*computeapi.Client
 // +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novacomputes/finalizers,verbs=update
 // daemonsets carry the nova-compute pods of a node pool.
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
+// verticalpodautoscalers carry the opt-in VPA of the pool's DaemonSet.
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // nodes are read to resolve a pool's selection, its zones and its conflicts.
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 
@@ -303,6 +323,9 @@ func (r *NovaComputeReconciler) pipelineSteps(children client.Client, cr *novav1
 		}},
 		{Name: stepDaemonSet, Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileNovaComputeDaemonSet(ctx, children, cr, pass)
+		}},
+		{Name: stepVPA, Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileVPA(ctx, children, cr, pass)
 		}},
 		{Name: stepAggregates, Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileNovaComputeAggregates(ctx, cr, pass)

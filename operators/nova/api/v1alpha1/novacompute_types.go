@@ -152,6 +152,13 @@ type NovaComputeSpec struct {
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
+	// VerticalAutoscaling opts the nova-compute DaemonSet into a
+	// VerticalPodAutoscaler that controls the requests of its containers. On a
+	// cluster that does not serve autoscaling.k8s.io/v1 VerticalPodAutoscaler,
+	// the CR reports VPAReady=False with reason VPANotInstalled.
+	// +optional
+	VerticalAutoscaling *commonv1.VerticalAutoscalingSpec `json:"verticalAutoscaling,omitempty"`
+
 	// ExtraConfig provides free-form INI sections merged over the pool's
 	// rendered config. It is the per-pool override surface. The keys the pods
 	// take from their environment or their mounts, and the keys that select the

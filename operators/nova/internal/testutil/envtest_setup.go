@@ -14,6 +14,7 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -125,14 +126,17 @@ func SetupNovaEnvTestWithController(
 
 // buildControllerScheme creates a runtime.Scheme that includes all types the
 // reconciler needs: the Nova API types, core Kubernetes types, ESO (the
-// credential gate and the store watches), Gateway API (HTTPRoute), and MariaDB
-// (database provisioning and the cluster watch). It is created fresh per test.
+// credential gate and the store watches), Gateway API (HTTPRoute), MariaDB
+// (database provisioning and the cluster watch), and the
+// VerticalPodAutoscaler (the VPA steps). It is created fresh per test.
 func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
 	return commonenvtest.BuildScheme(
 		// External operator types the reconciler registers.
 		esov1.AddToScheme,
 		gatewayv1.Install,
 		mariadbv1alpha1.AddToScheme,
+		// VerticalPodAutoscaler types for the VPA step and its Owns leg.
+		vpav1.AddToScheme,
 		// Nova types.
 		addToScheme,
 	)

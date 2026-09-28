@@ -81,6 +81,9 @@ type NovaList struct {
 // +kubebuilder:validation:XValidation:rule="(has(self.apiDatabase.credentialsMode) ? self.apiDatabase.credentialsMode : 'Static') == (has(self.database.credentialsMode) ? self.database.credentialsMode : 'Static')",message="apiDatabase and database must use the same credentialsMode"
 // +kubebuilder:validation:XValidation:rule="!has(self.consoleProxy) || !has(self.consoleProxy.enabled) || self.consoleProxy.enabled || !has(self.consoleProxy.deployment)",message="consoleProxy.deployment must not be set when consoleProxy.enabled is false"
 // +kubebuilder:validation:XValidation:rule="!has(self.remoteCompute) || has(self.messaging.tls)",message="remoteCompute requires messaging.tls: a compute on another cluster verifies the broker against the messaging CA bundle"
+// A VerticalPodAutoscaler beside the HPA would act on the utilization signal
+// the HPA scales on, so the two are rejected together.
+// +kubebuilder:validation:XValidation:rule="!(has(self.autoscaling) && has(self.api) && has(self.api.deployment) && has(self.api.deployment.verticalAutoscaling))",message="spec.api.deployment.verticalAutoscaling cannot be set while spec.autoscaling scales the same Deployment"
 type NovaSpec struct {
 	// OpenStackRelease names the OpenStack release this operator deploys and
 	// drives. It governs install/upgrade release tracking:
@@ -342,7 +345,7 @@ type NovaSpec struct {
 	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
 }
 
-// DeploymentSpec, AutoscalingSpec, NetworkPolicySpec,
+// DeploymentSpec, AutoscalingSpec, VerticalAutoscalingSpec, NetworkPolicySpec,
 // NetworkPolicyIngressSource, LoggingSpec, GatewaySpec, GatewayParentRefSpec,
 // and UWSGISpec are aliased to the shared commonv1 definitions. commonv1
 // carries the canonical per-field godoc and validation markers. The aliases
@@ -351,6 +354,7 @@ type NovaSpec struct {
 type (
 	DeploymentSpec             = commonv1.DeploymentSpec
 	AutoscalingSpec            = commonv1.AutoscalingSpec
+	VerticalAutoscalingSpec    = commonv1.VerticalAutoscalingSpec
 	NetworkPolicySpec          = commonv1.NetworkPolicySpec
 	NetworkPolicyIngressSource = commonv1.NetworkPolicyIngressSource
 	LoggingSpec                = commonv1.LoggingSpec
