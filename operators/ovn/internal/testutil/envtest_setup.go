@@ -13,6 +13,7 @@ import (
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -137,13 +138,15 @@ func ovnPaths() (crdDir, webhookDir string) {
 }
 
 // buildControllerScheme creates a runtime.Scheme that includes all types the
-// OVNCentral and OVNChassis reconcilers need: OVN API types, core K8s types, and
-// cert-manager (the Certificates the TLS step applies and watches). It is
-// created fresh per test.
+// OVNCentral and OVNChassis reconcilers need: OVN API types, core K8s types,
+// cert-manager (the Certificates the TLS step applies and watches), and the
+// VerticalPodAutoscaler (the VPA steps). It is created fresh per test.
 func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
 	return commonenvtest.BuildScheme(
 		// External operator types the reconcilers register.
 		certmanagerv1.AddToScheme,
+		// VerticalPodAutoscaler types for the VPA step and its Owns leg.
+		vpav1.AddToScheme,
 		// OVN types.
 		addToScheme,
 	)

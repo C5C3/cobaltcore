@@ -36,11 +36,13 @@ var subReconcilerConditionTypes = map[string]string{
 	"Northd":     conditionTypeNorthdReady,
 	"Relay":      conditionTypeRelayReady,
 	"Backup":     conditionTypeBackupReady,
+	"VPA":        "VPAReady",
 
 	"Central":     conditionTypeCentralReady,
 	"Nodes":       conditionTypeNodesReady,
 	"OVS":         conditionTypeOVSReady,
 	"Controller":  conditionTypeControllerReady,
+	"ChassisVPA":  "VPAReady",
 	"Maintenance": conditionTypeMaintenanceReady,
 }
 

@@ -384,6 +384,11 @@ func (in *OVNChassisSpec) DeepCopyInto(out *OVNChassisSpec) {
 		*out = new(OVNChassisContainerSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.VerticalAutoscaling != nil {
+		in, out := &in.VerticalAutoscaling, &out.VerticalAutoscaling
+		*out = new(VerticalAutoscalingSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.TargetClusterRef != nil {
 		in, out := &in.TargetClusterRef, &out.TargetClusterRef
 		*out = new(types.TargetClusterRefSpec)
@@ -460,6 +465,11 @@ func (in *OVNDatabaseSpec) DeepCopyInto(out *OVNDatabaseSpec) {
 	if in.Resources != nil {
 		in, out := &in.Resources, &out.Resources
 		*out = new(v1.ResourceRequirements)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.VerticalAutoscaling != nil {
+		in, out := &in.VerticalAutoscaling, &out.VerticalAutoscaling
+		*out = new(VerticalAutoscalingSpec)
 		(*in).DeepCopyInto(*out)
 	}
 	if in.PriorityClassName != nil {
@@ -554,6 +564,11 @@ func (in *OVNRelaySpec) DeepCopyInto(out *OVNRelaySpec) {
 	if in.Resources != nil {
 		in, out := &in.Resources, &out.Resources
 		*out = new(v1.ResourceRequirements)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.VerticalAutoscaling != nil {
+		in, out := &in.VerticalAutoscaling, &out.VerticalAutoscaling
+		*out = new(VerticalAutoscalingSpec)
 		(*in).DeepCopyInto(*out)
 	}
 	in.NodePlacementSpec.DeepCopyInto(&out.NodePlacementSpec)

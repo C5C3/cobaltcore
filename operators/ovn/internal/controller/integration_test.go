@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -548,6 +549,89 @@ func TestIntegrationOVNCentral_ProjectsChildrenAndReachesReady(t *testing.T) {
 	g.Expect(backup.Reason).To(Equal(conditionReasonBackupScheduled))
 
 	g.Expect(meta.IsStatusConditionTrue(cr.Status.Conditions, "Ready")).To(BeTrue())
+}
+
+// expectVPA waits for the VerticalPodAutoscaler name to exist and asserts it
+// targets the workload of the same name and kind.
+func expectVPA(t testing.TB, ctx context.Context, c client.Client, ns, name, kind string) *vpav1.VerticalPodAutoscaler {
+	t.Helper()
+	vpa := &vpav1.VerticalPodAutoscaler{}
+	eventuallyExists(t, ctx, c, client.ObjectKey{Namespace: ns, Name: name}, vpa, "VerticalPodAutoscaler "+name, eventuallyTimeout)
+	g := NewGomegaWithT(t)
+	g.Expect(vpa.Spec.TargetRef.Kind).To(Equal(kind))
+	g.Expect(vpa.Spec.TargetRef.Name).To(Equal(name))
+	g.Expect(vpa.Spec.ResourcePolicy.ContainerPolicies).To(HaveLen(1))
+	return vpa
+}
+
+// An OVNCentral opts its northd Deployment and both Raft StatefulSets in; the
+// Raft VPAs carry the request floor as minAllowed.
+func TestIntegrationOVNCentral_VerticalAutoscalingCreatesVPAs(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+	ns := createTestNamespace(t, ctx, c)
+	driveCentralToReady(t, ctx, c, c, ns, integrationCentralName, nil)
+
+	crKey := types.NamespacedName{Name: integrationCentralName, Namespace: ns}
+	g.Eventually(func() error {
+		cr := &ovnv1alpha1.OVNCentral{}
+		if err := c.Get(ctx, crKey, cr); err != nil {
+			return err
+		}
+		off := &ovnv1alpha1.VerticalAutoscalingSpec{UpdateMode: "Off"}
+		cr.Spec.Northbound.VerticalAutoscaling = off
+		cr.Spec.Southbound.VerticalAutoscaling = off.DeepCopy()
+		cr.Spec.Northd.Deployment.VerticalAutoscaling = off.DeepCopy()
+		return c.Update(ctx, cr)
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+	for _, name := range []string{integrationCentralName + "-nb", integrationCentralName + "-sb"} {
+		vpa := expectVPA(t, ctx, c, ns, name, "StatefulSet")
+		minAllowed := vpa.Spec.ResourcePolicy.ContainerPolicies[0].MinAllowed
+		cpu, memory := minAllowed[corev1.ResourceCPU], minAllowed[corev1.ResourceMemory]
+		g.Expect(cpu.Cmp(commonv1.DefaultCPURequest())).To(BeZero(), "%s minAllowed.cpu", name)
+		g.Expect(memory.Cmp(commonv1.MemoryRequestFloor())).To(BeZero(), "%s minAllowed.memory", name)
+	}
+	expectVPA(t, ctx, c, ns, integrationCentralName+"-northd", "Deployment")
+
+	g.Eventually(func() string {
+		cr := &ovnv1alpha1.OVNCentral{}
+		if err := c.Get(ctx, crKey, cr); err != nil {
+			return ""
+		}
+		if cond := meta.FindStatusCondition(cr.Status.Conditions, "VPAReady"); cond != nil && cond.Status == metav1.ConditionTrue {
+			return cond.Reason
+		}
+		return ""
+	}, eventuallyTimeout, pollInterval).Should(Equal("VPAReady"))
+}
+
+// An OVNChassis opts both DaemonSets in through one block.
+func TestIntegrationOVNChassis_VerticalAutoscalingCreatesVPAs(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+	ns := createTestNamespace(t, ctx, c)
+	driveCentralToReady(t, ctx, c, c, ns, integrationCentralName, nil)
+
+	chassis := integrationChassisCR(integrationChassisName, ns, integrationCentralName, nil)
+	chassis.Spec.VerticalAutoscaling = &ovnv1alpha1.VerticalAutoscalingSpec{UpdateMode: "Off"}
+	g.Expect(c.Create(ctx, chassis)).To(Succeed(), "create the OVNChassis CR")
+
+	// The VPA step follows the two DaemonSets, and envtest runs no DaemonSet
+	// controller, so their readiness is set here.
+	ovsKey := client.ObjectKey{Namespace: ns, Name: chassisOVSName(chassis)}
+	eventuallyExists(t, ctx, c, ovsKey, &appsv1.DaemonSet{}, "ovs DaemonSet", eventuallyTimeout)
+	g.Expect(simulators.MarkDaemonSetReady(ctx, c, ovsKey)).To(Succeed(), "mark the ovs DaemonSet ready")
+	controllerKey := client.ObjectKey{Namespace: ns, Name: chassisControllerName(chassis)}
+	eventuallyExists(t, ctx, c, controllerKey, &appsv1.DaemonSet{}, "ovn-controller DaemonSet", eventuallyLongTimeout)
+	g.Expect(simulators.MarkDaemonSetReady(ctx, c, controllerKey)).To(Succeed(), "mark the ovn-controller DaemonSet ready")
+
+	expectVPA(t, ctx, c, ns, chassisOVSName(chassis), "DaemonSet")
+	expectVPA(t, ctx, c, ns, chassisControllerName(chassis), "DaemonSet")
 }
 
 // TestIntegrationOVNChassis_ProjectsDaemonSetsAndReachesReady walks the

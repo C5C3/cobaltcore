@@ -24,7 +24,11 @@ func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	known := make(map[string]struct{}, len(centralSubConditionTypes)+len(chassisSubConditionTypes))
+	var shared []string
 	for _, ct := range append(append([]string{}, centralSubConditionTypes...), chassisSubConditionTypes...) {
+		if _, dup := known[ct]; dup {
+			shared = append(shared, ct)
+		}
 		known[ct] = struct{}{}
 	}
 
@@ -38,9 +42,14 @@ func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 	// The two vocabularies have to stay disjoint. A condition type both CRs set
 	// would be attributed to one sub_reconciler name in the map and to the other
 	// pipeline's step in the metrics, and the reader of an alert could not tell
-	// which CR kind is failing.
-	g.Expect(known).To(HaveLen(len(centralSubConditionTypes)+len(chassisSubConditionTypes)),
-		"the OVNCentral and OVNChassis sub-condition vocabularies must not overlap")
+	// which CR kind is failing. VPAReady is the one exception: it is the shared
+	// VerticalPodAutoscaler condition every operator reports under, and each
+	// pipeline sets it from a step of its own name (VPA, ChassisVPA), so the
+	// sub_reconciler label still names the kind.
+	g.Expect(shared).To(ConsistOf("VPAReady"),
+		"the OVNCentral and OVNChassis sub-condition vocabularies must not overlap beyond VPAReady")
+	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("VPA", "VPAReady"))
+	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("ChassisVPA", "VPAReady"))
 }
 
 // TestPipelineStepNamesAreMapped is the other half of the drift guard, walking

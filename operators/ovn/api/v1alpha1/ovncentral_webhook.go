@@ -215,6 +215,20 @@ func (w *OVNCentralWebhook) validate(ctx context.Context, c *OVNCentral, extra f
 	if c.Spec.Relay != nil {
 		allErrs = append(allErrs, validation.NodePlacement(specPath.Child("relay"), &c.Spec.Relay.NodePlacementSpec)...)
 	}
+
+	// Defense-in-depth twins of the verticalAutoscaling markers and CEL rules,
+	// plus the minAllowed-above-maxAllowed rule CEL cannot express, on every
+	// workload that carries the block.
+	allErrs = append(allErrs, validation.VerticalAutoscaling(
+		specPath.Child("northbound", "verticalAutoscaling"), c.Spec.Northbound.VerticalAutoscaling)...)
+	allErrs = append(allErrs, validation.VerticalAutoscaling(
+		specPath.Child("southbound", "verticalAutoscaling"), c.Spec.Southbound.VerticalAutoscaling)...)
+	allErrs = append(allErrs, validation.VerticalAutoscaling(
+		specPath.Child("northd", "deployment", "verticalAutoscaling"), c.Spec.Northd.Deployment.VerticalAutoscaling)...)
+	if c.Spec.Relay != nil {
+		allErrs = append(allErrs, validation.VerticalAutoscaling(
+			specPath.Child("relay", "verticalAutoscaling"), c.Spec.Relay.VerticalAutoscaling)...)
+	}
 	allErrs = append(allErrs, validation.Job(ctx, w.Client, specPath.Child("jobs"), c.Spec.Jobs)...)
 
 	// TLS is not optional: the OVN databases carry the whole logical network
