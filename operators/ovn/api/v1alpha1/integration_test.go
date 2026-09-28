@@ -8,11 +8,13 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -359,4 +361,86 @@ func TestIntegration_CRD_NestedDefaultsMaterialized(t *testing.T) {
 		g.Expect(got.Spec.UpdateStrategy.Type).To(Equal("RollingUpdate"), "updateStrategy.type")
 		g.Expect(got.Spec.RemoteProbeIntervalMs).To(BeEquivalentTo(60000), "remoteProbeIntervalMs")
 	})
+}
+
+// TestIntegration_CRD_CELOnly_VerticalAutoscaling pins the CEL rules of
+// verticalAutoscaling on the OVNCentral CRD against an envtest API server
+// with NO validating webhook installed, so the webhook twins cannot mask a
+// missing rule.
+func TestIntegration_CRD_CELOnly_VerticalAutoscaling(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(o *OVNCentral)
+		wantSub string
+	}{
+		{
+			name: "foreign-resource",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Northbound.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantSub: "minAllowed may only name cpu and memory",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := newNamespace(t, ctx, c, "celonly-vpa-")
+			o := integrationCentral("vpa-"+tc.name, ns)
+			tc.mutate(o)
+
+			err := c.Create(ctx, o)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
+// TestIntegration_CRD_CELOnly_OVNChassisVerticalAutoscaling pins the CEL rules of
+// verticalAutoscaling on the OVNChassis CRD against an envtest API server
+// with NO validating webhook installed, so the webhook twins cannot mask a
+// missing rule.
+func TestIntegration_CRD_CELOnly_OVNChassisVerticalAutoscaling(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(o *OVNChassis)
+		wantSub string
+	}{
+		{
+			name: "foreign-resource",
+			mutate: func(o *OVNChassis) {
+				o.Spec.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantSub: "minAllowed may only name cpu and memory",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := newNamespace(t, ctx, c, "celonly-vpa-")
+			o := newCELOnlyChassis("vpa-"+tc.name, ns)
+			tc.mutate(o)
+
+			err := c.Create(ctx, o)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
+// newCELOnlyChassis is integrationChassis against a central name no test
+// creates: the CEL rules answer before any reference is resolved.
+func newCELOnlyChassis(name, namespace string) *OVNChassis {
+	return integrationChassis(name, namespace, "central")
 }

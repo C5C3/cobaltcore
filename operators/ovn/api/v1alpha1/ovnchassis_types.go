@@ -157,6 +157,14 @@ type OVNChassisSpec struct {
 	// +optional
 	Controller *OVNChassisContainerSpec `json:"controller,omitempty"`
 
+	// VerticalAutoscaling opts both chassis DaemonSets, Open vSwitch and
+	// ovn-controller, into a VerticalPodAutoscaler each that controls the
+	// requests of their containers. On a cluster that does not serve
+	// autoscaling.k8s.io/v1 VerticalPodAutoscaler, the CR reports
+	// VPAReady=False with reason VPANotInstalled.
+	// +optional
+	VerticalAutoscaling *VerticalAutoscalingSpec `json:"verticalAutoscaling,omitempty"`
+
 	// TargetClusterRef selects the registered target cluster the DaemonSets are
 	// created on. When nil they are created on the cluster the operator runs in.
 	// The ref is immutable once set.

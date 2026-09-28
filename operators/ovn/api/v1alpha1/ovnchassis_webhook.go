@@ -148,6 +148,9 @@ func (w *OVNChassisWebhook) validate(ctx context.Context, c *OVNChassis, extra f
 	allErrs = append(allErrs, validation.JobBase(ctx, w.Client, specPath.Child("jobs"), c.Spec.Jobs)...)
 	allErrs = append(allErrs, validateBridgeMappings(specPath.Child("bridgeMappings"), c.Spec.BridgeMappings)...)
 	allErrs = append(allErrs, validateUpdateStrategy(specPath.Child("updateStrategy"), c.Spec.UpdateStrategy)...)
+	// Defense-in-depth twins of the verticalAutoscaling markers and CEL rules,
+	// plus the minAllowed-above-maxAllowed rule CEL cannot express.
+	allErrs = append(allErrs, validation.VerticalAutoscaling(specPath.Child("verticalAutoscaling"), c.Spec.VerticalAutoscaling)...)
 
 	if c.Spec.CentralRef.Name == "" {
 		allErrs = append(allErrs, field.Required(

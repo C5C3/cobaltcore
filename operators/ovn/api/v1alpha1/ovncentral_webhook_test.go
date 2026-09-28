@@ -180,6 +180,74 @@ func TestOVNCentralValidateCreate_Rejections(t *testing.T) {
 			},
 			wantMsg: "target cluster name must be set",
 		},
+		{
+			name: "verticalAutoscaling foreign resource rejected",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Northbound.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantMsg: `spec.northbound.verticalAutoscaling.minAllowed[ephemeral-storage]: Unsupported value: "ephemeral-storage"`,
+		},
+		{
+			name: "verticalAutoscaling minAllowed above maxAllowed rejected",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Northbound.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+					MaxAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				}
+			},
+			wantMsg: `spec.northbound.verticalAutoscaling.minAllowed[cpu]: Invalid value: "2": must not exceed maxAllowed`,
+		},
+		{
+			name: "verticalAutoscaling updateMode outside the enum rejected",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Northbound.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Sometimes"}
+			},
+			wantMsg: `spec.northbound.verticalAutoscaling.updateMode: Unsupported value: "Sometimes"`,
+		},
+		{
+			name: "verticalAutoscaling minReplicas zero rejected",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Northbound.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Auto", MinReplicas: ptr.To(int32(0))}
+			},
+			wantMsg: "spec.northbound.verticalAutoscaling.minReplicas: Invalid value: 0: must be at least 1",
+		},
+		{
+			name: "southbound verticalAutoscaling minAllowed above maxAllowed rejected",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Southbound.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+					MaxAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				}
+			},
+			wantMsg: `spec.southbound.verticalAutoscaling.minAllowed[cpu]: Invalid value: "2": must not exceed maxAllowed`,
+		},
+		{
+			name: "northd verticalAutoscaling foreign resource rejected",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Northd.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantMsg: `spec.northd.deployment.verticalAutoscaling.minAllowed[ephemeral-storage]: Unsupported value: "ephemeral-storage"`,
+		},
+		{
+			name: "relay verticalAutoscaling minAllowed above maxAllowed rejected",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Relay = &OVNRelaySpec{Replicas: 1}
+				o.Spec.Relay.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+					MaxAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				}
+			},
+			wantMsg: `spec.relay.verticalAutoscaling.minAllowed[cpu]: Invalid value: "2": must not exceed maxAllowed`,
+		},
 	}
 
 	for _, tt := range tests {

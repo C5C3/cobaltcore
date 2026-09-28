@@ -41,6 +41,10 @@ type OVNCentralList struct {
 	Items           []OVNCentral `json:"items"`
 }
 
+// VerticalAutoscalingSpec is aliased to the shared commonv1 definition, which
+// carries the canonical per-field godoc and validation markers.
+type VerticalAutoscalingSpec = commonv1.VerticalAutoscalingSpec
+
 // OVNCentralSpec defines the desired state of OVNCentral.
 //
 // The targetClusterRef transition rules (evaluated only on UPDATE) freeze the
@@ -223,6 +227,15 @@ type OVNDatabaseSpec struct {
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
+	// VerticalAutoscaling opts the member StatefulSet into a
+	// VerticalPodAutoscaler that controls the requests of its containers. The
+	// operator fills minAllowed with the request floor (70m CPU, 256Mi memory)
+	// for each resource the block does not name. On a cluster that does not
+	// serve autoscaling.k8s.io/v1 VerticalPodAutoscaler, the CR reports
+	// VPAReady=False with reason VPANotInstalled.
+	// +optional
+	VerticalAutoscaling *VerticalAutoscalingSpec `json:"verticalAutoscaling,omitempty"`
+
 	// PriorityClassName sets the priority class of the Raft member pods. When
 	// unset or empty no priority class is configured and the cluster default
 	// applies.
@@ -298,6 +311,13 @@ type OVNRelaySpec struct {
 	// request and limit. Anything else the block sets is kept.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// VerticalAutoscaling opts the relay Deployment into a
+	// VerticalPodAutoscaler that controls the requests of its containers. On a
+	// cluster that does not serve autoscaling.k8s.io/v1 VerticalPodAutoscaler,
+	// the CR reports VPAReady=False with reason VPANotInstalled.
+	// +optional
+	VerticalAutoscaling *VerticalAutoscalingSpec `json:"verticalAutoscaling,omitempty"`
 
 	// NodePlacementSpec adds nodeSelector, tolerations and affinity, which the
 	// operator renders onto the relay pod template verbatim.

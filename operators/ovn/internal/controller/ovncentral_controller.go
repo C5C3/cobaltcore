@@ -18,16 +18,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/gateway"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
@@ -91,6 +94,7 @@ var centralSubConditionTypes = []string{
 	conditionTypeNorthdReady,
 	conditionTypeRelayReady,
 	conditionTypeBackupReady,
+	"VPAReady",
 }
 
 // centralSkeleton bundles the shared controller-skeleton glue (Ready
@@ -135,6 +139,14 @@ type OVNCentralReconciler struct {
 	// Certificate".
 	certManagerAvailable bool
 
+	// vpaAvailable is set during SetupWithManager from the management
+	// cluster's RESTMapper and reports whether it serves the
+	// autoscaling.k8s.io/v1 VerticalPodAutoscaler kind. It gates the local VPA
+	// watch leg and answers commonmulticluster.ChildrenServeKind for local
+	// children, so reconcileVPA reports VPAReady=False/VPANotInstalled for an
+	// opt-in on a cluster without the VPA.
+	vpaAvailable bool
+
 	// Resolver resolves the target cluster an OVNCentral CR names in
 	// spec.targetClusterRef into the client its children are read and written
 	// with. Nil means always-local: every CR keeps its children on the
@@ -166,6 +178,7 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 	batchv1.SchemeGroupVersion.WithKind("Job"),
 	policyv1.SchemeGroupVersion.WithKind("PodDisruptionBudget"),
 	certificateGVK,
+	deployment.VPAGVK,
 }
 
 // The markers below cover both CR kinds of this operator. controller-gen
@@ -208,6 +221,9 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // The operator issues the OVN client and server certificates through
 // cert-manager and reads back the Secrets they write.
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
+// verticalpodautoscalers carry the opt-in VPAs of the databases, northd, the
+// relay and the chassis DaemonSets.
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // The validating webhooks look up every priorityClassName the two CR kinds
 // reference, through the uncached API reader that runs as this ServiceAccount.
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
@@ -396,6 +412,13 @@ func (r *OVNCentralReconciler) parallelSteps(children client.Client, primary *ov
 				return r.reconcileBackup(ctx, children, cr)
 			},
 		},
+		{
+			Name:          "VPA",
+			ConditionType: "VPAReady",
+			Fn: func(ctx context.Context, cr *ovnv1alpha1.OVNCentral) (ctrl.Result, error) {
+				return r.reconcileVPA(ctx, children, cr)
+			},
+		},
 	}
 }
 
@@ -473,6 +496,16 @@ func (r *OVNCentralReconciler) setupWithOptions(mgr mcmanager.Manager, opts crco
 		setupLog.Info("cert-manager not installed; Certificate watch disabled, spec.tls will be reported through the TLSReady condition")
 	}
 
+	// Detect the VerticalPodAutoscaler CRD: verticalAutoscaling is an opt-in,
+	// so the operator must run on clusters without the VPA, where an
+	// unconditional Owns would fail the controller at Start.
+	r.vpaAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	if r.vpaAvailable {
+		setupLog.Info("VerticalPodAutoscaler CRD detected; enabling VPA watch and reconciliation")
+	} else {
+		setupLog.Info("VerticalPodAutoscaler CRD not installed; VPA watch disabled, verticalAutoscaling will be reported through VPAReady")
+	}
+
 	// Register the OVNChassis field indexer before Watches so the chassis
 	// controller's mapper can rely on it for its MatchingFields lookup. The
 	// index goes on the LOCAL field indexer, not mgr's: with a provider
@@ -520,12 +553,22 @@ func (r *OVNCentralReconciler) setupWithOptions(mgr mcmanager.Manager, opts crco
 		b = b.Owns(&certmanagerv1.Certificate{}, engageLocal, engageNoProviders)
 	}
 
+	// The recommender rewrites status.recommendation about once a minute; only
+	// a spec change (drift from the applied VPA) wakes the CR.
+	if r.vpaAvailable {
+		b = b.Owns(&vpav1.VerticalPodAutoscaler{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			engageLocal, engageNoProviders)
+	}
+
 	// The same children, once more, on the clusters a CR can project onto. Owns
 	// cannot see them: an owner reference does not cross a cluster boundary, so
-	// the ownership labels are what maps a child back to its CR. No leg carries a
-	// predicate, mirroring what Owns admits locally.
+	// the ownership labels are what maps a child back to its CR. The VPA leg
+	// carries the same predicate as its local Owns; no other leg carries one,
+	// mirroring what Owns admits locally.
 	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &ovnv1alpha1.OVNCentral{},
-		targets, OVNCentralRemoteChildKinds, nil)
+		targets, OVNCentralRemoteChildKinds, map[schema.GroupVersionKind][]mcbuilder.WatchesOption{
+			deployment.VPAGVK: {mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})},
+		})
 	if err != nil {
 		return err
 	}

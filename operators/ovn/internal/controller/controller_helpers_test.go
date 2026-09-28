@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -89,8 +90,9 @@ func defaultedDatabaseSpec() ovnv1alpha1.OVNDatabaseSpec {
 }
 
 // newTestScheme returns the scheme the fake clients are built with: the
-// client-go kinds the children are, the OVN kinds the CRs are, and the
-// cert-manager kinds the TLS step projects.
+// client-go kinds the children are, the OVN kinds the CRs are, the
+// cert-manager kinds the TLS step projects, and the VerticalPodAutoscaler
+// kinds the VPA steps apply.
 func newTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 
@@ -103,6 +105,9 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := certmanagerv1.AddToScheme(scheme); err != nil {
 		t.Fatalf("adding the cert-manager kinds to the test scheme: %v", err)
+	}
+	if err := vpav1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding VerticalPodAutoscaler to scheme: %v", err)
 	}
 	return scheme
 }
