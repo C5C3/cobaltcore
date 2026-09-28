@@ -46,6 +46,7 @@ the operator creates:
 | `Deployment` | `keystone` | — |
 | `Service` (ClusterIP) | `keystone` | `keystone.openstack.svc.cluster.local` |
 | `HorizontalPodAutoscaler` | `keystone` | — |
+| `VerticalPodAutoscaler` | `keystone` | — |
 | `PodDisruptionBudget` | `keystone` | — |
 | `NetworkPolicy` | `keystone` | — |
 | `HTTPRoute` | `keystone` | — |
@@ -188,6 +189,7 @@ Groups the pod-level knobs for the Keystone API Deployment under `spec.deploymen
 | `nodeSelector` | `map[string]string` | No | `nil` | Restricts the Keystone API pods to nodes that carry every listed label. Rendered onto the pod template verbatim. The webhook checks the label grammar. See [NodePlacementSpec](#nodeplacementspec). |
 | `tolerations` | [`[]corev1.Toleration`](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/) | No | `nil` | Lets the pods onto nodes with matching taints. Rendered verbatim. The webhook applies the API server's toleration rules. |
 | `affinity` | [`*corev1.Affinity`](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity) | No | `nil` | Node affinity and pod (anti-)affinity rules, applied beside the topology spread constraints. Rendered verbatim; the API server validates it when the operator applies the Deployment. |
+| `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](#verticalautoscalingspec) | No | `nil` | Opts the Keystone API Deployment into a VerticalPodAutoscaler that controls the requests of its containers. Rejected beside `spec.autoscaling`. On a cluster that does not serve the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 
 ### Resource defaults
 
@@ -286,6 +288,9 @@ validating webhook is unavailable.
 | `spec.policyOverrides.rules` | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` | "policy rule value must not be empty" |
 | `spec.autoscaling` | `has(self.targetCPUUtilization) \|\| has(self.targetMemoryUtilization)` | "at least one of targetCPUUtilization or targetMemoryUtilization must be set" |
 | `spec.autoscaling` | `!has(self.minReplicas) \|\| self.minReplicas <= self.maxReplicas` | "minReplicas must not exceed maxReplicas" |
+| `spec` | `!(has(self.autoscaling) && has(self.deployment) && has(self.deployment.verticalAutoscaling))` | "spec.deployment.verticalAutoscaling cannot be set while spec.autoscaling scales the same Deployment" |
+| `spec.deployment.verticalAutoscaling` | `!has(self.minAllowed) \|\| self.minAllowed.all(k, k in ['cpu','memory'])` | "minAllowed may only name cpu and memory" |
+| `spec.deployment.verticalAutoscaling` | `!has(self.maxAllowed) \|\| self.maxAllowed.all(k, k in ['cpu','memory'])` | "maxAllowed may only name cpu and memory" |
 | `spec.networkPolicy` | `size(self.ingress) > 0` | "at least one ingress source must be specified" |
 | `spec.deployment` | drain window: effective `preStopSleepSeconds` (default 5) must be `<` effective `terminationGracePeriodSeconds` (default 30) | "preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds" |
 | `spec.uwsgi` | `!has(self.httpKeepAliveTimeout) \|\| !has(self.httpKeepAlive) \|\| self.httpKeepAlive` | "httpKeepAliveTimeout may only be set when httpKeepAlive is true" |
@@ -302,6 +307,9 @@ validating webhook is unavailable.
 | `spec.autoscaling.minReplicas` | Minimum: 1 | — |
 | `spec.autoscaling.targetCPUUtilization` | Minimum: 1 | — |
 | `spec.autoscaling.targetMemoryUtilization` | Minimum: 1 | — |
+| `spec.deployment.verticalAutoscaling.updateMode` | Enum: `Off`, `Initial`, `Recreate`, `Auto` | — |
+| `spec.deployment.verticalAutoscaling.minReplicas` | Minimum: 1 | — |
+| `spec.deployment.verticalAutoscaling.minAllowed`, `.maxAllowed` | MaxProperties: 2 | — |
 | `spec.uwsgi.processes` | Minimum: 1 | — |
 | `spec.uwsgi.threads` | Minimum: 1 | — |
 | `spec.uwsgi.harakiri` | Minimum: 1 | — |
@@ -415,6 +423,112 @@ spec:
           - type: Pods
             value: 1
             periodSeconds: 30
+```
+
+## VerticalAutoscalingSpec
+
+Opts the Keystone API Deployment into a VerticalPodAutoscaler
+(`autoscaling.k8s.io/v1`) through `spec.deployment.verticalAutoscaling`. The
+field sits on the shared `DeploymentSpec`, so every Deployment-shaped block of
+every service operator carries it. The OVN databases and relay, the OVN chassis
+DaemonSets, the Neutron metadata agent and the NovaCompute pool carry the same
+block on their own spec. When the block is `nil`, no VPA exists, and a VPA the
+CR created before is deleted.
+
+The operator owns the VPA's lifetime. What the VPA then does depends on the
+VPA components the cluster runs: the recommender computes the recommendation,
+the admission controller writes it into the requests of new pods, and the
+updater evicts running pods to apply it. A cluster that runs the recommender
+alone gets recommendations and no changed pod.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `updateMode` | `string` | Yes | — | The VPA's `spec.updatePolicy.updateMode`. `Off` only recommends, `Initial` sets the requests when a pod is created, and `Recreate` and `Auto` also evict running pods to apply them. `Auto` behaves like `Recreate` in VPA 1.8 and is deprecated upstream. `InPlaceOrRecreate` and `InPlace` are not offered: both need feature gates on the VPA and the cluster. YAML reads a bare `Off` as a boolean, so write `updateMode: "Off"`. |
+| `minReplicas` | `*int32` | No | unset | The VPA's `spec.updatePolicy.minReplicas`: the updater evicts no pod while fewer replicas run. Minimum: 1. Unset, the updater's own default of 2 applies (see [One replica](#one-replica)). |
+| `minAllowed` | `corev1.ResourceList` | No | unset | The lower bound of the recommendation, `minAllowed` of the container policy. Only `cpu` and `memory`. |
+| `maxAllowed` | `corev1.ResourceList` | No | unset | The upper bound of the recommendation, `maxAllowed` of the container policy. Only `cpu` and `memory`, each at least the `minAllowed` of the same resource. |
+
+### VPA Resource Mapping
+
+The VPA created from this spec has the following shape:
+
+| VPA Field | Value |
+| --- | --- |
+| `metadata.name` | `{name}`, the name of the Deployment it targets |
+| `metadata.labels` | `commonLabels` (name, instance, managed-by) |
+| `spec.targetRef` | `apiVersion: apps/v1`, `kind: Deployment`, `name: {name}` |
+| `spec.updatePolicy.updateMode` | `verticalAutoscaling.updateMode` |
+| `spec.updatePolicy.minReplicas` | `verticalAutoscaling.minReplicas` (absent when unset) |
+| `spec.resourcePolicy.containerPolicies` | One entry: `containerName: "*"`, `controlledValues: RequestsOnly`, `controlledResources: [cpu, memory]`, and `minAllowed` and `maxAllowed` from the block (absent when unset) |
+| `ownerReferences` | Points to the Keystone CR (controller: true). A VPA on a target cluster carries the ownership labels instead. |
+
+The `"*"` policy covers every container of the pod: the `keystone` container
+and, while `spec.federation` is set, the federation proxy sidecar. Init
+containers are outside the VPA's reach. The VPA controls requests only, so the
+limits stay as the operator renders them, and two consequences follow:
+
+- Memory: a container whose block names no memory runs with one figure as
+  request and limit, and the VPA caps a memory request at the container's
+  limit. To let a memory recommendation above that figure take effect, name a
+  higher memory limit in `spec.deployment.resources`.
+- CPU: the operators set no CPU limit, so nothing but `maxAllowed.cpu` bounds
+  a CPU request the VPA raises. Set `maxAllowed.cpu` whenever `updateMode`
+  lets the VPA change pods.
+
+### Exclusion with spec.autoscaling
+
+Every HPA the operators render scales on CPU or memory utilization, which is
+measured against the requests a VPA changes. A CR that sets both
+`spec.autoscaling` and `spec.deployment.verticalAutoscaling` is therefore
+rejected at admission, by a CEL rule on the spec root and by the webhook. A
+VPA belongs on a component no HPA scales.
+
+### VPAReady condition
+
+| Reason | Status | Meaning |
+| --- | --- | --- |
+| `VPAReady` | `True` | The VPA of every opted-in workload is applied; the message names them. |
+| `VPANotRequired` | `True` | No workload opts in. A VPA the CR created before is deleted. |
+| `VPANotInstalled` | `False` | A workload opts in, but the cluster its children land on does not serve `autoscaling.k8s.io/v1` `VerticalPodAutoscaler`. The message names the workloads. Nothing is created or deleted, and every other sub-reconciler keeps running; the aggregate `Ready` stays `False` until the VPA is installed or the opt-in is removed. |
+| `CapabilityProbeFailed` | `False` | The target cluster the CR names could not be asked whether it serves the kind. The pass is retried. |
+| `VPAError` | `False` | Listing, applying or deleting a VPA failed. The message carries the error, and the pass is retried. |
+
+The operator asks the management cluster for the kind once, at startup. A VPA
+CRD installed after the operator started is seen after an operator restart;
+until then an opt-in reports `VPANotInstalled`. A target cluster is asked on
+every reconcile.
+
+The operator watches its VPAs for spec changes only. The recommender rewrites
+`status.recommendation` about once a minute, and those writes do not wake the
+Keystone CR.
+
+### One replica
+
+The updater evicts a pod only while at least `minReplicas` replicas run, and
+its own default is 2. On the Minimal sizing profile every component runs one
+replica, so a VPA in `Recreate` or `Auto` mode only recommends until the block
+sets `minReplicas: 1`. With it, the updater evicts the only pod, and the
+component is down until its replacement is ready.
+
+### Example
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 2
+    verticalAutoscaling:
+      updateMode: Recreate
+      minAllowed:
+        memory: 512Mi
+      maxAllowed:
+        cpu: "2"
+        memory: 2Gi
+  # ... other required fields, and no spec.autoscaling ...
 ```
 
 ---
@@ -1569,6 +1683,12 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Autoscaling no metric targets | `spec.autoscaling` | `field.Required` | Neither `targetCPUUtilization` nor `targetMemoryUtilization` is set. Defense-in-depth alongside the CEL XValidation rule. |
 | Autoscaling target over a zero request | `spec.deployment.resources.requests.<cpu\|memory>`, or `limits.<cpu\|memory>` when no request is named | `field.Invalid` | A zero or negative request, or a zero or negative limit the API server would copy into the request, for the resource a set `targetCPUUtilization` or `targetMemoryUtilization` measures. The HPA divides the pods' usage by the sum of their containers' requests, so a zero request fails the metric or inflates it. A block that names neither passes, because the render-time default fills a positive request. Webhook-only: a `resource.Quantity` floor has no marker. |
 | Autoscaling target over a zero proxy request | `spec.federation.proxyResources.requests.<cpu\|memory>`, or `limits.<cpu\|memory>` | `field.Invalid` | The same rule for the federation proxy sidecar, which joins the API pod while `spec.federation` is set. |
+| Vertical autoscaling beside autoscaling | `spec.deployment.verticalAutoscaling` | `field.Forbidden` | `spec.autoscaling` and `spec.deployment.verticalAutoscaling` are both set (`cannot be set while spec.autoscaling scales the same Deployment`). Defense-in-depth alongside the CEL XValidation rule on the spec root. |
+| Vertical autoscaling update mode | `spec.deployment.verticalAutoscaling.updateMode` | `field.NotSupported` | A value other than `Off`, `Initial`, `Recreate` or `Auto`. Defense-in-depth alongside the `Enum` marker. |
+| Vertical autoscaling minReplicas minimum | `spec.deployment.verticalAutoscaling.minReplicas` | `field.Invalid` | `minReplicas < 1` when set (`must be at least 1`). Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
+| Vertical autoscaling resources | `spec.deployment.verticalAutoscaling.minAllowed[<key>]`, `.maxAllowed[<key>]` | `field.NotSupported` | A key other than `cpu` and `memory`. Defense-in-depth alongside the two CEL XValidation rules on `VerticalAutoscalingSpec`. |
+| Vertical autoscaling bounds | `spec.deployment.verticalAutoscaling.minAllowed[<key>]` | `field.Invalid` | `minAllowed` of a resource above `maxAllowed` of the same resource (`must not exceed maxAllowed`). Webhook-only: CEL cannot compare quantities across two maps. |
+| Vertical autoscaling bound scale | `spec.deployment.verticalAutoscaling.minAllowed[<key>]`, `.maxAllowed[<key>]` | `field.Invalid` | A `cpu` or `memory` bound whose decimal exponent lies beyond ±30, such as `1e2000000000` (`must not use a decimal exponent beyond ±30`). Webhook-only: comparing such a bound would build the number it spells out, so it is rejected before the bounds check. |
 | NetworkPolicy ingress required | `spec.networkPolicy.ingress` | `field.Required` | `networkPolicy` is set but `ingress` is empty. Defense-in-depth alongside the CEL XValidation rule. |
 | uWSGI processes minimum | `spec.uwsgi.processes` | `field.Invalid` | `processes < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | uWSGI threads minimum | `spec.uwsgi.threads` | `field.Invalid` | `threads < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
@@ -1760,6 +1880,11 @@ is pinned by a Chainsaw step.
 | `autoscaling-cpu-request-zero-rejected` | `30-autoscaling-cpu-request-zero.yaml` | `spec.deployment.resources` positive CPU request under a CPU target (webhook) | Error containing "spec.deployment.resources.requests.cpu" and "cpu request must be greater than zero" |
 | `autoscaling-behavior-window-above-max-rejected` | `31-autoscaling-behavior-window-above-max.yaml` | `spec.autoscaling.behavior` `autoscaling/v2` bounds (webhook) | Error containing "spec.autoscaling.behavior.scaleDown.stabilizationWindowSeconds" and "stabilizationWindowSeconds must be between 0 and 3600" |
 | `autoscaling-memory-target-unreachable-rejected` | `32-autoscaling-memory-target-unreachable.yaml` | Memory target above 100 that no container of the API pod can reach (webhook) | Error containing "spec.autoscaling.targetMemoryUtilization" and "can never be reached" |
+| `vertical-autoscaling-beside-autoscaling-rejected` | `33-vertical-autoscaling-beside-autoscaling.yaml` | `spec.deployment.verticalAutoscaling` beside `spec.autoscaling` (CEL on the spec root) | Error containing "spec.deployment.verticalAutoscaling" and "cannot be set while spec.autoscaling scales the same Deployment" |
+| `vertical-autoscaling-foreign-resource-rejected` | `34-vertical-autoscaling-foreign-resource.yaml` | `minAllowed` names only cpu and memory (CEL) | Error containing "spec.deployment.verticalAutoscaling" and "minAllowed may only name cpu and memory" |
+| `vertical-autoscaling-min-above-max-rejected` | `35-vertical-autoscaling-min-above-max.yaml` | `minAllowed` at most `maxAllowed` (webhook) | Error containing "spec.deployment.verticalAutoscaling.minAllowed[cpu]" and "must not exceed maxAllowed" |
+| `vertical-autoscaling-update-mode-rejected` | `36-vertical-autoscaling-update-mode.yaml` | `updateMode` Enum | Error containing "spec.deployment.verticalAutoscaling.updateMode" and "Unsupported value" |
+| `vertical-autoscaling-min-replicas-zero-rejected` | `37-vertical-autoscaling-min-replicas-zero.yaml` | `minReplicas` Minimum=1 | Error containing "spec.deployment.verticalAutoscaling.minReplicas" and "should be greater than or equal to 1" |
 
 Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
 so each is applied as an UPDATE of the base CR and is rejected by the

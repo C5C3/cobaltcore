@@ -2079,13 +2079,23 @@ recommender ships as a separate opt-in kind overlay. Neither the default
 `make deploy-infra` flow nor the production `deploy/flux-system/` overlay
 installs it.
 
-Its only consumer is the
+It has two consumers. The first is the
 [sizing measurement](../testing/sizing-calibration.md).
 `hack/ci-vpa-recommendations.sh`
 creates a VPA with `updateMode: "Off"` for every workload in the `openstack`
 namespace and records the recommender's CPU and memory targets. The
 `ci:measure-sizing` label runs that measurement in CI (see the
 [CI workflow](../ci-cd/ci-workflow.md) label table).
+
+The second is the `e2e-autoscaling` job, which always deploys the overlay. Its
+operators find the VerticalPodAutoscaler CRD at startup and create the VPAs
+that the ControlPlane's and the OVNCentral's `verticalAutoscaling` blocks opt
+into, and the
+[e2e-autoscaling suite](../testing/controlplane-e2e-tests.md#e2e-autoscaling)
+waits for the recommender to serve one of them. Without the updater and the
+admission controller, an opt-in with `updateMode` `Initial`, `Recreate` or
+`Auto` changes no pod on this overlay either, so the suite asserts the VPA
+objects and a recommendation, not rewritten requests.
 
 Recommendation-only mode changes no pod, so the release installs the VPA CRDs
 and the recommender alone: the updater and the admission controller are
@@ -2110,7 +2120,7 @@ Namespace, and the `HelmRepository` lives in `flux-system`.
 | `recommender.replicas` | `1` | One recommender; the chart disables leader election |
 | `recommender.extraArgs` | `--pod-recommendation-min-cpu-millicores=1`, `--pod-recommendation-min-memory-mb=1` | The recommender divides a per-pod floor (25 millicores and 250 MiB by default) evenly among a pod's containers. With the default floor a container using less than its share reports the floor instead of its use |
 | `recommender.resources` | requests `50m` / `256Mi`, limit `512Mi` memory | Keeps the recommender itself small on the measured node |
-| `crds.enabled` | `true` | Installs `verticalpodautoscalers.autoscaling.k8s.io`, which the collector checks for |
+| `crds.enabled` | `true` | Installs `verticalpodautoscalers.autoscaling.k8s.io`, which the collector checks for and the operators need to create opt-in VPAs |
 
 `--memory-saver` keeps its default `false`, so the recommender samples every
 pod from its start, whether or not a VPA selects it yet.

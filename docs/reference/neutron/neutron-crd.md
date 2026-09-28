@@ -47,6 +47,7 @@ of the fields below the plane fills and which it leaves to this CR.
 | --- | --- | --- | --- | --- |
 | `openStackRelease` | `string` (Pattern `^\d{4}\.[12]$`) | yes | none | The OpenStack release the operator deploys and drives. It governs install and upgrade release tracking: `status.installedRelease` is promoted to this value after a successful db-sync. The pattern admits the `YYYY.N` cadence with `N` in {1, 2}, the same class the validating webhook and `release.ParseRelease` accept, so a non-cadence minor is rejected at every layer. Kept separate from the image tag so a digest-pinned image still names a schema |
 | `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the API Deployment: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and 720Mi memory request and limit at the default `spec.apiServer.uwsgi` counts, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). It is also the fallback of `spec.jobs` |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the Neutron API Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). Rejected beside `spec.autoscaling`, which scales the same Deployment. On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `jobs` | [`*commonv1.JobSpec`](../keystone/keystone-crd.md#jobspec) | no | `nil` | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, and the ovn-db-sync CronJob. A field left unset falls back to `spec.deployment`. Unset resources default to a `70m` CPU request and `368Mi` memory as request and limit; ovn-db-sync gets the request floor instead (see [OVNDBSyncSpec](#ovndbsyncspec)) |
 | `image` | [`commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | yes | none | The Neutron container image, run by the API pods, both worker Deployments, the migration Jobs, and the ovn-db-sync CronJob. `tag` and `digest` are mutually exclusive and one of the two is required. The field carries no immutability rule |
 | `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | yes | none | The MariaDB connection, rendered into the plain `[database]` section. One of `clusterRef` (managed) or `host` (brownfield), never both, plus `database`, `secretRef`, and the optional `port`, `credentialsMode` and `tls`. `credentialsMode: Dynamic` requires `clusterRef`. `replicas` and `storageSize` sit in the schema and are read by the ControlPlane's managed-mode projection alone, so this operator ignores them |
@@ -162,6 +163,7 @@ load the process that opens the connection past it answers HTTP 500.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the worker Deployments. `replicas` (default 3) sizes both, so the default is three periodic-worker pods and three OVN maintenance-worker pods. Each worker runs one single-threaded process, so a `resources` block that names neither CPU nor memory renders a 70m CPU request, no CPU limit, and 368Mi as memory request and limit (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). The worker Deployments render its `nodeSelector`, `tolerations` and `affinity` too. The webhook validates this block like `spec.deployment`, except that `topologySpreadConstraints` must be unset or empty (see [Webhook rules](#webhook-rules)) |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts both worker Deployments (periodic-workers, ovn-maintenance-worker) into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 
 The block configures two Deployments, `{name}-periodic-workers` and
 `{name}-ovn-maintenance-worker`. Each selects its pods by its own component
@@ -616,9 +618,9 @@ each branch sits at and exits 0, which keeps the phase readable in the Job log.
 
 ### Conditions
 
-Fourteen sub-reconcilers report under ten condition types: four of them share
+Fifteen sub-reconcilers report under eleven condition types: four of them share
 `SecretsReady` and two share `OVNEndpointsReady`. The aggregate `Ready` is
-`True` only when all ten are. For the order they run in and what each one does,
+`True` only when all eleven are. For the order they run in and what each one does,
 see the [reconciler reference](./neutron-reconciler.md).
 
 | Type | Status | Reason | Meaning |
@@ -678,6 +680,11 @@ see the [reconciler reference](./neutron-reconciler.md).
 | `NetworkPolicyReady` | True | `NetworkPolicyNotRequired` | `spec.networkPolicy` is unset, so any previous policy was deleted and traffic flows unrestricted |
 | `Ready` | True | `AllReady` | All ten sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
+| `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
+| `VPAReady` | True | `VPANotRequired` | No workload opts in (every `verticalAutoscaling` block unset); a VPA the CR created before is deleted |
+| `VPAReady` | False | `VPANotInstalled` | A workload opts in, but the cluster the children land on does not serve `autoscaling.k8s.io/v1` `VerticalPodAutoscaler`. Nothing is created, and the other conditions still converge |
+| `VPAReady` | False | `CapabilityProbeFailed` | The target cluster the CR names could not be probed for the kind |
+| `VPAReady` | False | `VPAError` | Listing, applying or deleting a VPA failed; the message carries the error |
 
 `ExtraConfigHealthy` is set beside these on every pass that renders a config,
 reporting the honored overrides of operator-owned keys. It is informational and

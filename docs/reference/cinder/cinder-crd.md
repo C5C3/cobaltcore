@@ -59,6 +59,7 @@ The API is the only Deployment that scales horizontally.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | `DeploymentSpec` | no | `replicas: 3` | Pod-level knobs: `replicas`, `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and memory sized from `spec.api.uwsgi`, 720Mi as request and limit at its defaults, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds` (30), `preStopSleepSeconds` (5), `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). It is also the fallback of `spec.jobs` |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the Cinder API Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). Rejected beside `spec.autoscaling`, which scales the same Deployment. On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `uwsgi` | `UWSGISpec` | no | materialized | uWSGI parameters: `processes` (2), `threads` (1), `httpKeepAlive` (true), `harakiri` and `httpKeepAliveTimeout` (both omitted when unset). The defaulting webhook materializes the block, so the API always runs with the documented values |
 
 ### CinderSchedulerSpec
@@ -66,6 +67,7 @@ The API is the only Deployment that scales horizontally.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | `DeploymentSpec` | no | `replicas: 1` | The same pod-level knobs, node placement included. `cinder-scheduler` runs one single-threaded process, so a block that names no memory renders 368Mi as memory request and limit. Schedulers are peers that hold no state between requests, so the count may be raised; every pod registers under the one `{name}-scheduler` identity |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the scheduler Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 
 The one-replica default is applied by the defaulting webhook and reaches the
 absent block only. `commonv1.DeploymentSpec.Replicas` carries
@@ -77,6 +79,7 @@ carries a `deployment` object at all, before any mutating webhook runs.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | `DeploymentSpec` | no | `replicas: 1`, `strategy.type: Recreate` | The pod-level knobs every `cinder-volume` Deployment shares, node placement included. The operator projects one Deployment per attached backend and applies this block to all of them, which is why `topologySpreadConstraints` is rejected here (see [Defaulting and validation](#defaulting-and-validation)). Each `cinder-volume` runs one single-threaded process, so a block that names no memory renders 368Mi as memory request and limit |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts every `cinder-volume` Deployment, one VPA per projected backend into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 
 Two CEL rules on `CinderSpec` pin this block: `replicas` must be `1` and
 `strategy.type` must be `Recreate`. A `cinder-volume` owns its backend through a
@@ -92,6 +95,7 @@ beside whatever else it sets, or admission rejects it.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | `DeploymentSpec` | no | `replicas: 1`, `strategy.type: Recreate`, memory `2Gi` | The pod-level knobs of the backup Deployment, node placement included |
+| `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the backup Deployment while a backup target is projected into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 
 The same two CEL rules apply, with the same consequence for a present block.
 When the block names no memory, the reconciler renders a fixed `2Gi` as memory

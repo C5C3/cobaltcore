@@ -136,6 +136,7 @@ Deployment rollout, bootstrap Job).
 | upgrade-abort | `keystone-upgrade-abort` | In-flight upgrade abort by reverting the image tag; the upgrade wedges in `Expanding` because its target is pulled from an unresolvable `registry.invalid` repository, whichever releases exist, and recovers cleanly |
 | upgrade-flow | `keystone-upgrade-flow` | Expand-migrate-contract phase progression with `installedRelease`/`targetRelease` bookkeeping |
 | uwsgi | `keystone-uwsgi` | `spec.uwsgi` defaulting and propagation into the uWSGI command line |
+| [vertical-autoscaling](#vertical-autoscaling) | `keystone-vertical` | `spec.deployment.verticalAutoscaling` on a cluster without the VerticalPodAutoscaler: `VPAReady=False/VPANotInstalled` naming `autoscaling.k8s.io` while the Deployment and the API converge and `Ready` stays `False`; removing the opt-in returns `VPAReady=True/VPANotRequired` and `Ready=True` |
 
 ---
 
@@ -806,6 +807,34 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
 
 ---
 
+### vertical-autoscaling
+
+**File:** `tests/e2e/keystone/vertical-autoscaling/chainsaw-test.yaml`
+
+**Purpose:** Proves the absent case of `spec.deployment.verticalAutoscaling`:
+on a cluster that does not serve `autoscaling.k8s.io/v1`
+VerticalPodAutoscaler, the opt-in is reported through
+[`VPAReady`](../keystone/keystone-crd.md#vpaready-condition) and holds nothing
+else back. The `e2e-operator` keystone leg deploys no VPA, so the suite runs
+there; its first step fails rather than skips on a cluster that serves the
+kind, because it would then prove nothing. The present case, the operators
+creating VPAs, is proven by
+[e2e-autoscaling](controlplane-e2e-tests.md#e2e-autoscaling).
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | The cluster serves no VPA | `script` | `kubectl api-resources --api-group=autoscaling.k8s.io` lists no `verticalpodautoscalers`; otherwise the step fails and names `WITH_VPA=true` |
+| 2 | Apply the opted-in Keystone CR | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-vertical` with `verticalAutoscaling.updateMode: "Off"` |
+| 3 | Assert the opt-in is reported | `assert` (5m) + `script` | `DeploymentReady=True`, `KeystoneAPIReady=True`, `VPAReady=False/VPANotInstalled` with a message containing `autoscaling.k8s.io`, `Ready=False`; `kubectl get vpa` fails with `doesn't have a resource type` |
+| 4 | Patch: remove the opt-in | `patch` | `01-patch-disable-vertical-autoscaling.yaml` sets `verticalAutoscaling` to `null` |
+| 5 | Assert Ready returns | `assert` (5m) | `VPAReady=True/VPANotRequired` and `Ready=True/AllReady` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-disable-vertical-autoscaling.yaml`
+
+---
+
 ## Assertion Patterns
 
 The test suites use three Chainsaw assertion patterns:
@@ -1094,10 +1123,14 @@ tests/e2e/keystone/
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial release
 │   ├── 01-patch-upgrade.yaml           Patch for sequential upgrade
 │   └── 02-patch-skip-level.yaml        Patch for skip-level upgrade
-└── uwsgi/
-    ├── chainsaw-test.yaml              uWSGI command propagation
-    ├── 00-keystone-cr.yaml             Keystone CR without explicit uWSGI
-    └── 01-patch-custom-uwsgi.yaml      Patch with custom uWSGI settings
+├── uwsgi/
+│   ├── chainsaw-test.yaml              uWSGI command propagation
+│   ├── 00-keystone-cr.yaml             Keystone CR without explicit uWSGI
+│   └── 01-patch-custom-uwsgi.yaml      Patch with custom uWSGI settings
+└── vertical-autoscaling/
+    ├── chainsaw-test.yaml              VPAReady on a cluster without the VPA
+    ├── 00-keystone-cr.yaml             Keystone CR opting into a VPA
+    └── 01-patch-disable-vertical-autoscaling.yaml Patch removing the opt-in
 ```
 
 ## Related Resources

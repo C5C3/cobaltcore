@@ -40,6 +40,7 @@ see [Target Clusters](../target-clusters.md).
 | `novaMetadata` | [`NovaMetadataSpec`](#novametadataspec) pointer | no | `nil` | The Nova metadata API the agent proxies to. A nil block renders none of its four keys and the oslo defaults apply, which is what an agent standing beside a control plane that runs no compute service wants |
 | `metadataWorkers` | `*int32` (Minimum=0) | no | operator-resolved `4` | Rendered as `[DEFAULT] metadata_workers`. In 2026.1 it sizes the thread pool the agent serves metadata requests from, and `0` serves them one at a time in the main process, which is upstream's ML2/OVN default. 2025.2 ignores the option and starts one thread per request. The count does not follow the node's CPU count. The default is resolved when the config is rendered and never written into the CR |
 | `resources` | `corev1.ResourceRequirements` | no | `{}` | Requests and limits for the init container and the agent container, applied to both. The operator never writes defaults into this field; it resolves them per resource when it renders the pod: a CPU the block names neither as request nor as limit gets a 70m request and no limit, and a memory it names neither way gets 368Mi as both request and limit (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). A resource the block names is used as written, and anything else it sets is kept. A CR that names none still lands in the Burstable QoS class instead of BestEffort. Before the per-resource rule, the operator rendered a block that named anything as written, so a block that names only CPU gains a memory request and limit on the upgrade |
+| `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the agent DaemonSet (`{name}-metadata-agent`) into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `logging` | [`*LoggingSpec`](../keystone/keystone-crd.md#loggingspec) | no | `text` / `INFO` / `debug: false` | oslo.log derivation: `format` (`text` or `json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook. The `json` format ships a `logging.conf` in the config ConfigMap and points `[DEFAULT] log_config_append` at it |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSet, the config ConfigMaps and the transport-URL Secret are created on. The CR itself, its status and its finalizer stay on the management cluster. Immutable, enforced by two CEL transition rules and by the webhook. It has to name the same cluster the referenced `OVNChassis` names |
 | `extraConfig` | `map[string]map[string]string` | no | `nil` | Free-form INI sections for `neutron_ovn_metadata_agent.ini` options with no dedicated field. The render-time merge is `operator defaults < extraConfig`, so a user value wins. An override of an operator-owned key is honored and reported through the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event, except for the six keys the webhook refuses outright. Option names are checked at admission against the per-release catalog embedded in the operator |
@@ -290,9 +291,9 @@ condition.
 
 ### Conditions
 
-Three sub-reconcilers each own one condition type, and every one of the three is
+Four sub-reconcilers each own one condition type, and every one of the four is
 set on every pass: the agent runs no optional step. The aggregate `Ready` is
-`True` only when all three are. For the pipeline that sets them see
+`True` only when all four are. For the pipeline that sets them see
 [Reconciler Architecture](./neutron-reconciler.md).
 
 | Type | Status | Reason | Meaning |
@@ -315,6 +316,11 @@ set on every pass: the agent runs no optional step. The aggregate `Ready` is
 | `DaemonSetReady` | False | `DaemonSetError` | The DaemonSet could not be applied or read |
 | `Ready` | True | `AllReady` | All three sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
+| `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
+| `VPAReady` | True | `VPANotRequired` | No workload opts in (`spec.verticalAutoscaling` unset); a VPA the CR created before is deleted |
+| `VPAReady` | False | `VPANotInstalled` | A workload opts in, but the cluster the children land on does not serve `autoscaling.k8s.io/v1` `VerticalPodAutoscaler`. Nothing is created, and the other conditions still converge |
+| `VPAReady` | False | `CapabilityProbeFailed` | The target cluster the CR names could not be probed for the kind |
+| `VPAReady` | False | `VPAError` | Listing, applying or deleting a VPA failed; the message carries the error |
 
 `ExtraConfigHealthy` is set beside these on every pass that renders a config,
 reporting the honored overrides of operator-owned keys. It is informational and

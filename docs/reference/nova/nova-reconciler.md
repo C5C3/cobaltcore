@@ -59,6 +59,7 @@ Database ──► Conductor ──► Scheduler ──► Metadata ──► Co
 | ConsoleHTTPRoute | The same for `spec.consoleProxy.gateway`. A disabled proxy is handled as an absent block: the route is deleted in the same pass that deletes the proxy | `ConsoleHTTPRouteReady` |
 | HealthCheck | HTTP GET of the cluster-local API root through the shared TTL probe cache. The compute API ships no `/healthcheck` route, so `/`, the version document it answers without a token, is what a 2xx is read off | `NovaAPIReady` |
 | HPA | Creates and deletes the HorizontalPodAutoscaler of the API Deployment | `HPAReady` |
+| VPA | [`reconcileVPA`](../keystone/keystone-reconciler.md#reconcilevpa) applies or removes the VerticalPodAutoscalers of the API, metadata, scheduler, conductor and console-proxy Deployments through the shared VPA flow | `VPAReady` |
 | NetworkPolicy | Creates and deletes the NetworkPolicy (auto-derived egress, including the broker port) and, while the console proxy is enabled, the `{name}-novncproxy` policy opening the proxy's VNC egress; refuses an empty ingress list (fail-closed) | `NetworkPolicyReady` |
 
 `DBConnectionSecrets`, `TransportURLSecret` and `Config` reuse `SecretsReady`
@@ -80,7 +81,7 @@ conditions back before the status write.
 
 ## Conditions
 
-The aggregate `Ready` is True (reason `AllReady`) exactly when all fifteen
+The aggregate `Ready` is True (reason `AllReady`) exactly when all sixteen
 sub-conditions are True; otherwise False (`NotAllReady`). `ExtraConfigHealthy`
 is kept outside the aggregate: it reports on an overlay the user owns and must
 not depool a Nova whose API serves fine.
@@ -98,6 +99,7 @@ not depool a Nova whose API serves fine.
 | `DBArchiveReady` | `DBArchiveScheduled`, `DBArchiveSuspended` | `DBArchiveJobFailed` |
 | `NovaAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | errors propagate |
+| `VPAReady` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | errors propagate |
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled`, `CapabilityProbeFailed` |
 | `MetadataHTTPRouteReady` | the same vocabulary | the same vocabulary |
@@ -396,7 +398,7 @@ owns one condition, and the aggregate `Ready` is True only when all six are.
 ### NovaCompute pipeline
 
 ```text
-NovaRef ──► Nodes ──► PoolConfig ──► DaemonSet ──► Aggregates ──► Services
+NovaRef ──► Nodes ──► PoolConfig ──► DaemonSet ──► ComputeVPA ──► Aggregates ──► Services
 ```
 
 | Step | Function | Condition |
@@ -405,6 +407,7 @@ NovaRef ──► Nodes ──► PoolConfig ──► DaemonSet ──► Aggre
 | `Nodes` | `reconcileNovaComputeNodes` | `NodesReady` |
 | `PoolConfig` | `reconcileNovaComputeConfig` | `ConfigReady` |
 | `DaemonSet` | `reconcileNovaComputeDaemonSet` | `DaemonSetReady` |
+| `ComputeVPA` | `reconcileVPA` | `VPAReady` |
 | `Aggregates` | `reconcileNovaComputeAggregates` | `AggregatesReady` |
 | `Services` | `reconcileNovaComputeServices` | `ServicesReady` |
 
@@ -511,7 +514,8 @@ empties the aggregates the host sat in after its Aggregates step ran. Once the
 pool holds no node, only the `NovaRef` and `Aggregates` steps run, so a pass
 from a stale copy of the CR cannot recreate what the sweep removed. When the
 Nova is gone, or the target cluster was abandoned, that part is skipped. Then
-the remote children (the DaemonSet and the ConfigMaps) are swept, the
+the remote children (the DaemonSet, the ConfigMaps and the opt-in
+VerticalPodAutoscaler) are swept, the
 ControlPlane's contract mirror and the hypervisor operator's auth mirror are
 reaped when no other pool of the Nova on the cluster is live or still holds a
 node, and the finalizers are released.

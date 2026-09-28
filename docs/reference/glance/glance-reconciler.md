@@ -41,6 +41,7 @@ Secrets ──► DBConnectionSecret ──► Backends ──► Config ──�
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition. The route renders `timeouts.request: "4h"`, so the gateway does not truncate a long image transfer and a stalled one releases its worker eventually. The bound is on duration only — nothing the operator renders caps how many requests may occupy the API's workers at once | `HTTPRouteReady` |
 | HealthCheck | HTTP GET of the cluster-local `/healthcheck` through the shared TTL probe cache | `GlanceAPIReady` |
 | HPA | Creates/deletes the HorizontalPodAutoscaler | `HPAReady` |
+| VPA | [`reconcileVPA`](../keystone/keystone-reconciler.md#reconcilevpa) applies or removes the VerticalPodAutoscaler of the API Deployment through the shared VPA flow; reports `VPANotInstalled` for an opt-in on a cluster without the VPA | `VPAReady` |
 | NetworkPolicy | Creates/deletes the NetworkPolicy (auto-derived DB/cache/S3 egress); refuses an empty ingress list (fail-closed) | `NetworkPolicyReady` |
 | DBPurge | Projects the `{name}-db-purge` CronJob and reports the newest terminal run it spawned | `DBPurgeReady` |
 
@@ -63,6 +64,7 @@ nine sub-conditions are `True`; otherwise `False` (`NotAllReady`).
 | `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment`, `WaitingForBackends` |
 | `GlanceAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
+| `VPAReady` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled`, `CapabilityProbeFailed` |
 | `DBPurgeReady` | `DBPurgeScheduled`, `DBPurgeSuspended` | `DBPurgeJobFailed` |

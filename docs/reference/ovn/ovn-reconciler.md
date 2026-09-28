@@ -31,7 +31,8 @@ pipeline vectors carry no CR name.
 ```text
 TLS ──► Northbound ──► Southbound ──► Endpoints ──► ┬─ Northd
                                                     ├─ Relay
-                                                    └─ Backup   (parallel)
+                                                    ├─ Backup
+                                                    └─ VPA      (parallel)
 ```
 
 | Step | What it does | Condition |
@@ -43,14 +44,16 @@ TLS ──► Northbound ──► Southbound ──► Endpoints ──► ┬�
 | Northd | Projects the `ovn-northd` Deployment and stamps `status.installedImage` once it is available | `NorthdReady` |
 | Relay | Projects or removes the Southbound relay Deployment and Service, and stamps `status.relayAddress` | `RelayReady` |
 | Backup | Projects the snapshot claim and the CronJob, and reports on the newest terminal backup Job | `BackupReady` |
+| VPA | [`reconcileVPA`](../keystone/keystone-reconciler.md#reconcilevpa) applies or removes the VerticalPodAutoscalers of northd, the relay and the two Raft StatefulSets through the shared VPA flow. A Raft VPA carries the request floor as `minAllowed` for each resource the block does not name | `VPAReady` |
 
 TLS is the first gate: every OVN connection is authenticated with the
 certificates it requests, so a database projected before them would come up with
 nothing to present. The two databases follow, then the step that publishes their
 addresses. The last three read those addresses and nothing of each other's
-output, so they run as a parallel group. Each member works on its own copy of the
-CR and always sets its one condition type, which is why a CR without
-`spec.relay` still resolves the aggregate, through `RelayNotRequired`.
+output, so they run as a parallel group, with the VPA step beside them. Each
+member works on its own copy of the CR and always sets its one condition type,
+which is why a CR without `spec.relay` still resolves the aggregate, through
+`RelayNotRequired`.
 
 `RunParallelGroup` merges the conditions and the metadata off a member's copy and
 nothing else, so the two status fields a member publishes are copied onto the
@@ -60,7 +63,7 @@ primary CR by hand in `parallelSteps`: `status.installedImage` from Northd and
 ### OVNChassis
 
 ```text
-Central ──► Nodes ──► OVS ──► Controller ──► Maintenance
+Central ──► Nodes ──► OVS ──► Controller ──► ChassisVPA ──► Maintenance
 ```
 
 | Step | What it does | Condition |
@@ -69,6 +72,7 @@ Central ──► Nodes ──► OVS ──► Controller ──► Maintenance
 | Nodes | Renders one entry per node into the `{name}-nodes` ConfigMap, applies the `{name}-chassis-scripts` ConfigMap, and rebuilds `status.nodes` | `NodesReady` |
 | OVS | Projects the `{name}-ovs` DaemonSet | `OVSReady` |
 | Controller | Projects the `{name}-ovn-controller` DaemonSet, mirrors its node counters into status, and stamps `status.installedImage` | `ControllerReady` |
+| ChassisVPA | [`reconcileVPA`](../keystone/keystone-reconciler.md#reconcilevpa) applies or removes the VerticalPodAutoscalers of the two DaemonSets through the shared VPA flow | `VPAReady` |
 | Maintenance | Runs the per-node `apply`, `evacuate` and `chassis-del` Jobs that are due | `MaintenanceReady` |
 
 The `OVNCentral` is the first gate: its Southbound address and its client Secret
@@ -89,7 +93,7 @@ every CR reconciled concurrently.
 
 Each aggregate `Ready` is `True` with reason `AllReady` when every sub-condition
 of that kind is `True`, and `False` with `NotAllReady` otherwise. An `OVNCentral`
-aggregates seven, an `OVNChassis` five.
+aggregates eight, an `OVNChassis` six.
 
 | Type | Kind | True reasons | False reasons |
 | --- | --- | --- | --- |
@@ -100,11 +104,13 @@ aggregates seven, an `OVNChassis` five.
 | `NorthdReady` | `OVNCentral` | `DeploymentReady` | `DeploymentProgressing`, `DeploymentError`, `WaitingForEndpoints` |
 | `RelayReady` | `OVNCentral` | `DeploymentReady`, `RelayNotRequired` | `DeploymentProgressing`, `DeploymentError`, `ServicePending`, `WaitingForEndpoints` |
 | `BackupReady` | `OVNCentral` | `BackupScheduled`, `BackupSuspended` | `BackupJobFailed`, `BackupPVCInvalid`, `BackupError`, `WaitingForEndpoints` |
+| `VPAReady` | `OVNCentral` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
 | `CentralReady` | `OVNChassis` | `CentralResolved` | `CentralNotFound`, `CentralReadError`, `CentralOnAnotherCluster`, `CentralNotReady`, `CentralUpgrading`, `TargetClusterUnavailable` |
 | `NodesReady` | `OVNChassis` | `NodesRendered` | `NoMatchingNodes`, `NodeListError`, `NodesError` |
 | `OVSReady` | `OVNChassis` | `DaemonSetReady` | `DaemonSetProgressing`, `DaemonSetError` |
 | `ControllerReady` | `OVNChassis` | `DaemonSetReady` | `DaemonSetProgressing`, `DaemonSetError` |
 | `MaintenanceReady` | `OVNChassis` | `MaintenanceIdle`, `MaintenanceRunning`, `MaintenanceDeferred` | `MaintenanceJobFailed`, `MaintenanceError` |
+| `VPAReady` | `OVNChassis` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
 
 `TargetClusterUnavailable` is set ahead of every sub-reconciler, when
 `spec.targetClusterRef` names a cluster that is not registered or no longer
@@ -132,11 +138,13 @@ var subReconcilerConditionTypes = map[string]string{
 	"Northd":     conditionTypeNorthdReady,
 	"Relay":      conditionTypeRelayReady,
 	"Backup":     conditionTypeBackupReady,
+	"VPA":        "VPAReady",
 
 	"Central":     conditionTypeCentralReady,
 	"Nodes":       conditionTypeNodesReady,
 	"OVS":         conditionTypeOVSReady,
 	"Controller":  conditionTypeControllerReady,
+	"ChassisVPA":  "VPAReady",
 	"Maintenance": conditionTypeMaintenanceReady,
 }
 ```

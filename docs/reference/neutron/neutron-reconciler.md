@@ -60,6 +60,7 @@ Secrets ──► DBConnectionSecret ──► TransportURLSecret ──► OVNE
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's `Accepted` condition | `HTTPRouteReady` |
 | HealthCheck | HTTP GET of the cluster-local API root through the shared TTL probe cache | `NeutronAPIReady` |
 | HPA | Creates or removes the HorizontalPodAutoscaler | `HPAReady` |
+| VPA | [`reconcileVPA`](#reconcilevpa) applies or removes the VerticalPodAutoscalers of the API and the two worker Deployments through the shared VPA flow | `VPAReady` |
 | NetworkPolicy | Creates or removes the NetworkPolicy, with the auto-derived egress set; refuses an empty ingress list | `NetworkPolicyReady` |
 
 The three Secret steps come first, because everything behind them mounts what
@@ -96,7 +97,7 @@ other status field, so there is nothing to copy back by hand.
 ### NeutronMetadataAgent
 
 ```text
-Chassis ──► Secrets ──► Config ──► DaemonSet
+Chassis ──► Secrets ──► Config ──► DaemonSet ──► AgentVPA
 ```
 
 | Step | What it does | Condition |
@@ -105,6 +106,7 @@ Chassis ──► Secrets ──► Config ──► DaemonSet
 | Secrets | Gates on the Nova metadata shared secret and the Nova metadata CA bundle, digests the shared secret, and, under `spec.messaging`, materialises `{name}-transport-url` and digests it | `SecretsReady` |
 | Config | Renders `neutron_ovn_metadata_agent.ini` into an immutable content-addressed ConfigMap and prunes the history to three. Reports failures through `SecretsReady` | `SecretsReady` |
 | DaemonSet | Projects the `{name}-metadata-agent` DaemonSet onto the chassis's nodes, mirrors its node counters into status, and stamps `status.installedImage` | `DaemonSetReady` |
+| AgentVPA | Applies or removes the VerticalPodAutoscaler of the DaemonSet through the shared VPA flow | `VPAReady` |
 
 The chassis is the first gate: the nodes it selects, its central's Southbound
 address and that central's client Secret parameterise every later step, so an
@@ -133,10 +135,12 @@ aggregates ten, a `NeutronMetadataAgent` three.
 | `HTTPRouteReady` | `Neutron` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled`, `CapabilityProbeFailed` |
 | `NeutronAPIReady` | `Neutron` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `Neutron` | `HPAReady`, `HPANotRequired` | none (errors propagate) |
+| `VPAReady` | `Neutron` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
 | `NetworkPolicyReady` | `Neutron` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | none (errors propagate) |
 | `ChassisReady` | `NeutronMetadataAgent` | `ChassisResolved` | `ChassisNotFound`, `ChassisReadError`, `ChassisOnAnotherCluster`, `CentralNotFound`, `CentralReadError`, `CentralNotReady`, `TargetClusterUnavailable` |
 | `SecretsReady` | `NeutronMetadataAgent` | `SecretsAvailable` | `WaitingForNovaSharedSecret`, `WaitingForNovaMetadataCA`, `WaitingForMessagingCredentials`, `ConfigError` |
 | `DaemonSetReady` | `NeutronMetadataAgent` | `DaemonSetReady` | `DaemonSetProgressing`, `DaemonSetError` |
+| `VPAReady` | `NeutronMetadataAgent` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
 
 `TargetClusterUnavailable` is set ahead of every sub-reconciler, when
 `spec.targetClusterRef` names a cluster that is not registered or no longer
@@ -172,14 +176,16 @@ var subReconcilerConditionTypes = map[string]string{
 	"HTTPRoute":          "HTTPRouteReady",
 	"HealthCheck":        "NeutronAPIReady",
 	"HPA":                "HPAReady",
+	"VPA":                "VPAReady",
 	"NetworkPolicy":      "NetworkPolicyReady",
 
 	"Chassis":   "ChassisReady",
 	"DaemonSet": "DaemonSetReady",
+	"AgentVPA":  "VPAReady",
 }
 ```
 
-Sixteen keys cover eighteen sub-reconcilers. `Secrets` and `Config` appear once,
+Eighteen keys cover twenty sub-reconcilers. `Secrets` and `Config` appear once,
 because both pipelines run a step of that name and both drive `SecretsReady`.
 Four steps share `SecretsReady` and two share `OVNEndpointsReady`: all of them
 produce artefacts the same downstream graph mounts, so collapsing them under one
@@ -635,6 +641,31 @@ HPA to track.
 
 **Error handling:** A failed apply or delete is returned with no condition. Both
 arms are `True`, so a cluster without autoscaling still resolves the aggregate.
+
+### reconcileVPA
+
+**File:** `operators/neutron/internal/controller/reconcile_vpa.go`
+
+**Purpose:** Apply or remove the VerticalPodAutoscalers of a Neutron through the
+shared `deployment.ReconcileVPAs` flow. The targets are the API Deployment, fed
+by `spec.deployment.verticalAutoscaling`, and the `{name}-periodic-workers` and
+`{name}-ovn-maintenance-worker` Deployments, both fed by
+`spec.workers.deployment.verticalAutoscaling`. The NeutronMetadataAgent runs the
+same flow as its `AgentVPA` step, with its DaemonSet as the one target, fed by
+`spec.verticalAutoscaling`. The flow is the one [keystone's
+reconcileVPA](../keystone/keystone-reconciler.md#reconcilevpa) describes: a
+cluster without the kind is left untouched, and a serving one gets one VPA per
+opted-in workload, while every other VPA carrying the CR's labels is deleted.
+
+**Condition Contract:**
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `True` | `VPANotRequired` | "no workload opts into vertical autoscaling" | none |
+| `True` | `VPAReady` | "VerticalPodAutoscalers are configured: `<names>`" | none |
+| `False` | `VPANotInstalled` | names `autoscaling.k8s.io/v1 VerticalPodAutoscaler` and the opted-in workloads | none |
+| `False` | `CapabilityProbeFailed` | the probe error | backoff |
+| `False` | `VPAError` | the failed list, apply or delete | backoff |
 
 ### reconcileNetworkPolicy
 

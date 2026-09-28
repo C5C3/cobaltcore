@@ -31,6 +31,7 @@ Secrets ──► Config ──► Deployment ──► (prune) ──► ┬─
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition | `HTTPRouteReady` |
 | HealthCheck | HTTP GET of the cluster-local login page through the shared TTL probe cache — rendering it exercises Django routing, templates, and the static-asset manifest without a live Keystone | `HorizonAPIReady` |
 | HPA | Creates/deletes the HorizontalPodAutoscaler | `HPAReady` |
+| VPA | [`reconcileVPA`](../keystone/keystone-reconciler.md#reconcilevpa) applies or removes the VerticalPodAutoscaler of the dashboard Deployment through the shared VPA flow; reports `VPANotInstalled` for an opt-in on a cluster without the VPA | `VPAReady` |
 | NetworkPolicy | Creates/deletes the NetworkPolicy; refuses an empty ingress list (fail-closed) | `NetworkPolicyReady` |
 
 ## Conditions
@@ -46,6 +47,7 @@ all seven sub-conditions are `True`:
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled`, `CapabilityProbeFailed` |
 | `HorizonAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
+| `VPAReady` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
 
 `TargetClusterUnavailable` is set ahead of every sub-reconciler, when
