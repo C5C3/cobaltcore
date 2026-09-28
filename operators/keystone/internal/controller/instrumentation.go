@@ -52,6 +52,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"HTTPRoute":          conditionTypeHTTPRouteReady,
 	"HealthCheck":        conditionTypeKeystoneAPIReady,
 	"HPA":                "HPAReady",
+	"VPA":                "VPAReady",
 	"Bootstrap":          "BootstrapReady",
 	"TrustFlush":         "TrustFlushReady",
 	"PasswordRotation":   conditionTypePasswordRotationReady,

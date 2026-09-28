@@ -34,9 +34,11 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -45,6 +47,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
@@ -117,6 +120,9 @@ func setupEnvTestWithControllerAndIdentity(t testing.TB) (client.Client, context
 				// so the Gateway API kind is available to the reconciler. Mirror
 				// what SetupWithManager would set from the RESTMapper at startup
 				gatewayAPIAvailable: true,
+				// The fake VerticalPodAutoscaler CRD loads into every envtest
+				// too, so the VPA latch is true as it would be at startup.
+				vpaAvailable: true,
 			}
 			// Register the Keystone field indexer so secretToKeystoneMapper's
 			// MatchingFields lookup works in integration tests, mirroring what
@@ -137,6 +143,7 @@ func setupEnvTestWithControllerAndIdentity(t testing.TB) (client.Client, context
 				Owns(&batchv1.Job{}).
 				Owns(&policyv1.PodDisruptionBudget{}).
 				Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
+				Owns(&vpav1.VerticalPodAutoscaler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 				Owns(&gatewayv1.HTTPRoute{}).
 				Owns(&batchv1.CronJob{}).
 				Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
@@ -1412,6 +1419,129 @@ func TestIntegration_HPADeletedWhenAutoscalingRemoved(t *testing.T) {
 		}
 		return cond.Reason
 	}, eventuallyTimeout, pollInterval).Should(Equal("HPANotRequired"), "HPAReady reason should be HPANotRequired")
+}
+
+// --- VerticalPodAutoscaler ---
+
+func vpaReadyReason(t testing.TB, ctx context.Context, c client.Client, key types.NamespacedName) string {
+	t.Helper()
+	ks := &keystonev1alpha1.Keystone{}
+	if err := c.Get(ctx, key, ks); err != nil {
+		return ""
+	}
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "VPAReady")
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		return ""
+	}
+	return cond.Reason
+}
+
+// An opt-in creates the VPA in the CR's namespace, named and owned like the
+// Deployment, and removing the block deletes it again.
+func TestIntegration_VPA_CreatedWhenOptedInAndDeletedWhenRemoved(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-vpa-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	ks.Spec.Deployment.VerticalAutoscaling = &keystonev1alpha1.VerticalAutoscalingSpec{UpdateMode: "Off"}
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	vpaKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}
+	vpa := &vpav1.VerticalPodAutoscaler{}
+	g.Expect(c.Get(ctx, vpaKey, vpa)).To(Succeed(), "VerticalPodAutoscaler test-keystone should exist")
+	g.Expect(vpa.Spec.TargetRef.APIVersion).To(Equal("apps/v1"))
+	g.Expect(vpa.Spec.TargetRef.Kind).To(Equal("Deployment"))
+	g.Expect(vpa.Spec.TargetRef.Name).To(Equal("test-keystone"))
+	g.Expect(vpa.Spec.UpdatePolicy.UpdateMode).To(HaveValue(Equal(vpav1.UpdateModeOff)))
+	g.Expect(vpa.Spec.ResourcePolicy.ContainerPolicies).To(HaveLen(1))
+	g.Expect(vpa.Spec.ResourcePolicy.ContainerPolicies[0].ContainerName).To(Equal("*"))
+	g.Expect(vpa.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(vpa.OwnerReferences).To(HaveLen(1))
+	g.Expect(vpa.OwnerReferences[0].Name).To(Equal("test-keystone"))
+	g.Eventually(func() string { return vpaReadyReason(t, ctx, c, key) },
+		eventuallyTimeout, pollInterval).Should(Equal("VPAReady"))
+
+	updated := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+	updated.Spec.Deployment.VerticalAutoscaling = nil
+	g.Expect(c.Update(ctx, updated)).To(Succeed())
+
+	g.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, vpaKey, &vpav1.VerticalPodAutoscaler{}))
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "the VPA should be deleted once the opt-in is removed")
+	g.Eventually(func() string { return vpaReadyReason(t, ctx, c, key) },
+		eventuallyTimeout, pollInterval).Should(Equal("VPANotRequired"))
+}
+
+// The recommender rewrites status.recommendation about once a minute, so a
+// status write to the owned VPA must not wake the Keystone, while a spec drift
+// must, and the next pass reverts it.
+func TestIntegration_VPA_StatusPatchDoesNotWakeTheStep(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-vpa-status-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	ks.Spec.Deployment.VerticalAutoscaling = &keystonev1alpha1.VerticalAutoscalingSpec{UpdateMode: "Off"}
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	vpaKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}
+	g.Eventually(func() error { return c.Get(ctx, vpaKey, &vpav1.VerticalPodAutoscaler{}) },
+		eventuallyTimeout, pollInterval).Should(Succeed())
+
+	samples := func() uint64 {
+		return histogramSampleCount(t, "keystone_operator_reconcile_duration_seconds",
+			map[string]string{"sub_reconciler": "VPA"})
+	}
+	// Wait until the Keystone is quiet, so the window below measures the status
+	// patch and nothing the bring-up still had in flight.
+	var baseline uint64
+	g.Eventually(func() bool {
+		before := samples()
+		time.Sleep(3 * time.Second)
+		baseline = samples()
+		return before == baseline
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "the Keystone should settle after Ready=True")
+
+	vpa := &vpav1.VerticalPodAutoscaler{}
+	g.Expect(c.Get(ctx, vpaKey, vpa)).To(Succeed())
+	vpa.Status.Recommendation = &vpav1.RecommendedPodResources{
+		ContainerRecommendations: []vpav1.RecommendedContainerResources{{
+			ContainerName: "keystone",
+			Target:        corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("300Mi")},
+		}},
+	}
+	g.Expect(c.Status().Update(ctx, vpa)).To(Succeed())
+	g.Consistently(samples, 5*time.Second, pollInterval).Should(Equal(baseline),
+		"a status-only write to the VPA must not wake the VPA sub-reconciler")
+
+	g.Expect(c.Get(ctx, vpaKey, vpa)).To(Succeed())
+	vpa.Spec.UpdatePolicy.UpdateMode = ptr.To(vpav1.UpdateModeInitial)
+	g.Expect(c.Update(ctx, vpa)).To(Succeed())
+	g.Eventually(samples, eventuallyTimeout, pollInterval).Should(BeNumerically(">", baseline),
+		"a spec change of the VPA must wake the VPA sub-reconciler")
+	g.Eventually(func() vpav1.UpdateMode {
+		got := &vpav1.VerticalPodAutoscaler{}
+		if err := c.Get(ctx, vpaKey, got); err != nil || got.Spec.UpdatePolicy == nil {
+			return ""
+		}
+		return ptr.Deref(got.Spec.UpdatePolicy.UpdateMode, "")
+	}, eventuallyTimeout, pollInterval).Should(Equal(vpav1.UpdateModeOff), "the next pass reverts the drift")
 }
 
 // --- Task/4.1: Fresh deployment — InstalledRelease tracking ---

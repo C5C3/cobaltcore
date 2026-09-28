@@ -27,12 +27,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -40,6 +42,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
 	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/gateway"
 	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
@@ -208,6 +211,7 @@ var subConditionTypes = []string{
 	"DeploymentReady",
 	conditionTypeKeystoneAPIReady,
 	"HPAReady",
+	"VPAReady",
 	"NetworkPolicyReady",
 	conditionTypeHTTPRouteReady,
 	"BootstrapReady",
@@ -260,6 +264,14 @@ type KeystoneReconciler struct {
 	// surfaces a clear HTTPRouteReady=False condition if the user
 	// nonetheless sets spec.gateway.
 	gatewayAPIAvailable bool
+
+	// vpaAvailable is set during SetupWithManager from the management
+	// cluster's RESTMapper and reports whether it serves the
+	// autoscaling.k8s.io/v1 VerticalPodAutoscaler kind. It gates the local VPA
+	// watch leg and answers commonmulticluster.ChildrenServeKind for local
+	// children, so reconcileVPA reports VPAReady=False/VPANotInstalled for an
+	// opt-in on a cluster without the VPA.
+	vpaAvailable bool
 
 	// apiReader is set during SetupWithManager from mgr.GetAPIReader(): a
 	// direct, uncached reader. reconcileDeployment latches the two-phase
@@ -364,6 +376,7 @@ var KeystoneRemoteChildKinds = []schema.GroupVersionKind{
 	batchv1.SchemeGroupVersion.WithKind("CronJob"),
 	policyv1.SchemeGroupVersion.WithKind("PodDisruptionBudget"),
 	autoscalingv2.SchemeGroupVersion.WithKind("HorizontalPodAutoscaler"),
+	deployment.VPAGVK,
 	networkingv1.SchemeGroupVersion.WithKind("NetworkPolicy"),
 	httpRouteGVK,
 	certificateGVK,
@@ -413,6 +426,7 @@ var KeystoneRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // Required to create/update/delete HTTPRoutes that expose Keystone API externally.
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
@@ -727,6 +741,13 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					},
 				},
 				{
+					Name:          "VPA",
+					ConditionType: "VPAReady",
+					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+						return r.reconcileVPA(ctx, children, ks)
+					},
+				},
+				{
 					Name:          "Bootstrap",
 					ConditionType: "BootstrapReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
@@ -1032,6 +1053,16 @@ func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcont
 		setupLog.Info("Gateway API not installed; HTTPRoute watch disabled, spec.gateway will be rejected via HTTPRouteReady condition")
 	}
 
+	// Detect the VerticalPodAutoscaler CRD: verticalAutoscaling is an opt-in,
+	// so the operator must run on clusters without the VPA, where an
+	// unconditional Owns would fail the controller at Start.
+	r.vpaAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	if r.vpaAvailable {
+		setupLog.Info("VerticalPodAutoscaler CRD detected; enabling VPA watch and reconciliation")
+	} else {
+		setupLog.Info("VerticalPodAutoscaler CRD not installed; VPA watch disabled, verticalAutoscaling will be reported through VPAReady")
+	}
+
 	// Detect cert-manager so the operator can Owns(Certificate) — surfacing
 	// later DB-client Certificate issuance failures in DatabaseTLSReady — and
 	// so reconcileDatabaseTLS knows whether a managed Certificate can exist on
@@ -1104,16 +1135,24 @@ func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcont
 		b = b.Owns(&certmanagerv1.Certificate{}, engageLocal, engageNoProviders)
 	}
 
+	// The recommender rewrites status.recommendation about once a minute; only
+	// a spec change (drift from the applied VPA) wakes the CR.
+	if r.vpaAvailable {
+		b = b.Owns(&vpav1.VerticalPodAutoscaler{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			engageLocal, engageNoProviders)
+	}
+
 	// The same children, once more, on the clusters a CR can project onto.
 	// Owns cannot see them: an owner reference does not cross a cluster
 	// boundary, so the ownership labels are what maps a child back to its CR.
-	// The PushSecret predicate keeps ESO's status-only ticks on the target from
-	// waking the CR, exactly as it does locally; the other remote legs carry no
-	// predicate, mirroring what Owns admits locally.
+	// The PushSecret and VerticalPodAutoscaler predicates keep status-only
+	// ticks on the target from waking the CR, exactly as they do locally; the
+	// other remote legs carry no predicate, mirroring what Owns admits locally.
 	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &keystonev1alpha1.Keystone{},
 		targets, KeystoneRemoteChildKinds,
 		map[schema.GroupVersionKind][]mcbuilder.WatchesOption{
 			esov1alpha1.SchemeGroupVersion.WithKind("PushSecret"): {mcbuilder.WithPredicates(pushSecretRelevantChangePredicate)},
+			deployment.VPAGVK: {mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})},
 		})
 	if err != nil {
 		return err

@@ -1345,6 +1345,100 @@ func TestValidate_Autoscaling_Nil_IsValid(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// --- Vertical autoscaling validation tests ---
+
+func TestValidate_VerticalAutoscaling_Nil_IsValid(t *testing.T) {
+	g := NewGomegaWithT(t)
+	k := validKeystone()
+	k.Spec.Deployment.VerticalAutoscaling = nil
+
+	_, err := (&KeystoneWebhook{}).ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_VerticalAutoscaling_Valid(t *testing.T) {
+	g := NewGomegaWithT(t)
+	k := validKeystone()
+	k.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+		UpdateMode:  "Recreate",
+		MinReplicas: ptr.To(int32(1)),
+		MinAllowed:  corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+		MaxAllowed:  corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")},
+	}
+
+	_, err := (&KeystoneWebhook{}).ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_VerticalAutoscaling_Rejections(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mutate   func(k *Keystone)
+		wantPath string
+		wantSub  string
+	}{
+		{
+			name: "beside autoscaling",
+			mutate: func(k *Keystone) {
+				k.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: ptr.To(int32(80))}
+				k.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Off"}
+			},
+			wantPath: "spec.deployment.verticalAutoscaling",
+			wantSub:  "cannot be set while spec.autoscaling scales the same Deployment",
+		},
+		{
+			name: "foreign resource",
+			mutate: func(k *Keystone) {
+				k.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantPath: "spec.deployment.verticalAutoscaling.minAllowed[ephemeral-storage]",
+			wantSub:  "Unsupported value",
+		},
+		{
+			name: "minAllowed above maxAllowed",
+			mutate: func(k *Keystone) {
+				k.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+					MaxAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				}
+			},
+			wantPath: "spec.deployment.verticalAutoscaling.minAllowed[cpu]",
+			wantSub:  "must not exceed maxAllowed",
+		},
+		{
+			name: "update mode outside the enum",
+			mutate: func(k *Keystone) {
+				k.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Sometimes"}
+			},
+			wantPath: "spec.deployment.verticalAutoscaling.updateMode",
+			wantSub:  "Unsupported value",
+		},
+		{
+			name: "minReplicas zero",
+			mutate: func(k *Keystone) {
+				k.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Auto", MinReplicas: ptr.To(int32(0))}
+			},
+			wantPath: "spec.deployment.verticalAutoscaling.minReplicas",
+			wantSub:  "must be at least 1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			tc.mutate(k)
+
+			_, err := (&KeystoneWebhook{}).ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantPath))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
 // --- NetworkPolicy validation tests ---
 
 func TestValidate_NetworkPolicy_Nil_IsValid(t *testing.T) {

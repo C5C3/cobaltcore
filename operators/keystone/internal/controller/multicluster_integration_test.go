@@ -42,10 +42,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -56,9 +58,11 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/apply"
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
 	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonenvtest "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -167,6 +171,7 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 	crdDir, webhookDir := multiclusterKeystonePaths(t)
 
 	var mcMgr mcmanager.Manager
+	var reconciler *KeystoneReconciler
 	mgmtClient, ctx, _ := commonenvtest.StartManagedEnvTest(t, commonenvtest.ManagedEnvTestConfig{
 		Name:              "Keystone-multicluster",
 		Scheme:            mgmtScheme,
@@ -238,6 +243,11 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 			// management latch false, an HTTPRoute on the target cluster can
 			// only come from the per-cluster probe overriding it.
 			r.gatewayAPIAvailable = false
+			// The same flip for the VerticalPodAutoscaler: with the management
+			// latch false, a VPA on the target cluster can only come from the
+			// target's own probe.
+			r.vpaAvailable = false
+			reconciler = r
 			return nil
 		},
 	})
@@ -998,6 +1008,60 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 			"the management latch was forced false and the target cluster's probe answered instead, "+
 				"so the route was applied and the condition must report the missing acceptance, not %s",
 			conditionReasonGatewayAPINotInstalled)
+	})
+
+	t.Run("targeted CR reports VPANotInstalled against a target without the VPA", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// A target cluster that does not serve the kind, stood in for by a fake
+		// whose mapper lacks it: the flow answers from that cluster's probe, not
+		// from the management latch, and writes nothing.
+		ks := &keystonev1alpha1.Keystone{}
+		g.Expect(mgmtClient.Get(ctx, types.NamespacedName{Name: gatewayKeystone, Namespace: gatewayNamespace}, ks)).To(Succeed())
+		ks.Spec.Deployment.VerticalAutoscaling = &keystonev1alpha1.VerticalAutoscalingSpec{UpdateMode: "Off"}
+		withoutVPA := mctestutil.TargetFake(fake.NewClientBuilder().WithScheme(mgmtClient.Scheme()))
+
+		_, err := reconciler.reconcileVPA(ctx, mctestutil.RemoteChildren(t, mgmtClient, withoutVPA), ks)
+		g.Expect(err).NotTo(HaveOccurred())
+		cond := meta.FindStatusCondition(ks.Status.Conditions, "VPAReady")
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(deployment.ReasonVPANotInstalled))
+		g.Expect(cond.Message).To(ContainSubstring("target cluster does not serve autoscaling.k8s.io/v1 VerticalPodAutoscaler"))
+	})
+
+	t.Run("targeted CR gets its VPA on the target cluster although the management latch is false", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The target envtest loads the fake VPA CRD, so its probe answers yes
+		// and the VPA lands there, under the CR name, and nowhere else.
+		crKey := types.NamespacedName{Name: gatewayKeystone, Namespace: gatewayNamespace}
+		g.Eventually(func() error {
+			ks := &keystonev1alpha1.Keystone{}
+			if err := mgmtClient.Get(ctx, crKey, ks); err != nil {
+				return err
+			}
+			ks.Spec.Deployment.VerticalAutoscaling = &keystonev1alpha1.VerticalAutoscalingSpec{UpdateMode: "Off"}
+			return mgmtClient.Update(ctx, ks)
+		}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+		childKey := client.ObjectKey{Namespace: gatewayNamespace, Name: gatewayKeystone}
+		vpa := &vpav1.VerticalPodAutoscaler{}
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, vpa, "VerticalPodAutoscaler", eventuallyLongTimeout)
+		multiclusterExpectAbsent(t, ctx, mgmtClient, childKey, &vpav1.VerticalPodAutoscaler{}, "VerticalPodAutoscaler")
+		g.Expect(vpa.OwnerReferences).To(BeEmpty())
+		g.Expect(vpa.Labels).To(HaveKeyWithValue(commonmulticluster.OwnerNameLabel, gatewayKeystone))
+
+		g.Eventually(func() string {
+			ks := &keystonev1alpha1.Keystone{}
+			if err := mgmtClient.Get(ctx, crKey, ks); err != nil {
+				return ""
+			}
+			if cond := meta.FindStatusCondition(ks.Status.Conditions, "VPAReady"); cond != nil && cond.Status == metav1.ConditionTrue {
+				return cond.Reason
+			}
+			return ""
+		}, eventuallyTimeout, pollInterval).Should(Equal(deployment.ReasonVPAReady))
 	})
 
 	t.Run("scoping the live registration re-engages the cluster with a narrowed cache", func(t *testing.T) {

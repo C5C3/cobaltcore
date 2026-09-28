@@ -386,6 +386,65 @@ func TestIntegration_CRD_CELOnly_RejectsOutOfEnumTLSMode(t *testing.T) {
 	))
 }
 
+// TestIntegration_CRD_CELOnly_VerticalAutoscaling pins the CEL rules on
+// verticalAutoscaling against an envtest API server with NO validating webhook
+// installed: minAllowed and maxAllowed name only cpu and memory, and the block
+// is rejected beside spec.autoscaling on the same Deployment.
+func TestIntegration_CRD_CELOnly_VerticalAutoscaling(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(k *Keystone)
+		wantSub string
+	}{
+		{
+			name: "foreign-resource",
+			mutate: func(k *Keystone) {
+				k.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantSub: "minAllowed may only name cpu and memory",
+		},
+		{
+			name: "foreign-resource-max",
+			mutate: func(k *Keystone) {
+				k.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MaxAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantSub: "maxAllowed may only name cpu and memory",
+		},
+		{
+			name: "beside-autoscaling",
+			mutate: func(k *Keystone) {
+				cpu := int32(80)
+				k.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 5, TargetCPUUtilization: &cpu}
+				k.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Off"}
+			},
+			wantSub: "spec.deployment.verticalAutoscaling cannot be set while spec.autoscaling scales the same Deployment",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-celonly-vpa-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			k := validIntegrationKeystone("vpa-"+tc.name, ns.Name)
+			tc.mutate(k)
+
+			err := c.Create(ctx, k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
 // --- Field immutability (CEL transition rules, #466) ---
 
 // updateImmutableFieldRejected is the shared body for the field-immutability
