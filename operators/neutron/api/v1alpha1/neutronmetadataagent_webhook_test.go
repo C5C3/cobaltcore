@@ -374,6 +374,41 @@ func TestNeutronMetadataAgentValidateCreate_RejectionTable(t *testing.T) {
 			mutate:  func(o *NeutronMetadataAgent) { o.Spec.MetadataWorkers = ptr.To(int32(-1)) },
 			wantSub: "spec.metadataWorkers: Invalid value: -1: metadataWorkers must be non-negative",
 		},
+		{
+			name: "verticalAutoscaling foreign resource rejected",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				}
+			},
+			wantSub: `spec.verticalAutoscaling.minAllowed[ephemeral-storage]: Unsupported value: "ephemeral-storage"`,
+		},
+		{
+			name: "verticalAutoscaling minAllowed above maxAllowed rejected",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.VerticalAutoscaling = &VerticalAutoscalingSpec{
+					UpdateMode: "Off",
+					MinAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+					MaxAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				}
+			},
+			wantSub: `spec.verticalAutoscaling.minAllowed[cpu]: Invalid value: "2": must not exceed maxAllowed`,
+		},
+		{
+			name: "verticalAutoscaling updateMode outside the enum rejected",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Sometimes"}
+			},
+			wantSub: `spec.verticalAutoscaling.updateMode: Unsupported value: "Sometimes"`,
+		},
+		{
+			name: "verticalAutoscaling minReplicas zero rejected",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: "Auto", MinReplicas: ptr.To(int32(0))}
+			},
+			wantSub: "spec.verticalAutoscaling.minReplicas: Invalid value: 0: must be at least 1",
+		},
 	}
 
 	for _, tc := range tests {

@@ -173,6 +173,11 @@ func (in *NeutronMetadataAgentSpec) DeepCopyInto(out *NeutronMetadataAgentSpec) 
 		**out = **in
 	}
 	in.Resources.DeepCopyInto(&out.Resources)
+	if in.VerticalAutoscaling != nil {
+		in, out := &in.VerticalAutoscaling, &out.VerticalAutoscaling
+		*out = new(types.VerticalAutoscalingSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Logging != nil {
 		in, out := &in.Logging, &out.Logging
 		*out = new(LoggingSpec)

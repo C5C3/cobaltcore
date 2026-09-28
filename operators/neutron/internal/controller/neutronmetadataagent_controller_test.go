@@ -437,9 +437,10 @@ func TestReconcileAgent_CAWaitProjectsNothing(t *testing.T) {
 	g.Expect(daemonSets.Items).To(BeEmpty())
 }
 
-// TestAgentPipelineSteps_OrderAndNames pins the pipeline: four named steps in
+// TestAgentPipelineSteps_OrderAndNames pins the pipeline: five named steps in
 // dependency order and no parallel group, because each step consumes what the
-// previous one resolved.
+// previous one resolved; the VPA step targets the DaemonSet the step before it
+// renders.
 func TestAgentPipelineSteps_OrderAndNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 	r := &NeutronMetadataAgentReconciler{}
@@ -449,7 +450,7 @@ func TestAgentPipelineSteps_OrderAndNames(t *testing.T) {
 		named = append(named, step.Name)
 	}
 
-	g.Expect(named).To(Equal([]string{"Chassis", "Secrets", "Config", "DaemonSet"}))
+	g.Expect(named).To(Equal([]string{"Chassis", "Secrets", "Config", "DaemonSet", "AgentVPA"}))
 }
 
 // registerAgentIndexes is the single registration site for the agent's indexes,

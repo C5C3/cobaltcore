@@ -14,6 +14,7 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -160,8 +161,8 @@ func callerDir() string {
 // buildControllerScheme creates a runtime.Scheme that includes all types the
 // Neutron and NeutronMetadataAgent reconcilers need: Neutron API types, core K8s
 // types, ESO (credential gates), Gateway API (HTTPRoute), MariaDB (database
-// provisioning and the cluster watch), and the OVN types the two refs resolve to.
-// It is created fresh per test.
+// provisioning and the cluster watch), the OVN types the two refs resolve to,
+// and the VerticalPodAutoscaler (the VPA steps). It is created fresh per test.
 func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
 	return commonenvtest.BuildScheme(
 		// External operator types the reconcilers register.
@@ -170,6 +171,8 @@ func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 		mariadbv1alpha1.AddToScheme,
 		// Sibling operator types the two refs resolve to.
 		ovnv1alpha1.AddToScheme,
+		// VerticalPodAutoscaler types for the VPA step and its Owns leg.
+		vpav1.AddToScheme,
 		// Neutron types.
 		addToScheme,
 	)

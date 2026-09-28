@@ -176,6 +176,9 @@ func (w *NeutronMetadataAgentWebhook) validate(a *NeutronMetadataAgent, extra fi
 
 	allErrs := validation.TargetClusterRef(specPath.Child("targetClusterRef"), a.Spec.TargetClusterRef)
 	allErrs = append(allErrs, validateImage(specPath.Child("image"), a.Spec.Image)...)
+	// Defense-in-depth twins of the verticalAutoscaling markers and CEL rules,
+	// plus the minAllowed-above-maxAllowed rule CEL cannot express.
+	allErrs = append(allErrs, validation.VerticalAutoscaling(specPath.Child("verticalAutoscaling"), a.Spec.VerticalAutoscaling)...)
 
 	// The chassis is what puts the agent on a node and gives it the local OVS
 	// database to read, so an agent without one has nothing to attach to. This is
