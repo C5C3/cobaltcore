@@ -199,6 +199,15 @@ type DeploymentSpec struct {
 	// NodePlacementSpec adds nodeSelector, tolerations and affinity, which the
 	// operator renders onto the pod template verbatim.
 	NodePlacementSpec `json:",inline"`
+
+	// VerticalAutoscaling opts this Deployment into a VerticalPodAutoscaler
+	// that controls the requests of its containers. It is rejected beside
+	// spec.autoscaling when that block scales the same Deployment. On a
+	// cluster that does not serve autoscaling.k8s.io/v1
+	// VerticalPodAutoscaler, the CR reports VPAReady=False with reason
+	// VPANotInstalled.
+	// +optional
+	VerticalAutoscaling *VerticalAutoscalingSpec `json:"verticalAutoscaling,omitempty"`
 }
 
 // Default sets the shared-type defaults on a DeploymentSpec in place: a
@@ -264,6 +273,36 @@ type AutoscalingSpec struct {
 	// it.
 	// +optional
 	Behavior *autoscalingv2.HorizontalPodAutoscalerBehavior `json:"behavior,omitempty"`
+}
+
+// VerticalAutoscalingSpec opts a workload into a VerticalPodAutoscaler that
+// controls the requests of every container of its pods.
+// +kubebuilder:validation:XValidation:rule="!has(self.minAllowed) || self.minAllowed.all(k, k in ['cpu','memory'])",message="minAllowed may only name cpu and memory"
+// +kubebuilder:validation:XValidation:rule="!has(self.maxAllowed) || self.maxAllowed.all(k, k in ['cpu','memory'])",message="maxAllowed may only name cpu and memory"
+type VerticalAutoscalingSpec struct {
+	// UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
+	// recommends, Initial sets requests at pod creation, Recreate and Auto
+	// evict pods to apply them.
+	// +kubebuilder:validation:Enum=Off;Initial;Recreate;Auto
+	UpdateMode string `json:"updateMode"`
+
+	// MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the
+	// updater evicts only while at least 2 replicas run.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MinAllowed maps to minAllowed of the VPA's container policy.
+	// +optional
+	// +kubebuilder:validation:Type=object
+	// +kubebuilder:validation:MaxProperties=2
+	MinAllowed corev1.ResourceList `json:"minAllowed,omitempty"`
+
+	// MaxAllowed maps to maxAllowed of the VPA's container policy.
+	// +optional
+	// +kubebuilder:validation:Type=object
+	// +kubebuilder:validation:MaxProperties=2
+	MaxAllowed corev1.ResourceList `json:"maxAllowed,omitempty"`
 }
 
 // NetworkPolicySpec defines network isolation for the service API pods.
