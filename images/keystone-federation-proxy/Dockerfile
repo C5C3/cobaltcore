@@ -10,7 +10,7 @@
 # the localhost-bound uWSGI. Release-independent: both modules come from the
 # distro (ubuntu:noble) package archive, not from an OpenStack release.
 # mod_auth_mellon ships since the SAML federation phase (#573).
-FROM ubuntu:noble@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+FROM ubuntu:noble@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
 
 ENV LANG=C.UTF-8
 
