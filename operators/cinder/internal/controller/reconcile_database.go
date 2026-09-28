@@ -24,6 +24,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/release"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
@@ -491,7 +492,7 @@ func (r *CinderReconciler) reportUpgradeCheck(ctx context.Context, children clie
 	job.RecordJobTerminalState(ctx, r.Client, r.Recorder, cinder,
 		upgradeMigrateJobSuffix+"-check", observed, "UpgradeCheckEventEmissionDeferred",
 		func(string, time.Duration) {
-			message := upgradeCheckMessage(ctx, children, cinder.Namespace, observed.Name)
+			message := r.upgradeCheckMessage(ctx, children, cinder, observed)
 			switch {
 			case message == "":
 				r.Recorder.Event(cinder, corev1.EventTypeNormal, "UpgradeCheckCompleted",
@@ -504,33 +505,33 @@ func (r *CinderReconciler) reportUpgradeCheck(ctx context.Context, children clie
 		})
 }
 
-// upgradeCheckMessage reads the termination message of the migrate Job's pod:
-// the first pod the Job labels, its first container, the current termination
-// state or the previous one when the container has already been restarted. It
-// returns "" when there is no pod, no message, or the List failed — the three
-// cases the caller reports as unavailable. The List error is logged rather than
-// returned: nothing about the upgrade depends on the message.
-func upgradeCheckMessage(ctx context.Context, children client.Client, namespace, jobName string) string {
-	var pods corev1.PodList
-	if err := children.List(ctx, &pods, client.InNamespace(namespace),
-		client.MatchingLabels{"batch.kubernetes.io/job-name": jobName}); err != nil {
+// upgradeCheckMessage reads the migrate Job's termination message through
+// job.TerminationMessage (see there for which pod is picked), using the
+// uncached reader of the cluster that holds the Job. It returns "" when there is
+// no message to report, including a reader that does not resolve and a failed
+// read; those errors are logged rather than returned, because nothing about the
+// upgrade depends on the message.
+func (r *CinderReconciler) upgradeCheckMessage(ctx context.Context, children client.Client,
+	cinder *cinderv1alpha1.Cinder, observed *batchv1.Job,
+) string {
+	reader, err := commonmulticluster.ResolveChildrenAPIReader(ctx, r.Resolver, r.apiReader, cinder.Spec.TargetClusterRef)
+	if err != nil {
+		log.FromContext(ctx).Info("resolving the reader for the pods of the upgrade-check Job failed; "+
+			"the cinder-status exit code is reported as unavailable",
+			"job", observed.Name, "err", err.Error())
+		return ""
+	}
+	if reader == nil {
+		// No manager behind this reconciler (unit tests).
+		reader = children
+	}
+
+	message, err := job.TerminationMessage(ctx, reader, observed)
+	if err != nil {
 		log.FromContext(ctx).Info("listing the pods of the upgrade-check Job failed; "+
 			"the cinder-status exit code is reported as unavailable",
-			"job", jobName, "err", err.Error())
+			"job", observed.Name, "err", err.Error())
 		return ""
 	}
-	if len(pods.Items) == 0 {
-		return ""
-	}
-	statuses := pods.Items[0].Status.ContainerStatuses
-	if len(statuses) == 0 {
-		return ""
-	}
-	if terminated := statuses[0].State.Terminated; terminated != nil && terminated.Message != "" {
-		return terminated.Message
-	}
-	if terminated := statuses[0].LastTerminationState.Terminated; terminated != nil {
-		return terminated.Message
-	}
-	return ""
+	return message
 }

@@ -25,6 +25,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
@@ -932,14 +933,18 @@ func TestReconcileDatabase_AbortReachableDuringImageDrift(t *testing.T) {
 
 // --- the cell report and the nova-status upgrade check ---
 
-// terminatedJobPod returns a Job's pod with the given termination message on its
-// only container.
-func terminatedJobPod(jobName, message string) *corev1.Pod {
+// terminatedJobPod returns a pod of the observed Job, labeled the way the Job
+// controller labels it, with the given termination message on its only
+// container.
+func terminatedJobPod(observed *batchv1.Job, message string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName + "-pod",
+			Name:      observed.Name + "-pod",
 			Namespace: testNamespace,
-			Labels:    map[string]string{"batch.kubernetes.io/job-name": jobName},
+			Labels: map[string]string{
+				naming.LabelKeyJobName:     observed.Name,
+				batchv1.ControllerUidLabel: string(observed.UID),
+			},
 		},
 		Status: corev1.PodStatus{
 			ContainerStatuses: []corev1.ContainerStatus{{
@@ -1019,7 +1024,7 @@ func TestReportCells_WritesStatusFromTheTerminationMessage(t *testing.T) {
 	nova := validNova()
 	observed := terminalJob(dbSyncJobSuffix, "cells-uid")
 	message := "cell0=" + testCell0UUID + "\ncell1=" + testCell1UUID
-	r := newNovaTestReconciler(nova, terminatedJobPod(observed.Name, message))
+	r := newNovaTestReconciler(nova, terminatedJobPod(observed, message))
 
 	r.reportCells(context.Background(), r.Client, nova, observed)
 
@@ -1035,13 +1040,14 @@ func TestReportCells_WritesStatusFromTheTerminationMessage(t *testing.T) {
 // published UUID would be worse than reporting a stale one.
 func TestReportCells_UnavailableEmitsEventAndKeepsStatus(t *testing.T) {
 	published := []novav1alpha1.NovaCellStatus{{Name: "cell0", UUID: testCell0UUID}}
+	observed := terminalJob(dbSyncJobSuffix, "cells-uid-unavailable")
 
 	cases := []struct {
 		name string
 		pod  *corev1.Pod
 	}{
 		{name: "no pod at all"},
-		{name: "a pod that wrote no message", pod: terminatedJobPod(testNovaName+"-"+dbSyncJobSuffix, "")},
+		{name: "a pod that wrote no message", pod: terminatedJobPod(observed, "")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1054,7 +1060,7 @@ func TestReportCells_UnavailableEmitsEventAndKeepsStatus(t *testing.T) {
 			}
 			r := newNovaTestReconciler(objs...)
 
-			r.reportCells(context.Background(), r.Client, nova, terminalJob(dbSyncJobSuffix, "cells-uid-"+tc.name))
+			r.reportCells(context.Background(), r.Client, nova, observed)
 
 			g.Expect(nova.Status.Cells).To(Equal(published), "an unreadable report leaves the last one standing")
 			g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
@@ -1074,12 +1080,12 @@ func TestReportCells_PicksTheReportingPodAmongRetries(t *testing.T) {
 	nova := validNova()
 	observed := terminalJob(dbSyncJobSuffix, "cells-uid-retries")
 
-	failed := terminatedJobPod(observed.Name, "")
+	failed := terminatedJobPod(observed, "")
 	failed.Name = observed.Name + "-aaaaa"
 	failed.CreationTimestamp = metav1.NewTime(time.Now())
 	failed.Status.Phase = corev1.PodFailed
 
-	succeeded := terminatedJobPod(observed.Name, "cell0="+testCell0UUID+"\ncell1="+testCell1UUID)
+	succeeded := terminatedJobPod(observed, "cell0="+testCell0UUID+"\ncell1="+testCell1UUID)
 	succeeded.Name = observed.Name + "-zzzzz"
 	succeeded.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Minute))
 	succeeded.Status.Phase = corev1.PodSucceeded
@@ -1098,21 +1104,21 @@ func TestReportCells_PicksTheReportingPodAmongRetries(t *testing.T) {
 func TestJobPodTerminationMessage_NewestPodWithoutASuccess(t *testing.T) {
 	g := NewGomegaWithT(t)
 	nova := validNova()
-	jobName := testNovaName + "-" + upgradeExpandJobSuffix
+	observed := terminalJob(upgradeExpandJobSuffix, "expand-uid-newest")
 
-	older := terminatedJobPod(jobName, "nova-status upgrade check exit 2")
-	older.Name = jobName + "-zzzzz"
+	older := terminatedJobPod(observed, "nova-status upgrade check exit 2")
+	older.Name = observed.Name + "-zzzzz"
 	older.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Minute))
 	older.Status.Phase = corev1.PodFailed
 
-	newer := terminatedJobPod(jobName, "nova-status upgrade check exit 3")
-	newer.Name = jobName + "-aaaaa"
+	newer := terminatedJobPod(observed, "nova-status upgrade check exit 3")
+	newer.Name = observed.Name + "-aaaaa"
 	newer.CreationTimestamp = metav1.NewTime(time.Now())
 	newer.Status.Phase = corev1.PodFailed
 
 	r := newNovaTestReconciler(nova, older, newer)
 
-	g.Expect(r.jobPodTerminationMessage(context.Background(), r.Client, nova, jobName)).
+	g.Expect(r.jobPodTerminationMessage(context.Background(), r.Client, nova, observed)).
 		To(Equal("nova-status upgrade check exit 3"))
 }
 
@@ -1146,7 +1152,7 @@ func TestReportCells_OncePerJobUID(t *testing.T) {
 	g := NewGomegaWithT(t)
 	nova := validNova()
 	observed := terminalJob(dbSyncJobSuffix, "cells-uid-dedupe")
-	r := newNovaTestReconciler(nova, terminatedJobPod(observed.Name, "cell0="+testCell0UUID))
+	r := newNovaTestReconciler(nova, terminatedJobPod(observed, "cell0="+testCell0UUID))
 
 	r.reportCells(context.Background(), r.Client, nova, observed)
 	nova.Status.Cells = nil
@@ -1160,6 +1166,8 @@ func TestReportCells_OncePerJobUID(t *testing.T) {
 // Warning carrying the message, and a pod whose message cannot be read says so
 // rather than leaving a silent gap.
 func TestRecordUpgradePhaseTerminal(t *testing.T) {
+	// The messages end in the newline the script's echo writes, which the
+	// kubelet copies into the termination message as it is.
 	cases := []struct {
 		name      string
 		message   string
@@ -1168,12 +1176,12 @@ func TestRecordUpgradePhaseTerminal(t *testing.T) {
 		expect    string
 	}{
 		{
-			name: "a clean check", message: "nova-status upgrade check exit 0",
+			name: "a clean check", message: "nova-status upgrade check exit 0\n",
 			eventType: corev1.EventTypeNormal, reason: "UpgradeCheckCompleted",
 			expect: "nova-status upgrade check exit 0",
 		},
 		{
-			name: "warnings", message: "nova-status upgrade check exit 1",
+			name: "warnings", message: "nova-status upgrade check exit 1\n",
 			eventType: corev1.EventTypeWarning, reason: "UpgradeCheckWarnings",
 			expect: "nova-status upgrade check exit 1",
 		},
@@ -1188,7 +1196,7 @@ func TestRecordUpgradePhaseTerminal(t *testing.T) {
 			g := NewGomegaWithT(t)
 			nova := validNova()
 			observed := terminalJob(upgradeExpandJobSuffix, "expand-uid-"+tc.name)
-			r := newNovaTestReconciler(nova, terminatedJobPod(observed.Name, tc.message))
+			r := newNovaTestReconciler(nova, terminatedJobPod(observed, tc.message))
 
 			r.recordUpgradePhaseTerminal(context.Background(), r.Client, nova, upgradeExpandJobSuffix, observed)
 
@@ -1205,7 +1213,7 @@ func TestRecordUpgradePhaseTerminal(t *testing.T) {
 		g := NewGomegaWithT(t)
 		nova := validNova()
 		observed := terminalJob(upgradeMigrateJobSuffix, "migrate-uid")
-		r := newNovaTestReconciler(nova, terminatedJobPod(observed.Name, "nova-status upgrade check exit 0"))
+		r := newNovaTestReconciler(nova, terminatedJobPod(observed, "nova-status upgrade check exit 0"))
 
 		r.recordUpgradePhaseTerminal(context.Background(), r.Client, nova, upgradeMigrateJobSuffix, observed)
 
@@ -1218,7 +1226,7 @@ func TestRecordUpgradePhaseTerminal(t *testing.T) {
 		g := NewGomegaWithT(t)
 		nova := validNova()
 		observed := terminalJob(upgradeExpandJobSuffix, "expand-uid-dedupe")
-		r := newNovaTestReconciler(nova, terminatedJobPod(observed.Name, "nova-status upgrade check exit 0"))
+		r := newNovaTestReconciler(nova, terminatedJobPod(observed, "nova-status upgrade check exit 0"))
 
 		r.recordUpgradePhaseTerminal(context.Background(), r.Client, nova, upgradeExpandJobSuffix, observed)
 		r.recordUpgradePhaseTerminal(context.Background(), r.Client, nova, upgradeExpandJobSuffix, observed)

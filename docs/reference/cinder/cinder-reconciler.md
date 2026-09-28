@@ -180,6 +180,18 @@ normalises 0, 1 and 2 to a zero exit and lets anything else fail. The real code
 travels in the pod's termination message, which the operator turns into an
 `UpgradeCheckCompleted` or `UpgradeCheckWarnings` event.
 
+The message is read off the migrate Job's pod that succeeded, because the Job
+runs each retry as a pod of its own and a failed attempt with exit 3 or more
+sits beside the retry that completed. A Job without a succeeded pod is read off
+its newest one. Only pods carrying the Job's UID count, so a pod that an earlier
+migrate Job of the same name left behind is never read. The pods are listed
+through the uncached API reader of the cluster that holds them. The operator
+reads one pod's message once per Job and never watches pods, and a read through
+the cached client would start an informer over every pod of the cluster that
+the operator's `get`/`list` RBAC does not allow to watch. A pod the operator
+cannot read, or a target cluster that does not resolve, leaves the event saying
+the exit code is unavailable.
+
 `installedRelease` is promoted only after the contract phase completes. That
 promotion changes the `cinder.c5c3.io/installed-release` pod annotation, which
 rolls the scheduler, the volume services and the backup service once more. Each

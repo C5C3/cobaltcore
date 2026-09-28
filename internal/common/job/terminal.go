@@ -7,6 +7,7 @@ package job
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -15,6 +16,8 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 )
 
 // JobUIDAnnotationFormat builds the annotation key used to dedupe terminal
@@ -159,4 +162,56 @@ func RecordJobTerminalState(
 		duration = 0
 	}
 	record(result, duration)
+}
+
+// TerminationMessage reads the termination message a pod of the observed Job
+// left: the pod that succeeded when there is one, otherwise the newest of the
+// Job's pods, its first container, the current termination state or the
+// previous one when the container has already been restarted. It returns ""
+// when there is no pod or no message. Trailing newlines are dropped: a script's
+// `echo ... > /dev/termination-log` ends the file with one, and the kubelet
+// copies the file into the message as it is.
+//
+// The pick matters because a Job runs its retries as new pods, so a failed
+// attempt can sit beside the one that completed, and the List returns them in
+// no fixed order. The pods are selected by the Job's UID as well as its name: a
+// Job re-created under the same name can find the previous Job's pods still in
+// place until the garbage collector removes them, and a pod of the old Job
+// that succeeded would otherwise win the pick.
+//
+// reader should be an uncached reader: a List through the cached client starts
+// an informer over every pod of the cluster.
+func TerminationMessage(ctx context.Context, reader client.Reader, observed *batchv1.Job) (string, error) {
+	var pods corev1.PodList
+	if err := reader.List(ctx, &pods, client.InNamespace(observed.Namespace), client.MatchingLabels{
+		naming.LabelKeyJobName:     observed.Name,
+		batchv1.ControllerUidLabel: string(observed.UID),
+	}); err != nil {
+		return "", fmt.Errorf("listing the pods of Job %s/%s: %w", observed.Namespace, observed.Name, err)
+	}
+	if len(pods.Items) == 0 {
+		return "", nil
+	}
+	pod := &pods.Items[0]
+	for i := range pods.Items {
+		candidate := &pods.Items[i]
+		if candidate.Status.Phase == corev1.PodSucceeded {
+			pod = candidate
+			break
+		}
+		if candidate.CreationTimestamp.After(pod.CreationTimestamp.Time) {
+			pod = candidate
+		}
+	}
+	statuses := pod.Status.ContainerStatuses
+	if len(statuses) == 0 {
+		return "", nil
+	}
+	if terminated := statuses[0].State.Terminated; terminated != nil && terminated.Message != "" {
+		return strings.TrimRight(terminated.Message, "\n"), nil
+	}
+	if terminated := statuses[0].LastTerminationState.Terminated; terminated != nil {
+		return strings.TrimRight(terminated.Message, "\n"), nil
+	}
+	return "", nil
 }

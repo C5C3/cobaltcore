@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
@@ -20,10 +21,12 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
@@ -419,14 +422,18 @@ func TestReconcileDatabase_UpgradeWalk(t *testing.T) {
 
 // --- the cinder-status upgrade check report ---
 
-// terminatedCheckPod returns the migrate Job's pod with the given termination
-// message on its only container.
-func terminatedCheckPod(jobName, message string) *corev1.Pod {
+// terminatedCheckPod returns a pod of the observed migrate Job, labeled the way
+// the Job controller labels it, with the given termination message on its only
+// container.
+func terminatedCheckPod(observed *batchv1.Job, message string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName + "-pod",
+			Name:      observed.Name + "-pod",
 			Namespace: testNamespace,
-			Labels:    map[string]string{"batch.kubernetes.io/job-name": jobName},
+			Labels: map[string]string{
+				naming.LabelKeyJobName:     observed.Name,
+				batchv1.ControllerUidLabel: string(observed.UID),
+			},
 		},
 		Status: corev1.PodStatus{
 			ContainerStatuses: []corev1.ContainerStatus{{
@@ -457,8 +464,11 @@ func terminalMigrateJob(uid string) *batchv1.Job {
 // TestReportUpgradeCheck covers what the operator makes of the exit code the
 // migrate Job deliberately swallows: a clean run is Normal, warnings and a
 // failed check are Warnings carrying the message, and a pod whose message cannot
-// be read says so rather than leaving a silent gap.
+// be read says so rather than leaving a silent gap. It also pins which pod of a
+// retried Job the message comes from and that the read bypasses the cache.
 func TestReportUpgradeCheck(t *testing.T) {
+	// The messages end in the newline the script's echo writes, which the
+	// kubelet copies into the termination message as it is.
 	cases := []struct {
 		name      string
 		message   string
@@ -467,24 +477,24 @@ func TestReportUpgradeCheck(t *testing.T) {
 		expect    string
 	}{
 		{
-			name: "a clean check", message: "cinder-status upgrade check exit 0",
+			name: "a clean check", message: "cinder-status upgrade check exit 0\n",
 			eventType: corev1.EventTypeNormal, reason: "UpgradeCheckCompleted",
 			expect: "cinder-status upgrade check exit 0",
 		},
 		{
-			name: "warnings", message: "cinder-status upgrade check exit 1",
+			name: "warnings", message: "cinder-status upgrade check exit 1\n",
 			eventType: corev1.EventTypeWarning, reason: "UpgradeCheckWarnings",
 			expect: "cinder-status upgrade check exit 1",
 		},
 		{
-			name: "a failed check", message: "cinder-status upgrade check exit 2",
+			name: "a failed check", message: "cinder-status upgrade check exit 2\n",
 			eventType: corev1.EventTypeWarning, reason: "UpgradeCheckWarnings",
 			expect: "cinder-status upgrade check exit 2",
 		},
 		{
 			name: "a pod that wrote no message", message: "",
 			eventType: corev1.EventTypeNormal, reason: "UpgradeCheckCompleted",
-			expect: "exit code unavailable",
+			expect: "cinder-status upgrade check exit code unavailable",
 		},
 	}
 	for _, tc := range cases {
@@ -492,13 +502,12 @@ func TestReportUpgradeCheck(t *testing.T) {
 			g := NewGomegaWithT(t)
 			cinder := validCinder()
 			observed := terminalMigrateJob("migrate-uid-" + tc.name)
-			r := newCinderTestReconciler(cinder, terminatedCheckPod(observed.Name, tc.message))
+			r := newCinderTestReconciler(cinder, terminatedCheckPod(observed, tc.message))
 
 			r.reportUpgradeCheck(context.Background(), r.Client, cinder, observed)
 
-			events := collectEvents(r.Recorder.(*record.FakeRecorder))
-			g.Expect(events).To(ConsistOf(ContainSubstring(tc.eventType + " " + tc.reason)))
-			g.Expect(events[0]).To(ContainSubstring(tc.expect))
+			g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(
+				ConsistOf(tc.eventType + " " + tc.reason + " " + tc.expect))
 		})
 	}
 
@@ -512,6 +521,130 @@ func TestReportUpgradeCheck(t *testing.T) {
 		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(And(
 			ContainSubstring("Normal UpgradeCheckCompleted"),
 			ContainSubstring("exit code unavailable"),
+		)))
+	})
+
+	// A pod the kubelet has not reported a container on yet carries no message.
+	t.Run("a pod without container statuses", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cinder := validCinder()
+		observed := terminalMigrateJob("migrate-uid-nostatus")
+		pod := terminatedCheckPod(observed, "")
+		pod.Status.ContainerStatuses = nil
+		r := newCinderTestReconciler(cinder, pod)
+
+		r.reportUpgradeCheck(context.Background(), r.Client, cinder, observed)
+
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(And(
+			ContainSubstring("Normal UpgradeCheckCompleted"),
+			ContainSubstring("exit code unavailable"),
+		)))
+	})
+
+	// The pods are read through the uncached API reader: a List on the cached
+	// client would start a cluster-wide pod informer the RBAC cannot watch. The
+	// cached client fails every pod List here, so only a read through apiReader
+	// finds the message.
+	t.Run("the pod read bypasses the cached client", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cinder := validCinder()
+		observed := terminalMigrateJob("migrate-uid-uncached")
+		c := cinderFakeClientBuilder(cinder).
+			WithInterceptorFuncs(interceptor.Funcs{
+				List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if _, ok := list.(*corev1.PodList); ok {
+						return errors.New("the cached client must not list pods")
+					}
+					return cl.List(ctx, list, opts...)
+				},
+			}).Build()
+		r := &CinderReconciler{
+			Client:   c,
+			Scheme:   testScheme(),
+			Recorder: record.NewFakeRecorder(10),
+			apiReader: fake.NewClientBuilder().WithScheme(testScheme()).
+				WithObjects(terminatedCheckPod(observed, "cinder-status upgrade check exit 1")).Build(),
+		}
+
+		r.reportUpgradeCheck(context.Background(), r.Client, cinder, observed)
+
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(And(
+			ContainSubstring("Warning UpgradeCheckWarnings"),
+			ContainSubstring("cinder-status upgrade check exit 1"),
+		)))
+	})
+
+	// A target cluster that does not resolve leaves the code unavailable. The
+	// pod sits in the cached client, so a fallback to it would report exit 0.
+	t.Run("an unresolvable target cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cinder := validCinder()
+		cinder.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "nowhere"}
+		observed := terminalMigrateJob("migrate-uid-unresolvable")
+		r := newCinderTestReconciler(cinder, terminatedCheckPod(observed, "cinder-status upgrade check exit 0"))
+		r.Resolver = unresolvableResolver{}
+
+		r.reportUpgradeCheck(context.Background(), r.Client, cinder, observed)
+
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(And(
+			ContainSubstring("Normal UpgradeCheckCompleted"),
+			ContainSubstring("exit code unavailable"),
+		)))
+	})
+
+	// The migrate Job runs each retry as a pod of its own, and the list comes
+	// back in no fixed order. The failed pod's name sorts first here, and it is
+	// the newer one, so neither order nor age picks the report.
+	t.Run("a succeeded retry wins over a failed attempt", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cinder := validCinder()
+		observed := terminalMigrateJob("migrate-uid-retry")
+
+		failed := terminatedCheckPod(observed, "cinder-status upgrade check exit 3")
+		failed.Name = observed.Name + "-aaaaa"
+		failed.CreationTimestamp = metav1.NewTime(time.Now())
+		failed.Status.Phase = corev1.PodFailed
+
+		succeeded := terminatedCheckPod(observed, "cinder-status upgrade check exit 0")
+		succeeded.Name = observed.Name + "-zzzzz"
+		succeeded.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Minute))
+		succeeded.Status.Phase = corev1.PodSucceeded
+
+		r := newCinderTestReconciler(cinder, failed, succeeded)
+
+		r.reportUpgradeCheck(context.Background(), r.Client, cinder, observed)
+
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(And(
+			ContainSubstring("Normal UpgradeCheckCompleted"),
+			ContainSubstring("exit 0"),
+		)))
+	})
+
+	// A Job none of whose pods succeeded carries the check's last word on its
+	// newest attempt. The newer pod's name sorts first here, so name order and
+	// age order disagree.
+	t.Run("without a success the newest attempt wins", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cinder := validCinder()
+		observed := terminalMigrateJob("migrate-uid-newest")
+
+		older := terminatedCheckPod(observed, "cinder-status upgrade check exit 3")
+		older.Name = observed.Name + "-zzzzz"
+		older.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Minute))
+		older.Status.Phase = corev1.PodFailed
+
+		newer := terminatedCheckPod(observed, "cinder-status upgrade check exit 4")
+		newer.Name = observed.Name + "-aaaaa"
+		newer.CreationTimestamp = metav1.NewTime(time.Now())
+		newer.Status.Phase = corev1.PodFailed
+
+		r := newCinderTestReconciler(cinder, older, newer)
+
+		r.reportUpgradeCheck(context.Background(), r.Client, cinder, observed)
+
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(And(
+			ContainSubstring("Warning UpgradeCheckWarnings"),
+			ContainSubstring("exit 4"),
 		)))
 	})
 
@@ -529,7 +662,7 @@ func TestReportUpgradeCheck(t *testing.T) {
 					return cl.List(ctx, list, opts...)
 				},
 			}).Build()
-		r := &CinderReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
+		r := &CinderReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10), apiReader: c}
 
 		r.reportUpgradeCheck(context.Background(), r.Client, cinder, terminalMigrateJob("migrate-uid-listerr"))
 
@@ -544,7 +677,7 @@ func TestReportUpgradeCheck(t *testing.T) {
 		g := NewGomegaWithT(t)
 		cinder := validCinder()
 		observed := terminalMigrateJob("migrate-uid-dedupe")
-		r := newCinderTestReconciler(cinder, terminatedCheckPod(observed.Name, "cinder-status upgrade check exit 0"))
+		r := newCinderTestReconciler(cinder, terminatedCheckPod(observed, "cinder-status upgrade check exit 0"))
 
 		r.reportUpgradeCheck(context.Background(), r.Client, cinder, observed)
 		r.reportUpgradeCheck(context.Background(), r.Client, cinder, observed)
