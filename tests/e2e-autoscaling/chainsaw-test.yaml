@@ -30,6 +30,14 @@
 # request burst (step 8) makes every pinned pod open its database connections
 # first.
 #
+# ── DECISION: the VPA opt-ins ride this suite ────────────────────────────────
+# The job deploys the VPA overlay (WITH_VPA), so this is the cluster that
+# serves autoscaling.k8s.io/v1 VerticalPodAutoscaler. Three components the
+# HPAs leave alone opt in from the ControlPlane sizing, and the OVNCentral opts
+# its databases and northd in on its own spec; the other suites run on
+# clusters without the VPA, and tests/e2e/keystone/vertical-autoscaling/ proves
+# that case.
+#
 # What it proves, in order:
 #   1-3. metrics-server answers, the KV paths are seeded, and the ControlPlane
 #        (Minimal profile plus the autoscaling blocks of 00-controlplane-cr.yaml)
@@ -37,19 +45,23 @@
 #   4.   The behavior block reaches the Keystone child and its HPA, all seven
 #        HPAs target 150% CPU, the budgets follow the HPA minimum, and the
 #        Keystone cap is sized from maxReplicas: (3+1)×2×(1+1)+2 = 18.
-#   5-7. Token load scales Keystone to three ready pods above a 150% peak, and
+#   5.   The verticalAutoscaling blocks reach the children, every opted-in
+#        workload has its VPA and no HPA-scaled one has, the Raft VPAs carry
+#        the request floor, the recommender serves the Northbound database,
+#        and removing the Neutron opt-in removes its two VPAs.
+#   6-8. Token load scales Keystone to three ready pods above a 150% peak, and
 #        the fleet fits its cap (check-connection-cap.sh).
-#   8-9. A request burst reaches every pinned API, each fits its cap, and the
+#   9-10. A request burst reaches every pinned API, each fits its cap, and the
 #        server-wide total stays below @@max_connections.
-#   10.  The load ends clean and Keystone is back at one pod within 240 s,
+#   11.  The load ends clean and Keystone is back at one pod within 240 s,
 #        which the default 300 s scale-down window would not allow.
-#   11.  At one pod the budget allows one disruption, and an Eviction of that
+#   12.  At one pod the budget allows one disruption, and an Eviction of that
 #        pod is admitted.
-#   12.  Removing the behavior block restores the Kubernetes default.
+#   13.  Removing the behavior block restores the Kubernetes default.
 #
 # Every step pins its own timeout. The worst-case ceiling is their sum plus
-# the catch and the cleanup: 3 + 5 + 45 + 5 + 3 + 8 + 5 + 8 + 10 + 20 + 8 + 5
-# + 5 + 15 = 145 minutes. The 900 s load outlasts steps 6 and 7 at their
+# the catch and the cleanup: 3 + 5 + 45 + 5 + 15 + 3 + 8 + 5 + 8 + 10 + 20 + 8
+# + 5 + 5 + 15 = 160 minutes. The 900 s load outlasts steps 7 and 8 at their
 # timeouts (13 minutes), so Keystone is still loaded when its cap is checked.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -68,6 +80,8 @@ spec:
       content: |
         echo "=== HPAs ==="
         kubectl describe hpa -n openstack 2>&1 || true
+        echo "=== VPAs ==="
+        kubectl describe vpa -n openstack 2>&1 || true
         echo "=== kubectl top pods ==="
         kubectl top pods -n openstack 2>&1 || true
         echo "=== Pods ==="
@@ -278,7 +292,148 @@ spec:
           # the one projected replica it would be 10.
           assert_eq "User ${KEYSTONE} spec.maxUserConnections" 18 \
             "$(kubectl get users.k8s.mariadb.com "${KEYSTONE}" -n "${NS}" -o jsonpath='{.spec.maxUserConnections}')"
-  # ── Step 5: start the token load ────────────────────────────────────────
+  # ── Step 5: the opt-in VerticalPodAutoscalers ───────────────────────────
+  - name: vertical-autoscaling
+    try:
+    - script:
+        timeout: 15m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          assert_eq() { # <what> <want> <got>
+            if [ "$3" != "$2" ]; then
+              echo "ERROR: $1: got '$3', want '$2'"; exit 1
+            fi
+            echo "OK: $1 = $2"
+          }
+          condition_of() { # <kind> <name> <type>: status/reason
+            kubectl get "$1" "$2" -n "${NS}" \
+              -o jsonpath="{.status.conditions[?(@.type==\"$3\")].status}/{.status.conditions[?(@.type==\"$3\")].reason}"
+          }
+          wait_condition() { # <kind> <name> <type> <want status/reason> <seconds>
+            local deadline=$((SECONDS + $5)) got
+            while :; do
+              got="$(condition_of "$1" "$2" "$3")"
+              [ "${got}" = "$4" ] && break
+              if [ "${SECONDS}" -ge "${deadline}" ]; then
+                echo "ERROR: $1/$2 $3: got '${got}', want '$4'"; exit 1
+              fi
+              sleep 5
+            done
+            echo "OK: $1/$2 $3 = $4"
+          }
+
+          # The sizing blocks reach the component each one sizes.
+          assert_eq "cp-autoscaling-neutron spec.workers.deployment.verticalAutoscaling" \
+            '{"updateMode":"Off"}' \
+            "$(kubectl get neutron cp-autoscaling-neutron -n "${NS}" -o json | jq -cS '.spec.workers.deployment.verticalAutoscaling')"
+          assert_eq "cp-autoscaling-cinder spec.scheduler.deployment.verticalAutoscaling" \
+            '{"maxAllowed":{"cpu":"1"},"minReplicas":1,"updateMode":"Auto"}' \
+            "$(kubectl get cinder cp-autoscaling-cinder -n "${NS}" -o json | jq -cS '.spec.scheduler.deployment.verticalAutoscaling')"
+          assert_eq "cp-autoscaling-nova spec.conductor.deployment.verticalAutoscaling" \
+            '{"minAllowed":{"memory":"256Mi"},"updateMode":"Initial"}' \
+            "$(kubectl get nova cp-autoscaling-nova -n "${NS}" -o json | jq -cS '.spec.conductor.deployment.verticalAutoscaling')"
+
+          # Every opted-in workload has a VPA named like it, labelled with its
+          # CR, carrying the one container policy the operators write.
+          declare -A KIND=(
+            [cp-autoscaling-neutron-periodic-workers]=Deployment
+            [cp-autoscaling-neutron-ovn-maintenance-worker]=Deployment
+            [cp-autoscaling-cinder-scheduler]=Deployment
+            [cp-autoscaling-nova-conductor]=Deployment
+            [cp-autoscaling-ovn-northd]=Deployment
+            [cp-autoscaling-ovn-nb]=StatefulSet
+            [cp-autoscaling-ovn-sb]=StatefulSet
+          )
+          declare -A INSTANCE=(
+            [cp-autoscaling-neutron-periodic-workers]=cp-autoscaling-neutron
+            [cp-autoscaling-neutron-ovn-maintenance-worker]=cp-autoscaling-neutron
+            [cp-autoscaling-cinder-scheduler]=cp-autoscaling-cinder
+            [cp-autoscaling-nova-conductor]=cp-autoscaling-nova
+            [cp-autoscaling-ovn-northd]=cp-autoscaling-ovn
+            [cp-autoscaling-ovn-nb]=cp-autoscaling-ovn
+            [cp-autoscaling-ovn-sb]=cp-autoscaling-ovn
+          )
+          POLICY='[{"containerName":"*","controlledResources":["cpu","memory"],"controlledValues":"RequestsOnly"}]'
+          for vpa in "${!KIND[@]}"; do
+            json="$(kubectl get vpa "${vpa}" -n "${NS}" -o json)"
+            assert_eq "${vpa} targetRef" "apps/v1/${KIND[${vpa}]}/${vpa}" \
+              "$(jq -r '.spec.targetRef | "\(.apiVersion)/\(.kind)/\(.name)"' <<<"${json}")"
+            assert_eq "${vpa} app.kubernetes.io/instance" "${INSTANCE[${vpa}]}" \
+              "$(jq -r '.metadata.labels["app.kubernetes.io/instance"]' <<<"${json}")"
+            assert_eq "${vpa} container policies" "${POLICY}" \
+              "$(jq -cS '[.spec.resourcePolicy.containerPolicies[] | {containerName, controlledResources, controlledValues}]' <<<"${json}")"
+          done
+
+          # The fields each block sets, and the Raft floor the operator fills.
+          assert_eq "cp-autoscaling-cinder-scheduler updatePolicy" '{"minReplicas":1,"updateMode":"Auto"}' \
+            "$(kubectl get vpa cp-autoscaling-cinder-scheduler -n "${NS}" -o json | jq -cS '.spec.updatePolicy')"
+          assert_eq "cp-autoscaling-cinder-scheduler maxAllowed" '{"cpu":"1"}' \
+            "$(kubectl get vpa cp-autoscaling-cinder-scheduler -n "${NS}" -o json | jq -cS '.spec.resourcePolicy.containerPolicies[0].maxAllowed')"
+          assert_eq "cp-autoscaling-nova-conductor updateMode" Initial \
+            "$(kubectl get vpa cp-autoscaling-nova-conductor -n "${NS}" -o jsonpath='{.spec.updatePolicy.updateMode}')"
+          assert_eq "cp-autoscaling-nova-conductor minAllowed" '{"memory":"256Mi"}' \
+            "$(kubectl get vpa cp-autoscaling-nova-conductor -n "${NS}" -o json | jq -cS '.spec.resourcePolicy.containerPolicies[0].minAllowed')"
+          for vpa in cp-autoscaling-ovn-nb cp-autoscaling-ovn-sb; do
+            assert_eq "${vpa} minAllowed" '{"cpu":"70m","memory":"256Mi"}' \
+              "$(kubectl get vpa "${vpa}" -n "${NS}" -o json | jq -cS '.spec.resourcePolicy.containerPolicies[0].minAllowed')"
+          done
+
+          # Keystone opts nothing in, and no VPA shares a target with an HPA.
+          assert_eq "VPAs of cp-autoscaling-keystone" "" \
+            "$(kubectl get vpa -n "${NS}" -l app.kubernetes.io/instance=cp-autoscaling-keystone -o name)"
+          shared="$(comm -12 \
+            <(kubectl get vpa -n "${NS}" -o json | jq -r '.items[].spec.targetRef.name' | sort -u) \
+            <(kubectl get hpa -n "${NS}" -o json | jq -r '.items[].spec.scaleTargetRef.name' | sort -u))"
+          assert_eq "workloads with both a VPA and an HPA" "" "${shared}"
+
+          for child in neutron/cp-autoscaling-neutron cinder/cp-autoscaling-cinder nova/cp-autoscaling-nova \
+            ovncentral/cp-autoscaling-ovn; do
+            wait_condition "${child%%/*}" "${child#*/}" VPAReady True/VPAReady 120
+          done
+          for child in keystone glance placement barbican; do
+            wait_condition "${child}" "cp-autoscaling-${child}" VPAReady True/VPANotRequired 120
+          done
+
+          # The recommender accepts the targets: the Northbound database gets a
+          # recommendation for its ovsdb container, and no VPA is unsupported.
+          deadline=$((SECONDS + 600))
+          while :; do
+            json="$(kubectl get vpa cp-autoscaling-ovn-nb -n "${NS}" -o json)"
+            provided="$(jq -r '.status.conditions[]? | select(.type == "RecommendationProvided") | .status' <<<"${json}")"
+            memory="$(jq -r '.status.recommendation.containerRecommendations[]? | select(.containerName == "ovsdb") | .target.memory // empty' <<<"${json}")"
+            [ "${provided}" = True ] && [ -n "${memory}" ] && break
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: cp-autoscaling-ovn-nb has no ovsdb recommendation (RecommendationProvided='${provided}')"
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "OK: cp-autoscaling-ovn-nb recommends ${memory} memory for ovsdb"
+          assert_eq "VPAs with ConfigUnsupported=True" "" \
+            "$(kubectl get vpa -n "${NS}" -o json \
+              | jq -r '.items[] | select(any(.status.conditions[]?; .type == "ConfigUnsupported" and .status == "True")) | .metadata.name')"
+
+          # Removing the Neutron opt-in removes the two worker VPAs and nothing
+          # else.
+          kubectl patch controlplane cp-autoscaling -n "${NS}" --type=json \
+            -p '[{"op":"remove","path":"/spec/sizing/neutron/workers/verticalAutoscaling"}]'
+          deadline=$((SECONDS + 300))
+          until [ -z "$(kubectl get vpa -n "${NS}" -l app.kubernetes.io/instance=cp-autoscaling-neutron -o name)" ]; do
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: the Neutron worker VPAs are still there"; exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Neutron worker VPAs are gone"
+          wait_condition neutron cp-autoscaling-neutron VPAReady True/VPANotRequired 120
+          for vpa in cp-autoscaling-cinder-scheduler cp-autoscaling-nova-conductor cp-autoscaling-ovn-northd \
+            cp-autoscaling-ovn-nb cp-autoscaling-ovn-sb; do
+            kubectl get vpa "${vpa}" -n "${NS}" -o name
+          done
+          echo "OK: the other five VPAs remain"
+  # ── Step 6: start the token load ────────────────────────────────────────
   - name: start-load
     try:
     - script:
@@ -303,7 +458,7 @@ spec:
             sleep 5
           done
           echo "OK: the load Job's pod is running"
-  # ── Step 6: Keystone scales out to its maximum ──────────────────────────
+  # ── Step 7: Keystone scales out to its maximum ──────────────────────────
   - name: scale-out
     try:
     - script:
@@ -336,7 +491,7 @@ spec:
             echo "ERROR: the peak averageUtilization ${peak}% is not above the 150% target"; exit 1
           fi
           echo "OK: Keystone scaled out to three ready pods above a ${peak}% peak"
-  # ── Step 7: Keystone at its maximum fits its cap ────────────────────────
+  # ── Step 8: Keystone at its maximum fits its cap ────────────────────────
   # A pod the HPA just added turns ready before kube-proxy has sent it a
   # request, and uWSGI opens a worker's database connection on its first one,
   # so the helper is retried while the load reaches the new pods. Every
@@ -358,7 +513,7 @@ spec:
             echo "retrying in 15 s"
             sleep 15
           done
-  # ── Step 8: an authenticated burst against the pinned APIs ──────────────
+  # ── Step 9: an authenticated burst against the pinned APIs ──────────────
   - name: service-burst
     try:
     - script:
@@ -393,7 +548,7 @@ spec:
             echo "ERROR: the burst Job reports failed requests"; exit 1
           fi
           echo "OK: every pinned API answered every request of the burst"
-  # ── Step 9: the pinned APIs at their maximum fit their caps ─────────────
+  # ── Step 10: the pinned APIs at their maximum fit their caps ────────────
   - name: pinned-at-maximum
     try:
     - script:
@@ -414,7 +569,7 @@ spec:
             echo "ERROR: ${total} connections reach the server-wide max_connections of ${max}"; exit 1
           fi
           echo "OK: the server-wide total stays below max_connections"
-  # ── Step 10: the load ends clean, Keystone scales back in ───────────────
+  # ── Step 11: the load ends clean, Keystone scales back in ───────────────
   - name: load-result-and-scale-in
     try:
     - script:
@@ -471,7 +626,7 @@ spec:
             sleep 5
           done
           echo "OK: Keystone back at one ready pod ${elapsed} s after the load ended"
-  # ── Step 11: the budget admits an eviction at the minimum ───────────────
+  # ── Step 12: the budget admits an eviction at the minimum ───────────────
   - name: pdb-at-minimum
     try:
     - script:
@@ -523,7 +678,7 @@ spec:
             sleep 5
           done
           echo "OK: ${DEPLOY} is back at one ready pod and ${KEYSTONE} is Ready"
-  # ── Step 12: removing the behavior restores the default ─────────────────
+  # ── Step 13: removing the behavior restores the default ─────────────────
   - name: behavior-removal
     try:
     - script:

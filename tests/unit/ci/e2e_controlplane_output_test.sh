@@ -221,17 +221,21 @@ test_filter_covers_the_machinery_and_the_suites() {
   assert_contains "the External-mode suite has a filter of its own" \
     "$block" "tests/e2e/c5c3/external-keystone/**"
 
-  # The autoscaling job also runs on the metrics-server overlay it deploys and
-  # on the shared HPA code the suite drives.
+  # The autoscaling job also runs on the metrics-server and VPA overlays it
+  # deploys and on the shared HPA and VPA code the suite drives.
   block=$(filter_block tests_autoscaling)
   assert_contains "the autoscaling suite has a filter of its own" \
     "$block" "tests/e2e-autoscaling/**"
   assert_contains "the autoscaling filter lists the metrics-server overlay" \
     "$block" "deploy/kind/metrics-server/**"
+  assert_contains "the autoscaling filter lists the VPA overlay" \
+    "$block" "deploy/kind/vpa/**"
   assert_contains "the autoscaling filter lists the HPA builder" \
     "$block" "internal/common/deployment/builders.go"
   assert_contains "the autoscaling filter lists the HPA flow" \
     "$block" "internal/common/deployment/hpa_flow.go"
+  assert_contains "the autoscaling filter lists the VPA flow" \
+    "$block" "internal/common/deployment/vpa_flow.go"
 
   # The sidecar reaches the keystone e2e leg through image_proxy; the SSO suite
   # pins it to the locally built :dev tag and is scheduled by its own filter.

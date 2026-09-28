@@ -24,6 +24,12 @@
 # default. Memory is not named, so each database keeps the operator's 256Mi Raft
 # floor and northd its own default.
 #
+# The two databases and northd opt into a VerticalPodAutoscaler that only
+# recommends (Off). The Raft VPAs carry the request floor, 70m CPU and 256Mi
+# memory, as minAllowed, which the e2e-autoscaling suite asserts; the
+# recommendation for the Northbound database is its proof that the recommender
+# accepts a StatefulSet owned by an OVNCentral.
+#
 # The issuer is the cluster-scoped one the kind overlay ships
 # (deploy/flux-system/infrastructure/ovn-ca-issuer.yaml). OVN authenticates every
 # connection, so both databases and the client identity the Neutron pods mount
@@ -42,16 +48,22 @@ spec:
     resources:
       requests:
         cpu: 50m
+    verticalAutoscaling:
+      updateMode: "Off"
   southbound:
     replicas: 1
     resources:
       requests:
         cpu: 50m
+    verticalAutoscaling:
+      updateMode: "Off"
   northd:
     deployment:
       replicas: 1
       resources:
         requests:
           cpu: 50m
+      verticalAutoscaling:
+        updateMode: "Off"
   backup:
     suspend: true

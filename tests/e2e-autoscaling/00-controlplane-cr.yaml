@@ -25,6 +25,14 @@
 #     it reads any metric.
 # The topology is set at creation, so every cap is sized from its maximum
 # before the first API pod starts.
+#
+# Three components no HPA scales opt into a VerticalPodAutoscaler, one per
+# update mode family, so the blocks exercise every field: the Neutron workers
+# only recommend (Off), the Cinder scheduler may be evicted (Auto) down to one
+# replica with its CPU capped at one core, and the Nova conductor gets its
+# requests at pod creation (Initial) from a 256Mi memory floor. The job
+# installs the VPA recommender alone, without the updater and the admission
+# controller, so Auto and Initial change no pod.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -129,18 +137,32 @@ spec:
           minReplicas: 2
           maxReplicas: 2
           targetCPUUtilization: 150
+      workers:
+        verticalAutoscaling:
+          updateMode: "Off"
     cinder:
       api:
         autoscaling:
           minReplicas: 2
           maxReplicas: 2
           targetCPUUtilization: 150
+      scheduler:
+        verticalAutoscaling:
+          updateMode: Auto
+          minReplicas: 1
+          maxAllowed:
+            cpu: "1"
     nova:
       api:
         autoscaling:
           minReplicas: 2
           maxReplicas: 2
           targetCPUUtilization: 150
+      conductor:
+        verticalAutoscaling:
+          updateMode: Initial
+          minAllowed:
+            memory: 256Mi
   korc:
     adminCredential:
       cloudCredentialsRef:

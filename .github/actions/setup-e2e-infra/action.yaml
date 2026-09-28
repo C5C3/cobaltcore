@@ -44,7 +44,9 @@
 #
 # WITH_VPA is threaded the same way so the e2e-controlplane,
 # e2e-controlplane-sso and tempest jobs can opt in to the kind-only VPA
-# recommender when the `ci:measure-sizing` label runs the sizing measurement.
+# recommender when the `ci:measure-sizing` label runs the sizing measurement,
+# and the e2e-autoscaling job always does: its operators create the opt-in
+# VerticalPodAutoscalers the suite asserts.
 # WITH_VPA=true implies metrics-server inside hack/deploy-infra.sh, whatever
 # WITH_METRICS_SERVER the calling job sets. When the calling job leaves
 # WITH_VPA unset or empty, `${{ env.WITH_VPA }}` resolves to an empty string
