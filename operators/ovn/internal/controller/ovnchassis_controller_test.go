@@ -308,10 +308,12 @@ func TestReconcileChassis_CentralNotFoundGatesThePipeline(t *testing.T) {
 	g.Expect(ovnChassisCondition(got, conditionTypeNodesReady)).To(BeNil())
 }
 
-// TestChassisPipelineSteps_OrderAndNames pins the pipeline: six named steps in
-// dependency order and no parallel group, because ovn-controller registers
-// itself in the local database Open vSwitch owns. The VPA step follows the two
-// DaemonSets it targets.
+// TestChassisPipelineSteps_OrderAndNames pins the pipeline: seven named steps
+// in dependency order and no parallel group, because ovn-controller registers
+// itself in the local database Open vSwitch owns. The client-Secret step sits
+// between the central and the node step, since it consumes what the first
+// resolves and every later step mounts the Secret it names. The VPA step
+// follows the two DaemonSets it targets.
 func TestChassisPipelineSteps_OrderAndNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 	r := &OVNChassisReconciler{}
@@ -322,7 +324,9 @@ func TestChassisPipelineSteps_OrderAndNames(t *testing.T) {
 	for _, step := range steps {
 		named = append(named, step.Name)
 	}
-	g.Expect(named).To(Equal([]string{"Central", "Nodes", "OVS", "Controller", "ChassisVPA", "Maintenance"}))
+	g.Expect(named).To(Equal([]string{
+		"Central", "ClientSecret", "Nodes", "OVS", "Controller", "ChassisVPA", "Maintenance",
+	}))
 }
 
 func TestSetChassisReadyCondition_TrueOnlyWhenAllSubConditionsTrue(t *testing.T) {

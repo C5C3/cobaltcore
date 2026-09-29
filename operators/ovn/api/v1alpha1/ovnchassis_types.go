@@ -285,6 +285,15 @@ type OVNChassisStatus struct {
 	// +optional
 	InstalledImage string `json:"installedImage,omitempty"`
 
+	// ClientSecretName names the Secret holding the OVN client identity (tls.crt,
+	// tls.key and ca.crt) in this CR's namespace on the cluster this CR projects
+	// onto. The chassis pods mount it, and so does a NeutronMetadataAgent
+	// attached to this chassis. It is the OVNCentral's own client Secret when the
+	// two CRs project onto the same cluster, and <name>-ovn-client, the copy the
+	// operator writes, when they do not.
+	// +optional
+	ClientSecretName string `json:"clientSecretName,omitempty"`
+
 	// DesiredNumberScheduled is how many nodes the DaemonSets should run on,
 	// mirrored from the DaemonSet status.
 	// +optional

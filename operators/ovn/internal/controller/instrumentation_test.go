@@ -86,6 +86,9 @@ func TestPipelineStepNamesAreMapped(t *testing.T) {
 			"the OVNChassis pipeline runs no parallel group, so every step is instrumented by name")
 		names = append(names, step.Name)
 	}
+	// The client-Secret step reports under the central step's condition: its
+	// failure arms all overwrite CentralReady.
+	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("ClientSecret", conditionTypeCentralReady))
 
 	g.Expect(names).To(HaveLen(len(subReconcilerConditionTypes)),
 		"every mapped sub_reconciler must correspond to exactly one pipeline step")

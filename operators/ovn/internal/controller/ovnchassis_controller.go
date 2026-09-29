@@ -51,7 +51,8 @@ const chassisAppName = "ovnchassis"
 //
 // The order is the pipeline's: the OVNCentral the chassis attach to comes
 // first, because its Southbound address and client Secret are what every later
-// step is parameterised by, the per-node values next, then the two DaemonSets
+// step is parameterised by (the client-Secret step reports under the same
+// condition), the per-node values next, then the two DaemonSets
 // that mount them, and the maintenance Jobs last, since they act on nodes the
 // node step has already marked as leaving or as evacuating.
 var chassisSubConditionTypes = []string{
@@ -267,7 +268,9 @@ func (r *OVNChassisReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 //
 // The OVNCentral is the first gate: its Southbound address and its client
 // Secret parameterise every later step, so a chassis whose central has not
-// published them yet projects nothing at all. The per-node values come next,
+// published them yet projects nothing at all. The client-Secret step follows
+// it and settles which Secret the pods mount, copying the central's onto this
+// chassis's cluster when the two differ. The per-node values come next,
 // because both DaemonSets mount the ConfigMap holding them, and the maintenance
 // Jobs last, since they act on nodes the node step has already marked as
 // leaving or as giving up the gateway role.
@@ -297,6 +300,12 @@ func (r *OVNChassisReconciler) pipelineSteps(children client.Client, cr *ovnv1al
 			var res ctrl.Result
 			var err error
 			central, res, err = r.reconcileCentral(ctx, cr)
+			return res, err
+		}},
+		{Name: "ClientSecret", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			var res ctrl.Result
+			var err error
+			central.clientSecretName, res, err = r.reconcileClientSecret(ctx, children, cr, central)
 			return res, err
 		}},
 		{Name: "Nodes", Fn: func(ctx context.Context) (ctrl.Result, error) {
