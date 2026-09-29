@@ -459,5 +459,7 @@ spec:
           kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=100 --all-containers 2>&1 || true
           echo "=== OpenBao logs (last 100 lines) ==="
           kubectl logs -n shared-services openbao-0 --tail=100 2>&1 || true
+          echo "=== K-ORC controller logs (last 100 lines) ==="
+          kubectl logs -n orc-system deploy/orc-controller-manager --tail=100 --all-containers 2>&1 || true
           echo "=== Events ($NAMESPACE, last 30) ==="
           kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

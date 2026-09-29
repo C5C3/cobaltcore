@@ -378,5 +378,7 @@ spec:
           kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers 2>&1 || true
           echo "=== c5c3-operator logs (previous, last 100 lines) ==="
           kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers --previous 2>&1 || true
+          echo "=== K-ORC controller logs (last 100 lines) ==="
+          kubectl logs -n orc-system deploy/orc-controller-manager --tail=100 --all-containers 2>&1 || true
           echo "=== Events (last 30) ==="
           kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
