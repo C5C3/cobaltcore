@@ -4838,6 +4838,29 @@ spec:
                             x-kubernetes-list-type: atomic
                         type: object
                     type: object
+                  externallyReachable:
+                    default: false
+                    description: |-
+                      ExternallyReachable publishes the relay Service on one node port, making
+                      the relays reachable on the IP of every node of the cluster, and publishes
+                      the addresses of the nodes the relay pods run on in
+                      status.relayDbAddress. It is off by default. Turn it on when an
+                      OVNChassis on another cluster attaches to this central: such a chassis
+                      cannot reach the relay's cluster IP, and without a published relay it
+                      dials the Southbound database's node ports directly, which puts its
+                      connection on the Raft members the relay tier exists to spare.
+                    type: boolean
+                  nodePort:
+                    description: |-
+                      NodePort is the node port the relay is published on once
+                      externallyReachable is set. When nil the operator resolves 30661, ten
+                      ports above the default Southbound base and outside both default database
+                      ranges. The webhook rejects a port inside either database's node-port
+                      range.
+                    format: int32
+                    maximum: 32767
+                    minimum: 30000
+                    type: integer
                   nodeSelector:
                     additionalProperties:
                       type: string
@@ -5016,6 +5039,10 @@ spec:
                 required:
                 - replicas
                 type: object
+                x-kubernetes-validations:
+                - message: relay.nodePort requires relay.externallyReachable
+                  rule: '!has(self.nodePort) || (has(self.externallyReachable) &&
+                    self.externallyReachable)'
               southbound:
                 default: {}
                 description: |-
@@ -6406,6 +6433,14 @@ spec:
                   RelayAddress is the connection string for the Southbound relay Service,
                   "ssl:<clusterIP>:6642". It is set while spec.relay is set and cleared when
                   the relay is removed.
+                type: string
+              relayDbAddress:
+                description: |-
+                  RelayDbAddress is the connection string of the Southbound relay for
+                  clients outside the cluster: "ssl:<node InternalIP>:<nodePort>" for every
+                  node a relay pod runs on, comma-separated and sorted. It is empty unless
+                  spec.relay.externallyReachable is set, and while no relay pod has been
+                  scheduled onto a node.
                 type: string
               southbound:
                 description: Southbound reports the observed state of the Southbound

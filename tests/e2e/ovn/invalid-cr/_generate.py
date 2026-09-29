@@ -415,6 +415,36 @@ FIXTURES: tuple[Fixture, ...] = (
             "      minReplicas: 0\n"
         ),
     ),
+    Fixture(
+        filename="23-relay-nodeport-without-externallyreachable.yaml",
+        comment=(
+            "spec.relay.nodePort without spec.relay.externallyReachable violates the\n"
+            "XValidation rule on OVNRelaySpec, which the API server answers before the\n"
+            "webhook's twin runs. A node port the relay is not published on names a\n"
+            "port nothing listens on."
+        ),
+        extra=(
+            "  relay:\n"
+            "    replicas: 1\n"
+            "    nodePort: 30661\n"
+        ),
+    ),
+    Fixture(
+        filename="24-relay-nodeport-inside-southbound-range.yaml",
+        comment=(
+            "spec.relay.nodePort inside the Southbound nodePort range (30651-30653 at the\n"
+            "default base and three replicas) must be rejected by the validating webhook\n"
+            "(webhook-only): the range is resolved from the base and the replica count,\n"
+            "which no schema rule on the relay can see. The relay Service would take the\n"
+            "port of the first Southbound member."
+        ),
+        extra=(
+            "  relay:\n"
+            "    replicas: 1\n"
+            "    externallyReachable: true\n"
+            "    nodePort: 30651\n"
+        ),
+    ),
 )
 
 

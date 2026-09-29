@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -259,6 +260,26 @@ func TestIntegration_CRD_CELOnly_RejectsEvenReplicas(t *testing.T) {
 	central.Spec.Northbound.Replicas = 2
 
 	expectRejected(t, c.Create(ctx, central), "replicas must be odd")
+}
+
+// TestIntegration_CRD_CELOnly_RejectsRelayNodePortWithoutTheFlag pins the
+// relay rule on create: a node port the relay is not published on would name a
+// port nothing listens on. A published relay with the same port is admitted, so
+// the rule is what rejects the first CR and nothing else about it.
+func TestIntegration_CRD_CELOnly_RejectsRelayNodePortWithoutTheFlag(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+	ns := newNamespace(t, ctx, c, "relay-nodeport-")
+
+	central := integrationCentral("ovn", ns)
+	central.Spec.Relay = &OVNRelaySpec{Replicas: 1, NodePort: ptr.To(int32(30661))}
+	expectRejected(t, c.Create(ctx, central), "relay.nodePort requires relay.externallyReachable")
+
+	published := integrationCentral("ovn", ns)
+	published.Spec.Relay = &OVNRelaySpec{Replicas: 1, ExternallyReachable: true, NodePort: ptr.To(int32(30661))}
+	g.Expect(c.Create(ctx, published)).To(Succeed(), "a published relay may name its node port")
 }
 
 // TestIntegration_CRD_CELOnly_RejectsCentralRefChange pins the centralRef rule:

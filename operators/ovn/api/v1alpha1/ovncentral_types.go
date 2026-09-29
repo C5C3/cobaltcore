@@ -298,11 +298,37 @@ type OVNNorthdSpec struct {
 // OVNRelaySpec configures the ovsdb-server relays in front of the Southbound
 // database. Relays are stateless caches, so they scale independently of the Raft
 // cluster behind them.
+//
+// A nodePort without externallyReachable would name a port nothing publishes,
+// so the rule below rejects it rather than letting the value sit unused.
+// +kubebuilder:validation:XValidation:rule="!has(self.nodePort) || (has(self.externallyReachable) && self.externallyReachable)",message="relay.nodePort requires relay.externallyReachable"
 type OVNRelaySpec struct {
 	// Replicas is the number of relay pods. Unlike the database replicas this is
 	// a plain scaling knob with no odd-count or immutability constraint.
 	// +kubebuilder:validation:Minimum=1
 	Replicas int32 `json:"replicas"`
+
+	// ExternallyReachable publishes the relay Service on one node port, making
+	// the relays reachable on the IP of every node of the cluster, and publishes
+	// the addresses of the nodes the relay pods run on in
+	// status.relayDbAddress. It is off by default. Turn it on when an
+	// OVNChassis on another cluster attaches to this central: such a chassis
+	// cannot reach the relay's cluster IP, and without a published relay it
+	// dials the Southbound database's node ports directly, which puts its
+	// connection on the Raft members the relay tier exists to spare.
+	// +optional
+	// +kubebuilder:default=false
+	ExternallyReachable bool `json:"externallyReachable,omitempty"`
+
+	// NodePort is the node port the relay is published on once
+	// externallyReachable is set. When nil the operator resolves 30661, ten
+	// ports above the default Southbound base and outside both default database
+	// ranges. The webhook rejects a port inside either database's node-port
+	// range.
+	// +optional
+	// +kubebuilder:validation:Minimum=30000
+	// +kubebuilder:validation:Maximum=32767
+	NodePort *int32 `json:"nodePort,omitempty"`
 
 	// Resources defines the CPU and memory requests and limits for the relay
 	// container. The operator resolves defaults per resource when it renders the
@@ -457,6 +483,14 @@ type OVNCentralStatus struct {
 	// the relay is removed.
 	// +optional
 	RelayAddress string `json:"relayAddress,omitempty"`
+
+	// RelayDbAddress is the connection string of the Southbound relay for
+	// clients outside the cluster: "ssl:<node InternalIP>:<nodePort>" for every
+	// node a relay pod runs on, comma-separated and sorted. It is empty unless
+	// spec.relay.externallyReachable is set, and while no relay pod has been
+	// scheduled onto a node.
+	// +optional
+	RelayDbAddress string `json:"relayDbAddress,omitempty"`
 
 	// ClientSecretName names the Secret holding the client certificate every OVN
 	// client authenticates with: tls.crt, tls.key, and ca.crt. An OVNChassis
