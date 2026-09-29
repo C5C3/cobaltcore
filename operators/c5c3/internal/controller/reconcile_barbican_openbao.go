@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"slices"
 
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
@@ -26,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -555,9 +557,9 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 	key := types.NamespacedName{Name: barbicanOpenBaoName(cp), Namespace: cp.BarbicanNamespace()}
 
 	// Resolved before the read, so a cluster whose API-server endpoints cannot be
-	// determined writes no instance at all. See resolveAPIServerEndpointIPs for why
+	// determined writes no instance at all. See resolveAPIServerEndpoints for why
 	// this fails closed rather than projecting without the egress allowance.
-	apiServerIPs, err := r.resolveAPIServerEndpointIPs(ctx, cp)
+	apiServerIPs, apiServerPort, err := r.resolveAPIServerEndpoints(ctx, cp)
 	if err != nil {
 		return nil, err
 	}
@@ -572,7 +574,7 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 	case apierrors.IsNotFound(err):
 		instance.Name = key.Name
 		instance.Namespace = key.Namespace
-		instance.Spec = r.barbicanOpenBaoClusterSpec(cp, apiServerIPs, sizing.SecretStore)
+		instance.Spec = r.barbicanOpenBaoClusterSpec(cp, apiServerIPs, apiServerPort, sizing.SecretStore)
 		instance.Spec.Storage = openbaov1alpha1.StorageConfig{Size: barbicanOpenBaoStorageSize}
 		if oerr := claimChildOwnership(c, cp, instance, r.Scheme); oerr != nil {
 			return nil, fmt.Errorf("claiming ownership of OpenBaoCluster %q: %w", key.Name, oerr)
@@ -586,7 +588,7 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 		if aerr := refuseForeignAdoption(c, cp, instance, r.Scheme); aerr != nil {
 			return nil, aerr
 		}
-		desired := r.barbicanOpenBaoClusterSpec(cp, apiServerIPs, sizing.SecretStore)
+		desired := r.barbicanOpenBaoClusterSpec(cp, apiServerIPs, apiServerPort, sizing.SecretStore)
 		desired.Storage = instance.Spec.Storage
 		if !equality.Semantic.DeepEqual(instance.Spec, desired) {
 			instance.Spec = desired
@@ -616,7 +618,8 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 // the previous instance's data-<instance>-0 PVC — raft storage initialised under a
 // seal key that no longer exists — and never unseals.
 func (r *ControlPlaneReconciler) barbicanOpenBaoClusterSpec(
-	cp *c5c3v1alpha1.ControlPlane, apiServerIPs []string, secretStore *c5c3v1alpha1.ContainerSizingSpec,
+	cp *c5c3v1alpha1.ControlPlane, apiServerIPs []string, apiServerPort int32,
+	secretStore *c5c3v1alpha1.ContainerSizingSpec,
 ) openbaov1alpha1.OpenBaoClusterSpec {
 	name, namespace := barbicanOpenBaoName(cp), cp.BarbicanNamespace()
 	var resources *corev1.ResourceRequirements
@@ -647,6 +650,12 @@ func (r *ControlPlaneReconciler) barbicanOpenBaoClusterSpec(
 			// VIP on port 443, which a CNI enforcing egress against the post-DNAT
 			// destination never matches.
 			APIServerEndpointIPs: apiServerIPs,
+			// The operator renders its rule for the addresses above on port 6443
+			// and no other. Gardener's apiserver-proxy publishes the endpoint on
+			// 443, where the addresses alone allow nothing, so the same addresses
+			// are allowed again on the port the EndpointSlice publishes. On kind
+			// that port is 6443 and the rule duplicates the operator's own.
+			EgressRules: apiServerEgressRules(apiServerIPs, apiServerPort),
 		},
 		SelfInit: &openbaov1alpha1.SelfInitConfig{
 			Enabled:  true,
@@ -663,8 +672,8 @@ const (
 	apiServerEndpointSliceNamespace = "default"
 )
 
-// resolveAPIServerEndpointIPs returns the addresses the Kubernetes API server
-// answers on, deduplicated and sorted.
+// resolveAPIServerEndpoints returns the addresses the Kubernetes API server
+// answers on, deduplicated and sorted, and the port it answers on.
 //
 // The openbao-operator renders a deny-by-default NetworkPolicy over the instance
 // pods and derives its API-server egress rule from the in-cluster service VIP on
@@ -676,6 +685,13 @@ const (
 // auto-detect the addresses, because doing so needs cluster permissions outside
 // its trust model, so they are resolved here instead.
 //
+// The operator pins that rule to port 6443, which is where kube-apiserver listens
+// on kind but not everywhere: behind Gardener's apiserver-proxy the slice
+// publishes port 443. The port is therefore read from the same slice, and
+// apiServerEgressRules turns both into rules of their own. kube-apiserver
+// publishes exactly one port (`https`) in this slice, so the first port that
+// carries a number is the contract.
+//
 // The addresses are the ones of the cluster the INSTANCE runs on, which for a
 // placed Barbican is its target cluster and not the management one. The policy is
 // enforced by the CNI there, over pods that reach their own API server, so the
@@ -685,15 +701,15 @@ const (
 // have controller-runtime start a cluster-wide EndpointSlice informer to track a
 // single well-known object.
 //
-// All three failure paths — an unresolvable cluster, an unreadable slice, an empty
-// one — return an error rather than a partial answer, and the caller then writes no
-// instance at all. An instance that comes up without these rules does not merely
-// stay unavailable: its raft auto-join times out, self-init never completes, and
-// the partial raft state wedges every later initialisation attempt, recoverable
-// only by deleting the instance together with its PVC.
-func (r *ControlPlaneReconciler) resolveAPIServerEndpointIPs(
+// All four failure paths (an unresolvable cluster, an unreadable slice, an empty
+// one, one without a port) return an error rather than a partial answer, and the
+// caller then writes no instance at all. An instance that comes up without these
+// rules does not merely stay unavailable: its raft auto-join times out, self-init
+// never completes, and the partial raft state wedges every later initialisation
+// attempt, recoverable only by deleting the instance together with its PVC.
+func (r *ControlPlaneReconciler) resolveAPIServerEndpoints(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
-) ([]string, error) {
+) ([]string, int32, error) {
 	key := types.NamespacedName{
 		Name:      apiServerEndpointSliceName,
 		Namespace: apiServerEndpointSliceNamespace,
@@ -702,12 +718,12 @@ func (r *ControlPlaneReconciler) resolveAPIServerEndpointIPs(
 	reader, err := commonmulticluster.ResolveChildrenAPIReader(ctx, r.Resolver, r.apiReader(),
 		targetClusterRefForNamespace(cp, cp.BarbicanNamespace()))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	slice := &discoveryv1.EndpointSlice{}
 	if err := reader.Get(ctx, key, slice); err != nil {
-		return nil, fmt.Errorf("getting EndpointSlice %s/%s: %w",
+		return nil, 0, fmt.Errorf("getting EndpointSlice %s/%s: %w",
 			apiServerEndpointSliceNamespace, apiServerEndpointSliceName, err)
 	}
 
@@ -723,7 +739,19 @@ func (r *ControlPlaneReconciler) resolveAPIServerEndpointIPs(
 		}
 	}
 	if len(ips) == 0 {
-		return nil, fmt.Errorf("EndpointSlice %s/%s carries no API server address",
+		return nil, 0, fmt.Errorf("EndpointSlice %s/%s carries no API server address",
+			apiServerEndpointSliceNamespace, apiServerEndpointSliceName)
+	}
+
+	var port int32
+	for i := range slice.Ports {
+		if slice.Ports[i].Port != nil {
+			port = *slice.Ports[i].Port
+			break
+		}
+	}
+	if port == 0 {
+		return nil, 0, fmt.Errorf("EndpointSlice %s/%s carries no port",
 			apiServerEndpointSliceNamespace, apiServerEndpointSliceName)
 	}
 
@@ -731,7 +759,33 @@ func (r *ControlPlaneReconciler) resolveAPIServerEndpointIPs(
 	// the live one, and the API server guarantees no endpoint order. Unsorted, a
 	// reordered read would look like drift and rewrite the instance every pass.
 	slices.Sort(ips)
-	return ips, nil
+	return ips, port, nil
+}
+
+// apiServerEgressRules allows egress to each API-server address on port, one rule
+// per address: a /32 block for an IPv4 address and a /128 block for an IPv6 one.
+// The rules keep the order of ips, which resolveAPIServerEndpoints sorts, so the
+// projection compares equal from one pass to the next. An empty list yields nil,
+// which leaves spec.network.egressRules unset.
+func apiServerEgressRules(ips []string, port int32) []networkingv1.NetworkPolicyEgressRule {
+	if len(ips) == 0 {
+		return nil
+	}
+	rules := make([]networkingv1.NetworkPolicyEgressRule, 0, len(ips))
+	for _, ip := range ips {
+		cidr := ip + "/32"
+		if net.ParseIP(ip).To4() == nil {
+			cidr = ip + "/128"
+		}
+		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+			To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: cidr}}},
+			Ports: []networkingv1.NetworkPolicyPort{{
+				Protocol: ptr.To(corev1.ProtocolTCP),
+				Port:     ptr.To(intstr.FromInt32(port)),
+			}},
+		})
+	}
+	return rules
 }
 
 // barbicanOpenBaoIngressPeers names the only two sources allowed to reach the
