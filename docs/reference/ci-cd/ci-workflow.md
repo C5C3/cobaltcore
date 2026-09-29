@@ -929,8 +929,12 @@ with `OPERATOR`.
 
 Nova stays out of the two-cluster placed-services suite
 (`tests/e2e-multicluster/placed-services/`), decided on 2026-09-17. That suite
-proves where the children land, and every target-cluster-access grant a Nova
-would touch (Deployments, Jobs, CronJobs, HTTPRoutes, NetworkPolicies,
+proves where the children land. It also runs an `OVNChassis` and a
+`NeutronMetadataAgent` on the management cluster against the node ports of the
+`OVNCentral` placed on the target, which is why the `e2e-multicluster` job sets
+`WITH_OVN_KERNEL_MODULES` and loads the OVN and Neutron images into the
+management cluster. Every target-cluster-access grant a Nova would touch
+(Deployments, Jobs, CronJobs, HTTPRoutes, NetworkPolicies,
 HorizontalPodAutoscalers) the placed Keystone, Barbican, OVNCentral and Neutron
 cover already. The placed Neutron runs against a broker address that resolves
 nowhere (`rabbitmq.openstack.invalid`), which a Nova cannot do: membership
