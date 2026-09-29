@@ -38,6 +38,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
@@ -435,6 +436,175 @@ func TestIntegration_Multicluster_OVNTargetCluster(t *testing.T) {
 			&corev1.Secret{})).To(Succeed(), "the Secret cert-manager owns is not swept by this operator")
 		g.Expect(targetClient.Get(ctx, client.ObjectKey{Namespace: targetNamespace, Name: survivorConfigMap},
 			&corev1.ConfigMap{})).To(Succeed(), "an unlabelled ConfigMap should survive the sweep")
+	})
+
+	t.Run("a placed OVNChassis attaches to a home OVNCentral over its node ports", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// A central on the management cluster, published outside it on both
+		// databases and on its relay, and a chassis on the target. The chassis
+		// can reach neither the central's cluster IPs nor its client Secret, so
+		// it dials the relay's node address and mounts a copy of the Secret on
+		// its own cluster.
+		homeName := integrationCentralName + "-home"
+		home := integrationCentralCR(homeName, targetNamespace, nil)
+		home.Spec.Relay = &ovnv1alpha1.OVNRelaySpec{Replicas: 1, ExternallyReachable: true}
+		driveCentralCRToReady(t, ctx, mgmtClient, mgmtClient, home)
+
+		homeKey := types.NamespacedName{Name: homeName, Namespace: targetNamespace}
+		g.Expect(mgmtClient.Get(ctx, homeKey, home)).To(Succeed())
+		g.Expect(home.Status.RelayDbAddress).To(Equal(fmt.Sprintf("ssl:%s:%d", relayHostIP,
+			ovnv1alpha1.DefaultRelayNodePort)), "the relay's node address is what the chassis dials")
+		sourceKey := client.ObjectKey{Namespace: targetNamespace, Name: clientSecretName(home)}
+		source := &corev1.Secret{}
+		g.Expect(mgmtClient.Get(ctx, sourceKey, source)).To(Succeed())
+
+		chassis := integrationChassisCR("chassis-home", targetNamespace, homeName, targetRef)
+		g.Expect(mgmtClient.Create(ctx, chassis)).To(Succeed(), "create the placed OVNChassis CR")
+		placedKey := client.ObjectKeyFromObject(chassis)
+
+		// The copy lands on the target, beside the chassis's other children,
+		// carrying exactly the three source values and claimed by the ownership
+		// labels the teardown sweeps by.
+		copyKey := client.ObjectKey{Namespace: targetNamespace, Name: chassisClientSecretName(chassis)}
+		multiclusterExpectRemoteOwnership(t, ctx, targetClient, copyKey, &corev1.Secret{}, "client Secret copy",
+			"OVNChassis", chassis.Name, targetNamespace)
+		copied := &corev1.Secret{}
+		g.Expect(targetClient.Get(ctx, copyKey, copied)).To(Succeed())
+		g.Expect(copied.Data).To(Equal(map[string][]byte{
+			"tls.crt": source.Data["tls.crt"],
+			"tls.key": source.Data["tls.key"],
+			"ca.crt":  source.Data["ca.crt"],
+		}))
+		g.Expect(copied.Labels).To(HaveKeyWithValue("app.kubernetes.io/component", "ovn-client"))
+
+		// The two DaemonSets, in the pipeline's order, and a settled chassis:
+		// from here on no sub-reconciler asks for a requeue, which is what makes
+		// the renewal below a test of the Secret watch.
+		ovsKey := client.ObjectKey{Namespace: targetNamespace, Name: chassisOVSName(chassis)}
+		eventuallyExists(t, ctx, targetClient, ovsKey, &appsv1.DaemonSet{}, "ovs DaemonSet", eventuallyTimeout)
+		g.Expect(simulators.MarkDaemonSetReady(ctx, targetClient, ovsKey)).To(Succeed())
+		controllerKey := client.ObjectKey{Namespace: targetNamespace, Name: chassisControllerName(chassis)}
+		controller := &appsv1.DaemonSet{}
+		eventuallyExists(t, ctx, targetClient, controllerKey, controller, "ovn-controller DaemonSet", eventuallyLongTimeout)
+		g.Expect(simulators.MarkDaemonSetReady(ctx, targetClient, controllerKey)).To(Succeed())
+		waitForChassisCondition(t, ctx, mgmtClient, placedKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
+
+		g.Expect(targetClient.Get(ctx, controllerKey, controller)).To(Succeed())
+		var remotes []string
+		for _, container := range append(controller.Spec.Template.Spec.InitContainers,
+			controller.Spec.Template.Spec.Containers...) {
+			for _, env := range container.Env {
+				if env.Name == "OVN_REMOTE" {
+					remotes = append(remotes, env.Value)
+				}
+			}
+		}
+		g.Expect(remotes).NotTo(BeEmpty(), "ovn-controller has to be handed a remote")
+		g.Expect(remotes).To(HaveEach(home.Status.RelayDbAddress))
+		var mounted []string
+		for _, volume := range controller.Spec.Template.Spec.Volumes {
+			if volume.Secret != nil {
+				mounted = append(mounted, volume.Secret.SecretName)
+			}
+		}
+		g.Expect(mounted).To(ConsistOf(copyKey.Name), "the pods mount the copy, not the central's Secret")
+
+		placed := &ovnv1alpha1.OVNChassis{}
+		g.Expect(mgmtClient.Get(ctx, placedKey, placed)).To(Succeed())
+		g.Expect(placed.Status.ClientSecretName).To(Equal(copyKey.Name))
+		cond := meta.FindStatusCondition(placed.Status.Conditions, conditionTypeCentralReady)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(cond.Reason).To(Equal(conditionReasonCentralResolved))
+
+		// THE ACCEPTANCE RULE OF THIS HALF: it never writes the OVNChassis CR. A
+		// renewal rewrites the source on the management cluster, and the copy on
+		// the target has to follow through the Secret watch alone.
+		g.Expect(mgmtClient.Get(ctx, sourceKey, source)).To(Succeed())
+		source.Data["tls.crt"] = []byte("renewed-client-certificate")
+		g.Expect(mgmtClient.Update(ctx, source)).To(Succeed(), "renew the source client certificate")
+
+		g.Eventually(func(ig Gomega) {
+			renewed := &corev1.Secret{}
+			ig.Expect(targetClient.Get(ctx, copyKey, renewed)).To(Succeed())
+			ig.Expect(renewed.Data).To(HaveKeyWithValue("tls.crt", []byte("renewed-client-certificate")))
+		}, watchLatency, pollInterval).Should(Succeed(),
+			"the copy should follow the renewal through the Secret watch, with no write to the CR")
+
+		// The copy goes with the chassis, swept off the target by its ownership
+		// labels together with the DaemonSets and ConfigMaps, while the
+		// central's own Secret stays where cert-manager wrote it.
+		projected := append(chassisChildren(chassis),
+			remoteChild{key: copyKey, obj: &corev1.Secret{}, what: "client Secret copy"})
+		g.Expect(mgmtClient.Delete(ctx, placed)).To(Succeed(), "delete the placed OVNChassis")
+		g.Eventually(func() bool {
+			return apierrors.IsNotFound(mgmtClient.Get(ctx, placedKey, &ovnv1alpha1.OVNChassis{}))
+		}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
+			"the CR should leave etcd once the remote-children finalizer is released")
+		g.Eventually(func(ig Gomega) {
+			for _, child := range projected {
+				expectSwept(ig, ctx, targetClient, child)
+			}
+		}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+		g.Expect(mgmtClient.Get(ctx, sourceKey, &corev1.Secret{})).To(Succeed(),
+			"the central's client Secret is not the chassis's to sweep")
+	})
+
+	t.Run("a home OVNChassis follows a renewal on its placed OVNCentral's cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The mirror of the previous subtest: the central on the target, where
+		// cert-manager renews its client Secret, and the chassis with its copy on
+		// the management cluster. A renewal there can reach the chassis through
+		// the remote leg of the Secret watch alone; the local leg never sees it.
+		// The central that projected onto the target before has been swept, so
+		// its node ports are free again.
+		placedName := integrationCentralName + "-placed"
+		placed := integrationCentralCR(placedName, targetNamespace, targetRef)
+		driveCentralCRToReady(t, ctx, mgmtClient, targetClient, placed)
+		sourceKey := client.ObjectKey{Namespace: targetNamespace, Name: clientSecretName(placed)}
+
+		g.Expect(mgmtClient.Create(ctx, &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "mc-ovn-home-chassis-node",
+				Labels: map[string]string{integrationChassisLabel: "true"},
+			},
+		})).To(Succeed(), "create the selected node on the management cluster")
+
+		chassis := integrationChassisCR("chassis-mgmt", targetNamespace, placedName, nil)
+		g.Expect(mgmtClient.Create(ctx, chassis)).To(Succeed(), "create the home OVNChassis CR")
+		homeKey := client.ObjectKeyFromObject(chassis)
+
+		// A settled chassis: from here on no sub-reconciler asks for a requeue.
+		ovsKey := client.ObjectKey{Namespace: targetNamespace, Name: chassisOVSName(chassis)}
+		eventuallyExists(t, ctx, mgmtClient, ovsKey, &appsv1.DaemonSet{}, "ovs DaemonSet", eventuallyTimeout)
+		g.Expect(simulators.MarkDaemonSetReady(ctx, mgmtClient, ovsKey)).To(Succeed())
+		controllerKey := client.ObjectKey{Namespace: targetNamespace, Name: chassisControllerName(chassis)}
+		eventuallyExists(t, ctx, mgmtClient, controllerKey, &appsv1.DaemonSet{}, "ovn-controller DaemonSet",
+			eventuallyLongTimeout)
+		g.Expect(simulators.MarkDaemonSetReady(ctx, mgmtClient, controllerKey)).To(Succeed())
+		waitForChassisCondition(t, ctx, mgmtClient, homeKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
+
+		copyKey := client.ObjectKey{Namespace: targetNamespace, Name: chassisClientSecretName(chassis)}
+		g.Expect(mgmtClient.Get(ctx, copyKey, &corev1.Secret{})).To(Succeed(),
+			"the copy lands beside the chassis on the management cluster")
+
+		// THE ACCEPTANCE RULE OF THIS HALF: it writes neither CR. The renewal
+		// rewrites the source on the target in place, leaving the central's
+		// status as it was, so nothing but the remote Secret leg can wake the
+		// chassis inside the budget.
+		source := &corev1.Secret{}
+		g.Expect(targetClient.Get(ctx, sourceKey, source)).To(Succeed())
+		source.Data["tls.crt"] = []byte("renewed-on-the-target")
+		g.Expect(targetClient.Update(ctx, source)).To(Succeed(), "renew the source client certificate")
+
+		g.Eventually(func(ig Gomega) {
+			renewed := &corev1.Secret{}
+			ig.Expect(mgmtClient.Get(ctx, copyKey, renewed)).To(Succeed())
+			ig.Expect(renewed.Data).To(HaveKeyWithValue("tls.crt", []byte("renewed-on-the-target")))
+		}, watchLatency, pollInterval).Should(Succeed(),
+			"the copy should follow a renewal on the target through the remote Secret watch")
 	})
 }
 

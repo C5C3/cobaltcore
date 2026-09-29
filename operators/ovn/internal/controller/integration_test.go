@@ -351,9 +351,21 @@ func driveCentralToReady(t testing.TB, ctx context.Context, crClient, childClien
 	ns, name string, targetRef *commonv1.TargetClusterRefSpec,
 ) {
 	t.Helper()
+	driveCentralCRToReady(t, ctx, crClient, childClient, integrationCentralCR(name, ns, targetRef))
+}
+
+// driveCentralCRToReady is driveCentralToReady for a CR the caller built, so a
+// test can ask for what the suite's default CR leaves out. A CR that runs a
+// relay gets the relay's Certificate issued, one relay pod with a node address
+// (created before the Deployment reports available, as the scheduler would have
+// placed it by then) and its Deployment marked available.
+func driveCentralCRToReady(t testing.TB, ctx context.Context, crClient, childClient client.Client,
+	cr *ovnv1alpha1.OVNCentral,
+) {
+	t.Helper()
 	g := NewGomegaWithT(t)
 
-	cr := integrationCentralCR(name, ns, targetRef)
+	ns, name := cr.Namespace, cr.Name
 	g.Expect(crClient.Create(ctx, cr)).To(Succeed(), "create the OVNCentral CR")
 	crKey := types.NamespacedName{Name: name, Namespace: ns}
 
@@ -364,7 +376,11 @@ func driveCentralToReady(t testing.TB, ctx context.Context, crClient, childClien
 		metav1.ConditionFalse, eventuallyTimeout)
 	g.Expect(pending.Reason).To(Equal(conditionReasonCertificatePending))
 
-	for _, certName := range centralCertificateNames(name) {
+	certNames := centralCertificateNames(name)
+	if cr.Spec.Relay != nil {
+		certNames = append(certNames, relayName(cr))
+	}
+	for _, certName := range certNames {
 		key := client.ObjectKey{Namespace: ns, Name: certName}
 		eventuallyExists(t, ctx, childClient, key, &certmanagerv1.Certificate{}, "Certificate", eventuallyTimeout)
 		g.Expect(simulators.SimulateCertificateReady(ctx, childClient, key)).
@@ -416,7 +432,45 @@ func driveCentralToReady(t testing.TB, ctx context.Context, crClient, childClien
 	g.Expect(simulators.SimulateDeploymentReady(ctx, childClient, northdKey, ptr.Deref(deploy.Spec.Replicas, 1))).
 		To(Succeed(), "mark the northd Deployment available")
 
+	if cr.Spec.Relay != nil {
+		relayKey := client.ObjectKey{Namespace: ns, Name: relayName(cr)}
+		relay := &appsv1.Deployment{}
+		eventuallyExists(t, ctx, childClient, relayKey, relay, "relay Deployment", eventuallyLongTimeout)
+		createRelayPod(t, ctx, childClient, relay)
+		g.Expect(simulators.SimulateDeploymentReady(ctx, childClient, relayKey, ptr.Deref(relay.Spec.Replicas, 1))).
+			To(Succeed(), "mark the relay Deployment available")
+		waitForCentralCondition(t, ctx, crClient, crKey, conditionTypeRelayReady, metav1.ConditionTrue, eventuallyLongTimeout)
+	}
+
 	waitForCentralCondition(t, ctx, crClient, crKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
+}
+
+// relayHostIP is the node address the test puts on the relay pod, outside both
+// Raft ranges of raftHostIP so a relay address that named a member's node would
+// be visible in the assertion.
+const relayHostIP = "192.168.1.30"
+
+// createRelayPod plays the part of the ReplicaSet controller and the kubelet for
+// one relay pod: the pod the relay Deployment selects, carrying the node address
+// the relay step publishes for clients outside the cluster.
+func createRelayPod(t testing.TB, ctx context.Context, c client.Client, relay *appsv1.Deployment) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      relay.Name + "-0",
+			Namespace: relay.Namespace,
+			Labels:    maps.Clone(relay.Spec.Template.Labels),
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "relay", Image: "ovn"}},
+		},
+	}
+	g.Expect(c.Create(ctx, pod)).To(Succeed(), "create relay pod %s", pod.Name)
+
+	pod.Status.HostIP = relayHostIP
+	g.Expect(c.Status().Update(ctx, pod)).To(Succeed(), "put a node address on relay pod %s", pod.Name)
 }
 
 // --- Tests ---
