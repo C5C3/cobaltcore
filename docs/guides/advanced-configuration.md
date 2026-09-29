@@ -14,8 +14,8 @@ Beyond the minimal control plane from the
 [Quick Start (ControlPlane)](../quick-start-controlplane.md), the operators
 support a number of configuration options for real cluster deployments. This
 guide covers the ones the `ControlPlane` CR exposes and points to the reference
-for the rest — and to the [Standalone Keystone](#standalone-keystone-without-a-controlplane)
-section for the knobs that live only on a Keystone CR you own.
+for the rest. See [Standalone Keystone](#standalone-keystone-without-a-controlplane)
+for knobs that live only on a Keystone CR you own.
 
 ## Prerequisites
 
@@ -36,33 +36,32 @@ examples below is one that devstack produces.
 On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
 **projected** by the c5c3-operator; the projected fields are re-asserted on every
 reconcile, so editing them on the child is reverted. Configure the knobs the
-`ControlPlane` CRD exposes on the `ControlPlane` CR. A knob the CRD does not
-expose is **standalone-only** — apply it to a Keystone CR you own, in the
+`ControlPlane` CRD exposes on the `ControlPlane` CR. Set a knob the CRD does not
+expose on a Keystone CR you own, in the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section. See
 the [ControlPlane Reconciler](../reference/c5c3/controlplane-reconciler.md) for
 the projection contract.
 :::
 
-Each pattern below is an independent recipe — apply only what you need.
+Each section covers an independent recipe. Apply only what you need.
 
 ---
 
-## Brownfield database and cache
+## Infrastructure database
 
-The Quick Start uses "managed mode", where the operator provisions the MariaDB
-and Memcached the control plane connects to (`spec.infrastructure.database.clusterRef`
-/ `cache.clusterRef`). If you already run MariaDB/Galera and Memcached outside the
-operator's reach — managed by another team, hosted externally, or on a different
-operator — use **brownfield mode** with explicit connection parameters on the
-`ControlPlane` CR.
+### Brownfield database and cache
 
-Brownfield is a **creation-time** decision. The validating webhook freezes
-infrastructure presence and the database/cache mode (managed `clusterRef` vs
-brownfield `host`/`servers`), the database name, replicas, and storageSize after
-the ControlPlane is created (a replicas or storageSize left unset is taken from
-the ControlPlane's sizing at creation and frozen with it), so you cannot flip a
-managed control plane to brownfield in place — set `spec.infrastructure` when
-you first apply the CR:
+The Quick Start uses managed mode, where the operator provisions the MariaDB and
+Memcached the control plane connects to (`spec.infrastructure.database.clusterRef`
+and `cache.clusterRef`). If MariaDB/Galera and Memcached already run outside the
+operator's reach, use **brownfield mode** with explicit connection parameters on
+the `ControlPlane` CR.
+
+Using an existing database is a choice you make when you create the
+`ControlPlane`. The validating webhook freezes database parameters (name,
+replicas, and `storageSize`) after creation. It also freezes the database and
+cache modes: managed mode uses `clusterRef`, while brownfield mode uses `host` or
+`servers`. Set `spec.infrastructure` when you first apply the CR:
 
 ```yaml
 apiVersion: c5c3.io/v1alpha1
@@ -88,14 +87,14 @@ spec:
         - "memcached.cache.example.com:11211"
 ```
 
-The reconciler deep-copies the whole `infrastructure.database` and
-`infrastructure.cache` blocks onto the `controlplane-keystone` child, so the
-child connects to the servers you declared here.
+The reconciler copies the `infrastructure.database` and `infrastructure.cache`
+blocks onto the `controlplane-keystone` child, so the child connects to the
+servers declared here.
 
-::: warning In brownfield mode you own schema setup
-In brownfield mode (no `clusterRef`) the operator leaves the `secretRef` you
-supplied in place — you own that Secret out-of-band — and does **not** create the
-database, user, or grants. Provision them before the control plane reconciles:
+::: warning Brownfield expects an existing database
+In brownfield mode (no `clusterRef`), the operator does not create the supplied
+Secret, database, user, or grants. Create those before the control plane
+reconciles:
 
 ```sql
 CREATE DATABASE keystone DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci;
@@ -104,32 +103,35 @@ GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%';
 FLUSH PRIVILEGES;
 ```
 
-The Secret referenced by `secretRef` must contain both a `username` and a
-`password` key matching the SQL user — the keystone-operator gates `SecretsReady`
-on the child on both, so a Secret with only `password` leaves
-`controlplane-keystone` stuck at `SecretsReady=False`. Once those exist,
-`db_sync` creates the Keystone schema on first reconcile. The OpenBao
-database-tenant onboarding from the [Quick Start (ControlPlane)](../quick-start-controlplane.md)
-(Step 4) applies to **managed** mode's engine-issued (Dynamic) credentials only —
-a brownfield control plane draws no credentials from the OpenBao database engine.
+The Secret referenced by `secretRef` must contain matching `username` and
+`password` keys. The keystone-operator requires both for `SecretsReady`; a Secret
+with only `password` leaves `controlplane-keystone` at `SecretsReady=False`.
+After the database, user, grants, and Secret exist, `db_sync` creates the
+Keystone schema on first reconcile. Step 4 of the
+[Quick Start (ControlPlane)](../quick-start-controlplane.md) applies only to
+managed mode's engine-issued database credentials. Brownfield mode does not use
+the OpenBao database engine.
 :::
 
-The webhook enforces that exactly one of `clusterRef` or `host` (`servers` for
-cache) is set — never both — for both `database` and `cache`.
+The webhook requires exactly one of `clusterRef` or `host` (`servers` for cache)
+for both `database` and `cache`; never set both.
+
+For a managed database, replica count and volume size cannot be changed through
+the `ControlPlane` after creation. The MariaDB operator treats volume size as
+immutable. Set an adequate size before creating the control plane. For later
+growth, follow the MariaDB operator and storage provider's supported expansion
+or migration procedure. CobaltCore does not provide an in-place resize workflow.
 
 ---
 
 ## Free-form service configuration
 
-The `ControlPlane` exposes the same free-form configuration escape hatch the
-service CRs carry, at two levels. `spec.globalExtraConfig` applies to every
-INI-configured service the control plane declares (Keystone, Glance, Placement,
-Barbican, and Neutron today). `spec.services.<svc>.extraConfig` sets one
-service's own block. Both take the INI `map[section][key] = value` shape the
-child renders into its service config (`keystone.conf`, `glance-api.conf`,
-`placement.conf`, `barbican.conf`, and Neutron's `neutron.conf` plus
-`ml2_conf.ini`, which share one block). The dashboard is the exception:
-`spec.services.horizon.extraConfig` is a flat map of Django settings, covered in
+The `ControlPlane` exposes the same free-form configuration escape hatch as the
+service CRs, at two levels. `spec.globalExtraConfig` applies to every declared
+INI-configured service, such as Keystone, Glance, Placement, Barbican, and
+Neutron. `spec.services.<svc>.extraConfig` sets one service's block. For INI
+services, the map shape is `map[section][key] = value`. Horizon uses a flat map
+of Django settings instead; see
 [Horizon settings are flat, not INI](#horizon-settings-are-flat-not-ini).
 
 ```yaml
@@ -140,8 +142,8 @@ metadata:
   namespace: openstack
 spec:
   openStackRelease: "2025.2"
-  # Applied to every INI service the control plane declares (Keystone, Glance,
-  # Placement, Barbican, Neutron):
+  # Applied to every declared INI service (for example Keystone, Glance,
+  # Placement, Barbican, and Neutron):
   globalExtraConfig:
     database:
       pool_timeout: "30"
@@ -158,25 +160,23 @@ spec:
 ```
 
 The reconciler projects the merged INI result onto each INI service child's
-`spec.extraConfig`, and the Horizon block verbatim onto the dashboard child.
+`spec.extraConfig`. It projects the Horizon block verbatim onto the dashboard
+child; see [Horizon settings are flat, not INI](#horizon-settings-are-flat-not-ini).
 
 ### Merge semantics
 
-For each INI service the global and per-service blocks merge **key by key**, the
-per-service value winning. Whole sections are unioned: a per-service `[database]`
-block that sets only `pool_timeout` still inherits every other `[database]` key
-from the global block, and a global key with no per-service counterpart stays
-effective. In the example above Keystone renders `[database] pool_timeout = 60`
-(its own value), while a Glance service declared with no block of its own would
-render `30`, inherited from the global block.
+For each INI service the global and per-service blocks merge key by key, with
+the per-service value taking precedence. Whole sections are unioned: a
+per-service `[database]` block that sets only `pool_timeout` still inherits every
+other `[database]` key from the global block. A global key with no per-service
+counterpart stays effective. In the example above Keystone renders
+`[database] pool_timeout = 60`, while Glance with no block of its own renders
+`30` from the global block.
 
-The option catalog that guards a service CR's own `spec.extraConfig` guards the
-merged result here too, so a global key must be valid against **every** declared
-INI service's catalog. Because `spec.globalExtraConfig` reaches Glance,
-Placement, Barbican, and Neutron as well, a Keystone-only option placed there is
-rejected while `services.glance`, `services.placement`, `services.barbican`, or
-`services.neutron` is declared; the fix is to move that key to
-`spec.services.keystone.extraConfig`.
+The option catalog checks the merged result, so each global key must be valid
+for every declared INI service. A Keystone-only option in
+`spec.globalExtraConfig` can fail validation against another declared service.
+Put that key in `spec.services.keystone.extraConfig` instead.
 
 ### Horizon settings are flat, not INI
 
@@ -187,55 +187,53 @@ never reaches the dashboard, and there is no merge for the Horizon block.
 
 ### External keystone mode
 
-`spec.services.keystone.extraConfig` is forbidden when `services.keystone.mode`
-is `External`: no Keystone workload is deployed, so there is nothing to render.
-Both a CEL rule and the webhook reject it, with the message
-`services.keystone.extraConfig is forbidden when services.keystone.mode is External`.
-`spec.globalExtraConfig` stays legal but inert in External mode, the same posture
-`spec.globalPolicyOverrides` holds, since no INI-configured workload consumes it.
-Glance, Horizon, Placement, and Barbican are forbidden entirely in External mode,
-so their blocks cannot appear at all.
+`spec.services.keystone.extraConfig` is forbidden when
+`services.keystone.mode` is `External`: no Keystone workload is deployed to
+render it. Both a CEL rule and the webhook reject it. `spec.globalExtraConfig`
+and `spec.globalPolicyOverrides` remain allowed but have no effect in External
+mode because no INI-configured workload consumes them. Glance, Horizon,
+Placement, and Barbican are forbidden in External mode, so their service blocks
+cannot appear.
 
 ### Admission checks
 
-The validating webhook runs two families of check at `ControlPlane` admission,
+The validating webhook runs two families of checks at `ControlPlane` admission,
 using option catalogs and ownership registries embedded from the service API
 packages.
 
-**Shape and ownership** run on every create and every update. Empty section or
-key names in any INI block, and empty or non-Python-identifier setting names in
-the Horizon block, are rejected. Keys the ControlPlane projects itself are
-rejected outright: Glance's `[keystone_authtoken] password` (always), the Horizon
+**Shape and ownership** run on every create and update. Empty section or key
+names in any INI block are rejected. Horizon setting names must be non-empty
+Python identifiers. The webhook also rejects keys the ControlPlane projects
+itself: Glance's `[keystone_authtoken] password` (always), the Horizon
 `SECRET_KEY` and every WebSSO / multi-domain setting (always, since the
 ControlPlane projects those dynamically from the attached identity backends), and
-Keystone's `[federation] trusted_dashboard` **only when** the ControlPlane derives
-a dashboard endpoint from `services.horizon`. With no Horizon block that Keystone
+Keystone's `[federation] trusted_dashboard` only when the ControlPlane derives a
+dashboard endpoint from `services.horizon`. With no Horizon block that Keystone
 key is admitted with a warning, so an externally-run dashboard can still do WebSSO
 against the managed Keystone. Any other operator-owned key is honored but draws an
-admission warning naming the key, its owner, any impact, and the block that set it.
+admission warning naming the key, its owner, its impact, and the block that set it.
 
-**Option-catalog** validation runs on every create, and on update only when a
-catalog input changed: either INI block, `spec.openStackRelease`,
+**Option-catalog** validation runs on every create. Updates rerun it only when a
+catalog input changes: either INI block, `spec.openStackRelease`,
 `services.keystone.image`, or a newly-declared service. A replicas bump alone does
 not re-run it, so a stored CR whose `extraConfig` went stale-invalid against a
-regenerated catalog is not rejected by an unrelated edit. The merged result per
-INI service is checked against that service's per-release option catalog
-(Keystone's resolved from `services.keystone.image.tag` when the image is
-overridden, otherwise `spec.openStackRelease`; Glance's from
-`spec.openStackRelease`). Unknown sections and options are rejected; a
-deprecated-but-accepted option draws a warning naming its replacement. The check
-**fails open** with one warning per service and no error when no catalog resolves:
-a digest-pinned image, an unparseable tag, or a release the operator build ships
-no catalog for. Plugin-registered INI sections are rejected as unknown, because
-the ControlPlane has no plugins field and never sets `spec.plugins` on a child;
-configure plugin sections on the service CR directly. Neither family has a CEL or
-CRD-schema backstop; both live only in the webhook.
+regenerated catalog is not rejected by an unrelated edit. Each declared INI
+service's merged result is checked against that service's per-release option
+catalog. Keystone uses `services.keystone.image.tag` when its image is overridden
+and otherwise uses `spec.openStackRelease`; the other ControlPlane catalogs use
+`spec.openStackRelease`. The standalone service operators run the same option
+check against their own configured image or release. Unknown sections and options
+are rejected; a deprecated-but-accepted option draws a warning naming its
+replacement. Plugin-registered INI sections are rejected as unknown because the
+ControlPlane has no plugins field and does not set `spec.plugins` on a child.
+Configure plugin sections on the service CR directly. Neither family has a CEL or
+CRD-schema backstop; both checks live only in the webhook.
 
-Rejections name the block that carries the offending key. A finding is computed
-once on the merged config, then attributed to every contributing path:
-`spec.globalExtraConfig[<section>][<key>]` and
-`spec.services.<svc>.extraConfig[<section>][<key>]`. A key present in both blocks
-yields one error per path.
+When the c5c3-operator cannot map an image or release to an embedded catalog, it
+skips the option-name check and returns a warning instead of rejecting the CR.
+This can happen with a digest-pinned image, a tag that does not identify a
+release, or a release missing from the operator build. In those cases admission
+does not verify whether the option or section exists.
 
 ::: warning The projected children are operator-owned
 The merged INI result and the Horizon block are re-asserted on the service
@@ -249,73 +247,61 @@ free-form config on the `ControlPlane`, not on the child.
 
 ### Catalog skew across operator builds
 
-The catalogs consulted at `ControlPlane` admission are the ones embedded in the
-**c5c3-operator** build. A deployed service operator of a different build may
-embed a different catalog. The service CR's own validating webhook stays the
-defense-in-depth check for that skew: when it rejects the projected child, the
-ControlPlane surfaces `KeystoneProjectionRejected` or `GlanceProjectionRejected`
-on its conditions, making a skewed rejection visible.
+The c5c3-operator and a service operator may embed different catalogs. If the
+service webhook rejects the projected child, the ControlPlane reports
+`KeystoneProjectionRejected` or `GlanceProjectionRejected` on its conditions.
 
 ---
 
 ## Feature pointer table
 
-Everything else the control plane supports. One-line hints, the ControlPlane knob
-that projects it (or "not exposed" where it is standalone-only), and a link to the
-full Keystone CR reference.
-
 | Feature | Keystone CR field | ControlPlane path | Reference |
 |---------|-------------------|-------------------|-----------|
-| Replica count | `spec.deployment.replicas` | `spec.sizing.keystone.api.replicas` | [Day 2 — Scale](./day-2-operations.md#scale-replicas) |
-| Release / image | `spec.image` | `spec.openStackRelease` (tag) + `spec.services.keystone.image` (override) | [Day 2 — Upgrade](./day-2-operations.md#upgrade-the-openstack-release) |
+| Replica count | `spec.deployment.replicas` | `spec.sizing.keystone.api.replicas` | [Scale replicas](./day-2-operations.md#scale-replicas) |
+| Release / image | `spec.image` | `spec.openStackRelease` (tag) + `spec.services.keystone.image` (override) | [Upgrade release](./day-2-operations.md#upgrade-the-openstack-release) |
 | Policy overrides | `spec.policyOverrides` | `spec.services.keystone.policyOverrides` (+ `spec.globalPolicyOverrides`) | [PolicySpec](../reference/keystone/keystone-crd.md#policyspec) |
 | Federation proxy image | `spec.federation.proxyImage` | `spec.services.keystone.federationProxyImage` | [Attach an OIDC Federation Backend](./keystone/oidc-federation.md) |
 | Public endpoint / gateway | `spec.bootstrap.publicEndpoint`, `spec.gateway` | `spec.services.keystone.publicEndpoint`, `spec.services.keystone.gateway` | [BootstrapSpec](../reference/keystone/keystone-crd.md#bootstrapspec) |
-| Fernet / credential-key schedule | `spec.fernet`, `spec.credentialKeys` | `spec.services.keystone.rotationInterval` (schedule only) | [Day 2 — Rotate Fernet keys](./day-2-operations.md#rotate-fernet-keys-manually) |
+| Fernet / credential-key schedule | `spec.fernet`, `spec.credentialKeys` | `spec.services.keystone.rotationInterval` (schedule only) | [Rotate Fernet keys](./day-2-operations.md#rotate-fernet-keys-manually) |
 | Database TLS/mTLS | `spec.database.tls` | `spec.infrastructure.database.tls` | [Enable Keystone Database TLS/mTLS](./keystone/enable-keystone-database-tls.md) |
 | Autoscaling (HPA) | `spec.autoscaling` | `spec.sizing.keystone.api.autoscaling` | [Autoscaling (HPA)](#autoscaling-hpa) |
-| Network policy | `spec.networkPolicy` | not exposed — standalone-only | [Network policy](#network-policy) |
+| Network policy | `spec.networkPolicy` | standalone CR only | [Network policy](#network-policy) |
 | Free-form config (`extraConfig`) | `spec.extraConfig` | `spec.services.<svc>.extraConfig` (+ `spec.globalExtraConfig`) | [Free-form service configuration](#free-form-service-configuration) |
-| Scheduled admin-password rotation | `spec.passwordRotation` | not exposed — standalone-only | [Schedule Admin Password Rotation](./keystone/keystone-admin-password-scheduled-rotation.md) |
-| uWSGI tuning | `spec.uwsgi` | `spec.sizing.keystone.api.processes`, `.threads` (the other uWSGI knobs are standalone-only) | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
-| Logging | `spec.logging` | not exposed — standalone-only | [LoggingSpec](../reference/keystone/keystone-crd.md#loggingspec) |
-| Trust flush | `spec.trustFlush` | not exposed — standalone-only | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |
-| Middleware | `spec.middleware` | not exposed — standalone-only | [MiddlewareSpec](../reference/keystone/keystone-crd.md#middlewarespec) |
-| Plugins | `spec.plugins` | not exposed — standalone-only | [PluginSpec](../reference/keystone/keystone-crd.md#pluginspec) |
-| Rollout strategy | `spec.deployment.strategy` | not exposed — standalone-only | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
-| Graceful termination | `spec.deployment.terminationGracePeriodSeconds`, `spec.deployment.preStopSleepSeconds` | not exposed — standalone-only | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
+| Scheduled admin-password rotation | `spec.passwordRotation` | standalone CR only | [Schedule Admin Password Rotation](./keystone/keystone-admin-password-scheduled-rotation.md) |
+| uWSGI tuning | `spec.uwsgi` | `spec.sizing.keystone.api.processes`, `.threads` (other uWSGI settings are standalone CR only) | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
+| Logging | `spec.logging` | standalone CR only | [LoggingSpec](../reference/keystone/keystone-crd.md#loggingspec) |
+| Trust flush | `spec.trustFlush` | standalone CR only | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |
+| Middleware | `spec.middleware` | standalone CR only | [MiddlewareSpec](../reference/keystone/keystone-crd.md#middlewarespec) |
+| Plugins | `spec.plugins` | standalone CR only | [PluginSpec](../reference/keystone/keystone-crd.md#pluginspec) |
+| Rollout strategy | `spec.deployment.strategy` | standalone CR only | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
+| Graceful termination | `spec.deployment.terminationGracePeriodSeconds`, `spec.deployment.preStopSleepSeconds` | standalone CR only | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
 | Topology spread | `spec.deployment.topologySpreadConstraints` | `spec.sizing.keystone.api.spreadConstraints` (the ControlPlane adds the pod selector) | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |
 | Priority class | `spec.deployment.priorityClassName` | `spec.sizing.keystone.api.priorityClassName` (+ `spec.sizing.priorityClassName`) | [PriorityClassName](../reference/keystone/keystone-crd.md#priorityclassname) |
 | Resource requests/limits | `spec.deployment.resources` | `spec.sizing.keystone.api.resources` | [KeystoneSpec](../reference/keystone/keystone-crd.md#keystonespec) |
-| Node placement | `spec.deployment.nodeSelector`, `spec.deployment.tolerations`, `spec.deployment.affinity` | `spec.sizing.keystone.api.nodeSelector`, `.tolerations` (+ `spec.sizing.nodeSelector`, `.tolerations`); affinity not exposed — standalone-only | [NodePlacementSpec](../reference/keystone/keystone-crd.md#nodeplacementspec) |
+| Node placement | `spec.deployment.nodeSelector`, `spec.deployment.tolerations`, `spec.deployment.affinity` | `spec.sizing.keystone.api.nodeSelector`, `.tolerations` (+ `spec.sizing.nodeSelector`, `.tolerations`); affinity is standalone CR only | [NodePlacementSpec](../reference/keystone/keystone-crd.md#nodeplacementspec) |
 | Job and CronJob pods | `spec.jobs` | `spec.sizing.keystone.jobs` (resources and priority class) | [JobSpec](../reference/keystone/keystone-crd.md#jobspec) |
 
 The `spec.sizing` paths size every service the same way (`spec.sizing.<svc>.api`
 and the service's other components), starting from a built-in `Minimal` or
 `Standard` profile or a site `SizingProfile`; see
-[SizingSpec](../reference/c5c3/controlplane-crd.md#sizingspec). The "not exposed —
-standalone-only" knobs are not projectable through the `ControlPlane` CRD today;
-set them on a Keystone CR you own, as shown in the
+[SizingSpec](../reference/c5c3/controlplane-crd.md#sizingspec). Fields marked
+"standalone CR only" are not exposed through the `ControlPlane` CRD. Set them
+on a Keystone CR you own, as shown in the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section.
 
 ---
 
 ## Standalone Keystone, without a ControlPlane
 
-On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
-devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
-projecting it. The recipes below apply to that CR. One of them,
-`spec.networkPolicy`, is **not exposed on the `ControlPlane` CRD today**, so a
-standalone Keystone is the only place it can be set. `spec.extraConfig` is
-exposed on the ControlPlane, through
-[Free-form service configuration](#free-form-service-configuration), and
-`spec.autoscaling` through `spec.sizing.keystone.api.autoscaling`; the recipes
-below are the standalone equivalents.
+The [Quick Start](../quick-start.md) and [Quick Start (Extended)](../quick-start-extended.md)
+devstacks create a standalone Keystone CR named `keystone`. The recipes below
+apply to that CR. `spec.networkPolicy` is not exposed through the `ControlPlane`
+CRD, so configure it on a standalone Keystone CR.
 
 ### Brownfield database
 
-The standalone equivalent of the ControlPlane brownfield recipe above — explicit
-`host`/`port` and `servers` set directly on the Keystone CR:
+The standalone equivalent of the ControlPlane brownfield recipe above uses
+explicit `host`/`port` and `servers` on the Keystone CR:
 
 ```yaml
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
@@ -352,12 +338,14 @@ spec:
 ```
 
 The same SQL provisioning and `username`+`password` Secret contract from the
-ControlPlane recipe apply. The webhook enforces that exactly one of `clusterRef`
-or `host` is set — never both — for both `database` and `cache`.
+ControlPlane recipe apply. For both `database` and `cache`, the webhook requires
+exactly one of `clusterRef` or `host` and rejects both being set.
 
 ### Autoscaling (HPA)
 
-On a ControlPlane, set the same block as `spec.sizing.keystone.api.autoscaling`;
+Keystone is the example in this section. The same autoscaling behavior applies
+to other service APIs that expose `spec.autoscaling`. On a ControlPlane, set the
+Keystone block as `spec.sizing.keystone.api.autoscaling`;
 the reconciler projects it onto the child's `spec.autoscaling`. On a standalone
 Keystone, replace hand-patching `spec.deployment.replicas` with a
 `HorizontalPodAutoscaler` managed by the operator. When `spec.autoscaling` is
@@ -375,7 +363,7 @@ spec:
 ```
 
 - At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required.
-- `minReplicas` defaults to `spec.deployment.replicas` if unset — omitting it will floor the HPA at your current hand-set replica count, not at 1.
+- `minReplicas` defaults to `spec.deployment.replicas` if unset.
 - The API PodDisruptionBudget follows `minReplicas`. At `minReplicas: 1` it
   switches to `maxUnavailable: 1`, so a node drain can still evict the one pod the
   HPA may leave running. Above one it keeps `minAvailable: 1`.
@@ -420,8 +408,9 @@ spec:
               periodSeconds: 30
   ```
 - The generated HPA references `deploy/keystone` and uses the Kubernetes standard
-  `metrics-server`. The Quick Start kind cluster does **not** ship one by default —
-  the HPA will sit at `unknown/80%` until a resource-metrics API is available.
+  The generated HPA references `deploy/keystone` and uses the Kubernetes standard
+  `metrics-server`. The Quick Start kind cluster does **not** ship one by default.
+  Without a resource-metrics API, the HPA reports `unknown/80%`.
 
   On the kind devstack, opt in with the `WITH_METRICS_SERVER` flag. Bring the
   devstack up with it set (the recipe here also needs the ControlPlane, so the
@@ -440,9 +429,8 @@ spec:
   kubectl top pods -n openstack   # sanity check: real utilisation, not an error
   ```
 
-  The overlay pins the chart to a single major range and bakes in
-  `--kubelet-insecure-tls`, which kind requires because its kubelets serve the
-  metrics endpoint with self-signed certificates — no runtime patch needed.
+  The overlay pins the chart to a single major range and enables
+  `--kubelet-insecure-tls`, which kind requires.
 
   On non-kind clusters, `metrics-server` is usually already present: most managed
   Kubernetes distributions ship it. If yours does not, install it per the
@@ -462,10 +450,11 @@ for the exact field-to-resource mapping.
 
 ### Network policy
 
-`spec.networkPolicy` is not exposed on the `ControlPlane` CRD today, so it is
-standalone-only. When set, it creates a Kubernetes `NetworkPolicy` that restricts
-ingress to the Keystone API pods. Egress rules for database, cache, and DNS are
-derived automatically from the rest of the CR — you only declare the ingress sources.
+Keystone is the example in this section. Its `spec.networkPolicy` is not
+exposed through the `ControlPlane` CRD. The policy restricts ingress to the
+Keystone API pods and derives egress rules for its database, cache, and DNS.
+Other service operators derive egress rules from their own backends and settings.
+Only ingress sources are configured here.
 
 ```yaml
 spec:
@@ -482,49 +471,42 @@ spec:
 ```
 
 Each list entry requires a `namespaceSelector` and may narrow it with an optional
-`podSelector`. Both are full Kubernetes `metav1.LabelSelector`s, so you can use
-`matchLabels` (as above) or set-based `matchExpressions`.
-Within one entry the two selectors AND together; multiple entries OR. Ingress is
-always restricted to TCP 5000 — there is no per-entry port configuration. When the
-list is non-empty, all other ingress is blocked by default — **including kubelet
-probes from other namespaces, which is normally not an issue because probes
-originate from the node, but verify in your cluster topology.**
+`podSelector`. Both are Kubernetes `metav1.LabelSelector`s and support
+`matchLabels` or set-based `matchExpressions`. Within one entry the selectors
+AND together; multiple entries OR. Keystone ingress is restricted to TCP 5000.
+There is no per-entry port configuration. A non-empty list blocks all other
+ingress by default.
 
-For brownfield or external targets that the auto-derivation cannot see (an off-cluster
-MariaDB host, an external IdP), append explicit rules with `spec.networkPolicy.additionalEgress`
-— they are added after the auto-derived ones rather than replacing them.
+For targets that auto-derivation cannot see, such as an off-cluster MariaDB host
+or an external IdP, add rules with `spec.networkPolicy.additionalEgress`. These
+rules are added after the auto-derived rules and do not replace them.
 
 Removing `spec.networkPolicy` deletes the NetworkPolicy and restores unrestricted
-traffic. See the [NetworkPolicy reference](../reference/keystone/keystone-crd.md#networkpolicyspec)
-for the auto-derived egress rules (Keystone API → MariaDB, Memcached, DNS).
+traffic. The [Keystone NetworkPolicy reference](../reference/keystone/keystone-crd.md#networkpolicyspec)
+covers its derived egress rules. Other services have different rules based on
+their configured backends.
 
-### ExtraConfig — free-form INI sections
+### ExtraConfig: free-form INI sections
 
-On a standalone Keystone CR you set `spec.extraConfig` directly. On a ControlPlane
-the equivalent surface is `spec.globalExtraConfig` plus
-`spec.services.<svc>.extraConfig` (see
-[Free-form service configuration](#free-form-service-configuration)). The typed
-fields on the CR cover the supported configuration surface. For everything else —
-logging levels, oslo.messaging tuning, experimental Keystone flags —
-`spec.extraConfig` takes a `map[section][key] = value` that is rendered into the
-generated `keystone.conf`.
+On a standalone Keystone CR, set `spec.extraConfig` directly. On a ControlPlane,
+use `spec.globalExtraConfig` or `spec.services.<svc>.extraConfig` (see
+[Free-form service configuration](#free-form-service-configuration)). Use
+`spec.extraConfig` for settings not represented by typed fields, such as logging
+levels, oslo.messaging tuning, and experimental Keystone flags. It takes a
+`map[section][key] = value` rendered into `keystone.conf`.
 
-For the INI-file services (Keystone, Glance, Placement, Barbican) the operator
-renders configuration through a single precedence chain: `plugins < operator
-defaults < spec.extraConfig`. Each stage is merged key-wise, so a plugin section
-cannot shadow an operator-computed value, the operator defaults win over any
-colliding plugin section, and `spec.extraConfig` is the only door past the
-operator's own defaults.
-
-Each operator ships a registry of the configuration keys it computes. Overriding
-one of those keys through `spec.extraConfig` is honored — the value is rendered —
-but reported: the operator sets the informational `ExtraConfigHealthy=False`
-condition naming every overridden key and emits a one-shot
-`ExtraConfigOwnedKeyOverride` Warning event on the transition into that state.
-Most registered keys are report-only; a few are rejected outright at admission by
-the service webhook because a typed spec field owns them — for example Keystone's
-`[federation] trusted_dashboard`, Glance's `[keystone_authtoken] password`, or
-Horizon's `SECRET_KEY`.
+For INI-file services such as Keystone, Glance, Placement, and Barbican, the
+operator merges configuration in this order: `plugins < operator defaults <
+spec.extraConfig`. A plugin cannot override an operator-computed value, and
+`spec.extraConfig` is the only way to override the operator's defaults.
+Each operator ships a registry of configuration keys it computes. An override
+through `spec.extraConfig` takes effect and is reported by the
+`ExtraConfigHealthy=False` condition, which names the overridden keys. The
+operator emits a one-shot `ExtraConfigOwnedKeyOverride` Warning event when the
+condition first changes to that state. Most registered keys are report-only.
+The service webhook rejects some keys at admission when a typed spec field owns
+them, for example Keystone's `[federation] trusted_dashboard`, Glance's
+`[keystone_authtoken] password`, and Horizon's `SECRET_KEY`.
 
 ```yaml
 spec:
@@ -539,23 +521,18 @@ spec:
       heartbeat_timeout_threshold: "60"
 ```
 
-The `[DEFAULT] debug` override above is an operator-owned key — Keystone computes
-it from the typed `spec.logging.debug` field — so this example now draws an
+The `[DEFAULT] debug` override above is an operator-owned key. Keystone computes
+it from the typed `spec.logging.debug` field, so this example draws an
 `ExtraConfigOwnedKeyOverride` Warning event and flips `ExtraConfigHealthy` to
 `False` while still taking effect.
 
 Beyond the ownership registry, the validating webhook checks every option name in
-`spec.extraConfig` against a catalog of the options the service actually accepts.
-Each operator embeds one catalog per OpenStack release, generated from the
-`oslo-config-generator` run of the exact service image CobaltCore ships for that
-release. The catalog answers a single question: does this option name exist?
-Values are never inspected. Keystone derives the release from `spec.image.tag`;
-Glance derives it from `spec.openStackRelease`. An option that sits in a known
-section but is absent from the catalog is rejected at apply time with `no such
-option in the <service> <release> option catalog`, naming the section and key. An
-unknown section is rejected with `no such section in the <service> <release>
-option catalog (sections registered by a loaded plugin must be declared via
-spec.plugins)`.
+`spec.extraConfig` against a catalog of the options the service accepts. Each
+operator embeds one catalog per OpenStack release, generated from the
+`oslo-config-generator` output for the service image shipped for that release.
+The catalog contains option names. Values are not inspected. Each service
+operator selects a catalog from the release or image tag configured on its CR.
+An unknown option or section is rejected at apply time.
 
 Three classes of section or key are exempt from the catalog check. A section
 declared by a `spec.plugins` entry's `configSection` is trusted, because the
@@ -564,24 +541,23 @@ operator-ownership registry above is exempt too, since the operator already
 governs those. For Glance, the reserved store sections `os_glance_staging_store`
 and `os_glance_tasks_store` are additionally allowed.
 
-The check fails open when it cannot reason about a release. A digest-pinned
-Keystone image (or any tag that does not name a release) carries no release to
-look up, so the option check is skipped and the admission response returns a
-warning. A release newer than the operator build, one with no embedded catalog,
-is skipped the same way. A deprecated option that the service still accepts is
-admitted with a warning naming its replacement, for example `[DEFAULT] logfile`
-superseded by `[DEFAULT] log_file`.
+When the operator cannot match the configured release or image tag to an
+embedded catalog, admission skips the option-name check and returns a warning
+instead of rejecting the CR. This can happen with a digest-pinned Keystone
+image, a tag that does not identify a release, or a release without a catalog in
+the operator build. Admission does not verify that the option exists in these
+cases. A deprecated option that the service still accepts is admitted with a
+warning naming its replacement, such as `[DEFAULT] logfile`, superseded by
+`[DEFAULT] log_file`.
 
 This check lives only in the webhook. There is no CEL or CRD-schema backstop, so
 a cluster with the validating webhook disabled accepts a misspelled option name
 and surfaces it only at render time. Updates re-run the check only when
 `spec.extraConfig`, the plugin section list, or the release field changes.
 
-The operator still does not validate the values in these sections, but a
-misspelled option name is now rejected at apply time. A wrong value on a real
-option becomes a silent no-op at best and a crash loop at worst, so test changes
-in a lab before rolling out. A change to `extraConfig` triggers a ConfigMap
-rehash and a rolling Deployment update.
+The operator does not validate option values. A wrong value can be ignored or
+cause a crash loop, so test changes in a lab before rollout. Changing
+`extraConfig` triggers a ConfigMap rehash and a rolling Deployment update.
 
 ---
 
