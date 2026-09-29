@@ -375,12 +375,13 @@ func (r *OVNCentralReconciler) pipelineSteps(children client.Client, cr *ovnv1al
 // none of them reads a value another one produces.
 //
 // primary is the CR the pipeline runs on. RunParallelGroup merges the
-// conditions and the metadata off a member's copy and nothing else, so the two
-// fields a member publishes into status — the relay address an OVNChassis
-// dials, and the image northd is running, which is what tells a rollout that
-// reached the pods from one that has not — are copied onto it here or they are
-// discarded with the copy. The two members write different fields, so the
-// primary is touched by at most one goroutine per field.
+// conditions and the metadata off a member's copy and nothing else, so the
+// fields a member publishes into status — the two relay addresses an OVNChassis
+// dials, inside and outside the cluster, and the image northd is running, which
+// is what tells a rollout that reached the pods from one that has not — are
+// copied onto it here or they are discarded with the copy. The two members
+// write different fields, so the primary is touched by at most one goroutine
+// per field.
 //
 // It is a method rather than a literal inside pipelineSteps so the drift guard
 // can enumerate the member names and their condition types without running a
@@ -402,6 +403,7 @@ func (r *OVNCentralReconciler) parallelSteps(children client.Client, primary *ov
 			Fn: func(ctx context.Context, cr *ovnv1alpha1.OVNCentral) (ctrl.Result, error) {
 				res, err := r.reconcileRelay(ctx, children, cr)
 				primary.Status.RelayAddress = cr.Status.RelayAddress
+				primary.Status.RelayDbAddress = cr.Status.RelayDbAddress
 				return res, err
 			},
 		},

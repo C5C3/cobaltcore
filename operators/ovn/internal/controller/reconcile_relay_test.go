@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -72,6 +73,28 @@ func assignRelayClusterIP(ctx context.Context, t *testing.T, r *OVNCentralReconc
 	}
 }
 
+// relayPod builds a relay pod of cr on the node at hostIP, labelled the way the
+// relay Deployment's selector matches it. An empty hostIP is a pod the
+// scheduler has not placed yet.
+func relayPod(cr *ovnv1alpha1.OVNCentral, name, hostIP string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: cr.Namespace,
+			Labels:    componentSelectorLabels(cr, componentRelay),
+		},
+		Status: corev1.PodStatus{HostIP: hostIP},
+	}
+}
+
+// publishedRelayOVNCentral is relayOVNCentral with the relay published outside
+// the cluster on the default node port.
+func publishedRelayOVNCentral() *ovnv1alpha1.OVNCentral {
+	cr := relayOVNCentral()
+	cr.Spec.Relay.ExternallyReachable = true
+	return cr
+}
+
 // Clearing spec.relay takes the relays with it. Leaving them running would keep
 // a tier the CR no longer describes serving reads from a database it no longer
 // tracks.
@@ -82,6 +105,7 @@ func TestReconcileRelay_ClearedSpecDeletesTheChildren(t *testing.T) {
 	deploy, svc := ownedRelayChildren(t, cr)
 	cr.Spec.Relay = nil
 	cr.Status.RelayAddress = "ssl:10.96.0.77:6642"
+	cr.Status.RelayDbAddress = "ssl:10.0.0.1:30661"
 	r := newTestOVNCentralReconciler(t, cr, deploy, svc)
 
 	res, err := r.reconcileRelay(ctx, r.Client, cr)
@@ -98,6 +122,7 @@ func TestReconcileRelay_ClearedSpecDeletesTheChildren(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonRelayNotRequired))
 	g.Expect(cr.Status.RelayAddress).To(BeEmpty(),
 		"a client handed the address of a deleted Service waits out its own timeout")
+	g.Expect(cr.Status.RelayDbAddress).To(BeEmpty(), "the node address goes with the Service it names")
 }
 
 // A Deployment of the same name that this CR never created belongs to somebody
@@ -334,4 +359,204 @@ func TestBuildRelayDeployment_RendersNodePlacement(t *testing.T) {
 	g.Expect(unset.NodeSelector).To(BeNil())
 	g.Expect(unset.Tolerations).To(BeNil())
 	g.Expect(unset.Affinity).To(BeNil())
+}
+
+// A published relay is a NodePort Service on one port for the whole tier. The
+// flag alone resolves the default port; an explicit port is used as written;
+// without the flag the builder names no type, which the API server defaults to
+// ClusterIP, and no node port a later edit would have to take back.
+func TestBuildRelayService_PublishesANodePort(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		relay        ovnv1alpha1.OVNRelaySpec
+		wantType     corev1.ServiceType
+		wantNodePort int32
+	}{
+		{
+			"the default port",
+			ovnv1alpha1.OVNRelaySpec{Replicas: 1, ExternallyReachable: true},
+			corev1.ServiceTypeNodePort, 30661,
+		},
+		{
+			"an explicit port",
+			ovnv1alpha1.OVNRelaySpec{Replicas: 1, ExternallyReachable: true, NodePort: ptr.To(int32(30700))},
+			corev1.ServiceTypeNodePort, 30700,
+		},
+		{"not published", ovnv1alpha1.OVNRelaySpec{Replicas: 1}, "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cr := relayOVNCentral()
+			cr.Spec.Relay = &tc.relay
+
+			svc := buildRelayService(cr)
+
+			g.Expect(svc.Spec.Type).To(Equal(tc.wantType))
+			g.Expect(svc.Spec.Ports).To(HaveLen(1))
+			g.Expect(svc.Spec.Ports[0].Port).To(BeEquivalentTo(6642))
+			g.Expect(svc.Spec.Ports[0].NodePort).To(Equal(tc.wantNodePort))
+		})
+	}
+}
+
+// Every node a relay pod runs on is named once, in address order, whatever
+// order the pods are listed in; a pod the scheduler has not placed yet names no
+// node. The RelayReady message carries the outside address beside the cluster
+// IP, so a reader of the condition sees both.
+func TestReconcileRelay_PublishesTheNodeAddresses(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := publishedRelayOVNCentral()
+	r := newTestOVNCentralReconciler(t, cr,
+		relayPod(cr, "relay-b", "10.0.0.2"),
+		relayPod(cr, "relay-a", "10.0.0.1"),
+		relayPod(cr, "relay-c", ""),
+		relayPod(cr, "relay-d", "10.0.0.2"))
+
+	_, err := r.reconcileRelay(ctx, r.Client, cr)
+	g.Expect(err).NotTo(HaveOccurred())
+	assignRelayClusterIP(ctx, t, r)
+	g.Expect(simulators.SimulateDeploymentReady(ctx, r.Client, centralKey("ovn-sb-relay"), 2)).To(Succeed())
+
+	res, err := r.reconcileRelay(ctx, r.Client, cr)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(cr.Status.RelayDbAddress).To(Equal("ssl:10.0.0.1:30661,ssl:10.0.0.2:30661"))
+	g.Expect(cr.Status.RelayAddress).To(Equal("ssl:" + testRelayClusterIP + ":6642"))
+
+	cond := ovnCentralCondition(cr, conditionTypeRelayReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDeploymentReady))
+	g.Expect(cond.Message).To(Equal("The sb-relay Deployment is available at ssl:" + testRelayClusterIP +
+		":6642 and at ssl:10.0.0.1:30661,ssl:10.0.0.2:30661 outside the cluster"))
+
+	var svc corev1.Service
+	g.Expect(r.Get(ctx, centralKey("ovn-sb-relay"), &svc)).To(Succeed())
+	g.Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeNodePort))
+	g.Expect(svc.Spec.Ports[0].NodePort).To(BeEquivalentTo(30661))
+}
+
+// A relay whose pods have no node yet has no address outside the cluster. That
+// is not a wait of its own: RelayReady reports the Deployment's state exactly
+// as it would for an unpublished relay, and the message names the cluster IP
+// alone.
+func TestReconcileRelay_NoRelayPodWithAHostIPPublishesNoNodeAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pods func(cr *ovnv1alpha1.OVNCentral) []client.Object
+	}{
+		{"no relay pod", func(*ovnv1alpha1.OVNCentral) []client.Object { return nil }},
+		{"relay pods without a host IP", func(cr *ovnv1alpha1.OVNCentral) []client.Object {
+			return []client.Object{relayPod(cr, "relay-a", ""), relayPod(cr, "relay-b", "")}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			cr := publishedRelayOVNCentral()
+			r := newTestOVNCentralReconciler(t, append([]client.Object{cr}, tc.pods(cr)...)...)
+
+			_, err := r.reconcileRelay(ctx, r.Client, cr)
+			g.Expect(err).NotTo(HaveOccurred())
+			assignRelayClusterIP(ctx, t, r)
+			g.Expect(simulators.SimulateDeploymentReady(ctx, r.Client, centralKey("ovn-sb-relay"), 2)).To(Succeed())
+
+			res, err := r.reconcileRelay(ctx, r.Client, cr)
+
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res.IsZero()).To(BeTrue())
+			g.Expect(cr.Status.RelayDbAddress).To(BeEmpty())
+
+			cond := ovnCentralCondition(cr, conditionTypeRelayReady)
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(cond.Reason).To(Equal(conditionReasonDeploymentReady))
+			g.Expect(cond.Message).To(Equal("The sb-relay Deployment is available at ssl:" + testRelayClusterIP + ":6642"))
+		})
+	}
+}
+
+// Clearing the flag takes the node address and the node port with it on the
+// same pass. A chassis on another cluster falls back to the Southbound node
+// ports once the field is empty, while a stale value would keep it dialling a
+// port that is gone.
+func TestReconcileRelay_ClearedFlagClearsTheNodeAddress(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := publishedRelayOVNCentral()
+	r := newTestOVNCentralReconciler(t, cr, relayPod(cr, "relay-a", "10.0.0.1"))
+
+	_, err := r.reconcileRelay(ctx, r.Client, cr)
+	g.Expect(err).NotTo(HaveOccurred())
+	assignRelayClusterIP(ctx, t, r)
+	_, err = r.reconcileRelay(ctx, r.Client, cr)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cr.Status.RelayDbAddress).To(Equal("ssl:10.0.0.1:30661"))
+
+	cr.Spec.Relay.ExternallyReachable = false
+	_, err = r.reconcileRelay(ctx, r.Client, cr)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cr.Status.RelayDbAddress).To(BeEmpty())
+	g.Expect(cr.Status.RelayAddress).To(Equal("ssl:"+testRelayClusterIP+":6642"),
+		"the cluster-IP address stays: the relay itself is still there")
+
+	var svc corev1.Service
+	g.Expect(r.Get(ctx, centralKey("ovn-sb-relay"), &svc)).To(Succeed())
+	g.Expect(svc.Spec.Type).NotTo(Equal(corev1.ServiceTypeNodePort))
+	g.Expect(svc.Spec.Ports).To(HaveLen(1))
+	g.Expect(svc.Spec.Ports[0].NodePort).To(BeZero(), "the node port is released with the flag")
+}
+
+// A pod list the target cluster refuses fails the pass under the same reason as
+// every other read of the step, and keeps the node address a previous pass
+// published: clearing it on a transient error would hold every chassis on
+// another cluster until the next pass succeeds. A nodePort edit is the
+// exception. The Service has moved to the new port by the time the list runs,
+// so the kept address names a released one, and a chassis handed it would dial
+// a port nothing listens on.
+func TestReconcileRelay_PodListErrorIsDeploymentError(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		nodePort *int32
+		want     string
+	}{
+		{"the published port", nil, "ssl:10.0.0.1:30661"},
+		{"an edited port", ptr.To(int32(30700)), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			cr := publishedRelayOVNCentral()
+			cr.Status.RelayDbAddress = "ssl:10.0.0.1:30661"
+			listErr := apierrors.NewForbidden(corev1.Resource("pods"), "", nil)
+
+			c := ovnCentralFakeClientBuilder(t, cr).
+				WithInterceptorFuncs(interceptor.Funcs{
+					List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+						if _, ok := list.(*corev1.PodList); ok {
+							return listErr
+						}
+						return cl.List(ctx, list, opts...)
+					},
+				}).Build()
+			r := &OVNCentralReconciler{Client: c, Scheme: newTestScheme(t), Recorder: record.NewFakeRecorder(10)}
+
+			_, err := r.reconcileRelay(ctx, r.Client, cr)
+			g.Expect(err).NotTo(HaveOccurred())
+			assignRelayClusterIP(ctx, t, r)
+			cr.Spec.Relay.NodePort = tc.nodePort
+
+			res, err := r.reconcileRelay(ctx, r.Client, cr)
+
+			g.Expect(err).To(MatchError("listing sb-relay pods: " + listErr.Error()))
+			g.Expect(apierrors.IsForbidden(err)).To(BeTrue(), "the API error must stay unwrappable")
+			g.Expect(res.IsZero()).To(BeTrue())
+			g.Expect(cr.Status.RelayDbAddress).To(Equal(tc.want))
+
+			cond := ovnCentralCondition(cr, conditionTypeRelayReady)
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(conditionReasonDeploymentError))
+		})
+	}
 }
