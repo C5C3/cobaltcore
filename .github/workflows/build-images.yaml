@@ -466,7 +466,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: mikefarah/yq@c14f446382944492701b16c1ddb48bb9dbe683e3 # v4.53.6
+      - uses: mikefarah/yq@504fc38780cc46be8444ea1b72fb55919fc0bfb0 # v4.54.1
 
       - name: Generate service×release matrix
         id: matrix
@@ -488,7 +488,7 @@ jobs:
       matrix: ${{ fromJson(needs.generate-matrix.outputs.tempest-matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: mikefarah/yq@c14f446382944492701b16c1ddb48bb9dbe683e3 # v4.53.6
+      - uses: mikefarah/yq@504fc38780cc46be8444ea1b72fb55919fc0bfb0 # v4.54.1
 
       - name: Resolve Tempest versions
         id: versions
@@ -560,7 +560,7 @@ jobs:
       matrix: ${{ fromJson(needs.generate-matrix.outputs.tempest-release-matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: mikefarah/yq@c14f446382944492701b16c1ddb48bb9dbe683e3 # v4.53.6
+      - uses: mikefarah/yq@504fc38780cc46be8444ea1b72fb55919fc0bfb0 # v4.54.1
 
       - name: Setup Docker registry
         uses: ./.github/actions/setup-docker-registry
