@@ -33,6 +33,8 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # script under test invokes
 #   - `get ns chaos-mesh`                          → exits <ns_exit>
 #   - `describe daemonset -n chaos-mesh chaos-daemon` → emits a stub marker
+#   - `get deployment orc-controller-manager -n orc-system` → exits 1 with
+#     kubectl's NotFound on stderr (no K-ORC on this cluster)
 #   - infra-summary verbs the dump always runs (`get helmrelease`,
 #     `get pods`, `get daemonsets`, `get nodes`, `get events`,
 #     `api-resources`) → exit 0
@@ -57,6 +59,13 @@ case "\$1" in
       ns)
         if [ "\$3" = "chaos-mesh" ]; then
           exit ${ns_exit}
+        fi
+        ;;
+      deployment)
+        if [ "\$3" = "orc-controller-manager" ] && [ "\$4" = "-n" ] \\
+            && [ "\$5" = "orc-system" ]; then
+          echo 'Error from server (NotFound): deployments.apps "orc-controller-manager" not found' >&2
+          exit 1
         fi
         ;;
       helmrelease|pods|daemonsets|events|nodes|fluxinstance,fluxreport)
@@ -127,6 +136,8 @@ test_skip_when_namespace_absent() {
     "$output" "SKIP: chaos-mesh namespace not present"
   assert_not_contains "describe stub output is NOT emitted when namespace absent" \
     "$output" "STUBBED-DESCRIBE-CHAOS-DAEMON"
+  assert_not_contains "the stub models every kubectl call the dump makes" \
+    "$output" "[kubectl-stub] unexpected invocation"
 }
 
 # ---------------------------------------------------------------------------
@@ -150,6 +161,8 @@ test_describe_when_namespace_present() {
     "$output" "STUBBED-DESCRIBE-CHAOS-DAEMON"
   assert_not_contains "stdout does NOT contain SKIP line when namespace present" \
     "$output" "SKIP: chaos-mesh namespace not present"
+  assert_not_contains "the stub models every kubectl call the dump makes" \
+    "$output" "[kubectl-stub] unexpected invocation"
 }
 
 # ---------------------------------------------------------------------------

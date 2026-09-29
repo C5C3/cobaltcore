@@ -48,6 +48,7 @@ case "$1" in
       daemonsets) echo "STUB-DAEMONSETS"; exit 0 ;;
       events) echo "STUB-EVENTS"; exit 0 ;;
       nodes) exit 0 ;;
+      deployment) exit 0 ;;
       ns) exit 1 ;;
       cm) echo "STUB-CONFIGMAPS"; exit 0 ;;
       jobs) echo "job/stub-job"; exit 0 ;;
@@ -66,10 +67,11 @@ case "$1" in
     esac
     ;;
   logs)
-    # The operator's own log carries the operator namespace; the namespace-wide
-    # loops read openstack.
+    # The operator's own log carries the operator namespace, the K-ORC section
+    # reads orc-system; the namespace-wide loops read openstack.
     case "$3" in
       nova-system) echo "STUB-OPERATOR-LOGS" ;;
+      orc-system) echo "STUB-KORC-LOGS" ;;
       *) echo "STUB-NAMESPACE-LOGS" ;;
     esac
     exit 0
@@ -129,6 +131,7 @@ test_full_dump_without_the_switch() {
   assert_contains "the events block runs" "$output" "=== Events (last 50) ==="
   assert_contains "the K-ORC section runs with the infrastructure block" "$output" \
     "=== K-ORC controller logs (last 200 lines) ==="
+  assert_contains "and reads the controller log" "$output" "STUB-KORC-LOGS"
   assert_contains "the Job descriptions run" "$output" "=== Job descriptions ==="
   assert_contains "the namespace pod logs run" "$output" \
     "=== All pod logs in openstack ==="
@@ -136,6 +139,8 @@ test_full_dump_without_the_switch() {
     "=== ConfigMaps in openstack namespace ==="
   assert_contains "the operator sections run" "$output" "=== Operator pods ==="
   assert_contains "and the CR status with them" "$output" "=== Operator CR status ==="
+  assert_not_contains "the stub models every kubectl call the dump makes" "$output" \
+    "[kubectl-stub] unexpected invocation"
 }
 
 # ---------------------------------------------------------------------------
@@ -183,6 +188,8 @@ test_operator_only_drops_the_shared_sections() {
     "=== All pod logs in openstack ==="
   assert_not_contains "no repeated ConfigMap listing" "$output" \
     "=== ConfigMaps in openstack namespace ==="
+  assert_not_contains "the stub models every kubectl call the dump makes" "$output" \
+    "[kubectl-stub] unexpected invocation"
 }
 
 # ---------------------------------------------------------------------------
