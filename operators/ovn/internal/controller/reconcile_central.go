@@ -27,12 +27,12 @@ const conditionTypeCentralReady = "CentralReady"
 
 // The condition reasons of the central step.
 const (
-	conditionReasonCentralNotFound         = "CentralNotFound"
-	conditionReasonCentralReadError        = "CentralReadError"
-	conditionReasonCentralOnAnotherCluster = "CentralOnAnotherCluster"
-	conditionReasonCentralNotReady         = "CentralNotReady"
-	conditionReasonCentralUpgrading        = "CentralUpgrading"
-	conditionReasonCentralResolved         = "CentralResolved"
+	conditionReasonCentralNotFound               = "CentralNotFound"
+	conditionReasonCentralReadError              = "CentralReadError"
+	conditionReasonCentralNotExternallyReachable = "CentralNotExternallyReachable"
+	conditionReasonCentralNotReady               = "CentralNotReady"
+	conditionReasonCentralUpgrading              = "CentralUpgrading"
+	conditionReasonCentralResolved               = "CentralResolved"
 )
 
 // resolvedCentral carries what the chassis need from the OVNCentral they attach
@@ -41,7 +41,8 @@ const (
 // than being looked up on the node.
 type resolvedCentral struct {
 	// ovnRemote is what ovn-controller dials: the Southbound relay when the
-	// central runs one, the Southbound database itself otherwise.
+	// central runs one the chassis can reach, the Southbound database itself
+	// otherwise.
 	ovnRemote string
 	// nbAddress is the Northbound address the gateway-evacuation Job talks to,
 	// which is the one maintenance action that edits the logical model rather
@@ -52,8 +53,20 @@ type resolvedCentral struct {
 	// but a deregistration that has to be durable is better aimed at the source.
 	sbAddress string
 	// clientSecretName names the Secret holding the client certificate every
-	// chassis container presents.
+	// chassis container presents: the Secret the pods mount on the chassis's
+	// own cluster. The central step sets it only when the two CRs project onto
+	// the same cluster, where it is the central's Secret itself; across a
+	// cluster boundary the client-Secret step sets it to the copy it writes.
 	clientSecretName string
+	// sameCluster reports whether the chassis and the central project their
+	// children onto the same cluster.
+	sameCluster bool
+	// centralTargetClusterRef is the cluster the central projects onto, which
+	// is where the client-Secret step reads the source Secret from.
+	centralTargetClusterRef *commonv1.TargetClusterRefSpec
+	// sourceClientSecretName names the Secret the central publishes, in the
+	// central's namespace on the central's cluster.
+	sourceClientSecretName string
 }
 
 // reconcileCentral resolves the OVNCentral this chassis attaches to.
@@ -62,6 +75,14 @@ type resolvedCentral struct {
 // through the children client: spec.centralRef is namespace-local and both CRs
 // are written by whoever deploys the control plane, so the OVNCentral lives
 // beside the OVNChassis whatever cluster their children land on.
+//
+// The two may project their children onto different clusters. A chassis on
+// another cluster than its central dials the addresses the central publishes
+// on node ports, which requires both databases to be externally reachable, and
+// mounts a copy of the client Secret the next step writes onto its own cluster.
+// That requirement cannot move into the validating webhook: spec.centralRef may
+// name an OVNCentral that does not exist at admission time, and by the time it
+// does the chassis is no longer under review.
 func (r *OVNChassisReconciler) reconcileCentral(ctx context.Context, cr *ovnv1alpha1.OVNChassis) (resolvedCentral, ctrl.Result, error) {
 	name := cr.Spec.CentralRef.Name
 
@@ -85,45 +106,79 @@ func (r *OVNChassisReconciler) reconcileCentral(ctx context.Context, cr *ovnv1al
 		return resolvedCentral{}, ctrl.Result{}, err
 	}
 
-	// Both CRs have to project onto the same cluster. A chassis mounts the client
-	// Secret the central publishes, and a Secret does not cross a cluster
-	// boundary, so a mismatched pair would leave every chassis pod stuck on a
-	// volume that never mounts.
-	//
-	// The check cannot move into the validating webhook: spec.centralRef may name
-	// an OVNCentral that does not exist at admission time, and by the time it
-	// does the chassis is no longer under review. It is a spec error rather than
-	// a wait, so it does not requeue; the ref is immutable on both sides, so only
-	// deleting and reapplying one of the two CRs can repair it, and that produces
-	// its own event.
-	if !sameTargetCluster(cr.Spec.TargetClusterRef, central.Spec.TargetClusterRef) {
-		conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeCentralReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cr.Generation,
-			Reason:             conditionReasonCentralOnAnotherCluster,
-			Message: fmt.Sprintf("OVNCentral %s projects onto %s while this OVNChassis projects onto %s; "+
-				"both have to name the same cluster, because a chassis mounts the client Secret the "+
-				"central publishes", name, describeTargetCluster(central.Spec.TargetClusterRef),
-				describeTargetCluster(cr.Spec.TargetClusterRef)),
-		})
-		return resolvedCentral{}, ctrl.Result{}, nil
+	// Which pair of published addresses applies follows from where the two CRs
+	// project their children. Inside one cluster the databases are reached at
+	// their Service addresses; from another cluster only the node ports the
+	// central publishes for an externally reachable database are routable.
+	sameCluster := sameTargetCluster(cr.Spec.TargetClusterRef, central.Spec.TargetClusterRef)
+	nbAddress, sbAddress := central.Status.Northbound.InternalDbAddress, central.Status.Southbound.InternalDbAddress
+	if !sameCluster {
+		// Both databases have to be published. ovn-controller needs the
+		// Southbound one alone, but the evacuation Job writes the Northbound
+		// database, and a chassis whose gateway nodes could never be evacuated
+		// is not a working chassis. The fix is an edit to the central, which
+		// the central watch delivers, so this does not requeue.
+		if !central.Spec.Northbound.ExternallyReachable || !central.Spec.Southbound.ExternallyReachable {
+			conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
+				Type:               conditionTypeCentralReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: cr.Generation,
+				Reason:             conditionReasonCentralNotExternallyReachable,
+				Message: fmt.Sprintf("OVNCentral %s projects onto %s while this OVNChassis projects onto %s, "+
+					"so the chassis reach it at the addresses published outside its cluster; set "+
+					"spec.northbound.externallyReachable and spec.southbound.externallyReachable on the "+
+					"OVNCentral to true to publish them", name, describeTargetCluster(central.Spec.TargetClusterRef),
+					describeTargetCluster(cr.Spec.TargetClusterRef)),
+			})
+			return resolvedCentral{}, ctrl.Result{}, nil
+		}
+		nbAddress, sbAddress = central.Status.Northbound.DbAddress, central.Status.Southbound.DbAddress
 	}
 
 	// The Southbound address and the client Secret are the two values without
 	// which a chassis has nothing to dial and nothing to authenticate with. The
 	// Northbound address may still be empty here: only the evacuation Job reads
 	// it, and that Job runs against a chassis the central has long registered.
-	if central.Status.Southbound.InternalDbAddress == "" || central.Status.ClientSecretName == "" {
+	if sbAddress == "" || central.Status.ClientSecretName == "" {
+		what := "its Southbound address"
+		if !sameCluster {
+			what += " outside its cluster"
+		}
 		conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeCentralReady,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cr.Generation,
 			Reason:             conditionReasonCentralNotReady,
-			Message: fmt.Sprintf("Waiting for OVNCentral %s to publish its Southbound address and its "+
-				"client Secret", name),
+			Message:            fmt.Sprintf("Waiting for OVNCentral %s to publish %s and its client Secret", name, what),
 		})
 		return resolvedCentral{}, ctrl.Result{RequeueAfter: RequeueRaftWait}, nil
+	}
+
+	// The relay wins when the central runs one the chassis can reach. Every
+	// chassis holds an open Southbound connection, and pointing them at the
+	// read-through cache instead of at the Raft leader is the whole reason the
+	// relay tier exists. Across a cluster boundary that is a relay published
+	// on a node port; one that is not published is skipped, since its cluster
+	// IP is unreachable from the chassis's cluster.
+	remote := central.Status.RelayAddress
+	if !sameCluster {
+		remote = ""
+		if central.Spec.Relay != nil && central.Spec.Relay.ExternallyReachable {
+			if central.Status.RelayDbAddress == "" {
+				conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
+					Type:               conditionTypeCentralReady,
+					Status:             metav1.ConditionFalse,
+					ObservedGeneration: cr.Generation,
+					Reason:             conditionReasonCentralNotReady,
+					Message:            fmt.Sprintf("Waiting for OVNCentral %s to publish its relay's node address", name),
+				})
+				return resolvedCentral{}, ctrl.Result{RequeueAfter: RequeueRaftWait}, nil
+			}
+			remote = central.Status.RelayDbAddress
+		}
+	}
+	if remote == "" {
+		remote = sbAddress
 	}
 
 	// OVN's supported upgrade order is central first, hypervisors second:
@@ -153,14 +208,6 @@ func (r *OVNChassisReconciler) reconcileCentral(ctx context.Context, cr *ovnv1al
 		return resolvedCentral{}, ctrl.Result{RequeueAfter: RequeueRaftWait}, nil
 	}
 
-	// The relay wins when the central runs one. Every chassis holds an open
-	// Southbound connection, and pointing them at the read-through cache instead
-	// of at the Raft leader is the whole reason the relay tier exists.
-	remote := central.Status.RelayAddress
-	if remote == "" {
-		remote = central.Status.Southbound.InternalDbAddress
-	}
-
 	conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeCentralReady,
 		Status:             metav1.ConditionTrue,
@@ -168,12 +215,18 @@ func (r *OVNChassisReconciler) reconcileCentral(ctx context.Context, cr *ovnv1al
 		Reason:             conditionReasonCentralResolved,
 		Message:            fmt.Sprintf("The chassis connect to OVNCentral %s at %s", name, remote),
 	})
-	return resolvedCentral{
-		ovnRemote:        remote,
-		nbAddress:        central.Status.Northbound.InternalDbAddress,
-		sbAddress:        central.Status.Southbound.InternalDbAddress,
-		clientSecretName: central.Status.ClientSecretName,
-	}, ctrl.Result{}, nil
+	resolved := resolvedCentral{
+		ovnRemote:               remote,
+		nbAddress:               nbAddress,
+		sbAddress:               sbAddress,
+		sameCluster:             sameCluster,
+		centralTargetClusterRef: central.Spec.TargetClusterRef,
+		sourceClientSecretName:  central.Status.ClientSecretName,
+	}
+	if sameCluster {
+		resolved.clientSecretName = central.Status.ClientSecretName
+	}
+	return resolved, ctrl.Result{}, nil
 }
 
 // sameTargetCluster reports whether two CRs project their children onto the
