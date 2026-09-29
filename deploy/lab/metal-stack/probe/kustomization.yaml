@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Read-only node probe for metal-stack clusters, applied by hand before the
+# CobaltCore lab stack exists:
+#
+#   kubectl apply -k deploy/lab/metal-stack/probe
+#
+# It renders one Job, node-probe in `default`, that prints the node facts the
+# lab depends on and exits 0. node-probe.yaml carries the expected output, the
+# commands to read it and the form that pins it to one node.
+#
+# All resource references are local to this directory (no parent-directory
+# paths). It therefore renders under kustomize's default
+# `LoadRestrictionsRootOnly` security check, which means `kubectl apply -k`
+# works without `--load-restrictor`; kubectl's embedded kustomize does not
+# expose that flag (kubernetes/kubectl#948).
+#
+# No production or kind overlay references this directory, and
+# hack/deploy-infra.sh never applies it.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - node-probe.yaml

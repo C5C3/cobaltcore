@@ -1,0 +1,221 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Read-only node probe for metal-stack clusters, the survey of #1138 (work
+# package 0) as a reusable Job. It is the prerequisite check of the CobaltCore
+# lab: run it against a metal-stack cluster before anything of the lab is
+# deployed. It prints the node facts the lab depends on under ten fixed
+# headers and exits 0 whatever it finds, so a node that lacks something
+# prints `absent`, `none` or `NOT FOUND` and the Job still completes.
+#
+# IMAGE docker.io/library/debian:bookworm-slim, a Docker Official Image whose
+# util-linux and coreutils supply lscpu, lsblk, stat and df. Digest-pinned;
+# the Renovate customManager in renovate.json refreshes the digest. Nothing is
+# installed at run time, so the probe needs no egress beyond the image pull.
+#
+# READ-ONLY posture:
+#   - The container runs privileged, because only a privileged container sees
+#     the host's device nodes. An unprivileged one gets a synthetic /dev
+#     without kvm.
+#   - The host root is mounted at /host with readOnly and
+#     recursiveReadOnly: IfPossible, so its submounts (/host/sys,
+#     /host/var/lib, ...) are read-only too where the runtime supports it.
+#   - No hostPID, no hostNetwork, no ServiceAccount token, a read-only root
+#     filesystem. The script enters no host namespace, loads no module and
+#     writes nothing; tests/unit/deploy/metal_stack_probe_test.sh fails when a
+#     later edit names nsenter, chroot, modprobe, insmod, rmmod, mount, umount,
+#     sysctl, apt-get, apt, tee, dd, mknod or rm, or adds a redirection other
+#     than 2>/dev/null.
+#   - /proc, /sys/module, /sys/kernel and /sys/fs/cgroup are read from the
+#     container's own mounts, which show the host kernel's values. The NIC
+#     list is read from /host/sys/class/net, the host's sysfs, so it names the
+#     host's interfaces and not the pod's own eth0.
+#
+# NAMESPACE default: the probe runs before deploy/flux-system/namespaces.yaml
+# has created `openstack` or `shared-services`, and the metal-stack shoot
+# enforces no PodSecurity level on `default`.
+#
+# Run it, read it and remove it:
+#   kubectl apply -k deploy/lab/metal-stack/probe
+#   kubectl wait --for=condition=complete job/node-probe -n default --timeout=5m
+#   kubectl logs -n default job/node-probe
+#   kubectl delete job -n default node-probe
+#
+# The Job runs on the node the scheduler picks. A cluster with more than one
+# worker is probed one node at a time by pinning the pod, followed by the same
+# wait, logs and delete (node-probe.yaml holds the one Job and nothing else):
+#   yq '.spec.template.spec.nodeName = "<node>"' deploy/lab/metal-stack/probe/node-probe.yaml | kubectl apply -f -
+# Delete the Job between runs: its pod template is immutable, so a second
+# apply with another nodeName is rejected. ttlSecondsAfterFinished removes the
+# Job, and its logs with it, one hour after it completes.
+#
+# A DaemonSet would cover every node at once, but it never completes, has to
+# be deleted by hand, and its pods' logs are read one at a time anyway. The
+# Job keeps the run bounded.
+#
+# EXPECTED OUTPUT of the 2026-09-29 run on
+# shoot--df33f0b4c1--forge-group-0-666b6-qmhrg, a lab-ready node. The
+# `== nics` section lists one cali* interface per pod on the node (14 in this
+# run, all mtu=1460 operstate=up); they are cut to one line here.
+#   == kvm device
+#   crw-rw---- 1 root 103 10, 232 Sep 29 17:17 /dev/kvm
+#   == cpu
+#   CPU(s):                                  16
+#   Model name:                              Intel(R) Xeon(R) D-2141I CPU @ 2.20GHz
+#   Thread(s) per core:                      2
+#   Core(s) per socket:                      8
+#   Socket(s):                               1
+#   Virtualization:                          VT-x
+#   NUMA node(s):                            1
+#   cpus with vmx|svm: 16
+#   == loaded modules
+#   tun
+#   nvme_tcp
+#   kvm_intel
+#   kvm
+#   == module files for 6.1.0-49-amd64
+#   kvm: /host/lib/modules/6.1.0-49-amd64/kernel/arch/x86/kvm/kvm.ko
+#   kvm-intel: /host/lib/modules/6.1.0-49-amd64/kernel/arch/x86/kvm/kvm-intel.ko
+#   kvm-amd: /host/lib/modules/6.1.0-49-amd64/kernel/arch/x86/kvm/kvm-amd.ko
+#   vhost_net: /host/lib/modules/6.1.0-49-amd64/kernel/drivers/vhost/vhost_net.ko
+#   openvswitch: /host/lib/modules/6.1.0-49-amd64/kernel/net/openvswitch/openvswitch.ko
+#   geneve: /host/lib/modules/6.1.0-49-amd64/kernel/drivers/net/geneve.ko
+#   nbd: /host/lib/modules/6.1.0-49-amd64/kernel/drivers/block/nbd.ko
+#   tun: /host/lib/modules/6.1.0-49-amd64/kernel/drivers/net/tun.ko
+#   bridge: /host/lib/modules/6.1.0-49-amd64/kernel/net/bridge/bridge.ko
+#   br_netfilter: /host/lib/modules/6.1.0-49-amd64/kernel/net/bridge/br_netfilter.ko
+#   dm-multipath: /host/lib/modules/6.1.0-49-amd64/kernel/drivers/md/dm-multipath.ko
+#   == nested / iommu
+#   kvm_intel nested=Y
+#   iommu groups: 79
+#   == memory
+#   MemTotal:       131558552 kB
+#   HugePages_Total:       0
+#   HugePages_Free:        0
+#   HugePages_Rsvd:        0
+#   HugePages_Surp:        0
+#   Hugepagesize:       2048 kB
+#   Hugetlb:               0 kB
+#   == disks
+#   NAME          SIZE TYPE FSTYPE MOUNTPOINT     MODEL                                    ROTA
+#   nvme0n1     894.3G disk                       SAMSUNG MZQL2960HCJR-00A07                  0
+#   |-nvme0n1p1   500M part        /host/boot/efi                                             0
+#   |-nvme0n1p2   4.9G part        /host                                                      0
+#   `-nvme0n1p3 888.9G part                                                                   0
+#   Filesystem                   Size  Used Avail Use% Mounted on
+#   /dev/nvme0n1p2               4.8G  1.5G  3.1G  33% /host
+#   /dev/mapper/csi--lvm-varlib  192G  3.3G  179G   2% /host/var/lib
+#   == cgroup
+#   cgroup2fs
+#   == host os / binaries
+#   PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+#   NAME="Debian GNU/Linux"
+#   VERSION_ID="12"
+#   usr/sbin/libvirtd: absent
+#   usr/bin/qemu-system-x86_64: absent
+#   usr/sbin/ovs-vswitchd: absent
+#   usr/sbin/rpc.nfsd: absent
+#   == nics
+#   cali0abe4d6054f: mtu=1460 operstate=up
+#   eth0: mtu=1500 operstate=down
+#   eth2: mtu=1500 operstate=down
+#   lan0: mtu=9000 operstate=up
+#   lan1: mtu=9000 operstate=up
+#   lo: mtu=65536 operstate=unknown
+#
+# Reading it: `/dev/kvm` present, VT-x and a `kvm-intel` module file mean
+# `virtType: kvm`; an `openvswitch`, `geneve` and `vhost_net` module file mean
+# the OVN chassis and the libvirt DaemonSet can load what they need; the lab's
+# /var/lib is the 192G LVM volume; the uplinks lan0 and lan1 carry MTU 9000
+# and the pod network (the cali* host ends) MTU 1460; no libvirt, QEMU, OVS or
+# NFS server runs on the host. The `/dev/kvm` date and the `Used` column
+# change from run to run.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: node-probe
+  namespace: default
+  labels:
+    app.kubernetes.io/name: node-probe
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: node-probe
+    spec:
+      restartPolicy: Never
+      # The probe never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      containers:
+        - name: probe
+          image: docker.io/library/debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "== kvm device"
+              ls -l /dev/kvm 2>/dev/null || echo absent
+              echo "== cpu"
+              lscpu 2>/dev/null | grep -E '^(Model name|CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)|Virtualization|NUMA node\(s\)):' || echo absent
+              echo "cpus with vmx|svm: $(grep -cE '^flags[[:space:]]*:.* (vmx|svm)( |$)' /proc/cpuinfo 2>/dev/null)"
+              echo "== loaded modules"
+              cut -d ' ' -f1 /proc/modules 2>/dev/null | grep -E '^(kvm|vhost|openvswitch|geneve|vxlan|nbd|tun|bridge|br_netfilter|dm_multipath|nvme_tcp|nfsd)' || echo none
+              KVER="$(uname -r)"
+              echo "== module files for $KVER"
+              for m in kvm kvm-intel kvm-amd vhost_net openvswitch geneve nbd tun bridge br_netfilter dm-multipath; do
+                f="$(find "/host/lib/modules/$KVER" -name "$m.ko*" -print -quit 2>/dev/null)"
+                if [ -z "$f" ] && grep -qE "/$m\.ko\$" "/host/lib/modules/$KVER/modules.builtin" 2>/dev/null; then
+                  f="builtin"
+                fi
+                echo "$m: ${f:-NOT FOUND}"
+              done
+              echo "== nested / iommu"
+              nested=""
+              for m in kvm_intel kvm_amd; do
+                if [ -f "/sys/module/$m/parameters/nested" ]; then
+                  nested="$m nested=$(cat "/sys/module/$m/parameters/nested")"
+                fi
+              done
+              echo "${nested:-kvm_* not loaded, no nested param}"
+              echo "iommu groups: $(ls /sys/kernel/iommu_groups 2>/dev/null | wc -l)"
+              echo "== memory"
+              grep -E '^(MemTotal|Huge)' /proc/meminfo 2>/dev/null || echo absent
+              echo "== disks"
+              lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,ROTA 2>/dev/null || echo absent
+              df -h /host /host/var/lib 2>/dev/null || echo absent
+              echo "== cgroup"
+              stat -fc %T /sys/fs/cgroup 2>/dev/null || echo absent
+              echo "== host os / binaries"
+              head -n 3 /host/etc/os-release 2>/dev/null || echo absent
+              for b in usr/sbin/libvirtd usr/bin/qemu-system-x86_64 usr/sbin/ovs-vswitchd usr/sbin/rpc.nfsd; do
+                if [ -e "/host/$b" ]; then echo "$b: present"; else echo "$b: absent"; fi
+              done
+              echo "== nics"
+              for n in /host/sys/class/net/*/; do
+                [ -e "$n" ] || { echo absent; break; }
+                echo "$(basename "$n"): mtu=$(cat "${n}mtu" 2>/dev/null) operstate=$(cat "${n}operstate" 2>/dev/null)"
+              done
+              exit 0
+          securityContext:
+            # Only a privileged container sees the host's device nodes; an
+            # unprivileged one gets a synthetic /dev without kvm.
+            privileged: true
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: host
+              mountPath: /host
+              readOnly: true
+              recursiveReadOnly: IfPossible
+      volumes:
+        - name: host
+          hostPath:
+            path: /
