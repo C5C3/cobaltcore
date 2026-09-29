@@ -81,12 +81,15 @@ var chassisSkeleton = commonreconcile.Skeleton[*ovnv1alpha1.OVNChassis, ovnv1alp
 // The list is short because a chassis owns no state of its own: the two
 // DaemonSets, the two ConfigMaps that carry the per-node values and the scripts
 // the pods run, the maintenance Jobs that evacuate a gateway node and
-// deregister a leaving chassis, and the opt-in VerticalPodAutoscalers.
+// deregister a leaving chassis, the opt-in VerticalPodAutoscalers, and the copy
+// of the central's client identity a chassis on another cluster than its
+// central mounts.
 var OVNChassisRemoteChildKinds = []schema.GroupVersionKind{
 	appsv1.SchemeGroupVersion.WithKind("DaemonSet"),
 	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
 	batchv1.SchemeGroupVersion.WithKind("Job"),
 	deployment.VPAGVK,
+	corev1.SchemeGroupVersion.WithKind("Secret"),
 }
 
 // OVNChassisReconciler reconciles an OVNChassis object. Its fields mirror the
@@ -134,16 +137,18 @@ type OVNChassisReconciler struct {
 // them, stamps their status and manages their finalizers. The projected child
 // kinds carry the full set. The read-only core kinds are inputs: nodes for the
 // selection this controller renders and for the addresses the OVNCentral
-// endpoint step publishes, pods for the same, and secrets for the certificate
-// material cert-manager writes.
+// endpoint step publishes, and pods for the same. Secrets carry the full set:
+// they are the certificate material cert-manager writes, which the operator
+// reads, and the copy of the client identity this controller writes for a
+// chassis on another cluster than its central.
 
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals;ovnchassis,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/finalizers,verbs=update
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core,resources=nodes;pods;secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=services;configmaps;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=nodes;pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=services;configmaps;persistentvolumeclaims;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments;daemonsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
@@ -486,7 +491,8 @@ func (r *OVNChassisReconciler) setupWithOptions(mgr mcmanager.Manager, opts crco
 		For(&ovnv1alpha1.OVNChassis{}, mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders).
 		Owns(&appsv1.DaemonSet{}, engageLocal, engageNoProviders).
 		Owns(&corev1.ConfigMap{}, engageLocal, engageNoProviders).
-		Owns(&batchv1.Job{}, engageLocal, engageNoProviders)
+		Owns(&batchv1.Job{}, engageLocal, engageNoProviders).
+		Owns(&corev1.Secret{}, engageLocal, engageNoProviders)
 
 	// The recommender rewrites status.recommendation about once a minute; only
 	// a spec change (drift from the applied VPA) wakes the CR.
@@ -514,6 +520,22 @@ func (r *OVNChassisReconciler) setupWithOptions(mgr mcmanager.Manager, opts crco
 	b = b.Watches(&ovnv1alpha1.OVNCentral{},
 		commonmulticluster.LocalRequests(centralToChassisMapper(local.GetClient())),
 		engageLocal, engageNoProviders)
+
+	// The central's client Secret, on both sides, so the copy a chassis on
+	// another cluster mounts follows a cert-manager renewal at watch latency.
+	// The two legs are registered by hand rather than through AddInputWatch,
+	// whose remote leg admits events from the chassis's own cluster alone: the
+	// source Secret lives on the central's cluster, which is exactly the one a
+	// chassis away from its central does not project onto, so the remote leg
+	// is gated on both (see chassisTargetClusters).
+	b = b.
+		Watches(&corev1.Secret{},
+			commonmulticluster.LocalRequests(clientSecretToChassisMapper(local.GetClient())),
+			engageLocal, engageNoProviders).
+		Watches(&corev1.Secret{},
+			commonmulticluster.RemoteRequestsAmong(clientSecretToChassisMapper(local.GetClient()),
+				chassisTargetClusters(local.GetClient())),
+			commonmulticluster.RemoteWatchOptions(corev1.SchemeGroupVersion.WithKind("Secret"))...)
 
 	// The nodes, on both sides: the management cluster's for a chassis that
 	// keeps its children local, and the target clusters' for a placed one. A

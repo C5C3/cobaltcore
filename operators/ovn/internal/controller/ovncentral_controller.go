@@ -191,8 +191,10 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // are written by whoever deploys the control plane, and the operator only reads
 // them, stamps their status and manages their finalizers. The projected child
 // kinds carry the full set. The read-only core kinds are inputs: nodes and pods
-// for the addresses the endpoint step publishes, and secrets for the
-// certificate material cert-manager writes.
+// for the addresses the endpoint step publishes. Secrets carry the full set:
+// they are the certificate material cert-manager writes, which the operator
+// reads, and the copy of the client identity the chassis controller writes for
+// a chassis on another cluster than its central.
 
 // No create and no delete: both CR kinds are written by whoever deploys the
 // control plane. The operator reads them, stamps their status and manages their
@@ -202,13 +204,14 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/finalizers,verbs=update
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/finalizers,verbs=update
-// The three inputs the operator reads and never writes: nodes and pods for the
-// addresses the endpoint step publishes to the chassis layer, secrets for the
-// certificate material cert-manager writes.
-// +kubebuilder:rbac:groups=core,resources=nodes;pods;secrets,verbs=get;list;watch
+// The two inputs the operator reads and never writes: nodes and pods for the
+// addresses the endpoint step publishes to the chassis layer.
+// +kubebuilder:rbac:groups=core,resources=nodes;pods,verbs=get;list;watch
 // persistentvolumeclaims covers the backup volume; the database volumes come
-// from the StatefulSet volumeClaimTemplates.
-// +kubebuilder:rbac:groups=core,resources=services;configmaps;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// from the StatefulSet volumeClaimTemplates. secrets covers the certificate
+// material cert-manager writes and the client-identity copy of a chassis on
+// another cluster than its central.
+// +kubebuilder:rbac:groups=core,resources=services;configmaps;persistentvolumeclaims;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // statefulsets carry the northbound and southbound databases, deployments the
 // northd and relay tiers, daemonsets the per-node chassis pods.

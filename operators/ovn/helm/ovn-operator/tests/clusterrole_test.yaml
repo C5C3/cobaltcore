@@ -57,9 +57,9 @@ tests:
             verbs:
               - update
 
-  # nodes, pods and secrets share the one read-only core rule, mirroring the
-  # nodes;pods;secrets marker.
-  - it: should grant read-only on nodes
+  # nodes and pods share the one read-only core rule, mirroring the nodes;pods
+  # marker.
+  - it: should grant read-only on nodes and pods
     asserts:
       - contains:
           path: rules
@@ -69,28 +69,17 @@ tests:
             resources:
               - nodes
               - pods
-              - secrets
             verbs:
               - get
               - list
               - watch
 
-  - it: should grant read-only on pods and secrets
+  # The chassis controller copies the central's client Secret onto the
+  # chassis's cluster (<chassis>-ovn-client), so secrets sit on the full-verb
+  # core rule beside the other children the operator writes.
+  - it: should grant full CRUD on secrets for the client-identity copy
     asserts:
       - contains:
-          path: rules
-          content:
-            apiGroups:
-              - ''
-            resources:
-              - nodes
-              - pods
-              - secrets
-            verbs:
-              - get
-              - list
-              - watch
-      - notContains:
           path: rules
           content:
             apiGroups:
@@ -121,7 +110,6 @@ tests:
             resources:
               - nodes
               - pods
-              - secrets
             verbs:
               - create
               - delete
