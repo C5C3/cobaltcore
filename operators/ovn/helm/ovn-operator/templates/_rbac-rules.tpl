@@ -10,6 +10,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   resources:
   - configmaps
   - persistentvolumeclaims
+  - secrets
   - services
   verbs:
   - create
@@ -31,7 +32,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   resources:
   - nodes
   - pods
-  - secrets
   verbs:
   - get
   - list

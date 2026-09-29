@@ -9,6 +9,7 @@ rules:
   resources:
   - configmaps
   - persistentvolumeclaims
+  - secrets
   - services
   verbs:
   - create
@@ -30,7 +31,6 @@ rules:
   resources:
   - nodes
   - pods
-  - secrets
   verbs:
   - get
   - list
