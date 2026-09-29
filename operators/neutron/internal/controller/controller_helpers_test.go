@@ -374,8 +374,9 @@ func validAgent() *neutronv1alpha1.NeutronMetadataAgent {
 }
 
 // readyOVNChassis returns the OVNChassis fixture as the agent needs to find it:
-// attached to the named OVNCentral and carrying the node selection the agent
-// copies onto its own DaemonSet.
+// attached to the named OVNCentral, carrying the node selection the agent
+// copies onto its own DaemonSet, and publishing the client Secret its pods
+// mount, which on the central's cluster is the one agentCentral names.
 func readyOVNChassis(name, namespace, centralName string) *ovnv1alpha1.OVNChassis {
 	return &ovnv1alpha1.OVNChassis{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
@@ -388,6 +389,7 @@ func readyOVNChassis(name, namespace, centralName string) *ovnv1alpha1.OVNChassi
 				Effect:   corev1.TaintEffectNoSchedule,
 			}},
 		},
+		Status: ovnv1alpha1.OVNChassisStatus{ClientSecretName: "ovn-client"},
 	}
 }
 
