@@ -16,6 +16,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -83,11 +85,12 @@ func barbicanOpenBaoControlPlane() *c5c3v1alpha1.ControlPlane {
 // defaultKubernetesEndpointSlice builds the EndpointSlice kube-apiserver publishes
 // for itself under a well-known name. Seeding it is what makes a fake client
 // resemble the cluster the reconciler actually runs against: every conformant
-// cluster carries one, and resolveAPIServerEndpointIPs reads it on every dedicated
+// cluster carries one, and resolveAPIServerEndpoints reads it on every dedicated
 // secret-store pass.
 //
 // With no addresses given it carries one, which is the single-control-plane shape
-// of a kind cluster.
+// of a kind cluster. The one port is the `https` port kube-apiserver listens on
+// there.
 func defaultKubernetesEndpointSlice(addresses ...string) *discoveryv1.EndpointSlice {
 	if len(addresses) == 0 {
 		addresses = []string{"172.18.0.2"}
@@ -99,6 +102,32 @@ func defaultKubernetesEndpointSlice(addresses ...string) *discoveryv1.EndpointSl
 		},
 		AddressType: discoveryv1.AddressTypeIPv4,
 		Endpoints:   []discoveryv1.Endpoint{{Addresses: addresses}},
+		Ports:       apiServerEndpointPorts(6443),
+	}
+}
+
+// apiServerEndpointPorts is the port list kube-apiserver publishes in its own
+// EndpointSlice: one port named `https`.
+func apiServerEndpointPorts(port int32) []discoveryv1.EndpointPort {
+	return []discoveryv1.EndpointPort{{
+		Name:     ptr.To("https"),
+		Port:     ptr.To(port),
+		Protocol: ptr.To(corev1.ProtocolTCP),
+	}}
+}
+
+// expectAPIServerEgressRules asserts one egress rule per address, in the order
+// given, each allowing that address alone on TCP port.
+func expectAPIServerEgressRules(g Gomega, rules []networkingv1.NetworkPolicyEgressRule, port int, cidrs ...string) {
+	g.Expect(rules).To(HaveLen(len(cidrs)))
+	for i, cidr := range cidrs {
+		g.Expect(rules[i].To).To(HaveLen(1))
+		g.Expect(rules[i].To[0].IPBlock).NotTo(BeNil())
+		g.Expect(rules[i].To[0].IPBlock.CIDR).To(Equal(cidr))
+		g.Expect(rules[i].Ports).To(HaveLen(1))
+		g.Expect(rules[i].Ports[0].Protocol).To(Equal(ptr.To(corev1.ProtocolTCP)))
+		g.Expect(rules[i].Ports[0].Port).NotTo(BeNil())
+		g.Expect(rules[i].Ports[0].Port.IntValue()).To(Equal(port))
 	}
 }
 
@@ -122,7 +151,7 @@ func barbicanOpenBaoReconciler(t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs
 }
 
 // barbicanOpenBaoReconcilerWithExactSeeds seeds exactly what it is given, so a test
-// can model the cluster resolveAPIServerEndpointIPs must refuse to project against:
+// can model the cluster resolveAPIServerEndpoints must refuse to project against:
 // one with no API-server EndpointSlice at all.
 func barbicanOpenBaoReconcilerWithExactSeeds(
 	t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
@@ -336,6 +365,7 @@ func TestEnsureBarbicanOpenBao_ProjectsAPIServerEndpointIPs(t *testing.T) {
 			{Addresses: []string{"172.18.0.4", "172.18.0.2"}},
 			{Addresses: []string{"172.18.0.3", "172.18.0.2"}},
 		},
+		Ports: apiServerEndpointPorts(6443),
 	})
 
 	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
@@ -345,9 +375,35 @@ func TestEnsureBarbicanOpenBao_ProjectsAPIServerEndpointIPs(t *testing.T) {
 	g.Expect(instance.Spec.Network).NotTo(BeNil())
 	g.Expect(instance.Spec.Network.APIServerEndpointIPs).To(
 		Equal([]string{"172.18.0.2", "172.18.0.3", "172.18.0.4"}))
+	// The same addresses once more as egress rules on the slice's port, in the
+	// same sorted order, so the drift comparison stays stable too.
+	expectAPIServerEgressRules(g, instance.Spec.Network.EgressRules, 6443,
+		"172.18.0.2/32", "172.18.0.3/32", "172.18.0.4/32")
 	// The egress allowance is additive to the ingress allowlist, never a
 	// replacement for it.
 	g.Expect(instance.Spec.Network.TrustedIngressPeers).To(HaveLen(2))
+}
+
+// TestEnsureBarbicanOpenBao_ProjectsAPIServerEgressRulesOnTheSlicePort models a
+// Gardener shoot: the apiserver-proxy publishes the API server on port 443, not
+// 6443. The openbao-operator renders its rule for apiServerEndpointIPs on 6443
+// only, so without an egress rule on the published port the instance loses its
+// API server behind a CNI that enforces egress post-DNAT.
+func TestEnsureBarbicanOpenBao_ProjectsAPIServerEgressRulesOnTheSlicePort(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanOpenBaoControlPlane()
+	slice := defaultKubernetesEndpointSlice("240.248.220.69")
+	slice.Ports = apiServerEndpointPorts(443)
+	r := barbicanOpenBaoReconciler(t, cp, slice)
+
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	instance := getBarbicanOpenBaoCluster(t, r, cp)
+	g.Expect(instance.Spec.Network).NotTo(BeNil())
+	// Kept beside the rule: the operator's APIServerNetworkReady condition keys on it.
+	g.Expect(instance.Spec.Network.APIServerEndpointIPs).To(Equal([]string{"240.248.220.69"}))
+	expectAPIServerEgressRules(g, instance.Spec.Network.EgressRules, 443, "240.248.220.69/32")
 }
 
 // TestEnsureBarbicanOpenBao_TracksAPIServerEndpointDrift asserts a live instance is
@@ -370,12 +426,14 @@ func TestEnsureBarbicanOpenBao_TracksAPIServerEndpointDrift(t *testing.T) {
 	}
 	g.Expect(r.Get(context.Background(), key, slice)).To(Succeed())
 	slice.Endpoints = []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.7"}}}
+	slice.Ports = apiServerEndpointPorts(443)
 	g.Expect(r.Update(context.Background(), slice)).To(Succeed())
 
 	_, err = r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(getBarbicanOpenBaoCluster(t, r, cp).Spec.Network.APIServerEndpointIPs).
-		To(Equal([]string{"10.0.0.7"}))
+	network := getBarbicanOpenBaoCluster(t, r, cp).Spec.Network
+	g.Expect(network.APIServerEndpointIPs).To(Equal([]string{"10.0.0.7"}))
+	expectAPIServerEgressRules(g, network.EgressRules, 443, "10.0.0.7/32")
 }
 
 // TestEnsureBarbicanOpenBao_RefusesWithoutAPIServerEndpointSlice asserts the
@@ -434,6 +492,71 @@ func TestEnsureBarbicanOpenBao_RefusesEmptyAPIServerEndpointSlice(t *testing.T) 
 	}
 	g.Expect(apierrors.IsNotFound(r.Get(context.Background(), instanceKey, instance))).To(BeTrue(),
 		"no OpenBaoCluster may be written when the API-server addresses cannot be resolved")
+}
+
+// TestEnsureBarbicanOpenBao_RefusesEndpointSliceWithoutPort asserts the fail-closed
+// outcome for a slice that carries addresses but no port, whether the port list is
+// empty or its only entry carries no number. The egress rule for the port the API
+// server answers on cannot be rendered without one, and an instance created
+// without it wedges behind Gardener's apiserver-proxy exactly as one without any
+// allowance does.
+func TestEnsureBarbicanOpenBao_RefusesEndpointSliceWithoutPort(t *testing.T) {
+	for name, ports := range map[string][]discoveryv1.EndpointPort{
+		"no port entry":                 nil,
+		"a port entry without a number": {{Name: ptr.To("https"), Protocol: ptr.To(corev1.ProtocolTCP)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := barbicanOpenBaoControlPlane()
+			slice := defaultKubernetesEndpointSlice("172.18.0.2")
+			slice.Ports = ports
+			r := barbicanOpenBaoReconciler(t, cp, slice)
+
+			available, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("EndpointSlice default/kubernetes carries no port"))
+			g.Expect(available).To(BeFalse())
+
+			instance := &openbaov1alpha1.OpenBaoCluster{}
+			instanceKey := types.NamespacedName{
+				Namespace: cp.BarbicanNamespace(), Name: barbicanOpenBaoName(cp),
+			}
+			g.Expect(apierrors.IsNotFound(r.Get(context.Background(), instanceKey, instance))).To(BeTrue(),
+				"no OpenBaoCluster may be written when the API-server port cannot be resolved")
+		})
+	}
+}
+
+// TestEnsureBarbicanOpenBao_ProjectsTheFirstNumberedPort asserts that a port entry
+// without a number is skipped rather than read, and the first entry that carries
+// one is the port the egress rules allow.
+func TestEnsureBarbicanOpenBao_ProjectsTheFirstNumberedPort(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanOpenBaoControlPlane()
+	slice := defaultKubernetesEndpointSlice("172.18.0.2")
+	slice.Ports = append([]discoveryv1.EndpointPort{{Name: ptr.To("unnumbered")}}, apiServerEndpointPorts(443)...)
+	r := barbicanOpenBaoReconciler(t, cp, slice)
+
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	instance := getBarbicanOpenBaoCluster(t, r, cp)
+	g.Expect(instance.Spec.Network).NotTo(BeNil())
+	expectAPIServerEgressRules(g, instance.Spec.Network.EgressRules, 443, "172.18.0.2/32")
+}
+
+// TestAPIServerEgressRules pins the address-family split of the rendered blocks
+// and the empty case, which leaves spec.network.egressRules unset.
+func TestAPIServerEgressRules(t *testing.T) {
+	t.Run("IPv6 address gets a /128 block", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		expectAPIServerEgressRules(g, apiServerEgressRules([]string{"10.0.0.1", "fd00::1"}, 6443), 6443,
+			"10.0.0.1/32", "fd00::1/128")
+	})
+	t.Run("no address yields no rule", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		g.Expect(apiServerEgressRules(nil, 6443)).To(BeNil())
+	})
 }
 
 // TestEnsureBarbicanOpenBao_ProjectsSelfInitRequests pins the eight self-init

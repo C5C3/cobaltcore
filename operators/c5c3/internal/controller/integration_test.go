@@ -2075,6 +2075,29 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	}
 	g.Expect(liveAddresses).NotTo(BeEmpty())
 	g.Expect(instance.Spec.Network.APIServerEndpointIPs).To(ConsistOf(liveAddresses))
+	// The same addresses once more as egress rules, on the port the slice
+	// publishes: the operator renders its rule for apiServerEndpointIPs on 6443
+	// only, which is not where every API server answers.
+	g.Expect(apiServerSlice.Ports).NotTo(BeEmpty())
+	g.Expect(apiServerSlice.Ports[0].Port).NotTo(BeNil())
+	livePort := int(*apiServerSlice.Ports[0].Port)
+	g.Expect(instance.Spec.Network.EgressRules).To(HaveLen(len(liveAddresses)))
+	liveCIDRs := make([]string, 0, len(liveAddresses))
+	for _, address := range liveAddresses {
+		if strings.Contains(address, ":") {
+			liveCIDRs = append(liveCIDRs, address+"/128")
+		} else {
+			liveCIDRs = append(liveCIDRs, address+"/32")
+		}
+	}
+	for _, rule := range instance.Spec.Network.EgressRules {
+		g.Expect(rule.To).To(HaveLen(1))
+		g.Expect(rule.To[0].IPBlock).NotTo(BeNil())
+		g.Expect(rule.To[0].IPBlock.CIDR).To(BeElementOf(liveCIDRs))
+		g.Expect(rule.Ports).To(HaveLen(1))
+		g.Expect(rule.Ports[0].Port).NotTo(BeNil())
+		g.Expect(rule.Ports[0].Port.IntValue()).To(Equal(livePort))
+	}
 
 	// self-init is one-shot, so the eight requests and their order are frozen at
 	// create time: a mount or auth method must be enabled before anything writes

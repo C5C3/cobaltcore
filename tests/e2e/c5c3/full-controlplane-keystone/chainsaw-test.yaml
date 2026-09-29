@@ -1035,6 +1035,34 @@ spec:
             exit 1
           fi
           echo "OK: dedicated OpenBaoCluster pins API-server endpoint IPs ('${BAO_API_IPS}')"
+          # The same addresses as egress rules on the port the slice publishes. The
+          # openbao-operator renders its apiServerEndpointIPs rule on 6443 only, and
+          # Gardener's apiserver-proxy answers on 443, so the rules are what keeps
+          # the API server reachable there. On kind the port is 6443.
+          # Compared with the live slice, so a projection that hardcodes 6443 or
+          # allows other addresses fails here and not only behind the proxy.
+          BAO_EGRESS_PORTS="$(kubectl get openbaoclusters.openbao.org "${BARBICAN_BAO}" -n "${CP_NS}" \
+            -o 'jsonpath={.spec.network.egressRules[*].ports[*].port}')"
+          if [ -z "${BAO_EGRESS_PORTS}" ]; then
+            echo "ERROR: dedicated OpenBaoCluster carries no spec.network.egressRules port"
+            exit 1
+          fi
+          SLICE_PORT="$(kubectl get endpointslice kubernetes -n default -o 'jsonpath={.ports[0].port}')"
+          for p in ${BAO_EGRESS_PORTS}; do
+            if [ "${p}" != "${SLICE_PORT}" ]; then
+              echo "ERROR: egress rule port ${p} is not the port EndpointSlice default/kubernetes publishes (${SLICE_PORT})"
+              exit 1
+            fi
+          done
+          BAO_EGRESS_CIDRS="$(kubectl get openbaoclusters.openbao.org "${BARBICAN_BAO}" -n "${CP_NS}" \
+            -o 'jsonpath={.spec.network.egressRules[*].to[*].ipBlock.cidr}')"
+          for ip in ${BAO_API_IPS}; do
+            case " ${BAO_EGRESS_CIDRS} " in
+              *" ${ip}/"*) ;;
+              *) echo "ERROR: no egress rule for API-server address ${ip} (rules: '${BAO_EGRESS_CIDRS}')"; exit 1 ;;
+            esac
+          done
+          echo "OK: dedicated OpenBaoCluster allows API-server egress to '${BAO_EGRESS_CIDRS}' on the slice's port ${SLICE_PORT}"
           # The image version is deliberately NOT asserted: it is a Renovate-managed
           # pin in the operator (defaultOpenBaoVersion), and a bump PR must not have
           # to edit an e2e fixture to stay green.

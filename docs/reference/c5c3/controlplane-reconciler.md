@@ -2134,7 +2134,7 @@ on both clusters.
 The instance's `spec.network` carries two allowlists. `trustedIngressPeers` names
 the barbican operator's pods and the Barbican API pods, the only sources admitted
 to the API port. `apiServerEndpointIPs` is the egress half, and
-`resolveAPIServerEndpointIPs` resolves it per pass from the EndpointSlice
+`resolveAPIServerEndpoints` resolves it per pass from the EndpointSlice
 `kubernetes` in `default` **on the cluster the instance runs on**, deduplicated
 and sorted. The policy is enforced by the CNI there, over pods that reach their
 own API server, so for a placed Barbican the management cluster's addresses would
@@ -2146,6 +2146,14 @@ complete, and the partial raft state wedges every later initialization attempt.
 Sorting keeps the desired-versus-live comparison from reading endpoint reordering as
 drift, and the read goes through that cluster's uncached reader so no cluster-wide
 EndpointSlice informer starts for one well-known object.
+
+The openbao-operator renders its rule for `apiServerEndpointIPs` on port 6443 and
+no other port. That is where kube-apiserver listens on kind, but behind Gardener's
+apiserver-proxy the slice publishes port 443. The resolution therefore also reads
+the slice's port (kube-apiserver publishes one, `https`) and projects
+`egressRules`: one rule per address, a `/32` block (`/128` for IPv6) on TCP at that
+port, in the same sorted order. On kind the rules duplicate the operator's own. A
+slice that carries addresses but no port is refused like an empty one.
 
 That resolution fails closed. An instance created without the egress rules is
 recoverable only by deleting it together with its PVC, so a pass that cannot resolve
