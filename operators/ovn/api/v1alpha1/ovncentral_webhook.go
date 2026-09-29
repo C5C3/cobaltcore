@@ -59,6 +59,11 @@ const (
 	// leaves both ranges room to grow to the five-replica ceiling without
 	// colliding.
 	DefaultSouthboundNodePortBase int32 = 30651
+	// DefaultRelayNodePort is the node port the Southbound relay is published
+	// on, resolved when spec.relay.nodePort is nil. It sits ten ports above the
+	// Southbound base, outside both default database ranges at their
+	// five-replica ceiling.
+	DefaultRelayNodePort int32 = 30661
 	// maxNodePort is the top of the Kubernetes default node-port range, the
 	// ceiling a base plus its replicas has to stay under.
 	maxNodePort int32 = 32767
@@ -254,11 +259,16 @@ func (w *OVNCentralWebhook) validate(ctx context.Context, c *OVNCentral, extra f
 }
 
 // validateNodePortRanges checks the two node-port ranges the databases are
-// published on. Each range runs from its base over as many consecutive ports as
-// there are Raft members, so two bases that look far apart still collide once
-// both databases are scaled up. The check runs against the effective bases and
-// replica counts, not the literal fields, because both are resolved rather than
-// stored.
+// published on, and the relay's node port against both. Each range runs from
+// its base over as many consecutive ports as there are Raft members, so two
+// bases that look far apart still collide once both databases are scaled up.
+// The check runs against the effective bases, replica counts and relay port, not
+// the literal fields, because all three are resolved rather than stored.
+//
+// The relay is checked against the ranges whether or not the databases are
+// published: a range claims its ports only once externallyReachable is set on
+// the database, and a relay port that fits today would collide with the first
+// edit that publishes it.
 func validateNodePortRanges(fldPath *field.Path, spec *OVNCentralSpec) field.ErrorList {
 	nbPath := fldPath.Child("northbound", "nodePortBase")
 	sbPath := fldPath.Child("southbound", "nodePortBase")
@@ -275,6 +285,38 @@ func validateNodePortRanges(fldPath *field.Path, spec *OVNCentralSpec) field.Err
 		errs = append(errs, field.Invalid(
 			sbPath, sbBase, "northbound and southbound nodePort ranges overlap",
 		))
+	}
+
+	if spec.Relay == nil {
+		return errs
+	}
+	relayPath := fldPath.Child("relay", "nodePort")
+
+	// Defense-in-depth twin of the XValidation rule on OVNRelaySpec.
+	if spec.Relay.NodePort != nil && !spec.Relay.ExternallyReachable {
+		errs = append(errs, field.Invalid(
+			relayPath, *spec.Relay.NodePort, "relay.nodePort requires relay.externallyReachable",
+		))
+	}
+
+	if !spec.Relay.ExternallyReachable {
+		return errs
+	}
+	port := ptr.Deref(spec.Relay.NodePort, DefaultRelayNodePort)
+	for _, r := range []struct {
+		db             string
+		base, replicas int32
+	}{
+		{"northbound", nbBase, nbReplicas},
+		{"southbound", sbBase, sbReplicas},
+	} {
+		if r.base <= port && port <= r.base+r.replicas-1 {
+			errs = append(errs, field.Invalid(
+				relayPath, port,
+				fmt.Sprintf("relay nodePort %d falls inside the %s nodePort range %d-%d",
+					port, r.db, r.base, r.base+r.replicas-1),
+			))
+		}
 	}
 	return errs
 }

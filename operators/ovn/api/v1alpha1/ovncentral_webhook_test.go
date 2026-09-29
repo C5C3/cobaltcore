@@ -6,6 +6,7 @@ package v1alpha1
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -72,7 +73,7 @@ func TestOVNCentralValidateCreate_AcceptsFullCustomSpec(t *testing.T) {
 		Deployment: commonv1.DeploymentSpec{Replicas: 2},
 		Threads:    4,
 	}
-	obj.Spec.Relay = &OVNRelaySpec{Replicas: 2}
+	obj.Spec.Relay = &OVNRelaySpec{Replicas: 2, ExternallyReachable: true, NodePort: ptr.To(int32(31020))}
 	obj.Spec.TLS.IssuerRef.Kind = "Issuer"
 	obj.Spec.Backup = &OVNBackupSpec{
 		Schedule:      "30 1 * * *",
@@ -547,4 +548,103 @@ func TestOVNCentralValidate_EmptyJobsAccepted(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), o)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// The relay's node port is checked against both database ranges at their
+// effective bases and replica counts, so a port that looks free next to the
+// literal fields still collides once the resolved defaults are applied.
+func TestOVNCentralWebhook_RelayNodePortInsideARange(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*OVNCentral)
+		wantMsg string
+	}{
+		{
+			name: "inside the default Southbound range",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Relay = &OVNRelaySpec{Replicas: 1, ExternallyReachable: true, NodePort: ptr.To(int32(30651))}
+			},
+			wantMsg: "spec.relay.nodePort: Invalid value: 30651: " +
+				"relay nodePort 30651 falls inside the southbound nodePort range 30651-30653",
+		},
+		{
+			name: "inside the default Northbound range",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Relay = &OVNRelaySpec{Replicas: 1, ExternallyReachable: true, NodePort: ptr.To(int32(30641))}
+			},
+			wantMsg: "spec.relay.nodePort: Invalid value: 30641: " +
+				"relay nodePort 30641 falls inside the northbound nodePort range 30641-30643",
+		},
+		{
+			name: "the last port of a five-member Southbound range",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Southbound.Replicas = 5
+				o.Spec.Relay = &OVNRelaySpec{Replicas: 1, ExternallyReachable: true, NodePort: ptr.To(int32(30655))}
+			},
+			wantMsg: "relay nodePort 30655 falls inside the southbound nodePort range 30651-30655",
+		},
+		{
+			name: "the default port inside a moved Southbound range",
+			mutate: func(o *OVNCentral) {
+				o.Spec.Southbound.NodePortBase = ptr.To(int32(30660))
+				o.Spec.Relay = &OVNRelaySpec{Replicas: 1, ExternallyReachable: true}
+			},
+			wantMsg: "spec.relay.nodePort: Invalid value: 30661: " +
+				"relay nodePort 30661 falls inside the southbound nodePort range 30660-30662",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			o := validOVNCentral()
+			tc.mutate(o)
+
+			_, err := (&OVNCentralWebhook{}).ValidateCreate(context.Background(), o)
+			g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(tc.wantMsg)))
+		})
+	}
+
+	for _, tc := range []struct {
+		name  string
+		relay *OVNRelaySpec
+	}{
+		{"the default port", &OVNRelaySpec{Replicas: 1, ExternallyReachable: true}},
+		{"the default port spelled out", &OVNRelaySpec{Replicas: 1, ExternallyReachable: true, NodePort: ptr.To(int32(30661))}},
+		{"the port above a five-member Southbound range", &OVNRelaySpec{Replicas: 1, ExternallyReachable: true, NodePort: ptr.To(int32(30656))}},
+	} {
+		t.Run("admits "+tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			o := validOVNCentral()
+			o.Spec.Southbound.Replicas = 5
+			o.Spec.Relay = tc.relay
+
+			_, err := (&OVNCentralWebhook{}).ValidateCreate(context.Background(), o)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+	}
+}
+
+// The webhook twin of the XValidation rule on OVNRelaySpec: a node port the
+// relay is not published on is refused rather than kept unused. The range check
+// does not run for an unpublished relay, so a port inside a range yields the
+// flag message alone.
+func TestOVNCentralWebhook_RelayNodePortRequiresTheFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		nodePort int32
+	}{
+		{"a free port", 30661},
+		{"a port inside the Southbound range", 30651},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			o := validOVNCentral()
+			o.Spec.Relay = &OVNRelaySpec{Replicas: 1, NodePort: ptr.To(tc.nodePort)}
+
+			_, err := (&OVNCentralWebhook{}).ValidateCreate(context.Background(), o)
+			g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(
+				"spec.relay.nodePort: Invalid value: " + strconv.Itoa(int(tc.nodePort)) +
+					": relay.nodePort requires relay.externallyReachable")))
+			g.Expect(err.Error()).NotTo(gomega.ContainSubstring("falls inside"))
+		})
+	}
 }

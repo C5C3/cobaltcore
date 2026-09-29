@@ -13,9 +13,9 @@
 # before it calls the validating webhook, so a rule carried by both layers is
 # answered by the schema and the assertions below quote the schema message. The
 # webhook message is asserted only where the rule has no schema counterpart:
-# the two node-port range rules correlate a base with a replica count, the
-# backup schedule is parsed rather than matched, and the metadata.name bound
-# comes from the name of a child object.
+# the node-port range rules correlate a base with a replica count (the relay's
+# port included), the backup schedule is parsed rather than matched, and the
+# metadata.name bound comes from the name of a child object.
 #
 # All fixtures are generated from the single canonical scaffold in
 # `_generate.py` (mirroring tests/e2e/placement/invalid-cr/). After editing the
@@ -269,3 +269,23 @@ spec:
             ($error != null): true
             (contains($error, 'spec.northbound.verticalAutoscaling.minReplicas')): true
             (contains($error, 'should be greater than or equal to 1')): true
+  # spec.relay.nodePort without spec.relay.externallyReachable must be rejected
+  # by the XValidation rule on the relay block (the webhook twin never runs).
+  - try:
+    - apply:
+        file: 23-relay-nodeport-without-externallyreachable.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.relay')): true
+            (contains($error, 'relay.nodePort requires relay.externallyReachable')): true
+  # spec.relay.nodePort inside the default Southbound nodePort range must be
+  # rejected by the validating webhook (webhook-only).
+  - try:
+    - apply:
+        file: 24-relay-nodeport-inside-southbound-range.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.relay.nodePort')): true
+            (contains($error, 'relay nodePort 30651 falls inside the southbound nodePort range 30651-30653')): true

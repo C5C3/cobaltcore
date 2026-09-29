@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.relay.nodePort inside the Southbound nodePort range (30651-30653 at the
+# default base and three replicas) must be rejected by the validating webhook
+# (webhook-only): the range is resolved from the base and the replica count,
+# which no schema rule on the relay can see. The relay Service would take the
+# port of the first Southbound member.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  relay:
+    replicas: 1
+    externallyReachable: true
+    nodePort: 30651
