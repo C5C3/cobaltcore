@@ -572,7 +572,7 @@ spec:
           echo "=== keystone-operator ==="
           kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --tail=100 --all-containers 2>&1 || true
           echo "=== K-ORC controller ==="
-          kubectl logs -n orc-system -l app.kubernetes.io/name=openstack-resource-controller --tail=100 --all-containers 2>&1 || true
+          kubectl logs -n orc-system deploy/orc-controller-manager --tail=100 --all-containers 2>&1 || true
           echo "=== external-secrets ==="
           kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=100 --all-containers 2>&1 || true
           echo "=== Events ==="

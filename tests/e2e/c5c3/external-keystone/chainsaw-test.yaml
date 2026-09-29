@@ -929,7 +929,7 @@ spec:
           echo "=== c5c3-operator logs (last 200) ==="
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
           echo "=== K-ORC controller logs (last 120) ==="
-          kubectl logs -n orc-system -l app.kubernetes.io/name=openstack-resource-controller --tail=120 --all-containers 2>&1 || true
+          kubectl logs -n orc-system deploy/orc-controller-manager --tail=120 --all-containers 2>&1 || true
           echo "=== OpenBao logs (last 100) ==="
           kubectl logs -n shared-services openbao-0 --tail=100 2>&1 || true
           echo "=== Events (brownfield, last 30) ==="
