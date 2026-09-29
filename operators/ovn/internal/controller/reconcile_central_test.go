@@ -93,71 +93,192 @@ func TestReconcileCentral_ReadErrorIsCentralReadError(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonCentralReadError))
 }
 
-// The central projects onto a target cluster while the chassis stays on the
-// management one. The chassis would mount a Secret that does not exist where
-// its pods run, so the pair is refused rather than half-configured.
-func TestReconcileCentral_CentralOnATargetWhileTheChassisIsLocal(t *testing.T) {
+// testNorthboundNodeAddress and testSouthboundNodeAddress are the addresses a
+// central publishes outside its cluster, and testRelayNodeAddress the node
+// address of its published relay. They differ from the cluster-IP addresses so
+// a test can tell which pair a chassis was handed.
+const (
+	testNorthboundNodeAddress = "ssl:172.18.0.5:30641"
+	testSouthboundNodeAddress = "ssl:172.18.0.5:30651"
+	testRelayNodeAddress      = "ssl:172.18.0.5:30661"
+)
+
+// crossClusterOVNCentral is resolvableOVNCentral projecting onto edge-1 with
+// both databases published on node ports and their node addresses in status,
+// as a chassis on another cluster needs it.
+func crossClusterOVNCentral() *ovnv1alpha1.OVNCentral {
+	central := publishOnNodePorts(resolvableOVNCentral())
+	central.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	central.Status.Northbound.DbAddress = testNorthboundNodeAddress
+	central.Status.Southbound.DbAddress = testSouthboundNodeAddress
+	return central
+}
+
+// A central on another cluster is reached at the addresses it publishes on node
+// ports. Without a relay ovn-controller dials the Southbound node address, and
+// the client Secret is left to the next step, which copies it onto the
+// chassis's cluster.
+func TestReconcileCentral_CrossClusterUsesTheNodeAddresses(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	cr := testOVNChassis()
-	central := resolvableOVNCentral()
-	central.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	r := newTestOVNChassisReconciler(t, cr, crossClusterOVNCentral())
+
+	resolved, res, err := r.reconcileCentral(ctx, cr)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(resolved).To(Equal(resolvedCentral{
+		ovnRemote:               testSouthboundNodeAddress,
+		nbAddress:               testNorthboundNodeAddress,
+		sbAddress:               testSouthboundNodeAddress,
+		sameCluster:             false,
+		centralTargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-1"},
+		sourceClientSecretName:  testClientSecretName,
+	}), "the pods mount no Secret by the source's name across a cluster boundary")
+
+	cond := ovnChassisCondition(cr, conditionTypeCentralReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonCentralResolved))
+	g.Expect(cond.Message).To(ContainSubstring(testSouthboundNodeAddress))
+}
+
+// Across a cluster boundary both databases have to be published: a chassis
+// dials the Southbound one, and the evacuation Job writes the Northbound one. A
+// central publishing neither, or the Southbound alone, is refused with the two
+// fields to set, and without a requeue: the fix is an edit to the central,
+// which the central watch delivers.
+func TestReconcileCentral_CrossClusterWithoutNodePortsIsNotExternallyReachable(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		northbound, southbound bool
+	}{
+		{"neither database published", false, false},
+		{"only the Southbound database published", false, true},
+		{"only the Northbound database published", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			cr := testOVNChassis()
+			cr.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+			central := resolvableOVNCentral()
+			central.Spec.Northbound.ExternallyReachable = tc.northbound
+			central.Spec.Southbound.ExternallyReachable = tc.southbound
+			central.Status.Southbound.DbAddress = testSouthboundNodeAddress
+			r := newTestOVNChassisReconciler(t, cr, central)
+
+			resolved, res, err := r.reconcileCentral(ctx, cr)
+
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res.IsZero()).To(BeTrue(), "an edit to the central is what repairs it, not a retry")
+			g.Expect(resolved).To(Equal(resolvedCentral{}))
+
+			cond := ovnChassisCondition(cr, conditionTypeCentralReady)
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(conditionReasonCentralNotExternallyReachable))
+			g.Expect(cond.Message).To(And(
+				ContainSubstring("target cluster edge-1"),
+				ContainSubstring("the management cluster"),
+				ContainSubstring("spec.northbound.externallyReachable"),
+				ContainSubstring("spec.southbound.externallyReachable"),
+			), "the message has to name both clusters and both fields to be actionable")
+		})
+	}
+}
+
+// A published central whose node addresses have not been assembled yet is an
+// ordinary wait, polled at the Raft cadence like the same wait inside one
+// cluster. Two target clusters that are not the same one take the same path as
+// a target and the management cluster.
+func TestReconcileCentral_CrossClusterPublishedButPendingWaits(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := testOVNChassis()
+	cr.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-2"}
+	central := crossClusterOVNCentral()
+	central.Status.Northbound.DbAddress = ""
+	central.Status.Southbound.DbAddress = ""
 	r := newTestOVNChassisReconciler(t, cr, central)
 
 	resolved, res, err := r.reconcileCentral(ctx, cr)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.IsZero()).To(BeTrue(),
-		"a misconfigured pair is a spec error, and retrying it changes nothing")
+	g.Expect(res.RequeueAfter).To(Equal(RequeueRaftWait))
 	g.Expect(resolved).To(Equal(resolvedCentral{}))
 
 	cond := ovnChassisCondition(cr, conditionTypeCentralReady)
-	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonCentralOnAnotherCluster))
-	g.Expect(cond.Message).To(And(
-		ContainSubstring("target cluster edge-1"),
-		ContainSubstring("the management cluster"),
-	), "the message has to name both clusters for the mismatch to be actionable")
+	g.Expect(cond.Reason).To(Equal(conditionReasonCentralNotReady))
+	g.Expect(cond.Message).To(Equal("Waiting for OVNCentral " + testOVNCentralName +
+		" to publish its Southbound address outside its cluster and its client Secret"))
 }
 
-// The mirror image: the chassis projects onto a target cluster while the
-// central stays local.
-func TestReconcileCentral_ChassisOnATargetWhileTheCentralIsLocal(t *testing.T) {
+// A relay published outside its cluster keeps its purpose for a chassis on
+// another cluster: ovn-controller dials it, while the deregistration Job still
+// addresses the Southbound database itself.
+func TestReconcileCentral_CrossClusterPrefersThePublishedRelay(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	cr := testOVNChassis()
-	cr.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
-	r := newTestOVNChassisReconciler(t, cr, resolvableOVNCentral())
+	central := crossClusterOVNCentral()
+	central.Spec.Relay = &ovnv1alpha1.OVNRelaySpec{Replicas: 1, ExternallyReachable: true}
+	central.Status.RelayAddress = testRelayAddress
+	central.Status.RelayDbAddress = testRelayNodeAddress
+	r := newTestOVNChassisReconciler(t, cr, central)
 
-	_, res, err := r.reconcileCentral(ctx, cr)
+	resolved, res, err := r.reconcileCentral(ctx, cr)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
-	g.Expect(ovnChassisCondition(cr, conditionTypeCentralReady).Reason).
-		To(Equal(conditionReasonCentralOnAnotherCluster))
+	g.Expect(resolved.ovnRemote).To(Equal(testRelayNodeAddress))
+	g.Expect(resolved.sbAddress).To(Equal(testSouthboundNodeAddress))
+	g.Expect(ovnChassisCondition(cr, conditionTypeCentralReady).Message).To(ContainSubstring(testRelayNodeAddress))
 }
 
-// Two target clusters that are not the same one are as unusable as one target
-// and one management cluster.
-func TestReconcileCentral_DifferentTargetNames(t *testing.T) {
+// A relay the central publishes but whose node address is not assembled yet is
+// waited for rather than bypassed: falling back to the Southbound database for
+// one pass would put every chassis on the Raft members and roll them all again
+// when the relay address arrives.
+func TestReconcileCentral_CrossClusterWaitsForTheRelayNodeAddress(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	cr := testOVNChassis()
-	cr.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
-	central := resolvableOVNCentral()
-	central.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-2"}
+	central := crossClusterOVNCentral()
+	central.Spec.Relay = &ovnv1alpha1.OVNRelaySpec{Replicas: 1, ExternallyReachable: true}
+	central.Status.RelayAddress = testRelayAddress
 	r := newTestOVNChassisReconciler(t, cr, central)
 
-	_, _, err := r.reconcileCentral(ctx, cr)
+	resolved, res, err := r.reconcileCentral(ctx, cr)
 
 	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(RequeueRaftWait))
+	g.Expect(resolved).To(Equal(resolvedCentral{}))
+
 	cond := ovnChassisCondition(cr, conditionTypeCentralReady)
-	g.Expect(cond.Reason).To(Equal(conditionReasonCentralOnAnotherCluster))
-	g.Expect(cond.Message).To(And(
-		ContainSubstring("target cluster edge-1"),
-		ContainSubstring("target cluster edge-2"),
-	))
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonCentralNotReady))
+	g.Expect(cond.Message).To(Equal("Waiting for OVNCentral " + testOVNCentralName +
+		" to publish its relay's node address"))
+}
+
+// A relay that is not published outside its cluster has a cluster IP alone,
+// which a chassis on another cluster cannot reach, so it dials the Southbound
+// node address instead.
+func TestReconcileCentral_CrossClusterUnpublishedRelayFallsBackToTheSouthbound(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := testOVNChassis()
+	central := crossClusterOVNCentral()
+	central.Spec.Relay = &ovnv1alpha1.OVNRelaySpec{Replicas: 1}
+	central.Status.RelayAddress = testRelayAddress
+	r := newTestOVNChassisReconciler(t, cr, central)
+
+	resolved, res, err := r.reconcileCentral(ctx, cr)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(resolved.ovnRemote).To(Equal(testSouthboundNodeAddress))
 }
 
 // Both CRs naming the same target cluster is the multi-cluster pairing that
@@ -176,6 +297,9 @@ func TestReconcileCentral_SameTargetNameIsAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(resolved.sbAddress).To(Equal(testSouthboundAddress))
+	g.Expect(resolved.sameCluster).To(BeTrue())
+	g.Expect(resolved.clientSecretName).To(Equal(testClientSecretName),
+		"a chassis on its central's cluster mounts the central's Secret directly")
 	g.Expect(ovnChassisCondition(cr, conditionTypeCentralReady).Status).To(Equal(metav1.ConditionTrue))
 }
 
@@ -235,10 +359,12 @@ func TestReconcileCentral_RelayPreferredOverTheSouthboundAddress(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(resolved).To(Equal(resolvedCentral{
-		ovnRemote:        testRelayAddress,
-		nbAddress:        testNorthboundAddress,
-		sbAddress:        testSouthboundAddress,
-		clientSecretName: testClientSecretName,
+		ovnRemote:              testRelayAddress,
+		nbAddress:              testNorthboundAddress,
+		sbAddress:              testSouthboundAddress,
+		clientSecretName:       testClientSecretName,
+		sameCluster:            true,
+		sourceClientSecretName: testClientSecretName,
 	}))
 	g.Expect(resolved.sbAddress).NotTo(Equal(resolved.ovnRemote),
 		"the deregistration Job still addresses the database itself")
@@ -261,6 +387,8 @@ func TestReconcileCentral_WithoutARelayUsesTheSouthboundAddress(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(resolved.ovnRemote).To(Equal(testSouthboundAddress))
+	g.Expect(resolved.sameCluster).To(BeTrue())
+	g.Expect(resolved.clientSecretName).To(Equal(testClientSecretName))
 	g.Expect(ovnChassisCondition(cr, conditionTypeCentralReady).Message).
 		To(ContainSubstring(testSouthboundAddress))
 }
