@@ -2427,3 +2427,80 @@ The listener and its Certificate are unconditional; the HTTPRoute is not. Like
 the `https-dizzy` listener above, the hostname answers 404 until a route is
 projected onto it. The Glance operator creates that route from `spec.gateway` on
 the Glance CR the suite applies, and deletes it again when the suite cleans up.
+
+## Metal-stack lab
+
+`deploy/lab/metal-stack/` holds the manifests of the CobaltCore lab on a
+metal-stack cluster, planned in
+[#1138](https://github.com/c5c3/cobaltcore/issues/1138). Neither
+`hack/deploy-infra.sh` nor `deploy/flux-system/kustomization.yaml` references
+the tree; every directory in it is applied by hand.
+
+### Node probe
+
+**File:** `deploy/lab/metal-stack/probe/kustomization.yaml`
+
+The node probe is the prerequisite check of the lab. The lab's quick start
+([#1143](https://github.com/c5c3/cobaltcore/issues/1143)) has a reader run it
+first, against any metal-stack cluster, before anything else is deployed. It
+is one Job, `node-probe`, that prints the node facts the lab depends on under
+ten fixed headers. It exits 0 whatever it finds: a node that lacks something
+prints `absent`, `none` or `NOT FOUND`, and the Job still completes, so
+`kubectl wait --for=condition=complete` returns.
+
+The container runs privileged, because only a privileged container sees the
+host's `/dev/kvm`. The host root is mounted read-only at `/host`, with
+`recursiveReadOnly: IfPossible` keeping its submounts read-only where the
+runtime supports it. The pod shares no host PID or network namespace and
+mounts no ServiceAccount token. The script loads no module, writes nothing and
+installs nothing, so the probe needs no egress beyond the image pull.
+`tests/unit/deploy/metal_stack_probe_test.sh` fails when an edit adds
+`nsenter`, `chroot`, `modprobe`, `insmod`, `rmmod`, `mount`, `umount`,
+`sysctl`, `apt-get`, `apt`, `tee`, `dd`, `mknod` or `rm` to the script, or a
+redirection other than `2>/dev/null`.
+
+```bash
+kubectl apply -k deploy/lab/metal-stack/probe
+kubectl wait --for=condition=complete job/node-probe -n default --timeout=5m
+kubectl logs -n default job/node-probe
+kubectl delete job -n default node-probe
+```
+
+The Job runs on the node the scheduler picks. On a cluster with more than one
+worker, pin it to each node in turn, with the same wait, logs and delete after
+every run. The delete is needed because a Job's pod template is immutable:
+
+```bash
+yq '.spec.template.spec.nodeName = "<node>"' deploy/lab/metal-stack/probe/node-probe.yaml | kubectl apply -f -
+```
+
+`ttlSecondsAfterFinished: 3600` removes the Job, and its logs with it, an hour
+after it completes. A DaemonSet would cover every node in one run, but it
+never completes and has to be deleted by hand; the Job keeps each run bounded.
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `default`. The probe runs before `deploy/flux-system/namespaces.yaml` has created `openstack` or `shared-services`, and the metal-stack shoot enforces no PodSecurity level on `default` |
+| Image | `docker.io/library/debian:bookworm-slim`, digest-pinned. A Renovate `customManager` refreshes the digest (automerged after 3 days); Renovate never moves the `bookworm-slim` codename tag, so a Debian release change is a manual edit |
+| Runs as | one Job with `backoffLimit: 0`, one privileged container, the host root read-only at `/host` |
+| Dependencies | none |
+
+| Header | What it answers for the lab |
+| --- | --- |
+| `== kvm device` | Whether the node has `/dev/kvm`. With `== cpu` it decides `virtType: kvm` |
+| `== cpu` | CPU model, count and topology, the virtualization extension, and how many CPUs carry the `vmx` or `svm` flag |
+| `== loaded modules` | Which KVM, vhost, Open vSwitch, Geneve, VXLAN, bridge, NBD, multipath, NVMe/TCP and NFS server (`nfsd`) modules are loaded |
+| `== module files for <kernel>` | Whether the running kernel ships `kvm`, `vhost_net`, `openvswitch`, `geneve` and the other module files, so the OVN chassis and the libvirt DaemonSet can load what they need. A module compiled into the kernel prints `builtin` |
+| `== nested / iommu` | The `nested` parameter of `kvm_intel` or `kvm_amd`, and the number of IOMMU groups |
+| `== memory` | `MemTotal` and the hugepage reservations |
+| `== disks` | The block devices, where `/var/lib` lives and how much it holds |
+| `== cgroup` | The cgroup filesystem type, `cgroup2fs` on cgroup v2 |
+| `== host os / binaries` | The host OS, and that no `libvirtd`, `qemu-system-x86_64`, `ovs-vswitchd` or `rpc.nfsd` is installed on the host |
+| `== nics` | Every host interface with its MTU and state: the uplinks, and the host end of each pod's veth (`cali*`), which carries the pod network's MTU. Neutron's `global_physnet_mtu` has to match the MTU of the network the Geneve tunnels run on |
+
+The values a lab-ready node shows come from the 2026-09-29 survey in
+[#1138](https://github.com/c5c3/cobaltcore/issues/1138). The header comment of
+`deploy/lab/metal-stack/probe/node-probe.yaml` lists them in the probe's own
+output format, from a run on the survey's node the same day. The survey's NIC
+lines show the pod's own `eth0`; the probe reads the host's sysfs and lists the
+host's interfaces instead.
