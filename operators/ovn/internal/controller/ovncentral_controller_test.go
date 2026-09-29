@@ -329,11 +329,13 @@ func TestPipelineSteps_OrderAndNames(t *testing.T) {
 }
 
 // RunParallelGroup merges a member's conditions and its metadata back onto the
-// primary CR and nothing else, so the two fields the group publishes into
-// status have to be carried over by the step itself. Without it both writes are
+// primary CR and nothing else, so the fields the group publishes into status
+// have to be carried over by the step itself. Without it the writes are
 // discarded with the copy the member ran on: an OVNChassis is never handed the
-// relay address and never learns that the central finished its rollout, so it
-// dials the Raft leader directly and upgrades ahead of the databases.
+// relay addresses and never learns that the central finished its rollout, so it
+// dials the Raft leader directly and upgrades ahead of the databases. A cleared
+// node address has to reach the primary the same way, or a chassis on another
+// cluster keeps dialling a port that is no longer published.
 //
 // The members are driven the way the group drives them — through the step's own
 // Fn, on a DeepCopy — because running the sub-reconciler directly on the primary
@@ -342,7 +344,8 @@ func TestParallelSteps_CarryPublishedStatusOntoThePrimary(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	primary := publishEndpoints(relayOVNCentral())
-	r := newTestOVNCentralReconciler(t, primary)
+	primary.Spec.Relay.ExternallyReachable = true
+	r := newTestOVNCentralReconciler(t, primary, relayPod(primary, "relay-a", "10.0.0.1"))
 
 	stepNamed := func(name string) commonreconcile.ParallelStep[*ovnv1alpha1.OVNCentral] {
 		for _, step := range r.parallelSteps(r.Client, primary) {
@@ -374,6 +377,13 @@ func TestParallelSteps_CarryPublishedStatusOntoThePrimary(t *testing.T) {
 	}
 
 	g.Expect(primary.Status.InstalledImage).To(Equal(effectiveImage(nil).Reference()))
+	g.Expect(primary.Status.RelayAddress).To(Equal("ssl:" + testRelayClusterIP + ":6642"))
+	g.Expect(primary.Status.RelayDbAddress).To(Equal("ssl:10.0.0.1:30661"))
+
+	primary.Spec.Relay.ExternallyReachable = false
+	_, err := stepNamed("Relay").Fn(ctx, primary.DeepCopy())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(primary.Status.RelayDbAddress).To(BeEmpty(), "the cleared flag clears the node address on the primary")
 	g.Expect(primary.Status.RelayAddress).To(Equal("ssl:" + testRelayClusterIP + ":6642"))
 }
 

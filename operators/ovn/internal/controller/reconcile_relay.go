@@ -7,7 +7,10 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path"
+	"slices"
+	"strings"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -15,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -57,10 +61,12 @@ func (r *OVNCentralReconciler) reconcileRelay(ctx context.Context, children clie
 			centralSkeleton.MarkFailed(cr, conditionTypeRelayReady, conditionReasonDeploymentError, err)
 			return ctrl.Result{}, err
 		}
-		// The address goes with the relays. A chassis handed a cluster IP whose
+		// The addresses go with the relays. A chassis handed a cluster IP whose
 		// Service no longer exists waits out its own timeout instead of falling
-		// back to the database it can still reach.
+		// back to the database it can still reach, and the same holds for a node
+		// port nothing listens on any more.
 		cr.Status.RelayAddress = ""
+		cr.Status.RelayDbAddress = ""
 		conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeRelayReady,
 			Status:             metav1.ConditionTrue,
@@ -100,6 +106,14 @@ func (r *OVNCentralReconciler) reconcileRelay(ctx context.Context, children clie
 		return ctrl.Result{}, err
 	}
 
+	// The Service publishes the spec's node port from here on. A node address a
+	// previous pass published for another port, before a nodePort edit, names a
+	// port nothing listens on any more, and it goes now rather than with the
+	// fresh one below: a read that fails on the way keeps what the field holds.
+	if !relayAddressUsesPort(cr.Status.RelayDbAddress, relayNodePort(cr)) {
+		cr.Status.RelayDbAddress = ""
+	}
+
 	// The cluster IP is read back live rather than taken from the applied
 	// object: the API server assigns it, the builder never sets it, and a cache
 	// that has not caught up would report the Service as unassigned.
@@ -124,6 +138,26 @@ func (r *OVNCentralReconciler) reconcileRelay(ctx context.Context, children clie
 	}
 	cr.Status.RelayAddress = fmt.Sprintf("ssl:%s:%d", live.Spec.ClusterIP, southboundDB(cr).clientPort)
 
+	// The node address follows the same live read as the cluster IP, for the
+	// same reason: the scheduler, not the builder, decides where the relay pods
+	// land. It is cleared with the flag, so a chassis on another cluster falls
+	// back to the Southbound node ports rather than dial a port that is no
+	// longer published. A list that fails keeps the published value when it
+	// names the current port, as every failed read above keeps the cluster-IP
+	// one: an empty field holds every chassis on another cluster until the next
+	// pass.
+	if cr.Spec.Relay.ExternallyReachable {
+		address, err := collectRelayNodeAddresses(ctx, commonmulticluster.LiveReader(children), cr)
+		if err != nil {
+			err = fmt.Errorf("listing sb-relay pods: %w", err)
+			centralSkeleton.MarkFailed(cr, conditionTypeRelayReady, conditionReasonDeploymentError, err)
+			return ctrl.Result{}, err
+		}
+		cr.Status.RelayDbAddress = address
+	} else {
+		cr.Status.RelayDbAddress = ""
+	}
+
 	if !ready {
 		conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeRelayReady,
@@ -135,14 +169,62 @@ func (r *OVNCentralReconciler) reconcileRelay(ctx context.Context, children clie
 		return ctrl.Result{RequeueAfter: commonreconcile.RequeueDeploymentPolling}, nil
 	}
 
+	message := fmt.Sprintf("The sb-relay Deployment is available at %s", cr.Status.RelayAddress)
+	if cr.Status.RelayDbAddress != "" {
+		message += fmt.Sprintf(" and at %s outside the cluster", cr.Status.RelayDbAddress)
+	}
 	conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeRelayReady,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: cr.Generation,
 		Reason:             conditionReasonDeploymentReady,
-		Message:            fmt.Sprintf("The sb-relay Deployment is available at %s", cr.Status.RelayAddress),
+		Message:            message,
 	})
 	return ctrl.Result{}, nil
+}
+
+// collectRelayNodeAddresses assembles the relay's connection string for clients
+// outside the cluster: one "ssl:<host IP>:<node port>" per node a relay pod runs
+// on, deduplicated and sorted so the string does not change with the order the
+// pods are listed in. A change in it rolls the ovn-controller DaemonSet of every
+// chassis on another cluster, so a reordering must not count as one.
+//
+// Only the nodes the relay pods run on are named, although a node port answers
+// on every node, so the list grows with the relay tier rather than with the
+// cluster. A pod not scheduled yet carries no host IP and is skipped, and no pod
+// with one leaves the string empty.
+func collectRelayNodeAddresses(ctx context.Context, reader client.Reader, cr *ovnv1alpha1.OVNCentral) (string, error) {
+	var pods corev1.PodList
+	if err := reader.List(ctx, &pods, client.InNamespace(cr.Namespace),
+		client.MatchingLabels(componentSelectorLabels(cr, componentRelay))); err != nil {
+		return "", err
+	}
+
+	hosts := make(map[string]struct{}, len(pods.Items))
+	for i := range pods.Items {
+		if ip := pods.Items[i].Status.HostIP; ip != "" {
+			hosts[ip] = struct{}{}
+		}
+	}
+
+	port := relayNodePort(cr)
+	addresses := make([]string, 0, len(hosts))
+	for _, ip := range slices.Sorted(maps.Keys(hosts)) {
+		addresses = append(addresses, fmt.Sprintf("ssl:%s:%d", ip, port))
+	}
+	return strings.Join(addresses, ","), nil
+}
+
+// relayAddressUsesPort reports whether every entry of a published relay node
+// address names the given node port. An empty address names none.
+func relayAddressUsesPort(address string, port int32) bool {
+	suffix := fmt.Sprintf(":%d", port)
+	for _, entry := range strings.Split(address, ",") {
+		if !strings.HasSuffix(entry, suffix) {
+			return false
+		}
+	}
+	return true
 }
 
 // deleteRelay removes the relay children of a CR that no longer asks for them,
@@ -280,9 +362,25 @@ func buildRelayDeployment(cr *ovnv1alpha1.OVNCentral) *appsv1.Deployment {
 // buildRelayService builds the Service the chassis reach the relays through. It
 // is a plain load-balanced Service, unlike the per-member Services of the
 // database: every relay serves the same cached copy, so any of them can answer.
+//
+// A relay published outside the cluster turns it into a NodePort Service on one
+// port, the way raftPerPodService publishes a database member. Unlike a member,
+// the relay needs one port for the whole tier, for the same reason it needs one
+// Service.
 func buildRelayService(cr *ovnv1alpha1.OVNCentral) *corev1.Service {
 	port := southboundDB(cr).clientPort
-	return deployment.BuildService(cr.Namespace, relayName(cr),
+	svc := deployment.BuildService(cr.Namespace, relayName(cr),
 		naming.ComponentLabels(centralAppName, cr.Name, componentRelay),
 		componentSelectorLabels(cr, componentRelay), port, port)
+	if cr.Spec.Relay.ExternallyReachable {
+		svc.Spec.Type = corev1.ServiceTypeNodePort
+		svc.Spec.Ports[0].NodePort = relayNodePort(cr)
+	}
+	return svc
+}
+
+// relayNodePort resolves the node port the relay is published on: the one the
+// spec names, or DefaultRelayNodePort.
+func relayNodePort(cr *ovnv1alpha1.OVNCentral) int32 {
+	return ptr.Deref(cr.Spec.Relay.NodePort, ovnv1alpha1.DefaultRelayNodePort)
 }

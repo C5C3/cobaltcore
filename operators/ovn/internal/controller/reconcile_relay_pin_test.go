@@ -309,6 +309,29 @@ status:
   loadBalancer: {}
 `
 
+const pinPublishedRelayServiceGolden = `metadata:
+  labels:
+    app.kubernetes.io/component: sb-relay
+    app.kubernetes.io/instance: ovn
+    app.kubernetes.io/managed-by: ovncentral-operator
+    app.kubernetes.io/name: ovncentral
+  name: ovn-sb-relay
+  namespace: openstack
+spec:
+  ports:
+  - nodePort: 30661
+    port: 6642
+    protocol: TCP
+    targetPort: 6642
+  selector:
+    app.kubernetes.io/component: sb-relay
+    app.kubernetes.io/instance: ovn
+    app.kubernetes.io/name: ovncentral
+  type: NodePort
+status:
+  loadBalancer: {}
+`
+
 // TestPinRelayDeployment pins the relay workload across a defaulted relay block
 // and one that moves both of its knobs.
 func TestPinRelayDeployment(t *testing.T) {
@@ -333,14 +356,32 @@ func TestPinRelayDeployment(t *testing.T) {
 	}
 }
 
-// TestPinRelayService pins the Service the chassis reach the relays through. It
-// carries no clusterIP of its own: the API server assigns one, and a builder
-// that set the field would make every apply fight it.
+// TestPinRelayService pins the Service the chassis reach the relays through,
+// unpublished and published on the default node port. It carries no clusterIP
+// of its own: the API server assigns one, and a builder that set the field
+// would make every apply fight it.
 func TestPinRelayService(t *testing.T) {
-	g := NewWithT(t)
+	cases := []struct {
+		name   string
+		cr     func() *ovnv1alpha1.OVNCentral
+		golden string
+	}{
+		{name: "default", cr: pinRelayOVNCentral, golden: pinRelayServiceGolden},
+		{name: "published", cr: func() *ovnv1alpha1.OVNCentral {
+			cr := pinRelayOVNCentral()
+			cr.Spec.Relay.ExternallyReachable = true
+			return cr
+		}, golden: pinPublishedRelayServiceGolden},
+	}
 
-	got, err := yaml.Marshal(buildRelayService(pinRelayOVNCentral()))
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(string(got)).To(Equal(pinRelayServiceGolden),
-		"the rendered relay Service must stay byte-identical")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			got, err := yaml.Marshal(buildRelayService(tc.cr()))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(string(got)).To(Equal(tc.golden),
+				"the rendered relay Service must stay byte-identical")
+		})
+	}
 }
