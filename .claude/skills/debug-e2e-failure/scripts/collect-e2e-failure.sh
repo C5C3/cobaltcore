@@ -72,7 +72,7 @@ evidence-after-finally|vhost ['a-z0-9_/-]+ not found|noise: pod tails captured a
 shared-memcached-401|keystoneauth1\.exceptions\.http\.Unauthorized|a service got 401 from Keystone; with two Keystone CRs on one Memcached this is the identity-cache collision
 aborted-connection|Aborted connection .*Got an error reading communication packets|noise: a short-lived MariaDB client (nova-manage, a healthcheck) exited without COM_QUIT; progress, not a hang
 catalog-import-race|all catalog imports resolved .*expected '4', got '3'|K-ORC resolves the admin Endpoint after the Service flips Available; the suite sampled too early
-korc-log-selector|No resources found in orc-system namespace|noise: the catch block's K-ORC log selector matches nothing, so K-ORC's side of the failure is not in this log
+korc-log-selector|No resources found in orc-system namespace|noise: a catch block from before #1107 selected K-ORC by a label no pod carries; rerun on a tree with #1107 for the K-ORC log
 insufficient-cpu|nodes are available: .*Insufficient cpu|pods Pending on the node's CPU request budget; read the Node capacity block before adding requests
 tempest-port-forward|port-forward on [0-9]+ died during the run|tempest failures against that localhost port are the dead forward, not the service
 webhook-stale-keepalive|Error from server \(InternalError\).*failed calling webhook|apiserver could not reach a webhook; right after an operator rollout it is a stale keep-alive to the old pod IP
