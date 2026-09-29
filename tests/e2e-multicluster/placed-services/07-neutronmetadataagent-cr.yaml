@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NeutronMetadataAgent fixture for the placed-services E2E test: the agent
+# beside the management-cluster chassis of 06.
+#
+# It names no targetClusterRef, the same cluster as its chassis, whose node it
+# shares. The agent reads the Southbound database at the node address the
+# central on the target publishes, and mounts the client Secret the chassis
+# publishes in status.clientSecretName, the copy on this cluster.
+#
+# The shape is tests/e2e/neutron/metadata-agent/03-neutronmetadataagent-cr.yaml:
+# no spec.messaging and no spec.novaMetadata, since neither is what this suite
+# proves.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: ovn-mc-agent
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  chassisRef:
+    name: ovn-mc-chassis

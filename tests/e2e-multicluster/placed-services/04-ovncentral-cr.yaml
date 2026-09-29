@@ -5,10 +5,14 @@
 # OVN control plane the neutron-mc CR programs, placed on the target cluster.
 #
 # The shape is tests/e2e/neutron/basic-deployment/01-ovncentral-cr.yaml plus
-# targetClusterRef. Both CRs name the same cluster, so the Neutron reconciler
-# reads the internal database addresses this central publishes; across a
-# boundary it would need the node ports an externally reachable database
-# publishes instead.
+# targetClusterRef. The Neutron names the same cluster, so its reconciler reads
+# the internal database addresses this central publishes.
+#
+# Both databases and the Southbound relay are published on node ports, because
+# the OVNChassis and the NeutronMetadataAgent of 06 and 07 stay on the
+# management cluster: they reach this central only at the addresses it
+# publishes outside the target (status.<db>.dbAddress and
+# status.relayDbAddress), and ovn-controller dials the relay's.
 #
 # The children this places are the ones no other CR in the suite produces: two
 # StatefulSets and a PersistentVolumeClaim. Those are the grants of the
@@ -26,10 +30,6 @@
 # where cert-manager and the databases both are. OVN authenticates every
 # connection, so both databases and the client identity the Neutron pods mount
 # are issued from the same CA there.
-#
-# No OVNChassis and no metadata agent: a chassis needs the openvswitch kernel
-# modules on the node and a privileged namespace, and this suite is about where
-# the children land rather than about the datapath.
 apiVersion: ovn.openstack.c5c3.io/v1alpha1
 kind: OVNCentral
 metadata:
@@ -43,10 +43,15 @@ spec:
       name: openstack-ovn-ca-issuer
   northbound:
     replicas: 1
+    externallyReachable: true
   southbound:
     replicas: 1
+    externallyReachable: true
   northd:
     deployment:
       replicas: 1
+  relay:
+    replicas: 1
+    externallyReachable: true
   backup:
     suspend: true

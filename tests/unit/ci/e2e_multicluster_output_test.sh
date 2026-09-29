@@ -177,6 +177,30 @@ test_job_deploys_the_network_operators() {
     "$job" 'ovn:${{ env.OVN_VERSION }}'
 }
 
+test_job_prepares_the_management_cluster_datapath() {
+  echo "Test: the job loads the datapath modules and the chassis and agent images"
+
+  # The suite's OVNChassis and NeutronMetadataAgent keep their DaemonSets on
+  # the management cluster. ovn-controller needs the openvswitch and geneve
+  # modules in the host kernel both kind clusters share, and neither image is
+  # otherwise present on the management cluster, which loads only the
+  # operators. Scoped to this job's text, like the test above.
+  local job
+  job=$(awk '
+    /^  e2e-multicluster:$/ { in_job = 1; next }
+    in_job && /^  ([a-z0-9-]+:$|#)/ { exit }
+    in_job { print }
+  ' "$CI_YAML")
+
+  assert_not_empty "the job exists" "$job"
+  assert_contains "the infrastructure step loads the OVN kernel modules" \
+    "$job" 'WITH_OVN_KERNEL_MODULES: "true"'
+  assert_contains "the OVN image reaches the management cluster" \
+    "$job" 'ovn:${{ env.OVN_VERSION }} --name "$MGMT_CLUSTER"'
+  assert_contains "the Neutron image reaches the management cluster" \
+    "$job" 'neutron:2025.2 --name "$MGMT_CLUSTER"'
+}
+
 test_job_never_registers_an_admin_kubeconfig() {
   echo "Test: the registration step mints the chart's token instead of taking the admin kubeconfig"
 
@@ -225,6 +249,7 @@ test_ci_yaml_wires_all_four_sides
 test_filter_covers_the_suite_and_the_chart
 test_job_runs_the_makefile_target
 test_job_deploys_the_network_operators
+test_job_prepares_the_management_cluster_datapath
 test_job_never_registers_an_admin_kubeconfig
 test_setup_action_threads_the_target_flags
 

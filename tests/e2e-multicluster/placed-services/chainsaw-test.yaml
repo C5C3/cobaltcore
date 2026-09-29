@@ -20,9 +20,17 @@
 #   - A placed OVN control plane and a placed Neutron reach Ready with the two
 #     Raft StatefulSets, the backup volume, the API Deployment and the mirrored
 #     OVN client Secret on the TARGET. Those StatefulSets and that volume are
-#     the two grants of the chart no other CR in the suite uses. No chassis is
-#     placed: the datapath wants kernel modules and a privileged namespace, and
-#     this suite is about where the children land
+#     the two grants of the chart no other CR in the suite uses. The central
+#     publishes both databases and its Southbound relay on node ports
+#   - An OVNChassis and a NeutronMetadataAgent on the MANAGEMENT cluster attach
+#     to that central across the cluster boundary: the chassis mounts a copy of
+#     the central's client Secret written beside it, byte-equal to the source,
+#     a real ovn-controller reports its Southbound connection as connected over
+#     the relay's node port, the node's Chassis row appears in the target's
+#     Southbound database, and the agent reaches Ready reading the Southbound
+#     node address. After the source is deleted and cert-manager re-issues it,
+#     the copy follows and the connection stays up. The job loads the
+#     openvswitch and geneve modules on the host both kind clusters share
 #   - Deleting the CRs sweeps their children off the target and leaves the
 #     infrastructure the deploy created there untouched
 #
@@ -335,6 +343,12 @@ spec:
             # published here, on the management cluster, while the Secret it
             # names exists only on the target.
             clientSecretName: ovn-mc-client
+            # The addresses outside the target the management-cluster chassis
+            # and agent dial. A comparison with '' would pass on an absent
+            # field, so each is required to start with the scheme.
+            (starts_with(northbound.dbAddress || '', 'ssl:')): true
+            (starts_with(southbound.dbAddress || '', 'ssl:')): true
+            (starts_with(relayDbAddress || '', 'ssl:')): true
     # The two Raft databases are the only StatefulSets this suite places and the
     # backup volume the only PersistentVolumeClaim, so this is where the chart's
     # grants for both kinds are exercised on a real target.
@@ -492,13 +506,382 @@ spec:
           done
           echo "=== Events (target cluster) ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 10: Delete the CRs and assert the sweep ────────────────────────
-  # The Neutron goes before its OVNCentral, and the store before its parent
-  # Barbican. In both pairs the dependent still resolves what it reads while it
-  # is being swept. Each delete is bounded: the remote sweep runs under a
-  # finalizer, so a target that cannot be reached shows up as a delete that does
-  # not return rather than as a passing teardown.
+  # ── Step 10: Label the management node the chassis selects ─────────────
+  # The chassis stays on the management cluster, so its node is the management
+  # cluster's one kind node. The cleanup takes the label off again at the end
+  # of the test, as tests/e2e/ovn/chassis-single-node/ does.
   - try:
+    - script:
+        content: |
+          set -eu
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          kubectl label node "$NODE" openstack.c5c3.io/chassis=true --overwrite
+          echo "OK: labelled node $NODE with openstack.c5c3.io/chassis=true"
+    cleanup:
+    - script:
+        content: |
+          set -eu
+          for node in $(kubectl get nodes -l openstack.c5c3.io/chassis=true -o name); do
+            kubectl label "$node" openstack.c5c3.io/chassis- || true
+          done
+          echo "OK: removed openstack.c5c3.io/chassis from every node"
+  # ── Step 11: A management-cluster chassis attaches to the placed central ─
+  # CentralResolved across the boundary means the central publishes both
+  # databases outside the target and the relay's node address, and
+  # status.clientSecretName names the copy rather than the central's Secret,
+  # which does not exist on this cluster. 10m for the image pull and the two
+  # DaemonSets in sequence on top of the chassis registration.
+  - try:
+    - apply:
+        file: 06-ovnchassis-cr.yaml
+    - apply:
+        file: 08-probe-script.yaml
+    - assert:
+        timeout: 10m
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          metadata:
+            name: ovn-mc-chassis
+            namespace: openstack
+          status:
+            (conditions[?type == 'CentralReady']):
+            - status: "True"
+              reason: CentralResolved
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            clientSecretName: ovn-mc-chassis-ovn-client
+    - script:
+        content: |
+          set -eu
+          SYSTEM_ID="$(kubectl get ovnchassis ovn-mc-chassis -n "$NAMESPACE" \
+            -o jsonpath='{.status.nodes[0].systemID}')"
+          if ! echo "${SYSTEM_ID}" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+            echo "FAIL: status.nodes[0].systemID is '${SYSTEM_ID}', want a UUID"
+            exit 1
+          fi
+          echo "OK: the management node registered with system-id ${SYSTEM_ID}"
+    catch:
+    - script:
+        content: |
+          echo "=== OVNChassis CR status (management cluster) ==="
+          kubectl get ovnchassis ovn-mc-chassis -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNCentral CR status (management cluster) ==="
+          kubectl get ovncentral ovn-mc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Chassis DaemonSets (management cluster) ==="
+          kubectl describe ds -n $NAMESPACE -l app.kubernetes.io/instance=ovn-mc-chassis 2>&1 || true
+          echo "=== Chassis pod logs (management cluster) ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-mc-chassis -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== ovn-operator logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=100 2>&1 || true
+          echo "=== Node labels (management cluster) ==="
+          kubectl get nodes --show-labels 2>&1 || true
+          echo "=== Events (management cluster) ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    - script:
+        cluster: target
+        content: |
+          echo "=== Relay and member Services (target cluster) ==="
+          kubectl get svc,pod -n openstack -l app.kubernetes.io/instance=ovn-mc -o wide 2>&1 || true
+          echo "=== Relay pod logs (target cluster) ==="
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=ovn-mc,app.kubernetes.io/component=sb-relay -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n openstack "$pod" --all-containers --tail=60 2>&1 || true
+          done
+  # ── Step 12: The copy of the client identity equals its source ──────────
+  # The copy lives beside the chassis on the management cluster, claimed by a
+  # controller reference; its source is the Secret cert-manager wrote on the
+  # target. The script reads the target through chainsaw's own kubeconfig for
+  # it, the path spec.clusters.target names, since a script runs in the test's
+  # directory with a kubeconfig for one cluster alone.
+  - try:
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ovn-mc-chassis-ovn-client
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: ovnchassis
+              app.kubernetes.io/instance: ovn-mc-chassis
+              app.kubernetes.io/component: ovn-client
+          type: Opaque
+          (contains(keys(data), 'tls.crt')): true
+          (contains(keys(data), 'tls.key')): true
+          (contains(keys(data), 'ca.crt')): true
+    - script:
+        content: |
+          set -eu
+          TARGET_KUBECONFIG=../../../_output/cobaltcore-target.kubeconfig
+          for key in tls.crt tls.key ca.crt; do
+            path="{.data.$(echo "$key" | sed 's/\./\\./')}"
+            COPY="$(kubectl get secret ovn-mc-chassis-ovn-client -n "$NAMESPACE" -o jsonpath="$path")"
+            SOURCE="$(kubectl --kubeconfig "$TARGET_KUBECONFIG" get secret ovn-mc-client -n openstack -o jsonpath="$path")"
+            if [ -z "$SOURCE" ] || [ "$COPY" != "$SOURCE" ]; then
+              echo "FAIL: $key of ovn-mc-chassis-ovn-client differs from ovn-mc-client on the target"
+              exit 1
+            fi
+          done
+          echo "OK: the copy carries the three keys of the source, byte for byte"
+    catch:
+    - script:
+        content: |
+          # describe prints the key sizes, never the private key itself.
+          echo "=== Client Secret copy (management cluster) ==="
+          kubectl describe secret ovn-mc-chassis-ovn-client -n $NAMESPACE 2>&1 || true
+          echo "=== OVNChassis CR status (management cluster) ==="
+          kubectl get ovnchassis ovn-mc-chassis -n $NAMESPACE -o yaml 2>&1 || true
+  # ── Step 13: ovn-controller registers across the boundary ───────────────
+  # The readiness probe's own command, run in the ovn-controller container,
+  # has to read "connected": the chassis reached the relay's node port on the
+  # target with the copied client identity. Then the probe pod of 08, on the
+  # management cluster with the same copy, finds the management node's Chassis
+  # row and its Geneve tunnel endpoint in the target's Southbound database.
+  - try:
+    - script:
+        timeout: 4m
+        content: |
+          set -eu
+          POD="$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=ovn-mc-chassis,app.kubernetes.io/component=ovn-controller \
+            -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$POD"
+          STATUS=""
+          for _ in $(seq 1 36); do
+            STATUS="$(kubectl exec -n "$NAMESPACE" "$POD" -c ovn-controller -- \
+              ovn-appctl -t /run/ovn/ovn-controller.ctl connection-status 2>&1 || true)"
+            [ "$STATUS" = connected ] && break
+            sleep 5
+          done
+          if [ "$STATUS" != connected ]; then
+            echo "FAIL: ovn-controller connection-status is '${STATUS}', want connected"
+            exit 1
+          fi
+          echo "OK: ovn-controller on $POD is connected to the Southbound database on the target"
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          POD=ovn-mc-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          # The image the chassis runs, so no fixture has to spell the OVN tag
+          # the operator resolved.
+          IMG="$(kubectl get ds ovn-mc-chassis-ovn-controller -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          SB="$(kubectl get ovncentral ovn-mc -n "$NAMESPACE" \
+            -o jsonpath='{.status.southbound.dbAddress}')"
+          test -n "$SB"
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-mc-chassis-ovn-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-mc-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "ovn-mc-probe",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh"],
+                  "env": [
+                    {"name": "SB_ADDRESS", "value": "${SB}"},
+                    {"name": "NODE_NAME", "value": "${NODE}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          # A terminal phase rather than Succeeded alone, and the verdict from
+          # the log: see tests/e2e/ovn/chassis-single-node/ step 7.
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'CHASSIS-OK'
+          echo "${OUT}" | grep -q 'ENCAP-OK'
+          echo "OK: the management node is a chassis in the target's Southbound database"
+    catch:
+    - script:
+        content: |
+          echo "=== Probe pod (management cluster) ==="
+          kubectl describe pod ovn-mc-probe -n $NAMESPACE 2>&1 || true
+          kubectl logs -n $NAMESPACE ovn-mc-probe --tail=200 2>&1 || true
+          echo "=== ovn-controller logs (management cluster) ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-mc-chassis,app.kubernetes.io/component=ovn-controller -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=120 2>&1 || true
+          done
+          echo "=== OVNCentral CR status (management cluster) ==="
+          kubectl get ovncentral ovn-mc -n $NAMESPACE -o yaml 2>&1 || true
+  # ── Step 14: The metadata agent beside the chassis reaches Ready ────────
+  # The agent shares the chassis's node and cluster. It mounts the Secret the
+  # chassis publishes and reads the Southbound database at the node address
+  # the central publishes, which the rendered ini has to name.
+  - try:
+    - apply:
+        file: 07-neutronmetadataagent-cr.yaml
+    - assert:
+        timeout: 10m
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: NeutronMetadataAgent
+          metadata:
+            name: ovn-mc-agent
+            namespace: openstack
+          status:
+            (conditions[?type == 'ChassisReady']):
+            - status: "True"
+              reason: ChassisResolved
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        content: |
+          set -eu
+          DS=ovn-mc-agent-metadata-agent
+          SECRETS="$(kubectl get ds "$DS" -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.template.spec.volumes[*].secret.secretName}')"
+          echo "$SECRETS" | tr ' ' '\n' | grep -Fxq ovn-mc-chassis-ovn-client
+          CM="$(kubectl get ds "$DS" -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')"
+          test -n "$CM"
+          kubectl get cm "$CM" -n "$NAMESPACE" \
+            -o 'jsonpath={.data.neutron_ovn_metadata_agent\.ini}' > /tmp/ovn-mc-agent.ini
+          SB="$(kubectl get ovncentral ovn-mc -n "$NAMESPACE" -o 'jsonpath={.status.southbound.dbAddress}')"
+          test -n "$SB"
+          grep -Fxq "ovn_sb_connection = ${SB}" /tmp/ovn-mc-agent.ini
+          echo "OK: the agent mounts the copy and reads the Southbound database at ${SB}"
+    catch:
+    - script:
+        content: |
+          echo "=== NeutronMetadataAgent CR status (management cluster) ==="
+          kubectl get neutronmetadataagent ovn-mc-agent -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Agent DaemonSet (management cluster) ==="
+          kubectl describe ds ovn-mc-agent-metadata-agent -n $NAMESPACE 2>&1 || true
+          echo "=== Agent pod logs (management cluster) ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-mc-agent -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== neutron-operator logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=100 2>&1 || true
+  # ── Step 15: The copy follows a renewal of its source ───────────────────
+  # Deleting the source on the target makes cert-manager re-issue it under the
+  # existing Certificate. The copy has to reach the new values through the
+  # operator's Secret watch on the target, and ovn-controller has to stay
+  # connected: no chassis pod rolls on a renewal, the mounted files are
+  # refreshed in place.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          TARGET_KUBECONFIG=../../../_output/cobaltcore-target.kubeconfig
+          target() { kubectl --kubeconfig "$TARGET_KUBECONFIG" "$@"; }
+          BEFORE="$(target get secret ovn-mc-client -n openstack -o 'jsonpath={.data.tls\.crt}')"
+          test -n "$BEFORE"
+          target delete secret ovn-mc-client -n openstack --wait=true
+          echo "deleted ovn-mc-client on the target; waiting for the re-issue to reach the copy"
+
+          POD="$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=ovn-mc-chassis,app.kubernetes.io/component=ovn-controller \
+            -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$POD"
+
+          for _ in $(seq 1 36); do
+            sleep 5
+            SOURCE_CRT="$(target get secret ovn-mc-client -n openstack -o 'jsonpath={.data.tls\.crt}' 2>/dev/null || true)"
+            if [ -z "$SOURCE_CRT" ] || [ "$SOURCE_CRT" = "$BEFORE" ]; then
+              echo "waiting for cert-manager to re-issue ovn-mc-client"
+              continue
+            fi
+            SAME=true
+            for key in tls.crt tls.key ca.crt; do
+              path="{.data.$(echo "$key" | sed 's/\./\\./')}"
+              COPY="$(kubectl get secret ovn-mc-chassis-ovn-client -n "$NAMESPACE" -o jsonpath="$path")"
+              SOURCE="$(target get secret ovn-mc-client -n openstack -o jsonpath="$path" 2>/dev/null || true)"
+              if [ -z "$SOURCE" ] || [ "$COPY" != "$SOURCE" ]; then
+                SAME=false
+              fi
+            done
+            if [ "$SAME" != true ]; then
+              echo "waiting for the copy to follow the re-issued source"
+              continue
+            fi
+            STATUS="$(kubectl exec -n "$NAMESPACE" "$POD" -c ovn-controller -- \
+              ovn-appctl -t /run/ovn/ovn-controller.ctl connection-status 2>&1 || true)"
+            if [ "$STATUS" = connected ]; then
+              echo "OK: the copy carries the re-issued identity and ovn-controller is connected"
+              exit 0
+            fi
+            echo "waiting for ovn-controller to report connected, got '${STATUS}'"
+          done
+          echo "FAIL: the copy did not follow the re-issued source, or ovn-controller is not connected, within 3 minutes"
+          exit 1
+    catch:
+    - script:
+        content: |
+          echo "=== OVNChassis CR status (management cluster) ==="
+          kubectl get ovnchassis ovn-mc-chassis -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== ovn-operator logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=100 2>&1 || true
+    - script:
+        cluster: target
+        content: |
+          echo "=== Client Certificate and Secret (target cluster) ==="
+          kubectl get certificate ovn-mc-client -n openstack -o yaml 2>&1 || true
+          kubectl get secret ovn-mc-client -n openstack 2>&1 || true
+  # ── Step 16: Delete the CRs and assert the sweep ────────────────────────
+  # The agent goes first and its chassis second, both before the central they
+  # read. The Neutron goes before its OVNCentral, and the store before its
+  # parent Barbican. In every pair the dependent still resolves what it reads
+  # while it is being swept. Each delete is bounded: the remote sweep runs under
+  # a finalizer, so a target that cannot be reached shows up as a delete that
+  # does not return rather than as a passing teardown.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: NeutronMetadataAgent
+          name: ovn-mc-agent
+          namespace: openstack
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          name: ovn-mc-chassis
+          namespace: openstack
     - delete:
         timeout: 2m
         ref:
@@ -534,8 +917,32 @@ spec:
           kind: Keystone
           name: keystone-mc
           namespace: openstack
-  # ── Step 11: Assert the children are gone and the infrastructure is not ─
+  # ── Step 17: Assert the children are gone and the infrastructure is not ─
+  # The chassis kept its children on the management cluster, where the
+  # garbage collector takes them through their controller references: both
+  # DaemonSets and the client Secret copy.
   - try:
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: ovn-mc-chassis-ovn-controller
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: ovn-mc-chassis-ovs
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ovn-mc-chassis-ovn-client
+            namespace: openstack
     - error:
         cluster: target
         resource:
