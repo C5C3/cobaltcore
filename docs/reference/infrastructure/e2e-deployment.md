@@ -71,11 +71,49 @@ Deploys the full infrastructure stack to a kind cluster by running
 `hack/deploy-infra.sh`. The script executes an 8-step deployment sequence
 (see [Deployment Sequence](#deployment-sequence) below). Exits 0 on success,
 non-zero on any failure with a descriptive error message.
+`EXTERNAL_CLUSTER=true make deploy-infra` deploys onto the cluster the current
+kubeconfig context points at instead, with the
+[`deploy/lab/metal-stack/`](#lab-overlay-patches) overlay, and needs neither
+Docker nor kind (see [`EXTERNAL_CLUSTER`](#environment-variables)).
 
 ### `make teardown-infra`
 
 Deletes the kind cluster by running `hack/teardown-infra.sh`. Idempotent —
-succeeds silently if no cluster exists. Always exits 0.
+succeeds silently if no cluster exists. The kind teardown always exits 0.
+
+`EXTERNAL_CLUSTER=true make teardown-infra` leaves the cluster in place and
+removes the stack that `EXTERNAL_CLUSTER=true make deploy-infra` put on it. It
+needs `kubectl` and `yq`, and deletes in an order that lets every finalizer run
+while its controller still exists:
+
+1. Every `ControlPlane` in `openstack`, when the `controlplanes.c5c3.io` CRD
+   exists, so the c5c3-operator reaps its children.
+2. The infrastructure overlay (`kubectl delete -k <overlay>/infrastructure`)
+   and the opt-in `deploy/kind/messaging` overlay, while their operators run.
+3. The base overlay without its Namespaces and FluxInstance. Every suspended
+   HelmRelease with a release history and every suspended Flux Kustomization
+   with an inventory is resumed first, because Flux neither uninstalls a
+   suspended release nor prunes a suspended Kustomization. The Gateway and
+   GatewayClass go first, while Envoy Gateway clears their finalizer, and the
+   opt-in `kube-prometheus-stack` release goes last.
+4. The PVCs in `shared-services` and `openstack`. The openbao-operator chart's
+   admission policy denies deleting its managed PVCs until step 3 has
+   uninstalled the chart.
+5. The FluxInstance, so the flux-operator uninstalls the toolkit.
+6. The `flux-system` namespace and the flux-operator's ClusterRoles and
+   ClusterRoleBinding.
+7. The namespaces of `deploy/flux-system/namespaces.yaml`, `envoy-gateway-system`
+   and `headlamp-system`.
+8. The CRDs of the stack's API groups (the cert-manager, External Secrets,
+   MariaDB, Memcached, OpenBao, Garage, RabbitMQ, Gateway API, Envoy Gateway,
+   Prometheus Operator, CobaltCore, K-ORC, Flux and flux-operator groups).
+
+It never names `kube-system`, `firewall`, `metallb-system` or `default`, nor a
+CRD of the platform (`autoscaling.k8s.io`, `cert.gardener.cloud`,
+`dns.gardener.cloud`, `crd.projectcalico.org`, `metallb.io`). Every delete
+ignores absence, so a second run finds nothing and exits 0. A delete that does
+not finish within `TEARDOWN_TIMEOUT` seconds exits 1 with the objects kubectl
+names, and so does a final count of stack CRDs or namespaces above zero.
 
 ### `make install-test-deps`
 
@@ -94,6 +132,9 @@ Produces JUnit XML reports in `_output/reports/`.
 
 ```text
 Step 1 ── Create kind cluster (hack/kind-config.yaml)
+     │         (EXTERNAL_CLUSTER=true: none is created; the current context
+     │         is checked for a default StorageClass, no node-local-dns
+     │         DaemonSet and a Ready node)
      │
 Step 2 ── Install flux-operator + apply FluxInstance
      │         kubectl apply -f flux-operator install.yaml
@@ -292,6 +333,35 @@ stay unset on purpose: a 500m request left pods Pending on the keystone leg
 Other operators (cert-manager, mariadb-operator, ESO, memcached-operator) are not
 patched — they are single-replica or stateless by default.
 
+### Lab Overlay Patches
+
+```text
+deploy/lab/metal-stack/
+├── base/
+│   └── kustomization.yaml          References ../../../kind/base/
+│                                    Patches OpenBao HelmRelease → storage class premium
+├── infrastructure/
+│   └── kustomization.yaml          References ../../../kind/infrastructure/
+│                                    Patches MariaDB CR, GarageCluster → storage class premium
+└── probe/                          Read-only node probe Job (#1139), applied by hand
+```
+
+`EXTERNAL_CLUSTER=true` applies `base/` in Step 3 and `infrastructure/` in
+Step 5 in place of the kind overlays. Both take the kind overlay as their base,
+so the lab inherits every patch above and changes only the storage class. The
+proving `OpenBaoCluster` names no class and binds to the cluster's default,
+`premium` on the lab, which Step 1 checks exists.
+
+| Setting | Kind | Lab |
+| --- | --- | --- |
+| OpenBao storage class (`dataStorage`) | `standard` | `premium` |
+| MariaDB storage class | `standard` | `premium` |
+| Garage storage class (metadata and data) | `standard` | `premium` |
+| Everything else | as above | inherited from the kind overlay |
+
+The overlay is described in
+[Infrastructure Manifests](infrastructure-manifests.md#lab-overlay).
+
 ## Environment Variables
 
 The deployment script supports configurable timeouts via environment variables:
@@ -316,6 +386,9 @@ The deployment script supports configurable timeouts via environment variables:
 | `WITH_MESSAGING` | `false` | When `true`, apply the `deploy/kind/messaging` overlay after Step 5 and wait for `rabbitmqcluster/shared-rabbitmq` in `openstack` to report `AllReplicasReady`. A timeout stops the run and prints the `kubectl describe` output for the broker plus the events of its server pod. The overlay is described in [Infrastructure Manifests](infrastructure-manifests.md#message-bus-kind-only-opt-in). The `e2e-controlplane` job is the broker's second consumer after the cinder `e2e-operator` leg: the full-ControlPlane suite takes a vhost of its own through `tests/e2e/cinder/broker-vhost.sh` and hands the ControlPlane the transport URL of that vhost brownfield |
 | `WITH_REGISTRY_CACHE` | `false` | Local-dev only. When `true`, bring up one distribution-registry (`registry:2`) pull-through proxy per upstream registry (`docker.io`, `ghcr.io`, `registry.k8s.io`, `quay.io`, plus the vanity fronts `oci.external-secrets.io` and `docker-registry3.mariadb.com`) on the `kind` Docker network and wire every node's containerd at them via a `certs.d/<host>/hosts.toml` mirror, so unmodified image refs are served from a persistent local cache that survives `kind delete`. The proxy streams and caches inline (fast even on a cold pull). The containerd mirror patch is injected only into the deploy-time kind config, never the checked-in `hack/kind-config.yaml`, so CI is unaffected. Requires `yq`. See the [Extended Quick Start](../../quick-start-extended.md) |
 | `PURGE_REGISTRY_CACHE` | `false` | Consumed by `make teardown-infra`. When `true`, also remove the registry pull-through cache containers and their volumes (identified by the `cobaltcore.registry-cache=true` label). The default leaves them running so the warm cache is reused on the next deploy |
+| `EXTERNAL_CLUSTER` | `false` | When `true`, deploy onto the cluster the current kubeconfig context points at (the script never switches contexts) with the `EXTERNAL_OVERLAY` overlays in Steps 3 and 5. Docker and kind are not required. Preflight refuses `WITH_VPA`, `WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE`, `WITH_CHAOS_MESH`, `WITH_OVN_KERNEL_MODULES`, `WITH_NFS` and `WITH_DIZZY`, requires the context's API server to answer, and logs the context and the server URL. Step 1 creates no cluster; it checks for a default StorageClass, for the absence of a `node-local-dns` DaemonSet in `kube-system` and for a Ready node, and logs the class and the node names. The nofile cap and the Keystone image preload are skipped. The Gateway is reached through `kubectl port-forward` on local port 8443, which the completion banner prints, and the bundled ControlPlane CR's `publicEndpoint` gets `:8443`. Also consumed by `make teardown-infra`. Any other value keeps the kind mode |
+| `EXTERNAL_OVERLAY` | `deploy/lab/metal-stack` | Overlay root of `EXTERNAL_CLUSTER=true`: its `base/` and `infrastructure/` replace `deploy/kind/base` and `deploy/kind/infrastructure`. Relative to the repository root unless absolute. Preflight fails when either kustomization is missing. Read by `make deploy-infra` and `make teardown-infra` |
+| `TEARDOWN_TIMEOUT` | `600` | Consumed by `make teardown-infra` under `EXTERNAL_CLUSTER=true`: seconds each delete waits for its objects to be gone before the teardown exits 1 |
 
 **Example: override HelmRelease timeout:**
 
