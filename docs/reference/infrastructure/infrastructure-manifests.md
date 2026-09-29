@@ -1264,6 +1264,13 @@ rules. Resolving no address aborts the deploy. The operator reports its own verd
 result as condition `APIServerNetworkReady`, which stays `Unknown` with reason
 `APIServerEndpointIPsRecommended` while only the service VIP is allowed.
 
+The operator renders the rule for `apiServerEndpointIPs` on port 6443 and no other.
+The same patch therefore also sets `spec.network.egressRules`: one rule per address, a
+`/32` block (`/128` for IPv6) on TCP at the port the EndpointSlice publishes. On kind that
+is 6443 and the rule duplicates the operator's own; behind Gardener's apiserver-proxy on
+the [metal-stack lab](#lab-overlay) it is 443, where the addresses alone allow nothing. A
+slice that publishes no port aborts the deploy like one without an address.
+
 **Self-init surface.** The operator renders `spec.selfInit.requests` into OpenBao's
 initialize stanzas, which run once against freshly initialized storage; OpenBao revokes
 the root token afterwards. The list below is therefore the instance's complete permanent
@@ -2432,9 +2439,11 @@ the Glance CR the suite applies, and deletes it again when the suite cleans up.
 
 `deploy/lab/metal-stack/` holds the manifests of the CobaltCore lab on a
 metal-stack cluster, planned in
-[#1138](https://github.com/c5c3/cobaltcore/issues/1138). Neither
-`hack/deploy-infra.sh` nor `deploy/flux-system/kustomization.yaml` references
-the tree; every directory in it is applied by hand.
+[#1138](https://github.com/c5c3/cobaltcore/issues/1138).
+`deploy/flux-system/kustomization.yaml` does not reference the tree.
+`hack/deploy-infra.sh` applies its `base/` and `infrastructure/` under
+`EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)); the probe is applied
+by hand.
 
 ### Node probe
 
@@ -2504,3 +2513,106 @@ The values a lab-ready node shows come from the 2026-09-29 survey in
 output format, from a run on the survey's node the same day. The survey's NIC
 lines show the pod's own `eth0`; the probe reads the host's sysfs and lists the
 host's interfaces instead.
+
+### Lab overlay
+
+**Files:** `deploy/lab/metal-stack/base/kustomization.yaml`,
+`deploy/lab/metal-stack/infrastructure/kustomization.yaml`
+
+`hack/deploy-infra.sh` applies these two kustomizations in Steps 3 and 5 when
+it deploys onto the lab. They take `deploy/kind/base` and
+`deploy/kind/infrastructure` as their base, so the lab inherits what the kind
+overlay patches:
+
+- the NodePort EnvoyProxy on `31443`, which keeps the Envoy Service from
+  pending as a `LoadBalancer` on a MetalLB without an address pool, and the
+  twelve-listener `openstack-gw` Gateway;
+- headlamp and flux-web, the optional addons of the kind base;
+- the standalone OpenBao, the suspended service-operator releases at one
+  replica, and the single-replica MariaDB, Memcached and Garage;
+- the Flux controller requests.
+
+The patches move the OpenBao, MariaDB and Garage volumes from `standard` to
+`premium`. The lab has a `standard` class too, so the kind pin would otherwise
+bind to it by coincidence. The proving `OpenBaoCluster` names no class and
+binds to the default, `premium`. No metrics-server or VPA release is rendered,
+because the platform runs both.
+
+```bash
+EXTERNAL_CLUSTER=true make deploy-infra
+kubectl -n envoy-gateway-system port-forward \
+  "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
+curl -sk https://keystone.127-0-0-1.nip.io:8443/v3
+EXTERNAL_CLUSTER=true make teardown-infra
+```
+
+The deploy runs against the current kubeconfig context and never switches it.
+It refuses the kind-only opt-ins, checks the cluster for a default
+StorageClass, for the absence of a `node-local-dns` DaemonSet (the instance's
+NetworkPolicy would need `spec.network.dnsEndpointIPs` for a host-networked
+resolver) and for a Ready node, and prints the port-forward command when it
+completes. The teardown removes the stack in finalizer order and leaves the
+platform's namespaces and CRDs alone. Both are described in
+[E2E Deployment](e2e-deployment.md#make-teardown-infra), with every variable.
+
+| Property | Value |
+| --- | --- |
+| Storage class | `premium` (OpenBao, MariaDB, Garage; the proving `OpenBaoCluster` through the default class) |
+| Access | `kubectl port-forward` to the Envoy Service on local port 8443; the `*.127-0-0-1.nip.io` hostnames are unchanged |
+| Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry |
+| Dependencies | a default StorageClass and no `node-local-dns` on the cluster |
+
+### Node port check
+
+**File:** `hack/lab-node-ports.sh`
+
+Live migration between the lab's hypervisors
+([#1142](https://github.com/c5c3/cobaltcore/issues/1142)) needs libvirt's TLS
+port `16514` and the QEMU migration range `49152`-`49215` open from every node
+to every other node on the node network. The script proves that on the
+current context's cluster. It starts one listener Pod per node (perl, one
+socket per port on `0.0.0.0`) and one client Pod per ordered node pair on the
+source node (bash `/dev/tcp` to the destination's first InternalIP, the
+address `status.hostIP` and so the NovaCompute `live_migration_inbound_addr`
+resolve to), all host-networked and
+unprivileged: no capability, no privilege escalation, UID 65534 on a read-only
+root filesystem, no ServiceAccount token. It runs on the node probe's pinned
+debian image, which carries `bash`, `perl` and `timeout`, so it has no image or
+Renovate pin of its own. Every Pod is labelled
+`app.kubernetes.io/name=lab-node-ports`. A run first deletes the Pods an
+earlier run left behind, so their logs are never read as its results, and an
+EXIT trap deletes the Pods on every path.
+
+```bash
+hack/lab-node-ports.sh
+NODE_PORTS_TCP=16514 hack/lab-node-ports.sh
+```
+
+It prints one line per ordered pair, then a summary:
+
+```text
+worker-a (10.128.44.10) -> worker-b (10.128.44.11): 65/65 open
+worker-b (10.128.44.11) -> worker-a (10.128.44.10): 63/65 open, closed: 16514 49215
+```
+
+A port is `closed` when the connect fails, `listener bind failed` when the
+destination's listener could not bind it, and `no result` when the client
+produced no line for it before the client wait ran out. The migration range
+sits in Linux's ephemeral port range, so an outgoing connection on the node can
+hold one of its ports; rerun the check or narrow `NODE_PORTS_TCP` when that
+happens.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `NODE_PORTS_TCP` | `16514 49152-49215` | Space-separated ports and inclusive ranges (65 ports by default) |
+| `NODE_PORTS_NAMESPACE` | `default` | Namespace of the Pods |
+| `NODE_PORTS_IMAGE` | the `image:` of `deploy/lab/metal-stack/probe/node-probe.yaml` | Image with `bash`, `perl` and `timeout`; the check exits 2 when it is unset and the probe manifest is missing |
+| `NODE_PORTS_NODE_SELECTOR` | empty (every node) | Label selector limiting the nodes |
+| `NODE_PORTS_CONNECT_TIMEOUT` | `5` | Seconds per connect |
+| `NODE_PORTS_POD_TIMEOUT` | `120` | Seconds for the listener waits and for removing an earlier run's Pods. The client wait adds `NODE_PORTS_CONNECT_TIMEOUT` per port, because a client probes its ports one after another and a firewall that drops the packets makes every probe take the full connect timeout |
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Every port of every ordered pair is open |
+| `1` | At least one port is closed, has no result, or was not bound by the listener |
+| `2` | Usage or cluster error: a missing tool or image, an invalid variable, fewer than two nodes, a node without an InternalIP or whose first one is IPv6 (the listeners bind IPv4 only) or not an address, Pods of an earlier run that cannot be deleted, Pods that cannot be created, or listeners that never became Ready |
