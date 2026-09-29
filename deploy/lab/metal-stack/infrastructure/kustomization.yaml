@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for the metal-stack lab: CRD-dependent infrastructure.
+# hack/deploy-infra.sh applies it in Step 5 under EXTERNAL_CLUSTER=true, in
+# place of deploy/kind/infrastructure.
+#
+# It takes the kind infrastructure overlay as its own base and inherits its
+# single-replica MariaDB and Memcached, the single-node GarageCluster, the
+# NodePort EnvoyProxy (nodePort 31443), the nip.io Certificates, the
+# ExternalSecret shims and the proving OpenBaoCluster with its tenant. The
+# patches move the MariaDB and Garage volumes from the kind `standard` class
+# to the lab's `premium` class (see ../base/kustomization.yaml for why the
+# class is pinned). The proving OpenBaoCluster names no class and binds to the
+# cluster's default, which hack/deploy-infra.sh checks exists before Step 2.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../kind/infrastructure
+
+patches:
+  - target:
+      group: k8s.mariadb.com
+      version: v1alpha1
+      kind: MariaDB
+      name: openstack-db
+      namespace: openstack
+    patch: |
+      apiVersion: k8s.mariadb.com/v1alpha1
+      kind: MariaDB
+      metadata:
+        name: openstack-db
+        namespace: openstack
+      spec:
+        storage:
+          storageClassName: premium
+
+  - target:
+      group: garage.rajsingh.info
+      version: v1beta2
+      kind: GarageCluster
+      name: garage
+      namespace: shared-services
+    patch: |
+      apiVersion: garage.rajsingh.info/v1beta2
+      kind: GarageCluster
+      metadata:
+        name: garage
+        namespace: shared-services
+      spec:
+        storage:
+          metadata:
+            storageClassName: premium
+          data:
+            storageClassName: premium

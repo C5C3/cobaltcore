@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for the metal-stack lab: base FluxCD manifests.
+# hack/deploy-infra.sh applies it in Step 3 under EXTERNAL_CLUSTER=true, in
+# place of deploy/kind/base:
+#
+#   EXTERNAL_CLUSTER=true make deploy-infra
+#
+# It takes the kind base as its own base, so the lab inherits everything the
+# kind overlay patches:
+#   - Envoy Gateway with the NodePort EnvoyProxy, so the data-plane Service
+#     never pends as a LoadBalancer on a MetalLB without an address pool, and
+#     the twelve-listener openstack-gw Gateway on the *.127-0-0-1.nip.io
+#     hostnames, reached through `kubectl port-forward` on 8443;
+#   - headlamp and flux-web, the optional addons of the kind base;
+#   - the standalone single-replica OpenBao, the suspended service-operator
+#     HelmReleases with one replica each, the one-replica c5c3-operator and
+#     the suspended K-ORC Kustomization;
+#   - the 25m CPU request of the Flux controllers.
+#
+# The one lab-specific patch is the OpenBao data volume's storage class. The
+# kind base pins `standard`, and the lab has a Lightbits `standard` class too,
+# so leaving the pin in place would bind the volume to a class chosen by
+# coincidence. `premium` is the lab's default class (#1138); it is pinned
+# rather than left to the default so a change of the default does not move
+# the volume.
+#
+# The kind base sits outside this directory. A directory reference is allowed
+# under kustomize's default LoadRestrictionsRootOnly check (the kind base
+# itself references ../../flux-system), so `kubectl apply -k` works without
+# `--load-restrictor`. No metrics-server or VPA release is rendered: the
+# platform runs both.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../kind/base
+
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: openbao
+      namespace: shared-services
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: openbao
+        namespace: shared-services
+      spec:
+        values:
+          server:
+            dataStorage:
+              storageClass: premium
