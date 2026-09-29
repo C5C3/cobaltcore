@@ -164,6 +164,8 @@ resources, and renders the node placement fields verbatim.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `replicas` | `int32` (Minimum=1) | yes | — | The number of relay pods. Unlike the database replicas this is a plain scaling knob with no odd-count or immutability constraint |
+| `externallyReachable` | `bool` | no | `false` | Publishes the relay Service on one node port and the addresses of the nodes the relay pods run on in `status.relayDbAddress`. Turn it on when an `OVNChassis` on another cluster attaches to this central: such a chassis cannot reach the relay's cluster IP, and without a published relay it dials the Southbound node ports, which puts its connection on the Raft members |
+| `nodePort` | `*int32` (Minimum=30000, Maximum=32767) | no | operator-resolved `30661` | The node port the relay is published on. Requires `externallyReachable`, and must not fall inside either database's node-port range (see [Webhook rules](#webhook-rules)) |
 | `resources` | `*corev1.ResourceRequirements` | no | operator-resolved `70m` CPU request, `368Mi` memory request and limit | Requests and limits for the relay container. The operator resolves defaults per resource when it renders the pod: a CPU the block names neither as request nor as limit gets a 70m request and no limit, and a memory it names neither way gets 368Mi as both request and limit, the figure for one single-threaded process (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). Anything else the block sets is kept |
 | `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the relay Deployment (`{name}-sb-relay`) into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `nodeSelector` | `map[string]string` | no | `nil` | Restricts the relay pods to nodes that carry every listed label. The webhook checks the label grammar |
@@ -229,7 +231,8 @@ configuration.
 `DefaultNorthboundNodePortBase` is 30641 and `DefaultSouthboundNodePortBase` is
 30651. The two bases carry their database's OVSDB port in the last two digits,
 and sit ten apart so both ranges reach the five-replica ceiling without
-colliding. The database request floor reads its 70m CPU request from the
+colliding. `DefaultRelayNodePort` is 30661, ten above the Southbound base and
+outside both default ranges at that ceiling. The database request floor reads its 70m CPU request from the
 shared `DefaultCPURequest` in `internal/common/types/workload.go` and sets its
 256Mi memory request in `WithRequestFloor`. The northd and relay containers get
 theirs from `WithResourceDefaults` and `MemoryForProcesses` in
@@ -249,6 +252,7 @@ These hold even when the webhook is down.
 | `replicas must be odd` | Field rule on `OVNDatabaseSpec.replicas` |
 | `exactly one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec`, on `spec.image` and on `spec.backup.s3.image` |
 | `preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds` | Inherited from `commonv1.DeploymentSpec` on `spec.northd.deployment`; the rule substitutes the effective defaults 5 and 30 for an unset pointer |
+| `relay.nodePort requires relay.externallyReachable` | Rule on `OVNRelaySpec`. A node port the relay is not published on would name a port nothing listens on |
 
 Each of the three `OVNDatabaseSpec` transition rules is guarded by a `has()`
 check on both sides. The API server evaluates every rule of the type against the
@@ -269,6 +273,8 @@ The validating webhook accumulates every violation into one admission response.
 | `exactly one of image.tag or image.digest must be set` | Both or neither are set on either image reference, re-checked outside the schema |
 | `nodePortBase %d leaves no room for %d replicas below %d` | A base whose range runs past 32767. The arguments are the effective base, the effective replica count, and the ceiling. The last member's Service would be rejected by the API server, leaving that member unreachable from outside the cluster |
 | `northbound and southbound nodePort ranges overlap` | The two ranges intersect. Each runs over as many consecutive ports as there are members, so two bases that look far apart still collide once both databases are scaled up |
+| `relay.nodePort requires relay.externallyReachable` | `spec.relay.nodePort` set without `spec.relay.externallyReachable`, the twin of the schema rule |
+| `relay nodePort %d falls inside the %s nodePort range %d-%d` | A published relay's effective port (`spec.relay.nodePort`, or 30661) lies inside the effective range of `northbound` or `southbound`. The arguments are the port, the database, and the first and last port of its range. The check runs whether or not the database is published, so a later edit that publishes it cannot collide with the relay |
 | `retentionDays must be at least 1` | `spec.backup.retentionDays` below 1, alongside the `Minimum=1` marker. Zero would delete every snapshot the run just took |
 | `invalid cron expression: %v` | `spec.backup.schedule` is non-empty and `cron.ParseStandard` refuses it. The argument is the parser's own error. An empty schedule is not parsed, since it resolves the operator default |
 | `credentialsSecretRef.name must be set` | `spec.backup.s3` is set with no credentials Secret named |
@@ -314,6 +320,7 @@ checks and the priority-class lookup.
 | `northbound` | [`OVNDatabaseStatus`](#ovndatabasestatus) | The observed state of the Northbound database |
 | `southbound` | [`OVNDatabaseStatus`](#ovndatabasestatus) | The observed state of the Southbound database |
 | `relayAddress` | `string` | The Southbound relay Service, `ssl:<clusterIP>:6642`. Set while `spec.relay` is set and cleared when the relay is removed |
+| `relayDbAddress` | `string` | The relay for clients outside the cluster, `ssl:<node InternalIP>:<nodePort>` per node a relay pod runs on, comma-separated. Empty unless `spec.relay.externallyReachable` is set. An `OVNChassis` on another cluster dials it (see [Address computation](#address-computation)) |
 | `clientSecretName` | `string` | The Secret holding the client certificate every OVN client authenticates with (`tls.crt`, `tls.key`, `ca.crt`). An `OVNChassis` mounts it, so this is the field that connects the two kinds |
 | `installedImage` | `string` | The image reference the running control plane was projected from, recorded once northd runs on it. It tells a rollout that has not reached the pods from one that has |
 
@@ -335,6 +342,15 @@ joined with commas, at port 6641 for the Northbound and 6642 for the Southbound
 database. The external address is assembled only under
 `spec.<db>.externallyReachable`, as `ssl:<hostIP>:<nodePortBase + ordinal>` per
 member, from the `HostIP` of the member's pod.
+
+The relay step publishes `status.relayDbAddress` the same way under
+`spec.relay.externallyReachable`: one `ssl:<hostIP>:<nodePort>` per node a
+relay pod runs on, with the port from `spec.relay.nodePort` or 30661. The host
+IPs are deduplicated and sorted, because a change in the string rolls the
+`ovn-controller` DaemonSet of every chassis on another cluster, and a reordered
+pod list must not count as one. A relay pod not scheduled yet names no node, and
+while no relay pod has a node address the field stays empty. It is cleared with
+the flag and with `spec.relay`.
 
 Both are IP literals, never DNS names. `ovsdb-server` resolves a remote once at
 startup and never again, so a name whose address changes leaves the client
@@ -373,9 +389,9 @@ Eight sub-reconcilers each own one condition type. The aggregate `Ready` is
 | `NorthdReady` | False | `DeploymentError` | The Deployment could not be applied |
 | `NorthdReady` | False | `WaitingForEndpoints` | One of the two database addresses is not published yet. northd is configured with both, so applying a Deployment with an empty `--ovnnb-db` would crash-loop the pods |
 | `RelayReady` | True | `RelayNotRequired` | `spec.relay` is not set; clients connect to the Southbound database directly |
-| `RelayReady` | True | `DeploymentReady` | The relay Deployment is available at `status.relayAddress` |
+| `RelayReady` | True | `DeploymentReady` | The relay Deployment is available at `status.relayAddress`. The message also names `status.relayDbAddress` when it is set |
 | `RelayReady` | False | `DeploymentProgressing` | The relay Deployment is rolling out |
-| `RelayReady` | False | `DeploymentError` | The relay Deployment, its Service, or its removal failed |
+| `RelayReady` | False | `DeploymentError` | The relay Deployment, its Service, or its removal failed, or listing the relay pods for the node address did (`listing sb-relay pods`) |
 | `RelayReady` | False | `ServicePending` | The relay Service has no cluster IP yet. Reported ahead of the Deployment's own state: without an address the relays are unreachable however many are running |
 | `RelayReady` | False | `WaitingForEndpoints` | The Southbound address is not published yet |
 | `BackupReady` | True | `BackupScheduled` | The CronJob is in place and the most recent terminal run did not fail |
@@ -410,7 +426,7 @@ Every child takes the CR name plus a component suffix. For an `OVNCentral` named
 | Secret | `{name}-nb-server`, `{name}-sb-server` | The server keypair each database's members listen with, written by cert-manager under the Certificate's name |
 | ConfigMap | `{name}-central-scripts` | The run and set-connection scripts of both databases plus the backup script. The backup shares it so the snapshot script cannot drift from the run scripts |
 | Deployment | `{name}-northd` | northd. It has no Service: the daemon connects out to both databases and nothing connects to it |
-| Deployment, Service | `{name}-sb-relay` | Only while `spec.relay` is set. The relay's own keypair is issued under the same name |
+| Deployment, Service | `{name}-sb-relay` | Only while `spec.relay` is set. The relay's own keypair is issued under the same name. The Service is `NodePort` on `spec.relay.nodePort` (30661 by default) under `spec.relay.externallyReachable` |
 | Secret | `{name}-client` | The keypair every OVN client authenticates with, published as `status.clientSecretName` |
 | PersistentVolumeClaim, CronJob | `{name}-backup` | The snapshot volume and the CronJob that writes to it, under one name |
 
@@ -488,9 +504,13 @@ spec:
   northd:
     deployment:
       replicas: 1
+  relay:
+    replicas: 1
+    externallyReachable: true
 ```
 
 This is the fixture the `central-basic-deployment` suite applies
-(`tests/e2e/ovn/central-basic-deployment/00-ovncentral-cr.yaml`). Both databases
-keep the default three Raft members, and `spec.image` is left unset so the
-operator resolves its own OVN image.
+(`tests/e2e/ovn/central-basic-deployment/00-ovncentral-cr.yaml`) plus a relay
+published on the default node port, the shape an `OVNChassis` on another
+cluster attaches to. Both databases keep the default three Raft members, and
+`spec.image` is left unset so the operator resolves its own OVN image.

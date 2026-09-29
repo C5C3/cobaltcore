@@ -25,7 +25,10 @@ remove its chassis row from the Southbound database.
 
 The two kinds are coupled through status. An `OVNChassis` names an `OVNCentral`,
 waits for its published Southbound address and for `status.clientSecretName`,
-and mounts that Secret. That link is the whole coupling.
+and mounts that Secret. When the two project onto different clusters, the
+chassis reads the addresses the central publishes on node ports and copies the
+Secret onto its own cluster, as `<chassis>-ovn-client`. That link is the whole
+coupling.
 
 ## Design decisions
 
@@ -45,7 +48,9 @@ this operator implements.
 - D3 (OVN central placement): the central runs on the same cluster as the
   chassis, which keeps the Southbound read path local, and publishes two
   addresses per database. `status.<db>.internalDbAddress` is for consumers on
-  that cluster, `status.<db>.dbAddress` for a management-side neutron-server.
+  that cluster, `status.<db>.dbAddress` for a management-side neutron-server and
+  for a chassis on another cluster, which also dials a relay published outside
+  the central's cluster (`status.relayDbAddress`).
 - D4 (chassis management): OVS and ovn-controller run as DaemonSets projected
   from `OVNChassis`, steered by node labels, and an `OVNChassis` works on its own
   without a Neutron above it. Host-native OVS is revisited only if DPDK or

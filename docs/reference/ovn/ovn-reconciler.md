@@ -42,7 +42,7 @@ TLS ──► Northbound ──► Southbound ──► Endpoints ──► ┬�
 | Southbound | The same code against the Southbound database, picking its condition type off the `raftDB` it was handed | `SouthboundReady` |
 | Endpoints | Assembles both connection strings per database from the per-member Services and pods, and stamps `internalDbAddress` and `dbAddress` | `EndpointsReady` |
 | Northd | Projects the `ovn-northd` Deployment and stamps `status.installedImage` once it is available | `NorthdReady` |
-| Relay | Projects or removes the Southbound relay Deployment and Service, and stamps `status.relayAddress` | `RelayReady` |
+| Relay | Projects or removes the Southbound relay Deployment and Service, and stamps `status.relayAddress`, plus `status.relayDbAddress` when the relay is published outside the cluster | `RelayReady` |
 | Backup | Projects the snapshot claim and the CronJob, and reports on the newest terminal backup Job | `BackupReady` |
 | VPA | [`reconcileVPA`](../keystone/keystone-reconciler.md#reconcilevpa) applies or removes the VerticalPodAutoscalers of northd, the relay and the two Raft StatefulSets through the shared VPA flow. A Raft VPA carries the request floor as `minAllowed` for each resource the block does not name | `VPAReady` |
 
@@ -56,19 +56,20 @@ which is why a CR without `spec.relay` still resolves the aggregate, through
 `RelayNotRequired`.
 
 `RunParallelGroup` merges the conditions and the metadata off a member's copy and
-nothing else, so the two status fields a member publishes are copied onto the
-primary CR by hand in `parallelSteps`: `status.installedImage` from Northd and
-`status.relayAddress` from Relay.
+nothing else, so the status fields a member publishes are copied onto the
+primary CR by hand in `parallelSteps`: `status.installedImage` from Northd, and
+`status.relayAddress` and `status.relayDbAddress` from Relay.
 
 ### OVNChassis
 
 ```text
-Central ──► Nodes ──► OVS ──► Controller ──► ChassisVPA ──► Maintenance
+Central ──► ClientSecret ──► Nodes ──► OVS ──► Controller ──► ChassisVPA ──► Maintenance
 ```
 
 | Step | What it does | Condition |
 | --- | --- | --- |
-| Central | Resolves the `OVNCentral` named by `spec.centralRef` into the Southbound remote, the two database addresses and the client Secret name | `CentralReady` |
+| Central | Resolves the `OVNCentral` named by `spec.centralRef` into the Southbound remote and the two database addresses that apply to this chassis's cluster | `CentralReady` |
+| ClientSecret | Settles the Secret the pods mount: the central's own on the same cluster, a copy `{name}-ovn-client` written onto this chassis's cluster otherwise. Publishes the name in `status.clientSecretName` | `CentralReady` |
 | Nodes | Renders one entry per node into the `{name}-nodes` ConfigMap, applies the `{name}-chassis-scripts` ConfigMap, and rebuilds `status.nodes` | `NodesReady` |
 | OVS | Projects the `{name}-ovs` DaemonSet | `OVSReady` |
 | Controller | Projects the `{name}-ovn-controller` DaemonSet, mirrors its node counters into status, and stamps `status.installedImage` | `ControllerReady` |
@@ -77,8 +78,10 @@ Central ──► Nodes ──► OVS ──► Controller ──► ChassisVPA 
 
 The `OVNCentral` is the first gate: its Southbound address and its client Secret
 parameterise every later step, so a chassis whose central has published neither
-projects nothing at all. The per-node values come next, because both DaemonSets
-mount the ConfigMap holding them.
+projects nothing at all. The client-Secret step follows it under the same
+condition, because a central the chassis can reach but not authenticate against
+is not a resolved central. The per-node values come next, because both
+DaemonSets mount the ConfigMap holding them.
 
 There is no parallel group here. The two DaemonSets look independent, but Open
 vSwitch owns the local database `ovn-controller` writes its chassis record into,
@@ -105,7 +108,7 @@ aggregates eight, an `OVNChassis` six.
 | `RelayReady` | `OVNCentral` | `DeploymentReady`, `RelayNotRequired` | `DeploymentProgressing`, `DeploymentError`, `ServicePending`, `WaitingForEndpoints` |
 | `BackupReady` | `OVNCentral` | `BackupScheduled`, `BackupSuspended` | `BackupJobFailed`, `BackupPVCInvalid`, `BackupError`, `WaitingForEndpoints` |
 | `VPAReady` | `OVNCentral` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
-| `CentralReady` | `OVNChassis` | `CentralResolved` | `CentralNotFound`, `CentralReadError`, `CentralOnAnotherCluster`, `CentralNotReady`, `CentralUpgrading`, `TargetClusterUnavailable` |
+| `CentralReady` | `OVNChassis` | `CentralResolved` | `CentralNotFound`, `CentralReadError`, `CentralNotExternallyReachable`, `CentralNotReady`, `CentralUpgrading`, `ClientSecretPending`, `ClientSecretIncomplete`, `ClientSecretReadError`, `ClientSecretCopyFailed`, `TargetClusterUnavailable` |
 | `NodesReady` | `OVNChassis` | `NodesRendered` | `NoMatchingNodes`, `NodeListError`, `NodesError` |
 | `OVSReady` | `OVNChassis` | `DaemonSetReady` | `DaemonSetProgressing`, `DaemonSetError` |
 | `ControllerReady` | `OVNChassis` | `DaemonSetReady` | `DaemonSetProgressing`, `DaemonSetError` |
@@ -290,9 +293,20 @@ template.
 **Purpose:** Project or remove the Southbound relay tier. Relays are stateless
 read-through caches in front of the Southbound database, which every chassis
 holds an open connection to. With `spec.relay` unset the step deletes the
-Deployment and the Service, clears `status.relayAddress` and reports `True`: a
-chassis handed a cluster IP whose Service no longer exists waits out its own
-timeout instead of falling back to the database it can still reach.
+Deployment and the Service, clears `status.relayAddress` and
+`status.relayDbAddress`, and reports `True`: a chassis handed a cluster IP
+whose Service no longer exists waits out its own timeout instead of falling
+back to the database it can still reach.
+
+Under `spec.relay.externallyReachable` the Service is `NodePort` on
+`spec.relay.nodePort` (30661 by default), and after the cluster-IP check the
+step lists the relay pods through the uncached reader and publishes
+`status.relayDbAddress`: `ssl:<hostIP>:<nodePort>` per node a relay pod runs on,
+deduplicated and sorted. It is empty while no relay pod has a node address, and
+cleared as soon as the flag is. A pod list that fails keeps the value a
+previous pass published, unless that value names another port than
+`spec.relay.nodePort`: once an edit moves the Service, the step clears it
+before any read, since the port it names is released.
 
 **Condition Contract:**
 
@@ -300,13 +314,13 @@ timeout instead of falling back to the database it can still reach.
 | --- | --- | --- | --- |
 | `True` | `RelayNotRequired` | "spec.relay is not set; clients connect to the Southbound database directly" | none |
 | `False` | `WaitingForEndpoints` | "Waiting for the Southbound database address to be published" | `RequeueRaftWait` |
-| `False` | `DeploymentError` | The wrapped error of the Deployment, the Service, the live read, or the removal | none (error returned) |
+| `False` | `DeploymentError` | The wrapped error of the Deployment, the Service, the live read, the removal, or the relay pod list ("listing sb-relay pods: \<error\>") | none (error returned) |
 | `False` | `ServicePending` | "Waiting for Service \<name\> to be assigned a cluster IP" | `RequeueRaftWait` |
 | `False` | `DeploymentProgressing` | "Waiting for the sb-relay Deployment to become available" | `RequeueDeploymentPolling` |
-| `True` | `DeploymentReady` | The relay Deployment is available at `status.relayAddress` | none |
+| `True` | `DeploymentReady` | "The sb-relay Deployment is available at \<relayAddress\>", followed by " and at \<relayDbAddress\> outside the cluster" when the node address is set | none |
 
-**Error handling:** All four failing objects report `DeploymentError` and return
-the error, for the reason the database step gives. `ServicePending` is reported
+**Error handling:** All five failing reads and writes report `DeploymentError`
+and return the error, for the reason the database step gives. `ServicePending` is reported
 ahead of the Deployment's own state: without an address the relays are
 unreachable however many of them are running.
 
@@ -346,15 +360,23 @@ the CR. See [Controller Events](./ovn-events.md).
 
 **File:** `operators/ovn/internal/controller/reconcile_central.go`
 
-**Purpose:** Resolve the `OVNCentral` this chassis attaches to into the four
-values the later steps are parameterised by: the Southbound remote
-`ovn-controller` dials (the relay when the central runs one, the database
-otherwise), the Northbound address the evacuation Job edits the logical model
-through, the Southbound address the chassis-deletion Job writes to, and the name
-of the client Secret every chassis container mounts. The central CR is read
+**Purpose:** Resolve the `OVNCentral` this chassis attaches to into the values
+the later steps are parameterised by: the Southbound remote `ovn-controller`
+dials, the Northbound address the evacuation Job edits the logical model
+through, the Southbound address the chassis-deletion Job writes to, and what the
+client-Secret step needs (whether the two CRs share a cluster, the central's
+target, and the name of the Secret it publishes). The central CR is read
 through the management-cluster client, because both CRs are written by whoever
 deploys the control plane and live beside each other whatever cluster their
 children land on.
+
+Which addresses apply follows from where the two CRs project their children:
+
+| Clusters | Database addresses | Southbound remote |
+| --- | --- | --- |
+| Same cluster | `status.<db>.internalDbAddress` | `status.relayAddress` when set, the Southbound address otherwise |
+| Different clusters, both `spec.<db>.externallyReachable` set | `status.<db>.dbAddress` | `status.relayDbAddress` when `spec.relay.externallyReachable` is set, the Southbound address otherwise. A relay not published outside its cluster is skipped, since its cluster IP is unreachable |
+| Different clusters, either database unpublished | none | none: `CentralNotExternallyReachable` |
 
 **Condition Contract:**
 
@@ -362,20 +384,63 @@ children land on.
 | --- | --- | --- | --- |
 | `False` | `CentralNotFound` | "OVNCentral \<name\> does not exist in namespace \<ns\>; the chassis stay unconfigured until it does" | `RequeueSecretPolling` |
 | `False` | `CentralReadError` | "reading OVNCentral \<ns\>/\<name\>: \<error\>" | none (error returned) |
-| `False` | `CentralOnAnotherCluster` | Names the cluster each of the two CRs projects onto | none |
-| `False` | `CentralNotReady` | "Waiting for OVNCentral \<name\> to publish its Southbound address and its client Secret" | `RequeueRaftWait` |
+| `False` | `CentralNotExternallyReachable` | "OVNCentral \<name\> projects onto \<cluster\> while this OVNChassis projects onto \<cluster\>, so the chassis reach it at the addresses published outside its cluster; set spec.northbound.externallyReachable and spec.southbound.externallyReachable on the OVNCentral to true to publish them" | none |
+| `False` | `CentralNotReady` | "Waiting for OVNCentral \<name\> to publish its Southbound address and its client Secret", with "outside its cluster" after "address" across clusters | `RequeueRaftWait` |
+| `False` | `CentralNotReady` | "Waiting for OVNCentral \<name\> to publish its relay's node address" | `RequeueRaftWait` |
 | `False` | `CentralUpgrading` | "Waiting for OVNCentral \<name\> to finish rolling out \<image\>; the chassis follow the central, because ovn-controller reads the Southbound schema the central owns" | `RequeueRaftWait` |
 | `True` | `CentralResolved` | "The chassis connect to OVNCentral \<name\> at \<address\>" | none |
 
 **Error handling:** A missing `OVNCentral` polls and leaves the pass successful:
 an `OVNChassis` applied before its `OVNCentral` is an ordinary ordering of two
-objects in one manifest. A cluster mismatch sets the condition and returns
-neither an error nor a requeue, because both refs are immutable and only deleting
-and reapplying one of the two CRs can repair it. The upgrade gate compares the
-central's `status.installedImage` against the image it resolves, so it holds only
-while the central's own rollout is in flight. The chassis image is not compared
-against it: a chassis pinned to an older image than the central is the direction
-OVN supports, and a gate demanding equality would wedge it.
+objects in one manifest. An unpublished central across clusters sets the
+condition and returns neither an error nor a requeue: the fix is an edit to the
+central, and the `OVNCentral` watch delivers it. Both databases are required,
+because the evacuation Job writes the Northbound one. A published relay whose
+node address is still empty is waited for, so the chassis do not dial the Raft
+members for one pass and roll again when the relay address arrives. The upgrade gate compares the central's `status.installedImage` against
+the image it resolves, so it holds only while the central's own rollout is in
+flight. The chassis image is not compared against it: a chassis pinned to an
+older image than the central is the direction OVN supports, and a gate demanding
+equality would wedge it.
+
+### reconcileClientSecret
+
+**File:** `operators/ovn/internal/controller/reconcile_client_secret.go`
+
+**Purpose:** Settle the Secret the chassis pods mount and publish its name in
+`status.clientSecretName`. On the central's cluster that is the central's own
+Secret, and nothing is written. On another cluster the central's Secret does
+not exist where the pods run, so the step reads it live through the central's
+children client and writes its `tls.crt`, `tls.key` and `ca.crt`, and nothing
+else, into `{name}-ovn-client` in the chassis's namespace through the chassis's
+children client. The copy is claimed for the chassis: a controller reference on
+the management cluster, the ownership labels on a target, where the sweep
+removes it with the DaemonSets. A copy that drifted is replaced wholesale, and
+an unchanged one is not rewritten.
+
+No pod rolls when the source is renewed. The copy is updated in place, the
+kubelet refreshes the mounted files, and `ovn-controller` and the maintenance
+Jobs read the keypair and the CA from those files, the same way a chassis that
+mounts the central's Secret directly picks up a renewal.
+
+**Condition Contract:** every failure arm overwrites `CentralReady`, which the
+central step left `True`.
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `False` | `TargetClusterUnavailable` | The resolver's error for the cluster the central projects onto | `RequeueSecretPolling` |
+| `False` | `ClientSecretPending` | "Waiting for the OVN client Secret \<ns\>/\<name\> the OVNCentral publishes" | `RequeueSecretPolling` |
+| `False` | `ClientSecretReadError` | "reading OVN client Secret \<ns\>/\<name\>: \<error\>" | none (error returned) |
+| `False` | `ClientSecretIncomplete` | "OVN client Secret \<ns\>/\<name\> carries no \<key\> yet" | `RequeueSecretPolling` |
+| `False` | `ClientSecretCopyFailed` | "claiming", "creating", "reading" or "updating the OVN client Secret copy \<ns\>/\<name\>: \<error\>", or "refusing to overwrite Secret \<ns\>/\<name\>: it exists and is not owned by this OVNChassis" | none (error returned) |
+
+**Error handling:** The central names its client Secret before cert-manager has
+issued it, so an absent or incomplete source is an ordinary wait. A Secret under
+the copy's name that this chassis does not own is refused, never adopted:
+replacing its data with a client key would hand the key to whoever reads a
+Secret somebody else provisioned. Across a renewal the copy keeps its last
+values while the source is re-issued, so the running pods keep a keypair to
+present.
 
 ### reconcileNodes
 
@@ -550,7 +615,7 @@ the `chassis-del` Jobs run before deleting the CR.
 | Constant | Value | Used by |
 | --- | --- | --- |
 | `RequeueRaftWait` (`requeue_intervals.go`) | 15s | Every OVN wait state: a Raft cluster that has not elected a leader, a member endpoint without an address, a central that has not published one, and a maintenance Job that is still running |
-| `RequeueSecretPolling` (`internal/common/reconcile/intervals.go`) | 15s | cert-manager polling in the TLS step, the missing-`OVNCentral` poll, the rejected snapshot claim, and the target-cluster hold on both controllers |
+| `RequeueSecretPolling` (`internal/common/reconcile/intervals.go`) | 15s | cert-manager polling in the TLS step, the missing-`OVNCentral` poll, the client-Secret waits of the chassis, the rejected snapshot claim, and the target-cluster hold on both controllers |
 | `RequeueDeploymentPolling` (`internal/common/reconcile/intervals.go`) | 10s | Deployment and DaemonSet readiness polling: northd, the relay, and the two chassis DaemonSets |
 | `RequeueNextPass` (`internal/common/reconcile/intervals.go`) | 1s | The single pass after the remote-children finalizer was added, so the next reconcile observes the persisted finalizer and not the in-memory copy |
 
@@ -575,8 +640,8 @@ start with "no matches for kind Certificate", which takes down every controller
 in the binary. `reconcileTLS` reports the missing kind on the CR as
 `CertManagerUnavailable`.
 
-The `OVNChassis` controller `Owns` its DaemonSet, ConfigMap and Job, and adds two
-watches:
+The `OVNChassis` controller `Owns` its DaemonSet, ConfigMap, Job and Secret, and
+adds three watches:
 
 - **OVNCentral**, mapped to every `OVNChassis` attached to it through the
   `spec.centralRef` field index, scoped to the central's namespace. The leg
@@ -589,6 +654,11 @@ watches:
   one that just lost the node as the one that gained it, so there is no index to
   narrow the fan-out through. The predicate narrows the other side instead, which
   is what keeps the kubelet's status heartbeat off the leg.
+- **Secret**, mapped through the `OVNCentral` in the Secret's namespace whose
+  `status.clientSecretName` names it to every `OVNChassis` attached to that
+  central (`clientSecretToChassisMapper` in `ovnchassis_watches.go`). It is what
+  makes the copy of a chassis on another cluster follow a cert-manager renewal
+  at watch latency. A List failure is logged and maps to what was collected.
 
 Both controllers watch their children a second time on the clusters a CR can
 project onto (`AddRemoteChildWatches`). An owner reference does not cross a
@@ -599,3 +669,12 @@ target clusters' for a placed one. Legs on a target cluster are engaged on all o
 them, so they drop the events belonging to a CR that projects somewhere else. The
 field index stays on the local field indexer, because it is an index on a CR kind
 and no target cluster holds one.
+
+The Secret watch has a local and a remote leg as well, registered by hand:
+`AddInputWatch` admits remote events from the CR's own target alone. The source Secret lives on the central's cluster, which is the one
+a chassis away from its central does not project onto. The remote leg is gated
+by `RemoteRequestsAmong` on `chassisTargetClusters` instead: the chassis's
+target and its central's target, either left out when it is the management
+cluster. `Secret` is also among `OVNChassisRemoteChildKinds`, so the copy on a
+target has a drift watch through its ownership labels and is swept with the
+other children.

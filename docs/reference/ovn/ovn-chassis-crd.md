@@ -22,7 +22,10 @@ CR's wiring to nodes that do not have it.
 The link to the control plane is one field. `spec.centralRef` names an
 [OVNCentral](./ovn-central-crd.md) in the same namespace; the chassis wait for
 its published Southbound address and for `status.clientSecretName`, and mount
-that Secret. Both refs are immutable, because repointing a live chassis strands
+that Secret. A central that projects onto another cluster than the chassis is
+reached at the addresses it publishes on node ports, and the chassis mounts a
+copy of its Secret, `{name}-ovn-client`, which the operator writes on the
+chassis's own cluster. Both refs are immutable, because repointing a live chassis strands
 its registration in the old Southbound database.
 
 `kubectl get ovnchassis` prints Ready
@@ -46,13 +49,13 @@ its registration in the old Southbound database.
 | `ovs` | [`*OVNChassisOVSSpec`](#ovnchassisovsspec) | no | `nil` | Tunes the `ovs-vswitchd` container: its resources and its revalidator thread count. When nil the operator renders no requests or limits for the container and pins 2 revalidator threads. The local `ovsdb-server` container beside it takes no resources from any field |
 | `controller` | [`*OVNChassisContainerSpec`](#ovnchassiscontainerspec) | no | `nil` | Tunes the `ovn-controller` container |
 | `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts both chassis DaemonSets, `{name}-ovs` and `{name}-ovn-controller`, one VPA each, into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
-| `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSets are created on. The CR itself, its status and its finalizer stay on the management cluster. Immutable, enforced by two CEL transition rules and by the webhook. It has to name the same cluster the `OVNCentral` names. See [Target Clusters](../target-clusters.md) |
+| `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSets are created on. The CR itself, its status and its finalizer stay on the management cluster. Immutable, enforced by two CEL transition rules and by the webhook. It may name another cluster than the `OVNCentral`'s, which then has to publish both databases outside its cluster (see [Conditions](#conditions)). See [Target Clusters](../target-clusters.md) |
 
 ### OVNCentralRef
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `name` | `string` (MinLength=1) | yes | none | The `OVNCentral`'s name. The reference is namespace-local: the chassis mount the client Secret it publishes, and a Secret cannot be mounted across namespaces |
+| `name` | `string` (MinLength=1) | yes | none | The `OVNCentral`'s name. The reference is namespace-local: the chassis mount the client Secret it publishes, and a Secret cannot be mounted across namespaces. Across clusters the chassis mounts the copy in the same namespace on its own cluster |
 
 ### OVNGatewaySpec
 
@@ -199,9 +202,13 @@ sees the finalizer-removal update that completes a deletion: rejecting that one
 would wedge the CR in `Terminating` with no field left to edit.
 
 One cross-CR constraint is outside the webhook's reach. `spec.centralRef` may
-name an `OVNCentral` that does not exist at admission time, so the check that
-both CRs project onto the same cluster runs in the controller and reports
-`CentralReady=False` with reason `CentralOnAnotherCluster`.
+name an `OVNCentral` that does not exist at admission time, so the controller
+checks it. When the two CRs project onto different clusters, the central has to
+set `spec.northbound.externallyReachable` and `spec.southbound.externallyReachable`:
+the chassis dials the Southbound database, and the gateway-evacuation Job writes
+the Northbound one. A central that publishes either one alone leaves the chassis
+at `CentralReady=False` with reason `CentralNotExternallyReachable`, and the
+message names both fields.
 
 ## Status
 
@@ -210,6 +217,7 @@ both CRs project onto the same cluster runs in the controller and reports
 | `conditions` | `[]metav1.Condition` | List-map keyed by `type`; see [Conditions](#conditions) |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled |
 | `installedImage` | `string` | The image reference the running DaemonSets were projected from, recorded once the `ovn-controller` DaemonSet reports every node ready. It tells a rollout that has not reached the nodes from one that has |
+| `clientSecretName` | `string` | The Secret in this CR's namespace, on the cluster this CR projects onto, that the chassis pods mount: the `OVNCentral`'s `status.clientSecretName` when both CRs project onto the same cluster, the copy `{name}-ovn-client` when they do not. A `NeutronMetadataAgent` attached to this chassis mounts the same Secret |
 | `desiredNumberScheduled` | `int32` | How many nodes the DaemonSets should run on, mirrored from the `ovn-controller` DaemonSet |
 | `numberReady` | `int32` | How many of those nodes have a ready `ovn-controller` pod |
 | `nodes` | [`[]OVNChassisNodeStatus`](#ovnchassisnodestatus) | The per-node registration state, list-map keyed by `name` |
@@ -236,19 +244,24 @@ has to outlive the selection.
 
 ### Conditions
 
-Six sub-reconcilers each own one condition type. The aggregate `Ready` is `True`
-only when all six are. For the pipeline that sets them see
+Seven sub-reconcilers set six condition types: the client-Secret step reports
+under `CentralReady`, the condition of the central step before it. The
+aggregate `Ready` is `True` only when all six are. For the pipeline that sets them see
 [Reconciler Architecture](./ovn-reconciler.md).
 
 | Type | Status | Reason | Meaning |
 | --- | --- | --- | --- |
-| `CentralReady` | True | `CentralResolved` | The `OVNCentral` published its Southbound address and its client Secret, and both CRs project onto the same cluster. The message names the address the chassis dial |
+| `CentralReady` | True | `CentralResolved` | The `OVNCentral` published the addresses that apply and its client Secret, and the Secret the pods mount is in place. The message names the address the chassis dial: the relay or the Southbound database inside one cluster, the relay's or the Southbound database's node address across clusters |
 | `CentralReady` | False | `CentralNotFound` | No `OVNCentral` of that name in the namespace. An `OVNChassis` applied before its `OVNCentral` is an ordinary ordering of two objects in one manifest, so this polls |
 | `CentralReady` | False | `CentralReadError` | Reading the `OVNCentral` failed |
-| `CentralReady` | False | `CentralOnAnotherCluster` | The two CRs name different target clusters. A chassis mounts the Secret the central publishes, and a Secret does not cross a cluster boundary. No requeue: both refs are immutable, so only deleting and reapplying one of the two can repair it |
-| `CentralReady` | False | `CentralNotReady` | The `OVNCentral` has not published its Southbound address or its client Secret yet |
+| `CentralReady` | False | `CentralNotExternallyReachable` | The two CRs project onto different clusters and the central does not set both `spec.northbound.externallyReachable` and `spec.southbound.externallyReachable`. The message names both clusters and both fields. No requeue: the fix is an edit to the central, which the central watch delivers |
+| `CentralReady` | False | `CentralNotReady` | The `OVNCentral` has not published the Southbound address that applies (outside its cluster, across a boundary) or its client Secret yet, or it publishes its relay outside its cluster and has no relay node address yet |
+| `CentralReady` | False | `ClientSecretPending` | The central's client Secret does not exist yet on the central's cluster, so there is nothing to copy. Polls |
+| `CentralReady` | False | `ClientSecretIncomplete` | The central's client Secret lacks `tls.crt`, `tls.key` or `ca.crt`, or carries one empty. The message names the key. Polls |
+| `CentralReady` | False | `ClientSecretReadError` | Reading the central's client Secret failed |
+| `CentralReady` | False | `ClientSecretCopyFailed` | Writing the copy `{name}-ovn-client` failed, or a Secret of that name exists that this chassis does not own, which the operator refuses to overwrite |
 | `CentralReady` | False | `CentralUpgrading` | The central's `status.installedImage` differs from the image it resolves, so its own rollout is still in flight. OVN's supported upgrade order is central first, hypervisors second: `ovn-controller` reads the Southbound schema the central owns |
-| `CentralReady` | False | `TargetClusterUnavailable` | `spec.targetClusterRef` names a cluster that does not resolve. This is the pipeline's first gate, so the failure lands on the condition the rest of the graph waits behind |
+| `CentralReady` | False | `TargetClusterUnavailable` | `spec.targetClusterRef` names a cluster that does not resolve, or the cluster the central projects onto does not resolve when the client Secret has to be copied from it. This is the pipeline's first gate, so the failure lands on the condition the rest of the graph waits behind |
 | `NodesReady` | True | `NodesRendered` | Every selected node has an entry in the `{name}-nodes` ConfigMap. The message counts the entries and how many of them are leaving |
 | `NodesReady` | False | `NoMatchingNodes` | No node carries `spec.nodeSelector`. The message repeats the selector. Both ConfigMaps are still applied, because a pod whose ConfigMap volume does not exist never starts |
 | `NodesReady` | False | `NodeListError` | Listing the nodes of the target cluster failed |
@@ -280,6 +293,7 @@ Every child takes the CR name plus a component suffix. For an `OVNChassis` named
 | DaemonSet | `{name}-ovn-controller` | `ovn-controller`, connected to the Southbound address the central published |
 | ConfigMap | `{name}-nodes` | One key per node this CR is responsible for, carrying that node's values. One object serves every node: the pod on a node reads the file named after it and ignores the rest |
 | ConfigMap | `{name}-chassis-scripts` | The scripts both DaemonSets and the three Jobs run. The suffix names the kind, so a chassis and a central of the same name keep separate scripts ConfigMaps in one namespace |
+| Secret | `{name}-ovn-client` | Only while the central projects onto another cluster. The copy of the central's client identity (`tls.crt`, `tls.key`, `ca.crt`) the pods mount, kept equal to the source across renewals. Swept with the DaemonSets on a placed chassis, garbage-collected through its controller reference on a local one |
 | Job | `{name}-apply-<8 hex>` | Re-applies one node's values after they changed. Pinned to that node and in its network namespace |
 | Job | `{name}-evacuate-<8 hex>` | Moves the gateway duties off one node, against the Northbound database |
 | Job | `{name}-chassis-del-<8 hex>` | Deletes one node's Southbound `Chassis` row, against the Southbound database |
