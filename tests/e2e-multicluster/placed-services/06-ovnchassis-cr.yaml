@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNChassis fixture for the placed-services E2E test: a chassis on the
+# MANAGEMENT cluster attached to the OVNCentral 04 places on the target.
+#
+# It names no targetClusterRef, so its DaemonSets land on the management
+# cluster's one node, which the suite labels with the selector below, while
+# its central projects onto cobaltcore-target. That is the pairing a compute
+# cluster has with a control plane on another cluster: the chassis dials the
+# relay's node address the central publishes, and mounts
+# ovn-mc-chassis-ovn-client, the copy of the central's client identity the
+# operator writes beside it, since the central's own Secret exists only on the
+# target.
+#
+# The shape is tests/e2e/ovn/chassis-single-node/02-ovnchassis-cr.yaml: no
+# bridge mappings and no gateway, since a kind node has no provider network, and
+# spec.image unset, so the operator resolves the OVN image the job loads into
+# the management cluster.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: ovn-mc-chassis
+  namespace: openstack
+spec:
+  centralRef:
+    name: ovn-mc
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"

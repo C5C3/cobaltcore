@@ -3257,7 +3257,10 @@ jobs:
   # the infrastructure and no operator (INFRA_ONLY=true), a management cluster
   # running keystone-operator, barbican-operator, ovn-operator and
   # neutron-operator and no infrastructure, and runs tests/e2e-multicluster/
-  # across both.
+  # across both. The suite also runs an OVN chassis and a metadata agent on the
+  # management cluster against the OVN central placed on the target, which is
+  # why the management cluster gets the OVN and Neutron service images and the
+  # host gets the datapath modules.
   #
   # The management cluster reaches the target EXCLUSIVELY through a kubeconfig
   # minted from the target-cluster-access chart's ServiceAccount token. Running
@@ -3337,16 +3340,25 @@ jobs:
         env:
           INFRA_ONLY: "true"
           CLUSTER_NAME: ${{ env.TARGET_CLUSTER }}
+          # The chassis of the suite runs on the management cluster, not on
+          # this one, but the modules load into the host kernel both kind
+          # clusters share.
+          WITH_OVN_KERNEL_MODULES: "true"
       - name: Create the management cluster
         run: hack/deploy-mgmt-cluster.sh
         env:
           CLUSTER_NAME: ${{ env.MGMT_CLUSTER }}
-      - name: Load operator images into the management cluster
+      # The OVN and Neutron service images join the operator images here: the
+      # suite's OVNChassis and NeutronMetadataAgent keep their DaemonSets on
+      # the management cluster.
+      - name: Load operator and datapath images into the management cluster
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name "$MGMT_CLUSTER"
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name "$MGMT_CLUSTER"
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name "$MGMT_CLUSTER"
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name "$MGMT_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name "$MGMT_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name "$MGMT_CLUSTER"
       # hack/deploy-mgmt-cluster.sh left the kubectl context on the management
       # cluster, which is where all four operators are installed.
       - name: Deploy keystone-operator
