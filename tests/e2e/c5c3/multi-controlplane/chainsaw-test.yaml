@@ -496,6 +496,8 @@ spec:
           kubectl get applicationcredentials.openstack.k-orc.cloud -n tenant-b 2>&1 || true
           echo "=== c5c3-operator logs (last 200 lines) ==="
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
+          echo "=== K-ORC controller logs (last 100 lines) ==="
+          kubectl logs -n orc-system deploy/orc-controller-manager --tail=100 --all-containers 2>&1 || true
           echo "=== openbao pods ==="
           kubectl get pods -n shared-services -l app.kubernetes.io/name=openbao 2>&1 || true
           echo "=== openbao-0 logs (last 100 lines) ==="
