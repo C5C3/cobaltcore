@@ -98,6 +98,11 @@ JSON
       ns)
         exit 1
         ;;
+      deployment)
+        # The K-ORC guard reads it; this cluster runs no K-ORC.
+        echo 'Error from server (NotFound): deployments.apps "orc-controller-manager" not found' >&2
+        exit 1
+        ;;
       helmrelease|daemonsets|events|fluxinstance,fluxreport)
         exit 0
         ;;

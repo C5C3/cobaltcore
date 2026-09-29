@@ -127,6 +127,8 @@ test_full_dump_without_the_switch() {
   assert_contains "the node-pressure block runs" "$output" \
     "=== Node capacity and allocated resources ==="
   assert_contains "the events block runs" "$output" "=== Events (last 50) ==="
+  assert_contains "the K-ORC section runs with the infrastructure block" "$output" \
+    "=== K-ORC controller logs (last 200 lines) ==="
   assert_contains "the Job descriptions run" "$output" "=== Job descriptions ==="
   assert_contains "the namespace pod logs run" "$output" \
     "=== All pod logs in openstack ==="
@@ -171,6 +173,8 @@ test_operator_only_drops_the_shared_sections() {
     "=== Kernel OOM events on the kind node(s) ==="
   assert_not_contains "no repeated event listing" "$output" \
     "=== Events (last 50) ==="
+  assert_not_contains "no repeated K-ORC section" "$output" \
+    "=== K-ORC controller logs"
   assert_not_contains "no repeated Job descriptions" "$output" \
     "=== Job descriptions ==="
   assert_not_contains "no repeated Job logs" "$output" \
