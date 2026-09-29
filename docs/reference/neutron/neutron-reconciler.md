@@ -137,7 +137,7 @@ aggregates ten, a `NeutronMetadataAgent` three.
 | `HPAReady` | `Neutron` | `HPAReady`, `HPANotRequired` | none (errors propagate) |
 | `VPAReady` | `Neutron` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
 | `NetworkPolicyReady` | `Neutron` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | none (errors propagate) |
-| `ChassisReady` | `NeutronMetadataAgent` | `ChassisResolved` | `ChassisNotFound`, `ChassisReadError`, `ChassisOnAnotherCluster`, `CentralNotFound`, `CentralReadError`, `CentralNotReady`, `TargetClusterUnavailable` |
+| `ChassisReady` | `NeutronMetadataAgent` | `ChassisResolved` | `ChassisNotFound`, `ChassisReadError`, `ChassisOnAnotherCluster`, `ChassisNotReady`, `CentralNotFound`, `CentralReadError`, `CentralNotExternallyReachable`, `CentralNotReady`, `TargetClusterUnavailable` |
 | `SecretsReady` | `NeutronMetadataAgent` | `SecretsAvailable` | `WaitingForNovaSharedSecret`, `WaitingForNovaMetadataCA`, `WaitingForMessagingCredentials`, `ConfigError` |
 | `DaemonSetReady` | `NeutronMetadataAgent` | `DaemonSetReady` | `DaemonSetProgressing`, `DaemonSetError` |
 | `VPAReady` | `NeutronMetadataAgent` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
@@ -729,6 +729,17 @@ rendered DaemonSet shares no field with the CR it was rendered from. For the
 nodes the chassis itself programs see
 [OVNChassis CRD](../ovn/ovn-chassis-crd.md).
 
+The agent has to share the chassis's cluster, but the central may project onto
+another one. The Southbound address is `status.southbound.internalDbAddress`
+when the chassis and the central share a cluster, and `status.southbound.dbAddress`
+when they do not. The Secret name comes from the chassis's
+`status.clientSecretName`: the central's own Secret on the central's cluster,
+the copy the chassis writes onto its own cluster otherwise. On a shared cluster
+the central's `status.clientSecretName` names the same Secret and stands in
+while the chassis has not published the field, which is the state of a chassis
+last reconciled by an ovn-operator older than the field or held at its
+central's upgrade gate. Across clusters it is not read.
+
 **Condition Contract:**
 
 | Status | Reason | Message | RequeueAfter |
@@ -738,17 +749,23 @@ nodes the chassis itself programs see
 | `False` | `ChassisOnAnotherCluster` | Names the cluster each of the two CRs projects onto and why both have to agree | none |
 | `False` | `CentralNotFound` | "OVNCentral \<name\>, which OVNChassis \<name\> attaches to, does not exist in namespace \<ns\>" | `RequeueSecretPolling` |
 | `False` | `CentralReadError` | "reading OVNCentral \<ns\>/\<name\>: \<error\>" | none (error returned) |
-| `False` | `CentralNotReady` | "Waiting for OVNCentral \<name\> to publish its Southbound address and its client Secret" | `RequeueSecretPolling` |
-| `True` | `ChassisResolved` | "The agent runs on the nodes of OVNChassis \<name\> and reads OVNCentral \<name\> at \<address\>" | none |
+| `False` | `CentralNotExternallyReachable` | "OVNCentral \<name\>, which OVNChassis \<name\> attaches to, projects onto \<cluster\> while the chassis and this agent project onto \<cluster\>, so the agent reads it at the address published outside its cluster; set spec.southbound.externallyReachable on the OVNCentral to true to publish it" | none |
+| `False` | `CentralNotReady` | "Waiting for OVNCentral \<name\> to publish its Southbound address", with " outside its cluster" appended across clusters | `RequeueSecretPolling` |
+| `False` | `ChassisNotReady` | "Waiting for OVNChassis \<name\> to publish the client Secret its pods mount" | `RequeueSecretPolling` |
+| `True` | `ChassisResolved` | "The agent runs on the nodes of OVNChassis \<name\> and reads OVNCentral \<name\> at \<address\>", naming the selected address | none |
 
 **Error handling:** A missing chassis or central polls and leaves the pass
 successful, the same ordering argument the OVN endpoint step makes. A failed read
-is returned. A cluster mismatch sets the condition and returns neither an error
-nor a requeue: the agent shares the chassis's nodes and mounts the Secret its
-central publishes, neither of which crosses a cluster boundary, and both refs are
-immutable, so only deleting and reapplying one of the two CRs repairs it. The
-check cannot move into the webhook, because `spec.chassisRef` may name a chassis
-that does not exist at admission time.
+is returned. A chassis/agent cluster mismatch sets the condition and returns
+neither an error nor a requeue: the agent shares the chassis's nodes and mounts
+the Secret the chassis publishes, neither of which crosses a cluster boundary,
+and both refs are immutable, so only deleting and reapplying one of the two CRs
+repairs it. An unpublished central across clusters is reported the same way,
+without a requeue, since the fix is an edit to the central and the `OVNCentral`
+watch delivers it. A chassis without a published Secret name polls: the
+`OVNChassis` watch carries no generation predicate, so the status flip wakes the
+agent too. The checks cannot move into the webhook, because `spec.chassisRef` may
+name a chassis that does not exist at admission time.
 
 ### reconcileAgentSecrets
 
@@ -931,12 +948,13 @@ adds three watches:
   agents that own the derived transport-URL Secret. Both are namespace-scoped, as
   an agent only ever references Secrets beside itself.
 - **OVNChassis**, mapped through the `spec.chassisRef.name` index to the agents
-  in that namespace.
+  in that namespace. It carries no generation predicate, so the chassis
+  publishing `status.clientSecretName` wakes them.
 - **OVNCentral**, mapped in two hops: the `OVNChassis` in the central's namespace
   whose `spec.centralRef` names it, then the agents indexed under each of those.
   The hop is what makes the leg necessary at all. An agent names a chassis and
-  not a central, while the two values its pods cannot start without live on the
-  central's status. Both hops resolve through a field index, so the leg copies
+  not a central, while the Southbound address its pods cannot start without lives
+  on the central's status. Both hops resolve through a field index, so the leg copies
   the chassis it needs. A namespace-wide list would copy every chassis there,
   each carrying one status entry per node it selects.
 
