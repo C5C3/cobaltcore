@@ -182,7 +182,7 @@ test_apply_and_wait_follow_step_5() {
   echo "Test: the messaging apply precedes its wait, and both follow Step 5"
 
   local infra_line apply_line wait_line
-  infra_line="$(grep -nF 'kubectl apply -k "${REPO_ROOT}/deploy/kind/infrastructure"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  infra_line="$(grep -nF 'kubectl apply -k "${OVERLAY_ROOT}/infrastructure"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   apply_line="$(grep -nF 'kubectl apply -k "${REPO_ROOT}/deploy/kind/messaging"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   wait_line="$(grep -nF 'wait_for_rabbitmqcluster shared-rabbitmq openstack' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
 

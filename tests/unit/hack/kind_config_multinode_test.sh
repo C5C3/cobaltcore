@@ -416,15 +416,17 @@ test_default_kind_config_is_not_reported_under_cdpath() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 14: both non-creating Step-1 branches call the warning. Running main()
-# would need a cluster, so pin the two call sites in the source instead.
+# Test 14: every non-creating Step-1 branch calls the warning: the external
+# cluster (EXTERNAL_CLUSTER=true), the pre-created one (SKIP_KIND_CREATE=true)
+# and the existing one. Running main() would need a cluster, so pin the three
+# call sites in the source instead.
 # ---------------------------------------------------------------------------
 test_both_skip_branches_warn() {
-  echo "Test: both Step-1 branches that skip creation call warn_unused_kind_config"
+  echo "Test: every Step-1 branch that skips creation calls warn_unused_kind_config"
 
   local call_count
   call_count="$(grep -cE '^[[:space:]]+warn_unused_kind_config ' "$DEPLOY_INFRA_SH" || true)"
-  assert_eq "warn_unused_kind_config is called on both skip branches" "2" "$call_count"
+  assert_eq "warn_unused_kind_config is called on all three skip branches" "3" "$call_count"
 }
 
 # ---------------------------------------------------------------------------
