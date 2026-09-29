@@ -38,12 +38,17 @@ var subReconcilerConditionTypes = map[string]string{
 	"Backup":     conditionTypeBackupReady,
 	"VPA":        "VPAReady",
 
-	"Central":     conditionTypeCentralReady,
-	"Nodes":       conditionTypeNodesReady,
-	"OVS":         conditionTypeOVSReady,
-	"Controller":  conditionTypeControllerReady,
-	"ChassisVPA":  "VPAReady",
-	"Maintenance": conditionTypeMaintenanceReady,
+	"Central": conditionTypeCentralReady,
+	// The client-Secret step reports under the condition of the step before it,
+	// the way the Neutron operator's OVNClientSecret step reuses
+	// OVNEndpointsReady: a central the chassis cannot authenticate against is
+	// not a resolved central.
+	"ClientSecret": conditionTypeCentralReady,
+	"Nodes":        conditionTypeNodesReady,
+	"OVS":          conditionTypeOVSReady,
+	"Controller":   conditionTypeControllerReady,
+	"ChassisVPA":   "VPAReady",
+	"Maintenance":  conditionTypeMaintenanceReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error

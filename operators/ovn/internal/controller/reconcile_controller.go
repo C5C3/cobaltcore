@@ -216,11 +216,13 @@ func buildControllerDaemonSet(cr *ovnv1alpha1.OVNChassis, central resolvedCentra
 				LocalObjectReference: corev1.LocalObjectReference{Name: chassisNodesName(cr)},
 			},
 		}},
-		// The client keypair the central publishes. Every chassis presents it to
-		// the Southbound database, which authenticates it against the issuing CA
-		// and authorizes it no further: the connection row carries no role=
-		// column, so this one keypair is full read and write on both databases
-		// and it is mounted on every selected node.
+		// The client keypair the central publishes, or the copy of it the
+		// client-Secret step writes onto a chassis's cluster that is not the
+		// central's. Every chassis presents it to the Southbound database, which
+		// authenticates it against the issuing CA and authorizes it no further:
+		// the connection row carries no role= column, so this one keypair is full
+		// read and write on both databases and it is mounted on every selected
+		// node.
 		corev1.Volume{Name: tlsVolumeName, VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{SecretName: central.clientSecretName},
 		}},
