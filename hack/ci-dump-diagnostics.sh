@@ -129,6 +129,21 @@ if [[ -z "${OPERATOR_ONLY}" ]]; then
     echo "SKIP: chaos-mesh namespace not present (install with WITH_CHAOS_MESH=true)"
   fi
 
+  # K-ORC runs only on the legs that call hack/ci-deploy-korc.sh (the c5c3
+  # operator leg, e2e-controlplane, -sso, e2e-autoscaling, e2e-external-keystone)
+  # or on a Flux-deployed stack. The Deployment name comes from the upstream
+  # kustomization (namePrefix orc-, name controller-manager); the pod carries no
+  # app.kubernetes.io/name label, so the object is read by name, never by label.
+  # The guard keeps the reason: a NotFound means no K-ORC on this cluster, a
+  # connection error means the apiserver is gone and every section above
+  # already said so.
+  echo "=== K-ORC controller logs (last 200 lines) ==="
+  if err="$(kubectl get deployment orc-controller-manager -n orc-system 2>&1 >/dev/null)"; then
+    kubectl logs -n orc-system deploy/orc-controller-manager --tail=200 --all-containers 2>&1 || true
+  else
+    echo "SKIP: deployment/orc-controller-manager not readable in orc-system (${err})"
+  fi
+
   echo "=== Events (last 50) ==="
   kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -50 || true
 
