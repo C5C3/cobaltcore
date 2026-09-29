@@ -735,6 +735,10 @@ label off and wait for the `chassis-del` Jobs. Deleting the CR outright removes
 the DaemonSets and leaves the Southbound `Chassis` rows behind, the way deleting
 a Deployment leaves the rows its pods wrote (`ovnchassis_controller.go`);
 [Drain a chassis node](../guides/ovn/drain-a-chassis-node.md) walks the drain.
+A chassis on another cluster than its central also takes its copy of the
+central's client Secret, `<chassis>-ovn-client`, with the DaemonSets: the sweep
+removes it on a target, and the garbage collector through its owner reference on
+the management cluster.
 The `Neutron` goes third, since it mounts the client Secret the central
 publishes, and the `OVNCentral` last. `PersistentVolumeClaim` is on that CR's
 sweep list for the sake of the `<name>-backup` claim, which no controller owns
@@ -851,6 +855,7 @@ What a placed service takes with it, and what stays behind:
 | The metadata shared secret's `Password` generator and `ExternalSecret`, and the Secret ESO materializes from it | The service's cluster |
 | The hypervisor operator's auth Secret, `<cp>-nova-hypervisor-operator-auth` (while `services.nova.hypervisorOperator` is set) | The Nova's cluster, and a copy on every compute cluster a `NovaCompute` of the Nova runs on |
 | The metadata shared-secret copy, `<cp>-nova-metadata-agent-secret` | Every cluster a `NeutronMetadataAgent` in the OVN central's namespace names it on, in that namespace |
+| The OVN client-identity copy, `<chassis>-ovn-client` | The chassis's cluster, while its central projects onto another |
 | The namespace a service is placed in | Both |
 
 The namespace is on both because both sides need it: the projected CR lives in it
@@ -968,7 +973,11 @@ ovn-operator reconciles it on the management cluster and projects its children
 onto the target its own `targetClusterRef` names. When the central and the
 network service land on different clusters, the central has to publish both
 databases with `externallyReachable: true`, because the Neutron pods then reach
-them over the node network rather than through cluster DNS.
+them over the node network rather than through cluster DNS. The same holds for
+an `OVNChassis` and the `NeutronMetadataAgent`s beside it on another cluster
+than their central. The chassis also dials the relay when the central sets
+`spec.relay.externallyReachable`, and mounts a copy of the central's client
+Secret the ovn-operator writes onto the chassis's cluster.
 
 The Secrets a placed service reads but does not create have to exist in its
 namespace on its own cluster: the dashboard's `SECRET_KEY` Secret, every Glance
