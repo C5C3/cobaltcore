@@ -261,6 +261,8 @@ func TestIntegration_Multicluster_NeutronTargetCluster(t *testing.T) {
 
 		chassis := integrationChassisCR(integrationChassisName, targetNamespace, integrationCentralName, targetRef)
 		g.Expect(mgmtClient.Create(ctx, chassis)).To(Succeed(), "create the placed OVNChassis CR")
+		publishChassisClientSecret(t, ctx, mgmtClient, client.ObjectKeyFromObject(chassis),
+			integrationClientSecretName)
 
 		agent := integrationAgentCR(integrationAgentName, targetNamespace, integrationChassisName, targetRef)
 		g.Expect(mgmtClient.Create(ctx, agent)).To(Succeed(), "create the placed NeutronMetadataAgent CR")
@@ -426,6 +428,55 @@ func TestIntegration_Multicluster_NeutronTargetCluster(t *testing.T) {
 			&corev1.Secret{})).To(Succeed(), "the Secret the OVNCentral publishes is not swept by this CR")
 		g.Expect(targetClient.Get(ctx, client.ObjectKey{Namespace: targetNamespace, Name: survivorConfigMap},
 			&corev1.ConfigMap{})).To(Succeed(), "an unlabelled ConfigMap should survive the sweep")
+	})
+
+	t.Run("a placed NeutronMetadataAgent mounts the copy its chassis publishes", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// A central on the management cluster, published on node ports, and a
+		// chassis with its agent on the target. The central's own Secret does not
+		// exist where the agent runs: the chassis copies it onto the target and
+		// names the copy in its status, which the test plays here in place of
+		// the OVN operator.
+		homeName := integrationCentralName + "-home"
+		publishCentralOnNodePorts(t, ctx, mgmtClient, homeName, targetNamespace)
+
+		chassis := integrationChassisCR("chassis-home", targetNamespace, homeName, targetRef)
+		g.Expect(mgmtClient.Create(ctx, chassis)).To(Succeed(), "create the placed OVNChassis CR")
+		copyName := chassis.Name + "-ovn-client"
+		g.Expect(targetClient.Create(ctx, ovnClientSecret(copyName, targetNamespace))).
+			To(Succeed(), "write the copy the chassis would write onto its cluster")
+		publishChassisClientSecret(t, ctx, mgmtClient, client.ObjectKeyFromObject(chassis), copyName)
+
+		agent := integrationAgentCR("agent-home", targetNamespace, chassis.Name, targetRef)
+		g.Expect(mgmtClient.Create(ctx, agent)).To(Succeed(), "create the placed NeutronMetadataAgent CR")
+		homeAgentKey := client.ObjectKeyFromObject(agent)
+
+		resolved := waitForAgentCondition(t, ctx, mgmtClient, homeAgentKey, conditionTypeChassisReady,
+			metav1.ConditionTrue, eventuallyTimeout)
+		g.Expect(resolved.Reason).To(Equal(conditionReasonChassisResolved))
+		g.Expect(resolved.Message).To(ContainSubstring(integrationSouthboundNodeAddress))
+
+		ds := &appsv1.DaemonSet{}
+		dsKey := client.ObjectKey{Namespace: targetNamespace, Name: agent.Name + "-" + metadataAgentComponent}
+		eventuallyExists(t, ctx, targetClient, dsKey, ds, "metadata-agent DaemonSet", eventuallyLongTimeout)
+		var mounted []string
+		for _, volume := range ds.Spec.Template.Spec.Volumes {
+			if volume.Secret != nil {
+				mounted = append(mounted, volume.Secret.SecretName)
+			}
+		}
+		g.Expect(mounted).To(ContainElement(copyName), "the agent mounts the copy its chassis publishes")
+		g.Expect(mounted).NotTo(ContainElement(integrationClientSecretName),
+			"the central's own Secret does not exist where the agent runs")
+
+		cm := &corev1.ConfigMap{}
+		g.Expect(targetClient.Get(ctx, client.ObjectKey{
+			Namespace: targetNamespace, Name: mountedConfigMapName(&ds.Spec.Template.Spec),
+		}, cm)).To(Succeed())
+		g.Expect(cm.Data[metadataAgentConfigFile]).To(ContainSubstring(
+			"ovn_sb_connection = "+integrationSouthboundNodeAddress),
+			"the agent reads the Southbound database at the address published outside its cluster")
 	})
 }
 

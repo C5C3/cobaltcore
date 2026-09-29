@@ -546,8 +546,8 @@ func (r *NeutronMetadataAgentReconciler) setupWithOptions(mgr mcmanager.Manager,
 		// The two OVN CRs live on the management cluster whatever cluster the
 		// children land on, so neither leg needs a remote counterpart. Neither
 		// carries a generation predicate: what the agents wait on are status flips
-		// (the central publishing its Southbound address and its client Secret),
-		// and those leave the generation untouched.
+		// (the central publishing its Southbound address, the chassis the client
+		// Secret its pods mount), and those leave the generation untouched.
 		Watches(&ovnv1alpha1.OVNChassis{},
 			commonmulticluster.LocalRequests(chassisToAgentsMapper(local.GetClient())),
 			engageLocal, engageNoProviders).

@@ -387,6 +387,51 @@ func republishCentral(t testing.TB, ctx context.Context, crClient client.Client,
 	g.Expect(crClient.Status().Update(ctx, central)).To(Succeed(), "publish the OVNCentral status")
 }
 
+// integrationNorthboundNodeAddress and integrationSouthboundNodeAddress are the
+// addresses publishCentralOnNodePorts puts into status for clients outside the
+// central's cluster, apart from the cluster-IP ones so an assertion can tell
+// which pair a consumer was handed.
+const (
+	integrationNorthboundNodeAddress = "ssl:172.18.0.5:30641"
+	integrationSouthboundNodeAddress = "ssl:172.18.0.5:30651"
+)
+
+// publishCentralOnNodePorts is publishCentral for a central on the management
+// cluster that publishes both databases on node ports: the CR sets
+// externallyReachable on both, and its status carries the node addresses beside
+// the cluster-IP ones, as the OVN operator's endpoint step would write them.
+func publishCentralOnNodePorts(t testing.TB, ctx context.Context, c client.Client, name, ns string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	central := integrationCentralCR(name, ns, nil)
+	central.Spec.Northbound.ExternallyReachable = true
+	central.Spec.Southbound.ExternallyReachable = true
+	g.Expect(c.Create(ctx, central)).To(Succeed(), "create the OVNCentral CR")
+
+	republishCentral(t, ctx, c, name, ns, integrationNorthboundAddress)
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(central), central)).To(Succeed())
+	central.Status.Northbound.DbAddress = integrationNorthboundNodeAddress
+	central.Status.Southbound.DbAddress = integrationSouthboundNodeAddress
+	g.Expect(c.Status().Update(ctx, central)).To(Succeed(), "publish the node addresses")
+}
+
+// publishChassisClientSecret plays the part of the OVN operator's client-Secret
+// step: it names, in the chassis's status, the Secret its pods mount, which is
+// the Secret the metadata agent beside it mounts too. The OVN operator does not
+// run here, and without the name every agent stops at its chassis gate.
+func publishChassisClientSecret(t testing.TB, ctx context.Context, c client.Client,
+	key client.ObjectKey, secretName string,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	chassis := &ovnv1alpha1.OVNChassis{}
+	g.Expect(c.Get(ctx, key, chassis)).To(Succeed(), "read the OVNChassis before writing its status")
+	chassis.Status.ClientSecretName = secretName
+	g.Expect(c.Status().Update(ctx, chassis)).To(Succeed(), "publish the chassis's client Secret")
+}
+
 // createNeutronPrerequisites materialises everything the Neutron pipeline reads
 // but does not create: the secret store its credential gate checks, the two
 // ESO-synced credential Secrets, and the MariaDB cluster its schema is
@@ -681,6 +726,7 @@ func TestIntegrationNeutronMetadataAgent_ReachesReady(t *testing.T) {
 
 	chassis := integrationChassisCR(integrationChassisName, ns, integrationCentralName, nil)
 	g.Expect(c.Create(ctx, chassis)).To(Succeed(), "create the OVNChassis CR")
+	publishChassisClientSecret(t, ctx, c, client.ObjectKeyFromObject(chassis), integrationClientSecretName)
 
 	agent := integrationAgentCR(integrationAgentName, ns, integrationChassisName, nil)
 	g.Expect(c.Create(ctx, agent)).To(Succeed(), "create the NeutronMetadataAgent CR")
