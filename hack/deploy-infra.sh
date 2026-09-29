@@ -3,10 +3,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# hack/deploy-infra.sh — Deploy full infrastructure stack to a kind cluster.
+# hack/deploy-infra.sh — Deploy full infrastructure stack to a kind cluster, or,
+# under EXTERNAL_CLUSTER=true, onto the cluster the current kubeconfig context
+# points at.
 #
 # Implements the 8-step deployment sequence:
-#   1. Create kind cluster (using hack/kind-config.yaml)
+#   1. Create kind cluster (using hack/kind-config.yaml); under
+#      EXTERNAL_CLUSTER=true no cluster is created and the current context is
+#      checked instead (check_external_cluster)
 #   2. Install flux-operator + apply FluxInstance — applies the
 #      ControlPlane flux-operator release, then the bootstrap-scope
 #      namespaces.yaml + fluxinstance.yaml, then waits for FluxInstance/flux
@@ -322,6 +326,40 @@ CONTROLPLANE_DB_STORAGE="${CONTROLPLANE_DB_STORAGE:-}"
 # HelmReleases are already suspended by the kind base overlay on the default
 # path. Defaults to false so a single-cluster deploy is unchanged.
 INFRA_ONLY="${INFRA_ONLY:-false}"
+
+# Selects the external-cluster mode: deploy onto whatever cluster the current
+# kubeconfig context points at (KUBECONFIG or ~/.kube/config, as kubectl
+# resolves it) instead of a kind cluster this script creates. The script never
+# switches contexts. Docker and kind are not needed; the kind-bound opt-ins
+# (WITH_VPA, WITH_METRICS_SERVER, WITH_REGISTRY_CACHE, WITH_CHAOS_MESH,
+# WITH_OVN_KERNEL_MODULES, WITH_NFS, WITH_DIZZY) are refused in preflight_checks,
+# the cluster is checked for a default StorageClass, no node-local-dns and a
+# Ready node before anything is applied (check_external_cluster), and the
+# Gateway is reached with `kubectl port-forward` on 8443. Defaults to false; any
+# value other than `true` keeps the kind mode.
+EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
+
+# The overlay root the external-cluster mode applies: its base/ in Step 3 and its
+# infrastructure/ in Step 5, in place of deploy/kind/base and
+# deploy/kind/infrastructure. A relative path resolves against REPO_ROOT. The
+# default is the metal-stack lab overlay; a later lab adds a sibling directory
+# and sets this. Read only under EXTERNAL_CLUSTER=true.
+EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
+
+# Derived from the two knobs above, not overridable. OVERLAY_ROOT is the
+# directory whose base/ and infrastructure/ Steps 3 and 5 apply. PUBLIC_PORT is
+# the port the *.127-0-0-1.nip.io endpoints are reached on: the kind host port in
+# kind mode, 8443 (the local end of the documented port-forward) in external mode.
+if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+  case "${EXTERNAL_OVERLAY}" in
+    /*) OVERLAY_ROOT="${EXTERNAL_OVERLAY}" ;;
+    *) OVERLAY_ROOT="${REPO_ROOT}/${EXTERNAL_OVERLAY}" ;;
+  esac
+  PUBLIC_PORT="8443"
+else
+  OVERLAY_ROOT="${REPO_ROOT}/deploy/kind"
+  PUBLIC_PORT="${KIND_HOST_PORT}"
+fi
 
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup.
@@ -1199,8 +1237,14 @@ preflight_checks() {
   # Check that required CLI tools are available.
   # Flux CLI is intentionally omitted: bootstrap now installs flux-operator and
   # applies a FluxInstance via kubectl, and source reconciles use kubectl
-  # annotate.
-  for cmd in docker kind kubectl jq; do
+  # annotate. The external-cluster mode creates no kind cluster and loads no
+  # image into one, so it needs neither docker nor kind.
+  local required=(docker kind kubectl jq)
+  if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+    required=(kubectl jq)
+  fi
+  local cmd
+  for cmd in "${required[@]}"; do
     if ! command -v "${cmd}" &>/dev/null; then
       log "ERROR: '${cmd}' is not installed or not in PATH."
       exit 1
@@ -1217,13 +1261,68 @@ preflight_checks() {
     exit 1
   fi
 
-  # Check that Docker is running.
-  if ! docker info &>/dev/null; then
-    log "ERROR: Docker is not running. Please start Docker and try again."
-    exit 1
+  if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+    preflight_external_cluster
+  else
+    # Check that Docker is running.
+    if ! docker info &>/dev/null; then
+      log "ERROR: Docker is not running. Please start Docker and try again."
+      exit 1
+    fi
   fi
 
   log "Pre-flight checks passed."
+}
+
+# ---------------------------------------------------------------------------
+# preflight_external_cluster — The EXTERNAL_CLUSTER=true half of preflight_checks.
+#
+# Refuses every kind-bound opt-in that is set, then an EXTERNAL_OVERLAY without
+# the two kustomizations Steps 3 and 5 apply, then a kubeconfig context whose API
+# server does not answer, cheapest first and each before anything is applied.
+# The refusals are checked in the order below so the message names the flag the
+# caller set: WITH_VPA=true has already folded into WITH_METRICS_SERVER=true at
+# the top of the script. The flags are read by indirect expansion (${!flag})
+# rather than as literal `"${WITH_X}" == "true"` tests, because each
+# tests/unit/hack/deploy_infra_<flag>_flag_test.sh counts those literals and a
+# second gate here would change the count.
+#
+# Logs the context and the API server URL, so the transcript records which
+# cluster the run went to.
+# ---------------------------------------------------------------------------
+preflight_external_cluster() {
+  local entry flag
+  for entry in \
+    "WITH_VPA|the platform runs Gardener's VPA" \
+    "WITH_METRICS_SERVER|the platform serves v1beta1.metrics.k8s.io" \
+    "WITH_REGISTRY_CACHE|the pull-through cache needs the kind Docker network" \
+    "WITH_CHAOS_MESH|it loads kernel modules on the host and tunes the kind nodes" \
+    "WITH_OVN_KERNEL_MODULES|it loads kernel modules on the host" \
+    "WITH_NFS|it loads kernel modules on the host and runs a privileged kind NFS server" \
+    "WITH_DIZZY|it reads the kind node's published ports with docker port"; do
+    flag="${entry%%|*}"
+    if [[ "${!flag}" == "true" ]]; then
+      log "ERROR: EXTERNAL_CLUSTER=true does not support ${flag}=true: ${entry#*|}"
+      exit 1
+    fi
+  done
+
+  if [[ ! -f "${OVERLAY_ROOT}/base/kustomization.yaml" ||
+    ! -f "${OVERLAY_ROOT}/infrastructure/kustomization.yaml" ]]; then
+    log "ERROR: EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}' has no base/ and infrastructure/ kustomization (resolved to ${OVERLAY_ROOT})."
+    exit 1
+  fi
+
+  # Every later step is a kubectl apply against this context, so an unreachable
+  # API server ends the run here, with kubectl's own error.
+  local out
+  if ! out="$(kubectl version --request-timeout=10s 2>&1)"; then
+    log "ERROR: the API server of the current kubeconfig context does not answer:"
+    log "         ${out}"
+    exit 1
+  fi
+  log "Kubeconfig context  : $(kubectl config current-context 2>/dev/null || echo '<none>')"
+  log "API server          : $(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)"
 }
 
 # ---------------------------------------------------------------------------
@@ -1341,6 +1440,81 @@ check_relocated_infrastructure() {
     log "          migration window instead of deleting first."
     exit 1
   fi
+}
+
+# ---------------------------------------------------------------------------
+# check_external_cluster — Refuse an external cluster the stack cannot come up on.
+#
+# Runs in Step 1 under EXTERNAL_CLUSTER=true, in place of the kind cluster
+# creation. It needs a reachable cluster, which is why it is not part of
+# preflight_checks. Each check aborts on a definite negative and, in the posture
+# of relocated_object_exists, on any other kubectl failure too: an unreadable
+# cluster is not one that passed.
+#
+#   1. A default StorageClass. The proving OpenBaoCluster (storage.size 1Gi, no
+#      class) and every volume the ControlPlane provisions bind to it; without
+#      one they pend forever behind a green Step 5.
+#   2. No DaemonSet node-local-dns in kube-system. The openbao-operator's
+#      NetworkPolicy allows DNS to the pods of spec.network.dnsNamespace; a
+#      host-networked resolver needs spec.network.dnsEndpointIPs, which nothing
+#      in this repository sets.
+#   3. At least one Ready node.
+#
+# The class and the node names are logged, so the transcript records what the
+# cluster had.
+# ---------------------------------------------------------------------------
+check_external_cluster() {
+  local out rc
+
+  # JSON reads keep stderr out of the capture: a kubectl warning would corrupt
+  # the document, and on a failure the error lands right above the abort.
+  rc=0
+  out="$(kubectl get storageclass -o json)" || rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    log "ERROR: cannot list the cluster's StorageClasses (kubectl's error is above)."
+    exit 1
+  fi
+  local default_class
+  default_class="$(jq -r '[.items[] | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name] | first // empty' <<<"${out}")"
+  if [[ -z "${default_class}" ]]; then
+    log "ERROR: the cluster has no default StorageClass. The proving OpenBaoCluster"
+    log "       (storage.size 1Gi, no class) and every volume the ControlPlane"
+    log "       provisions bind to the default class, and would pend forever behind"
+    log "       a green Step 5. Annotate one class with"
+    log "       storageclass.kubernetes.io/is-default-class=true and rerun."
+    exit 1
+  fi
+  log "Default StorageClass: ${default_class}"
+
+  rc=0
+  out="$(kubectl get daemonset node-local-dns -n kube-system 2>&1)" || rc=$?
+  if [[ ${rc} -eq 0 ]]; then
+    log "ERROR: DaemonSet kube-system/node-local-dns exists. The openbao-operator's"
+    log "       NetworkPolicy allows DNS only to the pods of spec.network.dnsNamespace;"
+    log "       a host-networked resolver needs spec.network.dnsEndpointIPs, which"
+    log "       nothing in this repository sets. The OpenBao instances would lose DNS."
+    exit 1
+  fi
+  if ! grep -qiE "not found|doesn't have a resource type|could not find the requested resource" \
+    <<<"${out}"; then
+    log "ERROR: cannot determine whether DaemonSet kube-system/node-local-dns exists:"
+    log "         ${out}"
+    exit 1
+  fi
+
+  rc=0
+  out="$(kubectl get nodes -o json)" || rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    log "ERROR: cannot list the cluster's nodes (kubectl's error is above)."
+    exit 1
+  fi
+  local ready_nodes
+  ready_nodes="$(jq -r '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .metadata.name] | join(" ")' <<<"${out}")"
+  if [[ -z "${ready_nodes}" ]]; then
+    log "ERROR: the cluster has no Ready node."
+    exit 1
+  fi
+  log "Ready nodes         : ${ready_nodes}"
 }
 
 # ---------------------------------------------------------------------------
@@ -2351,7 +2525,12 @@ main() {
   log "Pod timeout         : ${POD_TIMEOUT}s"
   log "ExternalSecret timeout : ${EXTERNALSECRET_TIMEOUT}s"
   log "Webhook timeout     : ${WEBHOOK_TIMEOUT}s"
-  log "Kind host port      : ${KIND_HOST_PORT} → 31443 (override via KIND_HOST_PORT)"
+  if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+    log "Cluster mode        : external (EXTERNAL_CLUSTER=true; overlay ${OVERLAY_ROOT}; port-forward on ${PUBLIC_PORT})"
+  else
+    log "Cluster mode        : kind (set EXTERNAL_CLUSTER=true to deploy onto the current kubeconfig context)"
+    log "Kind host port      : ${KIND_HOST_PORT} → 31443 (override via KIND_HOST_PORT)"
+  fi
   log "Kind config         : ${KIND_CONFIG} (override via KIND_CONFIG)"
   log "Node RLIMIT_NOFILE  : ${NODE_NOFILE_LIMIT:-<unset — skip cap>} (override via NODE_NOFILE_LIMIT)"
   log "Chaos Mesh         : ${WITH_CHAOS_MESH} (set WITH_CHAOS_MESH=true to install)"
@@ -2401,15 +2580,22 @@ main() {
     log "Skipping NFS kernel modules (WITH_NFS=false)."
   fi
 
-  # Step 1: Create kind cluster
-  log "=== Step 1/8: Create kind cluster ==="
-  if [[ "${SKIP_KIND_CREATE:-false}" == "true" ]]; then
+  # Step 1: Create kind cluster. The external-cluster mode creates none and checks
+  # the current context's cluster instead; SKIP_KIND_CREATE has no effect there.
+  if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+    log "=== Step 1/8: External cluster (EXTERNAL_CLUSTER=true): no cluster is created ==="
+    warn_unused_kind_config "the cluster is external (EXTERNAL_CLUSTER=true)"
+    check_external_cluster
+  elif [[ "${SKIP_KIND_CREATE:-false}" == "true" ]]; then
+    log "=== Step 1/8: Create kind cluster ==="
     warn_unused_kind_config "the cluster is pre-created (SKIP_KIND_CREATE=true)"
     log "SKIP_KIND_CREATE=true — assuming kind cluster '${CLUSTER_NAME}' already exists (CI mode)."
   elif kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
+    log "=== Step 1/8: Create kind cluster ==="
     warn_unused_kind_config "kind cluster '${CLUSTER_NAME}' already exists"
     log "Kind cluster '${CLUSTER_NAME}' already exists — skipping creation."
   else
+    log "=== Step 1/8: Create kind cluster ==="
     # Render the KIND_CONFIG file (default hack/kind-config.yaml) into a
     # tempfile so KIND_HOST_PORT overrides take effect without mutating the
     # checked-in file. We do not install a cleanup trap here:
@@ -2430,11 +2616,16 @@ main() {
   fi
 
   # Cap containerd's RLIMIT_NOFILE on every node before any workload lands.
-  # Runs on all three Step-1 paths (fresh create, pre-existing cluster,
+  # Runs on all three kind Step-1 paths (fresh create, pre-existing cluster,
   # SKIP_KIND_CREATE) because the fd limit is a property of the node's
   # containerd, not of how the cluster came to exist, and a uWSGI workload
-  # (Keystone) scheduled later would otherwise OOM-crashloop. See #546.
-  cap_node_nofile
+  # (Keystone) scheduled later would otherwise OOM-crashloop. See #546. The
+  # external cluster's nodes are not kind nodes this script can exec into.
+  if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then
+    cap_node_nofile
+  else
+    log "Skipping the containerd RLIMIT_NOFILE cap (EXTERNAL_CLUSTER=true; the nodes are not kind nodes)."
+  fi
 
   # Reject a cluster deployed before the shared-services relocation. Runs here
   # because it needs a reachable cluster (so not in preflight_checks) but must
@@ -2484,7 +2675,7 @@ main() {
   # /kustomize/notification), so HelmRepository and HelmRelease objects under
   # deploy/flux-system/{sources,releases}/ resolve to known Kinds.
   log "=== Step 3/8: Apply base kustomize overlay ==="
-  kubectl apply -k "${REPO_ROOT}/deploy/kind/base"
+  kubectl apply -k "${OVERLAY_ROOT}/base"
   log "Base kustomize overlay applied."
 
   # Opt-in chaos-mesh overlay. Layered on top of the base so the
@@ -3029,12 +3220,12 @@ main() {
     # The ControlPlane path does not use them anyway: the c5c3 operator projects
     # per-ControlPlane credential ExternalSecrets and the ControlPlane provisions
     # its own MariaDB root password. Step 8's shim wait is skipped to match.
-    kubectl kustomize "${REPO_ROOT}/deploy/kind/infrastructure" \
+    kubectl kustomize "${OVERLAY_ROOT}/infrastructure" \
       | yq eval 'select(.kind != "MariaDB" and .kind != "Memcached" and (.kind != "ExternalSecret" or (.metadata.name != "keystone-admin" and .metadata.name != "keystone-db" and .metadata.name != "mariadb-root-password")))' - \
       | kubectl apply -f -
     log "Infrastructure overlay applied WITHOUT MariaDB/Memcached and the standalone-shim ExternalSecrets (WITH_CONTROLPLANE=true; the ControlPlane provisions them)."
   else
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/infrastructure"
+    kubectl apply -k "${OVERLAY_ROOT}/infrastructure"
     log "Infrastructure kustomize overlay applied."
   fi
 
@@ -3313,10 +3504,14 @@ main() {
 
       # The projected Keystone references ghcr.io/c5c3/keystone:<release>; preload it
       # so kind need not pull it in-cluster. Best-effort — the image is public on GHCR.
-      local cp_release="2025.2"
-      if docker pull "ghcr.io/c5c3/keystone:${cp_release}" >/dev/null 2>&1; then
-        kind load docker-image "ghcr.io/c5c3/keystone:${cp_release}" --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
-        log "  Preloaded ghcr.io/c5c3/keystone:${cp_release} into kind."
+      if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then
+        local cp_release="2025.2"
+        if docker pull "ghcr.io/c5c3/keystone:${cp_release}" >/dev/null 2>&1; then
+          kind load docker-image "ghcr.io/c5c3/keystone:${cp_release}" --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
+          log "  Preloaded ghcr.io/c5c3/keystone:${cp_release} into kind."
+        fi
+      else
+        log "  Skipping the Keystone image preload (EXTERNAL_CLUSTER=true; the cluster pulls from GHCR itself)."
       fi
     else
       # CONTROLPLANE_OPERATORS=external: the Flux stack is suspended and the
@@ -3330,9 +3525,10 @@ main() {
     fi
 
     if [[ "${WITH_CONTROLPLANE_CR}" == "true" ]]; then
-      # Render the ControlPlane overlay; when KIND_HOST_PORT is overridden, inject the
-      # host port into spec.services.keystone.publicEndpoint so Keystone advertises the
-      # externally reachable URL. The checked-in CR omits publicEndpoint on purpose: at
+      # Render the ControlPlane overlay; when the public port is not 443 (a
+      # KIND_HOST_PORT override, or the 8443 port-forward of the external-cluster
+      # mode), inject it into spec.services.keystone.publicEndpoint so Keystone
+      # advertises the externally reachable URL. The checked-in CR omits publicEndpoint on purpose: at
       # the default port 443 the operator derives https://keystone.127-0-0-1.nip.io/v3
       # from the gateway hostname, so no rewrite is needed. This mirrors the
       # render_kind_config host-port discipline (yq is a hard dependency on this path).
@@ -3348,14 +3544,14 @@ main() {
           "${cp_manifest}"
         log "  Renamed bundled ControlPlane CR to '${CONTROLPLANE_NAME}' (CONTROLPLANE_NAME override)."
       fi
-      if [[ "${KIND_HOST_PORT}" != "443" ]]; then
+      if [[ "${PUBLIC_PORT}" != "443" ]]; then
         # Name-scope the rewrite to the CR we just (possibly) renamed so adding
         # further ControlPlanes to the overlay does not get silently rewritten
         # with this hostname/port.
-        KIND_HOST_PORT="${KIND_HOST_PORT}" CONTROLPLANE_NAME="${CONTROLPLANE_NAME}" yq -i \
-          '(select(.kind == "ControlPlane" and .metadata.name == strenv(CONTROLPLANE_NAME)) | .spec.services.keystone.publicEndpoint) = "https://keystone.127-0-0-1.nip.io:" + strenv(KIND_HOST_PORT) + "/v3"' \
+        PUBLIC_PORT="${PUBLIC_PORT}" CONTROLPLANE_NAME="${CONTROLPLANE_NAME}" yq -i \
+          '(select(.kind == "ControlPlane" and .metadata.name == strenv(CONTROLPLANE_NAME)) | .spec.services.keystone.publicEndpoint) = "https://keystone.127-0-0-1.nip.io:" + strenv(PUBLIC_PORT) + "/v3"' \
           "${cp_manifest}"
-        log "  Set ControlPlane publicEndpoint to https://keystone.127-0-0-1.nip.io:${KIND_HOST_PORT}/v3 (KIND_HOST_PORT override)."
+        log "  Set ControlPlane publicEndpoint to https://keystone.127-0-0-1.nip.io:${PUBLIC_PORT}/v3 (public port ${PUBLIC_PORT})."
       fi
 
       # Pin the backing-service knobs that are set onto the bundled CR. The
@@ -3397,10 +3593,12 @@ main() {
       log "  Name the CR '${CONTROLPLANE_NAME}' (CONTROLPLANE_NAME must match the applied"
       log "  CR name — the per-CR Model B admin-password bootstrap path and the projected"
       log "  ${CONTROLPLANE_NAME}-keystone Service both derive from it; set CONTROLPLANE_NAME"
-      log "  to change it);"
-      log "  on a KIND_HOST_PORT override set spec.services.keystone.publicEndpoint to"
-      log "  the matching :<port> URL. Or re-run with WITH_CONTROLPLANE_CR=true to apply"
-      log "  the bundled CR for you."
+      log "  to change it)."
+      if [[ "${PUBLIC_PORT}" != "443" ]]; then
+        log "  Set spec.services.keystone.publicEndpoint to"
+        log "  https://keystone.127-0-0-1.nip.io:${PUBLIC_PORT}/v3 (public port ${PUBLIC_PORT})."
+      fi
+      log "  Or re-run with WITH_CONTROLPLANE_CR=true to apply the bundled CR for you."
     fi
   fi
 
@@ -3408,8 +3606,26 @@ main() {
   log "=========================================="
   log "  Infrastructure deployment complete!"
   log "=========================================="
-  log "Cluster: ${CLUSTER_NAME}"
-  log "To tear down: make teardown-infra"
+  if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+    # The Gateway was waited for by wait_for_gateway_programmed, so an empty
+    # answer here is a lookup hiccup, not a missing Service: print the lookup
+    # instead of a name rather than failing a finished run.
+    local envoy_svc envoy_target
+    envoy_svc="$(kubectl -n envoy-gateway-system get svc \
+      -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    if [[ -n "${envoy_svc}" ]]; then
+      envoy_target="svc/${envoy_svc}"
+    else
+      envoy_target="\"\$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)\""
+    fi
+    log "Access: kubectl -n envoy-gateway-system port-forward ${envoy_target} ${PUBLIC_PORT}:443"
+    log "        then https://keystone.127-0-0-1.nip.io:${PUBLIC_PORT}/v3 and the other *.127-0-0-1.nip.io:${PUBLIC_PORT} hostnames"
+    log "To tear down: EXTERNAL_CLUSTER=true make teardown-infra"
+  else
+    log "Cluster: ${CLUSTER_NAME}"
+    log "To tear down: make teardown-infra"
+  fi
 }
 
 # Run main only when executed directly so unit tests (tests/unit/hack/) can
