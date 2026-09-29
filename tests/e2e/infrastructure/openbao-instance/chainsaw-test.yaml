@@ -128,6 +128,11 @@ spec:
               # operator's NetworkPolicy allows only the in-cluster service VIP on
               # port 443, which kindnet stops honouring from kind 0.32 onwards.
               (length(apiServerEndpointIPs) > `0`): true
+              # The same addresses as egress rules on the port the slice publishes:
+              # the operator renders its rule for the addresses above on 6443 only,
+              # and Gardener's apiserver-proxy answers on 443. On kind the port is
+              # 6443. The `[]` guard covers the poll before the patch lands.
+              (length(egressRules || `[]`) > `0`): true
           status:
             (conditions[?type == 'Available']):
             - status: "True"
@@ -137,6 +142,31 @@ spec:
             (conditions[?type == 'APIServerNetworkReady']):
             - status: "True"
             readyReplicas: 1
+    # The egress rules against the live slice: the assert above proves only that
+    # rules exist, not that they allow the addresses and the port the slice
+    # publishes.
+    - script:
+        content: |
+          set -eu
+          SLICE_PORT="$(kubectl get endpointslice kubernetes -n default -o 'jsonpath={.ports[0].port}')"
+          SLICE_IPS="$(kubectl get endpointslice kubernetes -n default -o 'jsonpath={.endpoints[*].addresses[*]}')"
+          RULE_PORTS="$(kubectl get openbaocluster openbao-instance -n openstack \
+            -o 'jsonpath={.spec.network.egressRules[*].ports[*].port}')"
+          RULE_CIDRS="$(kubectl get openbaocluster openbao-instance -n openstack \
+            -o 'jsonpath={.spec.network.egressRules[*].to[*].ipBlock.cidr}')"
+          for p in ${RULE_PORTS}; do
+            if [ "${p}" != "${SLICE_PORT}" ]; then
+              echo "ERROR: egress rule port ${p} is not the port EndpointSlice default/kubernetes publishes (${SLICE_PORT})"
+              exit 1
+            fi
+          done
+          for ip in ${SLICE_IPS}; do
+            case " ${RULE_CIDRS} " in
+              *" ${ip}/"*) ;;
+              *) echo "ERROR: no egress rule for API-server address ${ip} (rules: '${RULE_CIDRS}')"; exit 1 ;;
+            esac
+          done
+          echo "OK: the instance allows API-server egress to '${RULE_CIDRS}' on the slice's port ${SLICE_PORT}"
   # ── Step 4: Kubernetes auth to AppRole to KV round-trip ─────────────────
   # Every OpenBao call runs through `kubectl exec` into the instance pod with
   # the CLI env the bootstrap scripts use against the shared instance

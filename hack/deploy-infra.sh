@@ -1806,6 +1806,65 @@ openbao_onboard_database_tenant() {
 }
 
 # ---------------------------------------------------------------------------
+# resolve_api_server_egress — Derive the proving OpenBao instance's API-server
+# egress from EndpointSlice default/kubernetes.
+#
+# The openbao-operator's default-deny NetworkPolicy derives its API-server egress
+# from the in-cluster service VIP on port 443. kindnet enforces egress against the
+# POST-DNAT destination from kind 0.32 onwards, so that rule never matches: the
+# packet it inspects is addressed to the API server's own endpoint on 6443. The
+# instance then loses the API server, raft auto-join times out, self-init never
+# completes, and the partial raft state wedges every later initialization attempt
+# (recoverable only by deleting the CR AND its PVC).
+#
+# spec.network.apiServerEndpointIPs is the operator's remedy, but the operator
+# renders the rule for those addresses on port 6443 and no other. Behind Gardener's
+# apiserver-proxy the slice publishes port 443, so the addresses alone allow
+# nothing there. The port is therefore read from the same slice and rendered into
+# spec.network.egressRules, one /32 (or /128) rule per address. On kind the port
+# is 6443 and the rules duplicate the operator's own. apiServerEndpointIPs stays
+# because the operator's APIServerNetworkReady condition keys on it.
+#
+# The addresses are read rather than hardcoded because a kind node address does
+# not survive a cluster re-creation. EndpointSlice default/kubernetes is where
+# kube-apiserver publishes them itself, so it needs no controller-manager and
+# exists on every conformant cluster.
+#
+# Sets API_SERVER_ENDPOINT_IPS and API_SERVER_EGRESS_RULES (JSON arrays) and
+# API_SERVER_PORT. Exits 1, before anything is patched, when the slice cannot be
+# read (kubectl's error is printed above the abort), carries no address, or
+# carries no port.
+# ---------------------------------------------------------------------------
+resolve_api_server_egress() {
+  local slice=""
+  API_SERVER_ENDPOINT_IPS=""
+  # stderr is not captured: a kubectl warning would corrupt the JSON, and on a
+  # failure the error lands in the transcript right above the abort.
+  if slice="$(kubectl get endpointslice kubernetes -n default -o json)"; then
+    API_SERVER_ENDPOINT_IPS="$(jq -c '[.endpoints[]?.addresses[]?] | unique' <<<"${slice}")" ||
+      API_SERVER_ENDPOINT_IPS=""
+  else
+    log "ERROR: kubectl could not read EndpointSlice default/kubernetes (see its error above)."
+  fi
+  if [[ -z "${API_SERVER_ENDPOINT_IPS}" || "${API_SERVER_ENDPOINT_IPS}" == "[]" ]]; then
+    log "ERROR: no API server address in EndpointSlice default/kubernetes."
+    log "       The OpenBao instance's NetworkPolicy would deny its API-server"
+    log "       egress, wedging the raft store on first initialization. Aborting"
+    log "       rather than un-pausing the instance into that state."
+    exit 1
+  fi
+
+  API_SERVER_PORT="$(jq -r '[.ports[]?.port | select(. != null)] | first // empty' <<<"${slice}")"
+  if [[ -z "${API_SERVER_PORT}" ]]; then
+    log "ERROR: EndpointSlice default/kubernetes carries no port; the OpenBao instance's egress rule cannot be rendered."
+    exit 1
+  fi
+
+  API_SERVER_EGRESS_RULES="$(jq -nc --argjson ips "${API_SERVER_ENDPOINT_IPS}" --argjson port "${API_SERVER_PORT}" \
+    '[$ips[] | {to: [{ipBlock: {cidr: (. + (if contains(":") then "/128" else "/32" end))}}], ports: [{protocol: "TCP", port: $port}]}]')"
+}
+
+# ---------------------------------------------------------------------------
 # warn_unused_kind_config REASON — Report that KIND_CONFIG had no effect.
 #
 # render_kind_config runs on exactly one of the three Step-1 branches, the one
@@ -3141,41 +3200,16 @@ main() {
 
   # The instance's API-server egress, resolved from the live cluster and applied in
   # the SAME patch as the un-pause, so the operator's very first reconcile already
-  # renders the port-6443 rules.
-  #
-  # The openbao-operator's default-deny NetworkPolicy derives its API-server egress
-  # from the in-cluster service VIP on port 443. kindnet enforces egress against the
-  # POST-DNAT destination from kind 0.32 onwards, so that rule never matches: the
-  # packet it inspects is addressed to the API server's own endpoint on 6443. The
-  # instance then loses the API server, raft auto-join times out, self-init never
-  # completes, and the partial raft state wedges every later initialization attempt
-  # — recoverable only by deleting the CR AND its PVC.
-  #
-  # The addresses are read rather than hardcoded because a kind node address does
-  # not survive a cluster re-creation. EndpointSlice default/kubernetes is where
-  # kube-apiserver publishes them itself, so it needs no controller-manager and
-  # exists on every conformant cluster.
-  # The read runs under `if !` so a failed lookup reports through the same branch as
-  # an empty one, rather than tripping `set -e` and dying without saying why.
-  local api_server_endpoint_ips=""
-  if ! api_server_endpoint_ips="$(kubectl get endpointslice kubernetes -n default -o json |
-    jq -c '[.endpoints[]?.addresses[]?] | unique')"; then
-    api_server_endpoint_ips=""
-  fi
-  if [[ -z "${api_server_endpoint_ips}" || "${api_server_endpoint_ips}" == "[]" ]]; then
-    log "ERROR: no API server address in EndpointSlice default/kubernetes."
-    log "       The OpenBao instance's NetworkPolicy would deny its API-server"
-    log "       egress, wedging the raft store on first initialization. Aborting"
-    log "       rather than un-pausing the instance into that state."
-    exit 1
-  fi
-  log "Pinning the instance's API-server egress to ${api_server_endpoint_ips}..."
+  # renders the API-server rules. See resolve_api_server_egress for why the
+  # addresses are not enough on their own.
+  resolve_api_server_egress
+  log "Pinning the instance's API-server egress to ${API_SERVER_ENDPOINT_IPS} on port ${API_SERVER_PORT}..."
 
   # A JSON merge patch merges objects key by key, so spec.network.trustedIngressPeers
   # from the overlay survives. A later `kubectl apply -k` re-run cannot drop the
-  # field either: it appears in neither the overlay nor the last-applied annotation.
+  # fields either: they appear in neither the overlay nor the last-applied annotation.
   kubectl patch openbaocluster openbao-instance -n openstack --type merge \
-    -p "{\"spec\":{\"network\":{\"apiServerEndpointIPs\":${api_server_endpoint_ips}},\"paused\":false}}"
+    -p "{\"spec\":{\"network\":{\"apiServerEndpointIPs\":${API_SERVER_ENDPOINT_IPS},\"egressRules\":${API_SERVER_EGRESS_RULES}},\"paused\":false}}"
 
   # Garage object store (S3 backend for the Glance e2e suites). Its
   # GarageCluster/GarageBucket/GarageKey CRs live in shared-services and are
