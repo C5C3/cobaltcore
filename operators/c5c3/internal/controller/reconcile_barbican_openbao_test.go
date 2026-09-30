@@ -85,7 +85,7 @@ func barbicanOpenBaoControlPlane() *c5c3v1alpha1.ControlPlane {
 // defaultKubernetesEndpointSlice builds the EndpointSlice kube-apiserver publishes
 // for itself under a well-known name. Seeding it is what makes a fake client
 // resemble the cluster the reconciler actually runs against: every conformant
-// cluster carries one, and resolveAPIServerEndpoints reads it on every dedicated
+// cluster carries one, and resolveAPIServerAccess reads it on every dedicated
 // secret-store pass.
 //
 // With no addresses given it carries one, which is the single-control-plane shape
@@ -131,28 +131,68 @@ func expectAPIServerEgressRules(g Gomega, rules []networkingv1.NetworkPolicyEgre
 	}
 }
 
-// seedAPIServerEndpointSlice appends the API server's EndpointSlice unless the
-// caller already supplied one, so a test that pins particular addresses keeps
-// control of them without the fake client rejecting a duplicate key.
-func seedAPIServerEndpointSlice(objs []client.Object) []client.Object {
+// defaultKubernetesService builds the Service kube-apiserver maintains for itself
+// beside the EndpointSlice: the ClusterIP and port resolveAPIServerAccess turns
+// into the kubernetes_host of the instance's Kubernetes auth method. With no
+// ClusterIP given it carries the first address of kind's default service range;
+// the port is the one every cluster publishes.
+func defaultKubernetesService(clusterIP ...string) *corev1.Service {
+	ip := "10.96.0.1"
+	if len(clusterIP) > 0 {
+		ip = clusterIP[0]
+	}
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      apiServerServiceName,
+			Namespace: apiServerServiceNamespace,
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: ip,
+			Ports: []corev1.ServicePort{{
+				Name:     "https",
+				Port:     443,
+				Protocol: corev1.ProtocolTCP,
+			}},
+		},
+	}
+}
+
+// seedAPIServerObjects appends the API server's EndpointSlice and Service unless
+// the caller already supplied them, so a test that pins particular addresses
+// keeps control of them without the fake client rejecting a duplicate key. A
+// supplied Service is recognised by the well-known name, because tests seed
+// other Services too.
+func seedAPIServerObjects(objs []client.Object) []client.Object {
+	haveSlice, haveService := false, false
 	for _, o := range objs {
-		if _, ok := o.(*discoveryv1.EndpointSlice); ok {
-			return objs
+		switch obj := o.(type) {
+		case *discoveryv1.EndpointSlice:
+			haveSlice = true
+		case *corev1.Service:
+			if obj.Name == apiServerServiceName && obj.Namespace == apiServerServiceNamespace {
+				haveService = true
+			}
 		}
 	}
-	return append(objs, defaultKubernetesEndpointSlice())
+	if !haveSlice {
+		objs = append(objs, defaultKubernetesEndpointSlice())
+	}
+	if !haveService {
+		objs = append(objs, defaultKubernetesService())
+	}
+	return objs
 }
 
 // barbicanOpenBaoReconciler builds a reconciler over a fake client seeded with cp,
-// objs, and the API server's EndpointSlice.
+// objs, and the API server's EndpointSlice and Service.
 func barbicanOpenBaoReconciler(t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object) *ControlPlaneReconciler {
 	t.Helper()
-	return barbicanOpenBaoReconcilerWithExactSeeds(t, cp, seedAPIServerEndpointSlice(objs)...)
+	return barbicanOpenBaoReconcilerWithExactSeeds(t, cp, seedAPIServerObjects(objs)...)
 }
 
 // barbicanOpenBaoReconcilerWithExactSeeds seeds exactly what it is given, so a test
-// can model the cluster resolveAPIServerEndpoints must refuse to project against:
-// one with no API-server EndpointSlice at all.
+// can model the cluster resolveAPIServerAccess must refuse to project against:
+// one with no API-server EndpointSlice or Service at all.
 func barbicanOpenBaoReconcilerWithExactSeeds(
 	t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
 ) *ControlPlaneReconciler {
@@ -602,6 +642,121 @@ func TestEnsureBarbicanOpenBao_ProjectsSelfInitRequests(t *testing.T) {
 	g.Expect(data["token_policies"]).To(Equal("provisioner"))
 }
 
+// kubernetesAuthHost returns the kubernetes_host the instance's self-init writes
+// to auth/kubernetes/config.
+func kubernetesAuthHost(g Gomega, instance *openbaov1alpha1.OpenBaoCluster) string {
+	g.Expect(instance.Spec.SelfInit).NotTo(BeNil())
+	for _, req := range instance.Spec.SelfInit.Requests {
+		if req.Name != "kubernetes_auth_config" {
+			continue
+		}
+		g.Expect(req.Path).To(Equal("auth/kubernetes/config"))
+		g.Expect(req.Data).NotTo(BeNil())
+		data := map[string]string{}
+		g.Expect(json.Unmarshal(req.Data.Raw, &data)).To(Succeed())
+		return data["kubernetes_host"]
+	}
+	g.Expect(false).To(BeTrue(), "no kubernetes_auth_config self-init request")
+	return ""
+}
+
+// TestEnsureBarbicanOpenBao_ProjectsKubernetesHostFromTheService pins the
+// kubernetes_host of the Kubernetes auth method to the kubernetes Service's
+// ClusterIP and port rather than to kubernetes.default.svc. The name needs a DNS
+// lookup, and the operator-rendered NetworkPolicy admits DNS on port 53 alone;
+// where the resolver answers on another port behind its Service (Gardener's
+// CoreDNS on 8053) every login through the auth method waits out its deadline.
+// The ClusterIP needs no lookup. self-init is one-shot, so the value has to be
+// right on the first pass.
+func TestEnsureBarbicanOpenBao_ProjectsKubernetesHostFromTheService(t *testing.T) {
+	t.Run("IPv4 ClusterIP", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanOpenBaoControlPlane()
+		r := barbicanOpenBaoReconciler(t, cp, defaultKubernetesService("10.248.0.1"))
+
+		_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		g.Expect(kubernetesAuthHost(g, getBarbicanOpenBaoCluster(t, r, cp))).To(Equal("https://10.248.0.1:443"))
+	})
+	t.Run("IPv6 ClusterIP is bracketed", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanOpenBaoControlPlane()
+		r := barbicanOpenBaoReconciler(t, cp, defaultKubernetesService("fd00:10:96::1"))
+
+		_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		g.Expect(kubernetesAuthHost(g, getBarbicanOpenBaoCluster(t, r, cp))).To(Equal("https://[fd00:10:96::1]:443"))
+	})
+	t.Run("the Service's own port", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanOpenBaoControlPlane()
+		svc := defaultKubernetesService("10.96.0.1")
+		svc.Spec.Ports[0].Port = 6443
+		r := barbicanOpenBaoReconciler(t, cp, svc)
+
+		_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		g.Expect(kubernetesAuthHost(g, getBarbicanOpenBaoCluster(t, r, cp))).To(Equal("https://10.96.0.1:6443"))
+	})
+}
+
+// TestEnsureBarbicanOpenBao_RefusesWithoutAPIServerService asserts the fail-closed
+// outcome when the kubernetes Service is absent, has no ClusterIP (headless or
+// unassigned) or publishes no port: no instance is written, because a
+// kubernetes_host written wrong is as permanent as the rest of self-init.
+func TestEnsureBarbicanOpenBao_RefusesWithoutAPIServerService(t *testing.T) {
+	cases := []struct {
+		name    string
+		service *corev1.Service
+		message string
+	}{
+		{name: "absent", service: nil, message: "getting Service default/kubernetes"},
+		{name: "headless", service: func() *corev1.Service {
+			svc := defaultKubernetesService()
+			svc.Spec.ClusterIP = corev1.ClusterIPNone
+			return svc
+		}(), message: "service default/kubernetes carries no ClusterIP"},
+		{name: "unassigned", service: func() *corev1.Service {
+			svc := defaultKubernetesService()
+			svc.Spec.ClusterIP = ""
+			return svc
+		}(), message: "service default/kubernetes carries no ClusterIP"},
+		{name: "no port", service: func() *corev1.Service {
+			svc := defaultKubernetesService()
+			svc.Spec.Ports = nil
+			return svc
+		}(), message: "service default/kubernetes carries no port"},
+		{name: "port 0", service: func() *corev1.Service {
+			svc := defaultKubernetesService()
+			svc.Spec.Ports[0].Port = 0
+			return svc
+		}(), message: "service default/kubernetes carries no port"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := barbicanOpenBaoControlPlane()
+			seeds := []client.Object{defaultKubernetesEndpointSlice()}
+			if tc.service != nil {
+				seeds = append(seeds, tc.service)
+			}
+			r := barbicanOpenBaoReconcilerWithExactSeeds(t, cp, seeds...)
+
+			_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.message))
+
+			list := &openbaov1alpha1.OpenBaoClusterList{}
+			g.Expect(r.List(context.Background(), list)).To(Succeed())
+			g.Expect(list.Items).To(BeEmpty(),
+				"no OpenBaoCluster may be written when the Service cannot be resolved")
+		})
+	}
+}
+
 // TestEnsureBarbicanOpenBao_ProjectsCertificates pins the two Certificates the
 // instance's External TLS mode consumes. The server SAN list must carry the
 // operator's internal TLS server name, or External-mode validation rejects the
@@ -1025,7 +1180,7 @@ func TestEnsureBarbicanOpenBao_PlacedEnsembleLandsOnTheTarget(t *testing.T) {
 	ctx := context.Background()
 	cp := placedBarbicanOpenBaoControlPlane("remote-a")
 	r, remote := splitBarbicanOpenBaoReconciler(t, cp, nil,
-		[]client.Object{defaultKubernetesEndpointSlice()})
+		[]client.Object{defaultKubernetesEndpointSlice(), defaultKubernetesService()})
 
 	_, err := r.ensureBarbicanOpenBao(ctx, barbicanOpenBaoChildrenClient(t, r, cp), cp)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1084,14 +1239,16 @@ func TestEnsureBarbicanOpenBao_PlacedEnsembleLandsOnTheTarget(t *testing.T) {
 // NetworkPolicy the openbao-operator renders is enforced by the CNI on that
 // cluster, over pods that reach their own API server, so the management cluster's
 // addresses would allow the instance nothing it needs — and the instance would
-// wedge exactly as it does with no allowance at all.
+// wedge exactly as it does with no allowance at all. The kubernetes_host of the
+// auth method is the target's Service too: the TokenReview runs against the API
+// server the instance pods' tokens were issued by.
 func TestEnsureBarbicanOpenBao_ResolvesTheTargetAPIServerEndpoints(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	cp := placedBarbicanOpenBaoControlPlane("remote-a")
 	r, remote := splitBarbicanOpenBaoReconciler(t, cp,
-		[]client.Object{defaultKubernetesEndpointSlice("10.0.0.1")},
-		[]client.Object{defaultKubernetesEndpointSlice("172.18.0.5", "172.18.0.4")})
+		[]client.Object{defaultKubernetesEndpointSlice("10.0.0.1"), defaultKubernetesService("10.96.0.1")},
+		[]client.Object{defaultKubernetesEndpointSlice("172.18.0.5", "172.18.0.4"), defaultKubernetesService("10.100.0.1")})
 
 	_, err := r.ensureBarbicanOpenBao(ctx, barbicanOpenBaoChildrenClient(t, r, cp), cp)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1103,15 +1260,17 @@ func TestEnsureBarbicanOpenBao_ResolvesTheTargetAPIServerEndpoints(t *testing.T)
 	g.Expect(instance.Spec.Network).NotTo(BeNil())
 	g.Expect(instance.Spec.Network.APIServerEndpointIPs).To(Equal([]string{"172.18.0.4", "172.18.0.5"}),
 		"the addresses must be the target's, deduplicated and sorted")
+	g.Expect(kubernetesAuthHost(g, instance)).To(Equal("https://10.100.0.1:443"),
+		"the kubernetes_host must be the target's Service")
 }
 
-// TestEnsureBarbicanOpenBao_RefusesUnusableTargetEndpointSlice keeps the
-// fail-closed posture on the target cluster: an absent slice and a present-but-
-// empty one each abort with the error naming the object, and no instance is
-// written on either cluster. The management cluster publishes a perfectly good
-// slice in both cases, which is what makes the refusal a statement about the
+// TestEnsureBarbicanOpenBao_RefusesUnusableTargetAPIServer keeps the fail-closed
+// posture on the target cluster: an absent slice, a present-but-empty one and an
+// absent Service each abort with the error naming the object, and no instance is
+// written on either cluster. The management cluster publishes a good slice and
+// Service in every case, which is what makes the refusal a statement about the
 // target rather than about the read failing everywhere.
-func TestEnsureBarbicanOpenBao_RefusesUnusableTargetEndpointSlice(t *testing.T) {
+func TestEnsureBarbicanOpenBao_RefusesUnusableTargetAPIServer(t *testing.T) {
 	emptySlice := defaultKubernetesEndpointSlice()
 	emptySlice.Endpoints = nil
 
@@ -1129,6 +1288,11 @@ func TestEnsureBarbicanOpenBao_RefusesUnusableTargetEndpointSlice(t *testing.T) 
 			target: []client.Object{emptySlice},
 			errmsg: "EndpointSlice default/kubernetes carries no API server address",
 		},
+		{
+			name:   "no Service on the target",
+			target: []client.Object{defaultKubernetesEndpointSlice()},
+			errmsg: "getting Service default/kubernetes",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1137,7 +1301,7 @@ func TestEnsureBarbicanOpenBao_RefusesUnusableTargetEndpointSlice(t *testing.T) 
 			ctx := context.Background()
 			cp := placedBarbicanOpenBaoControlPlane("remote-a")
 			r, remote := splitBarbicanOpenBaoReconciler(t, cp,
-				[]client.Object{defaultKubernetesEndpointSlice("10.0.0.1")}, tc.target)
+				[]client.Object{defaultKubernetesEndpointSlice("10.0.0.1"), defaultKubernetesService()}, tc.target)
 
 			available, err := r.ensureBarbicanOpenBao(ctx, barbicanOpenBaoChildrenClient(t, r, cp), cp)
 			g.Expect(err).To(HaveOccurred())
@@ -1181,4 +1345,36 @@ func TestEnsureBarbicanOpenBao_CarriesOverLiveStorage(t *testing.T) {
 		"spec.storage is carried over from the live object, never re-projected")
 	g.Expect(instance.Spec.Version).To(Equal(defaultOpenBaoVersion),
 		"every other field is still re-projected")
+}
+
+// TestEnsureBarbicanOpenBao_CarriesOverLiveSelfInit pins that spec.selfInit is
+// not re-projected onto a live instance either. An instance an earlier release
+// created carries kubernetes_host https://kubernetes.default.svc. Self-init ran
+// once against its storage and the openbao-operator ignores the field after
+// that, so rewriting the host to the Service's ClusterIP would change nothing
+// inside OpenBao and leave the spec disagreeing with it. The instance is not
+// updated at all.
+func TestEnsureBarbicanOpenBao_CarriesOverLiveSelfInit(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := barbicanOpenBaoControlPlane()
+	r := barbicanOpenBaoReconciler(t, cp)
+
+	_, err := r.ensureBarbicanOpenBao(ctx, r.Client, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The earlier release's self-init list: the same requests, the name as host.
+	previous := getBarbicanOpenBaoCluster(t, r, cp)
+	previous.Spec.SelfInit.Requests = barbicanOpenBaoSelfInitRequests(
+		barbicanOpenBaoName(cp), cp.BarbicanNamespace(), "https://kubernetes.default.svc")
+	g.Expect(r.Update(ctx, previous)).To(Succeed())
+	resourceVersion := getBarbicanOpenBaoCluster(t, r, cp).ResourceVersion
+
+	_, err = r.ensureBarbicanOpenBao(ctx, r.Client, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	instance := getBarbicanOpenBaoCluster(t, r, cp)
+	g.Expect(kubernetesAuthHost(g, instance)).To(Equal("https://kubernetes.default.svc"),
+		"spec.selfInit is carried over from the live object, never re-projected")
+	g.Expect(instance.ResourceVersion).To(Equal(resourceVersion), "the instance is not updated")
 }

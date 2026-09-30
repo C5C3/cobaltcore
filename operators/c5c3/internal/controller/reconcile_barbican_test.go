@@ -343,7 +343,7 @@ func newBarbicanTestReconciler(t *testing.T, objs ...client.Object) *ControlPlan
 	s := barbicanTestScheme(t)
 	seeded := withBarbicanTenantStore(withReadyBarbicanRegistration(withBarbicanGatesPassed(objs)))
 	cb := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(seedAPIServerEndpointSlice(seeded)...).
+		WithObjects(seedAPIServerObjects(seeded)...).
 		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
 			&openbaov1alpha1.OpenBaoCluster{}, &c5c3v1alpha1.KeystoneService{})
 	return &ControlPlaneReconciler{Client: cb.Build(), Scheme: s}
@@ -771,7 +771,7 @@ func TestReconcileBarbican_RegistrationNotFoundAfterEnsureHolds(t *testing.T) {
 	cp := barbicanControlPlane()
 	s := barbicanTestScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(seedAPIServerEndpointSlice(withBarbicanGatesPassed([]client.Object{cp}))...).
+		WithObjects(seedAPIServerObjects(withBarbicanGatesPassed([]client.Object{cp}))...).
 		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
 			&openbaov1alpha1.OpenBaoCluster{}, &c5c3v1alpha1.KeystoneService{}).
 		WithInterceptorFuncs(interceptor.Funcs{
@@ -806,7 +806,7 @@ func TestReconcileBarbican_RegistrationReadFailureSurfaces(t *testing.T) {
 	cp := barbicanControlPlane()
 	s := barbicanTestScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(seedAPIServerEndpointSlice(withBarbicanGatesPassed([]client.Object{cp}))...).
+		WithObjects(seedAPIServerObjects(withBarbicanGatesPassed([]client.Object{cp}))...).
 		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
 			&openbaov1alpha1.OpenBaoCluster{}, &c5c3v1alpha1.KeystoneService{}).
 		WithInterceptorFuncs(interceptor.Funcs{
@@ -2078,7 +2078,7 @@ func TestReconcileBarbican_PlacedOpenBaoGateIsAnsweredFromTheTarget(t *testing.T
 
 	instance := availableBarbicanOpenBaoCluster(cp)
 	instance.Labels = remoteChildLabels(cp)
-	r, remote := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice())
+	r, remote := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice(), defaultKubernetesService())
 
 	res, err := r.reconcileBarbican(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2150,7 +2150,7 @@ func TestReconcileBarbican_ProjectsTheTargetClusterRef(t *testing.T) {
 
 	instance := availableBarbicanOpenBaoCluster(cp)
 	instance.Labels = remoteChildLabels(cp)
-	r, _ := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice())
+	r, _ := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice(), defaultKubernetesService())
 
 	_, err := r.reconcileBarbican(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2230,7 +2230,7 @@ func TestReconcileBarbican_MirrorsRegistrationCredentialsToTheTarget(t *testing.
 
 	instance := availableBarbicanOpenBaoCluster(cp)
 	instance.Labels = remoteChildLabels(cp)
-	r, remote := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice())
+	r, remote := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice(), defaultKubernetesService())
 
 	_, err := r.reconcileBarbican(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())

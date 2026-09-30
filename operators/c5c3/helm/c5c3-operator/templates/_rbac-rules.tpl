@@ -42,6 +42,12 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   verbs:
   - create
 - apiGroups:
+  - ''
+  resources:
+  - services
+  verbs:
+  - get
+- apiGroups:
   - barbican.openstack.c5c3.io
   resources:
   - barbicans

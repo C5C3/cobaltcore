@@ -2134,7 +2134,7 @@ on both clusters.
 The instance's `spec.network` carries two allowlists. `trustedIngressPeers` names
 the barbican operator's pods and the Barbican API pods, the only sources admitted
 to the API port. `apiServerEndpointIPs` is the egress half, and
-`resolveAPIServerEndpoints` resolves it per pass from the EndpointSlice
+`resolveAPIServerAccess` resolves it per pass from the EndpointSlice
 `kubernetes` in `default` **on the cluster the instance runs on**, deduplicated
 and sorted. The policy is enforced by the CNI there, over pods that reach their
 own API server, so for a placed Barbican the management cluster's addresses would
@@ -2155,12 +2155,40 @@ the slice's port (kube-apiserver publishes one, `https`) and projects
 port, in the same sorted order. On kind the rules duplicate the operator's own. A
 slice that carries addresses but no port is refused like an empty one.
 
+The same pass reads the Service `kubernetes` in `default` on that cluster and
+writes `https://<ClusterIP>:<port>` as the `kubernetes_host` of the instance's
+Kubernetes auth method, the address OpenBao sends its TokenReviews to. The
+ClusterIP rather than the name `kubernetes.default.svc`, because the name needs a
+lookup and the operator-rendered NetworkPolicy admits DNS on port 53 alone. Where
+the resolver answers on another port behind its Service (Gardener's CoreDNS
+listens on 8053, and a CNI enforcing post-DNAT sees that port) the lookup is
+dropped, every login through the auth method waits out its deadline, and the
+store reports `ProvisioningReady=False/OpenBaoUnreachable`. The ClusterIP needs no
+lookup and is a subject alternative name of the API server's certificate on
+every cluster, which the endpoint addresses are not (Gardener's advertise address
+is absent from it). A Service without a ClusterIP or port is refused like an
+empty slice.
+
+Once the instance exists, `spec.selfInit` is carried over from it like
+`spec.storage`: self-init ran once against its storage, and the openbao-operator
+ignores the field on an initialised instance, so a re-projected host would
+change nothing inside OpenBao. An instance created before the operator wrote the
+ClusterIP therefore keeps `https://kubernetes.default.svc`, in its spec and in
+`auth/kubernetes/config`. Where that name resolves for the instance pods nothing
+changes. Where it does not, as on a Gardener shoot, the store stays at
+`ProvisioningReady=False/OpenBaoUnreachable`. Deleting the `OpenBaoCluster` has
+the next pass recreate it with the ClusterIP, but `deletionPolicy: DeletePVCs`
+takes its PVC and every secret Barbican stored in it, so do that only while the
+store holds nothing Barbican still needs. For a placed Barbican, grant the
+Service read on the target before upgrading the operator (see
+[Target Clusters](../target-clusters.md)).
+
 That resolution fails closed. An instance created without the egress rules is
-recoverable only by deleting it together with its PVC, so a pass that cannot resolve
-the addresses writes no `OpenBaoCluster` at all and reports
-`BarbicanReady=False/BarbicanOpenBaoError`. Under `rbac.namespaceScoped`, where the
-operator's Role cannot read across into `default`, every dedicated store takes that
-path.
+recoverable only by deleting it together with its PVC, and self-init is one-shot,
+so a pass that cannot resolve the addresses or the Service writes no
+`OpenBaoCluster` at all and reports `BarbicanReady=False/BarbicanOpenBaoError`.
+Under `rbac.namespaceScoped`, where the operator's Role cannot read across into
+`default`, every dedicated store takes that path.
 
 The store, and with it the child, waits until the instance is `Available`
 (`BarbicanReady=False/WaitingForOpenBaoInstance`): a store attached to an

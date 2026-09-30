@@ -453,6 +453,13 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // against the post-DNAT destination. No list or watch: the name is well known and
 // the read goes through the uncached reader.
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get
+// Read-only on the kubernetes Service beside it, whose ClusterIP and port become
+// the kubernetes_host of the instance's Kubernetes auth method. The ClusterIP
+// rather than the Service's name, because the name needs a DNS lookup the
+// operator-rendered NetworkPolicy admits on port 53 alone, and not every
+// cluster's resolver answers there. Same shape as the slice read: a well-known
+// name, no list or watch, the uncached reader.
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // Required so reconcileNamespaces can ensure the namespaces a service is placed
 // in via spec.services.<svc>.namespace: create for the Managed lifecycle, delete
