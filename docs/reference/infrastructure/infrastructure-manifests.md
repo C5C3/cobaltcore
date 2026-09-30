@@ -2443,7 +2443,8 @@ metal-stack cluster, planned in
 `deploy/flux-system/kustomization.yaml` does not reference the tree.
 `hack/deploy-infra.sh` applies its `base/` and `infrastructure/` under
 `EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)); the probe is applied
-by hand.
+by hand, and so is `controlplane/`, once the deploy has finished (see
+[Lab ControlPlane](#lab-controlplane)).
 
 ### Node probe
 
@@ -2505,7 +2506,7 @@ never completes and has to be deleted by hand; the Job keeps each run bounded.
 | `== disks` | The block devices, where `/var/lib` lives and how much it holds |
 | `== cgroup` | The cgroup filesystem type, `cgroup2fs` on cgroup v2 |
 | `== host os / binaries` | The host OS, and that no `libvirtd`, `qemu-system-x86_64`, `ovs-vswitchd` or `rpc.nfsd` is installed on the host |
-| `== nics` | Every host interface with its MTU and state: the uplinks, and the host end of each pod's veth (`cali*`), which carries the pod network's MTU. Neutron's `global_physnet_mtu` has to match the MTU of the network the Geneve tunnels run on |
+| `== nics` | Every host interface with its MTU and state: the uplinks, and the host end of each pod's veth (`cali*`), which carries the pod network's MTU. Neutron's `global_physnet_mtu` must not exceed the MTU of the network the Geneve tunnels run on (see [Lab ControlPlane](#lab-controlplane)) |
 
 The values a lab-ready node shows come from the 2026-09-29 survey in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138). The header comment of
@@ -2561,6 +2562,93 @@ platform's namespaces and CRDs alone. Both are described in
 | Access | `kubectl port-forward` to the Envoy Service on local port 8443; the `*.127-0-0-1.nip.io` hostnames are unchanged |
 | Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry |
 | Dependencies | a default StorageClass and no `node-local-dns` on the cluster |
+
+### Lab ControlPlane
+
+**Files:** `deploy/lab/metal-stack/controlplane/kustomization.yaml`,
+`deploy/lab/metal-stack/controlplane/ovncentral.yaml`,
+`deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`
+
+The kustomization is the `OVNCentral` and the ControlPlane CR of Step 3 of the
+[Quick Start (ControlPlane)](../../quick-start-controlplane.md), with their data
+unchanged except for two keys the lab adds to the ControlPlane.
+`hack/deploy-infra.sh` names the directory in its `WITH_CONTROLPLANE=true`
+completion hint and never applies it. Its preflight renders the directory and
+refuses it unless it holds exactly one ControlPlane,
+`openstack/<CONTROLPLANE_NAME>`, because Step 7 seeds the admin-password paths
+of that namespace and name only. The lab CR is `openstack/controlplane`, which
+the default name matches.
+`tests/unit/deploy/metal_stack_controlplane_test.sh` compares both files with
+the page's blocks and fails when they drift apart. The CR file is not named
+`controlplane.yaml`, because `.gitignore` ignores that basename in every
+directory.
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `spec.sizing.profile` | `Minimal` | The quick start's profile: one replica per component and a 512Mi database volume (`operators/c5c3/api/v1alpha1/sizing_profiles.go`), which fits a worker with 16 CPUs and 128 GiB. The Lightbits CSI driver rounds a request up to its 1 GiB granularity (`getReqCapacity` in `pkg/driver/controller.go` of [LightBitsLabs/los-csi](https://github.com/LightBitsLabs/los-csi)), so the 512Mi claim binds as a 1 GiB volume. A lab that needs a value between `Minimal` and `Standard` declares a cluster-scoped `SizingProfile` with `spec.base: Minimal` and selects it with `spec.sizing.profileRef.name`, which excludes `spec.sizing.profile` |
+| `spec.services.neutron.extraConfig.DEFAULT.global_physnet_mtu` | `"1460"` | Tenant networks are Geneve. Neutron 27.0.3 computes their MTU as `global_physnet_mtu` minus 20 (the IPv4 header, `get_mtu` in `neutron/plugins/ml2/drivers/type_tunnel.py`) minus `[ml2_type_geneve] max_header_size`, which the Neutron operator owns at 38 (`operators/neutron/internal/controller/reconcile_config.go`): 1460 - 20 - 38 = 1402 for every tenant network. 1460 is the pod network's MTU (the `cali*` lines of the [node probe](#node-probe)). The chassis tunnels over the node network, whose uplinks `lan0` and `lan1` carry 9000, so 1460 is a bound, not a match: it holds without a path-MTU measurement between the two racks, and none exists yet. The value is a string, because `extraConfig` is `map[string]map[string]string` |
+| `spec.services.nova.hypervisorOperator` | `{}` | Provisions the Keystone user `hypervisor-operator` (project `service-hypervisor-operator`, role `admin`) and writes the Secret `controlplane-nova-hypervisor-operator-auth` into `openstack` (see [`ServiceNovaHypervisorOperatorSpec`](../c5c3/controlplane-crd.md#servicenovahypervisoroperatorspec)), which [#1142](https://github.com/c5c3/cobaltcore/issues/1142) feeds into the hypervisor operator's chart |
+
+The sequence runs from the repository root with the lab's kubeconfig:
+
+```bash
+# 1. deploy the stack and the operator stack
+export KUBECONFIG="$PWD/kubeconfig"
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true make deploy-infra
+
+# 2. the OVNCentral and the ControlPlane
+kubectl apply -k deploy/lab/metal-stack/controlplane
+kubectl wait ovncentral/controlplane-ovn -n openstack --for=condition=Ready --timeout=10m
+
+# 3. the database-engine tenant (quick start, Step 4)
+kubectl wait mariadb/openstack-db -n openstack --for=condition=Ready --timeout=10m
+export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
+  -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
+deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
+unset BAO_TOKEN
+
+# 4. the chain (no image is preloaded on the lab, hence 30m instead of the quick start's 15m)
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=30m
+
+# 5. access, in a second terminal, for as long as the checks run
+kubectl -n envoy-gateway-system port-forward \
+  "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
+```
+
+`kubectl apply -k` fails with `no matches for kind` while a service operator's
+chart is still installing its CRDs, and with a webhook connection error while
+the c5c3-operator's webhook starts. Rerun it, as `hack/deploy-infra.sh` does
+for the bundled CR. `kubectl wait mariadb/openstack-db` exits 1 with
+`Error from server (NotFound)` until the c5c3-operator has created the MariaDB;
+rerun it too. Start the port-forward again when it ends, for example after the
+Envoy pod restarted.
+
+The checks are those of Step 6 of the
+[Quick Start (ControlPlane)](../../quick-start-controlplane.md), run with
+`--insecure` while the port-forward runs. On the lab the fake compute and the
+volume check are skipped, `openstack --insecure network show demo-net -c mtu -f value`
+prints `1402`, `openstack --insecure compute service list` shows no
+`nova-compute` row, and `openstack --insecure hypervisor list` prints nothing.
+
+For the hypervisor package
+([#1142](https://github.com/c5c3/cobaltcore/issues/1142)) the ControlPlane
+publishes the OVN central `controlplane-ovn` and three Secrets in `openstack`:
+the compute contract `controlplane-nova-compute-config`, the metadata proxy
+secret `controlplane-nova-metadata-secret`, and the hypervisor operator's
+credentials `controlplane-nova-hypervisor-operator-auth`. The auth Secret's
+`auth_url` is `https://keystone.127-0-0-1.nip.io:8443/v3`, the loopback URL the
+public catalog carries. From inside a pod it resolves to the pod itself; the
+hypervisor package decides how its consumer reaches Keystone.
+
+| Property | Value |
+| --- | --- |
+| Namespace | `openstack` |
+| Applied | by hand, after `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true make deploy-infra` |
+| Storage | through the default class `premium`; neither CR names a `storageClassName` |
+| Metadata gateway | none; the metadata API stays in-cluster at `controlplane-nova-metadata.openstack.svc:8775` |
+| Block storage | none; `CinderReady` reports `True` with reason `CinderNotManaged` |
+| Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, which deletes the ControlPlane and then the `OVNCentral` in its first step |
+| Pinned by | `tests/unit/deploy/metal_stack_controlplane_test.sh` |
 
 ### Node port check
 

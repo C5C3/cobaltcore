@@ -87,7 +87,11 @@ needs `kubectl` and `yq`, and deletes in an order that lets every finalizer run
 while its controller still exists:
 
 1. Every `ControlPlane` in `openstack`, when the `controlplanes.c5c3.io` CRD
-   exists, so the c5c3-operator reaps its children.
+   exists, so the c5c3-operator reaps its children. Then every `OVNCentral` in
+   `openstack`, when the `ovncentrals.ovn.openstack.c5c3.io` CRD exists: the
+   quick start's `controlplane-ovn` is referenced by the ControlPlane, not
+   owned by it, carries no finalizer, and its database pods would otherwise
+   hold their PVCs through step 4.
 2. The infrastructure overlay (`kubectl delete -k <overlay>/infrastructure`)
    and the opt-in `deploy/kind/messaging` overlay, while their operators run.
 3. The base overlay without its Namespaces and FluxInstance. Every suspended
@@ -340,6 +344,10 @@ deploy/lab/metal-stack/
 ├── base/
 │   └── kustomization.yaml          References ../../../kind/base/
 │                                    Patches OpenBao HelmRelease → storage class premium
+├── controlplane/                   The quick start's OVNCentral and ControlPlane CR (#1141), applied by hand
+│   ├── kustomization.yaml          Lists the two manifests below
+│   ├── ovncentral.yaml             OVNCentral controlplane-ovn, as on the quick-start page
+│   └── controlplane-lab.yaml       ControlPlane controlplane, plus global_physnet_mtu and hypervisorOperator
 ├── infrastructure/
 │   └── kustomization.yaml          References ../../../kind/infrastructure/
 │                                    Patches MariaDB CR, GarageCluster → storage class premium
@@ -349,6 +357,8 @@ deploy/lab/metal-stack/
 `EXTERNAL_CLUSTER=true` applies `base/` in Step 3 and `infrastructure/` in
 Step 5 in place of the kind overlays. Both take the kind overlay as their base,
 so the lab inherits every patch above and changes only the storage class. The
+script never applies `controlplane/`; the completion hint of
+`WITH_CONTROLPLANE=true` names it. The
 proving `OpenBaoCluster` names no class and binds to the cluster's default,
 `premium` on the lab, which Step 1 checks exists.
 
@@ -387,7 +397,7 @@ The deployment script supports configurable timeouts via environment variables:
 | `WITH_REGISTRY_CACHE` | `false` | Local-dev only. When `true`, bring up one distribution-registry (`registry:2`) pull-through proxy per upstream registry (`docker.io`, `ghcr.io`, `registry.k8s.io`, `quay.io`, plus the vanity fronts `oci.external-secrets.io` and `docker-registry3.mariadb.com`) on the `kind` Docker network and wire every node's containerd at them via a `certs.d/<host>/hosts.toml` mirror, so unmodified image refs are served from a persistent local cache that survives `kind delete`. The proxy streams and caches inline (fast even on a cold pull). The containerd mirror patch is injected only into the deploy-time kind config, never the checked-in `hack/kind-config.yaml`, so CI is unaffected. Requires `yq`. See the [Extended Quick Start](../../quick-start-extended.md) |
 | `PURGE_REGISTRY_CACHE` | `false` | Consumed by `make teardown-infra`. When `true`, also remove the registry pull-through cache containers and their volumes (identified by the `cobaltcore.registry-cache=true` label). The default leaves them running so the warm cache is reused on the next deploy |
 | `EXTERNAL_CLUSTER` | `false` | When `true`, deploy onto the cluster the current kubeconfig context points at (the script never switches contexts) with the `EXTERNAL_OVERLAY` overlays in Steps 3 and 5. Docker and kind are not required. Preflight refuses `WITH_VPA`, `WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE`, `WITH_CHAOS_MESH`, `WITH_OVN_KERNEL_MODULES`, `WITH_NFS` and `WITH_DIZZY`, requires the context's API server to answer, and logs the context and the server URL. Step 1 creates no cluster; it checks for a default StorageClass, for the absence of a `node-local-dns` DaemonSet in `kube-system` and for a Ready node, and logs the class and the node names. The nofile cap and the Keystone image preload are skipped. The Gateway is reached through `kubectl port-forward` on local port 8443, which the completion banner prints, and the bundled ControlPlane CR's `publicEndpoint` gets `:8443`. Also consumed by `make teardown-infra`. Any other value keeps the kind mode |
-| `EXTERNAL_OVERLAY` | `deploy/lab/metal-stack` | Overlay root of `EXTERNAL_CLUSTER=true`: its `base/` and `infrastructure/` replace `deploy/kind/base` and `deploy/kind/infrastructure`. Relative to the repository root unless absolute. Preflight fails when either kustomization is missing. Read by `make deploy-infra` and `make teardown-infra` |
+| `EXTERNAL_OVERLAY` | `deploy/lab/metal-stack` | Overlay root of `EXTERNAL_CLUSTER=true`: its `base/` and `infrastructure/` replace `deploy/kind/base` and `deploy/kind/infrastructure`. Relative to the repository root unless absolute. Preflight fails when either kustomization is missing. An overlay may also carry a `controlplane/` kustomization, which `make deploy-infra` names in its `WITH_CONTROLPLANE=true` completion hint and never applies; while it exists and `WITH_CONTROLPLANE_CR` is not `true`, preflight renders it and refuses a failing render, a render with no ControlPlane or more than one, or a ControlPlane other than `openstack/<CONTROLPLANE_NAME>`, the only one Step 7 seeds. Read by `make deploy-infra` and `make teardown-infra` |
 | `TEARDOWN_TIMEOUT` | `600` | Consumed by `make teardown-infra` under `EXTERNAL_CLUSTER=true`: seconds each delete waits for its objects to be gone before the teardown exits 1 |
 
 **Example: override HelmRelease timeout:**
