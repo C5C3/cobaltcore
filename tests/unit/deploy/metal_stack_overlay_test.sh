@@ -11,8 +11,9 @@
 #   2. The base render carries the OpenBao HelmRelease on `premium` in
 #      standalone mode, the envoy-gateway HelmRelease, the twelve-listener
 #      openstack-gw Gateway and the nine suspended service-operator releases,
-#      and no metrics-server or vertical-pod-autoscaler release (the platform
-#      runs both).
+#      no metrics-server or vertical-pod-autoscaler release (the platform runs
+#      both), and the Gardener apiserver-proxy opt-out label on every
+#      rendered Namespace.
 #   3. The infrastructure render carries MariaDB and both Garage volumes on
 #      `premium` at one replica, the NodePort EnvoyProxy on 31443, the paused
 #      proving OpenBaoCluster without egress fields (hack/deploy-infra.sh
@@ -76,7 +77,7 @@ test_files_have_spdx_and_one_resource() {
 test_base_render() {
   echo "Test: kustomize build deploy/lab/metal-stack/base"
 
-  render "$BASE_DIR" 20 || return
+  render "$BASE_DIR" 22 || return
 
   assert_eq "HelmRelease openbao stores its data on premium" "premium" \
     "$(val HelmRelease openbao '.spec.values.server.dataStorage.storageClass')"
@@ -99,6 +100,19 @@ test_base_render() {
     "$(count_named HelmRelease metrics-server)"
   assert_eq "no vertical-pod-autoscaler HelmRelease is rendered" "0" \
     "$(count_named HelmRelease vertical-pod-autoscaler)"
+
+  # The stack's NetworkPolicies expect the API server by its in-cluster
+  # address; Gardener's webhook sets a DNS name in every pod that does not
+  # opt out, and the label is that opt-out. Every namespace, not a list.
+  local namespaces labelled
+  namespaces="$(printf '%s\n' "$RENDERED" |
+    yq -N -r 'select(.kind == "Namespace") | .metadata.name' - | grep -c .)"
+  labelled="$(printf '%s\n' "$RENDERED" |
+    yq -N -r 'select(.kind == "Namespace" and .metadata.labels["apiserver-proxy.networking.gardener.cloud/inject"] == "disable") | .metadata.name' - |
+    grep -c .)"
+  assert_eq "the base renders namespaces" "true" "$([[ "$namespaces" -gt 0 ]] && echo true || echo false)"
+  assert_eq "every rendered Namespace opts out of Gardener's KUBERNETES_SERVICE_HOST injection ($namespaces)" \
+    "$namespaces" "$labelled"
   assert_no_foreign_class "base"
 }
 

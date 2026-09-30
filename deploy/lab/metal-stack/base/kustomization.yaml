@@ -20,12 +20,40 @@
 #     the suspended K-ORC Kustomization;
 #   - the 25m CPU request of the Flux controllers.
 #
-# The one lab-specific patch is the OpenBao data volume's storage class. The
-# kind base pins `standard`, and the lab has a Lightbits `standard` class too,
-# so leaving the pin in place would bind the volume to a class chosen by
-# coincidence. `premium` is the lab's default class (#1138); it is pinned
-# rather than left to the default so a change of the default does not move
-# the volume.
+# Two things are lab-specific. The first is the OpenBao data volume's storage
+# class. The kind base pins `standard`, and the lab has a Lightbits `standard`
+# class too, so leaving the pin in place would bind the volume to a class
+# chosen by coincidence. `premium` is the lab's default class (#1138); it is
+# pinned rather than left to the default so a change of the default does not
+# move the volume.
+#
+# The second is the label apiserver-proxy.networking.gardener.cloud/inject:
+# disable on every namespace the stack declares. The lab is a Gardener shoot,
+# and Gardener's kubernetes-service-host webhook (gardener-resource-manager)
+# sets KUBERNETES_SERVICE_HOST in every new pod to the API server's DNS name,
+# so that pods bypass the node-local apiserver-proxy. The stack's
+# NetworkPolicies expect the address instead:
+#   - openbao-operator 0.4.2 reads the variable as an IP address to derive
+#     the API-server egress of the policy it renders over an OpenBaoCluster.
+#     A name makes the read fail, its fallback (`get` on Service
+#     default/kubernetes) is outside the operator's RBAC, and the instance
+#     stays at APIServerNetworkReady=False, reason
+#     APIServerNetworkConfigurationInvalid. Its pods would also dial the
+#     name's address, which no rule of the policy names.
+#   - The memcached-operator's chart policy allows DNS on port 53 alone, and
+#     the shoot's CoreDNS answers behind its Service on 8053, so the pod
+#     cannot resolve the name and every API request times out. With the
+#     address it needs no lookup.
+#   - The service-operator charts take their API-server egress as a list of
+#     endpoint addresses (networkPolicy.apiServer in their values).
+# The label is Gardener's opt-out for exactly this: its webhook skips
+# namespaces and pods that carry it, so the pods keep the kubelet's
+# KUBERNETES_SERVICE_HOST, the kubernetes Service's ClusterIP, and reach the
+# API server through the apiserver-proxy, the same path as on kind. It is set
+# on every namespace of the render, not on the ones known to break, so a
+# namespace added later gets the same path and the stack's network posture
+# stays one thing on the lab. The kind base creates all of them, so the patch
+# below needs no name.
 #
 # The kind base sits outside this directory. A directory reference is allowed
 # under kustomize's default LoadRestrictionsRootOnly check (the kind base
@@ -40,6 +68,19 @@ resources:
   - ../../../kind/base
 
 patches:
+  # Every Namespace of the render. kustomize replaces the patch's name with
+  # each target's own.
+  - target:
+      version: v1
+      kind: Namespace
+    patch: |
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: every-namespace
+        labels:
+          apiserver-proxy.networking.gardener.cloud/inject: disable
+
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
