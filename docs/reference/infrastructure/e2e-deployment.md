@@ -94,6 +94,12 @@ while its controller still exists:
    hold their PVCs through step 4.
 2. The infrastructure overlay (`kubectl delete -k <overlay>/infrastructure`)
    and the opt-in `deploy/kind/messaging` overlay, while their operators run.
+   The proving `OpenBaoCluster` `openbao-instance` is switched to
+   `deletionPolicy: DeletePVCs` first. Under the default `Retain` the
+   openbao-operator strips the owner references of the instance's unseal-key
+   and root-token Secrets before it clears its finalizer, and it is allowed
+   neither: its admission policy denies the patch on the ESO-materialized
+   unseal key, and the tenant RBAC grants no read on the root token.
 3. The base overlay without its Namespaces and FluxInstance. Every suspended
    HelmRelease with a release history and every suspended Flux Kustomization
    with an inventory is resumed first, because Flux neither uninstalls a

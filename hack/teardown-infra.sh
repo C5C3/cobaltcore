@@ -217,7 +217,9 @@ read_stack_crds() {
 #      their PVCs through step 4;
 #   2. the infrastructure overlay (MariaDB, Memcached, Garage, the OpenBao
 #      instance and tenant, the ExternalSecrets, Certificates and issuers) and
-#      the opt-in message bus, while their operators run;
+#      the opt-in message bus, while their operators run; the proving OpenBao
+#      instance is switched to deletionPolicy DeletePVCs first, because the
+#      openbao-operator cannot finalize it under the default Retain;
 #   3. the base overlay without its Namespaces and FluxInstance, after resuming
 #      what was suspended, so the helm-controller uninstalls every chart and the
 #      Flux Kustomizations prune K-ORC and the RabbitMQ operator; the Gateway and
@@ -275,6 +277,20 @@ teardown_external_cluster() {
   # 2. The CRs the infrastructure operators finalize, and the opt-in message
   # bus: its RabbitmqCluster would keep its finalizer once step 3 prunes the
   # cluster-operator.
+  #
+  # The proving OpenBao instance keeps the operator's default deletionPolicy,
+  # Retain, under which the openbao-operator strips the owner references of its
+  # unseal-key and root-token Secrets before it clears its finalizer. Neither
+  # can succeed: the chart's admission policy denies the controller the patch
+  # on the ESO-materialized unseal key hack/deploy-infra.sh adopted, and the
+  # tenant RBAC grants no read on the root token self-init never writes.
+  # DeletePVCs skips that step and deletes the instance's PVCs, which step 4
+  # would delete anyway.
+  if kubectl get openbaoclusters.openbao.org openbao-instance -n openstack >/dev/null 2>&1; then
+    log "Setting deletionPolicy DeletePVCs on the proving OpenBao instance..."
+    kubectl patch openbaoclusters.openbao.org openbao-instance -n openstack --type merge \
+      -p '{"spec":{"deletionPolicy":"DeletePVCs"}}' >/dev/null
+  fi
   delete_and_wait "the infrastructure overlay" -k "${OVERLAY_ROOT}/infrastructure"
   delete_and_wait "the message-bus overlay" -k "${REPO_ROOT}/deploy/kind/messaging"
 
