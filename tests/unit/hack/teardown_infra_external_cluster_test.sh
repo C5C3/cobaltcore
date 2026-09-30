@@ -11,18 +11,25 @@
 #   2. The external teardown never calls kind or docker, deletes in the order
 #      that lets every finalizer run while its controller exists (the
 #      OVNCentrals directly after the ControlPlanes, the proving OpenBao
-#      instance on DeletePVCs before the infrastructure overlay), passes
-#      --ignore-not-found to every delete, resumes only the suspended Flux
-#      objects that installed something, splits the base render into the
-#      Gateway pass and the rest, deletes exactly the stack CRDs of a mixed
-#      list, and names no namespace outside the stack's.
+#      instance on DeletePVCs before the infrastructure overlay, a wait for
+#      the stack CRs in openstack that are still being reaped before the
+#      operators go, which reads every namespaced stack kind in one call, no
+#      cluster-scoped or platform kind, and passes the Gateway and the objects
+#      nothing reaps), passes --ignore-not-found to every delete, resumes only
+#      the suspended Flux objects that installed something, splits the base
+#      render into the Gateway pass and the rest, deletes exactly the stack
+#      CRDs of a mixed list, and names no namespace outside the stack's.
 #   3. It exits 1 before any delete when the API server does not answer or yq
 #      is missing, exits 1 when a wait runs out (naming the object, the
 #      OVNCentral delete included, after which nothing else is deleted), when
-#      the proving OpenBao instance cannot be switched to DeletePVCs, when a
-#      stack CRD or namespace is left, and when the base render, the CRD list
-#      or the final namespace read fails, and exits 0 on a second run that
-#      finds nothing.
+#      a stack CR in openstack that is being deleted or whose owner is gone
+#      outlives the wait, or the read of those CRs keeps failing (naming the
+#      object or kubectl's error, before any operator is removed), when the
+#      CRD scope cannot be read (before any operator is removed), when the
+#      proving OpenBao instance cannot be switched to DeletePVCs, when a stack
+#      CRD or namespace is left, and when the base render, the CRD list of
+#      step 8 or the final namespace read fails, and exits 0 on a second run
+#      that finds nothing.
 #
 # main() runs against a recording kubectl stub on a private PATH prefix and the
 # real yq; the external-cluster checks are SKIP without yq.
@@ -43,10 +50,13 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 STACK_CRDS="certificates.cert-manager.io
+controlplanes.c5c3.io
 helmreleases.helm.toolkit.fluxcd.io
 keystones.keystone.openstack.c5c3.io
 images.openstack.k-orc.cloud
-fluxinstances.fluxcd.controlplane.io"
+fluxinstances.fluxcd.controlplane.io
+gateways.gateway.networking.k8s.io
+gatewayclasses.gateway.networking.k8s.io"
 PLATFORM_CRDS="verticalpodautoscalers.autoscaling.k8s.io
 certificates.cert.gardener.cloud
 ippools.crd.projectcalico.org"
@@ -68,6 +78,16 @@ ippools.crd.projectcalico.org"
 #   KUBECTL_OPENBAO_PATCH_RC
 #                          exit code of the OpenBao instance patch (default 0)
 #   KUBECTL_CRD_RC         non-empty: `get crd -o name` fails
+#   KUBECTL_CRD_SCOPE_RC   non-empty: `get crd -o custom-columns=...` fails
+#   KUBECTL_CR_READ_RC     non-empty: the read of the stack CRs in openstack
+#                          fails
+#   KUBECTL_CR_LEFT        non-empty: that read keeps answering a Keystone of
+#                          this name that is being deleted
+#   KUBECTL_CR_ORPHANED    non-empty: that read keeps answering a SecretStore of
+#                          this name whose ControlPlane is gone
+#   KUBECTL_CLUSTER_SCOPED_CR
+#                          non-empty: a read that names the cluster-scoped
+#                          gatewayclasses answers a GatewayClass being deleted
 #   KUBECTL_CRD_LEFT       a stack CRD the final report still finds
 #   KUBECTL_NS_LEFT        a namespace the final report still finds
 #   KUBECTL_NS_RC          non-empty: the final namespace read fails
@@ -82,6 +102,34 @@ make_stubs() {
     sed 's#^#customresourcedefinition.apiextensions.k8s.io/#' >"$dir/crds.txt"
   printf '%s\n' "$PLATFORM_CRDS" |
     sed 's#^#customresourcedefinition.apiextensions.k8s.io/#' >"$dir/crds-after.txt"
+  # The CRDs of crds.txt with their scope and kind, as the custom-columns read
+  # prints them. The platform's VerticalPodAutoscaler and Certificate are
+  # namespaced, like the stack's.
+  cat >"$dir/crd-columns.txt" <<'COLUMNS'
+certificates.cert-manager.io                 Namespaced   Certificate
+controlplanes.c5c3.io                        Namespaced   ControlPlane
+helmreleases.helm.toolkit.fluxcd.io          Namespaced   HelmRelease
+keystones.keystone.openstack.c5c3.io         Namespaced   Keystone
+images.openstack.k-orc.cloud                 Namespaced   Image
+fluxinstances.fluxcd.controlplane.io         Namespaced   FluxInstance
+gateways.gateway.networking.k8s.io           Namespaced   Gateway
+gatewayclasses.gateway.networking.k8s.io     Cluster      GatewayClass
+verticalpodautoscalers.autoscaling.k8s.io    Namespaced   VerticalPodAutoscaler
+certificates.cert.gardener.cloud             Namespaced   Certificate
+ippools.crd.projectcalico.org                Cluster      IPPool
+COLUMNS
+  grep -E '(autoscaling\.k8s\.io|cert\.gardener\.cloud|crd\.projectcalico\.org) ' \
+    "$dir/crd-columns.txt" >"$dir/crd-columns-after.txt"
+  # What the stack-CR read finds in openstack after steps 1 and 2 when no
+  # ControlPlane was ever applied: the base overlay's Gateway, the eso-tenant
+  # Certificate hack/deploy-infra.sh applies, and its CertificateRequest. Nothing
+  # reaps any of them before step 3.
+  cat >"$dir/openstack-crs.json" <<'JSON'
+{"apiVersion":"gateway.networking.k8s.io/v1","kind":"Gateway","metadata":{"name":"openstack-gw","uid":"uid-gateway"}},
+{"apiVersion":"cert-manager.io/v1","kind":"Certificate","metadata":{"name":"eso-tenant-client-tls","uid":"uid-eso-cert"}},
+{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","metadata":{"name":"eso-tenant-client-tls-1","uid":"uid-eso-cr",
+ "ownerReferences":[{"apiVersion":"cert-manager.io/v1","kind":"Certificate","name":"eso-tenant-client-tls","uid":"uid-eso-cert"}]}}
+JSON
   cat >"$dir/helmreleases.json" <<'JSON'
 {"items":[
   {"metadata":{"namespace":"c5c3-system","name":"c5c3-operator"},"spec":{"suspend":true},
@@ -183,6 +231,42 @@ case "$args" in
       echo 'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io "ovncentrals.ovn.openstack.c5c3.io" not found' >&2
       exit 1
     fi
+    ;;
+  "get crd -o custom-columns=NAME:.metadata.name,SCOPE:.spec.scope,KIND:.spec.names.kind --no-headers")
+    if [ -n "${KUBECTL_CRD_SCOPE_RC:-}" ]; then
+      echo 'Error from server (Forbidden): customresourcedefinitions.apiextensions.k8s.io is forbidden' >&2
+      exit 1
+    fi
+    if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
+      cat "$dir/crd-columns-after.txt"
+    else
+      cat "$dir/crd-columns.txt"
+    fi
+    ;;
+  "get "*" -n openstack -o json")
+    if [ -n "${KUBECTL_CR_READ_RC:-}" ]; then
+      echo 'error: You must be logged in to the server (Unauthorized)' >&2
+      exit 1
+    fi
+    items="$(cat "$dir/openstack-crs.json")"
+    if [ -n "${KUBECTL_CR_LEFT:-}" ]; then
+      items="${items},{\"apiVersion\":\"keystone.openstack.c5c3.io/v1alpha1\",\"kind\":\"Keystone\",
+        \"metadata\":{\"name\":\"${KUBECTL_CR_LEFT}\",\"uid\":\"uid-keystone\",\"deletionTimestamp\":\"2026-09-30T19:00:00Z\"}}"
+    fi
+    if [ -n "${KUBECTL_CR_ORPHANED:-}" ]; then
+      items="${items},{\"apiVersion\":\"external-secrets.io/v1\",\"kind\":\"SecretStore\",
+        \"metadata\":{\"name\":\"${KUBECTL_CR_ORPHANED}\",\"uid\":\"uid-store\",
+        \"ownerReferences\":[{\"apiVersion\":\"c5c3.io/v1alpha1\",\"kind\":\"ControlPlane\",\"name\":\"controlplane\",\"uid\":\"uid-controlplane\"}]}}"
+    fi
+    if [ -n "${KUBECTL_CLUSTER_SCOPED_CR:-}" ]; then
+      case "$args" in
+        *gatewayclasses.gateway.networking.k8s.io*)
+          items="${items},{\"apiVersion\":\"gateway.networking.k8s.io/v1\",\"kind\":\"GatewayClass\",
+            \"metadata\":{\"name\":\"envoy\",\"uid\":\"uid-gatewayclass\",\"deletionTimestamp\":\"2026-09-30T19:00:00Z\"}}"
+          ;;
+      esac
+    fi
+    printf '{"apiVersion":"v1","kind":"List","items":[%s]}\n' "$items"
     ;;
   "get crd -o name")
     if [ -n "${KUBECTL_CRD_RC:-}" ]; then
@@ -365,8 +449,8 @@ test_external_teardown_order() {
   echo "Test: the external teardown removes the stack in finalizer order"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (14 checks skipped)"
-    SKIP=$((SKIP + 14))
+    echo "  SKIP: yq not installed (18 checks skipped)"
+    SKIP=$((SKIP + 18))
     return
   fi
 
@@ -380,7 +464,8 @@ test_external_teardown_order() {
   output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true PURGE_REGISTRY_CACHE=true)"
   rc=$?
   assert_eq "the external teardown exits 0" "0" "$rc"
-  assert_not_contains "kind is never called" "$(cat "$CALL_LOG")" "kind "
+  # By line start: the CRD scope read's custom-columns end in `.kind`.
+  assert_eq "kind is never called" "" "$(grep '^kind ' "$CALL_LOG" || true)"
   assert_not_contains "docker is never called, even with PURGE_REGISTRY_CACHE=true" \
     "$(cat "$CALL_LOG")" "docker "
   assert_contains "the context is logged" "$output" "Kubeconfig context  : lab-forge"
@@ -411,6 +496,26 @@ test_external_teardown_order() {
   actual="$(mutations "$CALL_LOG" | grep -v 'customresourcedefinition')"
   assert_eq "the deletes run in finalizer order (patches only for installed, suspended objects)" \
     "$expected" "$actual"
+
+  # The wait for the ControlPlane's descendants: after the overlays, before the
+  # base overlay removes the operators that finalize them. One read of the
+  # namespaced stack kinds; neither the cluster-scoped GatewayClass nor a
+  # platform kind is read. The Gateway, the eso-tenant Certificate and its
+  # CertificateRequest are not being reaped, so the first read ends the wait.
+  local messaging_line wait_line operators_line reads read_kinds
+  messaging_line="$(grep -n 'delete -k .*deploy/kind/messaging' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  wait_line="$(grep -n -- '^kubectl get [^ ]* -n openstack -o json$' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  operators_line="$(grep -n 'patch helmrelease c5c3-operator' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  assert_eq "the stack CRs in openstack are read after the message-bus overlay" "true" \
+    "$([[ -n "$wait_line" && -n "$messaging_line" && "$wait_line" -gt "$messaging_line" ]] && echo true || echo false)"
+  assert_eq "and before the operators are resumed and removed" "true" \
+    "$([[ -n "$wait_line" && -n "$operators_line" && "$wait_line" -lt "$operators_line" ]] && echo true || echo false)"
+  reads="$(grep -c -- '^kubectl get [^ ]* -n openstack -o json$' "$CALL_LOG")"
+  assert_eq "the Gateway and the objects nothing reaps end the wait on the first read" "1" "$reads"
+  read_kinds="$(grep -- '^kubectl get [^ ]* -n openstack -o json$' "$CALL_LOG" | head -n1 |
+    cut -d' ' -f3 | tr ',' '\n' | sort)"
+  assert_eq "the one read names every namespaced stack kind and nothing else" \
+    "$(grep -vx 'gatewayclasses.gateway.networking.k8s.io' <<<"$STACK_CRDS" | sort)" "$read_kinds"
 
   local deletes without_flag
   deletes="$(grep -E '^kubectl delete ' "$CALL_LOG")"
@@ -469,8 +574,8 @@ test_external_teardown_failures() {
   echo "Test: the external teardown aborts on an unreachable cluster, a timeout or leftovers"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (31 checks skipped)"
-    SKIP=$((SKIP + 31))
+    echo "  SKIP: yq not installed (49 checks skipped)"
+    SKIP=$((SKIP + 49))
     return
   fi
 
@@ -494,6 +599,54 @@ test_external_teardown_failures() {
   assert_contains "the error says the delete did not finish" "$output" "did not finish within 600s"
   assert_contains "the error names the object still present" "$output" "namespaces/openstack"
 
+  # A ControlPlane descendant that outlives the wait: exit 1 before any
+  # operator is resumed or removed, naming the object, so its controller is
+  # still there when the operator looks at it. One is being deleted, the other
+  # has lost its ControlPlane and waits for garbage collection to mark it.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_CR_LEFT=controlplane-keystone)"
+  rc=$?
+  assert_eq "a stack CR being deleted in openstack exits 1" "1" "$rc"
+  assert_contains "the error says the CRs were not finalized" "$output" \
+    "the stack CRs in openstack were not finalized within 1s"
+  assert_contains "and names the object" "$output" "Keystone/controlplane-keystone"
+  assert_not_contains "and not the Gateway nothing reaps before step 3" "$output" "Gateway/openstack-gw"
+  assert_not_contains "no operator is resumed or removed afterwards" "$(cat "$CALL_LOG")" "patch helmrelease"
+
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_CR_ORPHANED=openbao-tenant-store)"
+  rc=$?
+  assert_eq "a stack CR whose ControlPlane is gone exits 1" "1" "$rc"
+  assert_contains "and names the object" "$output" "SecretStore/openbao-tenant-store"
+  assert_not_contains "and not the CertificateRequest whose Certificate is there" "$output" \
+    "CertificateRequest/eso-tenant-client-tls-1"
+  assert_not_contains "no operator is resumed or removed afterwards" "$(cat "$CALL_LOG")" "patch helmrelease"
+
+  # A read that keeps failing is not an empty namespace.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_CR_READ_RC=1)"
+  rc=$?
+  assert_eq "a stack-CR read that keeps failing exits 1" "1" "$rc"
+  assert_contains "and names kubectl's error" "$output" \
+    "cannot read them: error: You must be logged in to the server (Unauthorized)"
+  assert_not_contains "no operator is resumed or removed afterwards" "$(cat "$CALL_LOG")" "patch helmrelease"
+
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CRD_SCOPE_RC=1)"
+  rc=$?
+  assert_eq "a CRD scope that cannot be read exits 1" "1" "$rc"
+  assert_contains "says the scope cannot be read" "$output" "cannot read the scope of the cluster's CRDs"
+  assert_not_contains "no operator is resumed or removed afterwards" "$(cat "$CALL_LOG")" "patch helmrelease"
+
+  # The cluster-scoped GatewayClass is never read in openstack: kubectl would
+  # ignore -n and report the one step 3 deletes.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_CLUSTER_SCOPED_CR=1)"
+  rc=$?
+  assert_eq "a GatewayClass being deleted does not hold the wait" "0" "$rc"
+  assert_not_contains "the cluster-scoped CRD is not read in openstack" \
+    "$(grep -- ' -n openstack -o json$' "$CALL_LOG")" "gatewayclasses"
+
   : >"$CALL_LOG"
   output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_NS_LEFT=openstack)"
   rc=$?
@@ -512,6 +665,8 @@ test_external_teardown_failures() {
   rc=$?
   assert_eq "a CRD list that cannot be read exits 1" "1" "$rc"
   assert_contains "says the CRDs cannot be listed" "$output" "cannot list the cluster's CRDs"
+  assert_contains "in step 8, after the stack namespaces are deleted" "$(cat "$CALL_LOG")" \
+    "kubectl delete namespace $(stack_namespace_names)"
   assert_not_contains "and deletes no CRD blind" "$(cat "$CALL_LOG")" "delete customresourcedefinition"
 
   : >"$CALL_LOG"

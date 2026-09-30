@@ -207,6 +207,91 @@ read_stack_crds() {
 }
 
 # ---------------------------------------------------------------------------
+# wait_for_stack_crs_gone <namespace> — Wait until no CR of the stack's
+# namespaced CRDs (STACK_CRD_GROUPS) in <namespace> is still being reaped,
+# bounded by TEARDOWN_TIMEOUT.
+#
+# Run after steps 1 and 2 and before step 3. `kubectl delete controlplane --wait`
+# returns when the ControlPlane is gone; garbage collection reaps its children
+# afterwards (a Keystone behind its openbao-finalizer, the PushSecrets and
+# SecretStore that finalizer waits on, the dedicated Barbican OpenBao instance,
+# the RabbitmqCluster), and their finalizers need the operators step 3
+# uninstalls. Without this wait a slow finalizer loses its controller and holds
+# the namespace in Terminating for good.
+#
+# A CR is being reaped while it carries a deletionTimestamp, or while one of its
+# owners of a stack kind is gone and garbage collection has yet to mark it.
+# Nothing else is waited on, because nothing deletes it before step 3: the
+# Gateway of the base overlay, which step 3 deletes, and the eso-tenant
+# Certificate and SecretStore hack/deploy-infra.sh applies on the path without a
+# ControlPlane, which the namespace delete of step 7 takes. An owner of another
+# kind (a core object, a cluster-scoped one) is not read and counts as present.
+# Cluster-scoped CRDs are skipped: kubectl ignores -n for them and would report
+# the GatewayClass step 3 deletes.
+#
+# One kubectl call reads every kind per pass. A read that fails counts as a pass
+# with objects left, and the wait names kubectl's error if it runs out, so an
+# unreadable cluster never passes for a reaped namespace. A CRD deleted after
+# the listing fails every read the same way; nothing in steps 1 and 2 deletes
+# one. Exits 1 when the CRDs cannot be listed or the wait runs out, naming what
+# is left.
+# ---------------------------------------------------------------------------
+wait_for_stack_crs_gone() {
+  local namespace="$1" crds kinds owner_kinds json left errfile
+  log "Waiting for the stack CRs in ${namespace} to be finalized..."
+  if ! crds="$(kubectl get crd -o custom-columns=NAME:.metadata.name,SCOPE:.spec.scope,KIND:.spec.names.kind --no-headers)"; then
+    log "ERROR: cannot read the scope of the cluster's CRDs (kubectl's error is above)."
+    exit 1
+  fi
+  # "<plural>.<group> <Kind>", one namespaced stack CRD per line.
+  crds="$(awk '$2 == "Namespaced" { print $1, $3 }' <<<"${crds}" | grep -E "^[^ ]+\.(${STACK_CRD_GROUPS}) " || true)"
+  if [[ -z "${crds}" ]]; then
+    return 0
+  fi
+  kinds="$(cut -d' ' -f1 <<<"${crds}" | paste -sd, -)"
+  # "<group>/<Kind>", the form an ownerReference names its owner's kind in.
+  owner_kinds="$(awk '{ sub(/^[^.]*\./, "", $1); print $1 "/" $2 }' <<<"${crds}" | paste -sd, -)"
+
+  # The objects being reaped, as <Kind>/<name>. Chained selects rather than
+  # `and`: on the right side of `and`, yq loses a variable read inside any_c.
+  # shellcheck disable=SC2016 # $live, $kinds, $k and $u are yq variables
+  local reaped='[.items[].metadata.uid] as $live |
+    (strenv(OWNER_KINDS) | split(",")) as $kinds |
+    .items[] |
+    select(.metadata.deletionTimestamp != null or
+      ([(.metadata.ownerReferences // [])[] |
+        select(((.apiVersion | sub("/[^/]*$"; "")) + "/" + .kind) as $k | $kinds | any_c(. == $k)) |
+        select(.uid as $u | $live | any_c(. == $u) | not)] | length > 0)) |
+    .kind + "/" + .metadata.name'
+
+  errfile="$(mktemp)"
+  local deadline=$((SECONDS + TEARDOWN_TIMEOUT))
+  while :; do
+    if json="$(kubectl get "${kinds}" -n "${namespace}" -o json 2>"${errfile}")"; then
+      left="$(OWNER_KINDS="${owner_kinds}" yq -r "${reaped}" <<<"${json}")" ||
+        left="yq cannot read them (its error is above)"
+    else
+      left="cannot read them: $(head -n 1 "${errfile}")"
+    fi
+    if [[ -z "${left}" ]]; then
+      rm -f "${errfile}"
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      rm -f "${errfile}"
+      log "ERROR: the stack CRs in ${namespace} were not finalized within ${TEARDOWN_TIMEOUT}s:"
+      local line
+      while IFS= read -r line; do
+        [[ -n "${line}" ]] && log "         ${line}"
+      done <<<"${left}"
+      log "       Their operators are still installed; look at each object's conditions before rerunning."
+      exit 1
+    fi
+    sleep 5
+  done
+}
+
+# ---------------------------------------------------------------------------
 # teardown_external_cluster — Remove the stack from the current context's cluster.
 #
 # The order makes every finalizer run while the controller that clears it still
@@ -219,7 +304,11 @@ read_stack_crds() {
 #      instance and tenant, the ExternalSecrets, Certificates and issuers) and
 #      the opt-in message bus, while their operators run; the proving OpenBao
 #      instance is switched to deletionPolicy DeletePVCs first, because the
-#      openbao-operator cannot finalize it under the default Retain;
+#      openbao-operator cannot finalize it under the default Retain; then a
+#      wait until no CR of the stack's namespaced CRDs in openstack is still
+#      being reaped, since what a ControlPlane owned is finalized by an
+#      operator step 3 removes (the ControlPlane delete of step 1 returns when
+#      the ControlPlane is gone, not its children);
 #   3. the base overlay without its Namespaces and FluxInstance, after resuming
 #      what was suspended, so the helm-controller uninstalls every chart and the
 #      Flux Kustomizations prune K-ORC and the RabbitMQ operator; the Gateway and
@@ -293,6 +382,9 @@ teardown_external_cluster() {
   fi
   delete_and_wait "the infrastructure overlay" -k "${OVERLAY_ROOT}/infrastructure"
   delete_and_wait "the message-bus overlay" -k "${REPO_ROOT}/deploy/kind/messaging"
+  # What the ControlPlane owned: garbage collection reaps it after step 1's
+  # delete has returned, and its finalizers need the operators step 3 removes.
+  wait_for_stack_crs_gone openstack
 
   # 3. The Flux objects of the base overlay.
   resume_installed_flux_objects
