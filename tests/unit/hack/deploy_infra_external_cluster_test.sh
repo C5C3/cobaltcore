@@ -8,9 +8,11 @@
 #      and the derived OVERLAY_ROOT and PUBLIC_PORT follow the mode.
 #   2. preflight_checks in external mode needs only kubectl and jq, still needs
 #      yq under WITH_CONTROLPLANE=true, refuses each of the seven kind-bound
-#      opt-ins by name, refuses an overlay without its two kustomizations and a
-#      context whose API server does not answer; the kind mode still needs
-#      docker and kind, EXTERNAL_CLUSTER=yes included.
+#      opt-ins by name, refuses an overlay without its two kustomizations, a
+#      CONTROLPLANE_NAME the overlay's rendered by-hand ControlPlane does not
+#      carry (and nothing else with that name), a controlplane/ that does not
+#      render and a context whose API server does not answer; the kind mode
+#      still needs docker and kind, EXTERNAL_CLUSTER=yes included.
 #   3. check_external_cluster refuses a cluster without a default StorageClass,
 #      one with a node-local-dns DaemonSet, one without a Ready node, and one it
 #      cannot read, and passes a cluster with a default class, a NotFound
@@ -23,8 +25,11 @@
 #      resolve_api_server_egress, the external Step 1 runs
 #      check_external_cluster, Steps 3 and 5 apply the overlay root, the nofile
 #      cap and the Keystone preload sit behind an EXTERNAL_CLUSTER gate, the CR
-#      rewrite and the by-hand CR hint key on PUBLIC_PORT, and the external
-#      banners name the port-forward on PUBLIC_PORT and the teardown.
+#      rewrite and the by-hand CR hint key on PUBLIC_PORT, the external
+#      by-hand hint names the overlay's controlplane/ kustomization behind an
+#      EXTERNAL_CLUSTER and file gate and its CR by CONTROLPLANE_NAME while the
+#      kind hint keeps the bundled CR, and the external banners name the
+#      port-forward on PUBLIC_PORT and the teardown.
 #
 # The script is sourced (its BASH_SOURCE guard keeps main() from running) and
 # driven against a kubectl stub scripted through environment variables.
@@ -59,6 +64,8 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 #   KUBECTL_NODES           file answering `get nodes -o json`
 #   KUBECTL_SLICE           file answering `get endpointslice kubernetes`
 #   KUBECTL_SLICE_RC        exit code of that lookup (default 0)
+#   KUBECTL_KUSTOMIZE       file answering `kustomize <dir>` (default: empty)
+#   KUBECTL_KUSTOMIZE_RC    exit code of that render (default 0)
 make_kubectl_stub() {
   local dir="$1"
   mkdir -p "$dir"
@@ -79,6 +86,14 @@ case "${1:-}" in
       current-context) echo "lab-forge" ;;
       view) echo "https://api.lab.example" ;;
     esac
+    exit 0
+    ;;
+  kustomize)
+    if [ "${KUBECTL_KUSTOMIZE_RC:-0}" != "0" ]; then
+      echo "error: accumulating resources: open ${2:-}/missing.yaml: no such file or directory" >&2
+      exit "${KUBECTL_KUSTOMIZE_RC}"
+    fi
+    cat "${KUBECTL_KUSTOMIZE:-/dev/null}"
     exit 0
     ;;
   get)
@@ -153,9 +168,9 @@ run_preflight() {
   local path="$1"
   shift
   (
-    unset EXTERNAL_CLUSTER EXTERNAL_OVERLAY WITH_CONTROLPLANE WITH_VPA \
-      WITH_METRICS_SERVER WITH_REGISTRY_CACHE WITH_CHAOS_MESH \
-      WITH_OVN_KERNEL_MODULES WITH_NFS WITH_DIZZY
+    unset EXTERNAL_CLUSTER EXTERNAL_OVERLAY WITH_CONTROLPLANE WITH_CONTROLPLANE_CR \
+      CONTROLPLANE_NAME WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE \
+      WITH_CHAOS_MESH WITH_OVN_KERNEL_MODULES WITH_NFS WITH_DIZZY
     for assignment in "$@"; do
       export "${assignment?}"
     done
@@ -281,6 +296,97 @@ test_external_preflight() {
   rc=$?
   assert_nonzero_exit "fails without yq under WITH_CONTROLPLANE=true" "$rc"
   assert_contains "names yq as required" "$output" "requires 'yq'"
+
+  # The reader applies the overlay's controlplane/ by hand, and Step 7 seeds the
+  # paths of openstack/CONTROLPLANE_NAME alone: a rendered ControlPlane under
+  # another namespace or name, none or two are refused before the cluster is
+  # contacted, unless the bundled CR is applied and renamed instead. The kubectl
+  # stub renders an overlay whose CR is openstack/lab (with cat); the yq that
+  # reads the render is the real one.
+  if command -v yq >/dev/null 2>&1; then
+    make_stub_path "$tmp/kubectl-jq-yq" kubectl jq
+    ln -s "$(command -v yq)" "$tmp/kubectl-jq-yq/yq"
+    ln -s "$(command -v cat)" "$tmp/kubectl-jq-yq/cat"
+    mkdir -p "$tmp/lab/base" "$tmp/lab/infrastructure" "$tmp/lab/controlplane"
+    : >"$tmp/lab/base/kustomization.yaml"
+    : >"$tmp/lab/infrastructure/kustomization.yaml"
+    : >"$tmp/lab/controlplane/kustomization.yaml"
+    cat >"$tmp/lab-render.yaml" <<'YAML'
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: lab-ovn
+  namespace: openstack
+---
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: lab
+  namespace: openstack
+YAML
+    export KUBECTL_LOG="$tmp/kubectl.log" KUBECTL_KUSTOMIZE="$tmp/lab-render.yaml"
+    : >"$KUBECTL_LOG"
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      EXTERNAL_OVERLAY="$tmp/lab")"
+    rc=$?
+    assert_nonzero_exit "a CONTROLPLANE_NAME the overlay's ControlPlane does not carry is refused" "$rc"
+    assert_contains "the refusal names the overlay's CR and the override" "$output" \
+      "controlplane renders ControlPlane 'openstack/lab', but Step 7 seeds openstack/controlplane; keep the CR in the openstack namespace and set CONTROLPLANE_NAME to its name."
+    assert_eq "and comes before the cluster is contacted, after the overlay's render" \
+      "kubectl kustomize $tmp/lab/controlplane" "$(cat "$KUBECTL_LOG")"
+    unset KUBECTL_LOG
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      CONTROLPLANE_NAME=lab EXTERNAL_OVERLAY="$tmp/lab")"
+    rc=$?
+    assert_eq "the name the overlay's ControlPlane carries passes" "0" "$rc"
+    sed 's/^  namespace: openstack$/  namespace: lab2/' "$tmp/lab-render.yaml" >"$tmp/lab2-render.yaml"
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      CONTROLPLANE_NAME=lab EXTERNAL_OVERLAY="$tmp/lab" KUBECTL_KUSTOMIZE="$tmp/lab2-render.yaml")"
+    rc=$?
+    assert_nonzero_exit "a ControlPlane outside the openstack namespace is refused" "$rc"
+    assert_contains "the refusal names the CR's namespace" "$output" \
+      "renders ControlPlane 'lab2/lab', but Step 7 seeds openstack/lab;"
+    sed '/^  namespace: openstack$/d' "$tmp/lab-render.yaml" >"$tmp/no-ns-render.yaml"
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      CONTROLPLANE_NAME=lab EXTERNAL_OVERLAY="$tmp/lab" KUBECTL_KUSTOMIZE="$tmp/no-ns-render.yaml")"
+    rc=$?
+    assert_nonzero_exit "a ControlPlane without a namespace is refused" "$rc"
+    assert_contains "the refusal shows the empty namespace" "$output" "renders ControlPlane '/lab'"
+    sed -n '1,/^---$/p' "$tmp/lab-render.yaml" | sed '$d' >"$tmp/ovn-only-render.yaml"
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      EXTERNAL_OVERLAY="$tmp/lab" KUBECTL_KUSTOMIZE="$tmp/ovn-only-render.yaml")"
+    rc=$?
+    assert_nonzero_exit "a controlplane/ without a ControlPlane is refused" "$rc"
+    assert_contains "the refusal says none was rendered" "$output" \
+      "controlplane must render exactly one ControlPlane (got: none); Step 7 seeds only openstack/controlplane."
+    { cat "$tmp/lab-render.yaml"; echo "---"; cat "$tmp/lab2-render.yaml"; } >"$tmp/two-render.yaml"
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      CONTROLPLANE_NAME=lab EXTERNAL_OVERLAY="$tmp/lab" KUBECTL_KUSTOMIZE="$tmp/two-render.yaml")"
+    rc=$?
+    assert_nonzero_exit "a controlplane/ with two ControlPlanes is refused" "$rc"
+    assert_contains "the refusal lists both on one line" "$output" \
+      "must render exactly one ControlPlane (got: openstack/lab, lab2/lab);"
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      WITH_CONTROLPLANE_CR=true CONTROLPLANE_NAME=cp1 EXTERNAL_OVERLAY="$tmp/lab")"
+    rc=$?
+    assert_eq "an override passes when the bundled CR is applied and renamed" "0" "$rc"
+    mkdir -p "$tmp/no-controlplane/base" "$tmp/no-controlplane/infrastructure"
+    : >"$tmp/no-controlplane/base/kustomization.yaml"
+    : >"$tmp/no-controlplane/infrastructure/kustomization.yaml"
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      CONTROLPLANE_NAME=cp1 EXTERNAL_OVERLAY="$tmp/no-controlplane")"
+    rc=$?
+    assert_eq "an override passes for an overlay without controlplane/" "0" "$rc"
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      CONTROLPLANE_NAME=lab EXTERNAL_OVERLAY="$tmp/lab" KUBECTL_KUSTOMIZE_RC=1)"
+    rc=$?
+    assert_nonzero_exit "an overlay whose controlplane/ does not render is refused" "$rc"
+    assert_contains "the refusal names the directory" "$output" "cannot render $tmp/lab/controlplane"
+    unset KUBECTL_KUSTOMIZE
+  else
+    echo "  SKIP: yq not installed (16 checks skipped)"
+    SKIP=$((SKIP + 16))
+  fi
 
   output="$(run_preflight "$tmp/kubectl-jq" EXTERNAL_CLUSTER=true KUBECTL_VERSION_RC=1)"
   rc=$?
@@ -525,6 +631,20 @@ test_main_gates() {
   assert_contains "the by-hand CR hint names the URL on the public port" "$hint" \
     'https://keystone.127-0-0-1.nip.io:${PUBLIC_PORT}/v3'
   assert_not_contains "the by-hand CR hint no longer keys on KIND_HOST_PORT" "$hint" "KIND_HOST_PORT"
+
+  assert_file_contains_fixed "the external by-hand hint applies the overlay's controlplane kustomization" \
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k ${OVERLAY_ROOT}/controlplane'
+  local overlay_gate
+  overlay_gate="$(grep -B8 -F 'kubectl apply -k ${OVERLAY_ROOT}/controlplane' "$DEPLOY_INFRA_SH" |
+    grep -E '^[[:space:]]*(if|elif) \[\[' | tail -n1)"
+  assert_contains "the overlay hint is gated on EXTERNAL_CLUSTER" "$overlay_gate" \
+    '"${EXTERNAL_CLUSTER}" == "true"'
+  assert_contains "the overlay hint is gated on the overlay's controlplane kustomization" \
+    "$overlay_gate" '-f "${OVERLAY_ROOT}/controlplane/kustomization.yaml"'
+  assert_file_contains_fixed "the overlay hint names the CR by CONTROLPLANE_NAME" \
+    "$DEPLOY_INFRA_SH" "(the CR is named '\${CONTROLPLANE_NAME}')"
+  assert_file_contains_fixed "the kind by-hand hint still names the bundled CR" \
+    "$DEPLOY_INFRA_SH" 'kubectl apply -f deploy/kind/controlplane/controlplane.yaml'
 
   local banner
   banner="$(awk '/Infrastructure deployment complete!/,/^}/' "$DEPLOY_INFRA_SH")"
