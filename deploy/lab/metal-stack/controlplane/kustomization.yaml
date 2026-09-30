@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The quick start's OVNCentral and ControlPlane for the metal-stack lab, applied
+# by hand once `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true make deploy-infra`
+# has finished:
+#
+#   kubectl apply -k deploy/lab/metal-stack/controlplane
+#
+# hack/deploy-infra.sh names this directory in its completion hint and never
+# applies it. The base overlay creates the openstack namespace, so this one
+# declares none.
+#
+# All resource references are local to this directory (no parent-directory
+# paths). It therefore renders under kustomize's default
+# `LoadRestrictionsRootOnly` security check, which means `kubectl apply -k`
+# works without `--load-restrictor`; kubectl's embedded kustomize does not
+# expose that flag (kubernetes/kubectl#948).
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ovncentral.yaml
+  - controlplane-lab.yaml
