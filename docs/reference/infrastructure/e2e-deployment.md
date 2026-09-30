@@ -349,7 +349,8 @@ patched — they are single-replica or stateless by default.
 deploy/lab/metal-stack/
 ├── base/
 │   └── kustomization.yaml          References ../../../kind/base/
-│                                    Patches OpenBao HelmRelease → storage class premium
+│                                    Patches OpenBao HelmRelease → storage class premium,
+│                                    every Namespace → Gardener apiserver-proxy opt-out label
 ├── controlplane/                   The quick start's OVNCentral and ControlPlane CR (#1141), applied by hand
 │   ├── kustomization.yaml          Lists the two manifests below
 │   ├── ovncentral.yaml             OVNCentral controlplane-ovn, as on the quick-start page
@@ -362,7 +363,8 @@ deploy/lab/metal-stack/
 
 `EXTERNAL_CLUSTER=true` applies `base/` in Step 3 and `infrastructure/` in
 Step 5 in place of the kind overlays. Both take the kind overlay as their base,
-so the lab inherits every patch above and changes only the storage class. The
+so the lab inherits every patch above and changes only the storage class and
+the Namespaces, which carry Gardener's apiserver-proxy opt-out label. The
 script never applies `controlplane/`; the completion hint of
 `WITH_CONTROLPLANE=true` names it. The
 proving `OpenBaoCluster` names no class and binds to the cluster's default,
@@ -373,6 +375,7 @@ proving `OpenBaoCluster` names no class and binds to the cluster's default,
 | OpenBao storage class (`dataStorage`) | `standard` | `premium` |
 | MariaDB storage class | `standard` | `premium` |
 | Garage storage class (metadata and data) | `standard` | `premium` |
+| Namespace label `apiserver-proxy.networking.gardener.cloud/inject` | absent | `disable` |
 | Everything else | as above | inherited from the kind overlay |
 
 The overlay is described in

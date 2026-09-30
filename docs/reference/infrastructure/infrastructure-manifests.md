@@ -2539,6 +2539,25 @@ bind to it by coincidence. The proving `OpenBaoCluster` names no class and
 binds to the default, `premium`. No metrics-server or VPA release is rendered,
 because the platform runs both.
 
+The base overlay also labels every namespace it renders with
+`apiserver-proxy.networking.gardener.cloud/inject: disable`. The lab is a
+Gardener shoot, and Gardener's `kubernetes-service-host` webhook sets
+`KUBERNETES_SERVICE_HOST` in every new pod to the API server's DNS name, so
+that pods bypass the node-local apiserver-proxy. The stack's NetworkPolicies
+expect the address instead. openbao-operator 0.4.2 reads the variable as an IP
+address when it derives the API-server egress of the policy it renders over an
+`OpenBaoCluster`; a name makes the read fail, the fallback (`get` on Service
+`default/kubernetes`) is outside the operator's RBAC, and the instance stays at
+`APIServerNetworkReady=False` with reason `APIServerNetworkConfigurationInvalid`.
+The memcached-operator's chart policy allows DNS on port 53 alone, and the
+shoot's CoreDNS answers behind its Service on 8053, so that pod cannot resolve
+the name and every API request times out. The label is Gardener's opt-out: the
+webhook skips namespaces that carry it, so the pods keep the kubelet's value,
+the `kubernetes` Service's ClusterIP, and reach the API server through the
+apiserver-proxy, the same path as on kind. It is set on every namespace rather
+than on the ones known to break, so the stack's network posture is one thing on
+the lab.
+
 ```bash
 EXTERNAL_CLUSTER=true make deploy-infra
 kubectl -n envoy-gateway-system port-forward \
@@ -2561,6 +2580,7 @@ platform's namespaces and CRDs alone. Both are described in
 | Storage class | `premium` (OpenBao, MariaDB, Garage; the proving `OpenBaoCluster` through the default class) |
 | Access | `kubectl port-forward` to the Envoy Service on local port 8443; the `*.127-0-0-1.nip.io` hostnames are unchanged |
 | Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry |
+| Gardener | `apiserver-proxy.networking.gardener.cloud/inject: disable` on every namespace of the base render |
 | Dependencies | a default StorageClass and no `node-local-dns` on the cluster |
 
 ### Lab ControlPlane
