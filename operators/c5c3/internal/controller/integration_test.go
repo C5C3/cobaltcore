@@ -2098,6 +2098,17 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		g.Expect(rule.Ports[0].Port).NotTo(BeNil())
 		g.Expect(rule.Ports[0].Port.IntValue()).To(Equal(livePort))
 	}
+	// The Kubernetes auth method reviews tokens against the kubernetes Service's
+	// ClusterIP, which needs no DNS lookup, not against kubernetes.default.svc.
+	// envtest's apiserver maintains that Service too.
+	apiServerService := &corev1.Service{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: apiServerServiceName, Namespace: apiServerServiceNamespace,
+	}, apiServerService)).To(Succeed(), "envtest must publish the API server's Service")
+	g.Expect(apiServerService.Spec.ClusterIP).NotTo(BeEmpty())
+	g.Expect(apiServerService.Spec.Ports).NotTo(BeEmpty())
+	g.Expect(kubernetesAuthHost(g, instance)).To(Equal(fmt.Sprintf("https://%s:%d",
+		apiServerService.Spec.ClusterIP, apiServerService.Spec.Ports[0].Port)))
 
 	// self-init is one-shot, so the eight requests and their order are frozen at
 	// create time: a mount or auth method must be enabled before anything writes

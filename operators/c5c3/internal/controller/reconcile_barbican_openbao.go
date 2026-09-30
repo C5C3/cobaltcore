@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strconv"
 
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -550,16 +551,20 @@ func barbicanOpenBaoTokenRoleBinding(name, namespace, operatorSA, operatorNamesp
 // same-named instance the ControlPlane did not create in a namespace it does not
 // own is refused rather than reshaped (refuseForeignAdoption). spec.storage is
 // never re-projected — the openbao-operator rejects a change to it on an existing
-// CR — so it is carried over from the live object.
+// CR — so it is carried over from the live object. So is spec.selfInit: self-init
+// ran once against the instance's storage, and the openbao-operator ignores the
+// field once the instance is initialised, so a re-projected list (a new
+// kubernetes_host, say) would change nothing inside OpenBao and only make the
+// spec disagree with it.
 func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
 ) (*openbaov1alpha1.OpenBaoCluster, error) {
 	key := types.NamespacedName{Name: barbicanOpenBaoName(cp), Namespace: cp.BarbicanNamespace()}
 
-	// Resolved before the read, so a cluster whose API-server endpoints cannot be
-	// determined writes no instance at all. See resolveAPIServerEndpoints for why
-	// this fails closed rather than projecting without the egress allowance.
-	apiServerIPs, apiServerPort, err := r.resolveAPIServerEndpoints(ctx, cp)
+	// Resolved before the read, so a cluster whose API server cannot be addressed
+	// writes no instance at all. See resolveAPIServerAccess for why this fails
+	// closed rather than projecting without the egress allowance.
+	apiServer, err := r.resolveAPIServerAccess(ctx, cp)
 	if err != nil {
 		return nil, err
 	}
@@ -574,7 +579,7 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 	case apierrors.IsNotFound(err):
 		instance.Name = key.Name
 		instance.Namespace = key.Namespace
-		instance.Spec = r.barbicanOpenBaoClusterSpec(cp, apiServerIPs, apiServerPort, sizing.SecretStore)
+		instance.Spec = r.barbicanOpenBaoClusterSpec(cp, apiServer, sizing.SecretStore)
 		instance.Spec.Storage = openbaov1alpha1.StorageConfig{Size: barbicanOpenBaoStorageSize}
 		if oerr := claimChildOwnership(c, cp, instance, r.Scheme); oerr != nil {
 			return nil, fmt.Errorf("claiming ownership of OpenBaoCluster %q: %w", key.Name, oerr)
@@ -588,8 +593,9 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 		if aerr := refuseForeignAdoption(c, cp, instance, r.Scheme); aerr != nil {
 			return nil, aerr
 		}
-		desired := r.barbicanOpenBaoClusterSpec(cp, apiServerIPs, apiServerPort, sizing.SecretStore)
+		desired := r.barbicanOpenBaoClusterSpec(cp, apiServer, sizing.SecretStore)
 		desired.Storage = instance.Spec.Storage
+		desired.SelfInit = instance.Spec.SelfInit
 		if !equality.Semantic.DeepEqual(instance.Spec, desired) {
 			instance.Spec = desired
 			if uerr := c.Update(ctx, instance); uerr != nil {
@@ -618,7 +624,7 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 // the previous instance's data-<instance>-0 PVC — raft storage initialised under a
 // seal key that no longer exists — and never unseals.
 func (r *ControlPlaneReconciler) barbicanOpenBaoClusterSpec(
-	cp *c5c3v1alpha1.ControlPlane, apiServerIPs []string, apiServerPort int32,
+	cp *c5c3v1alpha1.ControlPlane, apiServer apiServerAccess,
 	secretStore *c5c3v1alpha1.ContainerSizingSpec,
 ) openbaov1alpha1.OpenBaoClusterSpec {
 	name, namespace := barbicanOpenBaoName(cp), cp.BarbicanNamespace()
@@ -649,31 +655,48 @@ func (r *ControlPlaneReconciler) barbicanOpenBaoClusterSpec(
 			// The openbao-operator's own detection allows the in-cluster service
 			// VIP on port 443, which a CNI enforcing egress against the post-DNAT
 			// destination never matches.
-			APIServerEndpointIPs: apiServerIPs,
+			APIServerEndpointIPs: apiServer.EndpointIPs,
 			// The operator renders its rule for the addresses above on port 6443
 			// and no other. Gardener's apiserver-proxy publishes the endpoint on
 			// 443, where the addresses alone allow nothing, so the same addresses
 			// are allowed again on the port the EndpointSlice publishes. On kind
 			// that port is 6443 and the rule duplicates the operator's own.
-			EgressRules: apiServerEgressRules(apiServerIPs, apiServerPort),
+			EgressRules: apiServerEgressRules(apiServer.EndpointIPs, apiServer.EndpointPort),
 		},
 		SelfInit: &openbaov1alpha1.SelfInitConfig{
 			Enabled:  true,
-			Requests: barbicanOpenBaoSelfInitRequests(name, namespace),
+			Requests: barbicanOpenBaoSelfInitRequests(name, namespace, apiServer.ServiceURL),
 		},
 	}
 }
 
-// The Kubernetes API server publishes its own endpoints in this EndpointSlice.
-// kube-apiserver maintains it directly rather than through the controller manager,
-// so it is present on every conformant cluster.
+// The Kubernetes API server publishes its own endpoints in this EndpointSlice and
+// its in-cluster address in the Service of the same name. kube-apiserver maintains
+// both directly rather than through the controller manager, so they are present
+// on every conformant cluster.
 const (
 	apiServerEndpointSliceName      = "kubernetes"
 	apiServerEndpointSliceNamespace = "default"
+	apiServerServiceName            = apiServerEndpointSliceName
+	apiServerServiceNamespace       = apiServerEndpointSliceNamespace
 )
 
-// resolveAPIServerEndpoints returns the addresses the Kubernetes API server
-// answers on, deduplicated and sorted, and the port it answers on.
+// apiServerAccess is how the instance reaches the Kubernetes API server of the
+// cluster it runs on: the addresses and port kube-apiserver answers on, which
+// become the NetworkPolicy egress allowance, and the URL of the kubernetes
+// Service, which the Kubernetes auth method reviews tokens against.
+type apiServerAccess struct {
+	// EndpointIPs are the API server's endpoint addresses, deduplicated and sorted.
+	EndpointIPs []string
+	// EndpointPort is the port the endpoints answer on.
+	EndpointPort int32
+	// ServiceURL is https://<ClusterIP>:<port> of the kubernetes Service.
+	ServiceURL string
+}
+
+// resolveAPIServerAccess returns the addresses the Kubernetes API server answers
+// on, deduplicated and sorted, the port it answers on, and the URL of its
+// in-cluster Service.
 //
 // The openbao-operator renders a deny-by-default NetworkPolicy over the instance
 // pods and derives its API-server egress rule from the in-cluster service VIP on
@@ -701,15 +724,30 @@ const (
 // have controller-runtime start a cluster-wide EndpointSlice informer to track a
 // single well-known object.
 //
-// All four failure paths (an unresolvable cluster, an unreadable slice, an empty
-// one, one without a port) return an error rather than a partial answer, and the
-// caller then writes no instance at all. An instance that comes up without these
-// rules does not merely stay unavailable: its raft auto-join times out, self-init
-// never completes, and the partial raft state wedges every later initialisation
-// attempt, recoverable only by deleting the instance together with its PVC.
-func (r *ControlPlaneReconciler) resolveAPIServerEndpoints(
+// The Service URL is the kubernetes_host of the instance's Kubernetes auth
+// method: the address OpenBao sends its TokenReviews to. It is the Service's
+// ClusterIP and port rather than the name kubernetes.default.svc, because the
+// name needs a lookup and the operator-rendered NetworkPolicy admits DNS on port
+// 53 alone. Where the cluster's resolver answers on another port behind its
+// Service (Gardener's CoreDNS listens on 8053, and a CNI enforcing post-DNAT sees
+// that port) the lookup is dropped, every login through the auth method waits
+// out its deadline, and the secret store reports OpenBaoUnreachable. The
+// ClusterIP needs no lookup, and the API server's certificate carries it as a
+// subject alternative name on every cluster, which is not true of the endpoint
+// addresses above (Gardener's advertise address is not in the certificate). It
+// is the form the Vault and OpenBao documentation give for kubernetes_host.
+//
+// Every failure path (an unresolvable cluster, an unreadable slice or Service, an
+// empty slice, one without a port, a Service without a ClusterIP or port) returns
+// an error rather than a partial answer, and the caller then writes no instance
+// at all. An instance that comes up without the egress rules does not merely stay
+// unavailable: its raft auto-join times out, self-init never completes, and the
+// partial raft state wedges every later initialisation attempt, recoverable only
+// by deleting the instance together with its PVC. self-init is one-shot, so a
+// kubernetes_host written wrong is just as permanent.
+func (r *ControlPlaneReconciler) resolveAPIServerAccess(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
-) ([]string, int32, error) {
+) (apiServerAccess, error) {
 	key := types.NamespacedName{
 		Name:      apiServerEndpointSliceName,
 		Namespace: apiServerEndpointSliceNamespace,
@@ -718,12 +756,12 @@ func (r *ControlPlaneReconciler) resolveAPIServerEndpoints(
 	reader, err := commonmulticluster.ResolveChildrenAPIReader(ctx, r.Resolver, r.apiReader(),
 		targetClusterRefForNamespace(cp, cp.BarbicanNamespace()))
 	if err != nil {
-		return nil, 0, err
+		return apiServerAccess{}, err
 	}
 
 	slice := &discoveryv1.EndpointSlice{}
 	if err := reader.Get(ctx, key, slice); err != nil {
-		return nil, 0, fmt.Errorf("getting EndpointSlice %s/%s: %w",
+		return apiServerAccess{}, fmt.Errorf("getting EndpointSlice %s/%s: %w",
 			apiServerEndpointSliceNamespace, apiServerEndpointSliceName, err)
 	}
 
@@ -739,7 +777,7 @@ func (r *ControlPlaneReconciler) resolveAPIServerEndpoints(
 		}
 	}
 	if len(ips) == 0 {
-		return nil, 0, fmt.Errorf("EndpointSlice %s/%s carries no API server address",
+		return apiServerAccess{}, fmt.Errorf("EndpointSlice %s/%s carries no API server address",
 			apiServerEndpointSliceNamespace, apiServerEndpointSliceName)
 	}
 
@@ -751,7 +789,7 @@ func (r *ControlPlaneReconciler) resolveAPIServerEndpoints(
 		}
 	}
 	if port == 0 {
-		return nil, 0, fmt.Errorf("EndpointSlice %s/%s carries no port",
+		return apiServerAccess{}, fmt.Errorf("EndpointSlice %s/%s carries no port",
 			apiServerEndpointSliceNamespace, apiServerEndpointSliceName)
 	}
 
@@ -759,12 +797,38 @@ func (r *ControlPlaneReconciler) resolveAPIServerEndpoints(
 	// the live one, and the API server guarantees no endpoint order. Unsorted, a
 	// reordered read would look like drift and rewrite the instance every pass.
 	slices.Sort(ips)
-	return ips, port, nil
+
+	serviceURL, err := apiServerServiceURL(ctx, reader)
+	if err != nil {
+		return apiServerAccess{}, err
+	}
+	return apiServerAccess{EndpointIPs: ips, EndpointPort: port, ServiceURL: serviceURL}, nil
+}
+
+// apiServerServiceURL reads the kubernetes Service through reader and returns
+// https://<ClusterIP>:<port>, the port being the first one the Service publishes
+// (kube-apiserver publishes exactly one, `https`). An IPv6 ClusterIP is bracketed.
+// A Service without a ClusterIP (headless, or one the cluster has not assigned)
+// or without a port is an error: there is no address to review tokens against.
+func apiServerServiceURL(ctx context.Context, reader client.Reader) (string, error) {
+	svc := &corev1.Service{}
+	key := types.NamespacedName{Name: apiServerServiceName, Namespace: apiServerServiceNamespace}
+	if err := reader.Get(ctx, key, svc); err != nil {
+		return "", fmt.Errorf("getting Service %s/%s: %w", apiServerServiceNamespace, apiServerServiceName, err)
+	}
+	ip := net.ParseIP(svc.Spec.ClusterIP)
+	if ip == nil {
+		return "", fmt.Errorf("service %s/%s carries no ClusterIP", apiServerServiceNamespace, apiServerServiceName)
+	}
+	if len(svc.Spec.Ports) == 0 || svc.Spec.Ports[0].Port == 0 {
+		return "", fmt.Errorf("service %s/%s carries no port", apiServerServiceNamespace, apiServerServiceName)
+	}
+	return "https://" + net.JoinHostPort(ip.String(), strconv.Itoa(int(svc.Spec.Ports[0].Port))), nil
 }
 
 // apiServerEgressRules allows egress to each API-server address on port, one rule
 // per address: a /32 block for an IPv4 address and a /128 block for an IPv6 one.
-// The rules keep the order of ips, which resolveAPIServerEndpoints sorts, so the
+// The rules keep the order of ips, which resolveAPIServerAccess sorts, so the
 // projection compares equal from one pass to the next. An empty list yields nil,
 // which leaves spec.network.egressRules unset.
 func apiServerEgressRules(ips []string, port int32) []networkingv1.NetworkPolicyEgressRule {
@@ -845,7 +909,10 @@ func barbicanOpenBaoIngressPeers(serviceNamespace, operatorNamespace string) []n
 // are deliberately identical to the ones provisioned on the shared management
 // OpenBao, so a Barbican on a dedicated store and one on an external store differ
 // only in which instance they point at.
-func barbicanOpenBaoSelfInitRequests(name, namespace string) []openbaov1alpha1.SelfInitRequest {
+//
+// kubernetesHost is the URL the Kubernetes auth method reviews tokens against,
+// the Service URL of resolveAPIServerAccess.
+func barbicanOpenBaoSelfInitRequests(name, namespace, kubernetesHost string) []openbaov1alpha1.SelfInitRequest {
 	return []openbaov1alpha1.SelfInitRequest{
 		{
 			Name:      "barbican_kv",
@@ -900,11 +967,13 @@ func barbicanOpenBaoSelfInitRequests(name, namespace string) []openbaov1alpha1.S
 			// kubernetes_host is the only required setting: the instance pod's
 			// projected ServiceAccount token and the kube root CA are mounted at
 			// the standard path and supply the reviewer credentials. The authority
-			// to run a TokenReview comes from the auth-delegator binding.
+			// to run a TokenReview comes from the auth-delegator binding. The host
+			// is the kubernetes Service's ClusterIP, not its name; see
+			// resolveAPIServerAccess for why.
 			Name:      "kubernetes_auth_config",
 			Operation: openbaov1alpha1.SelfInitOperationUpdate,
 			Path:      "auth/kubernetes/config",
-			Data:      selfInitData(map[string]string{"kubernetes_host": "https://kubernetes.default.svc"}),
+			Data:      selfInitData(map[string]string{"kubernetes_host": kubernetesHost}),
 		},
 		{
 			// The provisioner is the runtime writer: it hands out the barbican

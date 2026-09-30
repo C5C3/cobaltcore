@@ -41,6 +41,12 @@ rules:
   verbs:
   - create
 - apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+- apiGroups:
   - barbican.openstack.c5c3.io
   resources:
   - barbicans

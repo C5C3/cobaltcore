@@ -873,8 +873,14 @@ namespaces therefore takes the `External` lifecycle, against namespaces the
 target's owner created and granted. ControlPlane placement also reaches past the
 access chart in one place: Barbican's dedicated OpenBao ensemble reads the
 `kubernetes` EndpointSlices in the target's `default` namespace to compute the
-API server endpoint IPs the instance is configured with, and `default` is not a
-namespace a service is placed in.
+API server endpoint IPs the instance is configured with, and the `kubernetes`
+Service there for the address its Kubernetes auth method reviews tokens
+against, and `default` is not a namespace a service is placed in. Both reads
+are `get` on the object named `kubernetes` and run on every pass of a dedicated
+store, so a target that grants the EndpointSlice read alone, as operators
+before the Service read required, fails every pass with
+`BarbicanReady=False/BarbicanOpenBaoError` until the Service read is granted
+too.
 
 Every remote child carries the three ownership labels above, with `owner-kind:
 ControlPlane`, plus the `c5c3.io/controlplane-name` and
