@@ -343,7 +343,10 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # infrastructure/ in Step 5, in place of deploy/kind/base and
 # deploy/kind/infrastructure. A relative path resolves against REPO_ROOT. The
 # default is the metal-stack lab overlay; a later lab adds a sibling directory
-# and sets this. Read only under EXTERNAL_CLUSTER=true.
+# and sets this. An overlay may also carry a controlplane/ kustomization, which
+# this script never applies: preflight renders it to check that its one
+# ControlPlane is openstack/CONTROLPLANE_NAME, and the WITH_CONTROLPLANE=true
+# completion hint names it. Read only under EXTERNAL_CLUSTER=true.
 EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
 
 # Derived from the two knobs above, not overridable. OVERLAY_ROOT is the
@@ -1278,8 +1281,10 @@ preflight_checks() {
 # preflight_external_cluster — The EXTERNAL_CLUSTER=true half of preflight_checks.
 #
 # Refuses every kind-bound opt-in that is set, then an EXTERNAL_OVERLAY without
-# the two kustomizations Steps 3 and 5 apply, then a kubeconfig context whose API
-# server does not answer, cheapest first and each before anything is applied.
+# the two kustomizations Steps 3 and 5 apply, then an overlay whose by-hand
+# controlplane/ does not render exactly one ControlPlane, openstack/CONTROLPLANE_NAME,
+# then a kubeconfig context whose API server does not answer, cheapest first and
+# each before anything is applied.
 # The refusals are checked in the order below so the message names the flag the
 # caller set: WITH_VPA=true has already folded into WITH_METRICS_SERVER=true at
 # the top of the script. The flags are read by indirect expansion (${!flag})
@@ -1311,6 +1316,31 @@ preflight_external_cluster() {
     ! -f "${OVERLAY_ROOT}/infrastructure/kustomization.yaml" ]]; then
     log "ERROR: EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}' has no base/ and infrastructure/ kustomization (resolved to ${OVERLAY_ROOT})."
     exit 1
+  fi
+
+  # The reader applies the overlay's controlplane/ by hand after this run, while
+  # Step 7 seeds the admin-password paths of openstack/${CONTROLPLANE_NAME} alone:
+  # a ControlPlane under another namespace or name, a second one, or one without a
+  # namespace (applied to the context's namespace) would read paths nothing
+  # seeded. The identity is read from the render, which contacts no cluster. The
+  # bundled CR of WITH_CONTROLPLANE_CR=true is renamed to match instead.
+  if [[ "${WITH_CONTROLPLANE}" == "true" && "${WITH_CONTROLPLANE_CR}" != "true" &&
+    -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then
+    local overlay_cp
+    if ! overlay_cp="$(kubectl kustomize "${OVERLAY_ROOT}/controlplane" |
+      yq -N -r 'select(.kind == "ControlPlane") | (.metadata.namespace // "") + "/" + .metadata.name')"; then
+      log "ERROR: cannot render ${OVERLAY_ROOT}/controlplane (the error is above)."
+      exit 1
+    fi
+    if [[ -z "${overlay_cp}" || "${overlay_cp}" == *$'\n'* ]]; then
+      overlay_cp="${overlay_cp//$'\n'/, }"
+      log "ERROR: ${OVERLAY_ROOT}/controlplane must render exactly one ControlPlane (got: ${overlay_cp:-none}); Step 7 seeds only openstack/${CONTROLPLANE_NAME}."
+      exit 1
+    fi
+    if [[ "${overlay_cp}" != "openstack/${CONTROLPLANE_NAME}" ]]; then
+      log "ERROR: ${OVERLAY_ROOT}/controlplane renders ControlPlane '${overlay_cp}', but Step 7 seeds openstack/${CONTROLPLANE_NAME}; keep the CR in the openstack namespace and set CONTROLPLANE_NAME to its name."
+      exit 1
+    fi
   fi
 
   # Every later step is a kubectl apply against this context, so an unreachable
@@ -3586,6 +3616,15 @@ main() {
       # onboards. The e2e-controlplane CI job uses WITH_CONTROLPLANE_CR=false and
       # runs setup-database-tenant.sh from its own chainsaw suite instead.
       openbao_onboard_database_tenant "openstack" "${CONTROLPLANE_NAME}"
+    # An external overlay that ships its own OVNCentral and ControlPlane is
+    # named instead of the kind CR; the reader applies it by hand.
+    elif [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then
+      log "  Operator stack is up. The ControlPlane CR is NOT applied automatically."
+      log "  Apply the overlay's OVNCentral and ControlPlane (the CR is named '${CONTROLPLANE_NAME}'):"
+      log "    kubectl apply -k ${OVERLAY_ROOT}/controlplane"
+      log "  Then onboard the OpenBao database-engine tenant once MariaDB is Ready"
+      log "  (docs/quick-start-controlplane.md, Step 4):"
+      log "    deploy/openbao/bootstrap/setup-database-tenant.sh openstack ${CONTROLPLANE_NAME}"
     else
       log "  Operator stack is up. The ControlPlane CR is NOT applied automatically —"
       log "  create and apply it yourself (see docs/quick-start-controlplane.md), e.g.:"
