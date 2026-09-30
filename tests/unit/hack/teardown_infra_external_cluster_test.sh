@@ -9,13 +9,15 @@
 #      through, and the default teardown still deletes the kind cluster without
 #      calling kubectl.
 #   2. The external teardown never calls kind or docker, deletes in the order
-#      that lets every finalizer run while its controller exists, passes
+#      that lets every finalizer run while its controller exists (the
+#      OVNCentrals directly after the ControlPlanes), passes
 #      --ignore-not-found to every delete, resumes only the suspended Flux
 #      objects that installed something, splits the base render into the
 #      Gateway pass and the rest, deletes exactly the stack CRDs of a mixed
 #      list, and names no namespace outside the stack's.
 #   3. It exits 1 before any delete when the API server does not answer or yq
-#      is missing, exits 1 when a wait runs out (naming the object), when a
+#      is missing, exits 1 when a wait runs out (naming the object, the
+#      OVNCentral delete included, after which nothing else is deleted), when a
 #      stack CRD or namespace is left, and when the base render, the CRD list
 #      or the final namespace read fails, and exits 0 on a second run that
 #      finds nothing.
@@ -55,10 +57,12 @@ ippools.crd.projectcalico.org"
 # kubectl, kind and docker stubs that append their argv to $CALL_LOG. The
 # kubectl stub answers from the environment:
 #   KUBECTL_VERSION_RC     exit code of `version` (default 0)
-#   KUBECTL_SECOND_RUN     non-empty: the stack is gone (no Flux or c5c3 CRD,
-#                          no stack CRD, deletes of CR kinds report a missing
-#                          mapping)
+#   KUBECTL_SECOND_RUN     non-empty: the stack is gone (no Flux, c5c3 or ovn
+#                          CRD, no stack CRD, deletes of CR kinds report a
+#                          missing mapping)
 #   KUBECTL_DELETE_RC      exit code of every waiting delete (default 0)
+#   KUBECTL_OVNCENTRAL_DELETE_RC
+#                          exit code of the OVNCentral delete alone (default 0)
 #   KUBECTL_CRD_RC         non-empty: `get crd -o name` fails
 #   KUBECTL_CRD_LEFT       a stack CRD the final report still finds
 #   KUBECTL_NS_LEFT        a namespace the final report still finds
@@ -158,6 +162,12 @@ case "$args" in
       exit 1
     fi
     ;;
+  "get crd ovncentrals.ovn.openstack.c5c3.io"*)
+    if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
+      echo 'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io "ovncentrals.ovn.openstack.c5c3.io" not found' >&2
+      exit 1
+    fi
+    ;;
   "get crd -o name")
     if [ -n "${KUBECTL_CRD_RC:-}" ]; then
       echo 'error: You must be logged in to the server (Unauthorized)' >&2
@@ -201,6 +211,14 @@ case "$args" in
     cat "${BASE_RENDER:-$dir/base-render.yaml}"
     ;;
   delete*)
+    case "$args" in
+      "delete ovncentrals.ovn.openstack.c5c3.io "*)
+        if [ "${KUBECTL_OVNCENTRAL_DELETE_RC:-0}" != "0" ]; then
+          echo "error: timed out waiting for the condition on ovncentrals/controlplane-ovn" >&2
+          exit "${KUBECTL_OVNCENTRAL_DELETE_RC}"
+        fi
+        ;;
+    esac
     if [ "${KUBECTL_DELETE_RC:-0}" != "0" ]; then
       echo "error: timed out waiting for the condition on namespaces/openstack" >&2
       exit "${KUBECTL_DELETE_RC}"
@@ -355,6 +373,7 @@ test_external_teardown_order() {
   local expected
   expected="$(printf '%s\n' \
     'kubectl delete controlplane --all -n openstack' \
+    'kubectl delete ovncentrals.ovn.openstack.c5c3.io --all -n openstack' \
     'kubectl delete -k deploy/lab/metal-stack/infrastructure' \
     'kubectl delete -k deploy/kind/messaging' \
     'kubectl patch helmrelease c5c3-operator -n c5c3-system' \
@@ -432,8 +451,8 @@ test_external_teardown_failures() {
   echo "Test: the external teardown aborts on an unreachable cluster, a timeout or leftovers"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (20 checks skipped)"
-    SKIP=$((SKIP + 20))
+    echo "  SKIP: yq not installed (27 checks skipped)"
+    SKIP=$((SKIP + 27))
     return
   fi
 
@@ -503,6 +522,18 @@ test_external_teardown_failures() {
   assert_contains "and reports nothing left" "$output" "Stack CRDs left: 0; stack namespaces left: 0"
   assert_not_contains "and deletes no ControlPlane without the c5c3 CRD" \
     "$(cat "$CALL_LOG")" "delete controlplane"
+  assert_not_contains "and deletes no OVNCentral without the ovn CRD" \
+    "$(cat "$CALL_LOG")" "delete ovncentrals"
+
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OVNCENTRAL_DELETE_RC=1)"
+  rc=$?
+  assert_eq "an OVNCentral delete that runs out exits 1" "1" "$rc"
+  assert_contains "the error names the OVNCentral step" "$output" \
+    "deleting the OVNCentrals in openstack failed or did not finish within 600s"
+  assert_contains "the error names the OVNCentral still present" "$output" \
+    "error: timed out waiting for the condition on ovncentrals/controlplane-ovn"
+  assert_not_contains "and no later step deletes anything" "$(cat "$CALL_LOG")" "kubectl delete -k"
   unset CALL_LOG
 }
 
