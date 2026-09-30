@@ -99,7 +99,19 @@ while its controller still exists:
    openbao-operator strips the owner references of the instance's unseal-key
    and root-token Secrets before it clears its finalizer, and it is allowed
    neither: its admission policy denies the patch on the ESO-materialized
-   unseal key, and the tenant RBAC grants no read on the root token.
+   unseal key, and the tenant RBAC grants no read on the root token. The step
+   ends with a wait, bounded by `TEARDOWN_TIMEOUT`, until no CR of the stack's
+   namespaced CRDs in `openstack` is still being reaped, that is, carries a
+   deletion timestamp or has lost an owner of a stack kind. The ControlPlane
+   delete of step 1 returns when the ControlPlane is gone, and garbage
+   collection reaps its children afterwards (a Keystone behind its OpenBao
+   finalizer, the PushSecrets and SecretStore that finalizer waits on, the
+   dedicated Barbican OpenBao instance); their finalizers need the operators
+   step 3 uninstalls. Without the wait a slow finalizer loses its controller
+   and holds the namespace in `Terminating`. The base overlay's Gateway and
+   the objects the deploy applies outside the overlays are nobody's children
+   and are left to steps 3 and 7. One `kubectl get` reads every kind per pass,
+   and a read that fails counts as objects left, not as an empty namespace.
 3. The base overlay without its Namespaces and FluxInstance. Every suspended
    HelmRelease with a release history and every suspended Flux Kustomization
    with an inventory is resumed first, because Flux neither uninstalls a
