@@ -10,14 +10,16 @@
 #      calling kubectl.
 #   2. The external teardown never calls kind or docker, deletes in the order
 #      that lets every finalizer run while its controller exists (the
-#      OVNCentrals directly after the ControlPlanes), passes
+#      OVNCentrals directly after the ControlPlanes, the proving OpenBao
+#      instance on DeletePVCs before the infrastructure overlay), passes
 #      --ignore-not-found to every delete, resumes only the suspended Flux
 #      objects that installed something, splits the base render into the
 #      Gateway pass and the rest, deletes exactly the stack CRDs of a mixed
 #      list, and names no namespace outside the stack's.
 #   3. It exits 1 before any delete when the API server does not answer or yq
 #      is missing, exits 1 when a wait runs out (naming the object, the
-#      OVNCentral delete included, after which nothing else is deleted), when a
+#      OVNCentral delete included, after which nothing else is deleted), when
+#      the proving OpenBao instance cannot be switched to DeletePVCs, when a
 #      stack CRD or namespace is left, and when the base render, the CRD list
 #      or the final namespace read fails, and exits 0 on a second run that
 #      finds nothing.
@@ -58,11 +60,13 @@ ippools.crd.projectcalico.org"
 # kubectl stub answers from the environment:
 #   KUBECTL_VERSION_RC     exit code of `version` (default 0)
 #   KUBECTL_SECOND_RUN     non-empty: the stack is gone (no Flux, c5c3 or ovn
-#                          CRD, no stack CRD, deletes of CR kinds report a
-#                          missing mapping)
+#                          CRD, no OpenBao instance, no stack CRD, deletes of
+#                          CR kinds report a missing mapping)
 #   KUBECTL_DELETE_RC      exit code of every waiting delete (default 0)
 #   KUBECTL_OVNCENTRAL_DELETE_RC
 #                          exit code of the OVNCentral delete alone (default 0)
+#   KUBECTL_OPENBAO_PATCH_RC
+#                          exit code of the OpenBao instance patch (default 0)
 #   KUBECTL_CRD_RC         non-empty: `get crd -o name` fails
 #   KUBECTL_CRD_LEFT       a stack CRD the final report still finds
 #   KUBECTL_NS_LEFT        a namespace the final report still finds
@@ -160,6 +164,18 @@ case "$args" in
     if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
       echo 'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io "controlplanes.c5c3.io" not found' >&2
       exit 1
+    fi
+    ;;
+  "get openbaoclusters.openbao.org openbao-instance -n openstack"*)
+    if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
+      echo 'error: the server doesn'"'"'t have a resource type "openbaoclusters"' >&2
+      exit 1
+    fi
+    ;;
+  "patch openbaoclusters.openbao.org openbao-instance "*)
+    if [ "${KUBECTL_OPENBAO_PATCH_RC:-0}" != "0" ]; then
+      echo 'Error from server (Forbidden): openbaoclusters.openbao.org "openbao-instance" is forbidden: User "lab" cannot patch resource "openbaoclusters"' >&2
+      exit "${KUBECTL_OPENBAO_PATCH_RC}"
     fi
     ;;
   "get crd ovncentrals.ovn.openstack.c5c3.io"*)
@@ -289,6 +305,7 @@ mutations() {
   grep -E '^kubectl (delete|patch|kustomize) ' "$1" |
     sed -e 's/ --ignore-not-found --wait --timeout=[0-9]*s//' \
       -e "s# --type merge -p {\"spec\":{\"suspend\":false}}##" \
+      -e "s# --type merge -p {\"spec\":{\"deletionPolicy\":\"DeletePVCs\"}}##" \
       -e "s#${PROJECT_ROOT}/##g"
 }
 
@@ -374,6 +391,7 @@ test_external_teardown_order() {
   expected="$(printf '%s\n' \
     'kubectl delete controlplane --all -n openstack' \
     'kubectl delete ovncentrals.ovn.openstack.c5c3.io --all -n openstack' \
+    'kubectl patch openbaoclusters.openbao.org openbao-instance -n openstack' \
     'kubectl delete -k deploy/lab/metal-stack/infrastructure' \
     'kubectl delete -k deploy/kind/messaging' \
     'kubectl patch helmrelease c5c3-operator -n c5c3-system' \
@@ -451,8 +469,8 @@ test_external_teardown_failures() {
   echo "Test: the external teardown aborts on an unreachable cluster, a timeout or leftovers"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (27 checks skipped)"
-    SKIP=$((SKIP + 27))
+    echo "  SKIP: yq not installed (31 checks skipped)"
+    SKIP=$((SKIP + 31))
     return
   fi
 
@@ -524,6 +542,15 @@ test_external_teardown_failures() {
     "$(cat "$CALL_LOG")" "delete controlplane"
   assert_not_contains "and deletes no OVNCentral without the ovn CRD" \
     "$(cat "$CALL_LOG")" "delete ovncentrals"
+  assert_not_contains "and patches no OpenBao instance that is gone" \
+    "$(cat "$CALL_LOG")" "patch openbaoclusters"
+
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO_PATCH_RC=1)"
+  rc=$?
+  assert_nonzero_exit "an OpenBao instance that cannot be switched to DeletePVCs exits non-zero" "$rc"
+  assert_contains "with kubectl's error" "$output" 'openbaoclusters.openbao.org "openbao-instance" is forbidden'
+  assert_not_contains "before the infrastructure overlay is deleted" "$(cat "$CALL_LOG")" "kubectl delete -k"
 
   : >"$CALL_LOG"
   output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OVNCENTRAL_DELETE_RC=1)"
