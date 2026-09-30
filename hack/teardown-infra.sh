@@ -212,7 +212,9 @@ read_stack_crds() {
 # The order makes every finalizer run while the controller that clears it still
 # exists:
 #   1. every ControlPlane in openstack, while the c5c3-operator runs, so it
-#      reaps its children;
+#      reaps its children, then every OVNCentral there: the quick start's
+#      central is referenced, not owned, and its database pods would hold
+#      their PVCs through step 4;
 #   2. the infrastructure overlay (MariaDB, Memcached, Garage, the OpenBao
 #      instance and tenant, the ExternalSecrets, Certificates and issuers) and
 #      the opt-in message bus, while their operators run;
@@ -262,6 +264,12 @@ teardown_external_cluster() {
   # 1. The ControlPlanes, only where the c5c3 CRD was ever installed.
   if kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1; then
     delete_and_wait "the ControlPlanes in openstack" controlplane --all -n openstack
+  fi
+  # The standalone OVNCentral the quick start applies beside the ControlPlane
+  # carries no finalizer; garbage collection reaps its StatefulSets, and the
+  # PVC wait of step 4 covers their pods.
+  if kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+    delete_and_wait "the OVNCentrals in openstack" ovncentrals.ovn.openstack.c5c3.io --all -n openstack
   fi
 
   # 2. The CRs the infrastructure operators finalize, and the opt-in message
