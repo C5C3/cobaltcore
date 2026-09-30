@@ -59,6 +59,9 @@ demo/
 *.pem
 *.key
 *.pfx
+# The lab kubeconfig hack/deploy-infra.sh and hack/teardown-infra.sh run
+# against under EXTERNAL_CLUSTER=true: a cluster credential.
+/kubeconfig
 # A dump of the OpenBao init Secret — root token plus every unseal share, in
 # plaintext. The migration procedure writes it outside the tree; this catches
 # the copy that lands here anyway.
