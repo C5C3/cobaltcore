@@ -17,7 +17,8 @@ FAIL=0
 # Service images that inherit the generic user instead of creating their own.
 # python-base is checked separately: it is where the user is created. ovn and
 # backup-shifter create the user themselves because they do not derive from
-# python-base, so each has its own function below.
+# python-base, so each has its own function below. libvirt keeps root and
+# creates no user at all, and has its own function too.
 SERVICES="keystone horizon glance placement barbican neutron cinder nova nova-compute"
 
 # shellcheck source=tests/lib/assertions.sh
@@ -81,6 +82,20 @@ test_backup_shifter_deviation_comment() {
     "$dockerfile" "useradd -u 42424"
 }
 
+# --- Test 5: the libvirt image keeps root and creates no user ---
+test_libvirt_deviation_comment() {
+  echo "Test: libvirt Dockerfile has DEVIATION comment (root, no openstack user)"
+
+  local dockerfile="$PROJECT_ROOT/images/libvirt/Dockerfile"
+
+  assert_file_contains "libvirt/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
+  assert_contains "DEVIATION comment says the image keeps root" \
+    "$(deviation_block "$dockerfile")" "root"
+  assert_contains "DEVIATION comment names the openstack user it does not create" \
+    "$(deviation_block "$dockerfile")" "openstack"
+  assert_file_not_contains "libvirt/Dockerfile has no USER instruction" "$dockerfile" '^USER '
+}
+
 # --- Run all tests ---
 echo "=== DEVIATION comment verification tests ==="
 echo ""
@@ -93,6 +108,8 @@ echo ""
 test_ovn_deviation_comment
 echo ""
 test_backup_shifter_deviation_comment
+echo ""
+test_libvirt_deviation_comment
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
