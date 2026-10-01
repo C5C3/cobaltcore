@@ -2705,7 +2705,7 @@ renders.
 | `hypervisor/libvirt-ca.yaml` | Certificate `libvirt-migration-ca` (ECDSA 256, three years, bootstrapped from `selfsigned-cluster-issuer`) and Issuer `nova-hypervisor-agents-ca-issuer`, hvo's default issuer name, in `hypervisor-system`. The CA signs nothing else |
 | `hypervisor/libvirt-configmap.yaml` | ConfigMap `libvirt-lab`: `host-prepare.sh`, `libvirtd.sh`, `libvirtd.conf` and `qemu.conf` |
 | `hypervisor/libvirt-daemonset.yaml` | DaemonSet `libvirt` in `openstack` |
-| `hypervisor/compute.yaml` | `OVNChassis/lab-chassis` on `controlplane-ovn`, `NeutronMetadataAgent/lab-metadata-agent` on the in-cluster Nova metadata API, and `NovaCompute/lab` with `virtType: kvm`, `cpuMode: host-passthrough` and `imagesType: qcow2`, all in `openstack` |
+| `hypervisor/compute.yaml` | `OVNChassis/lab-chassis` on `controlplane-ovn`, `NeutronMetadataAgent/lab-metadata-agent` on the in-cluster Nova metadata API with 768Mi of memory, and `NovaCompute/lab` with `virtType: kvm`, `cpuMode: custom`, `cpuModels: [Skylake-Server-IBRS]` and `imagesType: qcow2`, all in `openstack` |
 | `hypervisor/gateway-alias.yaml` | Service `openstack-gw-8443` in `envoy-gateway-system` on the ClusterIP `10.248.0.200`, port `8443`, in front of the `openstack-gw` Envoy pods |
 | `hypervisor/sources.yaml` | One digest-pinned `OCIRepository` per chart in `flux-system` |
 | `hypervisor/hvo-release.yaml` | `HelmRelease/openstack-hypervisor-operator` in `openstack` |
@@ -2780,8 +2780,9 @@ there, so the script sets `SYSTEMD_IGNORE_CHROOT=1`.
 
 `libvirtd.conf` listens for TLS on the node's address and port `16514` only
 (`listen_tcp = 0`, `auth_tls = "none"`) and gives the socket the numeric group
-`+108` with mode `0770`, because kna runs as uid 42438 with its chart's default
-`supplementalGroups: [108]`. `qemu.conf` runs QEMU as `root:root` without a
+`+108` with mode `0770`, the group kna's chart gives its pod
+(`supplementalGroups: [108]`); the agent runs as root here (below), which opens
+the socket either way. `qemu.conf` runs QEMU as `root:root` without a
 security driver: the host's `/dev/kvm` is `root:103`, and the image's `kvm`
 group has another ID. QEMU's migration TLS reads `/etc/pki/qemu` and verifies
 the peer.
@@ -2798,6 +2799,7 @@ root on its node's libvirtd (see
 | Release | Setting | Value | Why |
 | --- | --- | --- | --- |
 | hvo | chart | `1.2.3_sha-a2baf3f` | The upstream chart of the pinned hvo commit, the `ARG HVO_COMMIT` line of `images/openstack-hypervisor-operator/Dockerfile`. Its `appVersion`, `sha-<commit>`, is the image tag |
+| hvo | `fullnameOverride` | `hypervisor-operator` | The chart names its metrics Service `<fullname>-controller-manager-metrics-service`, 64 characters with the release name as fullname, and the install fails |
 | hvo | `controllerManager.manager.image.repository` | `ghcr.io/c5c3/openstack-hypervisor-operator` | The image built from that commit with the Eviction patch, which leaves block migration to Nova (see [openstack-hypervisor-operator](../ci-cd/container-images.md#openstack-hypervisor-operator)) |
 | hvo | `valuesFrom` | six keys of `controlplane-nova-hypervisor-operator-auth` | The account the ControlPlane provisions: `password` into `secret.servicePassword`; `username`, `user_domain_name`, `project_name`, `project_domain_name` and `region_name` into the matching `controllerManager.manager.env.os*` values |
 | hvo | `env.osAuthUrl` | `http://controlplane-keystone.openstack.svc:5000/v3` | The in-cluster Keystone URL, the `spec.keystoneEndpoint` of `controlplane-nova`. The auth Secret's `auth_url` is the public loopback URL |
@@ -2808,6 +2810,7 @@ root on its node's libvirtd (see
 | kna | chart | `0.2.0` | The latest tag. Upstream's main carries dependency updates only, and upstream publishes no image per main commit |
 | kna | `controllerManager.manager.env.libvirtDefaultUri` | `qemu:///system` | The chart's default `ch:///system` is Cloud Hypervisor |
 | kna | `controllerManager.manager.env.nodeLabelFieldPath` | `spec.nodeName` | The chart renders it into the field reference of `NODE_LABEL` and defines no value |
+| kna | `controllerManager.manager.containerSecurityContext` | uid and gid `0`, every capability dropped but `DAC_OVERRIDE` | The image's uid 42438 has no passwd entry on the host, and the host's dbus-daemon closes the connection of a uid it cannot resolve, so kna exits at start. Starting a unit over the system bus needs root too. The chart's init container hands the PKI directories to 42438, and root needs `DAC_OVERRIDE` to write there |
 | kna | post-renderer | `NAMESPACE=hypervisor-system` | kna falls back to `monsoon3` without it, and the chart sets none |
 
 `Hypervisor.spec.createCertManagerCertificate` stays at its default `false`, so
@@ -2829,18 +2832,23 @@ by hand:
 | `cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests` | The only way a `Hypervisor` gets `lifecycleEnabled` and `skipTests`. The smoke test boots from a Cinder volume |
 | annotation `nova.openstack.cloud.sap/custom-traits=CUSTOM_C5C3_LAB` | hvo sets `TraitsUpdated` only when a custom trait differs, and onboarding waits for that condition |
 
-Onboarding also waits for `HaEnabled=True` while `spec.highAvailability` is
-`true`, and only SAP's kvm-ha-service sets that condition. hvo creates every
-`Hypervisor` with the field `true` and never writes it again, so the sequence
-patches it to `false` once per node.
+hvo assigns the trait in Placement but does not create it, so the sequence
+creates it once with `openstack trait create` (the osc-placement plugin of the
+OpenStack client). Onboarding also waits for `HaEnabled=True` while
+`spec.highAvailability` is `true`, and only SAP's kvm-ha-service sets that
+condition. hvo creates every `Hypervisor` with the field `true` and never writes
+it again, so the sequence patches it to `false` once per node.
 
 The run starts with the Lab ControlPlane `Ready`, its port-forward running in a
-second terminal and the `OS_*` variables of its checks exported. A server on a
-network without a router is reached through its console only, which needs the
-console proxy published with
-[Expose the Console Proxy](../../guides/nova/expose-the-console-proxy.md)
-(the ControlPlane patch of step 1 and the URL with `:8443` of step 2). The
-cirros user is `cirros`, its password `gocubsgo`.
+second terminal and the `OS_*` variables of its checks exported; `openstack`
+needs the osc-placement plugin for the trait. A server on a network without a
+router is reached through its console only. In a browser that is the noVNC URL
+of [Expose the Console Proxy](../../guides/nova/expose-the-console-proxy.md)
+(the ControlPlane patch of step 1, the URL with `:8443` of step 2); from a
+shell it is `virsh console <instance name>` in the libvirt pod of the server's
+node. The cirros user is `cirros`, its password `gocubsgo`. Two steps of the
+sequence work around defects outside the lab manifests (the last table below)
+and go once those are fixed.
 
 ```bash
 export KUBECONFIG="$PWD/kubeconfig"
@@ -2851,12 +2859,13 @@ hack/lab-node-ports.sh
 docker manifest inspect ghcr.io/c5c3/libvirt:latest >/dev/null
 docker manifest inspect "ghcr.io/c5c3/openstack-hypervisor-operator:sha-$(hack/ci-resolve-hvo-commit.sh)" >/dev/null
 
-# 2. the node labels and the custom trait
+# 2. the node labels, the custom trait and its Placement trait
 kubectl label node --all openstack.c5c3.io/chassis=true \
   openstack.c5c3.io/nova-compute-pool=lab \
   nova.openstack.cloud.sap/virt-driver=kvm \
   cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests
 kubectl annotate node --all nova.openstack.cloud.sap/custom-traits=CUSTOM_C5C3_LAB
+openstack --insecure --os-placement-api-version 1.6 trait create CUSTOM_C5C3_LAB
 
 # 3. the fixtures, after a K-ORC restart
 kubectl rollout restart deployment/orc-controller-manager -n orc-system
@@ -2879,15 +2888,25 @@ for node in "${nodes[@]}"; do
 done
 kubectl wait certificate --all -n hypervisor-system --for=condition=Ready --timeout=10m
 kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=15m
+
+# 6. interim: Nova's instances_path on every node, and the metadata agent's
+#    root helper (both in the last table below)
+for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
+  kubectl exec -n openstack "${pod}" -c libvirtd -- mkdir -p /var/lib/nova/instances
+done
+kubectl patch neutronmetadataagent lab-metadata-agent -n openstack --type merge \
+  -p '{"spec":{"extraConfig":{"agent":{"root_helper":"env"}}}}'
+
+# 7. onboarding and the node layer
 kubectl wait hypervisor --all --timeout=20m \
   --for=jsonpath='{.status.conditions[?(@.type=="Onboarding")].reason}'=Succeeded
 kubectl wait ovnchassis/lab-chassis neutronmetadataagent/lab-metadata-agent novacompute/lab \
   -n openstack --for=condition=Ready --timeout=20m
-kubectl get hypervisor -o custom-columns='NAME:.metadata.name,LIBVIRTD:.status.conditions[?(@.type=="libvirtd.service")].status,LIBVIRT:.status.conditions[?(@.type=="LibVirt")].status,TLS:.status.conditions[?(@.type=="TLSCertificateInstalled")].status'
+kubectl get hypervisor -o custom-columns='NAME:.metadata.name,LIBVIRTD:.status.conditions[?(@.type=="libvirtd.service")].status,LIBVIRT:.status.conditions[?(@.type=="LibVirtConnection")].status,TLS:.status.conditions[?(@.type=="TLSCertificateInstalled")].status'
 openstack --insecure hypervisor list
 openstack --insecure aggregate list
 
-# 6. host discovery, a network without a router, one server per node
+# 8. host discovery, a network without a router, one server per node
 for node in "${nodes[@]}"; do
   tests/e2e/nova/discover-hosts.sh controlplane-nova openstack "${node}"
 done
@@ -2901,24 +2920,30 @@ for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o n
   kubectl exec -n openstack "${pod}" -c libvirtd -- virsh list
 done
 
-# 7. on the console of lab-a, with lab-b's address from `openstack server show lab-b`
+# 9. on the console of lab-a, with lab-b's address from `openstack server show lab-b`
 #      curl http://169.254.169.254/latest/meta-data/instance-id
 #      ping -c 3 <lab-b>
 #      ping -c 3 -s 1374 -M do <lab-b>
 #      ping -c 1 -s 1375 -M do <lab-b>
 
-# 8. a libvirt restart under a running server
+# 10. a libvirt restart under a running server
 kubectl delete pod -n openstack -l app.kubernetes.io/name=libvirt \
   --field-selector "spec.nodeName=${nodes[0]}"
 kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=10m
 openstack --insecure server show lab-a -c status -f value
 
-# 9. a live migration over libvirt TLS
+# 11. a live migration over libvirt TLS, with the source libvirtd logging its
+#     migration steps
+source_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
+  --field-selector "spec.nodeName=${nodes[0]}" -o name)
+kubectl exec -n openstack "${source_pod}" -c libvirtd -- \
+  bash -c 'virt-admin daemon-log-filters 1:qemu.qemu_migration && virt-admin daemon-log-outputs 1:stderr'
 openstack --insecure server migrate --live-migration --wait lab-a
 openstack --insecure server show lab-a -c OS-EXT-SRV-ATTR:host -f value
 openstack --insecure server migration list --server lab-a
+kubectl logs -n openstack "${source_pod}" -c libvirtd | grep -o 'qemu+tls://[^ ,]*' | sort -u
 
-# 10. an Eviction through manual maintenance, and back
+# 12. an Eviction through manual maintenance, and back
 kubectl patch hypervisor "${nodes[1]}" --type merge \
   -p '{"spec":{"maintenance":"manual","maintenanceReason":"lab eviction check"}}'
 kubectl wait "eviction/${nodes[1]}" --timeout=20m \
@@ -2929,36 +2954,60 @@ kubectl patch hypervisor "${nodes[1]}" --type merge \
 openstack --insecure compute service list --service nova-compute
 ```
 
-Delete the servers before the teardown: `EXTERNAL_CLUSTER=true make teardown-infra`
-removes the hypervisors in its step 0, before the ControlPlane, and exits 1
-while a pool still holds a server (see
+Step 12 evicts whichever node holds the servers; after step 11 both sit on
+`nodes[1]`. Delete the servers before the teardown:
+`EXTERNAL_CLUSTER=true make teardown-infra` removes the hypervisors in its step
+0, before the ControlPlane, and exits 1 while a pool still holds a server (see
 [`make teardown-infra`](e2e-deployment.md#make-teardown-infra)).
 
 | Property | Value |
 | --- | --- |
 | Namespaces | `openstack` (libvirt, the compute CRs, hvo), `hypervisor-system` (the CA, the node certificates, kna), `envoy-gateway-system` (the alias Service), `flux-system` (the chart sources) |
-| Applied | by hand: the node labels, then `hypervisor-fixtures/` after a K-ORC restart, then `hypervisor/`, after the Lab ControlPlane is `Ready` |
+| Applied | by hand: the node labels and the Placement trait, then `hypervisor-fixtures/` after a K-ORC restart, then `hypervisor/`, after the Lab ControlPlane is `Ready` |
 | Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, step 0, labels and `maint-<node>` objects included. The node state under `/var/lib/nova`, `/var/lib/libvirt` and `/etc/pki` stays |
 | Pinned by | `tests/unit/deploy/metal_stack_hypervisor_test.sh`; the hvo chart tag follows `hack/ci-resolve-hvo-commit.sh`, and the kna chart is tracked by Renovate (`tests/unit/renovate/kvm_node_agent_chart_custommanager_test.sh`) |
 | Dependencies | the Lab ControlPlane with `spec.services.nova.hypervisorOperator`; `/dev/kvm` and `vhost_net` on every node; TCP 16514 and 49152 to 49215 open between the nodes ([Node port check](#node-port-check)) |
 
+The run of 2026-10-01 on the lab, two Xeon D-2141I workers on Debian 12 with
+kernel 6.1, passed every step above. libvirtd kept its domains across a restart
+of its pod: the scope held libvirtd alone, and QEMU ran in the host cgroup
+`/machine/qemu-<n>-<instance>.libvirt-qemu` that libvirt created itself. The
+socket's group was `108`, libvirtd listened on `<node IP>:16514` only, and the
+live migration dialed `qemu+tls://<destination IP>/system`. A teardown with a
+server left stopped at the `NovaCompute` delete with the servers hint; after the
+servers were deleted, two teardowns exited 0 and left no `kvm.cloud.sap` CRD,
+`hypervisor-system` namespace, `maint-<node>` object, node label or host unit.
+
 hvo and kna come from SAP's own environment, and several of their defaults
 assume it. [#1066](https://github.com/c5c3/cobaltcore/issues/1066) collects
-what would have to change upstream. The table lists each item with what it does
-on the lab, a Debian node under Gardener:
+what would have to change upstream. Each item with what it did on the lab:
 
 | Item | Upstream | On the lab | Here |
 | --- | --- | --- | --- |
-| `maint-<node>` image | hvo's Gardener lifecycle controller creates Deployment `maint-<node>` in `kube-system` with `keppel.global.cloud.sap/ccloud-dockerhub-mirror/library/busybox:latest` | not observed, from source reading | none; the teardown deletes the objects |
-| `kube-system` interlock | the same controller keeps a PodDisruptionBudget `maint-<node>` on that Deployment, so a node drain waits until the hypervisor is offboarded | not observed, from source reading | none |
-| Operating system | kna fills `Hypervisor.status.operatingSystem` from the host's `os-release` and drives updates through `systemd-sysupdate`, both written for Garden Linux, the Gardener project's Debian-based host OS | not observed, from source reading | none |
-| `BlockMigration: false` | hvo's Eviction live-migrates without block migration, which Nova refuses for a server on local disks | not observed, from source reading | patched in the image ([#1163](https://github.com/c5c3/cobaltcore/issues/1163)) |
-| `HaEnabled` gate | onboarding waits for `HaEnabled=True` while `spec.highAvailability` is `true`; only kvm-ha-service sets it | not observed, from source reading | `highAvailability: false` patched by hand |
-| `TraitsUpdated` gate | onboarding waits for `TraitsUpdated=True`, which hvo sets only when a custom trait differs | not observed, from source reading | the node annotation `CUSTOM_C5C3_LAB` |
-| Host units | kna reads `libvirtd.service` and starts `virt-admin-server-update-tls.service` through the host's systemd | not observed, from source reading | runtime stand-ins written by the libvirt DaemonSet |
-| `monsoon3` fallback | kna's namespace without `NAMESPACE`, which its chart does not set | not observed, from source reading | `NAMESPACE` set by a post-renderer |
-| Catalog interface | hvo reads only the `public` endpoints and takes no CA | not observed, from source reading | host aliases and `SSL_CERT_DIR` |
-| Images per main commit | upstream publishes a chart for every main commit but an image only as `latest` | not observed, from source reading | the image of [#1163](https://github.com/c5c3/cobaltcore/issues/1163) |
+| `maint-<node>` image | hvo's Gardener lifecycle controller creates Deployment `maint-<node>` in `kube-system` with `keppel.global.cloud.sap/ccloud-dockerhub-mirror/library/busybox:latest` | both Deployments stay `0/1`; their pods are `Pending` in `ImagePullBackOff` | none; the teardown deletes the objects |
+| `kube-system` interlock | the same controller keeps a PodDisruptionBudget `maint-<node>` with `minAvailable: 1` on that Deployment, so a node drain waits until the hypervisor is offboarded | both PDBs allow 0 disruptions, on pods that never start | none |
+| Operating system | kna fills `Hypervisor.status.operatingSystem` from the host's `os-release` and drives updates through `systemd-sysupdate`, both written for Garden Linux, the Gardener project's Debian-based host OS | the status carries the kernel, the firmware and the hardware, and no `version`, `prettyVersion`, `variantID` or Garden Linux field; the `VERSION` column is empty, and no update condition appears | none |
+| `BlockMigration: false` | hvo's Eviction live-migrates without block migration, which Nova refuses for a server on local disks | the patched image's Eviction moved both servers off a node with local qcow2 disks, two `completed` live migrations | patched in the image ([#1163](https://github.com/c5c3/cobaltcore/issues/1163)) |
+| `HaEnabled` gate | onboarding waits for `HaEnabled=True` while `spec.highAvailability` is `true`; only kvm-ha-service sets it | with the patch both Hypervisors reach `Onboarding=False`, reason `Succeeded` | `highAvailability: false` patched by hand |
+| `TraitsUpdated` gate | onboarding waits for `TraitsUpdated=True`, which hvo sets only when a custom trait differs; it assigns the trait in Placement and does not create it | Placement answers 400 `No such trait CUSTOM_C5C3_LAB` until the trait exists | the node annotation and `openstack trait create` |
+| Host units | kna reads `libvirtd.service` and `openvswitch-switch.service` and starts `virt-admin-server-update-tls.service` through the host's systemd | with the stand-ins kna reports `libvirtd.service`, `LibVirtConnection` and `TLSCertificateInstalled` as `True`; `openvswitch-switch.service` stays `False`, because Open vSwitch runs in the chassis pod | runtime stand-ins written by the libvirt DaemonSet |
+| Agent uid | kna's image runs as uid 42438 and authenticates to the system bus with it | the host has no such user, and its dbus-daemon drops the connection; kna exits at start | kna runs as uid 0 with `DAC_OVERRIDE` |
+| `monsoon3` fallback | kna's namespace without `NAMESPACE`, which its chart does not set | with `NAMESPACE` kna installs the certificates of `hypervisor-system` | `NAMESPACE` set by a post-renderer |
+| Catalog interface | hvo reads only the `public` endpoints and takes no CA | through the aliases and `SSL_CERT_DIR` hvo ran 35 minutes without a restart and without an `x509` or `connection refused` line | host aliases and `SSL_CERT_DIR` |
+| Chart object names | the chart builds names from the fullname, the release name when it contains the chart name | `openstack-hypervisor-operator` makes the metrics Service name 64 characters, and the install fails | `fullnameOverride: hypervisor-operator` |
+| Hand-set node labels | hvo flags changes made with kubectl | both Hypervisors report `Tainted=True`, reason `Kubectl` | none |
+| Images per main commit | upstream publishes a chart for every main commit but an image only as `latest` | the chart of `a2baf3f` ran `ghcr.io/c5c3/openstack-hypervisor-operator:sha-a2baf3f…` | the image of [#1163](https://github.com/c5c3/cobaltcore/issues/1163) |
+
+The run also found what this repository's own pieces owe a real hypervisor.
+The fake driver of the kind suites reaches none of it:
+
+| Item | On the lab | Here |
+| --- | --- | --- |
+| Live-migration CPU check | with `cpuMode: host-passthrough`, and with `host-model`, every live migration ends in `NoValidHost`: Nova's pre-check on the destination fails with `Unacceptable CPU info: CPU doesn't have compatibility`, although `virsh hypervisor-cpu-compare` there accepts the guest CPU | `cpuMode: custom` with `Skylake-Server-IBRS`, the host-model of both workers |
+| Metadata agent memory | the agent is OOM-killed at the operator's default of 368Mi once it provisions a network: its privsep daemons run beside it, about 550Mi with one network | 768Mi in `compute.yaml` |
+| Nova's `instances_path` | nova-compute's libvirt driver fails with `No such file or directory: '/var/lib/nova/instances'`: the pool mounts `/var/lib/nova` from the host and nothing creates `instances/` there, while the image's own copy is hidden by the mount | open, a change of the `NovaCompute` pod; step 6 creates the directory |
+| Metadata agent root helper | `sudo: privsep-helper: command not found`: the neutron image's `secure_path` lacks `/var/lib/openstack/bin`, which the nova-compute image adds, so the agent cannot provision a network's metadata namespace | open, a change of the neutron image; step 6 sets `[agent] root_helper = env` |
+| Console log after a libvirt restart | `openstack console log show` stops at the restart: QEMU's log goes through `virtlogd`, which ran in the old pod. The guest and its network keep running | none |
 
 ### Node port check
 
