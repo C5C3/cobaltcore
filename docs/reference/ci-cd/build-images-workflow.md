@@ -36,6 +36,7 @@ security pipeline. See [Reusable Components](#reusable-components) for details.
 | Generate build matrix script | `hack/ci-generate-build-matrix.sh` |
 | Resolve OVN version script | `hack/ci-resolve-ovn-version.sh` |
 | Build OVN image script | `hack/ci-build-ovn-image.sh` |
+| Resolve hvo commit script | `hack/ci-resolve-hvo-commit.sh` |
 
 Both workflow files use the `.yaml` extension and quote the trigger key as `"on"` to
 prevent YAML boolean interpretation. They start with the standard SPDX license
@@ -58,7 +59,7 @@ The two path lists differ. The push list is the broad one it has always been:
 action republishes the images. The pull-request list names the inputs this workflow
 actually reads: the images and their build contexts, `releases/**`, `patches/**`,
 `scripts/**`, `overrides/**`, the option catalogs it verifies, and the nine
-composite actions and ten `hack/` scripts its jobs call, directly or through
+composite actions and eleven `hack/` scripts its jobs call, directly or through
 `build-push-image`, `setup-docker-registry` and `merge-manifest-and-attest`. Four
 negative patterns exclude `tests/container-images/verify_build_images_workflow.sh`,
 `verify_deviation_comments.sh`, `verify_release_config.sh` and
@@ -285,7 +286,7 @@ and the image flags the build and test jobs gate on.
 | `ALL_SERVICES` | yes | — | Space-separated list of every service in the build matrix |
 | `FILTER_svc_<service>` | no | `false` | One per name in `ALL_SERVICES` |
 | `FILTER_base` | no | `false` | Base images, release configs, build scripts, constraint overrides |
-| `FILTER_tempest` / `FILTER_ovn` / `FILTER_proxy` / `FILTER_shifter` / `FILTER_libvirt` | no | `false` | The release-independent images, one each |
+| `FILTER_tempest` / `FILTER_ovn` / `FILTER_proxy` / `FILTER_shifter` / `FILTER_libvirt` / `FILTER_hvo` | no | `false` | The release-independent images, one each |
 | `FILTER_plumbing` | no | `false` | The workflow, its composite actions, its `hack/` scripts |
 | `GITHUB_OUTPUT` | no | `/dev/null` | GitHub Actions output file |
 
@@ -296,14 +297,15 @@ step yields on `push` and `workflow_dispatch`.
 | --- | --- |
 | `services` | `all`, a space-separated subset of `ALL_SERVICES` in `ALL_SERVICES` order, or empty |
 | `has-services` | `true` when `services` is `all` or non-empty |
-| `build-tempest` / `build-ovn` / `build-proxy` / `build-shifter` / `build-libvirt` | `true` or `false` |
+| `build-tempest` / `build-ovn` / `build-proxy` / `build-shifter` / `build-libvirt` / `build-hvo` | `true` or `false` |
 
 Three inputs resolve to everything, because everything is built from them: an event
 that is not a `pull_request`, a `plumbing` match, and a `base` match. The `base` class
 also sets `build-tempest`, since the Tempest image is built `FROM` `python-base` and
 `venv-builder` and reads `releases/<release>/`. OVN, the federation proxy, the
-backup shifter and libvirt build `FROM ubuntu:noble` and read neither, so they follow
-their own filters alone.
+backup shifter and libvirt build `FROM ubuntu:noble`, and openstack-hypervisor-operator
+builds `FROM golang` and distroless. None of them reads either, so they follow their
+own filters alone.
 
 Every output line is echoed as well as written, so running the script prints what it
 decided:
@@ -318,6 +320,7 @@ build-ovn=false
 build-proxy=false
 build-shifter=false
 build-libvirt=false
+build-hvo=false
 ```
 
 ### hack/ci-generate-build-matrix.sh
@@ -364,6 +367,9 @@ prepare ──────────┤
                   │
                   ├──> build-ovn (matrix: amd64 + arm64)
                   │      └──> merge-ovn-image (push only) ──> verify-ovn-image (push only)
+                  │
+                  ├──> build-hvo (matrix: amd64 + arm64)
+                  │      └──> merge-hvo-image (push only) ──> verify-hvo-image (push only)
                   │
                   └──> build-base-images (matrix: amd64 + arm64)
                          └──> merge-base-images ──> verify-base-images ──┬──> generate-matrix
@@ -420,7 +426,7 @@ them into the service list and the image flags.
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `8` |
 | Permissions | `contents: read` |
-| Outputs | `services`, `has-services`, `build-tempest`, `build-ovn`, `build-proxy`, `build-shifter`, `build-libvirt` |
+| Outputs | `services`, `has-services`, `build-tempest`, `build-ovn`, `build-proxy`, `build-shifter`, `build-libvirt`, `build-hvo` |
 
 The `dorny/paths-filter` step carries `if: github.event_name == 'pull_request'`, since
 the action diffs against the pull request base. On `push` and `workflow_dispatch` it is
@@ -544,6 +550,44 @@ architecture, so the two legs execute the amd64 and the arm64 variant
 respectively — pull requests compile amd64 only, and this job is where the
 arm64 binaries first run. It holds `contents: read` and `packages: read` and
 nothing else, so the post-merge check cannot write to the registry.
+
+### build-hvo / merge-hvo-image / verify-hvo-image
+
+openstack-hypervisor-operator, compiled from a pinned commit of its upstream
+`main` branch with the patches under `images/openstack-hypervisor-operator/patches/`
+(`images/openstack-hypervisor-operator/Dockerfile`, a `golang` build stage and a
+`gcr.io/distroless/static:nonroot` runtime, both pinned by digest). The single
+`ARG HVO_COMMIT` line is the whole version input, and
+`hack/ci-resolve-hvo-commit.sh` is its only parser: it prints the 40-character
+commit, and every job that needs it calls the script. The build fetches that
+commit from github.com, so the job passes the workflow token as the
+`github_token` secret, as `build-ovn` does. See
+[openstack-hypervisor-operator](./container-images.md#openstack-hypervisor-operator)
+for the patch and why the pin is a `main` commit.
+
+`build-hvo` needs `changes`, `lint-dockerfiles` and `prepare`, and carries
+`if: needs.changes.outputs.build-hvo == 'true'`: on a pull request it runs when
+`images/openstack-hypervisor-operator/**` or `tests/container-images/verify_hvo.sh`
+changed, and on a push it always runs. Its `linux/amd64` + `linux/arm64` include
+matrix is written out in the workflow, and it carries `timeout-minutes: 30`. On
+pull requests it builds amd64 only, loads the result locally as `:pr-verify`,
+and runs the inline Grype scan and `tests/container-images/verify_hvo.sh`
+against that tag. On push events it pushes per-platform digests for the merge
+job.
+
+`merge-hvo-image` (push only) assembles the manifest through
+`merge-manifest-and-attest`: SBOM `sbom-hvo.cyclonedx.json`, Grype scan,
+attestation, cosign signature. It publishes `sha-<hvo-commit>-<sha>` on every
+push to `main` or `stable/**`, and adds `sha-<hvo-commit>`,
+`upstream-<hvo-commit>` and `latest` on `main` (see
+[Release-independent images](#release-independent-images)). Its `hvo-image`
+output is the merged manifest as
+`ghcr.io/<owner>/openstack-hypervisor-operator@<digest>`.
+
+`verify-hvo-image` (push only) pulls that digest and runs `verify_hvo.sh` on a
+`[ubuntu-latest, ubuntu-24.04-arm]` runner matrix, so the arm64 binary, which
+pull requests never build, runs here first. It holds `contents: read` and
+`packages: read` and nothing else.
 
 ### build-base-images
 
@@ -999,8 +1043,8 @@ the same nova (for example `nova-compute:32.0.0-p0-main-a1b2c3d`).
 
 ### Release-independent images
 
-`keystone-federation-proxy`, `backup-shifter`, `libvirt` and `ovn` have no
-OpenStack version to tag with:
+`keystone-federation-proxy`, `backup-shifter`, `libvirt`, `ovn` and
+`openstack-hypervisor-operator` have no OpenStack version to tag with:
 
 | Image | Tags | Branches |
 | --- | --- | --- |
@@ -1009,11 +1053,17 @@ OpenStack version to tag with:
 | `libvirt` | `latest`, `<sha>` | all |
 | `ovn` | `<ovn-version>-<sha>` | all |
 | `ovn` | `<ovn-version>`, `latest` | `main` only |
+| `openstack-hypervisor-operator` | `sha-<hvo-commit>-<sha>` | all |
+| `openstack-hypervisor-operator` | `sha-<hvo-commit>`, `upstream-<hvo-commit>`, `latest` | `main` only |
 
 `<sha>` is the full 40-character `github.sha` here, as it is for the base
 images. Restricting `ovn:<ovn-version>` and `ovn:latest` to `main` has the same
 reason as the service version tag above: when two branches build the same
-upstream version, a shared tag would be silently overwritten.
+upstream version, a shared tag would be silently overwritten. The same holds
+for the three `main`-only tags of `openstack-hypervisor-operator`, where
+`<hvo-commit>` is the full upstream commit the Dockerfile pins.
+`sha-<hvo-commit>` is the tag the upstream chart of that commit renders from
+its `appVersion`.
 
 ## Retention
 
@@ -1027,6 +1077,7 @@ survives while it carries a **keeper** tag:
 | Version | `keystone:28.0.0` | Names an upstream release |
 | Release | `keystone:2025.2` | Names an OpenStack release |
 | Semver prerelease | `keystone-operator:1.2.0-rc1` | Tagged operator build |
+| Pinned upstream commit | `openstack-hypervisor-operator:upstream-<commit>` | A chart of that commit names the image |
 
 Everything else is a build artifact with a successor and is deleted once it is
 older than 24 hours: composite tags, SHA tags in all four shapes
@@ -1692,6 +1743,12 @@ have no entry in `source-refs.yaml` or `extra-packages.yaml`, and
 - A Renovate `customManager` for the `ARG` line, `packageRules` for the update
   types the image accepts, and a regression test under `tests/unit/renovate/`.
 
+An image pinned to an upstream commit instead of a version names its resolver
+`hack/ci-resolve-<image>-commit.sh` and may skip the build script when a plain
+`docker build` of its directory reproduces the CI build. `<image>` is the short
+name the jobs and test files use: `openstack-hypervisor-operator` has
+`hack/ci-resolve-hvo-commit.sh`, `build-hvo` and `verify_hvo.sh`.
+
 An image built from distro packages alone (`keystone-federation-proxy`,
 `backup-shifter`, `libvirt`) has no `ARG` pin and therefore skips the resolver
 script, the build script and the Renovate `customManager`.
@@ -1835,6 +1892,7 @@ The following table summarizes which test scripts run where:
 | `verify_nova_compute.sh` | — | build-nova-compute-image (PR) / verify-nova-compute-image (push) | Yes |
 | `verify_backup_shifter.sh` | — | build-backup-shifter (PR) | Yes |
 | `verify_libvirt.sh` | — | build-libvirt (PR) | Yes |
+| `verify_hvo.sh` | — | build-hvo (PR) / verify-hvo-image (push) | Yes |
 
 ## SPDX Header
 

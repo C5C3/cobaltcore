@@ -54,6 +54,7 @@ The custom managers cover:
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`, plus the envtest Kubernetes minor (`ENVTEST_K8S_VERSION`), which follows the `envtest-vX.Y.Z` releases of `kubernetes-sigs/controller-tools` that `setup-envtest` downloads its assets from.
 - **`renovate-config-validator` pin** — the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
 - **OVN image pin** — the `ARG OVN_VERSION` line in `images/ovn/Dockerfile` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix). A second manager tracks the same upstream tag in `defaultOVNVersion`, the constant in `operators/ovn/internal/controller/image.go` that the ovn-operator resolves for a CR leaving `spec.image` unset. It carries the bare version, so its versioning regex expects no `v` and an `extractVersionTemplate` strips the one the tag has. Both pins are grouped under `OVN LTS patch releases`, so they move in a single PR; `TestDefaultOVNVersionMatchesDockerfilePin` fails when they diverge.
+- **openstack-hypervisor-operator image pin** — the `ARG HVO_COMMIT` line in `images/openstack-hypervisor-operator/Dockerfile` (git-refs on upstream `main` of `cobaltcore-dev/openstack-hypervisor-operator`, digest updates, like the K-ORC source). The rule runs on the weekly schedule (`before 6am on monday`) behind the 3-day cooldown and is **not** automerged. Every upstream `main` commit is a new digest, so without the schedule each one would open a PR. A move also needs a human: the downstream patch may no longer apply, and from #1142 on the lab's chart reference has to move with the pin. A failed `git apply` step in `build-hvo` (`patch does not apply: /patches/<file>`) means the patch has to be re-cut; see [Re-cutting the openstack-hypervisor-operator patch](#re-cutting-the-openstack-hypervisor-operator-patch).
 - **noVNC console assets** — the `ARG NOVNC_VERSION` and `ARG NOVNC_COMMIT` lines in `images/nova/Dockerfile` (github-tags on `novnc/noVNC`, regex versioning because the tags carry a `v` prefix). One `matchStrings` entry spans both adjacent lines, so the tag and the commit it names move in a single PR. Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged, because the console page is user-facing and no e2e suite loads it before #1018. Digest updates are disabled: a tag moved upstream to another commit is not a release, and the pin stays on the reviewed commit.
 
 Major updates are **disabled** for all custom-regex managers — these touch deploy-time
@@ -115,6 +116,38 @@ someone noticed OVN security patches had stopped landing.
 Renovate tracks it as the `currentDigest` of the noVNC manager: a plain tag
 has no second gitlink to carry across, and the github-tags datasource resolves
 the tag to the commit it names.
+
+### Re-cutting the openstack-hypervisor-operator patch
+
+`images/openstack-hypervisor-operator/patches/0001-eviction-let-nova-choose-block-migration.patch`
+is cut against the pinned upstream commit. When a Renovate PR moves `ARG HVO_COMMIT`
+to a commit on which it no longer applies, `build-hvo` fails at the `git apply`
+step and nothing is published. If upstream now carries the change, delete the patch
+on the Renovate branch together with its two checks in the Dockerfile's build step:
+the `servers.LiveMigrateOpts` grep, and the `TestLiveMigrateAutoBody` run, which
+passes only while upstream ships that test. With no patch left, the `COPY patches/`
+and `git apply` steps fail as well, so drop them in the same change. Otherwise
+re-cut the patch in a scratch clone that holds both the old and the new commit, so a
+three-way apply finds the blobs the patch was cut from:
+
+```bash
+old=<commit before the move>; new=<commit the Renovate PR pins>
+git init /tmp/hvo && cd /tmp/hvo
+git remote add origin https://github.com/cobaltcore-dev/openstack-hypervisor-operator.git
+git fetch --depth 1 origin "$old" "$new" && git checkout --detach "$new"
+git apply --3way <repo>/images/openstack-hypervisor-operator/patches/0001-*.patch
+# resolve the conflicts, then prove the test still passes
+go test -count=1 -run '^TestLiveMigrateAutoBody$' ./internal/controller/eviction/
+git commit -am "Eviction: let Nova choose block migration"
+git format-patch -1 --no-signature --stdout > /tmp/0001.patch
+```
+
+`git am -3` does not take the checked-in file: it carries the house header instead of
+a mail envelope, and `git am` stops at the missing author. Turn the
+`git format-patch` output back into the house header (the SPDX pair, the bare subject,
+the rationale, `Applies-to:` naming the new commit, `Upstream status:`, and no
+diffstat; see `patches/cinder/2025.2/0001-nfs-run-qemu-img-info-as-the-service-user.patch`
+for the form), commit it onto the Renovate branch and let `build-hvo` prove it.
 
 ---
 

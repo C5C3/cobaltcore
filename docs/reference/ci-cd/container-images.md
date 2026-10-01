@@ -46,7 +46,7 @@ to install the service, then stage 2 extends `python-base` and copies only the v
 from stage 1. This ensures the final image contains no build tools.
 
 The release-independent images sit outside that lineage. They carry no
-OpenStack code and build straight on `ubuntu:noble`:
+OpenStack code, and all but one build straight on `ubuntu:noble`:
 
 ```text
 ubuntu:noble
@@ -55,6 +55,16 @@ ubuntu:noble
 ├── keystone-federation-proxy  Single stage: distro apache2 + mod_auth_openidc + mod_auth_mellon
 ├── backup-shifter             Single stage: distro rclone
 └── libvirt                    Single stage: distro libvirt + QEMU + OVMF
+```
+
+`openstack-hypervisor-operator` compiles a Go operator and builds on the two
+images the CobaltCore operator images use:
+
+```text
+golang:1.27
+└── openstack-hypervisor-operator  Stage 1 (build): fetch the pinned upstream commit, apply the patches, go test + go build
+gcr.io/distroless/static:nonroot
+└── openstack-hypervisor-operator  Stage 2 (runtime): copy the manager binary
 ```
 
 Each is described under [Release-independent images](#release-independent-images).
@@ -1485,6 +1495,111 @@ asks the QEMU driver for its version and its x86_64 domain capabilities.
 Its build, verification and tag scheme are described in
 [build-libvirt / merge-libvirt-image](./build-images-workflow.md#build-libvirt-merge-libvirt-image).
 
+### openstack-hypervisor-operator
+
+**Location:** `images/openstack-hypervisor-operator/Dockerfile`
+
+openstack-hypervisor-operator (hvo) from `cobaltcore-dev`, compiled from a
+pinned commit of its upstream `main` branch with the patches under
+`images/openstack-hypervisor-operator/patches/` applied. The hypervisor package
+of issue #1142 deploys it with the upstream Helm chart of the same commit.
+Nothing under `deploy/` references the image yet.
+
+| Property | Value |
+| --- | --- |
+| Build stage | `golang:1.27`, pinned by the digest `operators/Dockerfile` carries |
+| Runtime base | `gcr.io/distroless/static:nonroot`, pinned by the digest `operators/Dockerfile` carries |
+| Version pin | `ARG HVO_COMMIT`, a 40-character commit of upstream `main` (`hack/ci-resolve-hvo-commit.sh` prints it) |
+| User | `65532:65532`, the `nonroot` user of the distroless base |
+| Entrypoint | `/usr/bin/manager` |
+| Label | `io.c5c3.upstream-commit`, set to the pinned commit |
+
+**Build stage:**
+
+- Fetches `$HVO_COMMIT` from
+  `https://github.com/cobaltcore-dev/openstack-hypervisor-operator.git` by its
+  SHA, so no branch or tag decides what is compiled. The workflow token reaches
+  the fetch as the optional `github_token` secret, as for [ovn](#ovn)
+- Downloads the Go modules in a layer of their own before the patches, so CI's
+  layer cache keeps them when only a patch or a later step changes
+- Applies every `*.patch` under `patches/` with `git apply --index`. A patch
+  that does not apply fails the build with
+  `patch does not apply: /patches/<file>`
+- Fails when Go code outside the tests still names gophercloud's
+  `servers.LiveMigrateOpts`, whose `BlockMigration` cannot carry `"auto"`.
+  The grep matches the bare type name, so a literal, a `var`, `new()`, a
+  pointer and an aliased import all fail. Only a `//` outside a double-quoted
+  string before the name lets the line pass, so a comment passes while a `/`
+  in a string or a division does not. That catches a live migration a pin
+  move adds or reshapes, and a re-cut patch that lost its `controller.go` hunk
+- Runs `TestLiveMigrateAutoBody`, the test the patch brings, and fails unless
+  the log shows `--- PASS: TestLiveMigrateAutoBody`. `go test -run` exits 0
+  with `[no tests to run]` when the test is missing, so the grep is what
+  catches a patch that lost its test hunk
+- Builds `./cmd` with `CGO_ENABLED=0`, `GOTOOLCHAIN=local` and upstream's
+  ldflags, with the version set to `sha-<commit>`, the tag the image is
+  published under. `manager --version` therefore prints
+  `manager sha-<commit> (linux/<arch>) <commit>`. Upstream's `generate` step
+  is skipped: the generated files are committed
+
+**Why `main`:** `main` has the required `--agent-namespaces` flag, the
+offboarding taint and parallel migrations in an Eviction
+(`--eviction-concurrency`). The latest tag, v1.2.3, has none of them. Upstream
+publishes a chart for every `main` commit, version `1.2.3+sha-<short>` with
+`appVersion` `sha-<full commit>`, and that chart renders the image as
+`<repository>:<appVersion>`. Upstream pushes no image under that tag for a
+`main` commit, only a moving `latest`. This image is published as
+`sha-<commit>`, so the chart of the pinned commit runs it with only the
+repository overridden.
+
+**Source patch:**
+`images/openstack-hypervisor-operator/patches/0001-eviction-let-nova-choose-block-migration.patch`.
+Upstream's `liveMigrate` (`internal/controller/eviction/controller.go`) asks
+Nova for a live migration with `block_migration: false`. Nova refuses that for
+a server on the hypervisor's local disks with `InvalidSharedStorage`. Every
+server on the metal-stack lab boots from a local disk, so the Eviction cannot
+move it. From compute microversion 2.25 on, Nova accepts the string `"auto"`
+and chooses block migration per server. gophercloud types
+`LiveMigrateOpts.BlockMigration` as `*bool`, so the patch adds a
+`LiveMigrateOptsBuilder` of its own that sends
+`{"os-migrateLive": {"block_migration": "auto", "host": null}}`, plus the plain
+Go test `TestLiveMigrateAutoBody` that pins the body; no upstream test pins
+it. The patch header records `Upstream status: not submitted`. Its author
+submits it upstream, and issue #1066 tracks it until `main` carries it.
+
+**Tags:** CI publishes `ghcr.io/c5c3/openstack-hypervisor-operator` as
+`sha-<hvo-commit>-<sha>` on every push, and on `main` also as
+`sha-<hvo-commit>`, `upstream-<hvo-commit>` and `latest` (see the
+[tag table](./build-images-workflow.md#release-independent-images)). The
+upstream chart resolves `sha-<hvo-commit>`. That shape is a build artifact to
+[Retention](./build-images-workflow.md#retention), which would delete it once a
+newer pin holds `latest`, while a chart of the older pin still names it.
+`upstream-<hvo-commit>` sits on the same manifest and is a keeper tag, so every
+pin that reached `main` stays pullable under both tags.
+
+**Pin moves:** Renovate tracks the `ARG HVO_COMMIT` line as a git-refs digest
+of upstream `main`, weekly and without automerge (see
+[Dependency Management](../../contributing/dependency-management.md)).
+`hack/ci-resolve-hvo-commit.sh` is the only parser of the line. A new commit
+on which the patch no longer applies fails the build at the `git apply` step;
+the patch is then re-cut against the new commit. Once upstream carries the
+change, the patch is dropped together with its two checks in the build step,
+the `servers.LiveMigrateOpts` grep and the `TestLiveMigrateAutoBody` run. With
+the last patch gone, the `COPY patches/` and `git apply` steps go too, because
+both fail without a patch.
+
+**Image contract check:** `tests/container-images/verify_hvo.sh` runs four
+tests against a built image. `manager --version` names `sha-<pin>` and ends
+with the pin. `manager --help` lists `-agent-namespaces` and
+`-eviction-concurrency`, which v1.2.3 does not have. The image runs
+`/usr/bin/manager` as `65532:65532`, and its `io.c5c3.upstream-commit` label
+equals the pin. The script reads the usage text instead of starting the binary
+without flags: upstream logs its `--agent-namespaces is required` error before
+it installs a logger, so that message never reaches the output.
+
+Its build, verification and tag scheme are described in
+[build-hvo / merge-hvo-image / verify-hvo-image](./build-images-workflow.md#build-hvo-merge-hvo-image-verify-hvo-image).
+
 ## Named Build Contexts
 
 Service Dockerfiles use Docker's named build context feature (`--build-context`) to inject
@@ -1820,9 +1935,33 @@ Both projects are compiled from source, so the first build takes a while. The
 Dockerfile's BuildKit cache mounts keep the apt steps of a rebuild short, but
 the two `make -j"$(nproc)"` runs dominate either way.
 
+### Building openstack-hypervisor-operator locally
+
+The build needs no source checkout and no build args: the Dockerfile fetches
+the pinned commit, applies the patches and runs the patch's test itself. Pass
+`GITHUB_TOKEN` as a BuildKit secret when the anonymous fetch inside the build
+fails; CI always does.
+
+```bash
+docker build images/openstack-hypervisor-operator -t openstack-hypervisor-operator
+
+# The same build with an authenticated fetch
+docker build --secret id=github_token,env=GITHUB_TOKEN \
+  images/openstack-hypervisor-operator -t openstack-hypervisor-operator
+
+# Print the pinned upstream commit
+hack/ci-resolve-hvo-commit.sh
+
+# Run the full image contract check against openstack-hypervisor-operator
+bash tests/container-images/verify_hvo.sh
+```
+
+`--progress=plain` keeps the `--- PASS: TestLiveMigrateAutoBody` line in the
+build output.
+
 ## Design Deviations
 
-The implementation deviates from the original design document in two areas,
+The implementation deviates from the original design document in three areas,
 documented with `# DEVIATION` comments in the affected Dockerfiles:
 
 **Generic `openstack` user instead of per-service users:**
@@ -1857,3 +1996,13 @@ single pod security context.
 carries a `# DEVIATION` comment saying so. libvirtd has to run as root to
 manage domains, devices and cgroups on the node, and the libvirt packages
 create the `libvirt-qemu` user that QEMU runs guests as.
+
+**Distroless and UID 65532 instead of `python-base` (openstack-hypervisor-operator):**
+
+`images/openstack-hypervisor-operator/Dockerfile` does not derive from
+`python-base` and creates no `openstack` user, and carries a `# DEVIATION`
+comment saying so. The operator is a static Go binary, so it runs on the
+`gcr.io/distroless/static:nonroot` base the CobaltCore operator images use
+(`operators/Dockerfile`), as that base's `nonroot` user, UID 65532. Upstream's
+own image is Alpine with UID 4200. Its chart sets only `runAsNonRoot: true` and
+no command, which any non-root user and the image's `ENTRYPOINT` satisfy.
