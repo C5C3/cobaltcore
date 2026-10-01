@@ -44,12 +44,14 @@ TEARDOWN_TIMEOUT="${TEARDOWN_TIMEOUT:-600}"
 
 # The API groups whose CRDs the stack registers: the CobaltCore operators
 # (operators/*/config/crd/bases: c5c3.io and <svc>.openstack.c5c3.io), the
-# HelmReleases and Flux Kustomizations of deploy/flux-system, and the two bundles
-# hack/deploy-infra.sh installs itself (Gateway API, Envoy Gateway). The groups
+# HelmReleases and Flux Kustomizations of deploy/flux-system, the two bundles
+# hack/deploy-infra.sh installs itself (Gateway API, Envoy Gateway), and the
+# kvm.cloud.sap CRDs the charts of the lab hypervisors install
+# (deploy/lab/metal-stack/hypervisor; Helm leaves them behind). The groups
 # of the platform (autoscaling.k8s.io, cert.gardener.cloud, dns.gardener.cloud,
 # crd.projectcalico.org, metallb.io, snapshot.storage.k8s.io) are absent on
 # purpose and must stay absent.
-STACK_CRD_GROUPS='cert-manager\.io|external-secrets\.io|k8s\.mariadb\.com|openbao\.org|garage\.rajsingh\.info|rabbitmq\.com|gateway\.networking\.k8s\.io|gateway\.envoyproxy\.io|monitoring\.coreos\.com|c5c3\.io|openstack\.k-orc\.cloud|(source|kustomize|helm|notification|image)\.toolkit\.fluxcd\.io|fluxcd\.controlplane\.io'
+STACK_CRD_GROUPS='cert-manager\.io|external-secrets\.io|k8s\.mariadb\.com|openbao\.org|garage\.rajsingh\.info|rabbitmq\.com|gateway\.networking\.k8s\.io|gateway\.envoyproxy\.io|monitoring\.coreos\.com|c5c3\.io|openstack\.k-orc\.cloud|(source|kustomize|helm|notification|image)\.toolkit\.fluxcd\.io|fluxcd\.controlplane\.io|kvm\.cloud\.sap'
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).
@@ -292,10 +294,127 @@ wait_for_stack_crs_gone() {
 }
 
 # ---------------------------------------------------------------------------
+# delete_where_crd_exists CRD WHAT ARGS... — delete_and_wait WHAT CRD ARGS...
+# when CRD is installed, and nothing otherwise: an operator that was never
+# installed, or is gone, has no objects left to delete.
+# ---------------------------------------------------------------------------
+delete_where_crd_exists() {
+  local crd="$1" what="$2"
+  shift 2
+  if kubectl get crd "${crd}" >/dev/null 2>&1; then
+    delete_and_wait "${what}" "${crd}" "$@"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# teardown_hypervisors — Step 0 of teardown_external_cluster: remove the lab
+# hypervisors (deploy/lab/metal-stack/hypervisor and hypervisor-fixtures,
+# applied by hand) while the ControlPlane, the operators, K-ORC,
+# openstack-hypervisor-operator and kvm-node-agent still run. A no-op unless
+# ${OVERLAY_ROOT}/hypervisor/kustomization.yaml exists. Each kind is deleted
+# only where its CRD exists, like the ControlPlane in step 1:
+#   1. the NovaComputes, NeutronMetadataAgents and OVNChassis in openstack. A
+#      NovaCompute holds nova.openstack.c5c3.io/compute-drain until Nova counts
+#      no server on its nodes, so a pool that still holds servers outlives the
+#      wait, and the teardown exits 1 with a hint to delete them;
+#   2. the Hypervisors, Evictions and Migrations of kvm.cloud.sap. Nodes own
+#      them, so garbage collection never reaps them;
+#   3. the fixtures, when the overlay has them. Keystone refuses to delete an
+#      enabled domain and K-ORC does not disable it, so a domain that exists
+#      is disabled first; the delete runs either way, so a rerun after a
+#      partial delete still takes the image and the flavor. A read of the
+#      domain that fails exits 1 before the delete: K-ORC applies no spec
+#      change to an object that is being deleted, so a domain deleted while
+#      enabled could never be disabled;
+#   4. the hypervisor overlay, the two operators with it;
+#   5. the Deployment and PodDisruptionBudget maint-<node> the hypervisor
+#      operator leaves in kube-system for every node. Its lifecycle controller
+#      recreates them while it runs, hence after step 4;
+#   6. the four node labels and the annotation the lab sets by hand.
+# Node state under /var/lib/nova, /var/lib/libvirt and /etc/pki stays.
+# ---------------------------------------------------------------------------
+teardown_hypervisors() {
+  if [[ ! -f "${OVERLAY_ROOT}/hypervisor/kustomization.yaml" ]]; then
+    return 0
+  fi
+
+  # 1. The node layer. The NovaCompute delete runs in a subshell, so its
+  # timeout can add the hint before the exit.
+  if ! (delete_where_crd_exists novacomputes.nova.openstack.c5c3.io \
+    "the NovaComputes in openstack" --all -n openstack); then
+    log "Delete the servers on the lab hypervisors first (openstack server list --all-projects)."
+    exit 1
+  fi
+  delete_where_crd_exists neutronmetadataagents.neutron.openstack.c5c3.io \
+    "the NeutronMetadataAgents in openstack" --all -n openstack
+  delete_where_crd_exists ovnchassis.ovn.openstack.c5c3.io "the OVNChassis in openstack" --all -n openstack
+
+  # 2. What the two operators keep per node.
+  delete_where_crd_exists hypervisors.kvm.cloud.sap "the Hypervisors" --all
+  delete_where_crd_exists evictions.kvm.cloud.sap "the Evictions" --all
+  delete_where_crd_exists migrations.kvm.cloud.sap "the Migrations" --all -A
+
+  # 3. The fixtures, through the ControlPlane's credential. Only the disable
+  # needs the domain; a missing domain kind means there is none.
+  if [[ -f "${OVERLAY_ROOT}/hypervisor-fixtures/kustomization.yaml" ]]; then
+    local domain
+    if ! domain="$(kubectl get domains.openstack.k-orc.cloud hvo-cc3test -n openstack \
+      --ignore-not-found -o name 2>&1)"; then
+      if [[ "${domain}" != *"doesn't have a resource type"* ]]; then
+        log "ERROR: cannot read the fixtures' domain hvo-cc3test:"
+        log "         ${domain}"
+        exit 1
+      fi
+      domain=""
+    fi
+    # kubectl may write warnings beside an empty answer; only the name counts.
+    if grep -qxF 'domain.openstack.k-orc.cloud/hvo-cc3test' <<<"${domain}"; then
+      log "Disabling the fixtures' domain hvo-cc3test..."
+      kubectl patch domains.openstack.k-orc.cloud hvo-cc3test -n openstack --type merge \
+        -p '{"spec":{"resource":{"enabled":false}}}' >/dev/null
+      local out
+      if ! out="$(kubectl wait domains.openstack.k-orc.cloud/hvo-cc3test -n openstack \
+        --for=jsonpath='{.status.resource.enabled}'=false --timeout="${TEARDOWN_TIMEOUT}s" 2>&1)"; then
+        log "ERROR: K-ORC did not disable the domain hvo-cc3test within ${TEARDOWN_TIMEOUT}s:"
+        log "         ${out}"
+        exit 1
+      fi
+    fi
+    delete_and_wait "the hypervisor fixtures" -k "${OVERLAY_ROOT}/hypervisor-fixtures"
+  fi
+
+  # 4. The overlay.
+  delete_and_wait "the hypervisor overlay" -k "${OVERLAY_ROOT}/hypervisor"
+
+  # 5. The maintenance objects in kube-system, by name, in one delete.
+  local nodes node names=()
+  if ! nodes="$(kubectl get nodes -o name)"; then
+    log "ERROR: cannot list the nodes (kubectl's error is above)."
+    exit 1
+  fi
+  while IFS= read -r node; do
+    [[ -n "${node}" ]] || continue
+    names+=("maint-${node#node/}")
+  done <<<"${nodes}"
+  if [[ ${#names[@]} -gt 0 ]]; then
+    delete_and_wait "the maintenance objects in kube-system" \
+      deployment,poddisruptionbudget "${names[@]}" -n kube-system
+  fi
+
+  # 6. The node labels and the annotation.
+  log "Removing the hypervisor labels and annotation from every node..."
+  kubectl label nodes --all openstack.c5c3.io/chassis- openstack.c5c3.io/nova-compute-pool- \
+    nova.openstack.cloud.sap/virt-driver- cobaltcore.cloud.sap/node-hypervisor-lifecycle- >/dev/null
+  kubectl annotate nodes --all nova.openstack.cloud.sap/custom-traits- >/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # teardown_external_cluster — Remove the stack from the current context's cluster.
 #
 # The order makes every finalizer run while the controller that clears it still
 # exists:
+#   0. the lab hypervisors, when the overlay has them (teardown_hypervisors),
+#      while everything they need still runs;
 #   1. every ControlPlane in openstack, while the c5c3-operator runs, so it
 #      reaps its children, then every OVNCentral there: the quick start's
 #      central is referenced, not owned, and its database pods would hold
@@ -324,8 +443,9 @@ wait_for_stack_crs_gone() {
 #   8. the CRDs of STACK_CRD_GROUPS.
 # It ends with the count of stack CRDs and namespaces still present, which must
 # both be zero. Every delete ignores absence, so a second run finds nothing and
-# exits 0; a wait that runs out exits 1 (delete_and_wait). kube-system and the
-# platform's namespaces and CRDs are never named.
+# exits 0; a wait that runs out exits 1 (delete_and_wait). In kube-system only
+# the maint-<node> objects of step 0 are deleted; the platform's namespaces and
+# CRDs are never named.
 # ---------------------------------------------------------------------------
 teardown_external_cluster() {
   local cmd
@@ -351,6 +471,9 @@ teardown_external_cluster() {
   log "Kubeconfig context  : $(kubectl config current-context 2>/dev/null || echo '<none>')"
   log "Overlay             : ${OVERLAY_ROOT}"
   log "Wait per step       : ${TEARDOWN_TIMEOUT}s (override via TEARDOWN_TIMEOUT)"
+
+  # 0. The lab hypervisors.
+  teardown_hypervisors
 
   # 1. The ControlPlanes, only where the c5c3 CRD was ever installed.
   if kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1; then
