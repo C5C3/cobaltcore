@@ -10,12 +10,12 @@
 # mode reads that input from a fixture instead of the GHCR API, so every case
 # below runs offline.
 #
-# Usage: bash tests/scripts/test_ghcr_prune_stale_versions.sh
+# Usage: bash tests/unit/hack/ghcr_prune_stale_versions_test.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SCRIPT_UNDER_TEST="$PROJECT_ROOT/hack/ghcr-prune-stale-versions.py"
 
 PASS=0
@@ -28,7 +28,7 @@ cleanup() {
 trap cleanup EXIT
 
 # shellcheck source=tests/lib/assertions.sh
-source "$SCRIPT_DIR/../lib/assertions.sh"
+source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 # Digests are only compared for equality, so a repeated nibble per manifest keeps
 # the fixtures readable while staying the right length for the referrer regex.
@@ -268,6 +268,67 @@ test_missing_package_is_fatal_only_for_a_full_sweep() {
   assert_not_contains "without calling it prunable" "$output" "nothing to prune"
 }
 
+# --- Tests 10 and 11: a pinned upstream commit stays pullable ---
+# openstack-hypervisor-operator as merge-hvo-image leaves it behind: the
+# current pin's main build carries latest, sha-<pin>, upstream-<pin> and the
+# composite sha-<pin>-<sha>; an older pin's main build was left with
+# sha-<pin> and upstream-<pin> once a newer build took latest; a branch build
+# carries only its composite tag. The upstream chart of the older pin still
+# names sha-<pin>, so that manifest has to survive both modes.
+HVO_CURRENT=$(digest 1)
+HVO_OLD_PIN=$(digest 2)
+HVO_BRANCH=$(digest 3)
+PIN_A=$(printf '%.0sa' {1..40})
+PIN_C=$(printf '%.0sc' {1..40})
+SHA_B=$(printf '%.0sb' {1..40})
+SHA_D=$(printf '%.0sd' {1..40})
+
+write_hvo_fixture() {
+  cat > "$1" <<EOF
+{
+  "now": "2026-08-22T00:00:00Z",
+  "versions": [
+    {"id": 1, "name": "${HVO_CURRENT}", "created_at": "2026-08-01T00:00:00Z",
+     "metadata": {"container": {"tags": ["latest", "sha-${PIN_C}", "upstream-${PIN_C}", "sha-${PIN_C}-${SHA_D}"]}}},
+    {"id": 2, "name": "${HVO_OLD_PIN}", "created_at": "2026-07-01T00:00:00Z",
+     "metadata": {"container": {"tags": ["sha-${PIN_A}", "upstream-${PIN_A}"]}}},
+    {"id": 3, "name": "${HVO_BRANCH}", "created_at": "2026-07-01T00:00:00Z",
+     "metadata": {"container": {"tags": ["sha-${PIN_A}-${SHA_B}"]}}}
+  ],
+  "manifests": {}
+}
+EOF
+}
+
+test_upstream_pin_tag_is_a_keeper() {
+  echo "Test: an upstream-<commit> tag keeps its manifest without latest"
+  local fixture="$TMPDIR_BASE/hvo-keep.json" output mode
+  write_hvo_fixture "$fixture"
+
+  for mode in --only-sha-tags full; do
+    if [ "$mode" = "full" ]; then
+      output=$(plan "$fixture")
+    else
+      output=$(plan "$fixture" "$mode")
+    fi
+    assert_contains "the old pin is kept ($mode)" \
+      "$(echo "$output" | jq -c '.keep')" "$HVO_OLD_PIN"
+    assert_not_contains "the old pin is not deleted ($mode)" \
+      "$(echo "$output" | jq -c '[.delete[].digest]')" "$HVO_OLD_PIN"
+  done
+}
+
+test_composite_only_hvo_build_is_deleted() {
+  echo "Test: a build with only sha-<commit>-<sha> is deleted by the full sweep"
+  local fixture="$TMPDIR_BASE/hvo-composite.json" output deleted
+  write_hvo_fixture "$fixture"
+  output=$(plan "$fixture")
+  deleted=$(echo "$output" | jq -c '[.delete[].digest]')
+
+  assert_contains "the composite-only build is deleted" "$deleted" "$HVO_BRANCH"
+  assert_not_contains "the current pin is not deleted" "$deleted" "$HVO_CURRENT"
+}
+
 # --- Run all tests ---
 echo "=== ghcr-prune-stale-versions.py tests ==="
 echo ""
@@ -288,6 +349,10 @@ echo ""
 test_deletion_cap_is_reported
 echo ""
 test_missing_package_is_fatal_only_for_a_full_sweep
+echo ""
+test_upstream_pin_tag_is_a_keeper
+echo ""
+test_composite_only_hvo_build_is_deleted
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

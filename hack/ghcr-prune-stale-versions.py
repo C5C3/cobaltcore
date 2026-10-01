@@ -8,8 +8,9 @@
 Retention is decided per package version from its *whole tag set*, not from a
 "keep the newest N" counter:
 
-  keep    the version carries at least one keeper tag -- `latest`, or a bare
-          version / release tag such as `32.0.0`, `2026.1`, `1.2.0-rc1`
+  keep    the version carries at least one keeper tag -- `latest`, a bare
+          version / release tag such as `32.0.0`, `2026.1`, `1.2.0-rc1`, or
+          `upstream-<sha40>`, a pinned upstream commit
   delete  every other version older than --min-age-hours, including untagged
           ones: `<sha7>`, `<sha40>`, `sha-<sha40>`, `<release>-<sha40>`,
           `e2e-<run_id>-*`, `dev`, and composite tags
@@ -73,11 +74,19 @@ DEFAULT_KEEP_PATTERNS = (
     r"^[0-9]+(\.[0-9]+)+$",
     # 1.2.0-rc1 -- semver prerelease from a v* tag push
     r"^[0-9]+(\.[0-9]+)+-(alpha|beta|rc)[0-9.]*$",
+    # upstream-<sha40> -- a pinned upstream commit that a chart of that commit
+    # names (openstack-hypervisor-operator: the chart renders sha-<sha40>, which
+    # sits on the same manifest)
+    r"^upstream-[0-9a-f]{40}$",
 )
 
 # Commit-SHA tag shapes across the four publishing paths in this repo:
 # service images (short SHA), base images (long SHA), operator images
 # (docker/metadata-action type=sha,format=long), tempest (<release>-<long SHA>).
+# openstack-hypervisor-operator's sha-<upstream commit> matches the sha- shape
+# too, and its upstream- keeper protects it; its composite
+# sha-<upstream commit>-<sha> matches none, so only the full sweep removes
+# that image's branch builds.
 SHA_TAG_PATTERNS = (
     r"^[0-9a-f]{7}$",
     r"^[0-9a-f]{40}$",
