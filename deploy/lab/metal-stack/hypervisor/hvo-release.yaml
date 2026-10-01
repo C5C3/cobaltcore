@@ -1,0 +1,148 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# openstack-hypervisor-operator (hvo) from the upstream chart of the pinned
+# hvo commit (sources.yaml), running the image #1163 builds from that commit
+# with the Eviction patch: the chart renders <repository>:<appVersion>, and
+# only the repository is overridden.
+#
+# The release sits in openstack because its two inputs do: the auth Secret
+# the lab ControlPlane writes (spec.services.nova.hypervisorOperator), read
+# through valuesFrom, and the gateway certificates its pod mounts. Every key
+# of the auth Secret but auth_url feeds the chart value it names; the
+# password goes into the chart's own Secret.
+#
+# The values that differ from the chart's defaults, and why:
+#   - osAuthUrl is the in-cluster Keystone URL. The auth Secret carries the
+#     public https://keystone.127-0-0-1.nip.io:8443/v3, which resolves to the
+#     pod itself inside the cluster. The URL is
+#     `kubectl get nova controlplane-nova -n openstack -o jsonpath='{.spec.keystoneEndpoint}'`.
+#   - certificateNamespace is hypervisor-system, where libvirt-ca.yaml puts
+#     the Issuer of the default name nova-hypervisor-agents-ca-issuer.
+#   - agentNamespaces is openstack, where the NovaCompute, OVNChassis and
+#     metadata agent pods run: an offboarding waits for them to leave the
+#     node.
+#   - The ServiceMonitor, the PrometheusRules, the dashboards and the
+#     custom-resource metrics ConfigMaps are off: the lab runs no Prometheus
+#     Operator.
+#
+# hvo reads the compute, placement, image and network endpoints from the
+# catalog's public interface and has no CA option. The post-renderer
+# therefore points the four public hostnames at the 8443 Service in front of
+# Envoy (gateway-alias.yaml) and trusts the four self-signed gateway
+# certificates: hvo is a Go program, and Go reads every certificate file in
+# the directories SSL_CERT_DIR lists. /etc/ssl/certs keeps the image's public
+# roots.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: openstack-hypervisor-operator
+  namespace: openstack
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: openstack-hypervisor-operator
+    namespace: flux-system
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+  valuesFrom:
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: password
+      targetPath: secret.servicePassword
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: username
+      targetPath: controllerManager.manager.env.osUsername
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: user_domain_name
+      targetPath: controllerManager.manager.env.osUserDomainName
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: project_name
+      targetPath: controllerManager.manager.env.osProjectName
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: project_domain_name
+      targetPath: controllerManager.manager.env.osProjectDomainName
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: region_name
+      targetPath: controllerManager.manager.env.osRegionName
+  values:
+    controllerManager:
+      manager:
+        image:
+          repository: ghcr.io/c5c3/openstack-hypervisor-operator
+        env:
+          osAuthUrl: http://controlplane-keystone.openstack.svc:5000/v3
+          certificateNamespace: hypervisor-system
+          agentNamespaces: openstack
+    serviceMonitor:
+      enabled: false
+    prometheusRules:
+      create: false
+    dashboards:
+      create: false
+    customResourceMetrics:
+      create: false
+  postRenderers:
+    - kustomize:
+        patches:
+          # The chart renders one Deployment; kustomize replaces the patch's
+          # name with its own.
+          - target:
+              kind: Deployment
+            patch: |
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: controller-manager
+              spec:
+                template:
+                  spec:
+                    hostAliases:
+                      - ip: 10.248.0.200
+                        hostnames:
+                          - nova.127-0-0-1.nip.io
+                          - placement.127-0-0-1.nip.io
+                          - glance.127-0-0-1.nip.io
+                          - neutron.127-0-0-1.nip.io
+                    containers:
+                      - name: manager
+                        env:
+                          - name: SSL_CERT_DIR
+                            value: /etc/lab-gateway-ca:/etc/ssl/certs
+                        volumeMounts:
+                          - name: lab-gateway-ca
+                            mountPath: /etc/lab-gateway-ca
+                            readOnly: true
+                    volumes:
+                      - name: lab-gateway-ca
+                        projected:
+                          sources:
+                            - secret:
+                                name: nova-nip-io-tls
+                                items:
+                                  - key: ca.crt
+                                    path: nova.crt
+                            - secret:
+                                name: placement-nip-io-tls
+                                items:
+                                  - key: ca.crt
+                                    path: placement.crt
+                            - secret:
+                                name: glance-nip-io-tls
+                                items:
+                                  - key: ca.crt
+                                    path: glance.crt
+                            - secret:
+                                name: neutron-nip-io-tls
+                                items:
+                                  - key: ca.crt
+                                    path: neutron.crt

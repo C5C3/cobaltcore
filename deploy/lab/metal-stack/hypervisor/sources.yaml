@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The upstream charts of openstack-hypervisor-operator (hvo) and
+# kvm-node-agent (kna), each pinned by digest the way
+# deploy/flux-system/sources/openbao-operator.yaml pins its chart: ref.digest
+# takes precedence over ref.tag, so a re-pushed tag changes nothing that runs.
+#
+# hvo is the chart of the pinned hvo commit, the ARG HVO_COMMIT line of
+# images/openstack-hypervisor-operator/Dockerfile (hack/ci-resolve-hvo-commit.sh
+# prints it). Upstream publishes a chart for every main commit under
+# <version>_sha-<first seven characters>, with appVersion sha-<commit>, and
+# the chart renders the image as <repository>:<appVersion>: hvo-release.yaml
+# overrides the repository with the image #1163 builds from that commit,
+# which carries the same tag. The ref has no Renovate manager. It moves with
+# the pin, and tests/unit/deploy/metal_stack_hypervisor_test.sh fails while
+# its short SHA differs from the pinned commit.
+#
+# kna stays at the tag v0.2.0, chart 0.2.0. A customManager in renovate.json
+# bumps its tag and digest together; tests/unit/renovate/
+# kvm_node_agent_chart_custommanager_test.sh guards the pairing.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: openstack-hypervisor-operator
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/cobaltcore-dev/charts/openstack-hypervisor-operator
+  # `copy` hands the chart tarball to helm-controller unaltered, which is what
+  # a HelmRelease chartRef consumes.
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: "1.2.3_sha-a2baf3f"
+    digest: "sha256:a2442e53f92dc13bc5ab29ece620766388bb72624de8e922aa660b8e82ff360f"
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kvm-node-agent
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/cobaltcore-dev/charts/kvm-node-agent
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: "0.2.0"
+    digest: "sha256:19f289af2b66112feb1cda20f43ddd80f055d66af7e8409aa7c1bea37abd2565"

@@ -4,9 +4,10 @@
 
 # The two workers of the metal-stack lab as KVM hypervisors of the lab
 # ControlPlane (#1142): libvirt in a DaemonSet, the OVN chassis, the metadata
-# agent and the NovaCompute pool, and the libvirt migration CA. Applied by
-# hand, like ../controlplane; hack/deploy-infra.sh never applies it. The order
-# is:
+# agent and the NovaCompute pool, the libvirt migration CA,
+# openstack-hypervisor-operator and kvm-node-agent with their chart sources,
+# and the Service that lets the operator reach the gateway. Applied by hand,
+# like ../controlplane; hack/deploy-infra.sh never applies it. The order is:
 #
 #   1. the lab ControlPlane Ready (../controlplane/kustomization.yaml);
 #   2. the node labels below, by hand, because no manifest can patch a Node;
@@ -23,6 +24,17 @@
 #     cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests
 #   kubectl annotate node --all nova.openstack.cloud.sap/custom-traits=CUSTOM_C5C3_LAB
 #
+# The lifecycle label is the only way a Hypervisor gets lifecycleEnabled and
+# skipTests; the smoke test boots from a Cinder volume, which the lab lacks.
+# The annotation is needed because the hypervisor operator sets TraitsUpdated
+# only when a custom trait differs, and onboarding waits for that condition.
+# Onboarding also waits for HaEnabled=True while spec.highAvailability is
+# true, and only SAP's kvm-ha-service sets it. The operator creates every
+# Hypervisor with the field true and never writes it again, so patch each one
+# once it exists:
+#
+#   kubectl patch hypervisor <node> --type merge -p '{"spec":{"highAvailability":false}}'
+#
 # EXTERNAL_CLUSTER=true make teardown-infra removes all of it in its step 0,
 # labels included (docs/reference/infrastructure/e2e-deployment.md).
 #
@@ -38,3 +50,7 @@ resources:
   - libvirt-configmap.yaml
   - libvirt-daemonset.yaml
   - compute.yaml
+  - gateway-alias.yaml
+  - sources.yaml
+  - hvo-release.yaml
+  - kna-release.yaml
