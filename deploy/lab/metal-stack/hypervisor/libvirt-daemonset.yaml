@@ -1,0 +1,177 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# libvirtd and QEMU on every node of the lab's compute pool, the decision D1
+# of #1138: the hosts carry neither, so the image of #1153 brings both. The
+# scripts and the configuration are in libvirt-configmap.yaml.
+#
+# The node set is the NovaCompute pool's label (compute.yaml), so libvirtd
+# runs where nova-compute does. nova-compute reaches it over the host's
+# /run/libvirt and shares /var/lib/nova with it; Bidirectional propagation
+# carries mounts below /var/lib/nova to the host.
+#
+# The pod shares the host's network, PID and IPC namespaces: libvirtd listens
+# for TLS on the node's address, and libvirtd.sh moves it into a host scope
+# and hands its host PID to the two host units. It mounts the host's systemd
+# runtime directory (its private socket and /run/systemd/system) and D-Bus
+# socket for that, and the host's /etc/pki/{CA,libvirt,qemu}, where
+# kvm-node-agent writes the TLS files, read-only.
+#
+# OnDelete: a rollout would restart libvirtd under running migrations. No
+# liveness probe either: a restart on a slow answer would interrupt them. The
+# readiness probe asks libvirtd for its version over the local socket.
+#
+# The image tag is latest because it is the only tag of ghcr.io/c5c3/libvirt
+# that does not name a commit of this repository; Always pulls it on every
+# start. The resources bound this pod's cgroup, which keeps bash, virtlogd
+# and the probes. libvirtd and QEMU run in the host scope, outside it.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: libvirt
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: libvirt
+    app.kubernetes.io/part-of: lab-hypervisor
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: libvirt
+  updateStrategy:
+    type: OnDelete
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: libvirt
+        app.kubernetes.io/part-of: lab-hypervisor
+    spec:
+      nodeSelector:
+        openstack.c5c3.io/nova-compute-pool: lab
+      hostNetwork: true
+      hostPID: true
+      hostIPC: true
+      dnsPolicy: ClusterFirstWithHostNet
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: host-prepare
+          image: ghcr.io/c5c3/libvirt:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "/etc/libvirt-lab/host-prepare.sh"]
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /etc/libvirt-lab
+              readOnly: true
+            - name: dev
+              mountPath: /dev
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+      containers:
+        - name: libvirtd
+          image: ghcr.io/c5c3/libvirt:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "/etc/libvirt-lab/libvirtd.sh"]
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          env:
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+          readinessProbe:
+            exec:
+              command: ["virsh", "-c", "qemu:///system", "version"]
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /etc/libvirt-lab
+              readOnly: true
+            - name: run-libvirt
+              mountPath: /run/libvirt
+            - name: var-lib-libvirt
+              mountPath: /var/lib/libvirt
+            - name: var-lib-nova
+              mountPath: /var/lib/nova
+              mountPropagation: Bidirectional
+            - name: pki-ca
+              mountPath: /etc/pki/CA
+              readOnly: true
+            - name: pki-libvirt
+              mountPath: /etc/pki/libvirt
+              readOnly: true
+            - name: pki-qemu
+              mountPath: /etc/pki/qemu
+              readOnly: true
+            - name: dev
+              mountPath: /dev
+            - name: sys-fs-cgroup
+              mountPath: /sys/fs/cgroup
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+            - name: run-systemd
+              mountPath: /run/systemd
+            - name: run-dbus
+              mountPath: /run/dbus
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: libvirt-lab
+        - name: run-libvirt
+          hostPath:
+            path: /run/libvirt
+            type: DirectoryOrCreate
+        - name: var-lib-libvirt
+          hostPath:
+            path: /var/lib/libvirt
+            type: DirectoryOrCreate
+        - name: var-lib-nova
+          hostPath:
+            path: /var/lib/nova
+            type: DirectoryOrCreate
+        - name: pki-ca
+          hostPath:
+            path: /etc/pki/CA
+            type: DirectoryOrCreate
+        - name: pki-libvirt
+          hostPath:
+            path: /etc/pki/libvirt
+            type: DirectoryOrCreate
+        - name: pki-qemu
+          hostPath:
+            path: /etc/pki/qemu
+            type: DirectoryOrCreate
+        - name: dev
+          hostPath:
+            path: /dev
+        - name: sys-fs-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+        - name: run-systemd
+          hostPath:
+            path: /run/systemd
+        - name: run-dbus
+          hostPath:
+            path: /run/dbus

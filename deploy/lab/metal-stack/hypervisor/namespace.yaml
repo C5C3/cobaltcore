@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The namespace of the libvirt migration CA, its Issuer, the per-node
+# Certificates openstack-hypervisor-operator requests (libvirt-<node>, Secret
+# tls-libvirt-<node>) and kvm-node-agent. Every CobaltCore operator reads
+# Secrets in openstack, and a tls-libvirt-<node> Secret is root on its node's
+# libvirtd (docs/reference/nova/novacompute-crd.md, Live migration), so the
+# certificates live here and not there.
+#
+# The label is the lab's rule for every namespace it declares: it keeps
+# Gardener's kubernetes-service-host webhook from rewriting
+# KUBERNETES_SERVICE_HOST in the namespace's pods (see
+# ../base/kustomization.yaml).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hypervisor-system
+  labels:
+    apiserver-proxy.networking.gardener.cloud/inject: disable
