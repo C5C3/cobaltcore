@@ -1105,8 +1105,8 @@ changes that make the caps testable and a third that makes the VPAs testable:
 | 3. `controlplane-ready` (45m) | The ControlPlane reaches `Ready` |
 | 4. `projection-and-shape` (5m) | The Keystone child and its HPA carry the `scaleDown` behavior; all seven HPAs target 150% CPU; Keystone runs one ready pod and every pinned API two; Keystone's PDB carries `maxUnavailable: 1` and every pinned PDB `minAvailable: 1` without `maxUnavailable`; User `cp-autoscaling-keystone` carries `maxUserConnections: 18`, `(3+1)×2×(1+1)+2` |
 | 5. `vertical-autoscaling` (15m) | The three sizing blocks reach the Neutron, Cinder and Nova children; each of the seven opted-in workloads has a VPA named like it, labelled with its CR, targeting its Deployment or StatefulSet, with the one `*` container policy (`RequestsOnly`, `cpu` and `memory`); the Cinder and Nova VPAs carry their update policy and bounds, and the two Raft VPAs the `minAllowed` floor of `70m` and `256Mi`; Keystone has no VPA and no workload has both a VPA and an HPA; `VPAReady` is `True/VPAReady` on the four opted-in children and `True/VPANotRequired` on the other four; the recommender provides a memory recommendation for the Northbound database's `ovsdb` container within 600 s and marks no VPA `ConfigUnsupported`; removing the Neutron block removes its two VPAs, turns its `VPAReady` to `VPANotRequired`, and leaves the other five |
-| 6. `start-load` (3m) | The load Job's pod runs |
-| 7. `scale-out` (8m) | The Keystone HPA reaches `desiredReplicas: 3` and the Deployment three ready pods; the peak `averageUtilization` seen is above 150 |
+| 6. `start-load` (7m) | Keystone is at one pod (HPA `desiredReplicas: 1`, one ready replica) within 240 s, whatever the plane's own traffic scaled it to after step 4, and only then the load Job is applied and its pod runs |
+| 7. `scale-out` (8m) | The Keystone HPA reaches `desiredReplicas: 3` and the Deployment three ready pods; the peak `averageUtilization` seen is above 150. The step polls until it has seen both |
 | 8. `keystone-at-maximum` (5m) | `check-connection-cap.sh` for Keystone at three pods, retried for up to 240 s while the load reaches the pods the HPA just added |
 | 9. `service-burst` (8m) | The burst Job completes with six `RESULT` lines at `fail=0` |
 | 10. `pinned-at-maximum` (10m) | `check-connection-cap.sh` for the six pinned APIs (Nova with its API and cell users), and the server-wide connection count stays below `@@max_connections` |
@@ -1118,7 +1118,7 @@ A test-level `catch` (5m) dumps the HPAs, the VPAs, `kubectl top pods`, pods,
 events, both Jobs' logs and the live MariaDB connections per user. The
 `cleanup` of step 2 (15m) runs when the test ends, whichever step it ends in,
 and deletes both Jobs, the ControlPlane, the OVNCentral, the broker vhost and
-the eight KV paths. The worst-case ceiling is the sum of these timeouts, 160 minutes.
+the eight KV paths. The worst-case ceiling is the sum of these timeouts, 164 minutes.
 
 **Completed CronJob pods.** The HPA reads every pod its scale target's
 selector matches. The Keystone API Deployment selects on the
@@ -1126,9 +1126,9 @@ selector matches. The Keystone API Deployment selects on the
 pods of the hourly trust-flush CronJob and of the key rotations carry both. A
 Completed one reports no metrics, and on a scale-down the HPA counts a pod
 without metrics at the full target, which holds Keystone one pod above its
-minimum. Steps 4 and 11 therefore delete the Succeeded Job pods of the Keystone
-child while they poll (`keystone-hpa.sh drop-job-pods`), so the scale-in they
-measure depends on the behavior alone.
+minimum. Steps 4, 6 and 11 therefore delete the Succeeded Job pods of the
+Keystone child while they poll (`keystone-hpa.sh drop-job-pods`), so the
+scale-in they wait for depends on the behavior alone.
 
 **Load and burst Jobs.** Both run the tempest image with the per-CR
 `k-orc-clouds-yaml` Secret mounted, and exit 2 when its `admin` cloud is not a
