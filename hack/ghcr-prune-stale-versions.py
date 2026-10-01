@@ -198,7 +198,12 @@ def retry_delay(headers, attempt):
 
 
 def list_versions(org, package, token):
-    """Return every container version of the package, newest first."""
+    """Return every container version of the package, newest first.
+
+    Returns None when the package does not exist, so the caller decides whether
+    that is fatal. A 404 after the first page is always fatal: the package was
+    there a request ago.
+    """
     versions = []
     page = 1
     quoted = urllib.parse.quote(package, safe="")
@@ -206,6 +211,8 @@ def list_versions(org, package, token):
         url = f"{API_ROOT}/orgs/{org}/packages/container/{quoted}/versions?per_page=100&page={page}"
         status, _, body = request(url, token=token)
         if status == 404:
+            if page == 1:
+                return None
             raise SystemExit(f"package not found: {org}/{package}")
         batch = json.loads(body)
         if not batch:
@@ -481,6 +488,16 @@ def main(argv=None):
     else:
         package = args.package
         versions = list_versions(args.org, package, args.token)
+        if versions is None:
+            # GHCR creates a package on its first push. A new image directory is
+            # in the cleanup matrix from the pull request that adds it, before
+            # anything was published, and a package that does not exist holds no
+            # tag a narrowed run could be after. A full sweep names a package
+            # that is expected to exist, so there a 404 stays fatal.
+            if not args.only_tag_pattern:
+                raise SystemExit(f"package not found: {args.org}/{package}")
+            warn(f"[{package}] package not found: {args.org}/{package}; nothing to prune")
+            return 0
         children_of = Registry(args.org, package, args.token).children
         now = datetime.now(timezone.utc)
 

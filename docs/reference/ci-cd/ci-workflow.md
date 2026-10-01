@@ -1569,7 +1569,9 @@ derived by `hack/ci-generate-cleanup-matrix.sh` from `images/` and `operators/`.
 It was a hardcoded list until `keystone-federation-proxy` was left out of it and
 accumulated 352 stale tags. A package whose image this run reused rather than built
 carries no run-scoped tag, so the narrowed plan finds no candidate there and deletes
-nothing.
+nothing. A package GHCR does not know yet, the case for a new `images/<name>/`
+directory until its first publish from `main`, is reported as a warning and the
+leg exits 0. A full sweep still fails on an unknown package.
 
 Deletion runs through `hack/ghcr-prune-stale-versions.py` in
 `--only-tag-pattern` mode, scoped to `^e2e-${run_id}-`. That mode only considers
