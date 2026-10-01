@@ -3116,8 +3116,9 @@ main() {
 
   # Phase 3b: the RabbitMQ Cluster Operator arrives through a Flux Kustomization
   # (deploy/flux-system/releases/rabbitmq-cluster-operator.yaml), which
-  # wait_for_helmreleases cannot see. It hard-fails, unlike the optional k-orc
-  # wait further down: the c5c3 ControlPlane projects a RabbitmqCluster for
+  # wait_for_helmreleases cannot see. It hard-fails on every run, where the
+  # k-orc wait further down does so only on the CONTROLPLANE_OPERATORS=flux
+  # path: the c5c3 ControlPlane projects a RabbitmqCluster for
   # spec.infrastructure.messaging, so the CRD and the operator have to be on
   # every cluster this script provisions. Its Issuer/Certificate apply needs
   # cert-manager, which Phase 1 already waited for.
@@ -3522,9 +3523,17 @@ main() {
 
       kubectl patch kustomization/k-orc -n flux-system --type merge \
         -p '{"spec":{"suspend":false}}' 2>/dev/null || true
-      kubectl wait kustomization/k-orc -n flux-system \
-        --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
-        || log "  k-orc Kustomization not Ready yet (continuing)."
+      # This wait hard-fails, unlike the two HelmRelease waits around it: the
+      # c5c3-operator watches the K-ORC kinds unconditionally and cannot start
+      # without their CRDs, so continuing would end a "successful" run with a
+      # crash-looping operator. The source is printed too, because the
+      # Kustomization cannot apply while its GitRepository has no artifact.
+      if ! kubectl wait kustomization/k-orc -n flux-system \
+        --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s"; then
+        log "ERROR: kustomization/k-orc did not become Ready within ${HELMRELEASE_TIMEOUT}s; the c5c3-operator cannot start without the K-ORC CRDs."
+        kubectl get gitrepository/k-orc kustomization/k-orc -n flux-system 2>/dev/null || true
+        exit 1
+      fi
 
       kubectl patch helmrelease/c5c3-operator -n c5c3-system --type merge \
         -p '{"spec":{"suspend":false}}' 2>/dev/null || true
