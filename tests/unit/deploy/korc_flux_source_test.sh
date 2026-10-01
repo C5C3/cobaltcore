@@ -19,6 +19,10 @@
 #     leave the Kustomization pointing at a directory the checkout skipped.
 #   - the production overlay, the kind base and the metal-stack base all
 #     render the field.
+#   - hack/deploy-infra.sh stops when the k-orc Kustomization does not become
+#     Ready on the CONTROLPLANE_OPERATORS=flux path. It used to log "not Ready
+#     yet (continuing)" and finish, which left a deploy that reported success
+#     with a c5c3-operator that could not start.
 # Usage: bash tests/unit/deploy/korc_flux_source_test.sh
 
 set -euo pipefail
@@ -35,6 +39,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 KORC_SOURCE_YAML="$PROJECT_ROOT/deploy/flux-system/sources/k-orc.yaml"
 KORC_RELEASE_YAML="$PROJECT_ROOT/deploy/flux-system/releases/k-orc.yaml"
+DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
 
 # The entries of spec.sparseCheckout in the source manifest, one per line.
 sparse_dirs() {
@@ -113,10 +118,33 @@ test_overlays_render_sparse_checkout() {
   done
 }
 
+# --- Test 4: deploy-infra.sh fails when the k-orc Kustomization is not Ready ---
+#             (source-level, no tools required)
+test_deploy_infra_fails_on_korc_not_ready() {
+  echo "Test: hack/deploy-infra.sh exits when kustomization/k-orc does not become Ready"
+
+  # The wait and its failure branch form one block that ends at the first
+  # blank line.
+  local block
+  block="$(awk '
+    /kubectl wait kustomization\/k-orc -n flux-system/ { in_block = 1 }
+    in_block && /^[[:space:]]*$/ { exit }
+    in_block { print }
+  ' "$DEPLOY_INFRA_SH")"
+
+  assert_not_empty "the flux path waits on kustomization/k-orc" "$block"
+  assert_contains "a wait that fails ends the run" "$block" "exit 1"
+  assert_contains "the failure prints the state of the K-ORC source" \
+    "$block" "kubectl get gitrepository/k-orc kustomization/k-orc"
+  assert_file_not_contains "the tolerant k-orc wait is gone" \
+    "$DEPLOY_INFRA_SH" "k-orc Kustomization not Ready yet (continuing)"
+}
+
 # --- Run ---
 test_source_declares_sparse_checkout
 test_kustomization_path_is_checked_out
 test_overlays_render_sparse_checkout
+test_deploy_infra_fails_on_korc_not_ready
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
