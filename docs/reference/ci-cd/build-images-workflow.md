@@ -277,7 +277,7 @@ debugging failed tests.
 ### hack/ci-resolve-image-changes.sh
 
 Turns the paths-filter outputs of the [`changes`](#changes) job into the service list
-and the four image flags the build and test jobs gate on.
+and the image flags the build and test jobs gate on.
 
 | Env var | Required | Default | Description |
 | --- | --- | --- | --- |
@@ -285,7 +285,7 @@ and the four image flags the build and test jobs gate on.
 | `ALL_SERVICES` | yes | — | Space-separated list of every service in the build matrix |
 | `FILTER_svc_<service>` | no | `false` | One per name in `ALL_SERVICES` |
 | `FILTER_base` | no | `false` | Base images, release configs, build scripts, constraint overrides |
-| `FILTER_tempest` / `FILTER_ovn` / `FILTER_proxy` / `FILTER_shifter` | no | `false` | The four release-independent images |
+| `FILTER_tempest` / `FILTER_ovn` / `FILTER_proxy` / `FILTER_shifter` / `FILTER_libvirt` | no | `false` | The release-independent images, one each |
 | `FILTER_plumbing` | no | `false` | The workflow, its composite actions, its `hack/` scripts |
 | `GITHUB_OUTPUT` | no | `/dev/null` | GitHub Actions output file |
 
@@ -296,14 +296,14 @@ step yields on `push` and `workflow_dispatch`.
 | --- | --- |
 | `services` | `all`, a space-separated subset of `ALL_SERVICES` in `ALL_SERVICES` order, or empty |
 | `has-services` | `true` when `services` is `all` or non-empty |
-| `build-tempest` / `build-ovn` / `build-proxy` / `build-shifter` | `true` or `false` |
+| `build-tempest` / `build-ovn` / `build-proxy` / `build-shifter` / `build-libvirt` | `true` or `false` |
 
 Three inputs resolve to everything, because everything is built from them: an event
 that is not a `pull_request`, a `plumbing` match, and a `base` match. The `base` class
 also sets `build-tempest`, since the Tempest image is built `FROM` `python-base` and
-`venv-builder` and reads `releases/<release>/`. OVN, the federation proxy and the
-backup shifter build `FROM ubuntu:noble` and read neither, so they follow their own
-filters alone.
+`venv-builder` and reads `releases/<release>/`. OVN, the federation proxy, the
+backup shifter and libvirt build `FROM ubuntu:noble` and read neither, so they follow
+their own filters alone.
 
 Every output line is echoed as well as written, so running the script prints what it
 decided:
@@ -317,6 +317,7 @@ build-tempest=false
 build-ovn=false
 build-proxy=false
 build-shifter=false
+build-libvirt=false
 ```
 
 ### hack/ci-generate-build-matrix.sh
@@ -349,7 +350,7 @@ unknown service exits 1 before either is written.
 
 ## Jobs
 
-The workflow defines twenty-three jobs with a dependency graph:
+The workflow's jobs form this dependency graph:
 
 ```text
 changes ──────────┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
@@ -357,6 +358,9 @@ lint-dockerfiles ─┤      └──> merge-keystone-federation-proxy-image (p
 prepare ──────────┤
                   ├──> build-backup-shifter (matrix: amd64 + arm64)
                   │      └──> merge-backup-shifter-image (push only)
+                  │
+                  ├──> build-libvirt (matrix: amd64 + arm64)
+                  │      └──> merge-libvirt-image (push only)
                   │
                   ├──> build-ovn (matrix: amd64 + arm64)
                   │      └──> merge-ovn-image (push only) ──> verify-ovn-image (push only)
@@ -405,24 +409,24 @@ previously duplicated three-step setup sequence.
 
 ### changes
 
-Classifies the changed paths of a pull request into twelve filters — one per service
+Classifies the changed paths of a pull request into paths filters — one per service
 image, one for the base images and release configuration, one per release-independent
 image, and one for the workflow's own plumbing — and hands them to
 [`hack/ci-resolve-image-changes.sh`](#hack-ci-resolve-image-changes-sh), which resolves
-them into the service list and the four image flags.
+them into the service list and the image flags.
 
 | Property | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `8` |
 | Permissions | `contents: read` |
-| Outputs | `services`, `has-services`, `build-tempest`, `build-ovn`, `build-proxy`, `build-shifter` |
+| Outputs | `services`, `has-services`, `build-tempest`, `build-ovn`, `build-proxy`, `build-shifter`, `build-libvirt` |
 
 The `dorny/paths-filter` step carries `if: github.event_name == 'pull_request'`, since
 the action diffs against the pull request base. On `push` and `workflow_dispatch` it is
 skipped, its outputs resolve to the empty string, and the resolver answers `all` and
-four `true` flags regardless. That is why no gated job needs a `github.event_name` term
-in its condition.
+sets every image flag to `true` regardless. That is why no gated job needs a
+`github.event_name` term in its condition.
 
 `ALL_SERVICES` is a hand-maintained list, because `dorny/paths-filter` has no dynamic
 filter names. `tests/unit/ci/build_images_services_lockstep_test.sh` pins it to the
@@ -466,6 +470,24 @@ PR-skipped merge job assembling the multi-arch manifest with the `:latest` +
 Condition: `needs.changes.outputs.build-shifter == 'true'`. On a pull request the
 build job runs when `images/backup-shifter/**` or
 `tests/container-images/verify_backup_shifter.sh` changed; on a push it always runs.
+
+### build-libvirt / merge-libvirt-image
+
+The libvirt daemon and QEMU for containerized hypervisor nodes
+(`images/libvirt/`, single-stage `ubuntu:noble` + distro libvirt, QEMU, the QEMU
+disk tools and OVMF). The hypervisor package of issue #1142 runs it as a
+DaemonSet beside `nova-compute`. Like the backup shifter, the image carries no
+OpenStack code, so the job pair follows the base-image shape: a two-platform
+build job depending only on `lint-dockerfiles` and `prepare` (PR mode loads the
+amd64 image locally for the inline Grype scan and the
+`tests/container-images/verify_libvirt.sh` verify script, which starts
+`libvirtd` and queries the QEMU driver), and a PR-skipped merge job assembling
+the multi-arch manifest with the `:latest` + `:<sha>` tags, followed by the
+supply-chain pipeline. The arm64 leg builds on a push only.
+
+Condition: `needs.changes.outputs.build-libvirt == 'true'`. On a pull request the
+build job runs when `images/libvirt/**` or
+`tests/container-images/verify_libvirt.sh` changed; on a push it always runs.
 
 ### build-ovn / merge-ovn-image / verify-ovn-image
 
@@ -977,13 +999,14 @@ the same nova (for example `nova-compute:32.0.0-p0-main-a1b2c3d`).
 
 ### Release-independent images
 
-`keystone-federation-proxy`, `backup-shifter` and `ovn` have no OpenStack
-version to tag with:
+`keystone-federation-proxy`, `backup-shifter`, `libvirt` and `ovn` have no
+OpenStack version to tag with:
 
 | Image | Tags | Branches |
 | --- | --- | --- |
 | `keystone-federation-proxy` | `latest`, `<sha>` | all |
 | `backup-shifter` | `latest`, `<sha>` | all |
+| `libvirt` | `latest`, `<sha>` | all |
 | `ovn` | `<ovn-version>-<sha>` | all |
 | `ovn` | `<ovn-version>`, `latest` | `main` only |
 
@@ -1035,7 +1058,7 @@ The workflow behaves differently depending on the trigger event:
 | Base image verification | `verify-base-images` job (always runs) | `verify-base-images` job (always runs) |
 | Service matrix | The services whose sources changed, both releases each | Every service |
 | Tempest images | On `images/tempest/**`, its verify script, or a base change | Always |
-| OVN, federation proxy, backup shifter | On their own sources | Always |
+| OVN, federation proxy, backup shifter, libvirt | On their own sources | Always |
 | Service image platforms | `linux/amd64` only (ARM64 excluded) | `linux/amd64,linux/arm64` |
 | Service image push | No (`load: true` on amd64 runner) | Yes (by digest, tags assigned by `merge-service-images`) |
 | Service image tags | Computed but not published | Published to GHCR |
@@ -1651,15 +1674,27 @@ have no entry in `source-refs.yaml` or `extra-packages.yaml`, and
   platform include matrix written out, a PR-skipped `merge-<image>-image` job,
   and a `verify-<image>-image` job when the merged manifest is checked after
   the push. The Dockerfile also joins the `lint-dockerfiles` matrix.
+- Change detection: a paths filter for the image in the `changes` job, its
+  `FILTER_<name>` env line on the resolve step and a `build-<name>` output; the
+  flag in `hack/ci-resolve-image-changes.sh` (the header, both branches and the
+  `emit` lines) and in `assert_all_flags` of
+  `tests/unit/hack/ci_resolve_image_changes_test.sh`; and
+  `if: needs.changes.outputs.build-<name> == 'true'` on the build job. GitHub
+  resolves an unknown output to the empty string, so a missing link leaves the
+  image unbuilt on every pull request without an error.
 - `tests/container-images/verify_<image>.sh` as the image contract, wired into
   the inline PR verification and into the post-merge job.
 - Static assertions: the job structure and tag scheme in
   `verify_build_images_workflow.sh`, a note in `verify_release_config.sh`
   recording why the image is absent from its `SERVICES` list, and a check in
-  `verify_deviation_comments.sh` when the image creates the `openstack` user
-  itself.
+  `verify_deviation_comments.sh` when the image deviates from the `python-base`
+  user, by creating the `openstack` user itself or by keeping root.
 - A Renovate `customManager` for the `ARG` line, `packageRules` for the update
   types the image accepts, and a regression test under `tests/unit/renovate/`.
+
+An image built from distro packages alone (`keystone-federation-proxy`,
+`backup-shifter`, `libvirt`) has no `ARG` pin and therefore skips the resolver
+script, the build script and the Renovate `customManager`.
 
 ## Adding a New Release
 
@@ -1799,6 +1834,7 @@ The following table summarizes which test scripts run where:
 | `verify_ovn.sh` | — | build-ovn (PR) / verify-ovn-image (push) | Yes |
 | `verify_nova_compute.sh` | — | build-nova-compute-image (PR) / verify-nova-compute-image (push) | Yes |
 | `verify_backup_shifter.sh` | — | build-backup-shifter (PR) | Yes |
+| `verify_libvirt.sh` | — | build-libvirt (PR) | Yes |
 
 ## SPDX Header
 
