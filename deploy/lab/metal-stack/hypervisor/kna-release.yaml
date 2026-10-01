@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# kvm-node-agent (kna) v0.2.0 from its upstream chart (sources.yaml), on every
+# node labelled nova.openstack.cloud.sap/virt-driver. It reports libvirt's
+# state into the node's Hypervisor and installs the Secret
+# tls-libvirt-<node> under the host's /etc/pki, where the libvirt DaemonSet
+# waits for it.
+#
+# The values that differ from the chart's defaults, and why:
+#   - libvirtDefaultUri is qemu:///system: the chart's default ch:///system
+#     is Cloud Hypervisor.
+#   - nodeLabelFieldPath is spec.nodeName: the chart's DaemonSet renders it
+#     into the fieldRef of NODE_LABEL and defines no value for it.
+#
+# kna reads its namespace from the environment variable NAMESPACE, which the
+# chart does not set, and falls back to monsoon3 without it. The
+# post-renderer sets it to hypervisor-system. Hypervisor
+# spec.createCertManagerCertificate stays at its default false, so the agent
+# requests no certificate of its own and installs the one
+# openstack-hypervisor-operator requests.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kvm-node-agent
+  namespace: hypervisor-system
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: kvm-node-agent
+    namespace: flux-system
+  # The chart ships the Migration CRD; Flux's upgrade default would leave it
+  # at the first release's schema.
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+  values:
+    controllerManager:
+      manager:
+        env:
+          libvirtDefaultUri: qemu:///system
+          nodeLabelFieldPath: spec.nodeName
+  postRenderers:
+    - kustomize:
+        patches:
+          # The chart renders one DaemonSet; kustomize replaces the patch's
+          # name with its own.
+          - target:
+              kind: DaemonSet
+            patch: |
+              apiVersion: apps/v1
+              kind: DaemonSet
+              metadata:
+                name: controller-manager
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: manager
+                        env:
+                          - name: NAMESPACE
+                            value: hypervisor-system
