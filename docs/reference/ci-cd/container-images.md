@@ -1502,8 +1502,10 @@ Its build, verification and tag scheme are described in
 openstack-hypervisor-operator (hvo) from `cobaltcore-dev`, compiled from a
 pinned commit of its upstream `main` branch with the patches under
 `images/openstack-hypervisor-operator/patches/` applied. The hypervisor package
-of issue #1142 deploys it with the upstream Helm chart of the same commit.
-Nothing under `deploy/` references the image yet.
+of issue #1142 deploys it with the upstream Helm chart of the same commit:
+`deploy/lab/metal-stack/hypervisor/hvo-release.yaml` runs it on the
+metal-stack lab (see
+[Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)).
 
 | Property | Value |
 | --- | --- |
