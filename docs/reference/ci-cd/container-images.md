@@ -693,6 +693,23 @@ The patch moves the fakes inline into the test method. It changes nothing at
 runtime and has no 2026.1 twin. Upstream status: merged on master, backported
 to stable/2025.2 as `7faebca9b5`.
 
+`patches/cinder/2025.2/0004-tests-collect-garbage-before-the-backup-tpool-size-tests.patch`
+and its twin
+`patches/cinder/2026.1/0003-tests-collect-garbage-before-the-backup-tpool-size-tests.patch`
+are test-only. `BackupTestCase.test_default_tpool_size` and `test_tpool_size`
+assert that eventlet's native thread pool is empty before and after they build
+a `BackupManager`. The Ceph backup driver tests leave os-brick
+`RBDVolumeIOWrapper` objects to the garbage collector, and a collected wrapper
+closes itself: `close()` flushes, the flush reaches the image through a
+`tpool.Proxy`, and that starts the pool's 20 threads. A collection between the
+two assertions fails the test with "Second list contains 20 additional
+elements", as it did once in `test-service-images (cinder, 2025.2)` on
+2026-10-01. Both tests now start with `gc.collect()` and `tpool.killall()`, so
+every such finalizer has run before the first assertion; the assertions are
+unchanged. The patch changes nothing at runtime. Upstream status: not yet
+proposed; master replaced both tests when the backup service moved to native
+threads (`c07c49c586`).
+
 **Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
 probe of the cinder-scheduler, cinder-volume and cinder-backup processes
 (decision D2 of issue #979). None of the three serves an HTTP port, so
