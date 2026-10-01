@@ -30,6 +30,16 @@
 #      CRD or namespace is left, and when the base render, the CRD list of
 #      step 8 or the final namespace read fails, and exits 0 on a second run
 #      that finds nothing.
+#   4. Step 0 removes the lab hypervisors before the ControlPlane: the
+#      NovaComputes, metadata agents and OVNChassis, the kvm.cloud.sap
+#      objects, the fixtures after disabling their domain and waiting for
+#      that, the hypervisor overlay, the maint-<node> objects in kube-system
+#      in one delete and the node labels. It makes no call for an overlay
+#      without hypervisor/, skips a kind whose CRD is absent, exits 1 with a
+#      hint to delete the servers when the NovaCompute delete runs out, exits
+#      1 when the domain cannot be read or stays enabled, or the nodes cannot
+#      be listed, still deletes the fixtures once their domain is gone, and
+#      deletes none of its guarded kinds on a second run.
 #
 # main() runs against a recording kubectl stub on a private PATH prefix and the
 # real yq; the external-cluster checks are SKIP without yq.
@@ -56,7 +66,13 @@ keystones.keystone.openstack.c5c3.io
 images.openstack.k-orc.cloud
 fluxinstances.fluxcd.controlplane.io
 gateways.gateway.networking.k8s.io
-gatewayclasses.gateway.networking.k8s.io"
+gatewayclasses.gateway.networking.k8s.io
+hypervisors.kvm.cloud.sap
+evictions.kvm.cloud.sap
+migrations.kvm.cloud.sap"
+# The arguments of step 0's label removal.
+HYPERVISOR_LABELS_REMOVED="openstack.c5c3.io/chassis- openstack.c5c3.io/nova-compute-pool- \
+nova.openstack.cloud.sap/virt-driver- cobaltcore.cloud.sap/node-hypervisor-lifecycle-"
 PLATFORM_CRDS="verticalpodautoscalers.autoscaling.k8s.io
 certificates.cert.gardener.cloud
 ippools.crd.projectcalico.org"
@@ -93,6 +109,18 @@ ippools.crd.projectcalico.org"
 #   KUBECTL_NS_RC          non-empty: the final namespace read fails
 #   KUBECTL_RENDER_RC      non-empty: `kustomize` fails
 #   BASE_RENDER            file answering `kustomize` (default: base-render.yaml)
+#   KUBECTL_ABSENT_CRDS    space-separated step 0 CRDs that `get crd <name>`
+#                          reports absent (the six step 0 kinds are present
+#                          otherwise, and absent on a second run)
+#   KUBECTL_NOVACOMPUTE_DELETE_RC
+#                          exit code of the NovaCompute delete alone (default 0)
+#   KUBECTL_DOMAIN_GET_RC  exit code of the read of the fixtures domain, which
+#                          then times out (default 0)
+#   KUBECTL_DOMAIN_NOISE   non-empty: that read first writes an aggregated-API
+#                          error to stderr, as kubectl does while the
+#                          metrics-server APIService is down
+# The step 0 reads answer two nodes, lab-a and lab-b, and a fixtures domain
+# hvo-cc3test that a second run no longer finds.
 # A `delete -f -` records the kinds it received on stdin, and fails the way
 # kubectl does when stdin holds no object.
 make_stubs() {
@@ -114,6 +142,9 @@ images.openstack.k-orc.cloud                 Namespaced   Image
 fluxinstances.fluxcd.controlplane.io         Namespaced   FluxInstance
 gateways.gateway.networking.k8s.io           Namespaced   Gateway
 gatewayclasses.gateway.networking.k8s.io     Cluster      GatewayClass
+hypervisors.kvm.cloud.sap                    Cluster      Hypervisor
+evictions.kvm.cloud.sap                      Cluster      Eviction
+migrations.kvm.cloud.sap                     Namespaced   Migration
 verticalpodautoscalers.autoscaling.k8s.io    Namespaced   VerticalPodAutoscaler
 certificates.cert.gardener.cloud             Namespaced   Certificate
 ippools.crd.projectcalico.org                Cluster      IPPool
@@ -232,6 +263,54 @@ case "$args" in
       exit 1
     fi
     ;;
+  "get crd novacomputes.nova.openstack.c5c3.io"* | "get crd neutronmetadataagents.neutron.openstack.c5c3.io"* | \
+    "get crd ovnchassis.ovn.openstack.c5c3.io"* | "get crd hypervisors.kvm.cloud.sap"* | \
+    "get crd evictions.kvm.cloud.sap"* | "get crd migrations.kvm.cloud.sap"*)
+    crd="${args#get crd }"
+    crd="${crd%% *}"
+    if [ -n "${KUBECTL_SECOND_RUN:-}" ] || [[ " ${KUBECTL_ABSENT_CRDS:-} " == *" ${crd} "* ]]; then
+      echo "Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io \"${crd}\" not found" >&2
+      exit 1
+    fi
+    ;;
+  "get domains.openstack.k-orc.cloud hvo-cc3test -n openstack"*)
+    if [ -n "${KUBECTL_DOMAIN_NOISE:-}" ]; then
+      echo 'E1001 10:00:00.000000    4242 memcache.go:287] couldn'"'"'t get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request' >&2
+    fi
+    if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
+      echo 'error: the server doesn'"'"'t have a resource type "domains"' >&2
+      exit 1
+    fi
+    if [ "${KUBECTL_DOMAIN_GET_RC:-0}" != "0" ]; then
+      echo 'Error from server (Timeout): the server was unable to return a response in the time allotted, but may still be processing the request (get domains.openstack.k-orc.cloud hvo-cc3test)' >&2
+      exit "${KUBECTL_DOMAIN_GET_RC}"
+    fi
+    if [ -n "${KUBECTL_DOMAIN_ABSENT:-}" ]; then
+      [[ "$args" != *--ignore-not-found* ]] || exit 0
+      echo 'Error from server (NotFound): domains.openstack.k-orc.cloud "hvo-cc3test" not found' >&2
+      exit 1
+    fi
+    echo 'domain.openstack.k-orc.cloud/hvo-cc3test'
+    ;;
+  "patch domains.openstack.k-orc.cloud hvo-cc3test "*)
+    if [ -n "${KUBECTL_DOMAIN_ABSENT:-}" ]; then
+      echo 'Error from server (NotFound): domains.openstack.k-orc.cloud "hvo-cc3test" not found' >&2
+      exit 1
+    fi
+    ;;
+  "wait domains.openstack.k-orc.cloud/hvo-cc3test -n openstack"*)
+    if [ "${KUBECTL_DOMAIN_WAIT_RC:-0}" != "0" ]; then
+      echo 'error: timed out waiting for the condition on domains/hvo-cc3test' >&2
+      exit "${KUBECTL_DOMAIN_WAIT_RC}"
+    fi
+    ;;
+  "get nodes -o name")
+    if [ "${KUBECTL_NODES_RC:-0}" != "0" ]; then
+      echo 'Error from server (Forbidden): nodes is forbidden: User "lab" cannot list resource "nodes"' >&2
+      exit "${KUBECTL_NODES_RC}"
+    fi
+    printf '%s\n' node/lab-a node/lab-b
+    ;;
   "get crd -o custom-columns=NAME:.metadata.name,SCOPE:.spec.scope,KIND:.spec.names.kind --no-headers")
     if [ -n "${KUBECTL_CRD_SCOPE_RC:-}" ]; then
       echo 'Error from server (Forbidden): customresourcedefinitions.apiextensions.k8s.io is forbidden' >&2
@@ -318,6 +397,12 @@ case "$args" in
           exit "${KUBECTL_OVNCENTRAL_DELETE_RC}"
         fi
         ;;
+      "delete novacomputes.nova.openstack.c5c3.io "*)
+        if [ "${KUBECTL_NOVACOMPUTE_DELETE_RC:-0}" != "0" ]; then
+          echo "error: timed out waiting for the condition on novacomputes/lab" >&2
+          exit "${KUBECTL_NOVACOMPUTE_DELETE_RC}"
+        fi
+        ;;
     esac
     if [ "${KUBECTL_DELETE_RC:-0}" != "0" ]; then
       echo "error: timed out waiting for the condition on namespaces/openstack" >&2
@@ -384,12 +469,13 @@ resolve() {
 
 # mutations <call log>
 # The recorded kubectl calls that change the cluster, plus the render, with the
-# delete flags every call carries stripped, one per line.
+# delete flags every call carries and the patch payloads stripped, one per line.
 mutations() {
-  grep -E '^kubectl (delete|patch|kustomize) ' "$1" |
+  grep -E '^kubectl (delete|patch|kustomize|label|annotate) ' "$1" |
     sed -e 's/ --ignore-not-found --wait --timeout=[0-9]*s//' \
       -e "s# --type merge -p {\"spec\":{\"suspend\":false}}##" \
       -e "s# --type merge -p {\"spec\":{\"deletionPolicy\":\"DeletePVCs\"}}##" \
+      -e "s# --type merge -p {\"spec\":{\"resource\":{\"enabled\":false}}}##" \
       -e "s#${PROJECT_ROOT}/##g"
 }
 
@@ -449,8 +535,8 @@ test_external_teardown_order() {
   echo "Test: the external teardown removes the stack in finalizer order"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (18 checks skipped)"
-    SKIP=$((SKIP + 18))
+    echo "  SKIP: yq not installed (20 checks skipped)"
+    SKIP=$((SKIP + 20))
     return
   fi
 
@@ -474,6 +560,18 @@ test_external_teardown_order() {
 
   local expected
   expected="$(printf '%s\n' \
+    'kubectl delete novacomputes.nova.openstack.c5c3.io --all -n openstack' \
+    'kubectl delete neutronmetadataagents.neutron.openstack.c5c3.io --all -n openstack' \
+    'kubectl delete ovnchassis.ovn.openstack.c5c3.io --all -n openstack' \
+    'kubectl delete hypervisors.kvm.cloud.sap --all' \
+    'kubectl delete evictions.kvm.cloud.sap --all' \
+    'kubectl delete migrations.kvm.cloud.sap --all -A' \
+    'kubectl patch domains.openstack.k-orc.cloud hvo-cc3test -n openstack' \
+    'kubectl delete -k deploy/lab/metal-stack/hypervisor-fixtures' \
+    'kubectl delete -k deploy/lab/metal-stack/hypervisor' \
+    'kubectl delete deployment,poddisruptionbudget maint-lab-a maint-lab-b -n kube-system' \
+    "kubectl label nodes --all ${HYPERVISOR_LABELS_REMOVED}" \
+    'kubectl annotate nodes --all nova.openstack.cloud.sap/custom-traits-' \
     'kubectl delete controlplane --all -n openstack' \
     'kubectl delete ovncentrals.ovn.openstack.c5c3.io --all -n openstack' \
     'kubectl patch openbaoclusters.openbao.org openbao-instance -n openstack' \
@@ -494,8 +592,18 @@ test_external_teardown_order() {
     "kubectl delete namespace $(stack_namespace_names)")"
   local actual
   actual="$(mutations "$CALL_LOG" | grep -v 'customresourcedefinition')"
-  assert_eq "the deletes run in finalizer order (patches only for installed, suspended objects)" \
+  assert_eq "the deletes run in finalizer order, the lab hypervisors first (patches only for installed, suspended objects)" \
     "$expected" "$actual"
+
+  # The fixtures' domain: disabled, then waited for, then deleted with them.
+  local patch_line domain_wait_line fixtures_line
+  patch_line="$(grep -n '^kubectl patch domains.openstack.k-orc.cloud hvo-cc3test ' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  domain_wait_line="$(grep -n '^kubectl wait domains.openstack.k-orc.cloud/hvo-cc3test ' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  fixtures_line="$(grep -n 'delete -k .*/hypervisor-fixtures ' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  assert_eq "the domain is waited for after it is disabled" "true" \
+    "$([[ -n "$patch_line" && -n "$domain_wait_line" && "$domain_wait_line" -gt "$patch_line" ]] && echo true || echo false)"
+  assert_eq "and the fixtures are deleted after the wait" "true" \
+    "$([[ -n "$domain_wait_line" && -n "$fixtures_line" && "$fixtures_line" -gt "$domain_wait_line" ]] && echo true || echo false)"
 
   # The wait for the ControlPlane's descendants: after the overlays, before the
   # base overlay removes the operators that finalize them. One read of the
@@ -515,7 +623,8 @@ test_external_teardown_order() {
   read_kinds="$(grep -- '^kubectl get [^ ]* -n openstack -o json$' "$CALL_LOG" | head -n1 |
     cut -d' ' -f3 | tr ',' '\n' | sort)"
   assert_eq "the one read names every namespaced stack kind and nothing else" \
-    "$(grep -vx 'gatewayclasses.gateway.networking.k8s.io' <<<"$STACK_CRDS" | sort)" "$read_kinds"
+    "$(grep -vx -e 'gatewayclasses.gateway.networking.k8s.io' -e 'hypervisors.kvm.cloud.sap' \
+      -e 'evictions.kvm.cloud.sap' <<<"$STACK_CRDS" | sort)" "$read_kinds"
 
   local deletes without_flag
   deletes="$(grep -E '^kubectl delete ' "$CALL_LOG")"
@@ -705,7 +814,9 @@ test_external_teardown_failures() {
   rc=$?
   assert_nonzero_exit "an OpenBao instance that cannot be switched to DeletePVCs exits non-zero" "$rc"
   assert_contains "with kubectl's error" "$output" 'openbaoclusters.openbao.org "openbao-instance" is forbidden'
-  assert_not_contains "before the infrastructure overlay is deleted" "$(cat "$CALL_LOG")" "kubectl delete -k"
+  # Step 0 deletes the hypervisor overlays before the patch; no other overlay goes.
+  assert_eq "before any later overlay is deleted" "" \
+    "$(grep 'kubectl delete -k' "$CALL_LOG" | grep -v '/deploy/lab/metal-stack/hypervisor' || true)"
 
   : >"$CALL_LOG"
   output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OVNCENTRAL_DELETE_RC=1)"
@@ -715,12 +826,161 @@ test_external_teardown_failures() {
     "deleting the OVNCentrals in openstack failed or did not finish within 600s"
   assert_contains "the error names the OVNCentral still present" "$output" \
     "error: timed out waiting for the condition on ovncentrals/controlplane-ovn"
-  assert_not_contains "and no later step deletes anything" "$(cat "$CALL_LOG")" "kubectl delete -k"
+  assert_eq "and no later step deletes an overlay" "" \
+    "$(grep 'kubectl delete -k' "$CALL_LOG" | grep -v '/deploy/lab/metal-stack/hypervisor' || true)"
   unset CALL_LOG
 }
 
 # ---------------------------------------------------------------------------
-# Test 6: yq is required
+# Test 6: step 0, the lab hypervisors
+# ---------------------------------------------------------------------------
+test_hypervisor_step_zero() {
+  echo "Test: step 0 removes the lab hypervisors only where the overlay and the CRDs have them"
+
+  if ! have_yq; then
+    echo "  SKIP: yq not installed (40 checks skipped)"
+    SKIP=$((SKIP + 40))
+    return
+  fi
+
+  local tmp output rc calls
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  export CALL_LOG="$tmp/calls.log"
+
+  # An overlay without hypervisor/: step 0 reads and deletes nothing.
+  mkdir -p "$tmp/overlay/base" "$tmp/overlay/infrastructure"
+  : >"$tmp/overlay/base/kustomization.yaml"
+  : >"$tmp/overlay/infrastructure/kustomization.yaml"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/overlay")"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an overlay without hypervisor/ tears down as before" "0" "$rc"
+  assert_eq "and step 0 makes no call" "" \
+    "$(grep -E -e '^kubectl (get crd|delete) (novacomputes|neutronmetadataagents|ovnchassis|hypervisors|evictions|migrations)\.' \
+      -e 'domains\.openstack' -e 'delete -k [^ ]*/hypervisor' -e 'maint-' -e '^kubectl (get|label|annotate) nodes' \
+      <<<"$calls" || true)"
+  assert_eq "the ControlPlane delete still comes first" "kubectl delete controlplane --all -n openstack" \
+    "$(mutations "$CALL_LOG" | head -n 1)"
+
+  # A step 0 kind whose CRD is absent is skipped without an error.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true \
+    KUBECTL_ABSENT_CRDS="hypervisors.kvm.cloud.sap novacomputes.nova.openstack.c5c3.io")"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "absent step 0 CRDs do not fail the teardown" "0" "$rc"
+  assert_not_contains "no Hypervisor is deleted without its CRD" "$calls" "delete hypervisors.kvm.cloud.sap"
+  assert_not_contains "no NovaCompute is deleted without its CRD" "$calls" "delete novacomputes"
+  assert_contains "the Evictions, whose CRD exists, still are" "$calls" "delete evictions.kvm.cloud.sap --all"
+
+  # A pool that still holds servers: the wait runs out, the hint follows the
+  # error, and nothing after it is deleted.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_NOVACOMPUTE_DELETE_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a NovaCompute delete that runs out exits 1" "1" "$rc"
+  assert_contains "the error names the NovaCompute still present" "$output" \
+    "error: timed out waiting for the condition on novacomputes/lab"
+  assert_eq "the last line is the servers hint" \
+    "Delete the servers on the lab hypervisors first (openstack server list --all-projects)." \
+    "$(tail -n 1 <<<"$output" | sed 's/^\[[^]]*\] //')"
+  assert_not_contains "no ControlPlane is deleted" "$calls" "delete controlplane"
+  assert_not_contains "and no later step 0 delete runs" "$calls" "delete -k"
+
+  # The read of the domain fails (a timeout, an API server restarting): exit
+  # 1 before the fixtures are deleted. An enabled domain whose delete has
+  # begun stays: Keystone refuses the delete, and K-ORC applies no spec change
+  # to an object that is being deleted.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_DOMAIN_GET_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a domain read that fails exits 1" "1" "$rc"
+  assert_contains "the error names the domain" "$output" \
+    "ERROR: cannot read the fixtures' domain hvo-cc3test:"
+  assert_contains "and quotes kubectl's error" "$output" \
+    "Error from server (Timeout): the server was unable to return a response"
+  assert_not_contains "no fixture or overlay is deleted" "$calls" "delete -k"
+  assert_not_contains "no ControlPlane is deleted" "$calls" "delete controlplane"
+
+  # K-ORC does not disable the domain in time: exit 1 before the fixtures,
+  # the overlay or the ControlPlane are deleted.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_DOMAIN_WAIT_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a domain that stays enabled exits 1" "1" "$rc"
+  assert_contains "the error names the domain" "$output" \
+    "ERROR: K-ORC did not disable the domain hvo-cc3test within 600s:"
+  assert_contains "and quotes kubectl's error" "$output" \
+    "error: timed out waiting for the condition on domains/hvo-cc3test"
+  assert_not_contains "no fixture or overlay is deleted" "$calls" "delete -k"
+  assert_not_contains "no ControlPlane is deleted" "$calls" "delete controlplane"
+
+  # A rerun after a partial delete: the domain is gone, the image and the
+  # flavor may not be. The fixtures are deleted without the disable.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_DOMAIN_ABSENT=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a domain already gone does not fail the teardown" "0" "$rc"
+  assert_not_contains "nothing patches the domain" "$calls" "patch domains"
+  assert_not_contains "nothing waits for it" "$calls" "wait domains"
+  assert_contains "the fixtures are still deleted" "$calls" \
+    "kubectl delete -k $PROJECT_ROOT/deploy/lab/metal-stack/hypervisor-fixtures "
+
+  # The same rerun while kubectl writes to stderr and exits 0: only the
+  # domain's name in the read counts, not the noise beside it.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_DOMAIN_ABSENT=1 KUBECTL_DOMAIN_NOISE=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "stderr beside a domain already gone does not fail the teardown" "0" "$rc"
+  assert_not_contains "nothing patches the absent domain" "$calls" "patch domains"
+
+  # A domain that exists is still disabled while kubectl writes to stderr.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_DOMAIN_NOISE=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "stderr beside the domain does not fail the teardown" "0" "$rc"
+  assert_contains "the domain is still disabled" "$calls" \
+    "kubectl patch domains.openstack.k-orc.cloud hvo-cc3test -n openstack"
+
+  # The nodes cannot be listed: exit 1 before the maint- objects, the labels
+  # and the ControlPlane.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_NODES_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a node list that fails exits 1" "1" "$rc"
+  assert_contains "the error says the nodes cannot be listed" "$output" \
+    "ERROR: cannot list the nodes (kubectl's error is above)."
+  assert_not_contains "no maint- object is deleted" "$calls" "maint-"
+  assert_not_contains "no node label is removed" "$calls" "label nodes"
+  assert_not_contains "no ControlPlane is deleted" "$calls" "delete controlplane"
+
+  # A second run: the CRDs and the domain are gone.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_SECOND_RUN=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a second run exits 0" "0" "$rc"
+  assert_eq "it deletes none of the six step 0 kinds" "" \
+    "$(grep -E '^kubectl delete (novacomputes|neutronmetadataagents|ovnchassis|hypervisors|evictions|migrations)' <<<"$calls" || true)"
+  assert_not_contains "it patches no domain" "$calls" "patch domains"
+  assert_contains "its fixtures delete finds nothing and passes" "$calls" \
+    "kubectl delete -k $PROJECT_ROOT/deploy/lab/metal-stack/hypervisor-fixtures "
+  assert_contains "it reads the CRDs it would delete from" "$calls" "get crd hypervisors.kvm.cloud.sap"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
+# Test 7: yq is required
 # ---------------------------------------------------------------------------
 test_requires_yq() {
   echo "Test: the external teardown requires yq"
@@ -753,6 +1013,7 @@ test_default_deletes_the_kind_cluster
 test_external_teardown_order
 test_script_names_no_platform_namespace
 test_external_teardown_failures
+test_hypervisor_step_zero
 test_requires_yq
 
 echo ""
