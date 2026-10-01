@@ -489,7 +489,7 @@ test_hvo_release() {
 test_kna_release() {
   echo "Test: the kvm-node-agent release"
 
-  render "$HYPERVISOR_DIR" 5 || return
+  render "$HYPERVISOR_DIR" 8 || return
 
   local env='.spec.values.controllerManager.manager.env'
   assert_eq "the release lives in hypervisor-system" "hypervisor-system" \
@@ -497,10 +497,20 @@ test_kna_release() {
   assert_eq "the release takes its chart from the kna OCIRepository" \
     "OCIRepository/flux-system/kvm-node-agent" \
     "$(val HelmRelease kvm-node-agent '.spec.chartRef.kind + "/" + .spec.chartRef.namespace + "/" + .spec.chartRef.name')"
+  assert_eq "install and upgrade replace the Migration CRD the chart ships" "CreateReplace CreateReplace" \
+    "$(val HelmRelease kvm-node-agent '.spec.install.crds + " " + .spec.upgrade.crds')"
   assert_eq "the agent talks to QEMU" "qemu:///system" \
     "$(val HelmRelease kvm-node-agent "$env.libvirtDefaultUri")"
   assert_eq "NODE_LABEL reads the node name" "spec.nodeName" \
     "$(val HelmRelease kvm-node-agent "$env.nodeLabelFieldPath")"
+  assert_eq "the agent runs as uid 0, which the host's dbus-daemon and systemd accept" "0 0" \
+    "$(val HelmRelease kvm-node-agent '.spec.values.controllerManager.manager.containerSecurityContext |
+      (.runAsUser | tostring) + " " + (.runAsGroup | tostring)')"
+  assert_eq "it keeps DAC_OVERRIDE alone, for the PKI directories its init container hands to 42438" \
+    "drop=ALL add=DAC_OVERRIDE escalation=false" \
+    "$(val HelmRelease kvm-node-agent '.spec.values.controllerManager.manager.containerSecurityContext |
+      "drop=" + (.capabilities.drop | join(",")) + " add=" + (.capabilities.add | join(",")) +
+      " escalation=" + (.allowPrivilegeEscalation | tostring)')"
   assert_eq "the post-renderer sets NAMESPACE on the DaemonSet's manager" "DaemonSet hypervisor-system" \
     "$(val HelmRelease kvm-node-agent '.spec.postRenderers[0].kustomize.patches[0] |
       .target.kind + " " + (.patch | from_yaml | .spec.template.spec.containers[] | select(.name == "manager") |
