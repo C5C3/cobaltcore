@@ -49,8 +49,8 @@
 #        workload has its VPA and no HPA-scaled one has, the Raft VPAs carry
 #        the request floor, the recommender serves the Northbound database,
 #        and removing the Neutron opt-in removes its two VPAs.
-#   6-8. Token load scales Keystone to three ready pods above a 150% peak, and
-#        the fleet fits its cap (check-connection-cap.sh).
+#   6-8. Token load scales Keystone from one pod to three ready pods above a
+#        150% peak, and the fleet fits its cap (check-connection-cap.sh).
 #   9-10. A request burst reaches every pinned API, each fits its cap, and the
 #        server-wide total stays below @@max_connections.
 #   11.  The load ends clean and Keystone is back at one pod within 240 s,
@@ -60,8 +60,8 @@
 #   13.  Removing the behavior block restores the Kubernetes default.
 #
 # Every step pins its own timeout. The worst-case ceiling is their sum plus
-# the catch and the cleanup: 3 + 5 + 45 + 5 + 15 + 3 + 8 + 5 + 8 + 10 + 20 + 8
-# + 5 + 5 + 15 = 160 minutes. The 900 s load outlasts steps 7 and 8 at their
+# the catch and the cleanup: 3 + 5 + 45 + 5 + 15 + 7 + 8 + 5 + 8 + 10 + 20 + 8
+# + 5 + 5 + 15 = 164 minutes. The 900 s load outlasts steps 7 and 8 at their
 # timeouts (13 minutes), so Keystone is still loaded when its cap is checked.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -434,13 +434,37 @@ spec:
           done
           echo "OK: the other five VPAs remain"
   # ── Step 6: start the token load ────────────────────────────────────────
+  # Step 4 saw Keystone at one pod, but the plane's own traffic can scale it
+  # out again afterwards: the HPA acts on CPU samples up to half a minute old,
+  # and step 5 reconciles every child once more. The load starts only from one
+  # pod, so the scale-out step 7 measures is the load's.
   - name: start-load
     try:
     - script:
-        timeout: 3m
+        timeout: 7m
         shell: bash
         content: |
           set -euo pipefail
+          NS=openstack
+          HPA="$(./keystone-hpa.sh hpa)"
+          DEPLOY="$(./keystone-hpa.sh deploy)"
+          deadline=$((SECONDS + 240))
+          while :; do
+            ./keystone-hpa.sh drop-job-pods
+            desired="$(kubectl get hpa "${HPA}" -n "${NS}" -o jsonpath='{.status.desiredReplicas}')"
+            read -r replicas ready < <(kubectl get deployment "${DEPLOY}" -n "${NS}" -o json \
+              | jq -r '"\(.spec.replicas // 0) \(.status.readyReplicas // 0)"')
+            if [ "${desired:-0}" -eq 1 ] && [ "${replicas}" -eq 1 ] && [ "${ready}" -eq 1 ]; then
+              break
+            fi
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "ERROR: Keystone is not at one pod before the load (desired ${desired:-0}, replicas ${replicas}, ready ${ready})"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: Keystone is at one ready pod before the load"
+
           kubectl apply -f 02-keystone-loadgen-job.yaml
           deadline=$((SECONDS + 150))
           while :; do
@@ -459,6 +483,9 @@ spec:
           done
           echo "OK: the load Job's pod is running"
   # ── Step 7: Keystone scales out to its maximum ──────────────────────────
+  # The HPA can reach three pods on a sample this loop never read, so the loop
+  # ends only once it has also seen the utilization above the target. The load
+  # keeps it there for as long as the step polls.
   - name: scale-out
     try:
     - script:
@@ -478,18 +505,18 @@ spec:
             ready="${ready:-0}"
             [ "${util}" -gt "${peak}" ] && peak="${util}"
             echo "t=${SECONDS}s desiredReplicas=${desired} readyReplicas=${ready} averageUtilization=${util}%"
-            if [ "${desired}" -eq 3 ] && [ "${ready}" -eq 3 ]; then
+            if [ "${desired}" -eq 3 ] && [ "${ready}" -eq 3 ] && [ "${peak}" -gt 150 ]; then
               break
             fi
             if [ "${SECONDS}" -ge "${deadline}" ]; then
-              echo "ERROR: Keystone did not reach three ready pods (desired ${desired}, ready ${ready})"; exit 1
+              if [ "${desired}" -ne 3 ] || [ "${ready}" -ne 3 ]; then
+                echo "ERROR: Keystone did not reach three ready pods (desired ${desired}, ready ${ready})"; exit 1
+              fi
+              echo "ERROR: the peak averageUtilization ${peak}% is not above the 150% target"; exit 1
             fi
             sleep 5
           done
           echo "peak averageUtilization: ${peak}%"
-          if [ "${peak}" -le 150 ]; then
-            echo "ERROR: the peak averageUtilization ${peak}% is not above the 150% target"; exit 1
-          fi
           echo "OK: Keystone scaled out to three ready pods above a ${peak}% peak"
   # ── Step 8: Keystone at its maximum fits its cap ────────────────────────
   # A pod the HPA just added turns ready before kube-proxy has sent it a
