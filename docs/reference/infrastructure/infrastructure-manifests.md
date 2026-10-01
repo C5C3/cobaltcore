@@ -227,9 +227,16 @@ particular chart.
 **K-ORC is sourced from Git, not Helm.** K-ORC publishes no Helm chart (its
 `github.io` page serves no Helm index), so `sources/k-orc.yaml` is a `GitRepository`
 — still `source.toolkit.fluxcd.io/v1`, in `flux-system`, polling at `interval: 1h`
-— pinned by `ref.commit` to an upstream `main` commit and scoped to `/config` via
-`spec.ignore`. No released K-ORC ships the `RoleAssignment` and `Region` kinds the
-c5c3-operator owns, so the pin returns to a release tag once one does.
+— pinned by `ref.commit` to an upstream `main` commit. No released K-ORC ships the
+`RoleAssignment` and `Region` kinds the c5c3-operator owns, so the pin returns to a
+release tag once one does. `spec.sparseCheckout` limits the checkout to `config`, and
+`spec.ignore` scopes the artifact to the same directory. The sparse checkout is what
+keeps the source working while upstream moves: for a `ref.commit` the source-controller
+clones the tip of `main` and hard-resets to the pin, and that reset fails when the tip
+carries a symlink to a non-empty directory that the pin lacks. A sparse checkout starts
+from an empty worktree, so paths outside `config` are never removed.
+`tests/unit/deploy/korc_flux_source_test.sh` checks that the list covers the path the
+Kustomization builds.
 It is applied by a Flux `Kustomization`, not a HelmRelease; see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller).
 
