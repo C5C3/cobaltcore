@@ -86,6 +86,39 @@ removes the stack that `EXTERNAL_CLUSTER=true make deploy-infra` put on it. It
 needs `kubectl` and `yq`, and deletes in an order that lets every finalizer run
 while its controller still exists:
 
+0. The lab hypervisors, when the overlay has a `hypervisor/` kustomization
+   (see [Lab hypervisors](infrastructure-manifests.md#lab-hypervisors)), while
+   the ControlPlane and every operator still run. Each kind is deleted only
+   where its CRD exists:
+   1. every `NovaCompute`, `NeutronMetadataAgent` and `OVNChassis` in
+      `openstack`. A `NovaCompute` keeps its finalizer
+      `nova.openstack.c5c3.io/compute-drain` until Nova counts no server on its
+      nodes, so a pool that still holds servers outlives the wait: the teardown
+      exits 1 with the delete's error and the line
+      `Delete the servers on the lab hypervisors first (openstack server list --all-projects).`;
+   2. the `Hypervisor`, `Eviction` and `Migration` objects of `kvm.cloud.sap`,
+      which Nodes own and garbage collection therefore never reaps;
+   3. the fixtures, when the overlay has `hypervisor-fixtures/`. While the
+      K-ORC domain `hvo-cc3test` exists, it is disabled first and the wait
+      for K-ORC to apply that is bounded by `TEARDOWN_TIMEOUT`, because
+      Keystone refuses to delete an enabled domain. The delete runs either
+      way, so a rerun after a partial delete still removes the image and the
+      flavor. A read of the domain that fails exits 1 before the delete:
+      K-ORC applies no spec change to a domain that is being deleted, so one
+      deleted while enabled could never be disabled;
+   4. the hypervisor overlay, with the two operators and the libvirt
+      DaemonSet;
+   5. the `Deployment` and `PodDisruptionBudget` `maint-<node>` the hypervisor
+      operator leaves in `kube-system`, for every node. Its lifecycle
+      controller recreates them while it runs, so they go after sub-step 4;
+   6. the labels `openstack.c5c3.io/chassis`,
+      `openstack.c5c3.io/nova-compute-pool`,
+      `nova.openstack.cloud.sap/virt-driver` and
+      `cobaltcore.cloud.sap/node-hypervisor-lifecycle`, and the annotation
+      `nova.openstack.cloud.sap/custom-traits`, from every node.
+
+   What the hypervisors left on the nodes, under `/var/lib/nova`,
+   `/var/lib/libvirt` and `/etc/pki`, stays.
 1. Every `ControlPlane` in `openstack`, when the `controlplanes.c5c3.io` CRD
    exists, so the c5c3-operator reaps its children. Then every `OVNCentral` in
    `openstack`, when the `ovncentrals.ovn.openstack.c5c3.io` CRD exists: the
@@ -128,10 +161,12 @@ while its controller still exists:
    and `headlamp-system`.
 8. The CRDs of the stack's API groups (the cert-manager, External Secrets,
    MariaDB, Memcached, OpenBao, Garage, RabbitMQ, Gateway API, Envoy Gateway,
-   Prometheus Operator, CobaltCore, K-ORC, Flux and flux-operator groups).
+   Prometheus Operator, CobaltCore, K-ORC, Flux and flux-operator groups, and
+   `kvm.cloud.sap`, whose CRDs the lab hypervisors' charts install and Helm
+   leaves behind).
 
-It never names `kube-system`, `firewall`, `metallb-system` or `default`, nor a
-CRD of the platform (`autoscaling.k8s.io`, `cert.gardener.cloud`,
+In `kube-system` it deletes only the `maint-<node>` objects of step 0. It never
+names `firewall`, `metallb-system` or `default`, nor a CRD of the platform (`autoscaling.k8s.io`, `cert.gardener.cloud`,
 `dns.gardener.cloud`, `crd.projectcalico.org`, `metallb.io`). Every delete
 ignores absence, so a second run finds nothing and exits 0. A delete that does
 not finish within `TEARDOWN_TIMEOUT` seconds exits 1 with the objects kubectl
@@ -367,6 +402,20 @@ deploy/lab/metal-stack/
 │   ├── kustomization.yaml          Lists the two manifests below
 │   ├── ovncentral.yaml             OVNCentral controlplane-ovn, as on the quick-start page
 │   └── controlplane-lab.yaml       ControlPlane controlplane, plus global_physnet_mtu and hypervisorOperator
+├── hypervisor/                     The two workers as KVM hypervisors (#1142), applied by hand
+│   ├── kustomization.yaml          Lists the nine manifests below; the apply order and node labels in its header
+│   ├── namespace.yaml              Namespace hypervisor-system
+│   ├── libvirt-ca.yaml             The libvirt migration CA and Issuer nova-hypervisor-agents-ca-issuer
+│   ├── libvirt-configmap.yaml      host-prepare.sh, libvirtd.sh, libvirtd.conf, qemu.conf
+│   ├── libvirt-daemonset.yaml      DaemonSet libvirt on the pool's nodes
+│   ├── compute.yaml                OVNChassis, NeutronMetadataAgent, NovaCompute
+│   ├── gateway-alias.yaml          Service openstack-gw-8443 in front of the Envoy pods
+│   ├── sources.yaml                OCIRepository of each chart, digest-pinned
+│   ├── hvo-release.yaml            HelmRelease openstack-hypervisor-operator
+│   └── kna-release.yaml            HelmRelease kvm-node-agent
+├── hypervisor-fixtures/
+│   └── kustomization.yaml          References ../../../kind/hypervisor-operator-fixtures/
+│                                    Deletes VolumeType, Network and Subnet
 ├── infrastructure/
 │   └── kustomization.yaml          References ../../../kind/infrastructure/
 │                                    Patches MariaDB CR, GarageCluster → storage class premium
@@ -378,7 +427,8 @@ Step 5 in place of the kind overlays. Both take the kind overlay as their base,
 so the lab inherits every patch above and changes only the storage class and
 the Namespaces, which carry Gardener's apiserver-proxy opt-out label. The
 script never applies `controlplane/`; the completion hint of
-`WITH_CONTROLPLANE=true` names it. The
+`WITH_CONTROLPLANE=true` names it. Nor does it apply `hypervisor/` or
+`hypervisor-fixtures/`, which follow the ControlPlane by hand. The
 proving `OpenBaoCluster` names no class and binds to the cluster's default,
 `premium` on the lab, which Step 1 checks exists.
 
@@ -418,7 +468,7 @@ The deployment script supports configurable timeouts via environment variables:
 | `WITH_REGISTRY_CACHE` | `false` | Local-dev only. When `true`, bring up one distribution-registry (`registry:2`) pull-through proxy per upstream registry (`docker.io`, `ghcr.io`, `registry.k8s.io`, `quay.io`, plus the vanity fronts `oci.external-secrets.io` and `docker-registry3.mariadb.com`) on the `kind` Docker network and wire every node's containerd at them via a `certs.d/<host>/hosts.toml` mirror, so unmodified image refs are served from a persistent local cache that survives `kind delete`. The proxy streams and caches inline (fast even on a cold pull). The containerd mirror patch is injected only into the deploy-time kind config, never the checked-in `hack/kind-config.yaml`, so CI is unaffected. Requires `yq`. See the [Extended Quick Start](../../quick-start-extended.md) |
 | `PURGE_REGISTRY_CACHE` | `false` | Consumed by `make teardown-infra`. When `true`, also remove the registry pull-through cache containers and their volumes (identified by the `cobaltcore.registry-cache=true` label). The default leaves them running so the warm cache is reused on the next deploy |
 | `EXTERNAL_CLUSTER` | `false` | When `true`, deploy onto the cluster the current kubeconfig context points at (the script never switches contexts) with the `EXTERNAL_OVERLAY` overlays in Steps 3 and 5. Docker and kind are not required. Preflight refuses `WITH_VPA`, `WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE`, `WITH_CHAOS_MESH`, `WITH_OVN_KERNEL_MODULES`, `WITH_NFS` and `WITH_DIZZY`, requires the context's API server to answer, and logs the context and the server URL. Step 1 creates no cluster; it checks for a default StorageClass, for the absence of a `node-local-dns` DaemonSet in `kube-system` and for a Ready node, and logs the class and the node names. The nofile cap and the Keystone image preload are skipped. The Gateway is reached through `kubectl port-forward` on local port 8443, which the completion banner prints, and the bundled ControlPlane CR's `publicEndpoint` gets `:8443`. Also consumed by `make teardown-infra`. Any other value keeps the kind mode |
-| `EXTERNAL_OVERLAY` | `deploy/lab/metal-stack` | Overlay root of `EXTERNAL_CLUSTER=true`: its `base/` and `infrastructure/` replace `deploy/kind/base` and `deploy/kind/infrastructure`. Relative to the repository root unless absolute. Preflight fails when either kustomization is missing. An overlay may also carry a `controlplane/` kustomization, which `make deploy-infra` names in its `WITH_CONTROLPLANE=true` completion hint and never applies; while it exists and `WITH_CONTROLPLANE_CR` is not `true`, preflight renders it and refuses a failing render, a render with no ControlPlane or more than one, or a ControlPlane other than `openstack/<CONTROLPLANE_NAME>`, the only one Step 7 seeds. Read by `make deploy-infra` and `make teardown-infra` |
+| `EXTERNAL_OVERLAY` | `deploy/lab/metal-stack` | Overlay root of `EXTERNAL_CLUSTER=true`: its `base/` and `infrastructure/` replace `deploy/kind/base` and `deploy/kind/infrastructure`. Relative to the repository root unless absolute. Preflight fails when either kustomization is missing. An overlay may also carry a `controlplane/` kustomization, which `make deploy-infra` names in its `WITH_CONTROLPLANE=true` completion hint and never applies; while it exists and `WITH_CONTROLPLANE_CR` is not `true`, preflight renders it and refuses a failing render, a render with no ControlPlane or more than one, or a ControlPlane other than `openstack/<CONTROLPLANE_NAME>`, the only one Step 7 seeds. A `hypervisor/` kustomization, with `hypervisor-fixtures/` beside it, is applied by hand as well; `make teardown-infra` removes both in its step 0. Read by `make deploy-infra` and `make teardown-infra` |
 | `TEARDOWN_TIMEOUT` | `600` | Consumed by `make teardown-infra` under `EXTERNAL_CLUSTER=true`: seconds each delete waits for its objects to be gone before the teardown exits 1 |
 
 **Example: override HelmRelease timeout:**
