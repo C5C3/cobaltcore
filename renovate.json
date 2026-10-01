@@ -480,6 +480,20 @@
     },
     {
       "customType": "regex",
+      "description": "openstack-hypervisor-operator image: a commit of upstream main, tracked as a digest of the branch",
+      "managerFilePatterns": [
+        "/images/openstack-hypervisor-operator/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "(?m)^ARG HVO_COMMIT=(?<currentDigest>[a-f0-9]{40})\\s*$"
+      ],
+      "currentValueTemplate": "main",
+      "depNameTemplate": "https://github.com/cobaltcore-dev/openstack-hypervisor-operator",
+      "datasourceTemplate": "git-refs",
+      "packageNameTemplate": "https://github.com/cobaltcore-dev/openstack-hypervisor-operator"
+    },
+    {
+      "customType": "regex",
       "managerFilePatterns": [
         "/operators/ovn/internal/controller/image\\.go$/"
       ],
@@ -958,6 +972,16 @@
       "automerge": false,
       "minimumReleaseAge": "3 days",
       "groupName": "OVN LTS patch releases"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/openstack-hypervisor-operator/Dockerfile"],
+      "matchPackageNames": ["https://github.com/cobaltcore-dev/openstack-hypervisor-operator"],
+      "matchUpdateTypes": ["digest"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "schedule": ["before 6am on monday"],
+      "groupName": "openstack-hypervisor-operator"
     },
     {
       "matchManagers": ["custom.regex"],
