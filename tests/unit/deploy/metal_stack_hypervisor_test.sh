@@ -424,7 +424,7 @@ test_ca_and_compute() {
 test_hvo_release() {
   echo "Test: the openstack-hypervisor-operator release"
 
-  render "$HYPERVISOR_DIR" 18 || return
+  render "$HYPERVISOR_DIR" 19 || return
 
   local release=openstack-hypervisor-operator env='.spec.values.controllerManager.manager.env'
   assert_eq "the release lives in openstack" "openstack" \
@@ -449,6 +449,8 @@ test_hvo_release() {
       .spec.valuesFrom[] | .kind + \"/\" + .name" - | sort -u)"
   assert_eq "the image is the one #1163 builds" "ghcr.io/c5c3/openstack-hypervisor-operator" \
     "$(val HelmRelease "$release" '.spec.values.controllerManager.manager.image.repository')"
+  assert_eq "every chart object name stays within 63 characters" "hypervisor-operator" \
+    "$(val HelmRelease "$release" '.spec.values.fullnameOverride')"
   assert_eq "no image tag: the chart's appVersion names it" "false" \
     "$(val HelmRelease "$release" '.spec.values.controllerManager.manager.image | has("tag")')"
   assert_eq "osAuthUrl is the in-cluster Keystone URL" "http://controlplane-keystone.openstack.svc:5000/v3" \
