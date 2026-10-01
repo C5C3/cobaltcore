@@ -28,9 +28,10 @@
 # left in the host scope is stopped before the next one starts.
 #
 # libvirtd.conf listens for TLS on the node's address only (@HOST_IP@ is
-# replaced with status.hostIP). The socket's group is the numeric 108,
-# kvm-node-agent's chart default supplementalGroups, so the agent, which runs
-# as uid 42438, can open it. qemu.conf runs QEMU as root: the host's
+# replaced with status.hostIP). The socket's group is the numeric 108, the
+# group kvm-node-agent's chart gives its pod (supplementalGroups); the agent
+# runs as root here (kna-release.yaml) and opens it either way. qemu.conf runs
+# QEMU as root: the host's
 # /dev/kvm is root:103 and the image's kvm group has another ID
 # (docs/reference/ci-cd/container-images.md, libvirt).
 apiVersion: v1

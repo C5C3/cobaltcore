@@ -13,6 +13,13 @@
 #     is Cloud Hypervisor.
 #   - nodeLabelFieldPath is spec.nodeName: the chart's DaemonSet renders it
 #     into the fieldRef of NODE_LABEL and defines no value for it.
+#   - The manager runs as uid 0. The image's uid 42438 has no passwd entry
+#     on the host, and the host's dbus-daemon closes the connection of a uid
+#     it cannot resolve ("recvmsg: connection reset by peer"), so the agent
+#     exits at start. Starting a unit over the system bus needs root as
+#     well, or a polkit rule. The chart's init container hands the PKI
+#     directories to 42438, so root keeps DAC_OVERRIDE to write there; every
+#     other capability stays dropped.
 #
 # kna reads its namespace from the environment variable NAMESPACE, which the
 # chart does not set, and falls back to monsoon3 without it. The
@@ -43,6 +50,13 @@ spec:
         env:
           libvirtDefaultUri: qemu:///system
           nodeLabelFieldPath: spec.nodeName
+        containerSecurityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+            add: [DAC_OVERRIDE]
+          runAsUser: 0
+          runAsGroup: 0
   postRenderers:
     - kustomize:
         patches:
