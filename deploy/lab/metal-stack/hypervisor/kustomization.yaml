@@ -7,33 +7,11 @@
 # agent and the NovaCompute pool, the libvirt migration CA,
 # openstack-hypervisor-operator and kvm-node-agent with their chart sources,
 # and the Service that lets the operator reach the gateway. Applied by hand,
-# like ../controlplane; hack/deploy-infra.sh never applies it. The order is:
-#
-#   1. the lab ControlPlane Ready (../controlplane/kustomization.yaml);
-#   2. the node labels below, by hand, because no manifest can patch a Node;
-#   3. the fixtures (../hypervisor-fixtures/kustomization.yaml), after a K-ORC
-#      restart;
-#   4. kubectl apply -k deploy/lab/metal-stack/hypervisor
-#
-# The labels select the chassis and the pool, and the annotation gives every
-# node a custom trait:
-#
-#   kubectl label node --all openstack.c5c3.io/chassis=true \
-#     openstack.c5c3.io/nova-compute-pool=lab \
-#     nova.openstack.cloud.sap/virt-driver=kvm \
-#     cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests
-#   kubectl annotate node --all nova.openstack.cloud.sap/custom-traits=CUSTOM_C5C3_LAB
-#
-# The lifecycle label is the only way a Hypervisor gets lifecycleEnabled and
-# skipTests; the smoke test boots from a Cinder volume, which the lab lacks.
-# The annotation is needed because the hypervisor operator sets TraitsUpdated
-# only when a custom trait differs, and onboarding waits for that condition.
-# Onboarding also waits for HaEnabled=True while spec.highAvailability is
-# true, and only SAP's kvm-ha-service sets it. The operator creates every
-# Hypervisor with the field true and never writes it again, so patch each one
-# once it exists:
-#
-#   kubectl patch hypervisor <node> --type merge -p '{"spec":{"highAvailability":false}}'
+# like ../controlplane; hack/deploy-infra.sh never applies it. It needs the
+# lab ControlPlane Ready, node labels, a Placement trait and
+# ../hypervisor-fixtures before it, and hand steps after it. The run sequence
+# in docs/reference/infrastructure/infrastructure-manifests.md (Lab
+# hypervisors) is the one runbook, with every step and why it is needed.
 #
 # EXTERNAL_CLUSTER=true make teardown-infra removes all of it in its step 0,
 # labels included (docs/reference/infrastructure/e2e-deployment.md).
