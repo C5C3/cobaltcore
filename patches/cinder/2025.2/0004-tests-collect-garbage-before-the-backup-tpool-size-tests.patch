@@ -1,0 +1,97 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+tests: collect garbage before the backup tpool size tests
+
+`BackupTestCase.test_default_tpool_size` and `test_tpool_size`
+(cinder/tests/unit/backup/test_backup.py) assert that eventlet's native
+thread pool is empty, `tpool._threads == []`, before and after they
+build a BackupManager. The base TestCase cleanup calls `tpool.killall()`
+after every test, so the first assertion holds. The second one fails
+whenever something starts the pool between the two.
+
+The garbage collector does. The Ceph backup driver tests
+(cinder/tests/unit/backup/drivers/test_backup_ceph.py) build os-brick
+`RBDVolumeIOWrapper` objects and leave them to the garbage collector,
+some with an `eventlet.tpool.Proxy` as their image. The wrapper is an
+`io.RawIOBase` and closes itself on finalization: `close()` calls
+`flush()`, `flush()` calls `self.rbd_image.require_not_closed()`
+(os_brick/initiator/linuxrbd.py), and the proxy runs that through
+`tpool.execute()`, which starts all 20 threads. When a collection of
+that garbage falls into the BackupManager construction of one of the two
+tests, the test fails with
+
+    AssertionError: Lists differ: [] != [<Thread(tpool_thread_0, ...
+
+"Second list contains 20 additional elements." It needs the Ceph tests
+earlier on the same stestr worker and a collection at that exact point,
+and stestr spreads tests over workers in per-process hash order, so it
+is rare: `test-service-images (cinder, 2025.2)` hit it once, in run
+36865504387 on 2026-10-01. The volume manager twins of the two tests are
+skipped upstream for the same class of failure (`self.skipTest("Bug
+1811663")` in cinder/tests/unit/volume/test_volume.py).
+
+The patch makes both tests start with `gc.collect()` followed by
+`tpool.killall()`. Every finalizer that can start the pool runs before
+the first assertion, the pool is stopped again, and nothing collectable
+with such a finalizer is left for the rest of the test. The assertions
+themselves are unchanged. Fixing the leak at its source would mean
+closing the wrappers at the eleven places test_backup_ceph.py builds one,
+and would still leave the two tests exposed to the next leak.
+
+Shown with the garbage collector disabled for the run and one forced
+`gc.collect()` at the second BackupManager construction of
+`test_default_tpool_size`, after the test_backup_ceph module ran in the
+same process: without the patch the test fails at its second assertion
+with the 20 threads above, with the patch the collection frees no
+wrapper and both tests pass.
+
+The patch changes test code only, so it changes nothing at runtime and
+tests/container-images/verify_cinder.sh needs no assertion.
+The 2026.1 twin is
+patches/cinder/2026.1/0003-tests-collect-garbage-before-the-backup-tpool-size-tests.patch;
+it differs in the index line and the hunk offsets.
+
+Applies to cinder 27.0.0 (2025.2).
+
+Upstream status: not yet proposed. On master, commit c07c49c586 ("Run
+Cinder's Backup service in native threads") replaced both tests together
+with the tpool use they check, so the fix has no upstream target beyond
+the stable branches.
+
+diff --git a/cinder/tests/unit/backup/test_backup.py b/cinder/tests/unit/backup/test_backup.py
+index e7ccb5f99..44c28f9b6 100644
+--- a/cinder/tests/unit/backup/test_backup.py
++++ b/cinder/tests/unit/backup/test_backup.py
+@@ -15,6 +15,7 @@
+ """Tests for Backup code."""
+ 
+ import copy
++import gc
+ import os
+ from unittest import mock
+ import uuid
+@@ -2004,6 +2005,11 @@ class BackupTestCase(BaseBackupTest):
+     @test.testtools.skipIf(issues.TPOOL_KILLALL_ISSUE, 'tpool.killall bug')
+     def test_default_tpool_size(self):
+         """Test we can set custom tpool size."""
++        # A garbage-collected os-brick RBDVolumeIOWrapper flushes through its
++        # tpool.Proxy and starts the pool. Collect what earlier tests left
++        # behind now, so that no finalizer runs between the assertions.
++        gc.collect()
++        tpool.killall()
+         tpool._nthreads = 20
+         self.assertListEqual([], tpool._threads)
+ 
+@@ -2015,6 +2021,11 @@ class BackupTestCase(BaseBackupTest):
+     @test.testtools.skipIf(issues.TPOOL_KILLALL_ISSUE, 'tpool.killall bug')
+     def test_tpool_size(self):
+         """Test we can set custom tpool size."""
++        # A garbage-collected os-brick RBDVolumeIOWrapper flushes through its
++        # tpool.Proxy and starts the pool. Collect what earlier tests left
++        # behind now, so that no finalizer runs between the assertions.
++        gc.collect()
++        tpool.killall()
+         self.assertNotEqual(100, tpool._nthreads)
+         self.assertListEqual([], tpool._threads)
+ 
