@@ -1,0 +1,200 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The scripts and the configuration of the libvirt DaemonSet
+# (libvirt-daemonset.yaml), mounted at /etc/libvirt-lab.
+#
+# host-prepare.sh runs in the init container: it loads vhost_net from the
+# host's module tree and fails the pod on a node without /dev/kvm.
+#
+# libvirtd.sh runs in the main container. It waits for the TLS files
+# kvm-node-agent installs, then starts libvirtd in a host scope
+# (systemd-run --scope --slice=system), so that libvirtd and the QEMU
+# processes it forks leave the pod's cgroup and outlive a restart of the pod.
+# It then writes two runtime units into the host's /run/systemd/system,
+# because kvm-node-agent v0.2.0 reads libvirt's state from the host's
+# systemd:
+#   - libvirtd.service is active exactly as long as the containerized
+#     libvirtd lives (tail --pid). Without an active libvirtd.service the
+#     agent reports nothing about libvirt.
+#   - virt-admin-server-update-tls.service reloads libvirtd's TLS files
+#     through its mount namespace. The agent starts it after every
+#     certificate write and sets TLSCertificateInstalled=True only when the
+#     start succeeds.
+# Writing to the host bends decision D1 of #1138 ("the host is not
+# modified") knowingly. /run is a tmpfs, so a reboot removes the units, and
+# the script removes them whenever it ends. A libvirtd an earlier container
+# left in the host scope is stopped before the next one starts.
+#
+# libvirtd.conf listens for TLS on the node's address only (@HOST_IP@ is
+# replaced with status.hostIP). The socket's group is the numeric 108,
+# kvm-node-agent's chart default supplementalGroups, so the agent, which runs
+# as uid 42438, can open it. qemu.conf runs QEMU as root: the host's
+# /dev/kvm is root:103 and the image's kvm group has another ID
+# (docs/reference/ci-cd/container-images.md, libvirt).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: libvirt-lab
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: libvirt
+    app.kubernetes.io/part-of: lab-hypervisor
+data:
+  host-prepare.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    if ! modprobe vhost_net; then
+      echo "host-prepare: cannot load vhost_net from /lib/modules/$(uname -r)"
+      exit 1
+    fi
+    if [[ ! -e /dev/kvm ]]; then
+      echo "host-prepare: /dev/kvm is missing on this node"
+      exit 1
+    fi
+
+  libvirtd.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # systemctl ignores start and daemon-reload when /proc/1/root and / differ,
+    # taking that for a chroot. With hostPID, PID 1 is the host's init, so this
+    # container always looks like one.
+    export SYSTEMD_IGNORE_CHROOT=1
+
+    unit_dir=/run/systemd/system
+    unit_header='# Written by the cobaltcore lab libvirt DaemonSet (openstack/libvirt); removed when its pod stops.'
+    libvirtd_pid=""
+
+    remove_units() {
+      systemctl stop libvirtd.service || true
+      rm -f "${unit_dir}/libvirtd.service" "${unit_dir}/virt-admin-server-update-tls.service"
+      systemctl daemon-reload || true
+    }
+
+    # Wait for libvirtd and exit with its status.
+    exit_with_libvirtd() {
+      local rc=0
+      wait "${libvirtd_pid}" || rc=$?
+      exit "${rc}"
+    }
+
+    # 6. On TERM or INT: remove the host units, then stop libvirtd. Its domains
+    # keep running. A unit an earlier pod left behind goes as well.
+    # shellcheck disable=SC2329 # invoked by the trap below
+    shutdown() {
+      trap - EXIT
+      remove_units
+      if [[ -z "${libvirtd_pid}" ]]; then
+        exit 0
+      fi
+      kill -TERM "${libvirtd_pid}" 2>/dev/null || true
+      exit_with_libvirtd
+    }
+    # Every other end, a failed step or libvirtd's own exit, removes the host
+    # units too, and stops the libvirtd this script started: it runs in the
+    # host scope, which the end of this container does not reach.
+    # shellcheck disable=SC2329 # invoked by the trap below
+    on_exit() {
+      local rc=$?
+      remove_units
+      if [[ -n "${libvirtd_pid}" ]]; then
+        systemctl stop cobaltcore-libvirtd.scope 2>/dev/null || true
+      fi
+      exit "${rc}"
+    }
+    trap shutdown TERM INT
+    trap on_exit EXIT
+
+    # 1. No timeout: libvirtd refuses to start a TLS listener without these
+    # files, and a pod that is Running but not Ready is the signal.
+    until [[ -f /etc/pki/CA/cacert.pem && -f /etc/pki/libvirt/servercert.pem &&
+      -f /etc/pki/libvirt/private/serverkey.pem ]]; do
+      echo "libvirtd: waiting for the TLS files kvm-node-agent installs under /etc/pki"
+      sleep 10
+    done
+
+    # 2. The configuration, with the node's address in listen_addr.
+    sed "s/@HOST_IP@/${HOST_IP}/" /etc/libvirt-lab/libvirtd.conf >/etc/libvirt/libvirtd.conf
+    cp /etc/libvirt-lab/qemu.conf /etc/libvirt/qemu.conf
+
+    # 3. The scope moves libvirtd out of the pod's cgroup into the host's
+    # system.slice. systemd-run execs libvirtd, so $! is libvirtd's host PID.
+    # A libvirtd an earlier container left in the scope (killed after its
+    # grace period) still holds the scope and the socket, so it goes first.
+    # QEMU runs in libvirt's own /machine cgroups, so that stops libvirtd alone.
+    # A stop that runs out (systemd's 90s) leaves the scope failed, and a
+    # failed unit keeps its name: reset-failed frees it, and --collect lets
+    # systemd unload this scope however it ends.
+    systemctl stop cobaltcore-libvirtd.scope 2>/dev/null || true
+    systemctl reset-failed cobaltcore-libvirtd.scope 2>/dev/null || true
+    rm -f /run/libvirtd.pid
+    virtlogd -d
+    systemd-run --collect --scope --slice=system --unit=cobaltcore-libvirtd libvirtd --listen &
+    libvirtd_pid=$!
+
+    # 4. Liveness first, so a socket another libvirtd left behind cannot hide
+    # a systemd-run that failed. A libvirtd that exits during the wait ends it
+    # with its status.
+    for _ in $(seq 60); do
+      if ! kill -0 "${libvirtd_pid}" 2>/dev/null; then
+        exit_with_libvirtd
+      fi
+      if [[ -S /run/libvirt/libvirt-sock ]]; then
+        break
+      fi
+      sleep 1
+    done
+    if [[ ! -S /run/libvirt/libvirt-sock ]]; then
+      echo "libvirtd: /run/libvirt/libvirt-sock did not appear within 60s"
+      exit 1
+    fi
+
+    # 5. The two host units, read by kvm-node-agent through the host's systemd.
+    # The TLS unit enters the PID's mount namespace as host root, so it first
+    # checks that the PID still lives in the scope: a unit left behind fails
+    # instead of running another process's virt-admin.
+    cat >"${unit_dir}/libvirtd.service" <<EOF
+    ${unit_header}
+    [Unit]
+    Description=Stand-in for the containerized libvirtd, PID ${libvirtd_pid}
+
+    [Service]
+    Type=simple
+    ExecStart=/usr/bin/tail --pid=${libvirtd_pid} -f /dev/null
+    EOF
+    cat >"${unit_dir}/virt-admin-server-update-tls.service" <<EOF
+    ${unit_header}
+    [Unit]
+    Description=Reload the TLS files of the containerized libvirtd, PID ${libvirtd_pid}
+
+    [Service]
+    Type=oneshot
+    ExecStartPre=/usr/bin/grep -q /cobaltcore-libvirtd.scope /proc/${libvirtd_pid}/cgroup
+    ExecStart=/usr/bin/nsenter --target ${libvirtd_pid} --mount -- /usr/bin/virt-admin server-update-tls libvirtd
+    EOF
+    systemctl daemon-reload
+    systemctl restart libvirtd.service
+
+    # 7. Exit with libvirtd's status.
+    exit_with_libvirtd
+
+  libvirtd.conf: |
+    listen_tls = 1
+    listen_tcp = 0
+    tls_port = "16514"
+    listen_addr = "@HOST_IP@"
+    auth_tls = "none"
+    unix_sock_group = "+108"
+    unix_sock_rw_perms = "0770"
+    auth_unix_rw = "none"
+
+  qemu.conf: |
+    user = "root"
+    group = "root"
+    dynamic_ownership = 1
+    security_driver = "none"
+    default_tls_x509_cert_dir = "/etc/pki/qemu"
+    default_tls_x509_verify = 1

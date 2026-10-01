@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The two workers of the metal-stack lab as KVM hypervisors of the lab
+# ControlPlane (#1142): libvirt in a DaemonSet, the OVN chassis, the metadata
+# agent and the NovaCompute pool, and the libvirt migration CA. Applied by
+# hand, like ../controlplane; hack/deploy-infra.sh never applies it. The order
+# is:
+#
+#   1. the lab ControlPlane Ready (../controlplane/kustomization.yaml);
+#   2. the node labels below, by hand, because no manifest can patch a Node;
+#   3. the fixtures (../hypervisor-fixtures/kustomization.yaml), after a K-ORC
+#      restart;
+#   4. kubectl apply -k deploy/lab/metal-stack/hypervisor
+#
+# The labels select the chassis and the pool, and the annotation gives every
+# node a custom trait:
+#
+#   kubectl label node --all openstack.c5c3.io/chassis=true \
+#     openstack.c5c3.io/nova-compute-pool=lab \
+#     nova.openstack.cloud.sap/virt-driver=kvm \
+#     cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests
+#   kubectl annotate node --all nova.openstack.cloud.sap/custom-traits=CUSTOM_C5C3_LAB
+#
+# EXTERNAL_CLUSTER=true make teardown-infra removes all of it in its step 0,
+# labels included (docs/reference/infrastructure/e2e-deployment.md).
+#
+# All resource references are local to this directory, so `kubectl apply -k`
+# renders it under kustomize's default LoadRestrictionsRootOnly check.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - libvirt-ca.yaml
+  - libvirt-configmap.yaml
+  - libvirt-daemonset.yaml
+  - compute.yaml
