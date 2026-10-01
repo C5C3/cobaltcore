@@ -5,36 +5,36 @@ quadrant: operator
 
 # Multi-Tenant Deployment
 
-Guide for deploying the Keystone operator in namespace-scoped mode.
-In this mode the operator uses a `Role` / `RoleBinding` instead of
+This guide is for deploying operators in namespace-scoped mode, using Keystone as the
+example. In this mode an operator uses a `Role` / `RoleBinding` instead of
 `ClusterRole` / `ClusterRoleBinding` and restricts its cache, watches, and
-reconciliation to a single namespace.
+reconciliation to a single namespace. The service operator charts and the
+ControlPlane operator chart expose the same `rbac.namespaceScoped` setting.
 
-::: tip Two different "multi-tenant" axes
-This guide covers running the **Keystone operator itself** namespace-scoped — one
+This guide covers running the Keystone operator itself namespace-scoped: one
 operator instance confined to one namespace. That is distinct from the higher-level
-tenancy unit, the **`ControlPlane` CR**: a validating webhook enforces **at most one
-`ControlPlane` per namespace**, so each tenant lives in its own namespace with its own
-ControlPlane and per-CR-scoped credentials (admin password, K-ORC application
-credential, Keystone keys). If you are standing tenants up as ControlPlanes, start from
+tenancy unit, the **`ControlPlane` CR**. A ControlPlane CR is namespaced by
+default, but its operator runs cluster-wide (by default). When enabled, its
+validating webhook enforces at most one ControlPlane per namespace. Give each tenant
+its own namespace with a ControlPlane and per-CR-scoped credentials (admin
+password, K-ORC application credential, Keystone keys). To create tenants as
+ControlPlanes, start from
 the [ControlPlane Quick Start](../quick-start-controlplane.md); the namespace-scoped
 operator RBAC described here is the complementary, lower-level concern.
-:::
 
-::: tip Recommended for single-namespace production
-When a control plane is confined to **one namespace**, deploy the operator
-namespace-scoped (`rbac.namespaceScoped: true`). This replaces the operator's
-cluster-wide `ClusterRole` — which grants read/write on **every** `Secret` in
-**every** namespace — with a `Role` bound to a single namespace, so a
-compromised operator pod can reach only that namespace's Secrets. The
+For a control plane confined to one namespace, namespace-scoped operators can
+reduce Secret access once their watches work without cluster permissions. Set
+`rbac.namespaceScoped: true` for each operator after verifying its watches.
+This replaces an operator's
+cluster-wide `ClusterRole` with a `Role` bound to a single namespace. The
+operator pod can then only access that namespace's Secrets. The
 [Security trade-off](#security-trade-off-the-cluster-wide-rbac-default) below
 explains the privilege-escalation path this closes.
 
 The chart still ships cluster-wide (`rbac.namespaceScoped: false`) by default
-because some capabilities still need cluster scope — see
+because some capabilities still need cluster scope; see
 [When cluster-wide RBAC is still required](#when-cluster-wide-rbac-is-still-required).
-Adopt namespace-scoped mode when your deployment fits in one namespace.
-:::
+Adopt namespace-scoped mode when your use-case fits the deployment.
 
 ## Prerequisites
 
@@ -46,20 +46,19 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
 Follow that tutorial through to its final **Verify** step. This guide then
-re-deploys the keystone-operator **namespace-scoped** (the steps below), so treat
-the tutorial as the cluster-and-infrastructure baseline rather than its
-cluster-wide operator install.
+re-deploys the keystone-operator namespace-scoped (the steps below). Treat the
+tutorial as the cluster-and-infrastructure baseline for this installation.
 :::
 
 Before deploying the operator in namespace-scoped mode, ensure:
 
 1. **CRDs are installed cluster-wide.** Keystone CRDs (`keystones.keystone.openstack.c5c3.io`)
-   are always cluster-scoped resources — they cannot be installed per-namespace. A
-   cluster-admin must install the CRDs before any namespace-scoped operator instance
-   can start. Typically CRDs are installed once via `helm install` with
-   `--include-crds` or `kubectl apply -f` from a privileged context.
+  are always cluster-scoped resources; they cannot be installed per-namespace. A
+  cluster-admin must install the CRDs before any operator instance
+  can start. Install them once with `kubectl apply -f` from a privileged context
+  as shown in [CRD installation](#crd-installation).
 2. **Target namespace exists.** The namespace into which you deploy the operator
-   must already exist, or pass `--create-namespace` to `helm install`.
+  must already exist, or pass `--create-namespace` to `helm upgrade -i`.
 3. **Infrastructure dependencies are reachable.** MariaDB, Memcached, and
    External Secrets Operator services must be accessible from the tenant
    namespace (see [Multiple instances](#multiple-instances-in-different-namespaces)).
@@ -68,24 +67,24 @@ Before deploying the operator in namespace-scoped mode, ensure:
 
 ## When to use namespace-scoped mode
 
-- **Multi-tenant clusters** — multiple teams share a cluster and each team
+- **Multi-tenant clusters:** multiple teams share a cluster and each team
   operates its own OpenStack control plane in an isolated namespace.
-- **Least-privilege requirements** — security policy mandates that workloads
+- **Least-privilege requirements:** security policy mandates that workloads
   must not hold cluster-wide permissions.
-- **Multiple operator instances** — you need several independent Keystone
-  operators, each managing a different namespace.
+- **Multiple control planes:** you need several independent ControlPlanes,
+  each in a different namespace, with operators confined to those namespaces.
 
 ---
 
 ## When cluster-wide RBAC is still required
 
-Keep the default (`rbac.namespaceScoped: false`) when any of these apply — each
+Keep the default (`rbac.namespaceScoped: false`) when any of these apply. Each
 needs cluster scope, which namespace-scoped mode cannot provide:
 
-- **Cross-namespace CR management** — a single operator instance reconciles
+- **Cross-namespace CR management:** a single operator instance reconciles
   `Keystone` (or `ControlPlane`) CRs in more than one namespace. A
   namespace-scoped operator only watches and reconciles its own namespace.
-- **Admission webhooks** — the defaulting and validating webhooks register
+- **Admission webhooks:** the defaulting and validating webhooks register
   through cluster-scoped `ValidatingWebhookConfiguration` /
   `MutatingWebhookConfiguration` objects, which only a `ClusterRole` can manage
   (see [Webhook caveat](#webhook-caveat)).
@@ -95,62 +94,50 @@ needs cluster scope, which namespace-scoped mode cannot provide:
 ## Security trade-off: the cluster-wide RBAC default
 
 The default (`rbac.namespaceScoped: false`) binds the operator's ServiceAccount
-to a **`ClusterRole`**. Among its rules, that ClusterRole grants:
+to a `ClusterRole`. Among its rules, that ClusterRole grants:
 
 - `get` / `list` / `watch` / `create` / `update` / `patch` / `delete` on
-  **`secrets`** in **every** namespace, and
-- `create` on `serviceaccounts` plus full CRUD on `roles` and `rolebindings` —
+  `secrets` in every namespace, and
+- `create` on `serviceaccounts` plus full CRUD on `roles` and `rolebindings`,
   which the operator needs to mint the per-CronJob rotation RBAC described
   [below](#contrast-the-per-cronjob-rotation-rbac).
 
 ### Privilege-escalation path
 
-A compromised operator pod — or a leaked ServiceAccount token — can therefore:
+A compromised operator pod or a leaked ServiceAccount token can therefore:
 
-1. **Read every Secret in the cluster.** Database passwords, TLS keys, service
-   credentials, and the OpenStack admin password, in any namespace.
-2. **Make the compromise durable.** Because the same ClusterRole grants `create`
-   on `rolebindings`, an attacker can bind an existing `Role` (or the operator's
-   own permissions) to a subject they control, turning a transient pod
-   compromise into a standing, cluster-wide secret-read credential that outlives
-   the pod being killed.
+1. Read every Secret in the cluster.
+2. Make the compromise durable. An attacker can bind permissions to a subject
+  they control, turning a transient pod compromise into a standing issue that
+  outlives the pod.
 
 The ControlPlane operator widens the blast radius further: it projects the
-OpenStack admin password **in cleartext** into a `clouds.yaml` `Secret` in each
+OpenStack admin password in cleartext into a `clouds.yaml` `Secret` in each
 tenant's child namespace (see
 [ControlPlane Reconciler → RBAC Permissions](../reference/c5c3/controlplane-reconciler.md#rbac-permissions)).
-Cluster-wide Secret read access exposes every one of those projected passwords.
+Cluster-wide Secret read access exposes all of those projected passwords.
 
 ### Contrast: the per-CronJob rotation RBAC
 
-The RBAC the operator *generates* for its rotation CronJobs is the model to
-follow. Each CronJob gets a namespaced `Role` with `get` on exactly the
-push-source `Secret` and `get` + `patch` on exactly the staging `Secret`, both
-pinned by `resourceNames`; the CronJob never holds write access to a Secret a
-privileged workload consumes. Namespace-scoping the operator brings the
-operator's *own* footprint closer to that least-privilege shape.
+Each rotation CronJob has a namespaced `Role`. Its `resourceNames` rules grant
+`get` on the push-source `Secret` and `get` and `patch` on the staging `Secret`.
+It cannot write to a Secret consumed by a privileged workload. Namespace-scoping
+the operator also limits its RBAC to the namespace it manages.
 
 ### Why the cluster-wide Secret rule cannot simply be narrowed
 
 A natural question is whether the cluster-wide `secrets` rule could be pinned to
-specific names or labels instead of switching to namespace scope. For the
-cluster-wide deployment model, it cannot:
+specific names or labels. For the cluster-wide deployment model it can not.
 
-- **`resourceNames` does not apply to `list` / `watch`.** The operator's
-  controller-runtime cache `list`s and `watch`es Secrets to stay in sync, and an
-  RBAC rule carrying `resourceNames` does not authorize collection
-  (`list` / `watch`) requests — pinning names would break the cache.
-- **The names are dynamic and per-CR.** Managed Secrets (the Fernet keys, the
+- **`resourceNames` does not apply to `list` / `watch`.**
+- **The names are dynamic.** Managed Secrets (the Fernet keys, the
   credential keys, the database-connection Secret, the projected `clouds.yaml`)
-  are named after each CR and spread across namespaces, so there is no static
-  set of names to enumerate.
-- **RBAC has no label or field selectors.** Authorization is all-or-nothing for
-  a resource type within the granted scope. The informer cache *can* be
-  label-filtered, but that reduces memory, not the ServiceAccount's authority.
+  are named after each CR and spread across namespaces.
+- **RBAC has no label or field selectors.**
 
-The supported way to bound the blast radius is therefore to **reduce the
-scope**, not the rule: `rbac.namespaceScoped: true` confines both the RBAC grant
-and the informer cache to a single namespace.
+The supported way to restrict the blast radius is therefore to **reduce the
+scope**. `rbac.namespaceScoped: true` confines both the RBAC grant and the
+informer cache to a single namespace.
 
 ---
 
@@ -187,27 +174,44 @@ When `rbac.namespaceScoped` is `true`, you **must** disable webhooks by setting
 permission to create or manage cluster-scoped resources, so webhook
 registration will fail.
 
-**Trade-off:** With webhooks disabled the following admission-time behaviors
-are lost:
+Disabling the c5c3 operator's validating webhook also removes admission-time
+enforcement of the one-ControlPlane-per-namespace rule. Keep that constraint
+in your deployment process until a separate webhook deployment is available.
+
+With webhooks disabled the following admission-time behaviors are lost:
 
 | Behavior | Impact |
 | --- | --- |
 | Defaulting webhook | Zero-valued fields (`replicas: 0`, empty `cache.backend`, etc.) are no longer auto-filled. You must set all required fields explicitly in your `Keystone` CRs. |
 | Validating webhook | Server-side validation of cron expressions, duplicate plugin sections, and resource request/limit ordering is skipped. Invalid CRs will be accepted by the API server and fail at reconciliation time instead of at admission time. |
 
-CRD-level CEL validation rules remain active regardless of webhook status.
+CRD-level CEL validation rules remain active.
 These rules cover structural constraints such as `database` mutual exclusivity,
 `autoscaling` metric requirements, and minimum-value checks, as well as the
-immutability transition rules (`database.name`, the database mode,
-`bootstrap.adminUser`, `bootstrap.region`) — those are enforced by the API
-server itself, so they hold even with the webhook disabled.
+immutability transition rules.
 
 ---
 
 ## Example: namespace-scoped install
 
+::: info Chart scope
+These commands use the Keystone chart. The other service operator charts and
+the c5c3 ControlPlane operator chart also expose `rbac.namespaceScoped`; each
+operator needs its own chart, image, CRDs, and namespace. A namespaced
+`ControlPlane` CR does not itself change the scope of its operator.
+:::
+
+::: danger Known ClusterSecretStore watch failure
+The current Keystone controller watches `ClusterSecretStore` even in namespace-scoped
+mode. Its namespaced `Role` cannot list that cluster-scoped resource, so the
+watch repeatedly fails with `clustersecretstores.external-secrets.io is forbidden`.
+Pod readiness alone does not establish that reconciliation works. Do not use
+this mode for Keystone until the watch and RBAC contract are fixed and a
+Keystone CR reaches `Ready=True` in a namespace-scoped test.
+:::
+
 Deploy the operator into the `team-alpha` namespace with namespace-scoped RBAC.
-Build the operator image and load it into the kind cluster first — this mirrors
+Build the operator image and load it into the kind cluster first. This mirrors
 the install form of the guide's namespace-scoped-rbac chainsaw suite (a local
 `dev` image with `pullPolicy=Never`, no registry needed):
 
@@ -217,7 +221,8 @@ kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name cobaltcore
 ```
 
 ```bash
-helm install keystone-operator \
+helm dep up operators/keystone/helm/keystone-operator
+helm upgrade -i keystone-operator \
   operators/keystone/helm/keystone-operator/ \
   --namespace team-alpha --create-namespace \
   --set rbac.namespaceScoped=true \
@@ -247,19 +252,27 @@ You can install the operator multiple times, once per namespace, with each
 instance independently managing its own `Keystone` CRs:
 
 ```bash
+helm dep up operators/keystone/helm/keystone-operator
+
 # Team Alpha
-helm install keystone-operator \
+helm upgrade -i keystone-operator \
   operators/keystone/helm/keystone-operator/ \
   --namespace team-alpha --create-namespace \
   --set rbac.namespaceScoped=true \
-  --set webhook.enabled=false
+  --set webhook.enabled=false \
+  --set image.repository=ghcr.io/c5c3/keystone-operator \
+  --set image.tag=dev \
+  --set image.pullPolicy=Never
 
 # Team Beta
-helm install keystone-operator \
+helm upgrade -i keystone-operator \
   operators/keystone/helm/keystone-operator/ \
   --namespace team-beta --create-namespace \
   --set rbac.namespaceScoped=true \
-  --set webhook.enabled=false
+  --set webhook.enabled=false \
+  --set image.repository=ghcr.io/c5c3/keystone-operator \
+  --set image.tag=dev \
+  --set image.pullPolicy=Never
 ```
 
 Each instance only watches and reconciles resources in its own namespace.
@@ -281,8 +294,7 @@ infrastructure stacks.
 
 ## CRD installation
 
-Custom Resource Definitions (CRDs) are **always cluster-scoped** — Kubernetes
-does not support namespace-scoped CRDs. Even when the operator itself runs in
+Custom Resource Definitions (CRDs) are always cluster-scoped. Even when the operator itself runs in
 namespace-scoped mode, the CRDs must be installed at the cluster level by a
 user with cluster-admin privileges.
 
@@ -293,40 +305,38 @@ kubectl apply --server-side -f \
 ```
 
 If you manage CRDs separately (e.g., via a GitOps pipeline or a dedicated
-CRD-management chart), ensure they are applied **before** deploying any
-namespace-scoped operator instance. A missing CRD causes the operator to crash
-on startup because the informer cache cannot watch the unknown resource type.
+CRD-management chart), ensure they are applied before deploying any
+operator instances. A missing CRD causes the operator to crash on startup.
 
 ::: tip Local chart path vs. published OCI chart
-The `helm install` examples above use the in-repo chart path
+The `helm upgrade -i` examples above use the in-repo chart path
 `operators/keystone/helm/keystone-operator/`, which assumes a checked-out repository.
-For deployments off a checkout, use the published OCI chart instead —
-`oci://ghcr.io/c5c3/charts/keystone-operator` — with the same `--set` flags.
+For deployments off a checkout, use the published OCI chart instead:
+`oci://ghcr.io/c5c3/charts/keystone-operator`.
 :::
 
 ---
 
 ## Per-ControlPlane secret stores and OpenBao identities
 
-Every `ControlPlane` — and the `Keystone` / `Horizon` children it owns —
-reaches OpenBao through a **per-tenant namespaced store**, `openbao-tenant-store`,
-that the c5c3 operator provisions in the ControlPlane's own namespace and
-projects onto its children. That store authenticates against OpenBao as the
+Every `ControlPlane` and the service children it owns reach OpenBao through
+namespaced `openbao-tenant-store` stores. The c5c3 operator provisions a store
+in each namespace used by the ControlPlane and its children and projects the
+store reference onto the children. Each store authenticates to OpenBao as the
 `eso-tenant` Kubernetes auth role, and the `eso-tenant` templated policy scopes
 every readable and writable path to the caller's own namespace. A tenant token
-in namespace `team-alpha` can therefore only reach `team-alpha`'s Keystone key
-and bootstrap material and is **denied** on any other tenant's paths — so
-OpenBao itself, not a naming convention, isolates one control plane's secret
-material from another.
+in namespace `team-alpha` can therefore only reach `team-alpha`'s key
+and bootstrap material and is denied on any other tenant's paths. OpenBao
+isolates one control plane's secret material from another.
 
 This is the **enforced default**: you configure nothing, and existing
 operator-managed ControlPlanes migrate onto it on operator upgrade. The shared
 cluster-scoped store `openbao-cluster-store` no longer carries any
-per-ControlPlane write grant or Keystone read — it is restricted to the
+per-ControlPlane write grant or Keystone read. It is restricted to the
 namespaces hosting the static infrastructure ExternalSecrets and grants only the
 genuinely shared `bootstrap` and `infrastructure` reads.
 
-`spec.secretStoreRef` is an **override**, for the rare case where you manage the
+`spec.secretStoreRef` is an override in case you manage the
 store yourself:
 
 ```yaml
@@ -338,37 +348,39 @@ metadata:
 spec:
   # …
   # Optional. OMIT this to get the operator-provisioned per-tenant store (the
-  # default). Set it only to point at a store you manage yourself, e.g.:
+  # default).
   secretStoreRef:
     kind: SecretStore
     name: my-own-store
 ```
 
-- **Omitted (the default).** The operator provisions the per-tenant identity —
+- **Omitted (the default).** The operator provisions the per-tenant identity:
   the `ServiceAccount` (`eso-tenant-auth`), the cert-manager mTLS `Certificate`,
-  and the namespaced `SecretStore` (`openbao-tenant-store`) — as owned children
-  and routes the ControlPlane and its children through it. Nothing to do.
+  and the namespaced `SecretStore` (`openbao-tenant-store`) as owned children
+  and routes the ControlPlane and its children through it.
 - **Set.** The operator provisions nothing and uses the store you name (a
   namespaced `SecretStore` you manage, or the shared `openbao-cluster-store`).
-  The reference is projected onto the `Keystone` and `Horizon` children, so this
+  The reference is projected onto the service children, so this
   is the single place you configure it.
 
 ### Migrating an existing deployment
 
-::: warning The "keeps working unchanged across upgrades" promise is withdrawn
-Before this change the shared store carried wildcard write grants that let one
-tenant's ESO identity read and overwrite another tenant's irreplaceable key
-material. Retiring those grants means the shared-store default no longer works
-for per-ControlPlane secret traffic. Upgrading follows a defined path instead:
+::: warning Upgrade from the shared store
+Older deployments used the shared `openbao-cluster-store` for per-ControlPlane
+secret traffic. Its wildcard write grants allowed a tenant's ESO identity to
+access another tenant's keys. The new default uses a namespaced
+`openbao-tenant-store` with a per-tenant identity. Follow the migration steps
+below when upgrading an existing deployment.
 :::
 
-**Operator-managed ControlPlanes** migrate automatically. Upgrade the operators;
+**Operator-managed ControlPlanes** migrate from the shared cluster store to the
+per-tenant namespaced store automatically. Upgrade the operators;
 each ControlPlane provisions its per-tenant store and re-points its ExternalSecrets
-and PushSecrets in place. On a cluster whose OpenBao was bootstrapped **before**
+and PushSecrets in place. On a cluster whose OpenBao was bootstrapped before
 this feature, re-run `deploy/openbao/bootstrap/setup-auth.sh` and
 `setup-policies.sh` so the `eso-tenant` role and policy exist. Until they do, the
 per-tenant stores stay `NotReady` and reconciliation of new secret objects is
-gated — but existing Secrets keep serving and no key material is lost (a `403`
+gated, but existing Secrets keep serving and no key material is lost (a `403`
 never deletes anything).
 
 ::: danger Do not delete a ControlPlane mid-migration
@@ -377,10 +389,11 @@ Deleting a ControlPlane while its PushSecrets cannot reach OpenBao leaves the
 `Terminating`. Complete the OpenBao bootstrap re-run first.
 :::
 
-**Standalone Keystone / Horizon** deployments have no ControlPlane operator above
-them to provision a store, so they onboard the per-tenant identity manually and
-set the ref explicitly. The OpenBao side — the `eso-tenant` auth role and policy
-— is created once at bootstrap by `setup-auth.sh` / `setup-policies.sh`; the
+**Standalone service CRs** have no ControlPlane operator above them to provision
+a store. Operators for Keystone, Horizon, Barbican, Cinder, Glance, Neutron,
+Nova, and Placement expose `spec.secretStoreRef`; set it explicitly when moving
+from the shared store. The OpenBao side (the `eso-tenant` auth role and policy)
+is created once at bootstrap by `setup-auth.sh` / `setup-policies.sh`; the
 in-cluster side is created per namespace by `setup-eso-tenant.sh`:
 
 ```bash
@@ -391,12 +404,13 @@ kubectl wait --for=condition=Ready secretstore/openbao-tenant-store \
 ```
 
 Then set `spec.secretStoreRef: {kind: SecretStore, name: openbao-tenant-store}`
-on the standalone `Keystone` (and `Horizon`, if it pushes to OpenBao) CR.
+on each standalone service CR that uses OpenBao. The tenant store is provisioned
+per namespace, not per service.
 
 A ControlPlane's fernet and credential keys are **irreplaceable**: the credential
 keys decrypt every application credential, EC2 credential, and TOTP secret, and
 their OpenBao backup is bound to a PushSecret that deletes the remote copy when
-the binding goes away. Switching stores **moves** this material — it never
+the binding goes away. Switching stores moves this material; it never
 re-creates it: the operator updates the backup PushSecrets **in place**
 (unchanged name and OpenBao path) so a store switch only re-points the identity.
 
@@ -408,9 +422,9 @@ namespace, so two ControlPlanes already get two instances.
 
 ## Further reading
 
-- [ControlPlane Quick Start](../quick-start-controlplane.md) — standing up a tenant as a `ControlPlane` CR (the one-per-namespace tenancy aggregate).
-- [Enable the Keystone Operator NetworkPolicy](./keystone/enable-keystone-operator-networkpolicy.md) — confine the namespace-scoped operator's egress.
-- [Helm Values Schema](../reference/backend/helm-values-schema.md) — the full `rbac.*` / `webhook.*` value reference.
+- [ControlPlane Quick Start](../quick-start-controlplane.md): standing up a tenant as a `ControlPlane` CR (the one-per-namespace tenancy aggregate).
+- [Enable the Keystone Operator NetworkPolicy](./keystone/enable-keystone-operator-networkpolicy.md): confine the namespace-scoped operator's egress.
+- [Helm Values Schema](../reference/backend/helm-values-schema.md): the full `rbac.*` / `webhook.*` value reference.
 
 ## Tested by
 
