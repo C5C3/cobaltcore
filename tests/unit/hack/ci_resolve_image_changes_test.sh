@@ -8,7 +8,7 @@
 #   - a push, a workflow_dispatch, and a plumbing change all build everything,
 #     so the publish path keeps the behaviour it has today;
 #   - a base or release-config change builds every service and the Tempest
-#     image, but not the images built FROM ubuntu:noble;
+#     image, but not the images built FROM ubuntu:noble or golang;
 #   - a service filter builds that service alone, in ALL_SERVICES order;
 #   - an image filter builds that image with an empty service list, which is
 #     what has-services exists to gate;
@@ -65,7 +65,7 @@ assert_output() {
 # Every release-independent image flag at once.
 assert_all_flags() {
   local description="$1" expected="$2" flag
-  for flag in build-tempest build-ovn build-proxy build-shifter build-libvirt; do
+  for flag in build-tempest build-ovn build-proxy build-shifter build-libvirt build-hvo; do
     assert_output "$description ($flag)" "$flag" "$expected"
   done
 }
@@ -117,6 +117,7 @@ test_base_builds_services_and_tempest() {
   assert_output "base does not build the federation proxy" build-proxy "false"
   assert_output "base does not build the backup shifter" build-shifter "false"
   assert_output "base does not build the libvirt image" build-libvirt "false"
+  assert_output "base does not build the hvo image" build-hvo "false"
 }
 
 # ---------------------------------------------------------------------------
@@ -190,6 +191,26 @@ test_libvirt_filter_builds_libvirt_alone() {
   assert_output "OVN is not built" build-ovn "false"
   assert_output "the federation proxy is not built" build-proxy "false"
   assert_output "the backup shifter is not built" build-shifter "false"
+  assert_output "the hvo image is not built" build-hvo "false"
+  assert_output "Tempest is not built" build-tempest "false"
+}
+
+# ---------------------------------------------------------------------------
+# Test 7c: the hvo filter builds the openstack-hypervisor-operator image alone
+# ---------------------------------------------------------------------------
+test_hvo_filter_builds_hvo_alone() {
+  echo "Test: an openstack-hypervisor-operator change builds that image alone"
+
+  run_resolver EVENT_NAME=pull_request ALL_SERVICES="$ALL" FILTER_hvo=true
+
+  assert_eq "resolver exits 0" "0" "$RC"
+  assert_output "no service is built" services ""
+  assert_output "has-services gates the empty matrix" has-services "false"
+  assert_output "the hvo image is built" build-hvo "true"
+  assert_output "OVN is not built" build-ovn "false"
+  assert_output "the federation proxy is not built" build-proxy "false"
+  assert_output "the backup shifter is not built" build-shifter "false"
+  assert_output "the libvirt image is not built" build-libvirt "false"
   assert_output "Tempest is not built" build-tempest "false"
 }
 
@@ -223,6 +244,11 @@ test_empty_filter_counts_as_false() {
 
   assert_eq "resolver exits 0 with an empty image filter" "0" "$RC"
   assert_output "an empty image filter builds no image" build-libvirt "false"
+
+  run_resolver EVENT_NAME=pull_request ALL_SERVICES="$ALL" FILTER_hvo=
+
+  assert_eq "resolver exits 0 with an empty hvo filter" "0" "$RC"
+  assert_output "an empty hvo filter builds no hvo image" build-hvo "false"
 }
 
 # ---------------------------------------------------------------------------
@@ -276,6 +302,7 @@ test_service_filter_selects_one_service
 test_service_list_keeps_all_services_order
 test_image_filter_leaves_services_empty
 test_libvirt_filter_builds_libvirt_alone
+test_hvo_filter_builds_hvo_alone
 test_no_filter_resolves_to_nothing
 test_empty_filter_counts_as_false
 test_missing_env_vars_fail
