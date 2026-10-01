@@ -1,0 +1,132 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Eviction: let Nova choose block migration
+
+EvictionReconciler.liveMigrate in internal/controller/eviction/
+controller.go builds servers.LiveMigrateOpts{BlockMigration: false}
+and sends it at compute microversion 2.90. From microversion 2.25 on,
+Nova requires both block_migration and host in os-migrateLive and
+accepts a boolean or the string "auto" for block_migration
+(nova/api/openstack/compute/schemas/migrate_server.py,
+migrate_live_v2_25). With false, Nova refuses every server whose disks
+live on the hypervisor's local storage with InvalidSharedStorage, so an
+Eviction cannot move a server that boots from a local disk.
+
+"auto" lets Nova decide per server: a block migration when source and
+destination share no storage, a plain live migration when they do.
+gophercloud v2.15.0 types LiveMigrateOpts.BlockMigration as *bool, so
+the string needs an os-migrateLive body of its own. liveMigrateAuto is
+that body, a servers.LiveMigrateOptsBuilder that sends "host": null
+(Nova's scheduler picks the destination, as before) and
+"block_migration": "auto". Leaving the field out is no alternative: the
+2.25 schema rejects a body without it.
+
+No upstream test pins the request body. The patch adds
+TestLiveMigrateAutoBody, a plain Go test outside the Ginkgo suite, so
+it runs without envtest; the CobaltCore image build runs it and fails
+when it does not pass.
+
+Applies-to: cobaltcore-dev/openstack-hypervisor-operator main @ a2baf3f4002e39ff93f105fae9594b357ba55b21
+
+Upstream status: not submitted
+
+diff --git a/internal/controller/eviction/controller.go b/internal/controller/eviction/controller.go
+index 8e80c15..6fbc6d1 100644
+--- a/internal/controller/eviction/controller.go
++++ b/internal/controller/eviction/controller.go
+@@ -484,9 +484,7 @@ func (r *EvictionReconciler) setMigrationSucceeded(eviction *kvmv1.Eviction, msg
+ func (r *EvictionReconciler) liveMigrate(ctx context.Context, uuid string, eviction *kvmv1.Eviction) error {
+ 	log := logger.FromContext(ctx)
+ 
+-	liveMigrateOpts := servers.LiveMigrateOpts{
+-		BlockMigration: &[]bool{false}[0],
+-	}
++	liveMigrateOpts := liveMigrateAuto{}
+ 
+ 	res := servers.LiveMigrate(ctx, r.computeClient, uuid, liveMigrateOpts)
+ 	if res.Err != nil {
+diff --git a/internal/controller/eviction/live_migrate_auto.go b/internal/controller/eviction/live_migrate_auto.go
+new file mode 100644
+index 0000000..7afb3e4
+--- /dev/null
++++ b/internal/controller/eviction/live_migrate_auto.go
+@@ -0,0 +1,34 @@
++/*
++SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company and cobaltcore-dev contributors
++SPDX-License-Identifier: Apache-2.0
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package eviction
++
++// liveMigrateAuto is the os-migrateLive body that leaves the choice of block
++// migration to Nova. servers.LiveMigrateOpts cannot express it: its
++// BlockMigration field is a *bool, and the compute API takes the string "auto"
++// from microversion 2.25 on.
++type liveMigrateAuto struct{}
++
++// ToLiveMigrateMap implements servers.LiveMigrateOptsBuilder.
++func (liveMigrateAuto) ToLiveMigrateMap() (map[string]any, error) {
++	return map[string]any{
++		"os-migrateLive": map[string]any{
++			"host":            nil,
++			"block_migration": "auto",
++		},
++	}, nil
++}
+diff --git a/internal/controller/eviction/live_migrate_auto_test.go b/internal/controller/eviction/live_migrate_auto_test.go
+new file mode 100644
+index 0000000..115e8db
+--- /dev/null
++++ b/internal/controller/eviction/live_migrate_auto_test.go
+@@ -0,0 +1,38 @@
++/*
++SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company and cobaltcore-dev contributors
++SPDX-License-Identifier: Apache-2.0
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package eviction
++
++import (
++	"encoding/json"
++	"testing"
++)
++
++func TestLiveMigrateAutoBody(t *testing.T) {
++	body, err := liveMigrateAuto{}.ToLiveMigrateMap()
++	if err != nil {
++		t.Fatalf("ToLiveMigrateMap: %v", err)
++	}
++	got, err := json.Marshal(body)
++	if err != nil {
++		t.Fatalf("marshal body: %v", err)
++	}
++	want := `{"os-migrateLive":{"block_migration":"auto","host":null}}`
++	if string(got) != want {
++		t.Errorf("os-migrateLive body = %s, want %s", got, want)
++	}
++}

@@ -44,6 +44,13 @@ DERIVED_IMAGES="nova-compute"
 # source-refs.yaml key, no extra-packages.yaml entry and no build args either.
 # Its contract is tests/container-images/verify_libvirt.sh together with the
 # build-libvirt job in build-images.yaml.
+#
+# openstack-hypervisor-operator is release-independent and absent from the list
+# as well. It is compiled from a pinned commit of the upstream operator's main
+# branch, so it has no source-refs.yaml key, no extra-packages.yaml entry and
+# no build args either. Its contract is
+# tests/container-images/verify_hvo.sh together with the build-hvo job in
+# build-images.yaml.
 
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"

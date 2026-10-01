@@ -18,7 +18,9 @@ FAIL=0
 # python-base is checked separately: it is where the user is created. ovn and
 # backup-shifter create the user themselves because they do not derive from
 # python-base, so each has its own function below. libvirt keeps root and
-# creates no user at all, and has its own function too.
+# creates no user at all, and has its own function too. The
+# openstack-hypervisor-operator image is a static Go binary on distroless that
+# runs as uid 65532 and creates no user either; it has its own function.
 SERVICES="keystone horizon glance placement barbican neutron cinder nova nova-compute"
 
 # shellcheck source=tests/lib/assertions.sh
@@ -96,6 +98,22 @@ test_libvirt_deviation_comment() {
   assert_file_not_contains "libvirt/Dockerfile has no USER instruction" "$dockerfile" '^USER '
 }
 
+# --- Test 6: the openstack-hypervisor-operator image runs as distroless nonroot ---
+test_hvo_deviation_comment() {
+  echo "Test: openstack-hypervisor-operator Dockerfile has DEVIATION comment (distroless, uid 65532)"
+
+  local dockerfile="$PROJECT_ROOT/images/openstack-hypervisor-operator/Dockerfile"
+
+  assert_file_contains "openstack-hypervisor-operator/Dockerfile contains DEVIATION comment" \
+    "$dockerfile" "# DEVIATION"
+  assert_contains "DEVIATION comment names the distroless base" \
+    "$(deviation_block "$dockerfile")" "distroless"
+  assert_contains "DEVIATION comment names the openstack user it does not create" \
+    "$(deviation_block "$dockerfile")" "openstack"
+  assert_file_contains "openstack-hypervisor-operator/Dockerfile runs as 65532:65532" \
+    "$dockerfile" '^USER 65532:65532$'
+}
+
 # --- Run all tests ---
 echo "=== DEVIATION comment verification tests ==="
 echo ""
@@ -110,6 +128,8 @@ echo ""
 test_backup_shifter_deviation_comment
 echo ""
 test_libvirt_deviation_comment
+echo ""
+test_hvo_deviation_comment
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
