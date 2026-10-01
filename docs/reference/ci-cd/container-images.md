@@ -45,18 +45,19 @@ Service images (e.g., `keystone`) use a multi-stage build: stage 1 extends `venv
 to install the service, then stage 2 extends `python-base` and copies only the virtualenv
 from stage 1. This ensures the final image contains no build tools.
 
-Three images sit outside that lineage. They carry no OpenStack code and build
-straight on `ubuntu:noble`:
+The release-independent images sit outside that lineage. They carry no
+OpenStack code and build straight on `ubuntu:noble`:
 
 ```text
 ubuntu:noble
 ├── ovn                        Stage 1 (build): compile OVS + OVN from pinned upstream git
 ├── ovn                        Stage 2 (runtime): copy binaries, schemas and ctl scripts, add runtime apt packages
 ├── keystone-federation-proxy  Single stage: distro apache2 + mod_auth_openidc + mod_auth_mellon
-└── backup-shifter             Single stage: distro rclone
+├── backup-shifter             Single stage: distro rclone
+└── libvirt                    Single stage: distro libvirt + QEMU + OVMF
 ```
 
-All three are described under [Release-independent images](#release-independent-images).
+Each is described under [Release-independent images](#release-independent-images).
 
 ## Base Images
 
@@ -1387,6 +1388,86 @@ bash tests/container-images/verify_backup_shifter.sh c5c3/backup-shifter:latest
 Its build, verification and tag scheme are described in
 [build-backup-shifter / merge-backup-shifter-image](./build-images-workflow.md#build-backup-shifter-merge-backup-shifter-image).
 
+### libvirt
+
+**Location:** `images/libvirt/Dockerfile`
+
+The libvirt daemon and QEMU for hypervisor nodes whose host image has neither:
+a single stage on `ubuntu:noble` with every package taken from the Ubuntu
+archive, so the image has no version pin of its own and follows the `noble`
+package set. The hypervisor package of issue #1142 runs it privileged as a
+DaemonSet beside `nova-compute`.
+
+| Package | Why it is installed |
+| --- | --- |
+| `dmidecode` | libvirt reads the host's SMBIOS (firmware system information) data with it |
+| `iproute2` | `ip`; a Recommends of `libvirt-daemon-system`, which `--no-install-recommends` skips |
+| `kmod` | `modprobe`, for loading the `vhost_net` kernel module from the host's module tree |
+| `libvirt-clients` | `virsh`, and `virt-admin` for reloading the daemon's TLS certificates |
+| `libvirt-daemon-system` | `libvirtd`, `virtlogd` and the QEMU driver for `qemu:///system`, through its dependency `libvirt-daemon`; the configuration under `/etc/libvirt`, the `libvirt` and `kvm` groups and the `libvirt-qemu` user. It pulls in `systemd`, which brings `systemd-run` |
+| `ovmf` | UEFI firmware for guests: `OVMF_CODE_4M.fd` and `OVMF_VARS_4M.fd` |
+| `qemu-system-x86` | `qemu-system-x86_64`, the emulator for x86 guests; `libvirt-daemon` only recommends a QEMU |
+| `qemu-utils` | `qemu-img`, for disk images |
+
+**Why noble:** `images/nova-compute/` builds `libvirt-python` against noble's
+libvirt 10.0.0 and installs `libvirt0` at runtime. Building this image on noble
+makes the client in `nova-compute` and the daemon here one libvirt.
+`tests/container-images/verify_libvirt.sh` pins the major version and fails
+unless `libvirtd --version` reports 10. The apt packages carry no version pin
+(see `.hadolint.yaml`), so a rebuild can move the libvirt point release; only a
+major move fails the check.
+
+**What the image does not carry:** the image has no configuration of its own
+and no `ENTRYPOINT` or `CMD`. The consumer renders `libvirtd.conf`, `qemu.conf`
+and the start command. `libvirt-daemon-system` depends on
+`libvirt-daemon-config-network`, which defines the `default` NAT network and
+links it into `/etc/libvirt/qemu/networks/autostart/`. The consumer runs
+libvirtd in the host's network namespace, where that network would create
+`virbr0` and NAT rules on the node, so the Dockerfile removes the autostart
+link and keeps the definition. `dnsmasq-base`, which the network would serve
+DHCP and DNS with, is a Recommends and is not installed.
+
+**Runs as root:** libvirtd has to run as root, so the image has no `USER`
+instruction and creates no `openstack` user (see
+[Design Deviations](#design-deviations)). The packages create the
+`libvirt-qemu` user (UID 64055) and the `libvirt` and `kvm` groups, and QEMU
+runs guests as `libvirt-qemu` with the group `kvm`. The package scripts assign
+the two group IDs at build time, and they are not part of the image's
+contract: the consumer sets the socket's ownership in its own configuration.
+
+The same applies to `/dev/kvm`. A privileged container gets its own device
+node with the host's group ID and mode. Debian and Ubuntu hosts create it as
+`root:kvm` with mode `0660`, and their `kvm` group ID usually differs from the
+image's, so QEMU cannot open the device and a guest with `virt_type=kvm` does
+not start. Before it starts libvirtd, the consumer runs
+`chown root:kvm /dev/kvm && chmod 0660 /dev/kvm` on the container's own device
+node. On a hostPath mount of the host's `/dev` the same command would change
+the host's device.
+
+**Tags:** CI publishes `ghcr.io/c5c3/libvirt` as `latest` and `<sha>` (see the
+[tag table](./build-images-workflow.md#release-independent-images)). Every run
+of `build-images.yaml` that is not a pull request rebuilds the image and moves
+`latest` to the new manifest: a push that touches any image, a change under
+`images/libvirt/` included, and the dispatch a base image refresh starts.
+[Retention](./build-images-workflow.md#retention) keeps only the manifest that
+carries `latest`. The previous one, left with its `<sha>` tag alone, is deleted
+once it is older than 24 hours, so a consumer that pins a digest has to follow
+`latest`.
+
+```bash
+docker build -t c5c3/libvirt:latest images/libvirt/
+
+# Run the full image contract check
+bash tests/container-images/verify_libvirt.sh c5c3/libvirt:latest
+```
+
+The contract check runs without `--privileged`. Its last test starts `libvirtd`
+in the container, waits at most 30 seconds for `/run/libvirt/libvirt-sock` and
+asks the QEMU driver for its version and its x86_64 domain capabilities.
+
+Its build, verification and tag scheme are described in
+[build-libvirt / merge-libvirt-image](./build-images-workflow.md#build-libvirt-merge-libvirt-image).
+
 ## Named Build Contexts
 
 Service Dockerfiles use Docker's named build context feature (`--build-context`) to inject
@@ -1724,7 +1805,7 @@ the two `make -j"$(nproc)"` runs dominate either way.
 
 ## Design Deviations
 
-The implementation deviates from the original design document in one area,
+The implementation deviates from the original design document in two areas,
 documented with `# DEVIATION` comments in the affected Dockerfiles:
 
 **Generic `openstack` user instead of per-service users:**
@@ -1748,7 +1829,14 @@ for the other half of the same decision. Neither derives from `python-base`, so
 each creates the `openstack` user and group itself. For `ovn` the distro
 packages would install separate `openvswitch` and `ovn` users, and the source
 build carries no such packaging. The `rclone` package that `backup-shifter`
-installs brings no service account at all. One identity across all images keeps
-the pod security contexts uniform, and in the `OVNCentral` backup CronJob it
-lets the `backup` init container and the `shifter` container share a single pod
-security context.
+installs brings no service account at all. One identity across all non-root
+images keeps the pod security contexts uniform, and in the `OVNCentral` backup
+CronJob it lets the `backup` init container and the `shifter` container share a
+single pod security context.
+
+**Root instead of the `openstack` user (libvirt):**
+
+`images/libvirt/Dockerfile` keeps root and creates no `openstack` user, and
+carries a `# DEVIATION` comment saying so. libvirtd has to run as root to
+manage domains, devices and cgroups on the node, and the libvirt packages
+create the `libvirt-qemu` user that QEMU runs guests as.
