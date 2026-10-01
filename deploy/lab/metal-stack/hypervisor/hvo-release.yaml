@@ -14,6 +14,10 @@
 # password goes into the chart's own Secret.
 #
 # The values that differ from the chart's defaults, and why:
+#   - fullnameOverride is hypervisor-operator: the chart names its metrics
+#     Service <fullname>-controller-manager-metrics-service, and with the
+#     release name as fullname that is 64 characters, one over the limit,
+#     so the install fails.
 #   - osAuthUrl is the in-cluster Keystone URL. The auth Secret carries the
 #     public https://keystone.127-0-0-1.nip.io:8443/v3, which resolves to the
 #     pod itself inside the cluster. The URL is
@@ -75,6 +79,7 @@ spec:
       valuesKey: region_name
       targetPath: controllerManager.manager.env.osRegionName
   values:
+    fullnameOverride: hypervisor-operator
     controllerManager:
       manager:
         image:
