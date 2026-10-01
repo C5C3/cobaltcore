@@ -19,13 +19,16 @@
 #   5. libvirtd.conf and qemu.conf carry every key and value the lab needs.
 #   6. libvirtd.sh starts libvirtd in a host scope and writes both host units,
 #      and the scripts carry their log messages.
-#   7. The CA, its Issuer and the three compute CRs carry their fields;
-#      NovaCompute has no extraConfig.
+#   7. The CA, its Issuer and the three compute CRs carry their fields: the
+#      metadata agent's memory, and the pool's named CPU model, which Nova's
+#      live-migration pre-check accepts; NovaCompute has no extraConfig.
 #   8. The hvo release feeds the auth Secret into the six chart values, sets
-#      the lab values, and its post-renderer aliases the four gateway names to
-#      the alias Service's ClusterIP and trusts the gateway certificates.
-#   9. The kna release sets the libvirt URI, the node label field path and
-#      NAMESPACE.
+#      the lab values and a fullnameOverride that keeps every object name
+#      within 63 characters, and its post-renderer aliases the four gateway
+#      names to the alias Service's ClusterIP and trusts the gateway
+#      certificates.
+#   9. The kna release sets the libvirt URI, the node label field path, uid 0
+#      with DAC_OVERRIDE alone, and NAMESPACE.
 #  10. Both chart sources are pinned by digest.
 #  11. The hvo chart tag names the commit hack/ci-resolve-hvo-commit.sh prints.
 #  12. Both scripts parse, and pass shellcheck when it is on PATH.
@@ -354,7 +357,7 @@ FIXED
 test_ca_and_compute() {
   echo "Test: the libvirt CA and the three compute CRs"
 
-  render "$HYPERVISOR_DIR" 30 || return
+  render "$HYPERVISOR_DIR" 32 || return
 
   assert_eq "the Issuer lives in hypervisor-system" "hypervisor-system" \
     "$(val Issuer nova-hypervisor-agents-ca-issuer '.metadata.namespace')"
@@ -395,6 +398,8 @@ test_ca_and_compute() {
   assert_eq "the metadata agent signs with the ControlPlane's shared secret" \
     "controlplane-nova-metadata-secret" \
     "$(val NeutronMetadataAgent lab-metadata-agent "$agent.novaMetadata.sharedSecretRef.name")"
+  assert_eq "the metadata agent gets the memory its privsep daemons need" "768Mi 768Mi" \
+    "$(val NeutronMetadataAgent lab-metadata-agent "$agent.resources.requests.memory + \" \" + $agent.resources.limits.memory")"
 
   assert_eq "the pool follows controlplane-nova" "controlplane-nova" \
     "$(val NovaCompute lab '.spec.novaRef.name')"
@@ -403,8 +408,10 @@ test_ca_and_compute() {
   assert_eq "the pool selects nothing else" "1" \
     "$(val NovaCompute lab '.spec.nodeSelector | length')"
   assert_eq "the pool runs KVM" "kvm" "$(val NovaCompute lab '.spec.libvirt.virtType')"
-  assert_eq "the pool passes the host CPU through" "host-passthrough" \
+  assert_eq "the pool names a CPU model, which Nova's migration pre-check accepts" "custom" \
     "$(val NovaCompute lab '.spec.libvirt.cpuMode')"
+  assert_eq "the model is the lab workers' host-model" "Skylake-Server-IBRS" \
+    "$(val NovaCompute lab '.spec.libvirt.cpuModels | join(",")')"
   assert_eq "the pool keeps qcow2 disks" "qcow2" "$(val NovaCompute lab '.spec.libvirt.imagesType')"
   assert_eq "the pool has no extraConfig" "false" "$(val NovaCompute lab '.spec | has("extraConfig")')"
   assert_eq "the pool names no image" "false" "$(val NovaCompute lab '.spec | has("image")')"

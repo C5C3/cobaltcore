@@ -24,6 +24,10 @@ spec:
 # Serves 169.254.169.254 to the servers of every chassis node. It proxies to
 # the in-cluster Nova metadata API with the shared secret the ControlPlane
 # generates.
+#
+# The memory is measured on the lab: once the agent provisions a network's
+# metadata namespace it runs its privsep daemons beside itself, about 550Mi
+# with one network, and the operator's default of 368Mi gets it OOM-killed.
 apiVersion: neutron.openstack.c5c3.io/v1alpha1
 kind: NeutronMetadataAgent
 metadata:
@@ -36,6 +40,11 @@ spec:
     tag: "2025.2"
   chassisRef:
     name: lab-chassis
+  resources:
+    requests:
+      memory: 768Mi
+    limits:
+      memory: 768Mi
   novaMetadata:
     host: controlplane-nova-metadata.openstack.svc
     port: 8775
@@ -43,8 +52,17 @@ spec:
     sharedSecretRef:
       name: controlplane-nova-metadata-secret
 ---
-# KVM with the host CPU passed through, and qcow2 instance disks on the
-# node's /var/lib/nova. No extraConfig: the libvirt driver is Nova's default.
+# KVM with a named CPU model, and qcow2 instance disks on the node's
+# /var/lib/nova. No extraConfig: the libvirt driver is Nova's default.
+#
+# The model is the one both lab workers report (Xeon D-2141I, libvirt's
+# host-model is Skylake-Server-IBRS). With host-passthrough or host-model,
+# Nova's live-migration pre-check compares the source host's raw CPU
+# features with what the destination's QEMU offers and refuses every move
+# ("Unacceptable CPU info: CPU doesn't have compatibility"), although
+# `virsh hypervisor-cpu-compare` on the destination accepts the guest CPU.
+# A custom model is what Nova then compares, and it passes. A worker with an
+# older CPU generation needs a model both can run.
 apiVersion: nova.openstack.c5c3.io/v1alpha1
 kind: NovaCompute
 metadata:
@@ -57,5 +75,7 @@ spec:
     openstack.c5c3.io/nova-compute-pool: lab
   libvirt:
     virtType: kvm
-    cpuMode: host-passthrough
+    cpuMode: custom
+    cpuModels:
+      - Skylake-Server-IBRS
     imagesType: qcow2
