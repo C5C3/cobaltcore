@@ -237,6 +237,37 @@ test_deletion_cap_is_reported() {
   assert_contains "and surfaced as a warning" "$(plan_messages "$fixture" --max-deletions 1)" "deletion cap reached"
 }
 
+# --- Test 9: a package that was never published has nothing to prune ---
+# The only case that needs the API path: the module is loaded with its request()
+# replaced by a stub that answers 404, the way GHCR does for an unknown package.
+run_against_missing_package() {
+  python3 - "$SCRIPT_UNDER_TEST" "$@" <<'PYEOF'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("ghcr_prune", sys.argv[1])
+prune = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(prune)
+prune.request = lambda url, **kwargs: (404, {}, b"")
+sys.exit(prune.main(["--org", "demo-org", "--package", "demo", "--token", "t"] + sys.argv[2:]))
+PYEOF
+}
+
+test_missing_package_is_fatal_only_for_a_full_sweep() {
+  echo "Test: an unpublished package ends a narrowed run cleanly and fails a full sweep"
+  local exit_code=0 output
+
+  output=$(run_against_missing_package --only-tag-pattern '^e2e-42-' --min-age-hours 0 2>&1) || exit_code=$?
+  assert_eq "narrowed mode exits 0" "0" "$exit_code"
+  assert_contains "and says there was nothing to prune" "$output" "package not found: demo-org/demo; nothing to prune"
+
+  exit_code=0
+  output=$(run_against_missing_package 2>&1) || exit_code=$?
+  assert_eq "a full sweep exits 1" "1" "$exit_code"
+  assert_contains "and names the package" "$output" "package not found: demo-org/demo"
+  assert_not_contains "without calling it prunable" "$output" "nothing to prune"
+}
+
 # --- Run all tests ---
 echo "=== ghcr-prune-stale-versions.py tests ==="
 echo ""
@@ -255,6 +286,8 @@ echo ""
 test_empty_keep_set_aborts_full_sweep
 echo ""
 test_deletion_cap_is_reported
+echo ""
+test_missing_package_is_fatal_only_for_a_full_sweep
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
