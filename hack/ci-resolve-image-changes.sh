@@ -8,17 +8,17 @@
 #
 # Reads the paths-filter outputs of the build-images workflow (passed as
 # FILTER_* env vars) and decides which services enter the build matrix and
-# which of the four release-independent images are built. A service is built
-# when its own sources changed; an image is built when its own sources changed.
+# which of the release-independent images are built. A service is built when
+# its own sources changed; an image is built when its own sources changed.
 #
 # Three inputs override that and build everything, because everything is built
 # from them: any event that is not a pull request, a change to the workflow's
 # own plumbing (the workflow file, the composite actions, the build scripts),
 # and a change to the base images or the release configuration. The base class
 # also builds the Tempest image, which is built FROM python-base and
-# venv-builder and reads releases/<release>/. The OVN, federation proxy and
-# backup shifter images build FROM ubuntu:noble and read neither, so they come
-# from their own filters only.
+# venv-builder and reads releases/<release>/. The OVN, federation proxy, backup
+# shifter and libvirt images build FROM ubuntu:noble and read neither, so they
+# come from their own filters only.
 #
 # Required env vars:
 #   EVENT_NAME   — github.event_name
@@ -32,6 +32,7 @@
 #   FILTER_ovn           — OVN image sources
 #   FILTER_proxy         — Keystone federation proxy image sources
 #   FILTER_shifter       — Backup shifter image sources
+#   FILTER_libvirt       — Libvirt image sources
 #   FILTER_plumbing      — The workflow, its composite actions and hack scripts
 #   Anything but the literal "true" is false, including the empty string the
 #   skipped filter step yields on push and workflow_dispatch.
@@ -45,6 +46,7 @@
 #   build-ovn     — true or false
 #   build-proxy   — true or false
 #   build-shifter — true or false
+#   build-libvirt — true or false
 #
 # To add a new service: add a svc_<service> paths filter, its FILTER_svc_<service>
 # env line, and the name to ALL_SERVICES, all in the changes job of
@@ -101,11 +103,13 @@ if [[ "${build_everything}" == "true" ]]; then
   build_ovn=true
   build_proxy=true
   build_shifter=true
+  build_libvirt=true
 else
   build_tempest=$(yesno filter_on tempest)
   build_ovn=$(yesno filter_on ovn)
   build_proxy=$(yesno filter_on proxy)
   build_shifter=$(yesno filter_on shifter)
+  build_libvirt=$(yesno filter_on libvirt)
 
   services=""
   if filter_on base; then
@@ -131,3 +135,4 @@ emit build-tempest "${build_tempest}"
 emit build-ovn "${build_ovn}"
 emit build-proxy "${build_proxy}"
 emit build-shifter "${build_shifter}"
+emit build-libvirt "${build_libvirt}"
