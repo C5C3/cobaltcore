@@ -21,6 +21,8 @@
 #      docs/reference/infrastructure/infrastructure-manifests.md, which links
 #      the page
 #   8. Proven by names the date of a lab run and no chainsaw suite
+#   9. Part 1, Step 4 holds no instruction to repeat the apply: deploy-infra
+#      returns only once the cluster admits it
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -306,6 +308,17 @@ test_proven_by() {
   assert_not_contains "Proven by names no chainsaw suite" "$body" "chainsaw test --test-dir"
 }
 
+# --- Test 9: Step 4 applies once ---
+test_step_4_has_no_retry_instruction() {
+  echo "Test: Part 1, Step 4 holds no instruction to repeat the apply"
+  local step
+  step="$(section '^## Part 1: ' |
+    awk '/^### Step 4:/ { inside = 1; next } inside && /^### / { exit } inside { print }')"
+  assert_not_empty "Part 1 holds Step 4" "$step"
+  assert_not_contains "Step 4 holds no 'Repeat'" "$step" "Repeat"
+  assert_not_contains "Step 4 holds no 'until it succeeds'" "$step" "until it succeeds"
+}
+
 test_frontmatter
 test_sidebar
 test_sections
@@ -314,6 +327,7 @@ test_devstack
 test_part_2_standalone
 test_one_runbook
 test_proven_by
+test_step_4_has_no_retry_instruction
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

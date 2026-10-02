@@ -102,8 +102,9 @@ The script deploys onto the cluster the current kubeconfig context points at
 and never switches the context. It refuses the kind-only opt-ins
 (`WITH_NFS`, `WITH_VPA` and the other flags that need a kind node), checks the
 cluster before it applies anything, and installs the shared infrastructure and
-the ControlPlane operator stack. When it completes, it prints the port-forward
-command on its `Access:` line. [`make deploy-infra`](./reference/infrastructure/e2e-deployment.md#make-deploy-infra)
+the ControlPlane operator stack. It returns once the ten operator releases are
+Ready and the cluster admits the manifests of Step 4. When it completes, it
+prints the port-forward command on its `Access:` line. [`make deploy-infra`](./reference/infrastructure/e2e-deployment.md#make-deploy-infra)
 describes every step and variable.
 
 ### Step 4: Apply the OVN central and the ControlPlane {#cp-apply}
@@ -133,10 +134,6 @@ gives the reason behind each setting.
 
 <<< @/../deploy/lab/metal-stack/controlplane/controlplane-lab.yaml
 :::
-
-The apply fails with `no matches for kind` while a service operator's chart
-still installs its CRDs, and with a webhook connection error while the
-c5c3-operator's webhook starts. Repeat `kubectl apply -k` until it succeeds.
 
 ### Step 5: Onboard the database-engine tenant {#cp-tenant}
 
@@ -475,10 +472,12 @@ Every `bash` block of this page but the `git clone` and the CA file of Part 1,
 Step 7 ran in page order on
 2026-10-02, from commit `715eafd3`, on shoot `forge` with two workers and
 Kubernetes v1.35.6, from a bare cluster to a bare cluster. The block of Part 1,
-Step 4 took three attempts and the block of Part 2, Step 3 two, each after the
-error its step names; every other block exited 0 on its first. The console
-commands of Part 2, Step 6 were typed by a script. The teardown waited five
-minutes for the stack's objects in `openstack`
+Step 4 took three attempts, each repeat after `no matches for kind` or a
+webhook connection error, and the block of Part 2, Step 3 two, after the error
+its step names; every other block exited 0 on its first. The wait at the
+end of Part 1, Step 3 replaced those repeats of Step 4 afterwards and has not
+run on the lab. The console commands of Part 2, Step 6 were typed by a
+script. The teardown waited five minutes for the stack's objects in `openstack`
 ([#1186](https://github.com/c5c3/cobaltcore/issues/1186)) and then finished.
 That run passed `--insecure` to every `openstack` command. The CA file of
 Part 1, Step 7 replaced the flag afterwards and has not run on the lab: the

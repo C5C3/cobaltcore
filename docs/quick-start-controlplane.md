@@ -72,7 +72,9 @@ ControlPlane operator stack (keystone-operator, horizon-operator,
 glance-operator, placement-operator, barbican-operator, ovn-operator,
 neutron-operator, cinder-operator, nova-operator, K-ORC, c5c3-operator) from
 the published charts. It does not create the `ControlPlane` CR itself; you
-create and apply that in Step 4. The RabbitMQ Cluster Operator that serves the managed bus
+create and apply that in Step 4. The command returns once the operator
+releases are Ready and the cluster admits the manifests of Steps 3 and 4.
+The RabbitMQ Cluster Operator that serves the managed bus
 arrives through a Flux Kustomization of its own, on every cluster this script
 provisions, with or without `WITH_CONTROLPLANE=true`. In this mode the
 ControlPlane provisions its own MariaDB/Memcached (managed mode), so
