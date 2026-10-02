@@ -282,15 +282,16 @@ test_every_current_value_parses() {
   # Exact counts, not a lower bound: the only path that reaches `continue`
   # without a FAIL is the digest-only classifier, so a misfiring probe
   # would otherwise move entries from replayed to skipped in bulk while a
-  # single survivor kept the sweep green. The two digest-only entries are
-  # the K-ORC GitRepository commit and the openstack-hypervisor-operator
-  # ARG HVO_COMMIT pin, both commits of an upstream main branch.
+  # single survivor kept the sweep green. The three digest-only entries are
+  # the K-ORC GitRepository commit, the openstack-hypervisor-operator
+  # ARG HVO_COMMIT pin and the kvm-node-agent ARG KNA_COMMIT pin, each a
+  # commit of an upstream main branch.
   local entry_count
   entry_count="$(jq '.customManagers | length' "$RENOVATE_FILE")"
-  assert_eq "exactly two digest-only customManagers entries are skipped" \
-    "2" "$digest_only"
+  assert_eq "exactly three digest-only customManagers entries are skipped" \
+    "3" "$digest_only"
   assert_eq "every other customManagers entry was replayed" \
-    "$((entry_count - 2))" "$replayed"
+    "$((entry_count - 3))" "$replayed"
 }
 
 # --- Run ---

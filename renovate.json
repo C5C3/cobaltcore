@@ -507,6 +507,20 @@
     },
     {
       "customType": "regex",
+      "description": "kvm-node-agent image: a commit of upstream main, tracked as a digest of the branch",
+      "managerFilePatterns": [
+        "/images/kvm-node-agent/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "(?m)^ARG KNA_COMMIT=(?<currentDigest>[a-f0-9]{40})\\s*$"
+      ],
+      "currentValueTemplate": "main",
+      "depNameTemplate": "https://github.com/cobaltcore-dev/kvm-node-agent",
+      "datasourceTemplate": "git-refs",
+      "packageNameTemplate": "https://github.com/cobaltcore-dev/kvm-node-agent"
+    },
+    {
+      "customType": "regex",
       "managerFilePatterns": [
         "/operators/ovn/internal/controller/image\\.go$/"
       ],
@@ -1004,6 +1018,16 @@
       "minimumReleaseAge": "3 days",
       "schedule": ["before 6am on monday"],
       "groupName": "openstack-hypervisor-operator"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/kvm-node-agent/Dockerfile"],
+      "matchPackageNames": ["https://github.com/cobaltcore-dev/kvm-node-agent"],
+      "matchUpdateTypes": ["digest"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "schedule": ["before 6am on monday"],
+      "groupName": "kvm-node-agent"
     },
     {
       "matchManagers": ["custom.regex"],
