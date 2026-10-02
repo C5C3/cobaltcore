@@ -21,6 +21,13 @@ import (
 // file the container passes to neutron-ovn-metadata-agent as --config-file.
 const metadataAgentConfigFile = "neutron_ovn_metadata_agent.ini"
 
+// agentRootHelper is the [agent] root_helper the operator renders: the command
+// oslo.privsep puts in front of privsep-helper for every privsep context the
+// agent starts. env keeps the PATH of the agent process, which leads with
+// /var/lib/openstack/bin, where privsep-helper is installed. An empty value
+// does not drop the prefix: oslo.privsep falls back to sudo.
+const agentRootHelper = "env"
+
 // ovsdbSocketPath is the local Open vSwitch database the agent reads its node's
 // port bindings from. The socket is the one the OVNChassis pods create on the
 // host, which is why the two workloads have to share a node.
@@ -83,12 +90,16 @@ func (r *NeutronMetadataAgentReconciler) reconcileAgentConfig(ctx context.Contex
 // directly to assert the rendered defaults stay in lockstep with
 // neutronv1alpha1.MetadataAgentOwnedConfigKeys.
 //
-// Three groups of keys are deliberately absent. metadata_proxy_shared_secret
+// Two groups of keys are deliberately absent. metadata_proxy_shared_secret
 // reaches the process as OS_DEFAULT__METADATA_PROXY_SHARED_SECRET, so the
-// credential stays out of the ConfigMap every agent pod mounts. [DEFAULT]
-// root_helper and the [privsep] helper_command keys stay at their oslo defaults
-// of "sudo" and "sudo privsep-helper": the image ships /usr/bin/sudo and the
-// container runs as root, so the defaults resolve.
+// credential stays out of the ConfigMap every agent pod mounts. The
+// per-context [privsep*] helper_command keys stay unset, because [agent]
+// root_helper already prefixes the helper of every context.
+//
+// [agent] root_helper is rendered as env instead of its oslo default of sudo.
+// sudo replaces PATH with its secure_path, which drops /var/lib/openstack/bin,
+// so it finds no privsep-helper. The container already runs as uid 0, so sudo
+// has no privilege to add.
 func agentOperatorDefaults(cr *neutronv1alpha1.NeutronMetadataAgent, chassis resolvedChassis) map[string]map[string]string {
 	logging := effectiveLogging(cr.Spec.Logging)
 	defaults := map[string]map[string]string{
@@ -101,6 +112,10 @@ func agentOperatorDefaults(cr *neutronv1alpha1.NeutronMetadataAgent, chassis res
 			// release bump does not change the config for it and roll the
 			// DaemonSet on every compute node.
 			"metadata_workers": fmt.Sprintf("%d", ptr.Deref(cr.Spec.MetadataWorkers, neutronv1alpha1.DefaultMetadataWorkers)),
+		},
+		// The command the agent starts privsep-helper through.
+		"agent": {
+			"root_helper": agentRootHelper,
 		},
 		// The local database the agent watches its node's port bindings in.
 		"ovs": {

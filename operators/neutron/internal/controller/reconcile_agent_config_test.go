@@ -108,19 +108,30 @@ func TestReconcileAgentConfig_SouthboundAddressFollowsTheCentral(t *testing.T) {
 		To(ContainSubstring("ovn_sb_connection = ssl:10.96.0.99:6642"))
 }
 
-// Three groups of keys must never reach the file: the shared secret, which is
-// env-injected and would otherwise be copied into a ConfigMap every pod mounts,
-// and the two privsep escalation keys, whose oslo defaults ("sudo" and "sudo
-// privsep-helper") are what the image and the root container resolve.
-func TestReconcileAgentConfig_NeverRendersTheSecretOrTheRootHelpers(t *testing.T) {
+// The operator's defaults leave two groups of keys out of the file: the shared
+// secret, which is env-injected and would otherwise be copied into a ConfigMap
+// every pod mounts, and the per-context privsep helper_command keys, whose
+// helper [agent] root_helper already prefixes.
+func TestReconcileAgentConfig_DefaultsOmitTheSecretAndTheHelperCommands(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cr := withNovaMetadata("shared_secret")
 	r, name := renderAgentConfig(t, cr)
 
 	conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
 	g.Expect(conf).NotTo(ContainSubstring("metadata_proxy_shared_secret"))
-	g.Expect(conf).NotTo(ContainSubstring("root_helper"))
 	g.Expect(conf).NotTo(ContainSubstring("helper_command"))
+}
+
+// An agent that sets nothing gets the operator's privsep helper, so the
+// shipped image starts privsep-helper without a hand-set extraConfig.
+func TestReconcileAgentConfig_RendersTheRootHelper(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := validAgent()
+	g.Expect(cr.Spec.ExtraConfig).To(BeNil())
+	r, name := renderAgentConfig(t, cr)
+
+	conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
+	g.Expect(conf).To(ContainSubstring("[agent]\nroot_helper = env\n"))
 }
 
 // The Nova keys follow the block that names them: an agent proxying nowhere
@@ -290,8 +301,10 @@ func TestReconcileAgentConfig_ExtraConfigOverridesTheDefaults(t *testing.T) {
 	g.Expect(conf).To(ContainSubstring("metadata_backlog = 2048"))
 	g.Expect(conf).To(ContainSubstring("[agent]"))
 	g.Expect(conf).To(ContainSubstring("report_interval = 30"))
-	// The operator's own DEFAULT keys survive beside the addition.
+	// The operator's own keys survive beside the additions, in [DEFAULT] and in
+	// the [agent] section the addition shares with them.
 	g.Expect(conf).To(ContainSubstring("state_path = " + neutronStatePath))
+	g.Expect(conf).To(ContainSubstring("\nroot_helper = env\n"))
 }
 
 // An override of an operator-owned key is rendered (extraConfig is the last
@@ -503,6 +516,51 @@ func TestReconcileAgentConfig_AuthCACertOverrideIsReported(t *testing.T) {
 			ContainSubstring(corev1.EventTypeWarning),
 			ContainSubstring(config.EventReasonExtraConfigOwnedKeyOverride),
 		)))
+}
+
+// root_helper is owned but honored: a custom image may need another helper, so
+// an extraConfig value is rendered, since extraConfig is merged last, and the
+// condition and the Warning event say why the file departs from the default.
+func TestReconcileAgentConfig_RootHelperOverrideIsReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := validAgent()
+	cr.Spec.ExtraConfig = map[string]map[string]string{"agent": {"root_helper": "sudo"}}
+	r, name := renderAgentConfig(t, cr)
+
+	conf := renderedAgentConfigMap(t, r, name).Data[metadataAgentConfigFile]
+	g.Expect(conf).To(ContainSubstring("\nroot_helper = sudo\n"))
+	g.Expect(conf).NotTo(ContainSubstring("root_helper = env"))
+
+	cond := agentCondition(cr, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+	g.Expect(cond.Message).To(ContainSubstring("[agent] root_helper"))
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
+		To(ContainElement(And(
+			ContainSubstring(corev1.EventTypeWarning),
+			ContainSubstring(config.EventReasonExtraConfigOwnedKeyOverride),
+		)))
+}
+
+// An agent that carries the hand-set root_helper = env renders the same bytes
+// as one that sets nothing. The ConfigMap is content-addressed, so the equal
+// name means its DaemonSet does not roll at the operator upgrade, nor when the
+// entry is removed later. The entry is still reported until then.
+func TestReconcileAgentConfig_CarriedWorkaroundKeepsTheConfigMap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	_, plain := renderAgentConfig(t, validAgent())
+
+	carrying := validAgent()
+	carrying.Spec.ExtraConfig = map[string]map[string]string{"agent": {"root_helper": "env"}}
+	_, carried := renderAgentConfig(t, carrying)
+
+	g.Expect(carried).To(Equal(plain), "the carried workaround must not change the content-hashed name")
+
+	cond := agentCondition(carrying, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Message).To(ContainSubstring("[agent] root_helper"))
 }
 
 // nova_metadata_insecure has no typed field, so an extraConfig value is rendered
