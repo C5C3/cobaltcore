@@ -59,6 +59,96 @@ compute service is deleted after the pod is gone.
 | `cpuModels` | `[]string` (items `^[A-Za-z0-9_.-]+$`) | no | none | `[libvirt] cpu_models`, rendered comma-joined. Required with `cpuMode: custom` and refused otherwise |
 | `imagesType` | `string` (Enum `default`, `qcow2`, `raw`, `flat`) | no | none | `[libvirt] images_type`. When empty the key is not rendered. The `rbd`, `lvm` and `ploop` backends are not offered: the image carries neither a Ceph client nor `lvm2` |
 
+### Changing the libvirt settings of a pool with servers
+
+A change of `virtType`, `cpuMode`, `cpuModels` or `imagesType` renders a new
+`{name}-config-<hash>` ConfigMap, and the pod template names it. Under
+`RollingUpdate` the pool's pods restart, `maxUnavailable` nodes at a time.
+Under `OnDelete` a pod keeps the old file until it is deleted.
+
+`nova-compute` reads `compute-pool.conf` when it starts. A server that runs
+keeps the CPU of its domain: the restart of `nova-compute` leaves the domain
+alone. A hard reboot (`openstack server reboot --hard`) builds the domain anew
+from the configuration of the `nova-compute` process on the server's node and
+replaces its live and its persistent definition. It applies the new CPU only
+once that node's pod has restarted. A hard reboot handled by the old pod keeps
+the old CPU and has to be repeated.
+
+The pod has no probe, so it counts as ready as soon as its container starts.
+On the lab `nova-compute` took requests 24 to 28 seconds after its pod
+started, and a hard reboot sent in that window is lost. At start-up
+`nova-compute` clears the reboot's task state, Nova records the reboot action
+as `Error` (`openstack server event list <server>`), and the server stays
+`ACTIVE` with its old domain. `openstack server reboot --hard --wait` reports
+success all the same.
+
+Before the hard reboot, wait for three things:
+
+- `ConfigReady` is `True` and its `observedGeneration` equals
+  `metadata.generation`: the operator has rendered the current spec, and the
+  condition's message names the ConfigMap. `status.observedGeneration` does
+  not show this. Every pass sets it, including one that stopped before the
+  ConfigMap or the DaemonSet step.
+- The pod on the server's node mounts that ConfigMap in its `pool-config`
+  volume. `DaemonSetReady`, which step 2 below waits for, does not prove it:
+  the operator reads the DaemonSet back from its cache right after it applies
+  the template, and a read that still shows the previous rollout reports
+  `True` for a moment. Otherwise `DaemonSetReady` stays `False` under
+  `OnDelete` until the pods that run the old template are deleted, and
+  `kubectl rollout status` answers
+  `rollout status is only available for RollingUpdate strategy type`.
+- The compute service of the server's node has reported since the pod's
+  `nova-compute` container started. `nova-compute` reports to Nova once it
+  takes requests, every `report_interval` (10 seconds by default). Read
+  `Updated At` while the container runs, and wait until it has changed twice
+  while the container's `startedAt` stays the same. The first change can come
+  from something else: a report the old process sent before it died that
+  `nova-conductor` applied late, a report the old process sent while it shut
+  down after `kubectl delete pod --force` had the DaemonSet start the new pod,
+  or another write to the service row such as `openstack compute service set`.
+  Do not compare `Updated At` with `startedAt`: `nova-conductor` stamps
+  `Updated At` with its own clock, `startedAt` comes from the node's, and a
+  skew between them can make the old process's last report look later than
+  the new container's start.
+
+```bash
+# 1. the operator has rendered the current spec, and the ConfigMap it names;
+#    kubectl wait skips a condition whose observedGeneration is older than
+#    metadata.generation
+kubectl wait novacompute/<name> -n <namespace> --for=condition=ConfigReady --timeout=5m
+kubectl get novacompute <name> -n <namespace> \
+  -o jsonpath='{.status.conditions[?(@.type=="ConfigReady")].message}{"\n"}'
+
+# 2. every pod runs the current template (rollout status: RollingUpdate only)
+kubectl rollout status daemonset/<name>-nova-compute -n <namespace> --timeout=15m
+kubectl wait novacompute/<name> -n <namespace> --for=condition=DaemonSetReady --timeout=15m
+
+# 3. the pod on the server's node: its name, the ConfigMap it mounts, the start
+#    of its nova-compute container, and the CPU keys it read
+kubectl get pod -n <namespace> -o name \
+  -l app.kubernetes.io/instance=<name>,app.kubernetes.io/component=nova-compute \
+  --field-selector spec.nodeName=<node>
+kubectl get -n <namespace> <pod> \
+  -o jsonpath='{.spec.volumes[?(@.name=="pool-config")].configMap.name}{"\n"}'
+kubectl get -n <namespace> <pod> \
+  -o jsonpath='{.status.containerStatuses[?(@.name=="nova-compute")].state.running.startedAt}{"\n"}'
+kubectl exec -n <namespace> <pod> -c nova-compute -- \
+  grep -E '^cpu_(mode|models)' /etc/nova/compute-pool.conf.d/compute-pool.conf
+
+# 4. the last report of the node's compute service: read it while the container
+#    runs, and again until it has changed twice
+openstack compute service list --service nova-compute --host <node> -c 'Updated At' -f value
+```
+
+`<node>` is the server's host
+(`openstack server show <server> -c OS-EXT-SRV-ATTR:host -f value`). With
+`spec.targetClusterRef` set, the `rollout status` line and the four pod lines
+run against the target cluster, the others against the management cluster.
+
+The lab moved its pool to `cpuMode: custom` because live migration between its
+nodes needed a named model; [Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)
+records that and the reproduction behind this section.
+
 ### NovaComputeUpdateStrategy
 
 | Field | Type | Required | Default | Description |
@@ -243,7 +333,7 @@ stays out of the aggregate. For the pipeline see
 | `NodesReady` | False | `NodeConflict` | A selected node is held by another pool; the message lists `node (held by <pool>)`. A Warning event `NodeConflict` records each new conflict once |
 | `NodesReady` | False | `NodesForbidden` | The Node list answered 403, which is the nova chart installed with `rbac.namespaceScoped=true` and a pool on the local cluster |
 | `NodesReady` | False | `NodeListError` | Listing or reading Nodes failed otherwise |
-| `ConfigReady` | True | `ConfigRendered` | `compute-pool.conf` is rendered into its ConfigMap |
+| `ConfigReady` | True | `ConfigRendered` | `compute-pool.conf` is rendered into its ConfigMap; the message names it |
 | `ConfigReady` | False | `WaitingForComputeConfig` | The contract Secret is not in the CR's namespace on the pool's cluster. The ControlPlane mirrors it for a ControlPlane-managed Nova; otherwise copy it ([Connect a compute cluster](../../guides/nova/connect-a-compute-cluster.md)) |
 | `ConfigReady` | False | `ComputeConfigIncomplete` | `nova-compute.conf`, `transport_url` or `password` is missing or empty; the message names them |
 | `ConfigReady` | False | `ConfigError` | Reading the Secret, or writing or pruning the ConfigMaps, failed |
