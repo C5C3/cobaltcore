@@ -5,10 +5,16 @@ quadrant: infrastructure
 
 # Hypervisor Cluster
 
-> **Status: sketch — not implemented.** Carried over in raw form from the
-> original
+> **Status: sketch — the dedicated cluster is not implemented.** Carried over
+> in raw form from the original
 > [C5C3 architecture document](https://c5c3.github.io/C5C3/03-components/02-hypervisor).
-> Nothing on this page exists in this repository yet.
+> What exists is the node layer: this repository has `NovaCompute`,
+> `OVNChassis` and `NeutronMetadataAgent`, and the
+> [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on two
+> workers of the control-plane cluster, beside a containerized libvirt
+> DaemonSet and the upstream openstack-hypervisor-operator and kvm-node-agent.
+> Their `Hypervisor` CRs belong to the API group `kvm.cloud.sap`, not to the
+> sketched `hypervisor.c5c3.io`.
 
 The original document plans a dedicated bare-metal Kubernetes cluster for
 compute virtualization: IronCore provisions the servers and installs
@@ -42,9 +48,10 @@ Whether the implemented management/target-cluster mechanics
 cluster is unexamined. The [Nova](../reference/nova/index.md) and
 [Neutron](../reference/neutron/index.md) control planes this cluster presumes
 are onboarded, and the [OVN operator](../reference/ovn/index.md) already
-projects `ovs` and `ovn-controller` onto labelled nodes. The compute side is
-missing: `nova-compute` and the node agents on dedicated compute clusters are
-tracked in [#1013](https://github.com/C5C3/cobaltcore/issues/1013). What such a
+projects `ovs` and `ovn-controller` onto labelled nodes. `NovaCompute` pools
+run `nova-compute` on labelled nodes of the control-plane cluster. What
+[#1013](https://github.com/C5C3/cobaltcore/issues/1013) still tracks is the
+attachment of a separate compute cluster to that control plane. What such a
 cluster reads from the control plane, and what it has to provide in return, is
 written down in [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md).
 

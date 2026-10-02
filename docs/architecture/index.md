@@ -146,7 +146,7 @@ IronCore. The table maps them to the state in this repository:
 | --- | --- | --- |
 | Management | GitOps hub, OpenBao, ESO, observability UI (Greenhouse, Aurora) | Collapsed into the single management cluster above; a dedicated cluster is a [sketch](../future/management-cluster.md) |
 | Control Plane | OpenStack control-plane services, K-ORC, infrastructure | Implemented as the management cluster, with optional [target clusters](../reference/target-clusters.md) for workload placement |
-| Hypervisor | Compute virtualization on bare metal (LibVirt, OVN, node agents) | [Sketch](../future/hypervisor-cluster.md); the [Nova](../reference/nova/index.md) compute control plane and the [OVN](../reference/ovn/index.md) chassis layer are onboarded, the compute clusters that run `nova-compute` are not ([#1013](https://github.com/C5C3/cobaltcore/issues/1013)) |
+| Hypervisor | Compute virtualization on bare metal (LibVirt, OVN, node agents) | The dedicated cluster is a [sketch](../future/hypervisor-cluster.md). The [Nova](../reference/nova/index.md) control plane, the [OVN](../reference/ovn/index.md) chassis layer and `NovaCompute` node pools are onboarded, and the [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on KVM inside one cluster. Attaching a separate compute cluster is tracked in [#1013](https://github.com/C5C3/cobaltcore/issues/1013) |
 | Storage | Ceph via Rook, storage observability | [Sketch](../future/storage-cluster.md); block storage itself is onboarded as the [Cinder](../reference/cinder/index.md) control-plane service on the management cluster |
 
 Beyond the clusters, the original document scopes services that are not

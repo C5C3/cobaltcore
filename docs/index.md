@@ -22,8 +22,10 @@ patterns — CRD layout, sub-reconciler chain, webhooks, finalizers,
 instrumentation — replicated by every other service operator. Horizon, Glance,
 Placement, Barbican, Cinder, Nova, and Neutron with its OVN layer are onboarded
 on the same scaffolding. The c5c3-operator ties the services together into a
-single ControlPlane resource, which projects Nova through `services.nova`. The
-compute nodes that join it are the follow-on
+single ControlPlane resource, which projects Nova through `services.nova`.
+Compute nodes join it through `NovaCompute` pools, which the
+[Quick Start (metal-stack)](./quick-start-metal-stack.md) runs on KVM; a
+separate compute cluster is the follow-on
 [#1013](https://github.com/C5C3/cobaltcore/issues/1013).
 
 ## Start here
@@ -34,6 +36,8 @@ compute nodes that join it are the follow-on
   local-build path, the production HelmRelease, E2E, and Tempest.
 - **[Quick Start (ControlPlane)](./quick-start-controlplane.md)** — bring up a
   full ControlPlane through the c5c3-operator.
+- **[Quick Start (metal-stack)](./quick-start-metal-stack.md)** — the same
+  ControlPlane on a metal-stack cluster, with servers on two KVM hypervisors.
 
 ## What's inside
 
