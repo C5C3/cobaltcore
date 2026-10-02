@@ -179,34 +179,51 @@ after the Envoy pod restarted, start it again.
 
 ### Step 7: Verify {#cp-verify}
 
-Log in as the admin through the port-forward:
+The Gateway serves one self-signed certificate per hostname, each in a Secret
+`<service>-nip-io-tls` in `openstack` whose `ca.crt` is the certificate
+itself. Collect them into one CA file for the OpenStack CLI:
 
 ```bash
+kubectl get secret -n openstack --field-selector type=kubernetes.io/tls -o json |
+  jq -r '.items[] | select(.metadata.name | endswith("-nip-io-tls")) | .data["ca.crt"] | @base64d' > gateway-ca.pem
+grep -c 'BEGIN CERTIFICATE' gateway-ca.pem
+```
+
+The count is the number of Gateway hostnames, twelve on the lab. `.gitignore`
+keeps `*.pem` out of git. Then log in as the admin through the port-forward:
+
+```bash
+export OS_CACERT="$PWD/gateway-ca.pem"
 export OS_AUTH_URL=https://keystone.127-0-0-1.nip.io:8443/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=$(kubectl get secret controlplane-keystone-admin-credentials -n openstack -o jsonpath='{.data.password}' | base64 -d)
 export OS_PROJECT_NAME=admin
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
-openstack --insecure token issue
+openstack token issue
 ```
 
-The command prints a token table. `--insecure` accepts the Gateway's
-self-signed certificates. On a host that cannot resolve `*.nip.io`, the tip in
-Step 7 of the [Quick Start (ControlPlane)](./quick-start-controlplane.md) gives
-the `/etc/hosts` entries. Then list the catalog, the compute services and the
+The command prints a token table. `OS_CACERT` makes the CLI verify every
+endpoint against the Gateway's certificates, so no command on this page takes
+`--insecure`, and the admin password goes only to a listener that holds one of
+their keys. A `certificate verify failed` error means the file predates a
+reissued certificate; write it again. On a host that cannot resolve
+`*.nip.io`, the tip in Step 7 of the
+[Quick Start (ControlPlane)](./quick-start-controlplane.md) gives the
+`/etc/hosts` entries. Then list the catalog, the compute services and the
 hypervisors:
 
 ```bash
-openstack --insecure catalog list
-openstack --insecure compute service list
-openstack --insecure hypervisor list
+openstack catalog list
+openstack compute service list
+openstack hypervisor list
 ```
 
 The catalog holds a row per service of the ControlPlane. The compute service
 list has no `nova-compute` row, and the hypervisor list is empty: no node runs
 a hypervisor yet. The image, placement and secret checks of the Quick Start
-(ControlPlane) run unchanged with these variables:
+(ControlPlane) run with these variables, with or without the `--insecure`
+they carry there:
 [Upload a first image](./quick-start-controlplane.md#upload-a-first-image),
 [List placement resource classes](./quick-start-controlplane.md#list-placement-resource-classes)
 and [Store and retrieve a first secret](./quick-start-controlplane.md#store-and-retrieve-a-first-secret),
@@ -218,7 +235,8 @@ Part 2 turns both workers into KVM hypervisors, boots a server on each,
 live-migrates one and evicts a node. It needs three things, whatever brought
 them up: a `Ready` ControlPlane `controlplane` in `openstack` with
 `spec.services.nova.hypervisorOperator`, a running port-forward to the Gateway
-on local port 8443, and the `OS_*` variables of an admin login exported. Run
+on local port 8443, and the `OS_*` variables of an admin login exported,
+`OS_CACERT` with the Gateway's certificates among them. Run
 it from the root of the clone with `KUBECONFIG` pointing at the cluster. The
 commands read the node names and their availability zone from the cluster:
 
@@ -252,7 +270,7 @@ kubectl label node --all openstack.c5c3.io/chassis=true \
   nova.openstack.cloud.sap/virt-driver=kvm \
   cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests
 kubectl annotate node --all nova.openstack.cloud.sap/custom-traits=CUSTOM_C5C3_LAB
-openstack --insecure --os-placement-api-version 1.6 trait create CUSTOM_C5C3_LAB
+openstack --os-placement-api-version 1.6 trait create CUSTOM_C5C3_LAB
 ```
 
 The labels select the nodes for the OVN chassis, the `NovaCompute` pool, the
@@ -311,8 +329,8 @@ kubectl wait hypervisor --all --timeout=20m \
 kubectl wait ovnchassis/lab-chassis neutronmetadataagent/lab-metadata-agent novacompute/lab \
   -n openstack --for=condition=Ready --timeout=20m
 kubectl get hypervisor -o custom-columns='NAME:.metadata.name,LIBVIRTD:.status.conditions[?(@.type=="libvirtd.service")].status,LIBVIRT:.status.conditions[?(@.type=="LibVirtConnection")].status,TLS:.status.conditions[?(@.type=="TLSCertificateInstalled")].status'
-openstack --insecure hypervisor list
-openstack --insecure aggregate list
+openstack hypervisor list
+openstack aggregate list
 ```
 
 Each `Hypervisor` shows `True` in the `LIBVIRTD`, `LIBVIRT` and `TLS` columns.
@@ -329,12 +347,12 @@ server on each node:
 for node in "${nodes[@]}"; do
   tests/e2e/nova/discover-hosts.sh controlplane-nova openstack "${node}"
 done
-openstack --insecure network create lab-net
-openstack --insecure subnet create lab-subnet --network lab-net --subnet-range 192.168.77.0/24
-openstack --insecure network show lab-net -c mtu -f value
-openstack --insecure server create lab-a --image cirros-kvm --flavor 1 --network lab-net \
+openstack network create lab-net
+openstack subnet create lab-subnet --network lab-net --subnet-range 192.168.77.0/24
+openstack network show lab-net -c mtu -f value
+openstack server create lab-a --image cirros-kvm --flavor 1 --network lab-net \
   --availability-zone "${zone}:${nodes[0]}" --wait
-openstack --insecure server create lab-b --image cirros-kvm --flavor 1 --network lab-net \
+openstack server create lab-b --image cirros-kvm --flavor 1 --network lab-net \
   --availability-zone "${zone}:${nodes[1]}" --wait
 for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
   kubectl exec -n openstack "${pod}" -c libvirtd -- virsh list
@@ -351,9 +369,9 @@ A server on a network without a router is reached through its console. Print
 node:
 
 ```bash
-openstack --insecure server show lab-b -c addresses -f value
-host=$(openstack --insecure server show lab-a -c OS-EXT-SRV-ATTR:host -f value)
-domain=$(openstack --insecure server show lab-a -c OS-EXT-SRV-ATTR:instance_name -f value)
+openstack server show lab-b -c addresses -f value
+host=$(openstack server show lab-a -c OS-EXT-SRV-ATTR:host -f value)
+domain=$(openstack server show lab-a -c OS-EXT-SRV-ATTR:instance_name -f value)
 libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
   --field-selector "spec.nodeName=${host}" -o name)
 kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${domain}"
@@ -382,9 +400,9 @@ with `Ctrl+]`.
 ### Step 7: Live-migrate a server {#hv-migrate}
 
 ```bash
-openstack --insecure server migrate --live-migration --wait lab-a
-openstack --insecure server show lab-a -c OS-EXT-SRV-ATTR:host -f value
-openstack --insecure server migration list --server lab-a
+openstack server migrate --live-migration --wait lab-a
+openstack server show lab-a -c OS-EXT-SRV-ATTR:host -f value
+openstack server migration list --server lab-a
 ```
 
 `lab-a` now runs on `nodes[1]`, beside `lab-b`, and the migration list shows the
@@ -404,10 +422,10 @@ kubectl patch hypervisor "${nodes[1]}" --type merge \
 kubectl wait --for=create "eviction/${nodes[1]}" --timeout=5m
 kubectl wait "eviction/${nodes[1]}" --timeout=20m \
   --for=jsonpath='{.status.conditions[?(@.type=="Evicting")].reason}'=Succeeded
-openstack --insecure server list --all-projects --host "${nodes[1]}"
+openstack server list --all-projects --host "${nodes[1]}"
 kubectl patch hypervisor "${nodes[1]}" --type merge \
   -p '{"spec":{"maintenance":"","maintenanceReason":""}}'
-openstack --insecure compute service list --service nova-compute
+openstack compute service list --service nova-compute
 ```
 
 The operator disables the node's compute service in Nova before it creates
@@ -423,9 +441,9 @@ compute service is `enabled` and `up` again.
 Delete the servers and the network, then the stack:
 
 ```bash
-openstack --insecure server delete --wait lab-a lab-b
-openstack --insecure subnet delete lab-subnet
-openstack --insecure network delete lab-net
+openstack server delete --wait lab-a lab-b
+openstack subnet delete lab-subnet
+openstack network delete lab-net
 EXTERNAL_CLUSTER=true make teardown-infra
 ```
 
@@ -437,7 +455,7 @@ nodes, so the teardown exits 1 with
 `Delete the servers on the lab hypervisors first (openstack server list --all-projects).`
 while a server is left. The node state under `/var/lib/nova`,
 `/var/lib/libvirt` and `/etc/pki` stays on the nodes. Stop the port-forward of
-Part 1 once the teardown has finished.
+Part 1 once the teardown has finished, and delete `gateway-ca.pem`.
 
 ## Caveats
 
@@ -453,7 +471,8 @@ worker first. With one worker left, no node can receive them.
 
 ## Proven by
 
-Every `bash` block of this page but the `git clone` ran in page order on
+Every `bash` block of this page but the `git clone` and the CA file of Part 1,
+Step 7 ran in page order on
 2026-10-02, from commit `715eafd3`, on shoot `forge` with two workers and
 Kubernetes v1.35.6, from a bare cluster to a bare cluster. The block of Part 1,
 Step 4 took three attempts and the block of Part 2, Step 3 two, each after the
@@ -461,6 +480,10 @@ error its step names; every other block exited 0 on its first. The console
 commands of Part 2, Step 6 were typed by a script. The teardown waited five
 minutes for the stack's objects in `openstack`
 ([#1186](https://github.com/c5c3/cobaltcore/issues/1186)) and then finished.
+That run passed `--insecure` to every `openstack` command. The CA file of
+Part 1, Step 7 replaced the flag afterwards and has not run on the lab: the
+OpenStack CLI 8.2.0 verified a certificate of the Gateway's shape (self-signed,
+`CA:FALSE`, empty subject) against such a file on a workstation.
 No chainsaw suite runs against the lab, because CI has no metal-stack cluster.
 The findings of the lab runs so far, upstream and in this repository, are
 listed under
