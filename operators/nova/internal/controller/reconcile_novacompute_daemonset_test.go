@@ -51,6 +51,33 @@ func ownedDaemonSet(t *testing.T, cr *novav1alpha1.NovaCompute, desired, ready i
 	return ds
 }
 
+// reconcilePoolDaemonSet runs the PoolConfig and DaemonSet steps of one pass
+// and returns the DaemonSet they leave behind.
+func reconcilePoolDaemonSet(t *testing.T, r *NovaComputeReconciler, cr *novav1alpha1.NovaCompute) *appsv1.DaemonSet {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	pass := daemonSetPass()
+	_, err := r.reconcileNovaComputeConfig(ctx, r.Client, cr, pass)
+	g.Expect(err).NotTo(HaveOccurred())
+	_, err = r.reconcileNovaComputeDaemonSet(ctx, r.Client, cr, pass)
+	g.Expect(err).NotTo(HaveOccurred())
+	ds := &appsv1.DaemonSet{}
+	g.Expect(r.Get(ctx, novaComputeDaemonSetKey, ds)).To(Succeed())
+	return ds
+}
+
+// mountedPoolConfigMapName returns the ConfigMap a NovaCompute pod spec mounts
+// its pool config from.
+func mountedPoolConfigMapName(spec *corev1.PodSpec) string {
+	for _, v := range spec.Volumes {
+		if v.Name == poolConfigVolume && v.ConfigMap != nil {
+			return v.ConfigMap.Name
+		}
+	}
+	return ""
+}
+
 func deletingNovaCompute() *novav1alpha1.NovaCompute {
 	cr := validNovaCompute()
 	cr.DeletionTimestamp = ptr.To(metav1.Now())
@@ -186,25 +213,47 @@ func TestReconcileNovaComputeDaemonSet_ZeroTermsLeavesAForeignDaemonSet(t *testi
 // on the pod template follows the contract.
 func TestReconcileNovaComputeDaemonSet_RotatedContractRollsThePods(t *testing.T) {
 	g := NewGomegaWithT(t)
-	ctx := context.Background()
 
 	annotationFor := func(password string) string {
 		cr := validNovaCompute()
 		r := newNovaComputeTestReconciler(nil, cr, computeContractSecret(password))
-		pass := daemonSetPass()
-		_, err := r.reconcileNovaComputeConfig(ctx, r.Client, cr, pass)
-		g.Expect(err).NotTo(HaveOccurred())
-		_, err = r.reconcileNovaComputeDaemonSet(ctx, r.Client, cr, pass)
-		g.Expect(err).NotTo(HaveOccurred())
-		ds := &appsv1.DaemonSet{}
-		g.Expect(r.Get(ctx, novaComputeDaemonSetKey, ds)).To(Succeed())
-		return ds.Spec.Template.Annotations[novaComputeConfigHashAnnotation]
+		return reconcilePoolDaemonSet(t, r, cr).Spec.Template.Annotations[novaComputeConfigHashAnnotation]
 	}
 
 	first := annotationFor("pw-1")
 	g.Expect(first).NotTo(BeEmpty())
 	g.Expect(annotationFor("pw-1")).To(Equal(first))
 	g.Expect(annotationFor("pw-2")).NotTo(Equal(first))
+}
+
+// TestReconcileNovaComputeDaemonSet_ChangedLibvirtSettingsRollThePods runs the
+// PoolConfig and DaemonSet steps on one pool before and after a cpuMode change:
+// the pod template moves to a new ConfigMap that carries the new keys, and the
+// previous ConfigMap stays for the pods that still mount it under OnDelete.
+func TestReconcileNovaComputeDaemonSet_ChangedLibvirtSettingsRollThePods(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := validNovaCompute()
+	cr.Spec.Libvirt = novav1alpha1.NovaComputeLibvirtSpec{VirtType: "kvm", CPUMode: "host-passthrough"}
+	r := newNovaComputeTestReconciler(nil, cr, computeContractSecret("pw-1"))
+
+	first := mountedPoolConfigMapName(&reconcilePoolDaemonSet(t, r, cr).Spec.Template.Spec)
+	g.Expect(first).NotTo(BeEmpty())
+	g.Expect(mountedPoolConfigMapName(&reconcilePoolDaemonSet(t, r, cr).Spec.Template.Spec)).To(Equal(first))
+
+	cr.Spec.Libvirt = novav1alpha1.NovaComputeLibvirtSpec{
+		VirtType: "kvm", CPUMode: "custom", CPUModels: []string{"Skylake-Server-IBRS"},
+	}
+	second := mountedPoolConfigMapName(&reconcilePoolDaemonSet(t, r, cr).Spec.Template.Spec)
+	g.Expect(second).NotTo(BeEmpty())
+	g.Expect(second).NotTo(Equal(first))
+
+	cm := &corev1.ConfigMap{}
+	g.Expect(r.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: second}, cm)).To(Succeed())
+	g.Expect(cm.Data[poolConfigFile]).To(ContainSubstring("cpu_mode = custom"))
+	g.Expect(cm.Data[poolConfigFile]).To(ContainSubstring("cpu_models = Skylake-Server-IBRS"))
+	g.Expect(r.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: first}, &corev1.ConfigMap{})).
+		To(Succeed(), "an OnDelete pod still mounts the previous ConfigMap")
 }
 
 func TestNovaComputeUpdateStrategy(t *testing.T) {
