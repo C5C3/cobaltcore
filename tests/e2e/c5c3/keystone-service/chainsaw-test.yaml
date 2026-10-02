@@ -340,6 +340,100 @@ spec:
               sleep 5
             done
           }
+          # Probe for LIVE data: a kv-v2 soft delete leaves the metadata behind, so
+          # `kv get` keeps exiting 0 with data:null after the value is purged.
+          # The exec itself is a failure path of its own: openbao-0 restarting or
+          # a broken stream must not read as a purged leaf, which is what
+          # discarding its output would do. Only data:null, or OpenBao saying the
+          # path is not there, ends the loop.
+          #
+          # kubectl's own transport errors therefore stay OUT of the match: with
+          # 2>&1 they land in the same buffer as OpenBao's, and openbao-0 is one
+          # replica of a Raft StatefulSet, so `pods "openbao-0" not found` and
+          # `container not found ("openbao")` are the two likeliest failures in
+          # this window. Matching a bare `not found` would read either of them as
+          # a purged leaf. stderr goes to a file of its own and only OpenBao's own
+          # missing-path wording ends the loop; anything else retries.
+          wait_kv_purged() { # <kv path> <timeoutSeconds> <what the purge follows>
+            local path="$1" timeout="$2" after="$3" deadline err kv_json
+            deadline=$(( $(date +%s) + timeout ))
+            err="$(mktemp)"
+            while true; do
+              if kv_json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${path}" 2>"${err}")"; then
+                jq -e '.data.data == null' <<<"${kv_json}" >/dev/null 2>&1 && break
+              elif grep -qiE 'no value found|no secret found' "${err}"; then
+                break
+              else
+                echo "WARN: could not read ${path} ($(cat "${err}")); retrying"
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${path} still holds a live value, or could not be read, ${timeout}s after ${after}"
+                rm -f "${err}"
+                exit 1
+              fi
+              sleep 5
+            done
+            rm -f "${err}"
+            echo "OK: ${path} holds no live value."
+          }
+          # The counterpart, for a path a purge check is about to watch: a purge
+          # check passes on a path that was never written, so the path has to
+          # hold a live value first. The JSON is key material, so nothing of it
+          # is printed; only jq's exit status leaves this function.
+          assert_kv_live() { # <kv path> <timeoutSeconds>
+            local path="$1" timeout="$2" deadline err kv_json
+            deadline=$(( $(date +%s) + timeout ))
+            err="$(mktemp)"
+            while true; do
+              if kv_json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${path}" 2>"${err}")" &&
+                jq -e '.data.data != null' <<<"${kv_json}" >/dev/null 2>&1; then
+                rm -f "${err}"
+                echo "OK: ${path} holds a live value."
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${path} held no live value within ${timeout}s ($(cat "${err}")); a purge check on it would prove nothing"
+                rm -f "${err}"
+                exit 1
+              fi
+              sleep 5
+            done
+          }
+          # A stall event marks a teardown that finished through a breaker
+          # instead of the ordering under test. Captured, then tested, so a
+          # failed call cannot read as "no such event" (see count_of).
+          assert_no_event() { # <reason> <namespace>
+            local reason="$1" ns="$2" out
+            if ! out="$(kubectl get events -n "${ns}" --field-selector "reason=${reason}" --no-headers 2>/dev/null)"; then
+              echo "ERROR: kubectl get events in ${ns} failed; refusing to report no ${reason} event"
+              exit 1
+            fi
+            if [ -n "${out}" ]; then
+              echo "ERROR: ${ns} holds ${reason} event(s):"
+              echo "${out}"
+              exit 1
+            fi
+            echo "OK: no ${reason} event in ${ns}"
+          }
+          # One read rather than a wait: the object has to be gone already. Only
+          # a NotFound counts as absent (see wait_gone); any other read error is
+          # retried twice, then fails the check.
+          assert_absent() { # <resource> <name> <namespace>
+            local res="$1" name="$2" ns="$3" err
+            for _ in 1 2 3; do
+              if err="$(kubectl get "${res}" "${name}" -n "${ns}" 2>&1 >/dev/null)"; then
+                echo "ERROR: ${res}/${name} in ${ns} is still present"
+                exit 1
+              elif grep -qi 'not found' <<<"${err}"; then
+                echo "OK: ${res}/${name} in ${ns} is gone"
+                return 0
+              fi
+              echo "WARN: kubectl get ${res}/${name} failed (${err}); retrying"
+              sleep 5
+            done
+            echo "ERROR: ${res}/${name} in ${ns} could not be read"
+            exit 1
+          }
           # A password is never passed to assert_eq or assert_nonempty: both echo
           # the value they were given. These two say pass or fail and nothing else.
           assert_secret_nonempty() { # <description> <value>
@@ -895,39 +989,7 @@ spec:
           done
           echo "OK: the consumer Secret, its ExternalSecret, the PushSecret, the source Secret and every password Secret are gone."
 
-          # Probe for LIVE data: a kv-v2 soft delete leaves the metadata behind, so
-          # `kv get` keeps exiting 0 with data:null after the value is purged.
-          # The exec itself is a failure path of its own: openbao-0 restarting or
-          # a broken stream must not read as a purged leaf, which is what
-          # discarding its output would do. Only data:null, or OpenBao saying the
-          # path is not there, ends the loop.
-          #
-          # kubectl's own transport errors therefore stay OUT of the match: with
-          # 2>&1 they land in the same buffer as OpenBao's, and openbao-0 is one
-          # replica of a Raft StatefulSet, so `pods "openbao-0" not found` and
-          # `container not found ("openbao")` are the two likeliest failures in
-          # this window. Matching a bare `not found` would read either of them as
-          # a purged leaf. stderr goes to a file of its own and only OpenBao's own
-          # missing-path wording ends the loop; anything else retries.
-          KV_DEADLINE=$(( $(date +%s) + 120 ))
-          KV_ERR="$(mktemp)"
-          while true; do
-            if kv_json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${WORKFLOW_KV}" 2>"${KV_ERR}")"; then
-              jq -e '.data.data == null' <<<"${kv_json}" >/dev/null 2>&1 && break
-            elif grep -qiE 'no value found|no secret found' "${KV_ERR}"; then
-              break
-            else
-              echo "WARN: could not read ${WORKFLOW_KV} ($(cat "${KV_ERR}")); retrying"
-            fi
-            if [ "$(date +%s)" -ge "${KV_DEADLINE}" ]; then
-              echo "ERROR: ${WORKFLOW_KV} still holds a live value, or could not be read, 120s after the registration left"
-              rm -f "${KV_ERR}"
-              exit 1
-            fi
-            sleep 5
-          done
-          rm -f "${KV_ERR}"
-          echo "OK: the OpenBao leaf holds no live value."
+          wait_kv_purged "${WORKFLOW_KV}" 120 "the registration left"
 
           admin_osc show "${KS_NAME}" "${KS_NAME}" "${KS_NAME}"
           assert_eq "the catalog row left Keystone" "ABSENT" "$(admin_service_id)"
@@ -946,25 +1008,21 @@ spec:
           kubectl delete job "${KS_NAME}-verify" admin-osc-seed admin-osc-show \
             -n "${CP_NS}" --ignore-not-found
 
-          # The plane goes down in three ordered moves, because its residues
-          # cannot be sequenced by anyone else once the CR is gone:
-          #
-          #   1. Delete the ControlPlane (async). Its finalizer revokes the
-          #      admin application credential and takes the plane's own K-ORC
-          #      children back out of a Keystone that is still serving.
-          #   2. Once those children have drained, delete the projected
-          #      Keystone EXPLICITLY, while the ControlPlane finalizer still
-          #      holds the per-tenant SecretStore trio: the Keystone's
-          #      openbao-finalizer waits for ESO to purge the fernet- and
-          #      credential-keys backup paths, and ESO can only do that
-          #      against a store that still authenticates. Left to the
-          #      post-release GC cascade or the namespace deletion, the store
-          #      dies unsequenced and the purge holds the namespace until the
-          #      operator's bounded stall breaker (OpenBaoCleanupStallTimeout)
-          #      cuts it loose minutes later. This order keeps the teardown
-          #      prompt and orphans no kv-v2 path.
-          #   3. Only then wait the ControlPlane out, so chainsaw's namespace
-          #      cleanup meets finalizer-free residue.
+          # The plane goes down through its own finalizer, and the suite only
+          # watches the order it keeps. The finalizer revokes the admin
+          # application credential and takes the plane's K-ORC children out of
+          # a Keystone that is still serving. Then it deletes the projected
+          # Keystone and holds the per-tenant SecretStore trio until that
+          # Keystone is gone: the Keystone's openbao-finalizer has ESO purge the
+          # fernet- and credential-keys backup paths, which only works against a
+          # store that still authenticates. A teardown that loses this order
+          # finishes through a stall breaker instead (OpenBaoCleanupStalled on
+          # the Keystone, KeystoneTeardownStalled on the plane) and leaves the
+          # keys in OpenBao, so the checks after the wait look for both.
+          FERNET_KV="openstack/keystone/${CP_NS}/${CP_NAME}-keystone/fernet-keys"
+          CREDENTIAL_KV="openstack/keystone/${CP_NS}/${CP_NAME}-keystone/credential-keys"
+          assert_kv_live "${FERNET_KV}" 60
+          assert_kv_live "${CREDENTIAL_KV}" 60
           CP_KORC_RESIDUE="${KORC_KINDS},domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
           kubectl delete controlplane "${CP_NAME}" -n "${CP_NS}" --wait=false
           DRAIN_DEADLINE=$(( $(date +%s) + 300 ))
@@ -977,13 +1035,12 @@ spec:
             sleep 5
           done
           echo "OK: the plane's own K-ORC children drained against a live Keystone."
-          kubectl delete keystone "${CP_NAME}-keystone" -n "${CP_NS}" --ignore-not-found --wait=false
-          # Covers the operator's 5m stall window too: if the ControlPlane
-          # released between the drain check and the delete above, GC may
-          # already have reaped the tenant store, and the Keystone then leaves
-          # via the stall breaker rather than a completed purge.
-          wait_gone keystone "${CP_NAME}-keystone" "${CP_NS}" 420
           kubectl wait --for=delete "controlplane/${CP_NAME}" -n "${CP_NS}" --timeout=10m
+          assert_absent keystone "${CP_NAME}-keystone" "${CP_NS}"
+          assert_no_event OpenBaoCleanupStalled "${CP_NS}"
+          assert_no_event KeystoneTeardownStalled "${CP_NS}"
+          wait_kv_purged "${FERNET_KV}" 60 "the ControlPlane left"
+          wait_kv_purged "${CREDENTIAL_KV}" 60 "the ControlPlane left"
           echo "OK: own-namespace registration proven end to end."
     catch:
     - script:
@@ -1090,12 +1147,13 @@ spec:
           # the registrations above needed in order to leave.
           kubectl delete controlplane cp -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
 
-          # Mirror the try teardown's ordering as far as a net can: drain the
-          # plane's K-ORC children (bounded), then take the projected Keystone
-          # down explicitly while its OpenBao backup purge can still find the
-          # per-tenant store, then wait the plane out. When this ordering loses
-          # a race, the operators' bounded stall breakers still converge the
-          # namespace — inside chainsaw's cleanup budget instead of past it.
+          # Drain the plane's K-ORC children (bounded), then take the projected
+          # Keystone down explicitly, then wait the plane out. The plane's
+          # finalizer deletes the Keystone itself before it releases; the
+          # explicit delete is for a run that failed before the finalizer got
+          # that far. When this ordering loses a race, the operators' bounded
+          # stall breakers still converge the namespace, inside chainsaw's
+          # cleanup budget instead of past it.
           CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
           DRAIN_DEADLINE=$(( $(date +%s) + 240 ))
           while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do
