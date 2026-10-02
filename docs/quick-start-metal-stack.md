@@ -453,9 +453,17 @@ worker first. With one worker left, no node can receive them.
 
 ## Proven by
 
-The page as written has not run end to end on the lab yet. No chainsaw suite
-runs against the lab, because CI has no metal-stack cluster. The findings of
-the lab runs so far, upstream and in this repository, are listed under
+Every `bash` block of this page but the `git clone` ran in page order on
+2026-10-02, from commit `715eafd3`, on shoot `forge` with two workers and
+Kubernetes v1.35.6, from a bare cluster to a bare cluster. The block of Part 1,
+Step 4 took three attempts and the block of Part 2, Step 3 two, each after the
+error its step names; every other block exited 0 on its first. The console
+commands of Part 2, Step 6 were typed by a script. The teardown waited five
+minutes for the stack's objects in `openstack`
+([#1186](https://github.com/c5c3/cobaltcore/issues/1186)) and then finished.
+No chainsaw suite runs against the lab, because CI has no metal-stack cluster.
+The findings of the lab runs so far, upstream and in this repository, are
+listed under
 [Lab hypervisors](./reference/infrastructure/infrastructure-manifests.md#lab-hypervisors).
 
 ## Related references

@@ -3069,13 +3069,13 @@ with uid 0 set in the release, on two Xeon D-2141I workers on Debian 12 with
 kernel 6.1. It passed every step of the sequence that is now Part 2 of the
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md#hypervisors) and
 of the checks above, but the kna image check, which came with the image of
-[#1178](https://github.com/c5c3/cobaltcore/issues/1178) and has not run on the
-lab, and the console-log part of the restart check, which came with
-[#1174](https://github.com/c5c3/cobaltcore/issues/1174) and ran on 2026-10-02
-(below). The run also created `/var/lib/nova/instances` by hand. The
+[#1178](https://github.com/c5c3/cobaltcore/issues/1178), and the console-log
+part of the restart check, which came with
+[#1174](https://github.com/c5c3/cobaltcore/issues/1174). Both ran on
+2026-10-02 (below). The run also created `/var/lib/nova/instances` by hand. The
 `NovaCompute` pod creates it since
-[#1171](https://github.com/c5c3/cobaltcore/issues/1171), which has not run on
-the lab. libvirtd kept its domains across a restart
+[#1171](https://github.com/c5c3/cobaltcore/issues/1171). libvirtd kept its
+domains across a restart
 of its pod: the scope held libvirtd alone, and QEMU ran in the host cgroup
 `/machine/qemu-<n>-<instance>.libvirt-qemu` that libvirt created itself. The
 socket's group was `108`, libvirtd listened on `<node IP>:16514` only, and the
@@ -3091,6 +3091,26 @@ status XML carried no `<chardevStdioLogd/>`. After a restart of the libvirt
 pod, a `virsh reset` of the guest left the QEMU PID unchanged, `console.log`
 grew, and `openstack console log show` returned the new boot output.
 
+A second run on 2026-10-02 executed the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md) from commit
+`715eafd3`, from a bare cluster through the teardown, on the same two workers.
+Every block of the page exited 0, two of them after the repeats their steps
+name. The kna pods ran
+`ghcr.io/c5c3/kvm-node-agent:sha-1e4e4b8e7050bbfa2d5a990aa21b849ba7b51700`
+with no `runAsUser` in their pod spec and restarted once each; the run did not
+read why. Both `Hypervisor` objects showed `TLSCertificateInstalled` `True`,
+and the key-mode loop above printed `600` for `serverkey.pem` and
+`server-key.pem` on both nodes. The `NovaCompute` pods carried the init
+container `create-instances-dir`, and both servers booted with no directory
+created by hand; the nodes still held `/var/lib/nova` from the earlier runs, so
+the run does not show the directory created on a fresh node. The two
+`lab-metadata-agent` pods had a restart count of 0 after both servers booted
+and after the eviction
+([#1173](https://github.com/c5c3/cobaltcore/issues/1173)). The teardown exited
+0 and left neither `openstack` nor `hypervisor-system`; it waited five minutes
+for the Keystone CR's backup PushSecrets
+([#1186](https://github.com/c5c3/cobaltcore/issues/1186)).
+
 hvo and kna come from SAP's own environment, and several of their defaults
 assume it. [#1066](https://github.com/c5c3/cobaltcore/issues/1066) collects
 what would have to change upstream. Each item with what it did on the lab:
@@ -3104,13 +3124,13 @@ what would have to change upstream. Each item with what it did on the lab:
 | `HaEnabled` gate | onboarding waits for `HaEnabled=True` while `spec.highAvailability` is `true`; only kvm-ha-service sets it | with the patch both Hypervisors reach `Onboarding=False`, reason `Succeeded` | `highAvailability: false` patched by hand |
 | `TraitsUpdated` gate | onboarding waits for `TraitsUpdated=True`, which hvo sets only when a custom trait differs; it assigns the trait in Placement and does not create it | Placement answers 400 `No such trait CUSTOM_C5C3_LAB` until the trait exists | the node annotation and `openstack trait create` |
 | Host units | kna reads `libvirtd.service` and `openvswitch-switch.service` and starts `virt-admin-server-update-tls.service` through the host's systemd | with the stand-ins kna reports `libvirtd.service`, `LibVirtConnection` and `TLSCertificateInstalled` as `True`; `openvswitch-switch.service` stays `False`, because Open vSwitch runs in the chassis pod | runtime stand-ins written by the libvirt DaemonSet |
-| Agent uid | kna's image runs as uid 42438 and authenticates to the system bus with it | the host has no such user, and its dbus-daemon drops the connection; kna exits at start. Run as uid 0 from the release, upstream's image started; the image of #1178 has not run on the lab | the image of [#1178](https://github.com/c5c3/cobaltcore/issues/1178) runs as uid 0; the release keeps `DAC_OVERRIDE` |
-| Key mode | kna writes every TLS file with mode 0644, the private keys included ([#1175](https://github.com/c5c3/cobaltcore/issues/1175), found in upstream's code) | not checked on the lab; the image of #1178 has not run on the lab | patched in the image ([#1178](https://github.com/c5c3/cobaltcore/issues/1178)): 0600, or 0640 for QEMU's and Cloud Hypervisor's keys with `PKI_KEY_GROUP` |
+| Agent uid | kna's image runs as uid 42438 and authenticates to the system bus with it | the host has no such user, and its dbus-daemon drops the connection; kna exits at start. Run as uid 0 from the release, upstream's image started. The image of #1178 ran on 2026-10-02 with no `runAsUser` in the pod spec | the image of [#1178](https://github.com/c5c3/cobaltcore/issues/1178) runs as uid 0; the release keeps `DAC_OVERRIDE` |
+| Key mode | kna writes every TLS file with mode 0644, the private keys included ([#1175](https://github.com/c5c3/cobaltcore/issues/1175), found in upstream's code) | not checked with upstream's image. With the image of #1178, both keys showed `600` on both nodes on 2026-10-02 | patched in the image ([#1178](https://github.com/c5c3/cobaltcore/issues/1178)): 0600, or 0640 for QEMU's and Cloud Hypervisor's keys with `PKI_KEY_GROUP` |
 | `monsoon3` fallback | kna's namespace without `NAMESPACE`, which its chart does not set | with `NAMESPACE` kna installs the certificates of `hypervisor-system` | `NAMESPACE` set by a post-renderer |
 | Catalog interface | hvo reads only the `public` endpoints and takes no CA | through the aliases and `SSL_CERT_DIR` hvo ran 35 minutes without a restart and without an `x509` or `connection refused` line | host aliases and `SSL_CERT_DIR` |
 | Chart object names | the chart builds names from the fullname, the release name when it contains the chart name | `openstack-hypervisor-operator` makes the metrics Service name 64 characters, and the install fails | `fullnameOverride: hypervisor-operator` |
 | Hand-set node labels | hvo flags changes made with kubectl | both Hypervisors report `Tainted=True`, reason `Kubectl` | none |
-| Images per main commit | hvo and kna publish a chart for every main commit but no image under its tag; hvo pushes only `latest` | the chart of `a2baf3f` ran `ghcr.io/c5c3/openstack-hypervisor-operator:sha-a2baf3f…`; the kna image of #1178 has not run on the lab | the images of [#1163](https://github.com/c5c3/cobaltcore/issues/1163) and [#1178](https://github.com/c5c3/cobaltcore/issues/1178) |
+| Images per main commit | hvo and kna publish a chart for every main commit but no image under its tag; hvo pushes only `latest` | the chart of `a2baf3f` ran `ghcr.io/c5c3/openstack-hypervisor-operator:sha-a2baf3f…`; the kna chart of `1e4e4b8` ran `ghcr.io/c5c3/kvm-node-agent:sha-1e4e4b8…` on 2026-10-02 | the images of [#1163](https://github.com/c5c3/cobaltcore/issues/1163) and [#1178](https://github.com/c5c3/cobaltcore/issues/1178) |
 
 The run also found what this repository's own pieces owe a real hypervisor.
 The fake driver of the kind suites reaches none of it:
