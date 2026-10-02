@@ -33,13 +33,12 @@ tolerations: []
 priorityClassName: ""
 
 rbac:
-  # Set to true to deploy with namespace-scoped Role/RoleBinding
-  # instead of ClusterRole/ClusterRoleBinding. Restricts the operator to its
-  # release namespace. Requires webhook.enabled=false.
-  # Recommended for single-namespace production deployments: the default
-  # ClusterRole grants cluster-wide Secret CRUD, so namespace scoping bounds a
-  # compromised operator pod to a single namespace. See the Multi-Tenant
-  # Deployment guide for the cluster-wide privilege-escalation trade-off.
+  # Namespace-scoped Role/RoleBinding instead of ClusterRole/ClusterRoleBinding
+  # is NOT supported by this chart, and setting it to true fails the render.
+  # The ControlPlane controller watches cluster-scoped Namespaces,
+  # SizingProfiles and ClusterSecretStores and creates ClusterRoleBindings. A
+  # namespaced Role grants none of them, and the manager fails its cache sync
+  # at startup.
   namespaceScoped: false
 
 leaderElection:
