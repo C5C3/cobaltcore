@@ -635,8 +635,10 @@ test_main_gates() {
   assert_file_contains_fixed "the external by-hand hint applies the overlay's controlplane kustomization" \
     "$DEPLOY_INFRA_SH" 'kubectl apply -k ${OVERLAY_ROOT}/controlplane'
   local overlay_gate
-  overlay_gate="$(grep -B8 -F 'kubectl apply -k ${OVERLAY_ROOT}/controlplane' "$DEPLOY_INFRA_SH" |
-    grep -E '^[[:space:]]*(if|elif) \[\[' | tail -n1)"
+  # The gate is the ending's own if/elif, at four spaces; the admission probe
+  # nested under it, at six, is not the gate.
+  overlay_gate="$(grep -B30 -F 'kubectl apply -k ${OVERLAY_ROOT}/controlplane' "$DEPLOY_INFRA_SH" |
+    grep -E '^    (if|elif) \[\[' | tail -n1)"
   assert_contains "the overlay hint is gated on EXTERNAL_CLUSTER" "$overlay_gate" \
     '"${EXTERNAL_CLUSTER}" == "true"'
   assert_contains "the overlay hint is gated on the overlay's controlplane kustomization" \

@@ -264,7 +264,8 @@ WITH_CONTROLPLANE="${WITH_CONTROLPLANE:-false}"
 # the bundled ControlPlane CR (deploy/kind/controlplane) automatically — the old
 # all-in-one behaviour, kept for demos and automation. Defaults to false so the
 # Quick Start's manual `kubectl apply` step is the norm. Ignored unless
-# WITH_CONTROLPLANE=true.
+# WITH_CONTROLPLANE=true. Refused in preflight_checks under INFRA_ONLY=true,
+# whose cluster runs no operator to admit the CR.
 WITH_CONTROLPLANE_CR="${WITH_CONTROLPLANE_CR:-false}"
 
 # Name of the ControlPlane CR brought up under WITH_CONTROLPLANE=true. The
@@ -477,16 +478,16 @@ wait_for_helmreleases() {
         continue
       fi
 
-      local ready_status
-      ready_status=$(kubectl get helmrelease "${release}" -n "${ns}" -o json 2>/dev/null \
-        | jq -r '.status.conditions[]? | select(.type == "Ready") | .status' 2>/dev/null) || true
+      # One GET per release and poll: the status, reason and message below are
+      # read from the same object.
+      local hr_json ready_status
+      hr_json=$(kubectl get helmrelease "${release}" -n "${ns}" -o json 2>/dev/null) || true
+      ready_status=$(jq -r '.status.conditions[]? | select(.type == "Ready") | .status' <<<"${hr_json}" 2>/dev/null) || true
 
       if [[ "${ready_status}" != "True" ]]; then
         local reason message
-        reason=$(kubectl get helmrelease "${release}" -n "${ns}" -o json 2>/dev/null \
-          | jq -r '.status.conditions[]? | select(.type == "Ready") | .reason // "Pending"' 2>/dev/null) || true
-        message=$(kubectl get helmrelease "${release}" -n "${ns}" -o json 2>/dev/null \
-          | jq -r '.status.conditions[]? | select(.type == "Ready") | .message // ""' 2>/dev/null) || true
+        reason=$(jq -r '.status.conditions[]? | select(.type == "Ready") | .reason // "Pending"' <<<"${hr_json}" 2>/dev/null) || true
+        message=$(jq -r '.status.conditions[]? | select(.type == "Ready") | .message // ""' <<<"${hr_json}" 2>/dev/null) || true
         log "  HelmRelease '${release}' in namespace '${ns}' is not Ready yet (reason: ${reason:-Pending})."
         if [[ -n "${message}" ]]; then
           log "    ${message}"
@@ -1338,6 +1339,16 @@ install_envoy_gateway_crds() {
 # ---------------------------------------------------------------------------
 preflight_checks() {
   log "Running pre-flight checks..."
+
+  # INFRA_ONLY=true scales every CobaltCore operator to zero, so nothing would
+  # admit or reconcile the bundled ControlPlane CR: its admission probe could
+  # only time out, after the whole stack is applied. INFRA_ONLY is read by
+  # indirect expansion for the reason preflight_external_cluster gives.
+  local infra_only=INFRA_ONLY
+  if [[ "${!infra_only}" == "true" && "${WITH_CONTROLPLANE}" == "true" && "${WITH_CONTROLPLANE_CR}" == "true" ]]; then
+    log "ERROR: INFRA_ONLY=true does not support WITH_CONTROLPLANE_CR=true: this cluster runs no CobaltCore operator to admit or reconcile the ControlPlane CR."
+    exit 1
+  fi
 
   # Check that required CLI tools are available.
   # Flux CLI is intentionally omitted: bootstrap now installs flux-operator and
@@ -3614,22 +3625,22 @@ main() {
     # ControlPlane provisions them. Bring up the operator stack so a ControlPlane
     # CR can reconcile; whether that CR is applied here or by hand depends on
     # WITH_CONTROLPLANE_CR (default: by hand — see the ControlPlane Quick Start).
+    # operators_awaited turns true once the operator waits below have run; the
+    # by-hand endings probe the cluster's admission only then.
+    local operators_awaited=false
     log "=== WITH_CONTROLPLANE: bringing up the c5c3 ControlPlane stack ==="
     if [[ "${CONTROLPLANE_OPERATORS}" == "flux" ]]; then
       # Remove suspension from Flux HelmReleases and Kustomizations
       kubectl patch helmrelease/keystone-operator -n keystone-system --type merge \
         -p '{"spec":{"suspend":false}}' 2>/dev/null || true
-      kubectl wait helmrelease/keystone-operator -n keystone-system \
-        --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
-        || log "  keystone-operator not Ready yet (continuing; the ControlPlane tolerates it)."
 
       kubectl patch kustomization/k-orc -n flux-system --type merge \
         -p '{"spec":{"suspend":false}}' 2>/dev/null || true
-      # This wait hard-fails, unlike the two HelmRelease waits around it: the
-      # c5c3-operator watches the K-ORC kinds unconditionally and cannot start
-      # without their CRDs, so continuing would end a "successful" run with a
-      # crash-looping operator. The source is printed too, because the
-      # Kustomization cannot apply while its GitRepository has no artifact.
+      # This wait hard-fails: the c5c3-operator watches the K-ORC kinds
+      # unconditionally and cannot start without their CRDs, so continuing
+      # would end a "successful" run with a crash-looping operator. The source
+      # is printed too, because the Kustomization cannot apply while its
+      # GitRepository has no artifact.
       if ! kubectl wait kustomization/k-orc -n flux-system \
         --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s"; then
         log "ERROR: kustomization/k-orc did not become Ready within ${HELMRELEASE_TIMEOUT}s; the c5c3-operator cannot start without the K-ORC CRDs."
@@ -3639,9 +3650,35 @@ main() {
 
       kubectl patch helmrelease/c5c3-operator -n c5c3-system --type merge \
         -p '{"spec":{"suspend":false}}' 2>/dev/null || true
-      kubectl wait helmrelease/c5c3-operator -n c5c3-system \
-        --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
-        || log "  c5c3-operator not Ready yet (continuing)."
+
+      # The nine service operators and the c5c3-operator must be Ready, and one
+      # CRD per operator registered, before a ControlPlane or an OVNCentral can
+      # be admitted. The CRD list is fixed instead of read from the chart
+      # directories: Flux installs the published charts, which can lag this
+      # checkout. INFRA_ONLY=true keeps every operator suspended, so nothing
+      # here could become Ready in that mode.
+      if [[ "${INFRA_ONLY}" != "true" ]]; then
+        wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" \
+          keystone-system/keystone-operator horizon-system/horizon-operator \
+          glance-system/glance-operator placement-system/placement-operator \
+          barbican-system/barbican-operator ovn-system/ovn-operator \
+          neutron-system/neutron-operator cinder-system/cinder-operator \
+          nova-system/nova-operator c5c3-system/c5c3-operator
+        wait_for_crds "${POD_TIMEOUT}" \
+          controlplanes.c5c3.io \
+          keystones.keystone.openstack.c5c3.io \
+          horizons.horizon.openstack.c5c3.io \
+          glances.glance.openstack.c5c3.io \
+          placements.placement.openstack.c5c3.io \
+          barbicans.barbican.openstack.c5c3.io \
+          ovncentrals.ovn.openstack.c5c3.io \
+          neutrons.neutron.openstack.c5c3.io \
+          cinders.cinder.openstack.c5c3.io \
+          novas.nova.openstack.c5c3.io
+        operators_awaited=true
+      else
+        log "  Skipping the operator waits and the admission probe (INFRA_ONLY=true; this cluster runs no CobaltCore operator)."
+      fi
 
       # The projected Keystone references ghcr.io/c5c3/keystone:<release>; preload it
       # so kind need not pull it in-cluster. Best-effort — the image is public on GHCR.
@@ -3703,16 +3740,15 @@ main() {
       render_controlplane_replicas "${cp_manifest}"
       log "  Set ControlPlane backing-service footprint: MariaDB replicas=${CONTROLPLANE_DB_REPLICAS:-<profile>} (>1 = Galera) storage=${CONTROLPLANE_DB_STORAGE:-<profile>}, Memcached replicas=${CONTROLPLANE_CACHE_REPLICAS:-<profile>}."
 
-      # Apply the ControlPlane CR. Retry briefly: the c5c3-operator validating webhook
-      # may need a moment after the chart install before it accepts the CR.
-      local cp_attempt
-      for cp_attempt in 1 2 3 4 5; do
-        if kubectl apply -f "${cp_manifest}" 2>/dev/null; then
-          break
-        fi
-        log "  ControlPlane CR apply attempt ${cp_attempt} failed (webhook warming up?); retrying..."
-        sleep 10
-      done
+      # Apply the ControlPlane CR once: the admission probe returns only once
+      # the API server answers a server-side dry-run of this file, so a
+      # failing apply is a real error and ends the run.
+      wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}" "${cp_manifest}"
+      if ! kubectl apply -f "${cp_manifest}"; then
+        rm -f "${cp_manifest}"
+        log "ERROR: applying the ControlPlane CR failed (the error is above)."
+        exit 1
+      fi
       rm -f "${cp_manifest}"
       log "  ControlPlane CR applied (WITH_CONTROLPLANE_CR=true). Watch the chain with:"
       log "    kubectl get controlplane -n openstack -w"
@@ -3730,6 +3766,20 @@ main() {
     # An external overlay that ships its own OVNCentral and ControlPlane is
     # named instead of the kind CR; the reader applies it by hand.
     elif [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then
+      if [[ "${operators_awaited}" == "true" ]]; then
+        # Probe the manifests the hint below names, so the run ends only once
+        # the cluster admits them. Preflight rendered the same directory, so a
+        # render failure here means the tree changed during the run.
+        local overlay_probe
+        overlay_probe="$(mktemp)"
+        if ! kubectl kustomize "${OVERLAY_ROOT}/controlplane" >"${overlay_probe}"; then
+          rm -f "${overlay_probe}"
+          log "ERROR: cannot render ${OVERLAY_ROOT}/controlplane (the error is above)."
+          exit 1
+        fi
+        wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}" "${overlay_probe}"
+        rm -f "${overlay_probe}"
+      fi
       log "  Operator stack is up. The ControlPlane CR is NOT applied automatically."
       log "  Apply the overlay's OVNCentral and ControlPlane (the CR is named '${CONTROLPLANE_NAME}'):"
       log "    kubectl apply -k ${OVERLAY_ROOT}/controlplane"
@@ -3737,6 +3787,13 @@ main() {
       log "  (docs/quick-start-controlplane.md, Step 5):"
       log "    deploy/openbao/bootstrap/setup-database-tenant.sh openstack ${CONTROLPLANE_NAME}"
     else
+      if [[ "${operators_awaited}" == "true" ]]; then
+        # Probe the bundled CR the hint below names together with the
+        # OVNCentral of docs/quick-start-controlplane.md, Step 3. The lab's
+        # ovncentral.yaml is the only tracked copy of that manifest, and
+        # tests/unit/deploy/metal_stack_controlplane_test.sh keeps the two equal.
+        wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}" "${REPO_ROOT}/deploy/kind/controlplane/controlplane.yaml" "${REPO_ROOT}/deploy/lab/metal-stack/controlplane/ovncentral.yaml"
+      fi
       log "  Operator stack is up. The ControlPlane CR is NOT applied automatically —"
       log "  create and apply it yourself (see docs/quick-start-controlplane.md), e.g.:"
       log "    kubectl apply -f deploy/kind/controlplane/controlplane.yaml"
