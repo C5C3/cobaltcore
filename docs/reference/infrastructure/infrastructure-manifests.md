@@ -2897,13 +2897,10 @@ done
 kubectl wait certificate --all -n hypervisor-system --for=condition=Ready --timeout=10m
 kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=15m
 
-# 6. interim: Nova's instances_path on every node, and the metadata agent's
-#    root helper (both in the last table below)
+# 6. interim: Nova's instances_path on every node (in the last table below)
 for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
   kubectl exec -n openstack "${pod}" -c libvirtd -- mkdir -p /var/lib/nova/instances
 done
-kubectl patch neutronmetadataagent lab-metadata-agent -n openstack --type merge \
-  -p '{"spec":{"extraConfig":{"agent":{"root_helper":"env"}}}}'
 
 # 7. onboarding and the node layer
 kubectl wait hypervisor --all --timeout=20m \
@@ -3051,7 +3048,6 @@ The fake driver of the kind suites reaches none of it:
 | --- | --- | --- |
 | Live-migration CPU check | with `cpuMode: host-passthrough`, and with `host-model`, every live migration ends in `NoValidHost`: Nova's pre-check on the destination fails with `Unacceptable CPU info: CPU doesn't have compatibility`, although `virsh hypervisor-cpu-compare` there accepts the guest CPU | `cpuMode: custom` with `Skylake-Server-IBRS`, the host-model of both workers |
 | Nova's `instances_path` | nova-compute's libvirt driver fails with `No such file or directory: '/var/lib/nova/instances'`: the pool mounts `/var/lib/nova` from the host and nothing creates `instances/` there, while the image's own copy is hidden by the mount | open, a change of the `NovaCompute` pod; step 6 creates the directory |
-| Metadata agent root helper | `sudo: privsep-helper: command not found`: the neutron image's `secure_path` lacks `/var/lib/openstack/bin`, which the nova-compute image adds, so the agent cannot provision a network's metadata namespace | open, a change of the neutron image; step 6 sets `[agent] root_helper = env` |
 | Console log after a libvirt restart | `openstack console log show` stops at the restart: QEMU's log goes through `virtlogd`, which ran in the old pod. The guest and its network keep running | none |
 
 ### Node port check

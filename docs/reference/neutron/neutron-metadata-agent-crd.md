@@ -277,12 +277,12 @@ metadata keys the API never writes. Six of its entries are refused in
 
 Every other entry in the registry is honored and reported: `[DEFAULT]`
 `state_path`, `debug`, `nova_metadata_host`, `nova_metadata_port`,
-`nova_metadata_protocol`, `auth_ca_cert` and `metadata_workers`, the
-`[oslo_messaging_notifications] driver`, the five `[oslo_messaging_rabbit]`
-keys, and `[oslo_concurrency] lock_path`. The broker keys are registered
-unconditionally although they render only while `spec.messaging` is set: the
-registry records that a key is not the user's to set, not that it is currently
-rendered.
+`nova_metadata_protocol`, `auth_ca_cert` and `metadata_workers`,
+`[agent] root_helper`, the `[oslo_messaging_notifications] driver`, the five
+`[oslo_messaging_rabbit]` keys, and `[oslo_concurrency] lock_path`. The broker
+keys are registered unconditionally although they render only while
+`spec.messaging` is set: the registry records that a key is not the user's to
+set, not that it is currently rendered.
 
 `nova_metadata_protocol` joined the registry with `spec.novaMetadata.protocol`.
 Before that `spec.extraConfig` was the only way to set it, so an agent that sets
@@ -306,6 +306,21 @@ value, because `extraConfig` is merged last, and reports
 `ExtraConfigHealthy=False` naming `[DEFAULT] metadata_workers`. Move the value to
 `spec.metadataWorkers` and drop the entry from `spec.extraConfig` to clear the
 condition.
+
+`[agent] root_helper` joined the registry with the operator default `env` and
+has no typed field. An agent whose `spec.extraConfig` sets no `root_helper` in
+`[agent]` gets a new config ConfigMap at the operator upgrade, and its
+DaemonSet rolls once on every node. An agent that carries `root_helper: env`
+there renders the same bytes and does not roll. It reports
+`ExtraConfigHealthy=False` with an `ExtraConfigOwnedKeyOverride` Warning event
+until the entry is removed from `spec.extraConfig`, and removing it does not
+roll the DaemonSet either. Any other value, for a custom image that needs
+another helper, is honored and reported the same way.
+
+Keep the `root_helper: env` entry until a rollback to an operator release
+without this default is ruled out. That release renders no `root_helper`, so
+the agent falls back to `sudo`, finds no `privsep-helper` and provisions no
+network. While the entry is set, a rollback still renders `root_helper = env`.
 
 ## Status
 
@@ -405,12 +420,14 @@ Neutron opens the file on every proxied request and the volume has no
 The agent container runs privileged and pinned to uid 0, with
 `runAsNonRoot: false`. It creates network namespaces, moves interfaces into them
 and starts a haproxy per network through privsep, which the Restricted profile
-denies and no named capability covers; privsep-helper is invoked through `sudo`,
-so the image's own unprivileged user does not work either. The pod-level security
-context carries the seccomp profile and nothing else: no `fsGroup`, because it
-would be applied to the host directories the pod mounts, where the ownership is
-the node's business. The `wait-for-chassis` init container runs under the
-Restricted profile.
+denies and no named capability covers. The operator renders
+`[agent] root_helper = env`, so the agent starts privsep-helper as the
+container's own user, and privsep-helper needs uid 0 for the capabilities it
+keeps. The image's own unprivileged user does not work either. The pod-level
+security context carries the seccomp profile and nothing else: no `fsGroup`,
+because it would be applied to the host directories the pod mounts, where the
+ownership is the node's business. The `wait-for-chassis` init container runs
+under the Restricted profile.
 
 That init container is the same-node gate. It polls the local database until the
 chassis has registered itself:

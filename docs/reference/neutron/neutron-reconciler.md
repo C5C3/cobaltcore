@@ -814,11 +814,15 @@ content-addressed ConfigMap, plus `logging.conf` under
 rendered `[ovs] ovsdb_connection` is the local socket
 `unix:/run/openvswitch/db.sock` the chassis pods create on the node, and the
 `[ovn]` section carries the Southbound address the chassis step resolved together
-with the three files of the mounted client keypair. `[DEFAULT] root_helper` and
-the privsep helper commands stay at their oslo defaults of `sudo` and
-`sudo privsep-helper`, because the image ships `/usr/bin/sudo` and the container
-runs as root. While `spec.novaMetadata.caBundleSecretRef` is set, `[DEFAULT]
-auth_ca_cert` names the mounted bundle, `/etc/nova-metadata-ca/ca.crt`.
+with the three files of the mounted client keypair. `[agent] root_helper` is
+`env`, the command the agent starts `privsep-helper` with, the program that runs
+each of its privsep daemons as root. Its oslo default, `sudo`, replaces `PATH`
+with sudo's `secure_path`, which lacks `/var/lib/openstack/bin`, where the image
+installs `privsep-helper`. The container already runs as uid 0, so sudo has no
+privilege to add. The per-context `helper_command` keys are not rendered,
+because `root_helper` prefixes the helper of every privsep context. While
+`spec.novaMetadata.caBundleSecretRef` is set, `[DEFAULT] auth_ca_cert` names the
+mounted bundle, `/etc/nova-metadata-ca/ca.crt`.
 
 **Condition Contract:**
 
