@@ -434,9 +434,10 @@ cross-namespace teardown — you own the namespace and its contents end to end.
   deletion ordering.
 - [Multi-Tenant Deployment](./multi-tenant-deployment.md) — the other tenancy
   axis: namespace-scoped operator installs and several ControlPlanes side by
-  side. Note that the Helm chart's namespace-scoped RBAC mode does **not**
-  support dedicated service namespaces — the operator needs cluster-scoped
-  namespace and cross-namespace child access.
+  side. Note that the c5c3-operator chart does **not** support
+  namespace-scoped RBAC at all: it refuses `rbac.namespaceScoped=true`,
+  because the operator needs cluster-scoped namespace and cross-namespace child
+  access.
 - [Quick Start (ControlPlane)](../quick-start-controlplane.md) — the devstack
   this guide builds on.
 

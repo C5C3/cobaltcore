@@ -22,13 +22,16 @@ operator RBAC described here is the complementary, lower-level concern.
 :::
 
 ::: tip Recommended for single-namespace production
-When a control plane is confined to **one namespace**, deploy the operator
-namespace-scoped (`rbac.namespaceScoped: true`). This replaces the operator's
-cluster-wide `ClusterRole` — which grants read/write on **every** `Secret` in
-**every** namespace — with a `Role` bound to a single namespace, so a
-compromised operator pod can reach only that namespace's Secrets. The
+When a control plane is confined to **one namespace**, deploy its service
+operators namespace-scoped (`rbac.namespaceScoped: true`); the keystone,
+barbican, cinder, glance, horizon, nova and placement charts support the mode.
+This replaces each operator's cluster-wide `ClusterRole` — which grants
+read/write on **every** `Secret` in **every** namespace — with a `Role` bound to
+a single namespace, so a compromised operator pod can reach only that
+namespace's Secrets. The
 [Security trade-off](#security-trade-off-the-cluster-wide-rbac-default) below
-explains the privilege-escalation path this closes.
+explains the privilege-escalation path this closes, and why it stays open for
+the c5c3-operator.
 
 The chart still ships cluster-wide (`rbac.namespaceScoped: false`) by default
 because some capabilities still need cluster scope — see
@@ -129,6 +132,13 @@ tenant's child namespace (see
 [ControlPlane Reconciler → RBAC Permissions](../reference/c5c3/controlplane-reconciler.md#rbac-permissions)).
 Cluster-wide Secret read access exposes every one of those projected passwords.
 
+The c5c3-operator chart refuses `rbac.namespaceScoped: true` (see
+[When cluster-wide RBAC is still required](#when-cluster-wide-rbac-is-still-required)),
+so the ControlPlane operator's cluster-wide Secret and RoleBinding grants cannot
+be scoped down. Protect it by other means: limit who can exec into its pod or
+read its ServiceAccount token, run it on dedicated nodes, and audit the API
+requests its ServiceAccount makes from anywhere other than that pod.
+
 ### Contrast: the per-CronJob rotation RBAC
 
 The RBAC the operator *generates* for its rotation CronJobs is the model to
@@ -156,9 +166,9 @@ cluster-wide deployment model, it cannot:
   a resource type within the granted scope. The informer cache *can* be
   label-filtered, but that reduces memory, not the ServiceAccount's authority.
 
-The supported way to bound the blast radius is therefore to **reduce the
-scope**, not the rule: `rbac.namespaceScoped: true` confines both the RBAC grant
-and the informer cache to a single namespace.
+For the service-operator charts, the supported way to bound the blast radius is
+therefore to **reduce the scope**, not the rule: `rbac.namespaceScoped: true`
+confines both the RBAC grant and the informer cache to a single namespace.
 
 ---
 
