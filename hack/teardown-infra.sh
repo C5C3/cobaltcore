@@ -214,10 +214,12 @@ read_stack_crds() {
 # bounded by TEARDOWN_TIMEOUT.
 #
 # Run after steps 1 and 2 and before step 3. `kubectl delete controlplane --wait`
-# returns when the ControlPlane is gone; garbage collection reaps its children
-# afterwards (a Keystone behind its openbao-finalizer, the PushSecrets and
-# SecretStore that finalizer waits on, the dedicated Barbican OpenBao instance,
-# the RabbitmqCluster), and their finalizers need the operators step 3
+# returns when the ControlPlane is gone. Its finalizer deletes the co-located
+# Keystone and waits for it first, so the Keystone and the backup PushSecrets
+# its openbao-finalizer purges are finalized by then. Garbage collection reaps
+# the other children afterwards (the SecretStore, the dedicated Barbican OpenBao
+# instance, the RabbitmqCluster), and the Keystone too when the finalizer gave
+# up on it at its deadline; their finalizers need the operators step 3
 # uninstalls. Without this wait a slow finalizer loses its controller and holds
 # the namespace in Terminating for good.
 #
