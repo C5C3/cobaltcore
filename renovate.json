@@ -235,19 +235,6 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/lab/metal-stack/hypervisor/sources\\.yaml$/"
-      ],
-      "matchStrings": [
-        "tag: \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"\\n\\s*digest: \"(?<currentDigest>sha256:[a-f0-9]{64})\""
-      ],
-      "depNameTemplate": "ghcr.io/cobaltcore-dev/charts/kvm-node-agent",
-      "datasourceTemplate": "docker",
-      "packageNameTemplate": "ghcr.io/cobaltcore-dev/charts/kvm-node-agent",
-      "versioningTemplate": "docker"
-    },
-    {
-      "customType": "regex",
-      "managerFilePatterns": [
         "/deploy/flux-system/sources/rabbitmq-cluster-operator\\.yaml$/"
       ],
       "matchStrings": [
@@ -692,15 +679,6 @@
       "automerge": false,
       "minimumReleaseAge": "3 days",
       "groupName": "openbao-operator chart"
-    },
-    {
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/lab/metal-stack/hypervisor/sources.yaml"],
-      "matchPackageNames": ["ghcr.io/cobaltcore-dev/charts/kvm-node-agent"],
-      "allowedVersions": "/^\\d+\\.\\d+\\.\\d+$/",
-      "automerge": false,
-      "minimumReleaseAge": "3 days",
-      "groupName": "kvm-node-agent chart"
     },
     {
       "matchManagers": ["custom.regex"],

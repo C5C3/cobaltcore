@@ -13,8 +13,7 @@
 # (systemd-run --scope --slice=system), so that libvirtd and the QEMU
 # processes it forks leave the pod's cgroup and outlive a restart of the pod.
 # It then writes two runtime units into the host's /run/systemd/system,
-# because kvm-node-agent v0.2.0 reads libvirt's state from the host's
-# systemd:
+# because kvm-node-agent reads libvirt's state from the host's systemd:
 #   - libvirtd.service is active exactly as long as the containerized
 #     libvirtd lives (tail --pid). Without an active libvirtd.service the
 #     agent reports nothing about libvirt.
