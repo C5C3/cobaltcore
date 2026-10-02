@@ -2759,7 +2759,7 @@ The init container `host-prepare` loads `vhost_net` and fails the pod with
    libvirtd's own exit included, deletes the units as well and stops the
    scope.
 
-kna v0.2.0 reads libvirt's state from the host's systemd. It reports nothing
+kna reads libvirt's state from the host's systemd. It reports nothing
 about libvirt while `libvirtd.service` is not active, and it sets
 `TLSCertificateInstalled=True` only once starting
 `virt-admin-server-update-tls.service` succeeds. A Debian host without libvirt
@@ -2785,7 +2785,13 @@ there, so the script sets `SYSTEMD_IGNORE_CHROOT=1`.
 the socket either way. `qemu.conf` runs QEMU as `root:root` without a
 security driver: the host's `/dev/kvm` is `root:103`, and the image's `kvm`
 group has another ID. QEMU's migration TLS reads `/etc/pki/qemu` and verifies
-the peer.
+the peer. The kna image of this repository writes all three private keys,
+`libvirt/private/serverkey.pem`, `qemu/server-key.pem` and
+`ch/server-key.pem`, with mode 0600 (see
+[kvm-node-agent](../ci-cd/container-images.md#kvm-node-agent)), and QEMU as
+root reads its key either way. `PKI_KEY_GROUP` therefore stays unset: it gives
+QEMU's key a group and mode 0640, which only a QEMU that runs as another user
+needs.
 
 The DaemonSet, the three compute CRs and hvo run in `openstack`. hvo sits there
 because its release reads the ControlPlane's auth Secret through `valuesFrom`
@@ -2807,10 +2813,11 @@ root on its node's libvirtd (see
 | hvo | `env.agentNamespaces` | `openstack` | The namespace of the pool, chassis and metadata agent pods, which an offboarding waits for |
 | hvo | `serviceMonitor.enabled`, `prometheusRules.create`, `dashboards.create`, `customResourceMetrics.create` | `false` | The lab runs no Prometheus Operator |
 | hvo | post-renderer | `hostAliases`, `SSL_CERT_DIR` | hvo takes the first `public` endpoint of `compute`, `placement`, `image` and `network`, and has no CA option. The aliases point `nova`, `placement`, `glance` and `neutron` under `.127-0-0-1.nip.io` at `10.248.0.200`, so the catalog's `:8443` URLs reach the Gateway from the pod. The `ca.crt` of the four `*-nip-io-tls` Secrets is mounted at `/etc/lab-gateway-ca`, which `SSL_CERT_DIR=/etc/lab-gateway-ca:/etc/ssl/certs` makes the Go program trust |
-| kna | chart | `0.2.0` | The latest tag. Upstream's main carries dependency updates only, and upstream publishes no image per main commit |
+| kna | chart | `0.2.0_sha-1e4e4b8` | The upstream chart of the pinned kna commit, the `ARG KNA_COMMIT` line of `images/kvm-node-agent/Dockerfile`. Its `appVersion`, `sha-<commit>`, is the image tag. Upstream publishes no image under that tag, and the tag `0.2.0` would leave the private keys at 0644 |
+| kna | `controllerManager.manager.image.repository` | `ghcr.io/c5c3/kvm-node-agent` | The image built from that commit with the key mode patch, which writes the private keys with mode 0600 (see [kvm-node-agent](../ci-cd/container-images.md#kvm-node-agent)) |
 | kna | `controllerManager.manager.env.libvirtDefaultUri` | `qemu:///system` | The chart's default `ch:///system` is Cloud Hypervisor |
 | kna | `controllerManager.manager.env.nodeLabelFieldPath` | `spec.nodeName` | The chart renders it into the field reference of `NODE_LABEL` and defines no value |
-| kna | `controllerManager.manager.containerSecurityContext` | uid and gid `0`, every capability dropped but `DAC_OVERRIDE` | The image's uid 42438 has no passwd entry on the host, and the host's dbus-daemon closes the connection of a uid it cannot resolve, so kna exits at start. Starting a unit over the system bus needs root too. The chart's init container hands the PKI directories to 42438, and root needs `DAC_OVERRIDE` to write there |
+| kna | `controllerManager.manager.containerSecurityContext` | every capability dropped but `DAC_OVERRIDE`, no `runAsUser` or `runAsGroup` | The image runs as `0:0`: upstream's uid 42438 has no passwd entry on the host, and the host's dbus-daemon closes the connection of a uid it cannot resolve. Starting a unit over the system bus needs root too. The chart's init container hands the PKI directories to 42438, and root needs `DAC_OVERRIDE` to write there |
 | kna | post-renderer | `NAMESPACE=hypervisor-system` | kna falls back to `monsoon3` without it, and the chart sets none |
 
 `Hypervisor.spec.createCertManagerCertificate` stays at its default `false`, so
@@ -2858,6 +2865,7 @@ nodes=($(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'))
 hack/lab-node-ports.sh
 docker manifest inspect ghcr.io/c5c3/libvirt:latest >/dev/null
 docker manifest inspect "ghcr.io/c5c3/openstack-hypervisor-operator:sha-$(hack/ci-resolve-hvo-commit.sh)" >/dev/null
+docker manifest inspect "ghcr.io/c5c3/kvm-node-agent:sha-$(hack/ci-resolve-kna-commit.sh)" >/dev/null
 
 # 2. the node labels, the custom trait and its Placement trait
 kubectl label node --all openstack.c5c3.io/chassis=true \
@@ -2960,16 +2968,53 @@ Step 12 evicts whichever node holds the servers; after step 11 both sit on
 0, before the ControlPlane, and exits 1 while a pool still holds a server (see
 [`make teardown-infra`](e2e-deployment.md#make-teardown-infra)).
 
+A lab that moves to the kna image of this repository in place keeps its 0644
+keys: kna writes the files only when the node's Secret changes. Deleting
+`tls-libvirt-<node>` makes cert-manager reissue the certificate with a new
+key, which kna then writes with mode 0600. That also retires a key every local
+user of the node could read. Delete the Secrets only once every node runs the
+new image. kna records the `resourceVersion` it wrote in the host's
+`/etc/pki/CA/.last_resource_version` and reads it back at start, so a pod of
+the old image that handles the reissued Secret writes the new key with mode
+0644, and the new pod then skips the Secret as unchanged:
+
+```bash
+image="ghcr.io/c5c3/kvm-node-agent:sha-$(hack/ci-resolve-kna-commit.sh)"
+# the chart names the DaemonSet <release>-controller-manager
+kubectl wait daemonset/kvm-node-agent-controller-manager -n hypervisor-system \
+  --for=jsonpath="{.spec.template.spec.containers[?(@.name==\"manager\")].image}=${image}" \
+  --timeout=10m
+kubectl rollout status daemonset/kvm-node-agent-controller-manager \
+  -n hypervisor-system --timeout=15m
+for node in "${nodes[@]}"; do
+  kubectl delete secret "tls-libvirt-${node}" -n hypervisor-system
+done
+kubectl wait certificate --all -n hypervisor-system --for=condition=Ready --timeout=10m
+for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
+  kubectl exec -n openstack "${pod}" -c libvirtd -- \
+    stat -c '%a %n' /etc/pki/libvirt/private/serverkey.pem /etc/pki/qemu/server-key.pem
+done
+```
+
+Each key shows `600`. A key that still shows `644` has not been rewritten by a
+pod of the new image; deleting its node's Secret again has that pod write it.
+These commands have not run on the lab. A lab deployed after a teardown gets
+new Secrets, so kna writes new keys anyway.
+
 | Property | Value |
 | --- | --- |
 | Namespaces | `openstack` (libvirt, the compute CRs, hvo), `hypervisor-system` (the CA, the node certificates, kna), `envoy-gateway-system` (the alias Service), `flux-system` (the chart sources) |
 | Applied | by hand: the node labels and the Placement trait, then `hypervisor-fixtures/` after a K-ORC restart, then `hypervisor/`, after the Lab ControlPlane is `Ready` |
 | Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, step 0, labels and `maint-<node>` objects included. The node state under `/var/lib/nova`, `/var/lib/libvirt` and `/etc/pki` stays |
-| Pinned by | `tests/unit/deploy/metal_stack_hypervisor_test.sh`; the hvo chart tag follows `hack/ci-resolve-hvo-commit.sh`, and the kna chart is tracked by Renovate (`tests/unit/renovate/kvm_node_agent_chart_custommanager_test.sh`) |
+| Pinned by | `tests/unit/deploy/metal_stack_hypervisor_test.sh`; the hvo chart tag follows `hack/ci-resolve-hvo-commit.sh`, and the kna chart tag `hack/ci-resolve-kna-commit.sh` |
 | Dependencies | the Lab ControlPlane with `spec.services.nova.hypervisorOperator`; `/dev/kvm` and `vhost_net` on every node; TCP 16514 and 49152 to 49215 open between the nodes ([Node port check](#node-port-check)) |
 
-The run of 2026-10-01 on the lab, two Xeon D-2141I workers on Debian 12 with
-kernel 6.1, passed every step above. libvirtd kept its domains across a restart
+The run of 2026-10-01 on the lab ran upstream's kna v0.2.0 image and chart,
+with uid 0 set in the release, on two Xeon D-2141I workers on Debian 12 with
+kernel 6.1. It passed every step above but the kna image check of step 1,
+which came with the image of
+[#1178](https://github.com/c5c3/cobaltcore/issues/1178) and has not run on the
+lab. libvirtd kept its domains across a restart
 of its pod: the scope held libvirtd alone, and QEMU ran in the host cgroup
 `/machine/qemu-<n>-<instance>.libvirt-qemu` that libvirt created itself. The
 socket's group was `108`, libvirtd listened on `<node IP>:16514` only, and the
@@ -2991,12 +3036,13 @@ what would have to change upstream. Each item with what it did on the lab:
 | `HaEnabled` gate | onboarding waits for `HaEnabled=True` while `spec.highAvailability` is `true`; only kvm-ha-service sets it | with the patch both Hypervisors reach `Onboarding=False`, reason `Succeeded` | `highAvailability: false` patched by hand |
 | `TraitsUpdated` gate | onboarding waits for `TraitsUpdated=True`, which hvo sets only when a custom trait differs; it assigns the trait in Placement and does not create it | Placement answers 400 `No such trait CUSTOM_C5C3_LAB` until the trait exists | the node annotation and `openstack trait create` |
 | Host units | kna reads `libvirtd.service` and `openvswitch-switch.service` and starts `virt-admin-server-update-tls.service` through the host's systemd | with the stand-ins kna reports `libvirtd.service`, `LibVirtConnection` and `TLSCertificateInstalled` as `True`; `openvswitch-switch.service` stays `False`, because Open vSwitch runs in the chassis pod | runtime stand-ins written by the libvirt DaemonSet |
-| Agent uid | kna's image runs as uid 42438 and authenticates to the system bus with it | the host has no such user, and its dbus-daemon drops the connection; kna exits at start | kna runs as uid 0 with `DAC_OVERRIDE` |
+| Agent uid | kna's image runs as uid 42438 and authenticates to the system bus with it | the host has no such user, and its dbus-daemon drops the connection; kna exits at start. Run as uid 0 from the release, upstream's image started; the image of #1178 has not run on the lab | the image of [#1178](https://github.com/c5c3/cobaltcore/issues/1178) runs as uid 0; the release keeps `DAC_OVERRIDE` |
+| Key mode | kna writes every TLS file with mode 0644, the private keys included ([#1175](https://github.com/c5c3/cobaltcore/issues/1175), found in upstream's code) | not checked on the lab; the image of #1178 has not run on the lab | patched in the image ([#1178](https://github.com/c5c3/cobaltcore/issues/1178)): 0600, or 0640 for QEMU's and Cloud Hypervisor's keys with `PKI_KEY_GROUP` |
 | `monsoon3` fallback | kna's namespace without `NAMESPACE`, which its chart does not set | with `NAMESPACE` kna installs the certificates of `hypervisor-system` | `NAMESPACE` set by a post-renderer |
 | Catalog interface | hvo reads only the `public` endpoints and takes no CA | through the aliases and `SSL_CERT_DIR` hvo ran 35 minutes without a restart and without an `x509` or `connection refused` line | host aliases and `SSL_CERT_DIR` |
 | Chart object names | the chart builds names from the fullname, the release name when it contains the chart name | `openstack-hypervisor-operator` makes the metrics Service name 64 characters, and the install fails | `fullnameOverride: hypervisor-operator` |
 | Hand-set node labels | hvo flags changes made with kubectl | both Hypervisors report `Tainted=True`, reason `Kubectl` | none |
-| Images per main commit | upstream publishes a chart for every main commit but an image only as `latest` | the chart of `a2baf3f` ran `ghcr.io/c5c3/openstack-hypervisor-operator:sha-a2baf3f…` | the image of [#1163](https://github.com/c5c3/cobaltcore/issues/1163) |
+| Images per main commit | hvo and kna publish a chart for every main commit but no image under its tag; hvo pushes only `latest` | the chart of `a2baf3f` ran `ghcr.io/c5c3/openstack-hypervisor-operator:sha-a2baf3f…`; the kna image of #1178 has not run on the lab | the images of [#1163](https://github.com/c5c3/cobaltcore/issues/1163) and [#1178](https://github.com/c5c3/cobaltcore/issues/1178) |
 
 The run also found what this repository's own pieces owe a real hypervisor.
 The fake driver of the kind suites reaches none of it:

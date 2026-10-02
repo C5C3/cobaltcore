@@ -408,7 +408,16 @@ configures none of it:
   `/etc/pki/libvirt/servercert.pem` and `/etc/pki/qemu/server-cert.pem`, and
   the key at `/etc/pki/libvirt/private/serverkey.pem` and
   `/etc/pki/qemu/server-key.pem`. The client certificate and key in both
-  directories link to the server ones.
+  directories link to the server ones. The
+  [kvm-node-agent image](../ci-cd/container-images.md#kvm-node-agent) of this
+  repository writes the keys with mode 0600. QEMU opens its key itself, so a
+  host whose QEMU does not run as root sets `PKI_KEY_GROUP` on the agent to
+  the numeric group QEMU runs in, which gives `/etc/pki/qemu/server-key.pem`
+  that group and mode 0640. The agent container then needs the `CHOWN`
+  capability or that group among its groups; without either, the agent fails
+  every update and keeps the previous files. All key files hold the same key,
+  so that group can read the key the node authenticates with to the libvirtd
+  of its peers as well.
 - TCP 16514 and QEMU's migration ports, 49152 to 49215 by default, open between
   every pair of nodes that can migrate to each other and closed to every other
   source.
