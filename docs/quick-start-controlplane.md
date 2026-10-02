@@ -70,15 +70,9 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 `WITH_CONTROLPLANE=true` brings up the shared infrastructure and then the
 ControlPlane operator stack (keystone-operator, horizon-operator,
 glance-operator, placement-operator, barbican-operator, ovn-operator,
-<<<<<<< HEAD
 neutron-operator, cinder-operator, nova-operator, K-ORC, c5c3-operator) from
 the published charts. It does not create the `ControlPlane` CR itself; you
-create and apply that in Step 3. The RabbitMQ Cluster Operator that serves the managed bus
-=======
-neutron-operator, cinder-operator, K-ORC, c5c3-operator) from the published
-charts. It does not create the `ControlPlane` CR itself; you create and apply
-that in Step 4. The RabbitMQ Cluster Operator that serves the managed bus
->>>>>>> 99a5a3f5 (docs: split up controlplane quickstart)
+create and apply that in Step 4. The RabbitMQ Cluster Operator that serves the managed bus
 arrives through a Flux Kustomization of its own, on every cluster this script
 provisions, with or without `WITH_CONTROLPLANE=true`. In this mode the
 ControlPlane provisions its own MariaDB/Memcached (managed mode), so
@@ -317,7 +311,7 @@ carrying the image catalog entry and the `glance` service account (user
 Keystone tokens it receives. Its database and cache derive from
 `spec.infrastructure` the same way Keystone's do. On the managed shared
 database its DB credential is engine-issued and auto-rotated like Keystone's,
-as short-lived leases from the OpenBao database engine, and the Step 4
+as short-lived leases from the OpenBao database engine, and the Step 5
 onboarding provisions the engine tenant for all database services (keystone,
 glance, placement, barbican, neutron, nova's two schemas, and cinder when the
 block-storage block is present). A `GlanceReady` condition joins the chain,
@@ -332,7 +326,7 @@ carries the placement catalog entry and the `placement` account (user
 each registration creates its project, so two naming one project would collide.
 Database and cache derive from `spec.infrastructure` the same way Glance's do,
 and on the managed shared database the DB credential is engine-issued too, from
-the tenant Step 4 onboards. The `gateway` block puts the API on the sixth HTTPS
+the tenant Step 5 onboards. The `gateway` block puts the API on the sixth HTTPS
 listener the kind overlay adds, `placement.127-0-0-1.nip.io`, and
 `publicEndpoint` carries the `:8443` host port into the public placement
 catalog row. A `PlacementReady`
@@ -346,7 +340,7 @@ CRs: the Barbican child `controlplane-barbican`, the instance
 attaches the two. A `KeystoneService` registration `controlplane-barbican`
 carries the key-manager catalog entry and the `barbican` account (user
 `barbican`, role `service`) with a project of its own, `service-barbican`. Its
-database credential is engine-issued from the tenant Step 4 onboards, like
+database credential is engine-issued from the tenant Step 5 onboards, like
 Glance's and Placement's. The `gateway` block puts the key-manager API on the
 seventh HTTPS listener, `barbican.127-0-0-1.nip.io`, and `publicEndpoint`
 carries the `:8443` host port into the public key-manager catalog row. A `BarbicanReady` condition joins the chain beside `GlanceReady`
@@ -365,9 +359,9 @@ URL, and delivers the URL beside the child as a
 `controlplane-neutron` references brownfield. A `KeystoneService` registration
 `controlplane-neutron` carries the network catalog entry and the `neutron`
 account (user `neutron`, role `service`) in its own project, `service-neutron`.
-Its database credential is engine-issued from the tenant Step 4 onboards, like
+Its database credential is engine-issued from the tenant Step 5 onboards, like
 Glance's, Placement's, and Barbican's. `ovn.centralRef` points at the
-`controlplane-ovn` central from the top of this step; the plane reads that
+`controlplane-ovn` central of Step 3; the plane reads that
 central's database addresses and client Secret and mirrors its readiness into an
 `OVNReady` condition, which `NeutronReady` gates on alongside `KeystoneReady`,
 the bus delivery, and the registration. The `gateway` block puts the API on the
@@ -393,7 +387,7 @@ the caller's own context.
 
 Nova keeps its state in two schemas, `nova_api` and `nova` (with `nova_cell0`
 beside it), and each takes an engine-issued credential of its own from the
-tenant Step 4 onboards: `controlplane-nova-api-db-credentials` and
+tenant Step 5 onboards: `controlplane-nova-api-db-credentials` and
 `controlplane-nova-db-credentials`. The bus reaches the child as
 `controlplane-nova-messaging`, like Neutron's. The ControlPlane generates the
 shared secret the metadata API verifies proxied instance requests with into
@@ -459,7 +453,7 @@ a `FailedMount` event that names `nfs.csi.k8s.io` as not registered, and
 :::
 
 Manual work remains after the apply: a hand-applied ControlPlane needs the
-one-time OpenBao onboarding in Step 4 before the chain can progress past its
+one-time OpenBao onboarding in Step 5 before the chain can progress past its
 database credentials.
 
 <details>
@@ -767,13 +761,8 @@ openstack --insecure token issue
 > `foo-keystone-admin-credentials` instead.
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
-<<<<<<< HEAD
 > and drop all seven `publicEndpoint` lines (keystone, glance, placement,
-> barbican, neutron, nova, and cinder) from the CR in Step 3.
-=======
-> and drop all six `publicEndpoint` lines (keystone, glance, placement,
-> barbican, neutron, and cinder) from the CR in Step 4.
->>>>>>> 99a5a3f5 (docs: split up controlplane quickstart)
+> barbican, neutron, nova, and cinder) from the CR in Step 4.
 
 ### Upload a first image
 
@@ -786,7 +775,7 @@ openstack --insecure catalog list
 
 An `image` row proves Glance registered its endpoints. The public image catalog
 row now carries the gateway URL (`https://glance.127-0-0-1.nip.io:8443`, the
-`publicEndpoint` from Step 3), and the `openstack` CLI resolves the `public`
+`publicEndpoint` from Step 4), and the `openstack` CLI resolves the `public`
 interface by default, so the upload runs directly from the host through the
 shared Gateway, with no in-cluster pod involved. `--insecure` accepts the listener's
 self-signed certificate, as with the Keystone calls above.
@@ -980,7 +969,7 @@ openstack --insecure catalog list
 A `compute` row proves the ControlPlane registered both endpoints: the
 in-cluster one at `http://controlplane-nova.openstack.svc:8774/v2.1` and the
 public one at `https://nova.127-0-0-1.nip.io:8443/v2.1`, the `publicEndpoint`
-from Step 3 with the `/v2.1` the registration appends. Then list the compute
+from Step 4 with the `/v2.1` the registration appends. Then list the compute
 services the control plane runs:
 
 ```bash
