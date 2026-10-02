@@ -39,7 +39,7 @@ compute service is deleted after the pod is gone.
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | no | `ghcr.io/c5c3/nova-compute:<Nova status.installedRelease>` | The nova-compute image. When nil the tag is the release the referenced Nova has installed, not the one it is moving to: the control plane upgrades first, and the pool follows once the schemas have moved |
 | `libvirt` | [`NovaComputeLibvirtSpec`](#novacomputelibvirtspec) | no | `{}` | The `[libvirt]` options the pool renders |
 | `updateStrategy` | [`NovaComputeUpdateStrategy`](#novacomputeupdatestrategy) | no | `{}` | Paces the DaemonSet rollout |
-| `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits of the `nova-compute` container, applied to the `wait-for-chassis` init container too. Nil renders none |
+| `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits of the `nova-compute` container, applied to both init containers too. Nil renders none |
 | `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the pool DaemonSet (`{name}-nova-compute`) for as long as the operator renders it into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `extraConfig` | `map[string]map[string]string` | no | none | INI sections merged over the rendered `compute-pool.conf`. It is the per-pool override surface. The keys the pod takes from its environment or its mounts, and the keys that select the live-migration transport, are rejected at admission (see [NovaComputeOwnedConfigKeys](#owned-keys)) |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSet and its ConfigMaps are created on. The CR, its status and its finalizers stay on the management cluster. Immutable. See [Target Clusters](../target-clusters.md) |
@@ -305,7 +305,7 @@ probe; the service state Nova reports is the health signal.
 | the contract Secret | `/etc/nova/compute-config` | read-only; the fragment's `ssl_ca_file` names `ca.crt` here |
 | the pool ConfigMap | `/etc/nova/compute-pool.conf.d` | read-only |
 | hostPath `/run/libvirt` | same | `DirectoryOrCreate`; the libvirt socket |
-| hostPath `/var/lib/nova` | same | `DirectoryOrCreate`, `mountPropagation: Bidirectional`, so the NFS volumes os-brick mounts below it reach the host's QEMU. The node's `compute_id` lives here, so a restarted pod keeps its identity |
+| hostPath `/var/lib/nova` | same | `DirectoryOrCreate`, `mountPropagation: Bidirectional`, so the NFS volumes os-brick mounts below it reach the host's QEMU. The node's `compute_id` lives here, so a restarted pod keeps its identity. The `create-instances-dir` init container mounts it as well, without propagation |
 | hostPath `/run/openvswitch` | same | `DirectoryOrCreate`; the node's Open vSwitch database |
 | hostPath `/dev` | same | |
 | hostPath `/sys/fs/cgroup` | same | read-only |
@@ -320,6 +320,16 @@ restricted profile and waits until the node's OVN chassis has written
 [metadata agent](../neutron/index.md) runs. It speaks the OVSDB JSON-RPC
 protocol itself, because the image ships no `ovsdb-client`, so a pool's nodes
 need an [OVNChassis](../ovn/ovn-chassis-crd.md).
+
+The `create-instances-dir` init container runs first, as uid 0 and gid 0. It is
+not privileged, and every capability is dropped but `DAC_OVERRIDE`. It runs
+`mkdir -p -m 0755 /var/lib/nova/instances`, nova's default `instances_path`:
+the host mount hides the directory the image ships, and the kubelet creates
+`/var/lib/nova` and nothing below it. An existing directory keeps its owner and
+mode. When `mkdir` fails, the pod stays in its init phase, `nova-compute` does
+not start, and the pool reports `DaemonSetReady=False` with reason
+`DaemonSetProgressing`. A file at the path fails it with `File exists`, a
+read-only host filesystem with `Read-only file system`.
 
 ### The namespace
 

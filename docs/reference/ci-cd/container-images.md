@@ -1195,8 +1195,11 @@ spec that meets it):
   `/var/lib/nova`, `/var/lib/nova/instances` and `/var/lib/nova/tmp` on the
   host owned by 42424:42424 before nova-compute starts. The NovaCompute pod
   runs nova-compute as root, because a stock host's libvirt socket is
-  `root:libvirt` 0660 with a host-specific group ID, so it needs none of this;
-  a non-root consumer does. The mount hides the
+  `root:libvirt` 0660 with a host-specific group ID, so it needs no ownership
+  change. It creates `instances` itself, `root:root` 0755, in its
+  `create-instances-dir` init container (see the
+  [node contract](../nova/novacompute-crd.md#node-contract)). A non-root
+  consumer needs the owner change. The mount hides the
   image's own directories, the kubelet creates a missing `hostPath` directory
   as `root:root` 0755, and `fsGroup` does not apply to a `hostPath`. On a
   directory nova-compute cannot write, the first start fails to write
