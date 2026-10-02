@@ -37,6 +37,7 @@ security pipeline. See [Reusable Components](#reusable-components) for details.
 | Resolve OVN version script | `hack/ci-resolve-ovn-version.sh` |
 | Build OVN image script | `hack/ci-build-ovn-image.sh` |
 | Resolve hvo commit script | `hack/ci-resolve-hvo-commit.sh` |
+| Resolve kna commit script | `hack/ci-resolve-kna-commit.sh` |
 
 Both workflow files use the `.yaml` extension and quote the trigger key as `"on"` to
 prevent YAML boolean interpretation. They start with the standard SPDX license
@@ -59,7 +60,7 @@ The two path lists differ. The push list is the broad one it has always been:
 action republishes the images. The pull-request list names the inputs this workflow
 actually reads: the images and their build contexts, `releases/**`, `patches/**`,
 `scripts/**`, `overrides/**`, the option catalogs it verifies, and the nine
-composite actions and eleven `hack/` scripts its jobs call, directly or through
+composite actions and twelve `hack/` scripts its jobs call, directly or through
 `build-push-image`, `setup-docker-registry` and `merge-manifest-and-attest`. Four
 negative patterns exclude `tests/container-images/verify_build_images_workflow.sh`,
 `verify_deviation_comments.sh`, `verify_release_config.sh` and
@@ -286,7 +287,7 @@ and the image flags the build and test jobs gate on.
 | `ALL_SERVICES` | yes | — | Space-separated list of every service in the build matrix |
 | `FILTER_svc_<service>` | no | `false` | One per name in `ALL_SERVICES` |
 | `FILTER_base` | no | `false` | Base images, release configs, build scripts, constraint overrides |
-| `FILTER_tempest` / `FILTER_ovn` / `FILTER_proxy` / `FILTER_shifter` / `FILTER_libvirt` / `FILTER_hvo` | no | `false` | The release-independent images, one each |
+| `FILTER_tempest` / `FILTER_ovn` / `FILTER_proxy` / `FILTER_shifter` / `FILTER_libvirt` / `FILTER_hvo` / `FILTER_kna` | no | `false` | The release-independent images, one each |
 | `FILTER_plumbing` | no | `false` | The workflow, its composite actions, its `hack/` scripts |
 | `GITHUB_OUTPUT` | no | `/dev/null` | GitHub Actions output file |
 
@@ -297,15 +298,15 @@ step yields on `push` and `workflow_dispatch`.
 | --- | --- |
 | `services` | `all`, a space-separated subset of `ALL_SERVICES` in `ALL_SERVICES` order, or empty |
 | `has-services` | `true` when `services` is `all` or non-empty |
-| `build-tempest` / `build-ovn` / `build-proxy` / `build-shifter` / `build-libvirt` / `build-hvo` | `true` or `false` |
+| `build-tempest` / `build-ovn` / `build-proxy` / `build-shifter` / `build-libvirt` / `build-hvo` / `build-kna` | `true` or `false` |
 
 Three inputs resolve to everything, because everything is built from them: an event
 that is not a `pull_request`, a `plumbing` match, and a `base` match. The `base` class
 also sets `build-tempest`, since the Tempest image is built `FROM` `python-base` and
 `venv-builder` and reads `releases/<release>/`. OVN, the federation proxy, the
 backup shifter and libvirt build `FROM ubuntu:noble`, and openstack-hypervisor-operator
-builds `FROM golang` and distroless. None of them reads either, so they follow their
-own filters alone.
+and kvm-node-agent build `FROM golang` and distroless. None of them reads either, so
+they follow their own filters alone.
 
 Every output line is echoed as well as written, so running the script prints what it
 decided:
@@ -321,6 +322,7 @@ build-proxy=false
 build-shifter=false
 build-libvirt=false
 build-hvo=false
+build-kna=false
 ```
 
 ### hack/ci-generate-build-matrix.sh
@@ -370,6 +372,9 @@ prepare ──────────┤
                   │
                   ├──> build-hvo (matrix: amd64 + arm64)
                   │      └──> merge-hvo-image (push only) ──> verify-hvo-image (push only)
+                  │
+                  ├──> build-kna (matrix: amd64 + arm64)
+                  │      └──> merge-kna-image (push only) ──> verify-kna-image (push only)
                   │
                   └──> build-base-images (matrix: amd64 + arm64)
                          └──> merge-base-images ──> verify-base-images ──┬──> generate-matrix
@@ -426,7 +431,7 @@ them into the service list and the image flags.
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `8` |
 | Permissions | `contents: read` |
-| Outputs | `services`, `has-services`, `build-tempest`, `build-ovn`, `build-proxy`, `build-shifter`, `build-libvirt`, `build-hvo` |
+| Outputs | `services`, `has-services`, `build-tempest`, `build-ovn`, `build-proxy`, `build-shifter`, `build-libvirt`, `build-hvo`, `build-kna` |
 
 The `dorny/paths-filter` step carries `if: github.event_name == 'pull_request'`, since
 the action diffs against the pull request base. On `push` and `workflow_dispatch` it is
@@ -588,6 +593,41 @@ output is the merged manifest as
 `[ubuntu-latest, ubuntu-24.04-arm]` runner matrix, so the arm64 binary, which
 pull requests never build, runs here first. It holds `contents: read` and
 `packages: read` and nothing else.
+
+### build-kna / merge-kna-image / verify-kna-image
+
+kvm-node-agent, compiled from a pinned commit of its upstream `main` branch
+with the patches under `images/kvm-node-agent/patches/`
+(`images/kvm-node-agent/Dockerfile`, the same digest-pinned `golang` build
+stage and `gcr.io/distroless/static:nonroot` runtime). The jobs are copies of
+the hvo jobs above with the short name `kna`. The single `ARG KNA_COMMIT` line
+is the whole version input, and `hack/ci-resolve-kna-commit.sh` is its only
+parser. The build fetches that commit from github.com with the workflow token
+as the `github_token` secret, and runs the patch's two tests, the second as
+uid 65534. See [kvm-node-agent](./container-images.md#kvm-node-agent) for the
+patch and why the pin is a `main` commit.
+
+`build-kna` needs `changes`, `lint-dockerfiles` and `prepare`, and carries
+`if: needs.changes.outputs.build-kna == 'true'`: on a pull request it runs when
+`images/kvm-node-agent/**`, `tests/container-images/verify_kna.sh` or the
+plumbing changed, and on a push it always runs. It builds the
+`linux/amd64` + `linux/arm64` include matrix with `timeout-minutes: 30` and
+`cache-scope: kna`. On pull requests it builds amd64 only, loads the result
+locally as `:pr-verify`, and runs the inline Grype scan and
+`tests/container-images/verify_kna.sh` against that tag. On push events it
+pushes per-platform digests as `digests-kna-<pair>` for the merge job.
+
+`merge-kna-image` (push only) assembles the manifest through
+`merge-manifest-and-attest`: SBOM `sbom-kna.cyclonedx.json`, Grype scan
+`grype-kna`, attestation, cosign signature. It publishes
+`sha-<kna-commit>-<sha>` on every push to `main` or `stable/**`, and adds
+`sha-<kna-commit>`, `upstream-<kna-commit>` and `latest` on `main` (see
+[Release-independent images](#release-independent-images)). Its `kna-image`
+output is the merged manifest as `ghcr.io/<owner>/kvm-node-agent@<digest>`.
+
+`verify-kna-image` (push only) pulls that digest and runs `verify_kna.sh` on a
+`[ubuntu-latest, ubuntu-24.04-arm]` runner matrix, with `contents: read` and
+`packages: read` only.
 
 ### build-base-images
 
@@ -1043,8 +1083,9 @@ the same nova (for example `nova-compute:32.0.0-p0-main-a1b2c3d`).
 
 ### Release-independent images
 
-`keystone-federation-proxy`, `backup-shifter`, `libvirt`, `ovn` and
-`openstack-hypervisor-operator` have no OpenStack version to tag with:
+`keystone-federation-proxy`, `backup-shifter`, `libvirt`, `ovn`,
+`openstack-hypervisor-operator` and `kvm-node-agent` have no OpenStack version
+to tag with:
 
 | Image | Tags | Branches |
 | --- | --- | --- |
@@ -1055,15 +1096,17 @@ the same nova (for example `nova-compute:32.0.0-p0-main-a1b2c3d`).
 | `ovn` | `<ovn-version>`, `latest` | `main` only |
 | `openstack-hypervisor-operator` | `sha-<hvo-commit>-<sha>` | all |
 | `openstack-hypervisor-operator` | `sha-<hvo-commit>`, `upstream-<hvo-commit>`, `latest` | `main` only |
+| `kvm-node-agent` | `sha-<kna-commit>-<sha>` | all |
+| `kvm-node-agent` | `sha-<kna-commit>`, `upstream-<kna-commit>`, `latest` | `main` only |
 
 `<sha>` is the full 40-character `github.sha` here, as it is for the base
 images. Restricting `ovn:<ovn-version>` and `ovn:latest` to `main` has the same
 reason as the service version tag above: when two branches build the same
 upstream version, a shared tag would be silently overwritten. The same holds
-for the three `main`-only tags of `openstack-hypervisor-operator`, where
-`<hvo-commit>` is the full upstream commit the Dockerfile pins.
-`sha-<hvo-commit>` is the tag the upstream chart of that commit renders from
-its `appVersion`.
+for the three `main`-only tags of `openstack-hypervisor-operator` and
+`kvm-node-agent`, where `<hvo-commit>` and `<kna-commit>` are the full upstream
+commits the Dockerfiles pin. `sha-<hvo-commit>` and `sha-<kna-commit>` are the
+tags the upstream chart of that commit renders from its `appVersion`.
 
 ## Retention
 
@@ -1077,7 +1120,7 @@ survives while it carries a **keeper** tag:
 | Version | `keystone:28.0.0` | Names an upstream release |
 | Release | `keystone:2025.2` | Names an OpenStack release |
 | Semver prerelease | `keystone-operator:1.2.0-rc1` | Tagged operator build |
-| Pinned upstream commit | `openstack-hypervisor-operator:upstream-<commit>` | A chart of that commit names the image |
+| Pinned upstream commit | `openstack-hypervisor-operator:upstream-<commit>`, `kvm-node-agent:upstream-<commit>` | A chart of that commit names the image |
 
 Everything else is a build artifact with a successor and is deleted once it is
 older than 24 hours: composite tags, SHA tags in all four shapes
@@ -1747,7 +1790,9 @@ An image pinned to an upstream commit instead of a version names its resolver
 `hack/ci-resolve-<image>-commit.sh` and may skip the build script when a plain
 `docker build` of its directory reproduces the CI build. `<image>` is the short
 name the jobs and test files use: `openstack-hypervisor-operator` has
-`hack/ci-resolve-hvo-commit.sh`, `build-hvo` and `verify_hvo.sh`.
+`hack/ci-resolve-hvo-commit.sh`, `build-hvo` and `verify_hvo.sh`, and
+`kvm-node-agent` has `hack/ci-resolve-kna-commit.sh`, `build-kna` and
+`verify_kna.sh`.
 
 An image built from distro packages alone (`keystone-federation-proxy`,
 `backup-shifter`, `libvirt`) has no `ARG` pin and therefore skips the resolver
@@ -1893,6 +1938,7 @@ The following table summarizes which test scripts run where:
 | `verify_backup_shifter.sh` | — | build-backup-shifter (PR) | Yes |
 | `verify_libvirt.sh` | — | build-libvirt (PR) | Yes |
 | `verify_hvo.sh` | — | build-hvo (PR) / verify-hvo-image (push) | Yes |
+| `verify_kna.sh` | — | build-kna (PR) / verify-kna-image (push) | Yes |
 
 ## SPDX Header
 
