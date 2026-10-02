@@ -28,7 +28,7 @@ This guide is written against the **[Quick Start (ControlPlane)](../../quick-sta
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
-Follow that tutorial through the **Boot a first server** checks in Step 6, so
+Follow that tutorial through the **Boot a first server** checks in Step 7, so
 the projected `controlplane-nova` child is `Ready` in `openstack` and has
 published `controlplane-nova-compute-config`. Every resource name in the
 examples below is one that devstack produces.

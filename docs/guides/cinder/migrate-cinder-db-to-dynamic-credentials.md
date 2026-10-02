@@ -49,8 +49,8 @@ This guide is written against the **[Quick Start (ControlPlane)](../../quick-sta
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra
 ```
 
-Follow that tutorial through the block-storage block of Step 3 and the
-**Create a first volume** check in Step 6, so the projected `controlplane-cinder`
+Follow that tutorial through the block-storage block of Step 4 and the
+**Create a first volume** check in Step 7, so the projected `controlplane-cinder`
 child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
 name in the examples below is one that devstack produces.
 :::

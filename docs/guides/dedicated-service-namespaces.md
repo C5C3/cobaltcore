@@ -150,7 +150,7 @@ seeded by the bring-up, so the dashboard needs nothing here.
 
 ### 3. Create the ControlPlane with the namespace assignment
 
-The CR is the tutorial's Step 3 CR plus two additions on the Keystone block: the
+The CR is the tutorial's Step 4 CR plus two additions on the Keystone block: the
 `namespace` assignment, and an explicit `gateway.parentRef.namespace` — when
 the field is empty the projected child's **own** namespace is assumed, which
 would now point at a Gateway that does not exist in `openstack-internal`.
@@ -230,7 +230,7 @@ Two rules to know before applying:
 
 ### 4. Onboard the OpenBao database-engine tenant
 
-Same one-time onboarding as the tutorial's Step 4, with one difference: the
+Same one-time onboarding as the tutorial's Step 5, with one difference: the
 managed MariaDB now lives in `openstack-internal`, so the readiness wait moves
 there. The script arguments are unchanged — they name the **ControlPlane**,
 and the script resolves the Keystone service namespace from the live spec and

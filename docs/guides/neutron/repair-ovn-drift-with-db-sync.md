@@ -30,7 +30,7 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
 Follow that tutorial through to the **Create a first network** check in its
-Step 6, so the projected `Neutron` `controlplane-neutron` is Ready in the
+Step 7, so the projected `Neutron` `controlplane-neutron` is Ready in the
 `openstack` namespace and its logical model holds something worth comparing.
 :::
 
