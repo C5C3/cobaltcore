@@ -46,7 +46,7 @@ to install the service, then stage 2 extends `python-base` and copies only the v
 from stage 1. This ensures the final image contains no build tools.
 
 The release-independent images sit outside that lineage. They carry no
-OpenStack code, and all but one build straight on `ubuntu:noble`:
+OpenStack code, and all but two build straight on `ubuntu:noble`:
 
 ```text
 ubuntu:noble
@@ -57,14 +57,16 @@ ubuntu:noble
 └── libvirt                    Single stage: distro libvirt + QEMU + OVMF
 ```
 
-`openstack-hypervisor-operator` compiles a Go operator and builds on the two
-images the CobaltCore operator images use:
+`openstack-hypervisor-operator` and `kvm-node-agent` compile Go programs and
+build on the two images the CobaltCore operator images use:
 
 ```text
 golang:1.27
-└── openstack-hypervisor-operator  Stage 1 (build): fetch the pinned upstream commit, apply the patches, go test + go build
+├── openstack-hypervisor-operator  Stage 1 (build): fetch the pinned upstream commit, apply the patches, go test + go build
+└── kvm-node-agent                 Stage 1 (build): fetch the pinned upstream commit, apply the patches, two test runs + go build
 gcr.io/distroless/static:nonroot
-└── openstack-hypervisor-operator  Stage 2 (runtime): copy the manager binary
+├── openstack-hypervisor-operator  Stage 2 (runtime): copy the manager binary
+└── kvm-node-agent                 Stage 2 (runtime): copy the manager binary, run as 0:0
 ```
 
 Each is described under [Release-independent images](#release-independent-images).
@@ -1602,6 +1604,142 @@ it installs a logger, so that message never reaches the output.
 Its build, verification and tag scheme are described in
 [build-hvo / merge-hvo-image / verify-hvo-image](./build-images-workflow.md#build-hvo-merge-hvo-image-verify-hvo-image).
 
+### kvm-node-agent
+
+**Location:** `images/kvm-node-agent/Dockerfile`
+
+kvm-node-agent (kna) from `cobaltcore-dev`, compiled from a pinned commit of
+its upstream `main` branch with the patches under
+`images/kvm-node-agent/patches/` applied. The agent runs on every hypervisor
+node: it reports libvirt's state into the node's `Hypervisor` and installs the
+node's libvirt TLS files under the host's `/etc/pki`.
+`deploy/lab/metal-stack/hypervisor/kna-release.yaml` runs it with the upstream
+Helm chart of the same commit (see
+[Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)).
+
+| Property | Value |
+| --- | --- |
+| Build stage | `golang:1.27`, pinned by the digest `operators/Dockerfile` carries |
+| Runtime base | `gcr.io/distroless/static:nonroot`, pinned by the digest `operators/Dockerfile` carries |
+| Version pin | `ARG KNA_COMMIT`, a 40-character commit of upstream `main` (`hack/ci-resolve-kna-commit.sh` prints it) |
+| User | `0:0` (see [Design Deviations](#design-deviations)) |
+| Entrypoint | `/usr/bin/manager` |
+| Label | `io.c5c3.upstream-commit`, set to the pinned commit |
+
+**Build stage:**
+
+- Fetches `$KNA_COMMIT` from
+  `https://github.com/cobaltcore-dev/kvm-node-agent.git` by its SHA, with the
+  optional `github_token` secret, as for
+  [openstack-hypervisor-operator](#openstack-hypervisor-operator)
+- Downloads the Go modules in a layer of their own, then applies every
+  `*.patch` under `patches/` with `git apply --index`. A patch that does not
+  apply fails the build with `patch does not apply: /patches/<file>`
+- Compiles the test binary of `internal/certificates` once, with `-trimpath`
+  as in the build below, so that the build reuses the packages compiled for
+  the test, and runs the two tests patch 0001 brings from it:
+  `TestUpdateTLSCertificateKeyMode` as root, then
+  `TestUpdateTLSCertificateKeyGroupNotPermitted` as uid 65534 through
+  `setpriv --reuid=65534 --regid=65534 --clear-groups`. The build fails unless
+  each log shows the test's `--- PASS:` line followed by a space, which a
+  subtest's line does not match. A test binary exits 0 with
+  `testing: warning: no tests to run` when a test is missing, so the greps are
+  what catch a patch that lost its test file. The second test skips as root
+  and prints `--- SKIP`, so its grep also fails when that run is not
+  unprivileged. `tests/unit/images/kna_patch_test_guard_test.sh` runs both
+  greps against such logs
+- Builds `./cmd` with `CGO_ENABLED=0`, `GOTOOLCHAIN=local` and upstream's
+  ldflags without the build date, with the version set to `sha-<commit>`, the
+  tag the image is published under. `manager --version` therefore prints
+  `manager version sha-<commit> ()`; the parentheses hold the unset build
+  date. Upstream's `generate` step is skipped: the generated files are
+  committed
+
+**Why `main`:** upstream publishes a chart for every `main` commit, version
+`0.2.0+sha-<short>` with `appVersion` `sha-<full commit>`, and that chart
+renders the image as `<repository>:<appVersion>`. Upstream pushes no image
+under that tag: `ghcr.io/cobaltcore-dev/kvm-node-agent:sha-<commit>` answers
+404. A fix the agent needs on hosts outside SAP ships here as a patch while it
+is proposed upstream. This image is published as `sha-<commit>`, so the chart
+of the pinned commit runs it with only the repository overridden.
+
+**Source patch:**
+`images/kvm-node-agent/patches/0001-certificates-restrict-private-key-file-modes.patch`.
+Upstream's `UpdateTLSCertificate` (`internal/certificates/manage_libvirt.go`)
+writes every file of the node's TLS Secret with mode 0644, the private key
+included (#1175). Every local user of the node can then read the key that
+authenticates it to every libvirtd of its migration domain. With the patch:
+
+- `libvirt/private/serverkey.pem`, `qemu/server-key.pem` and
+  `ch/server-key.pem` get mode 0600, and the six certificate files keep 0644.
+  A key target that a later upstream commit adds gets 0600 too.
+- When the environment variable `PKI_KEY_GROUP` holds a numeric group ID,
+  `qemu/server-key.pem` and `ch/server-key.pem` get that group and mode 0640.
+  With native TLS migration, QEMU opens its key itself, as the user it runs
+  as, and Cloud Hypervisor reads its own the same way.
+  `libvirt/private/serverkey.pem` keeps mode 0600, but it holds the same key,
+  and libvirt's client key links to it: the group can read the key the node
+  authenticates with to the libvirtd of its peers as well. Only a number is
+  accepted, because the distroless image has no group database, and an
+  invalid value fails the update before any file is written. The agent has to
+  belong to the group or hold `CAP_CHOWN`; otherwise the update fails with
+  `operation not permitted` and replaces no file. Unset or empty, the variable
+  changes no group.
+  The upstream chart has no value for it, so a host that needs it sets it
+  with a post-renderer.
+- Every file is written to a temporary file in its own directory, and the
+  temporary files are renamed over their targets only once all of them are
+  written. `os.WriteFile` keeps the mode of a file that already exists, so the
+  rename is what tightens a key an earlier version left at 0644. It needs
+  write permission on the directory and no `CAP_FOWNER`, and no reader sees a
+  partly written key. A write that fails leaves the files of the previous
+  Secret in place instead of a new certificate beside an old key.
+
+The agent writes the files only when the Secret's `resourceVersion` changes,
+so a node keeps the keys it has until its certificate is reissued.
+`TestUpdateTLSCertificateKeyMode` walks the PKI directory in eight subtests and
+fails for any file with the key's content that is not a key target, for a key
+file with another mode or group, and for any other file whose mode is not
+0644. `TestUpdateTLSCertificateKeyGroupNotPermitted` sets a group the process
+does not belong to and expects a failed update that leaves every file of the
+previous Secret in place and no temporary file behind. A root process may give
+a file any group, so that test skips as root, and the build runs it a second
+time as uid 65534.
+The patch header records `Upstream status: not submitted`. Its author submits
+it upstream; #1175 stays open until upstream `main` carries the change, and
+issue #1066 tracks it.
+
+**Tags:** CI publishes `ghcr.io/c5c3/kvm-node-agent` as
+`sha-<kna-commit>-<sha>` on every push, and on `main` also as
+`sha-<kna-commit>`, `upstream-<kna-commit>` and `latest` (see the
+[tag table](./build-images-workflow.md#release-independent-images)). The
+upstream chart resolves `sha-<kna-commit>`, and `upstream-<kna-commit>` keeps
+that manifest through [Retention](./build-images-workflow.md#retention), as
+for openstack-hypervisor-operator.
+
+**Pin moves:** Renovate tracks the `ARG KNA_COMMIT` line as a git-refs digest
+of upstream `main`, weekly and without automerge (see
+[Dependency Management](../../contributing/dependency-management.md)).
+`hack/ci-resolve-kna-commit.sh` is the only parser of the line. The lab's chart
+ref in `deploy/lab/metal-stack/hypervisor/sources.yaml` moves with the pin by
+hand, and `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while the
+chart's short SHA differs from it. A new commit on which the patch no longer
+applies fails the build at the `git apply` step; the patch is then re-cut
+against the new commit. Once upstream carries the change, the patch goes
+together with its two test runs in the build step, and with the last patch
+the `COPY patches/` and `git apply` steps go too.
+
+**Image contract check:** `tests/container-images/verify_kna.sh` runs four
+tests against a built image. The first line of `manager --version` is
+`manager version sha-<pin> ()`. `manager --help` exits 0 and lists
+`-health-probe-bind-address`, the flag the chart passes; a binary that needed
+a C library would not start on the static base at all. The image runs
+`/usr/bin/manager` as `0:0`, and its `io.c5c3.upstream-commit` label equals
+the pin.
+
+Its build, verification and tag scheme are described in
+[build-kna / merge-kna-image / verify-kna-image](./build-images-workflow.md#build-kna-merge-kna-image-verify-kna-image).
+
 ## Named Build Contexts
 
 Service Dockerfiles use Docker's named build context feature (`--build-context`) to inject
@@ -1961,9 +2099,34 @@ bash tests/container-images/verify_hvo.sh
 `--progress=plain` keeps the `--- PASS: TestLiveMigrateAutoBody` line in the
 build output.
 
+### Building kvm-node-agent locally
+
+The build needs no source checkout and no build args: the Dockerfile fetches
+the pinned commit, applies the patches and runs the patch's two tests itself.
+Pass `GITHUB_TOKEN` as a BuildKit secret when the anonymous fetch inside the
+build fails; CI always does.
+
+```bash
+docker build images/kvm-node-agent -t kvm-node-agent
+
+# The same build with an authenticated fetch
+docker build --secret id=github_token,env=GITHUB_TOKEN \
+  images/kvm-node-agent -t kvm-node-agent
+
+# Print the pinned upstream commit
+hack/ci-resolve-kna-commit.sh
+
+# Run the full image contract check against kvm-node-agent
+bash tests/container-images/verify_kna.sh
+```
+
+`--progress=plain` keeps the `--- PASS: TestUpdateTLSCertificateKeyMode` and
+`--- PASS: TestUpdateTLSCertificateKeyGroupNotPermitted` lines in the build
+output.
+
 ## Design Deviations
 
-The implementation deviates from the original design document in three areas,
+The implementation deviates from the original design document in four areas,
 documented with `# DEVIATION` comments in the affected Dockerfiles:
 
 **Generic `openstack` user instead of per-service users:**
@@ -2008,3 +2171,18 @@ comment saying so. The operator is a static Go binary, so it runs on the
 (`operators/Dockerfile`), as that base's `nonroot` user, UID 65532. Upstream's
 own image is Alpine with UID 4200. Its chart sets only `runAsNonRoot: true` and
 no command, which any non-root user and the image's `ENTRYPOINT` satisfy.
+
+**Distroless and UID 0 instead of `python-base` (kvm-node-agent):**
+
+`images/kvm-node-agent/Dockerfile` does not derive from `python-base` and
+creates no `openstack` user, and carries a `# DEVIATION` comment saying so.
+The agent is a static Go binary on the same `gcr.io/distroless/static:nonroot`
+base, but it runs as root (`USER 0:0`) instead of that base's `nonroot` user.
+kna authenticates to the host's system bus and starts units there, and a
+Debian host's dbus-daemon drops the connection of a UID it cannot resolve
+(#1167). Upstream's own image is Alpine with `USER 42438:42438`, a user that
+exists on SAP's hosts only. Every consumer of the image therefore runs the
+agent as root unless its pod sets `runAsUser`: the upstream chart sets none
+for the manager, and `runAsNonRoot: true` rejects the image. hadolint reports
+`DL3002` for a root `USER`, so the line above it carries
+`# hadolint ignore=DL3002`.

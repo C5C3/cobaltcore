@@ -55,6 +55,7 @@ The custom managers cover:
 - **`renovate-config-validator` pin** — the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
 - **OVN image pin** — the `ARG OVN_VERSION` line in `images/ovn/Dockerfile` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix). A second manager tracks the same upstream tag in `defaultOVNVersion`, the constant in `operators/ovn/internal/controller/image.go` that the ovn-operator resolves for a CR leaving `spec.image` unset. It carries the bare version, so its versioning regex expects no `v` and an `extractVersionTemplate` strips the one the tag has. Both pins are grouped under `OVN LTS patch releases`, so they move in a single PR; `TestDefaultOVNVersionMatchesDockerfilePin` fails when they diverge.
 - **openstack-hypervisor-operator image pin** — the `ARG HVO_COMMIT` line in `images/openstack-hypervisor-operator/Dockerfile` (git-refs on upstream `main` of `cobaltcore-dev/openstack-hypervisor-operator`, digest updates, like the K-ORC source). The rule runs on the weekly schedule (`before 6am on monday`) behind the 3-day cooldown and is **not** automerged. Every upstream `main` commit is a new digest, so without the schedule each one would open a PR. A move also needs a human: the downstream patch may no longer apply, and from #1142 on the lab's chart reference has to move with the pin. A failed `git apply` step in `build-hvo` (`patch does not apply: /patches/<file>`) means the patch has to be re-cut; see [Re-cutting the openstack-hypervisor-operator patch](#re-cutting-the-openstack-hypervisor-operator-patch).
+- **kvm-node-agent image pin** — the `ARG KNA_COMMIT` line in `images/kvm-node-agent/Dockerfile` (git-refs on upstream `main` of `cobaltcore-dev/kvm-node-agent`, digest updates), with the same weekly schedule, 3-day cooldown and no automerge as the hvo pin. The lab's chart reference, `ref.tag` and `ref.digest` of the `kvm-node-agent` `OCIRepository` in `deploy/lab/metal-stack/hypervisor/sources.yaml`, has no manager of its own and moves with the pin in the same PR; `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while its short SHA differs from the pin. A failed `git apply` step in `build-kna` means the patch has to be re-cut; see [Re-cutting the kvm-node-agent patch](#re-cutting-the-kvm-node-agent-patch).
 - **noVNC console assets** — the `ARG NOVNC_VERSION` and `ARG NOVNC_COMMIT` lines in `images/nova/Dockerfile` (github-tags on `novnc/noVNC`, regex versioning because the tags carry a `v` prefix). One `matchStrings` entry spans both adjacent lines, so the tag and the commit it names move in a single PR. Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged, because the console page is user-facing and no e2e suite loads it before #1018. Digest updates are disabled: a tag moved upstream to another commit is not a release, and the pin stays on the reviewed commit.
 
 Major updates are **disabled** for all custom-regex managers — these touch deploy-time
@@ -148,6 +149,39 @@ a mail envelope, and `git am` stops at the missing author. Turn the
 the rationale, `Applies-to:` naming the new commit, `Upstream status:`, and no
 diffstat; see `patches/cinder/2025.2/0001-nfs-run-qemu-img-info-as-the-service-user.patch`
 for the form), commit it onto the Renovate branch and let `build-hvo` prove it.
+
+### Re-cutting the kvm-node-agent patch
+
+`images/kvm-node-agent/patches/0001-certificates-restrict-private-key-file-modes.patch`
+is cut against the pinned upstream commit, and the recipe is the one above with the
+kna names. When a Renovate PR moves `ARG KNA_COMMIT` to a commit on which the patch
+no longer applies, `build-kna` fails at the `git apply` step and nothing is
+published. If upstream now carries the change, delete the patch on the Renovate
+branch together with its two test runs in the Dockerfile's build step, and with the
+last patch the `COPY patches/` and `git apply` steps. Otherwise re-cut it in a
+scratch clone that holds both commits:
+
+```bash
+old=<commit before the move>; new=<commit the Renovate PR pins>
+git init /tmp/kna && cd /tmp/kna
+git remote add origin https://github.com/cobaltcore-dev/kvm-node-agent.git
+git fetch --depth 1 origin "$old" "$new" && git checkout --detach "$new"
+git apply --3way <repo>/images/kvm-node-agent/patches/0001-*.patch
+# resolve the conflicts, then prove both tests still pass
+go test -count=1 -run '^TestUpdateTLSCertificateKeyMode$' ./internal/certificates/
+go test -count=1 -run '^TestUpdateTLSCertificateKeyGroupNotPermitted$' ./internal/certificates/
+git commit -am "Certificates: restrict the mode of private key files"
+git format-patch -1 --no-signature --stdout > /tmp/0001.patch
+```
+
+Run the second test as a user other than root: it skips as root, because a root
+process may give a file any group. The image build runs the first test as root and
+the second as uid 65534, and fails unless both print their `--- PASS:` line. Turn
+the `git format-patch` output into the house header as for the hvo patch (the SPDX
+pair, the bare subject, the rationale, `Applies-to:` naming the new commit,
+`Upstream status:`, and no diffstat), move the chart ref in
+`deploy/lab/metal-stack/hypervisor/sources.yaml` to the chart of the new commit,
+commit both onto the Renovate branch and let `build-kna` prove the patch.
 
 ---
 
