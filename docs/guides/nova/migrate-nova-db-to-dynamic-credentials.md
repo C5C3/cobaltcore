@@ -62,15 +62,15 @@ This guide is written against the **[Quick Start (ControlPlane)](../../quick-sta
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
-Follow that tutorial through the `nova` block of Step 3, the onboarding of
-Step 4 and the **Boot a first server** catalog check in Step 6, so the projected
+Follow that tutorial through the `nova` block of Step 4, the onboarding of
+Step 5 and the **Boot a first server** catalog check in Step 7, so the projected
 `controlplane-nova` child is `Ready` in `openstack`. Every resource name in the
 examples below is one that devstack produces.
 :::
 
-On that devstack Nova already runs on dynamic credentials, because Step 4
-onboarded both engine roles. To walk the migration there, stage the static mode
-first with step 3 below, then cut over with step 4.
+On that devstack Nova already runs on dynamic credentials, because the
+tutorial's Step 5 onboarded both engine roles. To walk the migration there,
+stage the static mode first with step 3 below, then cut over with step 4.
 
 ::: warning Set the credential mode on the ControlPlane, never on the projected child
 The `controlplane-nova` Nova CR is **projected** by the c5c3-operator, so a

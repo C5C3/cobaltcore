@@ -31,8 +31,8 @@ This guide is written against the **[Quick Start (ControlPlane)](../../quick-sta
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra
 ```
 
-Follow that tutorial through the block-storage block of Step 3 and the
-**Create a first volume** check in Step 6, so the projected `controlplane-cinder`
+Follow that tutorial through the block-storage block of Step 4 and the
+**Create a first volume** check in Step 7, so the projected `controlplane-cinder`
 child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
 name in the examples below is one that devstack produces.
 :::
@@ -48,7 +48,7 @@ it down; that block is the single source of truth for the projected storage.
 - The `OS_*` environment variables from the tutorial's token-issue step, so the
   `openstack` client reaches the ControlPlane's Keystone.
 - The volume `demo-vol` that the tutorial's **Create a first volume** check
-  leaves behind in Step 6.
+  leaves behind in Step 7.
 
 ## Step 1 — Read the projected backup service
 

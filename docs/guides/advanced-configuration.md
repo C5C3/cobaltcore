@@ -107,7 +107,7 @@ The Secret referenced by `secretRef` must contain matching `username` and
 `password` keys. The keystone-operator requires both for `SecretsReady`; a Secret
 with only `password` leaves `controlplane-keystone` at `SecretsReady=False`.
 After the database, user, grants, and Secret exist, `db_sync` creates the
-Keystone schema on first reconcile. Step 4 of the
+Keystone schema on first reconcile. Step 5 of the
 [Quick Start (ControlPlane)](../quick-start-controlplane.md) applies only to
 managed mode's engine-issued database credentials. Brownfield mode does not use
 the OpenBao database engine.

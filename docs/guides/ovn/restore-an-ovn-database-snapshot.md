@@ -30,7 +30,7 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
 Follow that tutorial through to the **Create a first network** check in its
-Step 6, so the `OVNCentral` `controlplane-ovn` is Ready in the `openstack`
+Step 7, so the `OVNCentral` `controlplane-ovn` is Ready in the `openstack`
 namespace and its logical model holds something worth snapshotting.
 :::
 

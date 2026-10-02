@@ -41,7 +41,7 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
 Follow that tutorial through to its final **Verify** step, so a `ControlPlane`
-CR named `controlplane` is `Ready` in the `openstack` namespace. Its Step 3 CR
+CR named `controlplane` is `Ready` in the `openstack` namespace. Its Step 4 CR
 already carries the `services.barbican` block step 1 shows, so on a devstack
 brought up from it the service is reconciled and step 1 reads as a check. A
 ControlPlane created before that block existed, or from the bundled minimal CR
@@ -56,7 +56,7 @@ one this devstack produces.
 2. **`jq` on `PATH`** for the condition readouts in step 3.
 3. **The OpenBao root token**, for the one-time database-engine onboarding in
    step 2. On kind it is read from the `openbao-init-keys` Secret, as in the
-   tutorial's Step 4.
+   tutorial's Step 5.
 
 ## Step 1 — Declare the Barbican service
 
