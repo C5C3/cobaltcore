@@ -218,6 +218,32 @@ spec:
       hostNetwork: true
       initContainers:
       - command:
+        - mkdir
+        - -p
+        - -m
+        - "0755"
+        - /var/lib/nova/instances
+        image: ghcr.io/c5c3/nova-compute:2025.2
+        name: create-instances-dir
+        resources: {}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - DAC_OVERRIDE
+            drop:
+            - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsGroup: 0
+          runAsNonRoot: false
+          runAsUser: 0
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /var/lib/nova
+          name: var-lib-nova
+      - command:
         - python3
         - -c
         - |
@@ -339,7 +365,7 @@ status:
 `
 
 // pinOnDeleteNovaComputeDaemonSetGolden is a pool that names its resources
-// (applied to both containers), a toleration, and OnDelete.
+// (applied to all three containers), a toleration, and OnDelete.
 const pinOnDeleteNovaComputeDaemonSetGolden = `metadata:
   labels:
     app.kubernetes.io/component: nova-compute
@@ -476,6 +502,37 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       hostNetwork: true
       initContainers:
+      - command:
+        - mkdir
+        - -p
+        - -m
+        - "0755"
+        - /var/lib/nova/instances
+        image: ghcr.io/c5c3/nova-compute:2025.2
+        name: create-instances-dir
+        resources:
+          limits:
+            memory: 4Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - DAC_OVERRIDE
+            drop:
+            - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsGroup: 0
+          runAsNonRoot: false
+          runAsUser: 0
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /var/lib/nova
+          name: var-lib-nova
       - command:
         - python3
         - -c
@@ -748,6 +805,32 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       hostNetwork: true
       initContainers:
+      - command:
+        - mkdir
+        - -p
+        - -m
+        - "0755"
+        - /var/lib/nova/instances
+        image: ghcr.io/c5c3/nova-compute:2025.2
+        name: create-instances-dir
+        resources: {}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - DAC_OVERRIDE
+            drop:
+            - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsGroup: 0
+          runAsNonRoot: false
+          runAsUser: 0
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /var/lib/nova
+          name: var-lib-nova
       - command:
         - python3
         - -c

@@ -102,6 +102,10 @@ const (
 	novaComputeTmpVolume  = "tmp"
 )
 
+// novaInstancesPath is [DEFAULT] instances_path at nova's default,
+// $state_path/instances, where the libvirt driver keeps the instance disks.
+const novaInstancesPath = novaStatePath + "/instances"
+
 // reconcileNovaComputeDaemonSet projects the nova-compute DaemonSet, mirrors its
 // counters into status and sets DaemonSetReady.
 //
@@ -237,8 +241,9 @@ func novaComputeAffinity(cr *novav1alpha1.NovaCompute, excluded, keepPods []stri
 	}}
 }
 
-// buildNovaComputeDaemonSet builds the pool's DaemonSet: the gate that waits for
-// the node's chassis, and nova-compute.
+// buildNovaComputeDaemonSet builds the pool's DaemonSet: the init container that
+// creates instances_path on the node, the gate that waits for the node's
+// chassis, and nova-compute.
 //
 // There is no probe. Nova's own view of the service (up or down) is what the
 // Services step reports, and a liveness probe that restarted nova-compute
@@ -252,7 +257,21 @@ func buildNovaComputeDaemonSet(cr *novav1alpha1.NovaCompute, image commonv1.Imag
 		resources = *cr.Spec.Resources.DeepCopy()
 	}
 
+	// create-instances-dir runs first, so a failing mkdir shows at once and not
+	// behind the chassis gate, which may wait without bound.
 	initContainers := []corev1.Container{{
+		Name:            "create-instances-dir",
+		Image:           ref,
+		Command:         createInstancesDirCommand(novaInstancesPath),
+		SecurityContext: createInstancesDirSecurityContext(),
+		Resources:       resources,
+		// No Bidirectional propagation here: mkdir creates no mount below
+		// state_path, so nothing has to reach the host the way os-brick's NFS
+		// mounts in nova-compute do.
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: varLibNovaVolume, MountPath: novaStatePath},
+		},
+	}, {
 		Name:            "wait-for-chassis",
 		Image:           ref,
 		Command:         []string{"python3", "-c", waitForChassisScript},
@@ -340,7 +359,7 @@ func buildNovaComputeDaemonSet(cr *novav1alpha1.NovaCompute, image commonv1.Imag
 		// instance ports into the node's switch.
 		HostNetwork: true,
 		// The pod-level context carries the seccomp profile and nothing else:
-		// the two containers pin their own users, and an fsGroup would be
+		// the three containers pin their own users, and an fsGroup would be
 		// applied to the host directories.
 		PodSecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
@@ -367,6 +386,39 @@ func hostPathVolume(name, hostPath string, pathType corev1.HostPathType) corev1.
 func novaComputeSecurityContext() *corev1.SecurityContext {
 	sc := deployment.PrivilegedSecurityContext()
 	sc.RunAsUser = ptr.To(int64(0))
+	sc.RunAsNonRoot = ptr.To(false)
+	return sc
+}
+
+// createInstancesDirCommand is the command of the create-instances-dir init
+// container: it creates dir and leaves an existing one untouched. The kubelet
+// creates the hostPath novaStatePath empty and the mount hides the image's own
+// copy, so nothing else creates the instances directory below it.
+//
+// install -d would reset the owner and mode of an existing directory, and an
+// instances directory the node already has (another owner, or a mount point of
+// its own) must stay as it is, so the command is mkdir -p. -m 0755 makes the
+// mode of a new directory independent of the container's umask.
+func createInstancesDirCommand(dir string) []string {
+	return []string{"mkdir", "-p", "-m", "0755", dir}
+}
+
+// createInstancesDirSecurityContext is the posture of the create-instances-dir
+// init container: uid 0 and gid 0, unprivileged, holding DAC_OVERRIDE alone.
+//
+// Creating one directory needs no device or namespace access, so the container
+// is not privileged. CapabilitySecurityContext drops ALL, which takes
+// CAP_DAC_OVERRIDE with it and leaves uid 0 an ordinary user as far as file
+// permissions go. DAC_OVERRIDE is added back so the container creates the
+// directory wherever the privileged nova-compute could write, including a
+// novaStatePath that belongs to another user.
+//
+// RunAsGroup is 0 so the directory is root:root whatever group the image's
+// passwd gives uid 0.
+func createInstancesDirSecurityContext() *corev1.SecurityContext {
+	sc := deployment.CapabilitySecurityContext("DAC_OVERRIDE")
+	sc.RunAsUser = ptr.To(int64(0))
+	sc.RunAsGroup = ptr.To(int64(0))
 	sc.RunAsNonRoot = ptr.To(false)
 	return sc
 }

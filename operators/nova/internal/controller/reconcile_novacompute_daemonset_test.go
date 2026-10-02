@@ -6,6 +6,11 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -214,4 +219,128 @@ func TestNovaComputeUpdateStrategy(t *testing.T) {
 
 	cr.Spec.UpdateStrategy.Type = "OnDelete"
 	g.Expect(novaComputeUpdateStrategy(cr)).To(Equal(&appsv1.DaemonSetUpdateStrategy{Type: appsv1.OnDeleteDaemonSetStrategyType}))
+}
+
+// TestBuildNovaComputeDaemonSet_CreateInstancesDir pins the init container that
+// creates instances_path on the node: it runs before the chassis gate, as root
+// without the privileged profile, on the state directory alone, with the pool's
+// resources.
+func TestBuildNovaComputeDaemonSet_CreateInstancesDir(t *testing.T) {
+	render := func(cr *novav1alpha1.NovaCompute) corev1.PodSpec {
+		return buildNovaComputeDaemonSet(cr, pinNovaComputeImage(), testContract, pinNovaComputeConfigMap,
+			pinNovaComputeHash, novaComputeAffinity(validNovaCompute(), nil, nil)).Spec.Template.Spec
+	}
+
+	t.Run("it runs first, as root with DAC_OVERRIDE alone, on the state directory", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		pod := render(validNovaCompute())
+
+		var names []string
+		for _, c := range pod.InitContainers {
+			names = append(names, c.Name)
+		}
+		g.Expect(names).To(Equal([]string{"create-instances-dir", "wait-for-chassis"}))
+
+		c := pod.InitContainers[0]
+		g.Expect(c.Command).To(Equal([]string{"mkdir", "-p", "-m", "0755", "/var/lib/nova/instances"}))
+		g.Expect(c.Image).To(Equal(pod.Containers[0].Image))
+		g.Expect(c.SecurityContext).To(Equal(&corev1.SecurityContext{
+			Privileged:               ptr.To(false),
+			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
+			RunAsUser:                ptr.To(int64(0)),
+			RunAsGroup:               ptr.To(int64(0)),
+			RunAsNonRoot:             ptr.To(false),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+				Add:  []corev1.Capability{"DAC_OVERRIDE"},
+			},
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		}))
+		g.Expect(c.VolumeMounts).To(Equal([]corev1.VolumeMount{{Name: "var-lib-nova", MountPath: "/var/lib/nova"}}),
+			"one mount, writable and without propagation")
+	})
+
+	t.Run("nil spec.resources renders none", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		g.Expect(render(validNovaCompute()).InitContainers[0].Resources).To(Equal(corev1.ResourceRequirements{}))
+	})
+
+	t.Run("spec.resources applies to it too", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := pinOnDeleteNovaCompute()
+		g.Expect(render(cr).InitContainers[0].Resources).To(Equal(*cr.Spec.Resources))
+	})
+}
+
+// runCreateInstancesDir runs the rendered command for the directory at path and
+// returns its error and what it wrote to stderr.
+//
+// The command travels through a script file, run from the parent of path, so
+// the argument list of the test's own exec stays constant. Every word of the
+// command is a plain shell word, so joining them with spaces gives the argument
+// list the container runs. The script sets a restrictive umask before it execs
+// the command: the umask applies to the child alone and the test process keeps
+// its own.
+func runCreateInstancesDir(t *testing.T, path string) (string, error) {
+	t.Helper()
+	for _, binary := range []string{shPath, "mkdir"} {
+		if _, err := exec.LookPath(binary); err != nil {
+			t.Skipf("%s is unavailable; the rendered command cannot be exercised here: %v", binary, err)
+		}
+	}
+	command := createInstancesDirCommand(filepath.Base(path))
+	writeScriptFile(t, filepath.Dir(path), scriptFileName, "umask 0077\nexec "+strings.Join(command, " ")+"\n")
+
+	cmd := exec.CommandContext(t.Context(), shPath, scriptFileName)
+	cmd.Dir = filepath.Dir(path)
+	// mkdir words its errors in the caller's locale; the container has none.
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stderr.String(), err
+}
+
+func TestCreateInstancesDirCommand(t *testing.T) {
+	t.Run("creates a missing directory with mode 0755 whatever the umask", func(t *testing.T) {
+		t.Parallel()
+		g := NewGomegaWithT(t)
+		path := filepath.Join(t.TempDir(), "instances")
+
+		stderr, err := runCreateInstancesDir(t, path)
+
+		g.Expect(err).NotTo(HaveOccurred(), stderr)
+		info, err := os.Stat(path)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(info.IsDir()).To(BeTrue())
+		g.Expect(info.Mode().Perm()).To(Equal(os.FileMode(0o755)))
+	})
+
+	t.Run("leaves the mode of an existing directory alone", func(t *testing.T) {
+		t.Parallel()
+		g := NewGomegaWithT(t)
+		path := filepath.Join(t.TempDir(), "instances")
+		g.Expect(os.Mkdir(path, 0o700)).To(Succeed())
+
+		stderr, err := runCreateInstancesDir(t, path)
+
+		g.Expect(err).NotTo(HaveOccurred(), stderr)
+		info, err := os.Stat(path)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(info.Mode().Perm()).To(Equal(os.FileMode(0o700)))
+	})
+
+	t.Run("fails on a regular file at the path", func(t *testing.T) {
+		t.Parallel()
+		g := NewGomegaWithT(t)
+		path := filepath.Join(t.TempDir(), "instances")
+		g.Expect(os.WriteFile(path, nil, 0o600)).To(Succeed())
+
+		stderr, err := runCreateInstancesDir(t, path)
+
+		var exitErr *exec.ExitError
+		g.Expect(errors.As(err, &exitErr)).To(BeTrue(), "the command must fail by exiting, got %v", err)
+		g.Expect(stderr).To(ContainSubstring("File exists"))
+	})
 }
