@@ -1,0 +1,129 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The script the Northbound probes of step 10 and of its cleanup run inside the
+# OVN image.
+#
+# It lives in a ConfigMap rather than in the `kubectl run --overrides` payload so
+# it stays a reviewable, shellcheck-able shell script instead of a JSON-escaped
+# one-liner. Each probe pod mounts it at /probe and the client certificate the
+# OVNCentral published at /certs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: neutron-agent-memory-probe-script
+  namespace: openstack
+data:
+  probe.sh: |
+    #!/bin/bash
+    # Writes or removes the logical model the metadata agent provisions its
+    # networks from. Neutron writes this model on a real deployment; the suite
+    # runs no Neutron API, so the probe writes the rows the agent reads.
+    #
+    # NB_ADDRESS arrives as an environment variable. The mode is the first
+    # argument, and the second and third are the first and the last network
+    # index of the range the mode works on.
+    set -u
+
+    # The client keypair and the CA the databases authenticate peers against.
+    readonly CERT=(-p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt)
+
+    # Only a connection-level failure is retried. A TLS failure reports a
+    # certificate, an SSL routine or a protocol error instead, and retrying it
+    # would burn the budget on a misconfiguration that cannot resolve itself.
+    readonly RETRYABLE='Connection refused|Connection timed out|Network is unreachable|No route to host|Host is unreachable|Name or service not known|timeout exceeded'
+
+    readonly ATTEMPTS=30
+    readonly INTERVAL=5
+
+    # nbctl <label> <ovn-nbctl arguments...>
+    #
+    # Runs one ovn-nbctl invocation. A connection that is not up yet is retried;
+    # anything else fails the probe.
+    nbctl() {
+      local label="$1"
+      shift
+      local attempt=0 out rc
+
+      while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
+        attempt=$((attempt + 1))
+        out="$(ovn-nbctl --db="${NB_ADDRESS}" "${CERT[@]}" --timeout=10 "$@" 2>&1)"
+        rc=$?
+        if [ "${rc}" -eq 0 ]; then
+          return 0
+        fi
+        if grep -Eq "${RETRYABLE}" <<< "${out}"; then
+          echo "retry ${attempt}/${ATTEMPTS}: northbound database not reachable yet: ${out}"
+          sleep "${INTERVAL}"
+          continue
+        fi
+        echo "FAIL: ovn-nbctl ${label} exited ${rc}: ${out}"
+        exit 1
+      done
+
+      echo "FAIL: ovn-nbctl ${label} never reached the northbound database"
+      exit 1
+    }
+
+    usage() {
+      echo "FAIL: usage: probe.sh nb-seed|nb-cleanup <first> <last>"
+      exit 1
+    }
+
+    MODE="${1:-}"
+    FIRST="${2:-}"
+    LAST="${3:-}"
+    case "${MODE}" in
+    nb-seed | nb-cleanup) ;;
+    *) usage ;;
+    esac
+    if ! [[ "${FIRST}" =~ ^[1-9][0-9]*$ && "${LAST}" =~ ^[1-9][0-9]*$ ]] ||
+      [ "${FIRST}" -gt "${LAST}" ]; then
+      usage
+    fi
+
+    # The index is the third octet of the network's subnet and the last byte of
+    # both MAC addresses, so a range ends below 256.
+    for i in $(seq "${FIRST}" "${LAST}"); do
+      # The agent reads the network's name off the switch: northd copies
+      # neutron-<name> into the Southbound datapath, the agent strips the
+      # prefix, and the namespace becomes ovnmeta-<name>. Its veth names are
+      # `tap`, the first 10 characters of the name and 0 or 1, so those 10
+      # characters differ per network.
+      NET="$(printf '%08x-0000-4000-8000-000000000000' "${i}")"
+      HEX="$(printf '%02x' "${i}")"
+
+      case "${MODE}" in
+      nb-seed)
+        # Two ports per switch. The agent finds the metadata port by its
+        # localport type and its device owner, and takes the MAC and
+        # neutron:cidrs from it. It provisions the network once a VIF port
+        # with an IPv4 address inside that CIDR is bound on its chassis.
+        #
+        # One command line per network, so a retried attempt rebuilds the whole
+        # network rather than leaving a metadata port that is half configured.
+        # ovn-nbctl takes a key that contains a colon only inside double quotes.
+        nbctl "network ${i}" \
+          --may-exist ls-add "neutron-${NET}" \
+          -- --may-exist lsp-add "neutron-${NET}" "memmeta-${i}" \
+          -- lsp-set-type "memmeta-${i}" localport \
+          -- lsp-set-addresses "memmeta-${i}" "fa:16:3e:00:00:${HEX} 10.200.${i}.2" \
+          -- set Logical_Switch_Port "memmeta-${i}" \
+          'external_ids:"neutron:device_owner"="network:distributed"' \
+          "external_ids:\"neutron:cidrs\"=\"10.200.${i}.2/24\"" \
+          -- --may-exist lsp-add "neutron-${NET}" "memvif-${i}" \
+          -- lsp-set-addresses "memvif-${i}" "0a:00:00:00:00:${HEX} 10.200.${i}.10"
+        ;;
+      nb-cleanup)
+        # Deleting the switch takes both its ports with it, which is what
+        # releases the binding the chassis holds.
+        nbctl "ls-del neutron-${NET}" --if-exists ls-del "neutron-${NET}"
+        ;;
+      esac
+    done
+
+    case "${MODE}" in
+    nb-seed) echo "NB-SEED-OK" ;;
+    nb-cleanup) echo "NB-CLEANUP-OK" ;;
+    esac
