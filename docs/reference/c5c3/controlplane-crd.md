@@ -3519,6 +3519,7 @@ Set by `reconcileKeystone` (gated on `InfrastructureReady`).
 | `False` | `InvalidRotationInterval` | `services.keystone.rotationInterval` could not be converted to a cron schedule. |
 | `False` | `KeystoneProjectionRejected` | The Keystone API server rejected the projected spec (HTTP 422) — almost always a now-immutable db/bootstrap field that diverged from the frozen Keystone child. Reconcile the ControlPlane spec back to the child's values, or recreate the child, to recover. Distinct from `KeystoneError` so the wedge is diagnosable from the condition. |
 | `False` | `KeystoneError` | Error create-or-updating the Keystone CR. |
+| `False` | `FinalizingKeystone` | On deletion, the Keystone child in the ControlPlane's own namespace has been deleted by the teardown, and the ControlPlane finalizer waits for it to leave etcd: its `openbao-finalizer` has ESO purge the fernet- and credential-keys backup paths through the tenant `SecretStore`, which the owner-reference cascade would delete at the same time. Past `orcTeardownDeadline` a **Warning** `KeystoneTeardownStalled` names the Keystone and both paths and the release proceeds; see [Owner-ref / GC model](./controlplane-reconciler.md#owner-ref-gc-model). Message: `waiting for the Keystone child "<name>" to finish its OpenBao cleanup before releasing the ControlPlane`. |
 
 ### HorizonReady
 

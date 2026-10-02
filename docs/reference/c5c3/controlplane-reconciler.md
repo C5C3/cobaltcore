@@ -3908,11 +3908,34 @@ projected. On deletion it:
    `authDelegatorBinding` — leaves the binding standing with a **Warning**
    `AuthDelegatorBindingNotReclaimed` naming it, rather than holding the
    ControlPlane in `Terminating` for a grant the target withdrew.
-6. **Deletes the managed message bus by hand, then releases the finalizers once
-   the ORC CRs, PushSecrets, cross-namespace children and the bus are gone**,
-   letting GC cascade-delete the same-namespace Keystone, the infrastructure,
-   and the remaining children. The `RabbitmqCluster` is the one same-namespace
-   child the cascade is not trusted with: GC deletes with background
+6. **Deletes the co-located Keystone and the managed message bus by hand, then
+   releases the finalizers once the ORC CRs, PushSecrets, cross-namespace
+   children, the Keystone and the bus are gone**, letting GC cascade-delete the
+   infrastructure and the remaining children. Both deletes run in the same pass,
+   so the Keystone wait cannot spend the bus's deadline.
+
+   A Keystone in the ControlPlane's own namespace owns two backup PushSecrets
+   with `deletionPolicy: Delete`, `<keystone>-fernet-keys-backup` and
+   `<keystone>-credential-keys-backup`. Its `openbao-finalizer` holds it until
+   ESO has purged their OpenBao paths, and that purge authenticates through the
+   per-tenant `SecretStore` and its `eso-tenant-auth` ServiceAccount. The cascade
+   deletes all of them at once and in no order. `deleteColocatedKeystoneBeforeRelease`
+   therefore deletes the Keystone itself, with background propagation, and holds
+   the finalizer until it has left etcd, reported as
+   `KeystoneReady=False/FinalizingKeystone` with a 15-second requeue. The delete
+   waits for the K-ORC CRs to go first, because K-ORC revokes and deletes through
+   the Keystone API. Only a Keystone this ControlPlane owns is deleted. External
+   mode projects none, and a cluster without the Keystone CRD has none, so
+   neither waits; a Keystone in a dedicated namespace belongs to step 4. Past
+   `orcTeardownDeadline` (7 minutes from the deletion timestamp, the deadline the
+   steps before it share) a **Warning** `KeystoneTeardownStalled` names the
+   Keystone and its paths `openstack/keystone/<namespace>/<keystone>/fernet-keys`
+   and `openstack/keystone/<namespace>/<keystone>/credential-keys`, and the
+   release proceeds on the cascade. Those paths may then keep their data and have
+   to be deleted by hand.
+
+   The `RabbitmqCluster` is the other same-namespace child the cascade is not
+   trusted with: GC deletes with background
    propagation, so the CR vanishes the instant the RabbitMQ Cluster Operator
    removes its finalizer, and that operator's deletion path (v2.13.0 and later,
    rabbitmq/cluster-operator#1864) removes the finalizer through
@@ -3932,7 +3955,7 @@ projected. On deletion it:
    `messagingTeardownDeadline` (3 minutes from the deletion timestamp) a
    **Warning** `MessagingTeardownStalled` names the broker and the release
    proceeds on the cascade, so a wedged cluster-operator cannot make the
-   ControlPlane undeletable. The escape paths below release without this wait.
+   ControlPlane undeletable. The escape paths below release without either wait.
    The remote-children finalizer goes in the same update, because by then every
    placed namespace has been swept or its cluster abandoned.
 7. **Releases a CR-only remainder immediately.** K-ORC re-fetches the
