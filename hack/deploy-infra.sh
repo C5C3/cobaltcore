@@ -512,6 +512,28 @@ wait_for_helmreleases() {
 }
 
 # ---------------------------------------------------------------------------
+# dump_pod_logs — Print the logs of every pod in a namespace, for the
+# diagnostics of a wait that timed out.
+#
+# `--since=10m` keeps the dump focused on the most recent failure window. On
+# long-running timeouts the default --tail=200 may already have rolled past
+# the relevant crash frame; the time filter bounds the output to a
+# meaningful post-mortem window.
+#
+# Arguments:
+#   $1 — namespace
+# ---------------------------------------------------------------------------
+dump_pod_logs() {
+  local ns="$1" pods pod
+  log "${ns} pod logs (last 10m, tail 200):"
+  pods=$(kubectl get pods -n "${ns}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
+  for pod in ${pods}; do
+    log "--- logs for pod ${pod} ---"
+    kubectl logs "${pod}" -n "${ns}" --all-containers=true --since=10m --tail=200 2>/dev/null || true
+  done
+}
+
+# ---------------------------------------------------------------------------
 # wait_for_cert_manager_webhook — Wait until the cert-manager webhook admits
 # a request.
 #
@@ -570,12 +592,102 @@ wait_for_cert_manager_webhook() {
       done
       log "cert-manager pods:"
       kubectl get pods -n cert-manager -o wide 2>/dev/null || true
-      log "cert-manager pod logs (last 10m, tail 200):"
-      local cm_pods
-      cm_pods=$(kubectl get pods -n cert-manager -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
-      for pod in ${cm_pods}; do
-        log "--- logs for pod ${pod} ---"
-        kubectl logs "${pod}" -n cert-manager --all-containers=true --since=10m --tail=200 2>/dev/null || true
+      dump_pod_logs cert-manager
+      exit 1
+    fi
+
+    sleep 5
+  done
+}
+
+# ---------------------------------------------------------------------------
+# wait_for_controlplane_admission — Wait until the API server admits a
+# server-side dry-run of the ControlPlane manifests.
+#
+# The operator HelmReleases turn Ready while their charts' CRDs register and
+# their webhook listeners start. The c5c3-operator and the ovn-operator
+# register their webhooks with failurePolicy: Fail, so until both answer, the
+# first apply of an OVNCentral or a ControlPlane fails with
+#   no matches for kind "OVNCentral" in version "ovn.openstack.c5c3.io/v1alpha1"
+#   failed calling webhook "mcontrolplane.kb.io": ... connection refused
+# The apiserver runs the full admission chain for a dry-run without creating
+# anything, so an admitted dry-run proves the CRDs are registered and both
+# webhooks answer.
+#
+# A denial proves the same and ends the wait too. The ControlPlane webhook
+# denies a second ControlPlane in a namespace and an update to an immutable
+# field, so on a re-run against a cluster whose live CR differs from the
+# manifest, a denial is the permanent answer. kubectl's stderr is read as
+# records: a record opens at a line that begins with "Error", "error" or
+# "The ", and the Warning: lines before the first record belong to none. A
+# record is a denial when it holds "denied the request" or has reason
+# Invalid, which kubectl prints as "The <kind> "<name>" is invalid" when it
+# is the only error and as "Error from server (Invalid): ..." beside
+# another. The CRD's schema and CEL validation print the same two shapes;
+# they run after the mutating webhook, so they prove an answer as well.
+# The wait ends only when every record is a denial; any other record (a
+# missing kind, an unreachable webhook, a refused connection) is retried.
+#
+# Polls every 5s up to the supplied timeout. On timeout, prints the
+# c5c3-operator and ovn-operator HelmReleases, their pods and pod logs, then
+# exits 1.
+#
+# Arguments:
+#   $1 — timeout in seconds
+#   $2..N — manifest files to dry-run (at least one)
+# ---------------------------------------------------------------------------
+wait_for_controlplane_admission() {
+  local timeout="$1"
+  shift
+  if [[ $# -eq 0 ]]; then
+    log "ERROR: wait_for_controlplane_admission needs at least one manifest."
+    exit 1
+  fi
+  local manifests=("$@")
+  local file_args=()
+  local manifest
+  for manifest in "${manifests[@]}"; do
+    file_args+=(-f "${manifest}")
+  done
+  local deadline=$(( $(date +%s) + timeout ))
+
+  log "Waiting up to ${timeout}s for the API server to admit a server-side dry-run of the ControlPlane manifests: ${manifests[*]}"
+
+  while true; do
+    local err line
+    if err=$(kubectl apply --dry-run=server "${file_args[@]}" 2>&1 >/dev/null); then
+      log "The cluster admits the ControlPlane manifests."
+      return 0
+    fi
+    if awk '
+      /^(Error|error|The )/ {
+        if (open) { records++; if (denied) denials++ }
+        open = 1
+        denied = ($0 ~ /^The .+ is invalid/ || $0 ~ /^Error from server \(Invalid\)/)
+      }
+      open && index($0, "denied the request") { denied = 1 }
+      END {
+        if (open) { records++; if (denied) denials++ }
+        exit !(records > 0 && denials == records)
+      }
+    ' <<<"${err}"; then
+      log "The admission webhooks answer; the dry-run was denied:"
+      while IFS= read -r line; do log "  ${line}"; done <<<"${err}"
+      return 0
+    fi
+    log "  The cluster is not admitting the ControlPlane manifests yet."
+    while IFS= read -r line; do log "    ${line}"; done <<<"${err}"
+
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "ERROR: Timed out after ${timeout}s waiting for the cluster to admit the ControlPlane manifests."
+      log "Operator HelmReleases:"
+      kubectl get helmrelease -n c5c3-system c5c3-operator 2>/dev/null || true
+      kubectl get helmrelease -n ovn-system ovn-operator 2>/dev/null || true
+      local ns
+      for ns in c5c3-system ovn-system; do
+        log "Pods in ${ns}:"
+        kubectl get pods -n "${ns}" -o wide 2>/dev/null || true
+        dump_pod_logs "${ns}"
       done
       exit 1
     fi
@@ -705,17 +817,7 @@ wait_for_gateway_programmed() {
       log "ERROR: Timed out waiting for Gateway/${name} after ${timeout}s."
       log "Gateway description:"
       kubectl describe gateway/"${name}" -n "${namespace}" 2>/dev/null || true
-      log "envoy-gateway-system pod logs (last 10m, tail 200):"
-      local gw_pods
-      gw_pods=$(kubectl get pods -n envoy-gateway-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
-      # `--since=10m` keeps the dump focused on the most recent failure
-      # window. On long-running timeouts the default --tail=200 may already
-      # have rolled past the relevant crash frame; the time filter bounds
-      # the output to a meaningful post-mortem window.
-      for pod in ${gw_pods}; do
-        log "--- logs for pod ${pod} ---"
-        kubectl logs "${pod}" -n envoy-gateway-system --all-containers=true --since=10m --tail=200 2>/dev/null || true
-      done
+      dump_pod_logs envoy-gateway-system
       exit 1
     fi
 
