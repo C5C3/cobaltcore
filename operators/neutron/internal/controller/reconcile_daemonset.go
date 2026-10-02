@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -349,12 +350,20 @@ func agentDaemonSetName(cr *neutronv1alpha1.NeutronMetadataAgent) string {
 	return cr.Name + "-" + metadataAgentComponent
 }
 
+// metadataAgentMemory is the memory of both agent containers, in place of the
+// one-process formula figure. The agent runs its privsep daemons and one
+// haproxy per network of its node in its own container, so its working set
+// follows the networks bound on the node and not a process count. The figure
+// covers 32 networks with 25% headroom
+// (docs/reference/testing/sizing-calibration.md, Metadata agent memory).
+var metadataAgentMemory = resource.MustParse("2Gi")
+
 // effectiveAgentResources resolves the requests and limits of both agent
 // containers through the shared per-resource rule: a CPU spec.resources names
 // neither as request nor as limit gets a 70m request and no limit, a memory it
-// names neither way gets the figure for one single-threaded process as request
-// and limit, and anything else it sets is kept. A CR that names nothing
-// therefore lands in the Burstable QoS class rather than in BestEffort.
+// names neither way gets metadataAgentMemory as request and limit, and
+// anything else it sets is kept. A CR that names nothing therefore lands in
+// the Burstable QoS class rather than in BestEffort.
 func effectiveAgentResources(cr *neutronv1alpha1.NeutronMetadataAgent) corev1.ResourceRequirements {
-	return commonv1.WithResourceDefaults(&cr.Spec.Resources, commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, 1))
+	return commonv1.WithResourceDefaults(&cr.Spec.Resources, metadataAgentMemory.DeepCopy())
 }

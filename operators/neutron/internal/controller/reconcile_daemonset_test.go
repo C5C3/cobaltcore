@@ -381,20 +381,22 @@ func TestBuildAgentDaemonSet_SharedSecretDigestAnnotation(t *testing.T) {
 
 // A CR that names no resources still lands in the Burstable QoS class: an
 // unbounded agent on a compute node competes with the instances it serves. The
-// defaults fill each resource on its own, so a CPU-only block still gets its
-// memory, and a block naming both is used as written.
-func TestEffectiveAgentResources_FallsBackToTheSharedDefaults(t *testing.T) {
+// CPU request is the shared default and the memory is the agent's own figure.
+// The defaults fill each resource on its own, so a CPU-only block still gets
+// its memory, a block naming both is used as written, and a memory named as
+// the zero quantity counts as named.
+func TestEffectiveAgentResources_FillsTheAgentDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	g.Expect(effectiveAgentResources(validAgent())).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
+	g.Expect(effectiveAgentResources(validAgent())).To(Equal(testutil.RenderedResourceDefaults("2Gi")))
 
 	cpuOnly := validAgent()
 	cpuOnly.Spec.Resources = corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m")},
 	}
 	g.Expect(effectiveAgentResources(cpuOnly)).To(Equal(corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
-		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("2Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
 	}))
 	g.Expect(cpuOnly.Spec.Resources.Limits).To(BeNil(), "the fill must not write into the CR")
 
@@ -404,6 +406,14 @@ func TestEffectiveAgentResources_FallsBackToTheSharedDefaults(t *testing.T) {
 		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("256Mi")},
 	}
 	g.Expect(effectiveAgentResources(full)).To(Equal(full.Spec.Resources))
+
+	zero := validAgent()
+	zero.Spec.Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("0")},
+	}
+	got := effectiveAgentResources(zero)
+	g.Expect(got).To(Equal(zero.Spec.Resources))
+	g.Expect(got.Limits).NotTo(HaveKey(corev1.ResourceMemory), "a memory named as zero must not get a limit")
 }
 
 // The DaemonSet must select its own pods rather than the chassis pods sharing
@@ -420,7 +430,7 @@ func TestAgentSelectorLabels_NarrowByComponent(t *testing.T) {
 }
 
 // TestBuildAgentDaemonSet_RendersResourceDefaults verifies that both agent
-// containers, the wait-for-chassis init container and the agent, render 368Mi
+// containers, the wait-for-chassis init container and the agent, render 2Gi
 // as memory request and limit beside a 70m CPU request and no CPU limit when
 // spec.resources names nothing.
 func TestBuildAgentDaemonSet_RendersResourceDefaults(t *testing.T) {
@@ -429,7 +439,7 @@ func TestBuildAgentDaemonSet_RendersResourceDefaults(t *testing.T) {
 	ds := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "", "")
 
 	g.Expect(ds.Spec.Template.Spec.InitContainers).To(HaveLen(1))
-	g.Expect(ds.Spec.Template.Spec.InitContainers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
+	g.Expect(ds.Spec.Template.Spec.InitContainers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("2Gi")))
 	g.Expect(ds.Spec.Template.Spec.Containers).To(HaveLen(1))
-	g.Expect(ds.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
+	g.Expect(ds.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("2Gi")))
 }
