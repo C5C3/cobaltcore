@@ -130,10 +130,10 @@ spec:
           timeoutSeconds: 5
         resources:
           limits:
-            memory: 368Mi
+            memory: 2Gi
           requests:
             cpu: 70m
-            memory: 368Mi
+            memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: true
           privileged: true
@@ -168,10 +168,10 @@ spec:
         name: wait-for-chassis
         resources:
           limits:
-            memory: 368Mi
+            memory: 2Gi
           requests:
             cpu: 70m
-            memory: 368Mi
+            memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -282,10 +282,10 @@ spec:
           timeoutSeconds: 5
         resources:
           limits:
-            memory: 368Mi
+            memory: 2Gi
           requests:
             cpu: 70m
-            memory: 368Mi
+            memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: true
           privileged: true
@@ -320,10 +320,10 @@ spec:
         name: wait-for-chassis
         resources:
           limits:
-            memory: 368Mi
+            memory: 2Gi
           requests:
             cpu: 70m
-            memory: 368Mi
+            memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
