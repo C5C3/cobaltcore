@@ -37,7 +37,8 @@ Pages in this section are explicitly **not**:
 - [Hypervisor Cluster](./hypervisor-cluster.md) — the dedicated bare-metal
   compute cluster from the original architecture document: Hypervisor
   Operator, node agents, and the LibVirt virtualization layer. Raw form, not
-  elaborated.
+  elaborated. The node layer runs inside the control-plane cluster on the
+  metal-stack lab of the [Quick Start (metal-stack)](../quick-start-metal-stack.md).
 - [Storage Cluster](./storage-cluster.md) — the dedicated Ceph cluster from
   the original architecture document: Rook, the External Arbiter Operator,
   and Prysm. Raw form, not elaborated.

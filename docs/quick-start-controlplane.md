@@ -1068,6 +1068,9 @@ explains its settings, resizes a server on it, and removes it again.
 [Expose the Console Proxy](./guides/nova/expose-the-console-proxy.md) starts
 from the `demo-server` this check boots, so keep the server if that guide is
 your next stop.
+
+Servers that run on KVM, with a network, a console and live migration, are the
+subject of the [Quick Start (metal-stack)](./quick-start-metal-stack.md).
 :::
 
 ### Open the Horizon dashboard
