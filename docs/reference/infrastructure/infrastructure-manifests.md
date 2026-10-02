@@ -2705,7 +2705,7 @@ renders.
 | `hypervisor/libvirt-ca.yaml` | Certificate `libvirt-migration-ca` (ECDSA 256, three years, bootstrapped from `selfsigned-cluster-issuer`) and Issuer `nova-hypervisor-agents-ca-issuer`, hvo's default issuer name, in `hypervisor-system`. The CA signs nothing else |
 | `hypervisor/libvirt-configmap.yaml` | ConfigMap `libvirt-lab`: `host-prepare.sh`, `libvirtd.sh`, `libvirtd.conf` and `qemu.conf` |
 | `hypervisor/libvirt-daemonset.yaml` | DaemonSet `libvirt` in `openstack` |
-| `hypervisor/compute.yaml` | `OVNChassis/lab-chassis` on `controlplane-ovn`, `NeutronMetadataAgent/lab-metadata-agent` on the in-cluster Nova metadata API with 768Mi of memory, and `NovaCompute/lab` with `virtType: kvm`, `cpuMode: custom`, `cpuModels: [Skylake-Server-IBRS]` and `imagesType: qcow2`, all in `openstack` |
+| `hypervisor/compute.yaml` | `OVNChassis/lab-chassis` on `controlplane-ovn`, `NeutronMetadataAgent/lab-metadata-agent` on the in-cluster Nova metadata API, and `NovaCompute/lab` with `virtType: kvm`, `cpuMode: custom`, `cpuModels: [Skylake-Server-IBRS]` and `imagesType: qcow2`, all in `openstack` |
 | `hypervisor/gateway-alias.yaml` | Service `openstack-gw-8443` in `envoy-gateway-system` on the ClusterIP `10.248.0.200`, port `8443`, in front of the `openstack-gw` Envoy pods |
 | `hypervisor/sources.yaml` | One digest-pinned `OCIRepository` per chart in `flux-system` |
 | `hypervisor/hvo-release.yaml` | `HelmRelease/openstack-hypervisor-operator` in `openstack` |
@@ -3004,7 +3004,6 @@ The fake driver of the kind suites reaches none of it:
 | Item | On the lab | Here |
 | --- | --- | --- |
 | Live-migration CPU check | with `cpuMode: host-passthrough`, and with `host-model`, every live migration ends in `NoValidHost`: Nova's pre-check on the destination fails with `Unacceptable CPU info: CPU doesn't have compatibility`, although `virsh hypervisor-cpu-compare` there accepts the guest CPU | `cpuMode: custom` with `Skylake-Server-IBRS`, the host-model of both workers |
-| Metadata agent memory | the agent is OOM-killed at the operator's default of 368Mi once it provisions a network: its privsep daemons run beside it, about 550Mi with one network | 768Mi in `compute.yaml` |
 | Nova's `instances_path` | nova-compute's libvirt driver fails with `No such file or directory: '/var/lib/nova/instances'`: the pool mounts `/var/lib/nova` from the host and nothing creates `instances/` there, while the image's own copy is hidden by the mount | open, a change of the `NovaCompute` pod; step 6 creates the directory |
 | Metadata agent root helper | `sudo: privsep-helper: command not found`: the neutron image's `secure_path` lacks `/var/lib/openstack/bin`, which the nova-compute image adds, so the agent cannot provision a network's metadata namespace | open, a change of the neutron image; step 6 sets `[agent] root_helper = env` |
 | Console log after a libvirt restart | `openstack console log show` stops at the restart: QEMU's log goes through `virtlogd`, which ran in the old pod. The guest and its network keep running | none |

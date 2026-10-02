@@ -20,8 +20,8 @@
 #   6. libvirtd.sh starts libvirtd in a host scope and writes both host units,
 #      and the scripts carry their log messages.
 #   7. The CA, its Issuer and the three compute CRs carry their fields: the
-#      metadata agent's memory, and the pool's named CPU model, which Nova's
-#      live-migration pre-check accepts; NovaCompute has no extraConfig.
+#      metadata agent names no resources, and the pool names the CPU model
+#      Nova's live-migration pre-check accepts; NovaCompute has no extraConfig.
 #   8. The hvo release feeds the auth Secret into the six chart values, sets
 #      the lab values and a fullnameOverride that keeps every object name
 #      within 63 characters, and its post-renderer aliases the four gateway
@@ -398,8 +398,8 @@ test_ca_and_compute() {
   assert_eq "the metadata agent signs with the ControlPlane's shared secret" \
     "controlplane-nova-metadata-secret" \
     "$(val NeutronMetadataAgent lab-metadata-agent "$agent.novaMetadata.sharedSecretRef.name")"
-  assert_eq "the metadata agent gets the memory its privsep daemons need" "768Mi 768Mi" \
-    "$(val NeutronMetadataAgent lab-metadata-agent "$agent.resources.requests.memory + \" \" + $agent.resources.limits.memory")"
+  assert_eq "the metadata agent runs the operator's memory default" "null" \
+    "$(val NeutronMetadataAgent lab-metadata-agent "$agent.resources")"
 
   assert_eq "the pool follows controlplane-nova" "controlplane-nova" \
     "$(val NovaCompute lab '.spec.novaRef.name')"

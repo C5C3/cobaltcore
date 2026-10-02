@@ -24,10 +24,6 @@ spec:
 # Serves 169.254.169.254 to the servers of every chassis node. It proxies to
 # the in-cluster Nova metadata API with the shared secret the ControlPlane
 # generates.
-#
-# The memory is measured on the lab: once the agent provisions a network's
-# metadata namespace it runs its privsep daemons beside itself, about 550Mi
-# with one network, and the operator's default of 368Mi gets it OOM-killed.
 apiVersion: neutron.openstack.c5c3.io/v1alpha1
 kind: NeutronMetadataAgent
 metadata:
@@ -40,11 +36,6 @@ spec:
     tag: "2025.2"
   chassisRef:
     name: lab-chassis
-  resources:
-    requests:
-      memory: 768Mi
-    limits:
-      memory: 768Mi
   novaMetadata:
     host: controlplane-nova-metadata.openstack.svc
     port: 8775
