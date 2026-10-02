@@ -2853,9 +2853,7 @@ router is reached through its console only. In a browser that is the noVNC URL
 of [Expose the Console Proxy](../../guides/nova/expose-the-console-proxy.md)
 (the ControlPlane patch of step 1, the URL with `:8443` of step 2); from a
 shell it is `virsh console <instance name>` in the libvirt pod of the server's
-node. The cirros user is `cirros`, its password `gocubsgo`. Two steps of the
-sequence work around defects outside the lab manifests (the last table below)
-and go once those are fixed.
+node. The cirros user is `cirros`, its password `gocubsgo`.
 
 ```bash
 export KUBECONFIG="$PWD/kubeconfig"
@@ -2897,12 +2895,7 @@ done
 kubectl wait certificate --all -n hypervisor-system --for=condition=Ready --timeout=10m
 kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=15m
 
-# 6. interim: Nova's instances_path on every node (in the last table below)
-for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
-  kubectl exec -n openstack "${pod}" -c libvirtd -- mkdir -p /var/lib/nova/instances
-done
-
-# 7. onboarding and the node layer
+# 6. onboarding and the node layer
 kubectl wait hypervisor --all --timeout=20m \
   --for=jsonpath='{.status.conditions[?(@.type=="Onboarding")].reason}'=Succeeded
 kubectl wait ovnchassis/lab-chassis neutronmetadataagent/lab-metadata-agent novacompute/lab \
@@ -2911,7 +2904,7 @@ kubectl get hypervisor -o custom-columns='NAME:.metadata.name,LIBVIRTD:.status.c
 openstack --insecure hypervisor list
 openstack --insecure aggregate list
 
-# 8. host discovery, a network without a router, one server per node
+# 7. host discovery, a network without a router, one server per node
 for node in "${nodes[@]}"; do
   tests/e2e/nova/discover-hosts.sh controlplane-nova openstack "${node}"
 done
@@ -2925,19 +2918,19 @@ for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o n
   kubectl exec -n openstack "${pod}" -c libvirtd -- virsh list
 done
 
-# 9. on the console of lab-a, with lab-b's address from `openstack server show lab-b`
+# 8. on the console of lab-a, with lab-b's address from `openstack server show lab-b`
 #      curl http://169.254.169.254/latest/meta-data/instance-id
 #      ping -c 3 <lab-b>
 #      ping -c 3 -s 1374 -M do <lab-b>
 #      ping -c 1 -s 1375 -M do <lab-b>
 
-# 10. a libvirt restart under a running server
+# 9. a libvirt restart under a running server
 kubectl delete pod -n openstack -l app.kubernetes.io/name=libvirt \
   --field-selector "spec.nodeName=${nodes[0]}"
 kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=10m
 openstack --insecure server show lab-a -c status -f value
 
-# 11. a live migration over libvirt TLS, with the source libvirtd logging its
+# 10. a live migration over libvirt TLS, with the source libvirtd logging its
 #     migration steps
 source_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
   --field-selector "spec.nodeName=${nodes[0]}" -o name)
@@ -2948,7 +2941,7 @@ openstack --insecure server show lab-a -c OS-EXT-SRV-ATTR:host -f value
 openstack --insecure server migration list --server lab-a
 kubectl logs -n openstack "${source_pod}" -c libvirtd | grep -o 'qemu+tls://[^ ,]*' | sort -u
 
-# 12. an Eviction through manual maintenance, and back
+# 11. an Eviction through manual maintenance, and back
 kubectl patch hypervisor "${nodes[1]}" --type merge \
   -p '{"spec":{"maintenance":"manual","maintenanceReason":"lab eviction check"}}'
 kubectl wait "eviction/${nodes[1]}" --timeout=20m \
@@ -2959,7 +2952,7 @@ kubectl patch hypervisor "${nodes[1]}" --type merge \
 openstack --insecure compute service list --service nova-compute
 ```
 
-Step 12 evicts whichever node holds the servers; after step 11 both sit on
+Step 11 evicts whichever node holds the servers; after step 10 both sit on
 `nodes[1]`. Delete the servers before the teardown:
 `EXTERNAL_CLUSTER=true make teardown-infra` removes the hypervisors in its step
 0, before the ControlPlane, and exits 1 while a pool still holds a server (see
@@ -3011,7 +3004,10 @@ with uid 0 set in the release, on two Xeon D-2141I workers on Debian 12 with
 kernel 6.1. It passed every step above but the kna image check of step 1,
 which came with the image of
 [#1178](https://github.com/c5c3/cobaltcore/issues/1178) and has not run on the
-lab. libvirtd kept its domains across a restart
+lab. The run also created `/var/lib/nova/instances` by hand. The
+`NovaCompute` pod creates it since
+[#1171](https://github.com/c5c3/cobaltcore/issues/1171), which has not run on
+the lab. libvirtd kept its domains across a restart
 of its pod: the scope held libvirtd alone, and QEMU ran in the host cgroup
 `/machine/qemu-<n>-<instance>.libvirt-qemu` that libvirt created itself. The
 socket's group was `108`, libvirtd listened on `<node IP>:16514` only, and the
@@ -3047,7 +3043,6 @@ The fake driver of the kind suites reaches none of it:
 | Item | On the lab | Here |
 | --- | --- | --- |
 | Live-migration CPU check | with `cpuMode: host-passthrough`, and with `host-model`, every live migration ends in `NoValidHost`: Nova's pre-check on the destination fails with `Unacceptable CPU info: CPU doesn't have compatibility`, although `virsh hypervisor-cpu-compare` there accepts the guest CPU | `cpuMode: custom` with `Skylake-Server-IBRS`, the host-model of both workers |
-| Nova's `instances_path` | nova-compute's libvirt driver fails with `No such file or directory: '/var/lib/nova/instances'`: the pool mounts `/var/lib/nova` from the host and nothing creates `instances/` there, while the image's own copy is hidden by the mount | open, a change of the `NovaCompute` pod; step 6 creates the directory |
 | Console log after a libvirt restart | `openstack console log show` stops at the restart: QEMU's log goes through `virtlogd`, which ran in the old pod. The guest and its network keep running | none |
 
 ### Node port check
