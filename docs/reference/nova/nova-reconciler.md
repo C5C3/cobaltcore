@@ -88,7 +88,7 @@ not depool a Nova whose API serves fine.
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
-| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForMetadataSharedSecret`, `MetadataSharedSecretEmpty`, `WaitingForMessagingCA`, `WaitingForMessagingCredentials`, `TransportURLRejected`, `ConfigError` |
+| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForMetadataSharedSecret`, `MetadataSharedSecretEmpty`, `WaitingForMessagingCA`, `WaitingForMessagingCredentials`, `TransportURLRejected`, `ConfigError` |
 | `ComputeConfigReady` | `ComputeConfigPublished` | `ComputeConfigError`, `WaitingForRemoteTransportURL` |
 | `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `WaitingForConfig`, `ImageReleaseMismatch`, `DBSyncFailed`, `DBSyncInProgress`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `UpgradeTargetChanged`, `ExpandInProgress`, `MigrateInProgress`, `UpgradeRollingUpdate`, `ContractInProgress`, `ExpandFailed`, `MigrateFailed`, `ContractFailed` |
 | `ConductorReady` | `ConductorReady` | `WaitingForConductor` |
@@ -342,6 +342,8 @@ Beyond the owned set it watches:
   rather than twice when both name the same one.
 - Both the cluster-scoped `ClusterSecretStore` and the namespaced `SecretStore`
   a Nova can select, so a store-backend outage reflects in `SecretsReady`.
+  The `ClusterSecretStore` leg is not registered when the operator runs with
+  `--namespace`.
 
 The Secret index is registered on the local field indexer, never on the fleet: it indexes a CR kind, which exists on the management cluster alone, and
 registering it on the fleet would fail the engagement of every target cluster.

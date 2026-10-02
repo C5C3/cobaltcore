@@ -41,7 +41,7 @@ all seven sub-conditions are `True`:
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
-| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForSecretKey` |
+| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForSecretKey` |
 | `ConfigReady` | `ConfigRendered` | `ConfigError` |
 | `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment` |
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled`, `CapabilityProbeFailed` |
@@ -87,7 +87,8 @@ namespaced `SecretStore` — each bound to `storeToHorizonMapper` (the shared
 `watch.StoreRefFanOut`), which enqueues only the Horizon CRs whose effective
 `spec.secretStoreRef` resolves to the changed store, so upstream
 credential and backend changes retrigger reconciliation without waiting for
-a periodic requeue. The HTTPRoute watch is registered only when the Gateway
+a periodic requeue. The `ClusterSecretStore` leg is not registered when the
+operator runs with `--namespace`. The HTTPRoute watch is registered only when the Gateway
 API CRD is installed on the management cluster; without it, `spec.gateway`
 surfaces `HTTPRouteReady=False` with reason `GatewayAPINotInstalled` instead
 of crashing the controller. That setup probe answers for CRs without a

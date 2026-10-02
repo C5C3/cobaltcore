@@ -126,7 +126,7 @@ aggregates ten, a `NeutronMetadataAgent` three.
 
 | Type | Kind | True reasons | False reasons |
 | --- | --- | --- | --- |
-| `SecretsReady` | `Neutron` | `SecretsAvailable` | `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForNovaNotifierCredentials`, `WaitingForMessagingCredentials`, `ConfigError`, `TargetClusterUnavailable` |
+| `SecretsReady` | `Neutron` | `SecretsAvailable` | `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForNovaNotifierCredentials`, `WaitingForMessagingCredentials`, `ConfigError`, `TargetClusterUnavailable` |
 | `OVNEndpointsReady` | `Neutron` | `OVNEndpointsResolved` | `OVNCentralNotFound`, `OVNCentralReadError`, `OVNEndpointsPending`, `OVNClientSecretPending`, `OVNClientSecretIncomplete`, `OVNClientSecretReadError`, `OVNClientSecretMirrorFailed`, `TargetClusterUnavailable` |
 | `DatabaseReady` | `Neutron` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `WaitingForConfig`, `DBSyncInProgress`, `DBSyncFailed`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `ImageReleaseMismatch`, `UpgradeTargetChanged`, `ExpandInProgress`, `ExpandFailed`, `MigrateInProgress`, `MigrateFailed`, `ContractInProgress`, `ContractFailed`, `UpgradeRollingUpdate` |
 | `OVNDBSyncReady` | `Neutron` | `OVNDBSyncNotRequired`, `OVNDBSyncScheduled`, `OVNDBSyncSuspended` | `OVNDBSyncJobFailed` |
@@ -217,6 +217,7 @@ pod restart and on nothing else.
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
 | `False` | `SecretStoreNotReady` | "\<kind\> \"\<name\>\" is not ready; upstream secret backend unreachable", naming the selected `ClusterSecretStore` or `SecretStore` | `RequeueSecretPolling` |
+| `False` | `ClusterSecretStoreUnsupported` | "ClusterSecretStore \"\<name\>\" cannot be read by a namespace-scoped operator; set spec.secretStoreRef to a SecretStore in namespace \"\<namespace\>\"". Set only when the operator runs with `--namespace` and the effective store is a `ClusterSecretStore`; the store is not read | `RequeueSecretPolling` |
 | `False` | `WaitingForDBCredentials` | The gate's attribution of the miss: "Database credentials ExternalSecret \<ns\>/\<name\> not found yet", "Waiting for ESO to sync database credentials from OpenBao", or "Database credentials Secret exists but is missing expected keys" | `RequeueSecretPolling` |
 | `False` | `WaitingForServiceUserCredentials` | The same three attributions against the service-user Secret and its configured key | `RequeueSecretPolling` |
 | `True` | `SecretsAvailable` | none | none |
@@ -930,7 +931,9 @@ cluster, probed at setup through the RESTMapper. Beyond the owned set it watches
   `Neutron` can select, so a backend outage reflects in `SecretsReady` as soon as
   ESO flips the store's Ready condition. A CR that omits `spec.secretStoreRef`
   resolves to the shared cluster store, so the default fan-out is preserved while
-  a CR pinned to a namespaced store is woken only by its own.
+  a CR pinned to a namespaced store is woken only by its own. The
+  `ClusterSecretStore` leg is not registered when the operator runs with
+  `--namespace`.
 - **OVNCentral**, mapped through the `spec.ovn.centralRef` index to every
   `Neutron` driving it, listed cluster-wide because the ref is not
   namespace-bound. The leg carries no generation predicate: what the Neutrons wait

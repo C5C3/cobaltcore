@@ -76,7 +76,7 @@ and must not depool a Cinder whose API serves fine.
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
-| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForMessagingCredentials`, `ConfigError` |
+| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForMessagingCredentials`, `ConfigError` |
 | `BackendsReady` | `AllBackendsProjected`, `NoBackends` | `WaitingForBackends` |
 | `BackupBackendReady` | `BackupBackendProjected`, `NoBackupBackend` | `WaitingForBackupBackend`, `MultipleBackupBackends` |
 | `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `WaitingForConfig`, `ImageReleaseMismatch`, `DBSyncFailed`, `DBSyncInProgress`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `UpgradeTargetChanged`, `ExpandInProgress`, `MigrateInProgress`, `UpgradeRollingUpdate`, `ContractInProgress`, `ExpandFailed`, `MigrateFailed`, `ContractFailed` |
@@ -321,6 +321,8 @@ Beyond the owned set it watches:
   requeue.
 - Both the cluster-scoped `ClusterSecretStore` and the namespaced `SecretStore`
   a Cinder can select, so a store-backend outage reflects in `SecretsReady`.
+  The `ClusterSecretStore` leg is not registered when the operator runs with
+  `--namespace`.
 - `CinderBackend` and `CinderBackupBackend`, mapped to their parent through the
   two `spec.cinderRef.name` field indexes, with no generation predicate: the
   status flip to `CredentialsReady=True` and the deletion timestamp are the
