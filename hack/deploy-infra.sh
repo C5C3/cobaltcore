@@ -3632,7 +3632,7 @@ main() {
       log "  Apply the overlay's OVNCentral and ControlPlane (the CR is named '${CONTROLPLANE_NAME}'):"
       log "    kubectl apply -k ${OVERLAY_ROOT}/controlplane"
       log "  Then onboard the OpenBao database-engine tenant once MariaDB is Ready"
-      log "  (docs/quick-start-controlplane.md, Step 4):"
+      log "  (docs/quick-start-controlplane.md, Step 5):"
       log "    deploy/openbao/bootstrap/setup-database-tenant.sh openstack ${CONTROLPLANE_NAME}"
     else
       log "  Operator stack is up. The ControlPlane CR is NOT applied automatically —"

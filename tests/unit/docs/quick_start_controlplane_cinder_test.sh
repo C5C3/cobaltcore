@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the optional block-storage path in docs/quick-start-controlplane.md:
-#   - the `### Create a first volume` check exists in Step 6
+#   - the `### Create a first volume` check exists in Step 7
 #   - the Step 6 chain runs NeutronReady -> CinderReady -> NovaReady
 #   - Step 4 carries the `::: details` container for the optional block
 #   - Step 2 documents the WITH_NFS=true bring-up
