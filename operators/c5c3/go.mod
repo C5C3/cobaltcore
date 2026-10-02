@@ -13,7 +13,7 @@ require (
 	github.com/c5c3/cobaltcore/operators/nova v0.0.0-00010101000000-000000000000
 	github.com/c5c3/cobaltcore/operators/ovn v0.0.0-00010101000000-000000000000
 	github.com/c5c3/cobaltcore/operators/placement v0.0.0-00010101000000-000000000000
-	github.com/dc-tec/openbao-operator v0.0.0-20260922111451-ef96ef2ddcaa
+	github.com/dc-tec/openbao-operator v0.0.0-20261001081947-b99f7df00d9b
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/go-logr/logr v1.4.4
 	github.com/k-orc/openstack-resource-controller/v2 v2.5.1-0.20260917133841-ae545905edc2
@@ -78,11 +78,11 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/term v0.45.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
