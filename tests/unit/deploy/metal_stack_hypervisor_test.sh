@@ -17,8 +17,8 @@
 #      image, the hostPaths and the mount propagation libvirtd and
 #      nova-compute share, and without a liveness probe.
 #   5. libvirtd.conf and qemu.conf carry every key and value the lab needs.
-#   6. libvirtd.sh starts libvirtd in a host scope and writes both host units,
-#      and the scripts carry their log messages.
+#   6. libvirtd.sh starts libvirtd in a host scope, writes both host units and
+#      starts no virtlogd, and the scripts carry their log messages.
 #   7. The CA, its Issuer and the three compute CRs carry their fields: the
 #      metadata agent names no resources, and the pool names the CPU model
 #      Nova's live-migration pre-check accepts; NovaCompute has no extraConfig.
@@ -36,9 +36,9 @@
 #      hack/ci-resolve-kna-commit.sh's.
 #  12. Both scripts parse, and pass shellcheck when it is on PATH.
 #  13. libvirtd.sh, run against stubs, removes the host units and stops
-#      libvirtd however it ends, stops a libvirtd an earlier container left
-#      in the scope before it starts its own, and leaves no failed scope
-#      behind when a stop runs out.
+#      libvirtd however it ends, starts no virtlogd, stops a libvirtd an
+#      earlier container left in the scope before it starts its own, and
+#      leaves no failed scope behind when a stop runs out.
 #  14. Each chart's tag and digest resolve to the same upstream artifact
 #      (one SKIP per chart when ghcr.io cannot be reached).
 #
@@ -298,7 +298,7 @@ test_libvirt_daemonset() {
 test_libvirt_config() {
   echo "Test: the rendered libvirtd.conf and qemu.conf"
 
-  render "$HYPERVISOR_DIR" 14 || return
+  render "$HYPERVISOR_DIR" 15 || return
 
   local libvirtd_conf qemu_conf line
   libvirtd_conf="$(conf_lines libvirtd.conf)"
@@ -324,6 +324,7 @@ dynamic_ownership = 1
 security_driver = "none"
 default_tls_x509_cert_dir = "/etc/pki/qemu"
 default_tls_x509_verify = 1
+stdio_handler = "file"
 LINES
 }
 
@@ -333,7 +334,7 @@ test_scripts() {
 
   if [[ ! -f "$CONFIGMAP_FILE" ]]; then
     echo "  FAIL: $CONFIGMAP_FILE does not exist"
-    FAIL=$((FAIL + 15))
+    FAIL=$((FAIL + 16))
     return
   fi
   local fixed
@@ -356,6 +357,7 @@ echo "libvirtd: /run/libvirt/libvirt-sock did not appear within 60s"
 echo "host-prepare: cannot load vhost_net from /lib/modules/$(uname -r)"
 echo "host-prepare: /dev/kvm is missing on this node"
 FIXED
+  assert_file_not_contains "libvirt-configmap.yaml starts no virtlogd" "$CONFIGMAP_FILE" '^[^#]*virtlogd'
 }
 
 # --- Test 7: the CA and the compute CRs ---
@@ -622,8 +624,9 @@ test_scripts_lint() {
 #
 # libvirtd.sh runs with stubs of systemctl, systemd-run, virtlogd, libvirtd and
 # sleep first on PATH, and with its host paths moved under a scratch directory
-# (the rig). Like systemd, the stub systemd-run refuses the scope while a
-# libvirtd holds it or the scope is failed, and the stub
+# (the rig). The stub virtlogd only records its call. Like systemd, the stub
+# systemd-run refuses the scope while a libvirtd holds it or the scope is
+# failed, and the stub
 # `systemctl stop cobaltcore-libvirtd.scope` stops that libvirtd. A stop that
 # runs out kills it and leaves the scope failed, unless systemd-run had
 # --collect; `systemctl reset-failed cobaltcore-libvirtd.scope` clears that.
@@ -714,9 +717,9 @@ for _ in $(seq 600); do
 done
 exit 3
 STUB
-  printf '#!/bin/bash\nexit 0\n' >"$rig/bin/virtlogd"
+  printf '#!/bin/bash\necho "virtlogd $*" >>"$RIG/calls.log"\n' >"$rig/bin/virtlogd"
   printf '#!/bin/bash\n"$REAL_SLEEP" 0.01\n' >"$rig/bin/sleep"
-  for stub in systemctl systemd-run libvirtd virtlogd sleep; do
+  for stub in systemctl systemd-run virtlogd libvirtd sleep; do
     chmod +x "$rig/bin/$stub"
   done
 }
@@ -767,10 +770,10 @@ unit_files() {
 test_libvirtd_exits() {
   echo "Test: libvirtd.sh removes the host units and stops libvirtd however it ends"
 
-  render "$HYPERVISOR_DIR" 25 || return
+  render "$HYPERVISOR_DIR" 26 || return
   if ! command -v python3 >/dev/null 2>&1; then
-    echo "  SKIP: python3 not installed, no stub libvirtd can bind a socket (25 checks skipped)"
-    SKIP=$((SKIP + 25))
+    echo "  SKIP: python3 not installed, no stub libvirtd can bind a socket (26 checks skipped)"
+    SKIP=$((SKIP + 26))
     return
   fi
 
@@ -780,13 +783,13 @@ test_libvirtd_exits() {
   trap 'for rig in "$tmp"/*/; do touch "${rig}crash"; done; "$REAL_SLEEP" 0.2; rm -rf "$tmp"' RETURN
 
   # A libvirtd an earlier container left in the scope, killed after its grace
-  # period, holds the scope and the socket. The next start stops it, and its
-  # units name the libvirtd that runs; TERM removes them and passes
-  # libvirtd's exit status through.
+  # period, holds the scope and the socket. The next start stops it, starts no
+  # virtlogd, and its units name the libvirtd that runs; TERM removes them and
+  # passes libvirtd's exit status through.
   rig="$tmp/predecessor"
   if ! libvirtd_rig "$rig"; then
     echo "  FAIL: libvirtd.sh names a host path the rig does not move (above)"
-    FAIL=$((FAIL + 25))
+    FAIL=$((FAIL + 26))
     return
   fi
   rig_start "$rig" systemd-run --scope --unit=cobaltcore-libvirtd libvirtd --listen
@@ -801,6 +804,7 @@ test_libvirtd_exits() {
     "$([[ -n "$new" && "$new" != "$old" ]] && kill -0 "$new" 2>/dev/null && echo true || echo false)"
   assert_eq "both units name the new libvirtd" "2" \
     "$(grep -l "PID ${new:-none}\$" "$rig/units/libvirtd.service" "$rig/units/virt-admin-server-update-tls.service" 2>/dev/null | grep -c .)"
+  assert_eq "libvirtd.sh starts no virtlogd" "0" "$(grep -c '^virtlogd' "$rig/calls.log")"
   kill -TERM "$pid"
   rc=0
   exit_status "$pid" || rc=$?
