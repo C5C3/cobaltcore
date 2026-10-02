@@ -3165,8 +3165,8 @@ kernel 6.1. It passed every step above but the kna image check of step 1,
 which came with the image of
 [#1178](https://github.com/c5c3/cobaltcore/issues/1178) and has not run on the
 lab, and the console-log check of step 9, which came with
-[#1174](https://github.com/c5c3/cobaltcore/issues/1174). The run also created
-`/var/lib/nova/instances` by hand. The
+[#1174](https://github.com/c5c3/cobaltcore/issues/1174) and ran on 2026-10-02
+(below). The run also created `/var/lib/nova/instances` by hand. The
 `NovaCompute` pod creates it since
 [#1171](https://github.com/c5c3/cobaltcore/issues/1171), which has not run on
 the lab. libvirtd kept its domains across a restart
@@ -3177,6 +3177,13 @@ live migration dialed `qemu+tls://<destination IP>/system`. A teardown with a
 server left stopped at the `NovaCompute` delete with the servers hint; after the
 servers were deleted, two teardowns exited 0 and left no `kvm.cloud.sap` CRD,
 `hypervisor-system` namespace, `maint-<node>` object, node label or host unit.
+
+A run on 2026-10-02 applied `stdio_handler = "file"`
+([#1174](https://github.com/c5c3/cobaltcore/issues/1174)) on the same two
+workers. Once `lab-a` was hard-rebooted, no `virtlogd` ran on its node and its
+status XML carried no `<chardevStdioLogd/>`. After a restart of the libvirt
+pod, a `virsh reset` of the guest left the QEMU PID unchanged, `console.log`
+grew, and `openstack console log show` returned the new boot output.
 
 hvo and kna come from SAP's own environment, and several of their defaults
 assume it. [#1066](https://github.com/c5c3/cobaltcore/issues/1066) collects
