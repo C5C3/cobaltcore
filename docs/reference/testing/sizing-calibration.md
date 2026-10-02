@@ -67,9 +67,12 @@ above one, so `memoryPerExtraThread` stays `32Mi`. The OVN Raft memory floor
 of `256Mi` stays, because the Raft working set grows with the logical port
 count, which a CI data set does not represent. The Glance `cache-maintenance`
 sidecar runs only in the Glance `e2e-operator` leg, which the label does not
-switch on, so the shared sidecar figure only rises. The operators' manager
-pods, the OVN chassis and NovaCompute DaemonSets and the platform stack keep
-their own figures.
+switch on, so the shared sidecar figure only rises. The memory of the Neutron
+metadata agent is not taken from this run: none of its legs makes the agent
+provision a network, so its rows show an idle agent. Its figure has a
+measurement of its own (see [Metadata agent memory](#metadata-agent-memory)).
+The operators' manager pods, the OVN chassis and NovaCompute DaemonSets and the
+platform stack keep their own figures.
 
 ## Running a measurement
 
@@ -608,3 +611,68 @@ The formula still renders `368Mi` at one process, so a single-process service
 keeps its memory. At two processes it renders `720Mi` instead of `512Mi`, and at
 four `1424Mi` instead of `800Mi`. A Glance API renders `1040Mi` at one process and
 `2064Mi` at two.
+
+## Metadata agent memory
+
+The memory of the `NeutronMetadataAgent` containers is `metadataAgentMemory` in
+`operators/neutron/internal/controller/reconcile_daemonset.go`. It is sized for
+32 networks on the agent's node and comes from the `metadata-agent` suite
+(`tests/e2e/neutron/metadata-agent`), which runs in the `neutron` leg of
+`e2e-operator`.
+
+### What the suite measures
+
+The agent container holds the agent, its privsep daemons and one haproxy per
+network with a port bound on the node. Steps 9 to 11 of the suite write
+networks into the Northbound database with `ovn-nbctl`, bind one port of each
+on the kind node, and read the container's cgroup in four phases:
+
+| Release | Networks | How the agent gets there |
+| --- | --- | --- |
+| 2025.2 | 0 | No port is bound on the node |
+| 2025.2 | 1 | The port of one network is bound |
+| 2025.2 | 32 | The ports of 31 more networks are bound |
+| 2026.1 | 32 | A restart into 2026.1, whose first sync provisions all 32 networks |
+
+A phase polls every 5 seconds until the agent runs one haproxy per network,
+and for 30 seconds more. Its reading is the largest working set of those
+polls: `memory.current` less the `inactive_file` of `memory.stat`, rounded up
+to MiB. The proxies are idle, because no instance asks them for metadata. The
+phase prints one line:
+
+```text
+MEMORY-READING release=<release> networks=<n> working_set_mi=<MiB> peak_mi=<MiB> oom_kill=<count> haproxy=<count> limit_mi=<MiB>
+```
+
+It fails on a container restart, on an OOM kill in the cgroup and on a working
+set above 90% of the container's memory limit. A default that no longer holds
+32 networks therefore fails the leg.
+
+After each phase with 32 networks the suite prints one `MEMORY-PROCESSES` line
+per process name in the container, with the process count and the sum of
+`VmRSS`. `VmRSS` counts a shared page once per process, so the sums can exceed
+the working set.
+
+### From the readings to the figure
+
+`W1` is the working set of 2025.2 with one network, `W32a` that of 2025.2 with
+32 networks and `W32b` that of 2026.1 with 32 networks, all in MiB.
+
+| Figure | Rule | Meaning |
+| --- | --- | --- |
+| `S` | `ceil((W32a − W1) / 31)`, at least 1 | The memory one more network adds |
+| `L` | `max(0, 550 − W1)` | What the lab reading with one network lies above the runner's |
+| `F` | `(max(W32a, W32b) + L) × 1.25`, rounded up to a multiple of 64 and at least 768 | `metadataAgentMemory` in MiB |
+
+The 550 is the working set of an agent with one network on a hypervisor of the
+metal-stack lab (the run of
+[#1142](https://github.com/C5C3/cobaltcore/issues/1142), 2026-10-01). A
+hypervisor may run larger privsep daemons than a CI runner, so the lab reading
+enters as an offset. The factor 1.25 is the headroom for metadata requests,
+which the idle proxies of the suite do not serve. The 768 is the memory the lab
+agent ran with.
+
+`S` sizes a node beyond the default: an agent whose node binds `n` networks,
+`n` above 32, needs about `F + (n − 32) × S × 1.25` MiB, rounded up to a
+multiple of 64. The factor gives each further proxy the headroom `F` gives the
+first 32.
