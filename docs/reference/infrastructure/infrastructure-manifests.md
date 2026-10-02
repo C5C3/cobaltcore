@@ -2744,7 +2744,7 @@ The init container `host-prepare` loads `vhost_net` and fails the pod with
 3. stops `cobaltcore-libvirtd.scope`, which holds a libvirtd an earlier
    container left behind when it was killed after its grace period, and
    resets its failed state: a stop that runs out leaves the scope failed, and
-   a failed unit keeps its name. It then starts `virtlogd`, then
+   a failed unit keeps its name. It then starts
    `systemd-run --collect --scope --slice=system --unit=cobaltcore-libvirtd libvirtd --listen`.
    The scope moves libvirtd out of the pod's cgroup into the host's
    `system.slice`, so the QEMU processes it forks survive a restart of the pod.
@@ -2792,6 +2792,25 @@ the peer. The kna image of this repository writes all three private keys,
 root reads its key either way. `PKI_KEY_GROUP` therefore stays unset: it gives
 QEMU's key a group and mode 0640, which only a QEMU that runs as another user
 needs.
+
+`qemu.conf` also sets `stdio_handler = "file"`. libvirt's default, `logd`,
+sends QEMU's output, the console log Nova reads included, through a pipe to
+`virtlogd`. A `virtlogd` in the pod dies with the pod while QEMU lives on, and
+`openstack console log show` then stops at the restart
+([#1174](https://github.com/c5c3/cobaltcore/issues/1174)). With `file`,
+libvirtd opens each log file and hands QEMU the descriptor, so the script
+starts no `virtlogd`. This gives up `virtlogd`'s rollover, by default 2 MiB per
+file and three backups: `/var/lib/nova/instances/<uuid>/console.log` grows for
+as long as the guest writes to its console. A domain takes its handler when it
+starts. libvirtd reads `qemu.conf` when it starts too, and the script copies
+the file and starts libvirtd only when the container starts (steps 2 and 3).
+The DaemonSet updates `OnDelete`, so applying the change switches no node. On
+a lab with running servers, delete the libvirt pod of each node and wait until
+it is `Ready`. Only then run `openstack server reboot --hard` on each server of
+that node. A hard reboot before the pod delete starts the domain under the old
+pod's `virtlogd` again, and its console log stops once more at the delete. The
+status XML of a switched domain, `/run/libvirt/qemu/<instance_name>.xml`,
+carries no `<chardevStdioLogd/>`.
 
 The DaemonSet, the three compute CRs and hvo run in `openstack`. hvo sits there
 because its release reads the ControlPlane's auth Secret through `valuesFrom`
@@ -2924,22 +2943,29 @@ done
 #      ping -c 3 -s 1374 -M do <lab-b>
 #      ping -c 1 -s 1375 -M do <lab-b>
 
-# 9. a libvirt restart under a running server
+# 9. a libvirt restart under a running server, whose console log keeps growing
 kubectl delete pod -n openstack -l app.kubernetes.io/name=libvirt \
   --field-selector "spec.nodeName=${nodes[0]}"
 kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=10m
 openstack --insecure server show lab-a -c status -f value
+libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
+  --field-selector "spec.nodeName=${nodes[0]}" -o name)
+console_log="/var/lib/nova/instances/$(openstack --insecure server show lab-a -c id -f value)/console.log"
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- stat -c %s "${console_log}"
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
+  virsh reset "$(openstack --insecure server show lab-a -c OS-EXT-SRV-ATTR:instance_name -f value)"
+sleep 30
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- stat -c %s "${console_log}"
+openstack --insecure console log show lab-a | tail -n 3
 
 # 10. a live migration over libvirt TLS, with the source libvirtd logging its
 #     migration steps
-source_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
-  --field-selector "spec.nodeName=${nodes[0]}" -o name)
-kubectl exec -n openstack "${source_pod}" -c libvirtd -- \
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
   bash -c 'virt-admin daemon-log-filters 1:qemu.qemu_migration && virt-admin daemon-log-outputs 1:stderr'
 openstack --insecure server migrate --live-migration --wait lab-a
 openstack --insecure server show lab-a -c OS-EXT-SRV-ATTR:host -f value
 openstack --insecure server migration list --server lab-a
-kubectl logs -n openstack "${source_pod}" -c libvirtd | grep -o 'qemu+tls://[^ ,]*' | sort -u
+kubectl logs -n openstack "${libvirt_pod}" -c libvirtd | grep -o 'qemu+tls://[^ ,]*' | sort -u
 
 # 11. an Eviction through manual maintenance, and back
 kubectl patch hypervisor "${nodes[1]}" --type merge \
@@ -2952,10 +2978,12 @@ kubectl patch hypervisor "${nodes[1]}" --type merge \
 openstack --insecure compute service list --service nova-compute
 ```
 
-Step 11 evicts whichever node holds the servers; after step 10 both sit on
-`nodes[1]`. Delete the servers before the teardown:
-`EXTERNAL_CLUSTER=true make teardown-infra` removes the hypervisors in its step
-0, before the ControlPlane, and exits 1 while a pool still holds a server (see
+Step 9 prints the size of `lab-a`'s console log before and after a reset of
+the guest, and the second number is larger. Step 11 evicts whichever node holds
+the servers; after step 10 both sit on `nodes[1]`. Delete the servers before
+the teardown: `EXTERNAL_CLUSTER=true make teardown-infra` removes the
+hypervisors in its step 0, before the ControlPlane, and exits 1 while a pool
+still holds a server (see
 [`make teardown-infra`](e2e-deployment.md#make-teardown-infra)).
 
 A lab that moves to the kna image of this repository in place keeps its 0644
@@ -3136,7 +3164,9 @@ with uid 0 set in the release, on two Xeon D-2141I workers on Debian 12 with
 kernel 6.1. It passed every step above but the kna image check of step 1,
 which came with the image of
 [#1178](https://github.com/c5c3/cobaltcore/issues/1178) and has not run on the
-lab. The run also created `/var/lib/nova/instances` by hand. The
+lab, and the console-log check of step 9, which came with
+[#1174](https://github.com/c5c3/cobaltcore/issues/1174). The run also created
+`/var/lib/nova/instances` by hand. The
 `NovaCompute` pod creates it since
 [#1171](https://github.com/c5c3/cobaltcore/issues/1171), which has not run on
 the lab. libvirtd kept its domains across a restart
@@ -3175,7 +3205,7 @@ The fake driver of the kind suites reaches none of it:
 | Item | On the lab | Here |
 | --- | --- | --- |
 | Live-migration CPU check | with `cpuMode: host-passthrough`, and with `host-model`, every live migration ends in `NoValidHost`: Nova's pre-check on the destination fails with `Unacceptable CPU info: CPU doesn't have compatibility`, although `virsh hypervisor-cpu-compare` there accepts the guest CPU | `cpuMode: custom` with `Skylake-Server-IBRS`, the host-model of both workers |
-| Console log after a libvirt restart | `openstack console log show` stops at the restart: QEMU's log goes through `virtlogd`, which ran in the old pod. The guest and its network keep running | none |
+| Console log after a libvirt restart | with libvirt's default `stdio_handler = "logd"`, `openstack console log show` stopped at the restart: QEMU's log went through `virtlogd`, which ran in the old pod. The guest and its network kept running. With `file` the log grows across a restart | `stdio_handler = "file"` in `qemu.conf` ([#1174](https://github.com/c5c3/cobaltcore/issues/1174)) |
 | CPU model change under a server | on 2026-10-01 a server booted with `host-passthrough` kept that CPU through a hard reboot after the pool moved to `custom`; the run recorded no time for the reboot. The cpuMode block above ran on 2026-10-02 on `nodes[0]`. A, after the boot: the pod's file says `cpu_mode = host-passthrough`, the domain `mode='host-passthrough'`. B, before the reboot: a pod started 10 seconds after the patch, its file says `cpu_mode = custom` and `cpu_models = Skylake-Server-IBRS`, the domain is still `host-passthrough`. B, after the reboot: the same pod, and the live and the `--inactive` `<cpu>` say `mode='custom'` with the model `Skylake-Server-IBRS`. C, first reboot: the pod of B with its `custom` file, `DaemonSetReady` `False`, the domain `mode='custom'` while the CR says `host-passthrough`. C, second reboot: a new pod, its file says `cpu_mode = host-passthrough` and no `cpu_models`, the domain `mode='host-passthrough'`. A first pass of the same run sent C's second reboot 3 seconds after the new pods started, before `nova-compute` took requests: it cleared the reboot's task state at start-up, the reboot action ended in `Error`, `--wait` reported success and the domain stayed `custom`. `wait_compute` comes from that pass | [Changing the libvirt settings of a pool with servers](../nova/novacompute-crd.md#changing-the-libvirt-settings-of-a-pool-with-servers) |
 
 ### Node port check
