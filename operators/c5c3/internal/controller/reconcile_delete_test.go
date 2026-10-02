@@ -295,7 +295,7 @@ func TestReconcileDelete_NoFinalizer_NoOp(t *testing.T) {
 func TestReconcileDelete_NoORCResources_ReleasesFinalizer(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingControlPlane(0)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	rec := record.NewFakeRecorder(10)
@@ -451,7 +451,7 @@ func terminatingImportMeta(name, ns, finalizer string) metav1.ObjectMeta {
 func TestReconcileDelete_ReleasesUnmanagedImportsWithoutStall(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingExternalControlPlane() // deleted 1s ago — well inside the stall window
 	ns := childNamespace(cp)
 	svc := &orcv1alpha1.Service{
@@ -521,7 +521,7 @@ func TestReconcileDelete_ReleasesUnmanagedImportsWithoutStall(t *testing.T) {
 func TestReconcileDelete_WaitsForOwnedPushSecretCleanup(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingExternalControlPlane()
 	ns := childNamespace(cp)
 	// An owned PushSecret still live (not yet Terminating), held by ESO's
@@ -1016,7 +1016,7 @@ func TestReconcileDelete_ReleasePathReleasesAGivenUpRegistration(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingControlPlane(registrationTeardownStallTimeout + time.Minute)
 	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
 
@@ -1792,7 +1792,7 @@ func TestReconcileDelete_ExternalMode_TearsDownOnlyOwnedORCCRs(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingExternalControlPlane()
 	foreign := &orcv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "someone-elses-user", Namespace: childNamespace(cp)},
@@ -1953,7 +1953,7 @@ func TestReconcileDelete_ToleratesMissingRegion(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingControlPlane(0)
 	ns := childNamespace(cp)
 	// Every owned CR except the Region, and none of them held by a K-ORC finalizer,
@@ -2139,7 +2139,7 @@ func TestOrcChildOpenStackRef_Region(t *testing.T) {
 func TestReconcileDelete_ExternalMode_NoORCResources_ReleasesFinalizer(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingExternalControlPlane()
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
@@ -2179,7 +2179,11 @@ func TestIsManagedORCChild_ClassifiesRoleChildren(t *testing.T) {
 // --- cross-namespace teardown (issue #646) ---
 
 // namespaceTeardownScheme extends the K-ORC test scheme with the service-child
-// and backing-service types the cross-namespace teardown deletes.
+// and backing-service types the cross-namespace teardown deletes. Every test that
+// drives reconcileDelete to the finalizer release needs it too:
+// deleteColocatedKeystoneBeforeRelease reads the Keystone child on that path, and
+// under korcTestScheme the fake client fails that read with an unregistered-type
+// error instead of NotFound, so the release never happens.
 func namespaceTeardownScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := korcTestScheme(t)
@@ -4268,7 +4272,7 @@ func deletingManagedMessagingControlPlane(deletionAge time.Duration) *c5c3v1alph
 func TestReconcileDelete_DeletesTheManagedBusForegroundBeforeRelease(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingManagedMessagingControlPlane(0)
 	bus := managedBusFor(cp)
 	var gotPolicy *metav1.DeletionPropagation
@@ -4338,7 +4342,7 @@ func TestReconcileDelete_DeletesTheManagedBusForegroundBeforeRelease(t *testing.
 func TestReconcileDelete_ReleasesOnceTheClusterOperatorFinalizerIsOff(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingManagedMessagingControlPlane(0)
 	bus := managedBusFor(cp)
 	bus.SetFinalizers([]string{"foregroundDeletion"})
@@ -4364,7 +4368,7 @@ func TestReconcileDelete_ReleasesOnceTheClusterOperatorFinalizerIsOff(t *testing
 func TestReconcileDelete_LeavesAnUnownedBusToItsOwner(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingManagedMessagingControlPlane(0)
 	bus := managedBusFor(cp)
 	bus.SetOwnerReferences(nil)
@@ -4394,7 +4398,7 @@ func TestReconcileDelete_LeavesAnUnownedBusToItsOwner(t *testing.T) {
 func TestReconcileDelete_AbandonsTheBusWaitPastTheDeadline(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingManagedMessagingControlPlane(messagingTeardownDeadline + time.Minute)
 	bus := managedBusFor(cp)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, bus).Build()
@@ -4415,6 +4419,404 @@ func TestReconcileDelete_AbandonsTheBusWaitPastTheDeadline(t *testing.T) {
 	events := drainEvents(rec)
 	g.Expect(events).To(ContainElement(ContainSubstring("MessagingTeardownStalled")))
 	g.Expect(events).To(ContainElement(ContainSubstring("ORCTeardownComplete")))
+}
+
+// ownedKeystoneFor returns the Keystone child a ControlPlane projects into its own
+// namespace: named keystoneName(cp), controller-owned by cp, and carrying the
+// keystone-operator's openbao-finalizer, so a Delete leaves it Terminating the way
+// the real API server does until that operator has purged its OpenBao paths.
+func ownedKeystoneFor(cp *c5c3v1alpha1.ControlPlane) *keystonev1alpha1.Keystone {
+	return &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            keystoneName(cp),
+			Namespace:       cp.Namespace,
+			OwnerReferences: ownedByCP(cp),
+			Finalizers:      []string{"keystone.openstack.c5c3.io/openbao-finalizer"},
+		},
+	}
+}
+
+// keystoneGetErrorClient builds a fake client seeded with objs whose Keystone
+// reads in namespace fail with err, and whose other calls pass through.
+func keystoneGetErrorClient(
+	s *runtime.Scheme, namespace string, err error, objs ...client.Object,
+) client.WithWatch {
+	return fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*keystonev1alpha1.Keystone); ok && key.Namespace == namespace {
+					return err
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+}
+
+// TestReconcileDelete_DeletesTheColocatedKeystoneBeforeRelease pins the ordering
+// the Keystone's backup PushSecrets need: their OpenBao purge runs through the
+// tenant SecretStore the owner-reference cascade reaps in no order, so the
+// teardown deletes the co-located Keystone itself, with background propagation,
+// and holds the ControlPlane finalizer, reported as
+// KeystoneReady=False/FinalizingKeystone, until the keystone-operator has let it go.
+func TestReconcileDelete_DeletesTheColocatedKeystoneBeforeRelease(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := namespaceTeardownScheme(t)
+	cp := deletingControlPlane(0)
+	keystone := ownedKeystoneFor(cp)
+	var gotPolicy *metav1.DeletionPropagation
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, keystone).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*keystonev1alpha1.Keystone); ok {
+					do := &client.DeleteOptions{}
+					do.ApplyOptions(opts)
+					gotPolicy = do.PropagationPolicy
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: namespaceRequeueAfter}),
+		"the release must wait for the Keystone to leave etcd")
+	g.Expect(gotPolicy).NotTo(BeNil(), "the teardown must delete the co-located Keystone itself")
+	g.Expect(*gotPolicy).To(Equal(metav1.DeletePropagationBackground))
+
+	gotKeystone := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(keystone), gotKeystone)).To(Succeed())
+	g.Expect(gotKeystone.DeletionTimestamp.IsZero()).To(BeFalse(),
+		"the Keystone must be Terminating behind the keystone-operator's openbao-finalizer")
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeTrue(),
+		"the ControlPlane finalizer must hold the tenant store until the Keystone is gone")
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKeystoneReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("FinalizingKeystone"))
+	g.Expect(cond.Message).To(ContainSubstring(keystoneName(cp)))
+	g.Expect(drainEvents(rec)).NotTo(ContainElement(ContainSubstring("ORCTeardownComplete")))
+
+	// The keystone-operator finishes the purge and removes its finalizer; the
+	// Keystone leaves etcd and the next pass releases the ControlPlane.
+	gotKeystone.Finalizers = nil
+	g.Expect(c.Update(context.Background(), gotKeystone)).To(Succeed())
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+	res, err = r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	err = c.Get(context.Background(), key, &c5c3v1alpha1.ControlPlane{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	g.Expect(drainEvents(rec)).To(ContainElement(ContainSubstring("ORCTeardownComplete")))
+}
+
+// TestReconcileDelete_KeepsTheKeystoneWhileKORCDrains asserts the Keystone is not
+// deleted while a K-ORC CR is still Terminating: K-ORC revokes the admin
+// application credential and removes catalog rows through the Keystone API.
+func TestReconcileDelete_KeepsTheKeystoneWhileKORCDrains(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := namespaceTeardownScheme(t)
+	cp := deletingControlPlane(0)
+	ac := &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       adminAppCredentialName(cp),
+			Namespace:  childNamespace(cp),
+			Finalizers: []string{"openstack.k-orc.cloud/applicationcredential"},
+		},
+	}
+	keystone := ownedKeystoneFor(cp)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ac, keystone).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	gotKeystone := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(keystone), gotKeystone)).To(Succeed())
+	g.Expect(gotKeystone.DeletionTimestamp.IsZero()).To(BeTrue(),
+		"the Keystone must stay up while K-ORC still revokes against it")
+	g.Expect(conditions.GetCondition(cp.Status.Conditions, conditionTypeKeystoneReady)).To(BeNil())
+}
+
+// TestReconcileDelete_ReleasesWithoutAKeystoneChild asserts that a ControlPlane
+// with no Keystone object, as in External mode, releases in one pass without
+// naming a Keystone wait.
+func TestReconcileDelete_ReleasesWithoutAKeystoneChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := namespaceTeardownScheme(t)
+	cp := deletingExternalControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	err = c.Get(context.Background(), key, &c5c3v1alpha1.ControlPlane{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	g.Expect(conditions.GetCondition(cp.Status.Conditions, conditionTypeKeystoneReady)).To(BeNil(),
+		"a ControlPlane without a Keystone child has no Keystone wait to report")
+	g.Expect(drainEvents(rec)).To(ContainElement(ContainSubstring("ORCTeardownComplete")))
+}
+
+// TestDeleteColocatedKeystoneBeforeRelease_ToleratesAnAbsentCRD covers a
+// keystone-operator uninstalled before the ControlPlane: a Get against a kind the
+// API server no longer serves reads as nothing to wait for.
+func TestDeleteColocatedKeystoneBeforeRelease_ToleratesAnAbsentCRD(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := namespaceTeardownScheme(t)
+	cp := deletingControlPlane(time.Minute)
+	c := keystoneGetErrorClient(s, cp.Namespace, &meta.NoKindMatchError{
+		GroupKind: schema.GroupKind{Group: "keystone.openstack.c5c3.io", Kind: "Keystone"},
+	}, cp)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	done, err := r.deleteColocatedKeystoneBeforeRelease(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+}
+
+// TestDeleteColocatedKeystoneBeforeRelease_PropagatesAGetError asserts a read
+// error other than NotFound or NoMatch holds the release and names the Keystone.
+func TestDeleteColocatedKeystoneBeforeRelease_PropagatesAGetError(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := namespaceTeardownScheme(t)
+	cp := deletingControlPlane(time.Minute)
+	boom := errors.New("boom")
+	c := keystoneGetErrorClient(s, cp.Namespace, boom, cp)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	done, err := r.deleteColocatedKeystoneBeforeRelease(context.Background(), cp)
+	g.Expect(done).To(BeFalse())
+	g.Expect(err).To(MatchError(boom))
+	g.Expect(err.Error()).To(HavePrefix(`reading Keystone "` + keystoneName(cp) + `" before release:`))
+}
+
+// TestDeleteColocatedKeystoneBeforeRelease_PropagatesADeleteError asserts a failed
+// delete holds the release and names the Keystone, while a NotFound delete (the
+// Keystone left between the read and the delete) only waits for the next pass.
+func TestDeleteColocatedKeystoneBeforeRelease_PropagatesADeleteError(t *testing.T) {
+	cases := []struct {
+		name      string
+		deleteErr error
+		wantErr   bool
+	}{
+		{name: "an API error", deleteErr: errors.New("boom"), wantErr: true},
+		{
+			name: "NotFound",
+			deleteErr: apierrors.NewNotFound(
+				schema.GroupResource{Group: "keystone.openstack.c5c3.io", Resource: "keystones"}, "cp-keystone"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			s := namespaceTeardownScheme(t)
+			cp := deletingControlPlane(time.Minute)
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedKeystoneFor(cp)).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+						if _, ok := obj.(*keystonev1alpha1.Keystone); ok {
+							return tc.deleteErr
+						}
+						return cl.Delete(ctx, obj, opts...)
+					},
+				}).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+			done, err := r.deleteColocatedKeystoneBeforeRelease(context.Background(), cp)
+			g.Expect(done).To(BeFalse())
+			if !tc.wantErr {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			g.Expect(err).To(MatchError(tc.deleteErr))
+			g.Expect(err.Error()).To(HavePrefix(`deleting Keystone "` + keystoneName(cp) + `" before release:`))
+		})
+	}
+}
+
+// TestReconcileDelete_LeavesAnUnownedKeystoneAlone asserts that a Keystone under
+// the projected name that this ControlPlane does not own (no owner reference, no
+// ownership labels) is neither deleted nor waited for.
+func TestReconcileDelete_LeavesAnUnownedKeystoneAlone(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := namespaceTeardownScheme(t)
+	cp := deletingControlPlane(0)
+	keystone := ownedKeystoneFor(cp)
+	keystone.OwnerReferences = nil
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, keystone).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "an unowned Keystone must not hold the release")
+
+	gotKeystone := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(keystone), gotKeystone)).To(Succeed())
+	g.Expect(gotKeystone.DeletionTimestamp.IsZero()).To(BeTrue(),
+		"a Keystone this ControlPlane does not own must be left standing")
+	err = c.Get(context.Background(), key, &c5c3v1alpha1.ControlPlane{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+}
+
+// TestDeleteColocatedKeystoneBeforeRelease_SkipsADedicatedNamespace asserts a
+// Keystone placed in a namespace of its own is left to teardownDedicatedNamespaces.
+// A Keystone read in the ControlPlane's namespace fails here, so a true, nil
+// result shows the method did not look there either.
+func TestDeleteColocatedKeystoneBeforeRelease_SkipsADedicatedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := namespaceTeardownScheme(t)
+	cp := deletingNamespacedControlPlane(time.Minute)
+	keystone := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: keystoneName(cp), Namespace: "identity",
+			Finalizers: []string{"keystone.openstack.c5c3.io/openbao-finalizer"},
+		},
+	}
+	stampControlPlaneChildLabels(keystone, cp)
+	c := keystoneGetErrorClient(s, cp.Namespace, errors.New("the ControlPlane's namespace must not be read"),
+		cp, keystone)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	done, err := r.deleteColocatedKeystoneBeforeRelease(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+
+	gotKeystone := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(keystone), gotKeystone)).To(Succeed())
+	g.Expect(gotKeystone.DeletionTimestamp.IsZero()).To(BeTrue())
+}
+
+// TestReconcileDelete_HoldsWhileTheKeystoneIsTerminatingInsideTheDeadline asserts
+// that a Keystone already Terminating behind its openbao-finalizer keeps holding
+// the ControlPlane on every pass inside orcTeardownDeadline: ESO is still purging
+// its backup paths through the tenant SecretStore the release would hand to GC.
+func TestReconcileDelete_HoldsWhileTheKeystoneIsTerminatingInsideTheDeadline(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := namespaceTeardownScheme(t)
+	cp := deletingControlPlane(time.Minute)
+	keystone := ownedKeystoneFor(cp)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, keystone).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+	// Terminating behind the openbao-finalizer while ESO purges.
+	g.Expect(c.Delete(context.Background(), keystone)).To(Succeed())
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: namespaceRequeueAfter}),
+		"inside the deadline the release must keep waiting for the Keystone")
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeTrue(),
+		"the ControlPlane finalizer must hold the tenant store while the Keystone purges")
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKeystoneReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal("FinalizingKeystone"))
+	events := drainEvents(rec)
+	g.Expect(events).NotTo(ContainElement(ContainSubstring("KeystoneTeardownStalled")))
+	g.Expect(events).NotTo(ContainElement(ContainSubstring("ORCTeardownComplete")))
+}
+
+// TestReconcileDelete_AbandonsTheKeystoneWaitPastTheDeadline asserts the bound: a
+// Keystone still Terminating orcTeardownDeadline after the deletion started no
+// longer holds the ControlPlane, and a Warning names it and the OpenBao paths its
+// backup PushSecrets may leave behind.
+func TestReconcileDelete_AbandonsTheKeystoneWaitPastTheDeadline(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := namespaceTeardownScheme(t)
+	cp := deletingControlPlane(orcTeardownDeadline + time.Minute)
+	keystone := ownedKeystoneFor(cp)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, keystone).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+	// Terminating behind the openbao-finalizer, as a wedged keystone-operator
+	// leaves it.
+	g.Expect(c.Delete(context.Background(), keystone)).To(Succeed())
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "past the deadline the release must proceed")
+	err = c.Get(context.Background(), key, &c5c3v1alpha1.ControlPlane{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	events := drainEvents(rec)
+	g.Expect(events).To(ContainElement(SatisfyAll(
+		ContainSubstring("Warning"),
+		ContainSubstring("KeystoneTeardownStalled"),
+		ContainSubstring(keystoneName(cp)),
+		ContainSubstring(orcTeardownDeadline.String()),
+		ContainSubstring("kv-v2 paths openstack/keystone/"+cp.Namespace+"/"+keystoneName(cp)+"/fernet-keys and "+
+			"openstack/keystone/"+cp.Namespace+"/"+keystoneName(cp)+"/credential-keys"),
+	)))
+	g.Expect(events).To(ContainElement(ContainSubstring("ORCTeardownComplete")))
+}
+
+// TestReconcileDelete_KeystoneAndBusWaitsOverlap asserts both release waits start
+// in the same pass, so the Keystone wait cannot spend the bus's
+// messagingTeardownDeadline, and that each names itself on the CR.
+func TestReconcileDelete_KeystoneAndBusWaitsOverlap(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := namespaceTeardownScheme(t)
+	cp := deletingManagedMessagingControlPlane(0)
+	bus := managedBusFor(cp)
+	keystone := ownedKeystoneFor(cp)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, bus, keystone).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: namespaceRequeueAfter}))
+
+	gotKeystone := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(keystone), gotKeystone)).To(Succeed())
+	g.Expect(gotKeystone.DeletionTimestamp.IsZero()).To(BeFalse(), "the Keystone must be deleted in this pass")
+	gotBus := &unstructured.Unstructured{}
+	gotBus.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(bus), gotBus)).To(Succeed())
+	g.Expect(gotBus.GetDeletionTimestamp().IsZero()).To(BeFalse(), "the broker must be deleted in the same pass")
+
+	keystoneCond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKeystoneReady)
+	g.Expect(keystoneCond).NotTo(BeNil())
+	g.Expect(keystoneCond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(keystoneCond.Reason).To(Equal("FinalizingKeystone"))
+	infraCond := conditions.GetCondition(cp.Status.Conditions, conditionTypeInfrastructureReady)
+	g.Expect(infraCond).NotTo(BeNil())
+	g.Expect(infraCond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(infraCond.Reason).To(Equal("FinalizingMessaging"))
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeTrue())
 }
 
 // TestProjectedRegistrationKeys_IncludesCinder pins the teardown sweep on the
