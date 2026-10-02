@@ -627,6 +627,7 @@ see the [reconciler reference](./neutron-reconciler.md).
 | --- | --- | --- | --- |
 | `SecretsReady` | True | `SecretsAvailable` | The selected store is ready and both credential Secrets carry their keys |
 | `SecretsReady` | False | `SecretStoreNotReady` | The External Secrets store this Neutron selected is not ready. Checked ahead of the individual Secrets, so an upstream outage surfaces even while per-ExternalSecret caches still report their last successful sync |
+| `SecretsReady` | False | `ClusterSecretStoreUnsupported` | The operator runs with `--namespace` and this Neutron's effective store is a `ClusterSecretStore`, which an omitted `spec.secretStoreRef` resolves to. A namespaced Role cannot grant the cluster-scoped kind, so the operator does not read the store; select a `SecretStore` in the Neutron's namespace |
 | `SecretsReady` | False | `WaitingForDBCredentials` | The database credentials Secret is missing or carries no `username`/`password`. Also set by the step that derives the connection Secret |
 | `SecretsReady` | False | `WaitingForServiceUserCredentials` | The service-user Secret is missing or carries no password under the configured key |
 | `SecretsReady` | False | `WaitingForMessagingCredentials` | The managed `RabbitmqCluster` has published no default-user Secret yet, or the brownfield Secret carries no transport URL |

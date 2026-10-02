@@ -494,7 +494,12 @@ resources and their dependencies:
 The ClusterRoleBinding binds the ClusterRole to the operator's ServiceAccount in the
 release namespace only. With `rbac.namespaceScoped=true` the identical rule set is
 rendered as a namespaced Role/RoleBinding instead (both library templates
-include the generated `keystone-operator.rbacRules` partial).
+include the generated `keystone-operator.rbacRules` partial). The rule set's
+cluster-scoped entries, `clustersecretstores` and `priorityclasses`, grant nothing
+in a Role. The operator started with `--namespace` neither watches nor reads
+them: it registers no `ClusterSecretStore` watch and refuses a Keystone whose
+effective store is cluster-scoped, and only the webhook, which this mode
+disables, reads PriorityClasses.
 
 ### Webhook Configuration
 

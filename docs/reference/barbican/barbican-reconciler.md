@@ -88,7 +88,7 @@ sub-conditions are `True`, and `False` (`NotAllReady`) otherwise.
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
-| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
+| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
 | `SecretStoresReady` | `AllStoresProjected` | `NoDefaultSecretStore`, `MultipleOpenBaoStores`, `WaitingForSecretStores` |
 | `DBCleanReady` | `DBCleanScheduled`, `DBCleanSuspended` | `DBCleanJobFailed`, `DBCleanBlocked`, `WaitingForSecretStores` |
 | `DatabaseReady` | `DatabaseSynced` | `WaitingForSecretStores`, `WaitingForDatabase`, `DBSyncInProgress`, `DBSyncFailed`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `ImageReleaseMismatch`, plus the shared cluster-gate reason the provisioning flow sets while the referenced MariaDB is unavailable |
@@ -310,7 +310,8 @@ Beyond the owned set it watches:
   ESO flips the store's Ready condition. A Barbican that omits
   `spec.secretStoreRef` resolves to the shared cluster store, so the default
   fan-out is preserved while a Barbican pinned to a namespaced store is woken
-  only by its own.
+  only by its own. The `ClusterSecretStore` leg is not registered when the
+  operator runs with `--namespace`.
 
 The store controller watches two objects of its own, both without a generation
 predicate for the same reason: the parent `Barbican`, whose status flips carry

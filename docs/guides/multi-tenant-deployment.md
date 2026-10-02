@@ -89,6 +89,14 @@ needs cluster scope, which namespace-scoped mode cannot provide:
   through cluster-scoped `ValidatingWebhookConfiguration` /
   `MutatingWebhookConfiguration` objects, which only a `ClusterRole` can manage
   (see [Webhook caveat](#webhook-caveat)).
+- **`ClusterSecretStore` reads** — a CR reads its secrets through a
+  `ClusterSecretStore`, such as the shared `openbao-cluster-store`. A
+  namespace-scoped operator refuses such a CR (see
+  [Secret stores in namespace-scoped mode](#secret-stores-in-namespace-scoped-mode)).
+- **The c5c3-operator, ovn-operator and neutron-operator charts** — these
+  charts refuse `rbac.namespaceScoped=true` at render time. The c5c3 and ovn
+  operators watch cluster-scoped kinds, and the neutron operator reads across
+  namespaces.
 
 ---
 
@@ -201,6 +209,40 @@ These rules cover structural constraints such as `database` mutual exclusivity,
 immutability transition rules (`database.name`, the database mode,
 `bootstrap.adminUser`, `bootstrap.region`) — those are enforced by the API
 server itself, so they hold even with the webhook disabled.
+
+---
+
+## Secret stores in namespace-scoped mode
+
+A namespace-scoped operator cannot read a `ClusterSecretStore`. The kind is
+cluster-scoped, so the `Role` the chart renders grants nothing for it, and an
+operator started with `--namespace` registers no watch on it. Every CR such an
+operator reconciles sets `spec.secretStoreRef` to a namespaced `SecretStore`
+in the CR's own namespace:
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: team-alpha
+spec:
+  # …
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+```
+
+A CR that omits the field resolves to the shared `ClusterSecretStore`
+`openbao-cluster-store`. The operator refuses it, and any CR that names a
+`ClusterSecretStore`, without reading the store. The CR reports
+`SecretsReady=False` with reason `ClusterSecretStoreUnsupported` and a message
+that names the store and the namespace, and the operator checks it again every
+15 seconds. Setting `spec.secretStoreRef` to a `SecretStore` clears the
+condition.
+
+`setup-eso-tenant.sh` creates `openbao-tenant-store` in a namespace; the command
+is under [Migrating an existing deployment](#migrating-an-existing-deployment).
 
 ---
 
