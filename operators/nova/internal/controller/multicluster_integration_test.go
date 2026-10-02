@@ -618,14 +618,3 @@ func multiclusterExpectAbsent(
 	err := c.Get(ctx, key, obj)
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "%s %s should not exist, got %v", what, key, err)
 }
-
-// mountedPoolConfigMapName returns the ConfigMap a NovaCompute pod spec mounts
-// its pool config from.
-func mountedPoolConfigMapName(spec *corev1.PodSpec) string {
-	for _, v := range spec.Volumes {
-		if v.Name == poolConfigVolume && v.ConfigMap != nil {
-			return v.ConfigMap.Name
-		}
-	}
-	return ""
-}
