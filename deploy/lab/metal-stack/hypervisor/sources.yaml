@@ -7,19 +7,18 @@
 # deploy/flux-system/sources/openbao-operator.yaml pins its chart: ref.digest
 # takes precedence over ref.tag, so a re-pushed tag changes nothing that runs.
 #
-# hvo is the chart of the pinned hvo commit, the ARG HVO_COMMIT line of
-# images/openstack-hypervisor-operator/Dockerfile (hack/ci-resolve-hvo-commit.sh
-# prints it). Upstream publishes a chart for every main commit under
+# Each is the chart of a pinned upstream main commit: hvo's is the ARG
+# HVO_COMMIT line of images/openstack-hypervisor-operator/Dockerfile, kna's
+# the ARG KNA_COMMIT line of images/kvm-node-agent/Dockerfile
+# (hack/ci-resolve-hvo-commit.sh and hack/ci-resolve-kna-commit.sh print
+# them). Upstream publishes a chart for every main commit under
 # <version>_sha-<first seven characters>, with appVersion sha-<commit>, and
 # the chart renders the image as <repository>:<appVersion>: hvo-release.yaml
-# overrides the repository with the image #1163 builds from that commit,
-# which carries the same tag. The ref has no Renovate manager. It moves with
-# the pin, and tests/unit/deploy/metal_stack_hypervisor_test.sh fails while
-# its short SHA differs from the pinned commit.
-#
-# kna stays at the tag v0.2.0, chart 0.2.0. A customManager in renovate.json
-# bumps its tag and digest together; tests/unit/renovate/
-# kvm_node_agent_chart_custommanager_test.sh guards the pairing.
+# and kna-release.yaml override the repository with the images #1163 and
+# #1178 build from those commits, which carry the same tag. Neither ref has
+# a Renovate manager. Each moves with its pin, and
+# tests/unit/deploy/metal_stack_hypervisor_test.sh fails while its short SHA
+# differs from the pinned commit.
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
@@ -50,5 +49,5 @@ spec:
     mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
     operation: copy
   ref:
-    tag: "0.2.0"
-    digest: "sha256:19f289af2b66112feb1cda20f43ddd80f055d66af7e8409aa7c1bea37abd2565"
+    tag: "0.2.0_sha-1e4e4b8"
+    digest: "sha256:e9f33187ebb037a1a615e271b4d9bef04bd439182fa5461021ed414d4c70f10f"

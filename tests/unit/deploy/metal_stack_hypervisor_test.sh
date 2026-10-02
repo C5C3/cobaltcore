@@ -27,17 +27,20 @@
 #      within 63 characters, and its post-renderer aliases the four gateway
 #      names to the alias Service's ClusterIP and trusts the gateway
 #      certificates.
-#   9. The kna release sets the libvirt URI, the node label field path, uid 0
-#      with DAC_OVERRIDE alone, and NAMESPACE.
+#   9. The kna release runs the image ghcr.io/c5c3/kvm-node-agent without a
+#      tag, sets the libvirt URI, the node label field path, DAC_OVERRIDE
+#      alone without a runAsUser or runAsGroup, and NAMESPACE.
 #  10. Both chart sources are pinned by digest.
-#  11. The hvo chart tag names the commit hack/ci-resolve-hvo-commit.sh prints.
+#  11. Each chart tag names the commit its image's resolver prints: the hvo
+#      tag hack/ci-resolve-hvo-commit.sh's, the kna tag
+#      hack/ci-resolve-kna-commit.sh's.
 #  12. Both scripts parse, and pass shellcheck when it is on PATH.
 #  13. libvirtd.sh, run against stubs, removes the host units and stops
 #      libvirtd however it ends, stops a libvirtd an earlier container left
 #      in the scope before it starts its own, and leaves no failed scope
 #      behind when a stop runs out.
-#  14. The hvo chart's tag and digest resolve to the same upstream artifact
-#      (SKIP when ghcr.io cannot be reached).
+#  14. Each chart's tag and digest resolve to the same upstream artifact
+#      (one SKIP per chart when ghcr.io cannot be reached).
 #
 # Checks 2 to 5, 7 to 10, 12 and 13 are counted as SKIP when kustomize or yq
 # is not on PATH. A failing kustomize build counts them as FAIL and prints the
@@ -64,6 +67,7 @@ FIXTURES_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor-fixtures"
 CONFIGMAP_FILE="$HYPERVISOR_DIR/libvirt-configmap.yaml"
 SOURCES_FILE="$HYPERVISOR_DIR/sources.yaml"
 RESOLVE_HVO_COMMIT="$PROJECT_ROOT/hack/ci-resolve-hvo-commit.sh"
+RESOLVE_KNA_COMMIT="$PROJECT_ROOT/hack/ci-resolve-kna-commit.sh"
 
 HYPERVISOR_FILES="namespace.yaml
 libvirt-ca.yaml
@@ -116,12 +120,13 @@ conf_lines() {
     yq -N -r "select(.kind == \"ConfigMap\" and .metadata.name == \"libvirt-lab\") | .data[\"$1\"]" -
 }
 
-# hvo_ref <field>
-# ref.<field> (tag or digest) of the hvo OCIRepository in sources.yaml: the
-# first such line after the hvo url, read without yq.
-hvo_ref() {
-  awk -v field="$1" '
-    /url: oci:\/\/ghcr\.io\/cobaltcore-dev\/charts\/openstack-hypervisor-operator$/ { found = 1; next }
+# chart_ref <chart> <field>
+# ref.<field> (tag or digest) of the OCIRepository of the upstream chart
+# <chart> in sources.yaml: the first such line after its url, read without
+# yq.
+chart_ref() {
+  awk -v url="url: oci://ghcr.io/cobaltcore-dev/charts/$1" -v field="$2" '
+    substr($0, length($0) - length(url) + 1) == url { found = 1; next }
     found && $0 ~ "^[[:space:]]*" field ":" {
       sub("^[[:space:]]*" field ":[[:space:]]*", ""); gsub(/"/, ""); print; exit
     }
@@ -496,7 +501,7 @@ test_hvo_release() {
 test_kna_release() {
   echo "Test: the kvm-node-agent release"
 
-  render "$HYPERVISOR_DIR" 8 || return
+  render "$HYPERVISOR_DIR" 10 || return
 
   local env='.spec.values.controllerManager.manager.env'
   assert_eq "the release lives in hypervisor-system" "hypervisor-system" \
@@ -510,9 +515,13 @@ test_kna_release() {
     "$(val HelmRelease kvm-node-agent "$env.libvirtDefaultUri")"
   assert_eq "NODE_LABEL reads the node name" "spec.nodeName" \
     "$(val HelmRelease kvm-node-agent "$env.nodeLabelFieldPath")"
-  assert_eq "the agent runs as uid 0, which the host's dbus-daemon and systemd accept" "0 0" \
+  assert_eq "the release runs the image this repository builds" "ghcr.io/c5c3/kvm-node-agent" \
+    "$(val HelmRelease kvm-node-agent '.spec.values.controllerManager.manager.image.repository')"
+  assert_eq "no image tag: the chart's appVersion sha-<pin> names it" "false" \
+    "$(val HelmRelease kvm-node-agent '.spec.values.controllerManager.manager.image | has("tag")')"
+  assert_eq "the image's own 0:0 decides the user, so the release sets neither id" "null null" \
     "$(val HelmRelease kvm-node-agent '.spec.values.controllerManager.manager.containerSecurityContext |
-      (.runAsUser | tostring) + " " + (.runAsGroup | tostring)')"
+      ((.runAsUser // "null") | tostring) + " " + ((.runAsGroup // "null") | tostring)')"
   assert_eq "it keeps DAC_OVERRIDE alone, for the PKI directories its init container hands to 42438" \
     "drop=ALL add=DAC_OVERRIDE escalation=false" \
     "$(val HelmRelease kvm-node-agent '.spec.values.controllerManager.manager.containerSecurityContext |
@@ -542,24 +551,33 @@ test_sources() {
   done
 }
 
-# --- Test 11: the hvo chart follows the hvo pin ---
-test_hvo_lockstep() {
-  echo "Test: the hvo chart ref names the pinned hvo commit"
+# --- Test 11: each chart follows its image's pin ---
 
-  local sha tag
-  if ! sha="$(bash "$RESOLVE_HVO_COMMIT")"; then
-    echo "  FAIL: hack/ci-resolve-hvo-commit.sh printed no pinned commit"
+# chart_lockstep <short name> <chart> <resolver>
+# Compares the chart's ref.tag with the commit <resolver> prints.
+chart_lockstep() {
+  local short="$1" chart="$2" resolver="$3" sha tag
+  sha="$(bash "$resolver")" || sha=""
+  if [ -z "$sha" ]; then
+    echo "  FAIL: hack/${resolver##*/} printed no pinned commit"
     FAIL=$((FAIL + 1))
     return
   fi
-  tag="$(hvo_ref tag)"
+  tag="$(chart_ref "$chart" tag)"
   if [[ "$tag" == *"_sha-${sha:0:7}" ]]; then
-    echo "  PASS: hvo chart ref $tag matches the pinned commit $sha"
+    echo "  PASS: $short chart ref $tag matches the pinned commit $sha"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: hvo chart ref ${tag:-<none>} does not match the pinned commit $sha"
+    echo "  FAIL: $short chart ref ${tag:-<none>} does not match the pinned commit $sha"
     FAIL=$((FAIL + 1))
   fi
+}
+
+test_chart_lockstep() {
+  echo "Test: the hvo and kna chart refs name their pinned commits"
+
+  chart_lockstep hvo openstack-hypervisor-operator "$RESOLVE_HVO_COMMIT"
+  chart_lockstep kna kvm-node-agent "$RESOLVE_KNA_COMMIT"
 }
 
 # --- Test 12: the scripts parse and pass shellcheck ---
@@ -889,24 +907,26 @@ test_libvirtd_exits() {
   assert_not_contains "and starts nothing" "$(cat "$rig/calls.log")" "systemd-run"
 }
 
-# --- Test 14: the hvo chart's tag and digest name the same upstream artifact ---
+# --- Test 14: each chart's tag and digest name the same upstream artifact ---
 #
 # ref.digest takes precedence over ref.tag, so the digest decides which chart
 # Flux runs, and Test 11 compares only the tag with the pin. Skips rather than
 # fails when the registry cannot be reached: an offline workstation or a
 # rate-limited runner must not turn the suite red.
-test_hvo_tag_and_digest_agree_upstream() {
-  echo "Test: the hvo ref.tag and ref.digest resolve to the same upstream artifact"
+
+# chart_tag_and_digest_agree <short name> <chart>
+chart_tag_and_digest_agree() {
+  local short="$1" chart="$2"
 
   if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: curl or jq not installed (1 check skipped)"
+    echo "  SKIP: curl or jq not installed, cannot resolve the $short chart (1 check skipped)"
     SKIP=$((SKIP + 1))
     return
   fi
 
-  local tag digest registry=ghcr.io repository=cobaltcore-dev/charts/openstack-hypervisor-operator
-  tag="$(hvo_ref tag)"
-  digest="$(hvo_ref digest)"
+  local tag digest registry=ghcr.io repository="cobaltcore-dev/charts/$chart"
+  tag="$(chart_ref "$chart" tag)"
+  digest="$(chart_ref "$chart" digest)"
 
   # GHCR serves public packages to an anonymous pull token.
   local token
@@ -914,7 +934,7 @@ test_hvo_tag_and_digest_agree_upstream() {
     "https://${registry}/token?service=${registry}&scope=repository:${repository}:pull" \
     2>/dev/null | jq -r '.token // empty')"
   if [ -z "$token" ]; then
-    echo "  SKIP: ${registry} unreachable, cannot resolve ${tag} (1 check skipped)"
+    echo "  SKIP: ${registry} unreachable, cannot resolve the $short chart ${tag} (1 check skipped)"
     SKIP=$((SKIP + 1))
     return
   fi
@@ -926,12 +946,19 @@ test_hvo_tag_and_digest_agree_upstream() {
     "https://${registry}/v2/${repository}/manifests/${tag}" 2>/dev/null |
     tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" { print $2 }' | head -1)"
   if [ -z "$resolved" ]; then
-    echo "  SKIP: ${registry} did not resolve tag ${tag} (1 check skipped)"
+    echo "  SKIP: ${registry} did not resolve the $short chart tag ${tag} (1 check skipped)"
     SKIP=$((SKIP + 1))
     return
   fi
 
-  assert_eq "ref.tag ${tag} resolves to the pinned ref.digest" "$digest" "$resolved"
+  assert_eq "the $short ref.tag ${tag} resolves to the pinned ref.digest" "$digest" "$resolved"
+}
+
+test_chart_tag_and_digest_agree_upstream() {
+  echo "Test: each chart's ref.tag and ref.digest resolve to the same upstream artifact"
+
+  chart_tag_and_digest_agree hvo openstack-hypervisor-operator
+  chart_tag_and_digest_agree kna kvm-node-agent
 }
 
 # --- Run ---
@@ -945,10 +972,10 @@ test_ca_and_compute
 test_hvo_release
 test_kna_release
 test_sources
-test_hvo_lockstep
+test_chart_lockstep
 test_scripts_lint
 test_libvirtd_exits
-test_hvo_tag_and_digest_agree_upstream
+test_chart_tag_and_digest_agree_upstream
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

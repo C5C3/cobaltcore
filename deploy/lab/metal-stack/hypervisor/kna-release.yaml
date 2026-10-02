@@ -2,24 +2,31 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# kvm-node-agent (kna) v0.2.0 from its upstream chart (sources.yaml), on every
-# node labelled nova.openstack.cloud.sap/virt-driver. It reports libvirt's
-# state into the node's Hypervisor and installs the Secret
-# tls-libvirt-<node> under the host's /etc/pki, where the libvirt DaemonSet
-# waits for it.
+# kvm-node-agent (kna) from the upstream chart of the pinned kna commit
+# (sources.yaml), on every node labelled nova.openstack.cloud.sap/virt-driver,
+# running the image #1178 builds from that commit with the key mode patch:
+# the chart renders <repository>:<appVersion>, and only the repository is
+# overridden. It reports libvirt's state into the node's Hypervisor and
+# installs the Secret tls-libvirt-<node> under the host's /etc/pki, where
+# the libvirt DaemonSet waits for it.
 #
 # The values that differ from the chart's defaults, and why:
+#   - image.repository is ghcr.io/c5c3/kvm-node-agent, the image of #1178.
 #   - libvirtDefaultUri is qemu:///system: the chart's default ch:///system
 #     is Cloud Hypervisor.
 #   - nodeLabelFieldPath is spec.nodeName: the chart's DaemonSet renders it
 #     into the fieldRef of NODE_LABEL and defines no value for it.
-#   - The manager runs as uid 0. The image's uid 42438 has no passwd entry
-#     on the host, and the host's dbus-daemon closes the connection of a uid
-#     it cannot resolve ("recvmsg: connection reset by peer"), so the agent
-#     exits at start. Starting a unit over the system bus needs root as
-#     well, or a polkit rule. The chart's init container hands the PKI
-#     directories to 42438, so root keeps DAC_OVERRIDE to write there; every
-#     other capability stays dropped.
+#   - The manager keeps DAC_OVERRIDE and drops every other capability. The
+#     image runs as uid 0 (#1167): upstream's uid 42438 has no passwd entry
+#     on the host, the host's dbus-daemon closes the connection of a uid it
+#     cannot resolve ("recvmsg: connection reset by peer"), and starting a
+#     unit over the system bus needs root as well, or a polkit rule. Root
+#     still needs DAC_OVERRIDE, because the chart's init container hands the
+#     PKI directories to 42438.
+#
+# PKI_KEY_GROUP stays unset. QEMU runs as root here (libvirt-configmap.yaml),
+# so no hypervisor process needs a group to read its key, and the agent
+# writes all three private keys with mode 0600.
 #
 # kna reads its namespace from the environment variable NAMESPACE, which the
 # chart does not set, and falls back to monsoon3 without it. The
@@ -47,6 +54,8 @@ spec:
   values:
     controllerManager:
       manager:
+        image:
+          repository: ghcr.io/c5c3/kvm-node-agent
         env:
           libvirtDefaultUri: qemu:///system
           nodeLabelFieldPath: spec.nodeName
@@ -55,8 +64,6 @@ spec:
           capabilities:
             drop: [ALL]
             add: [DAC_OVERRIDE]
-          runAsUser: 0
-          runAsGroup: 0
   postRenderers:
     - kustomize:
         patches:
