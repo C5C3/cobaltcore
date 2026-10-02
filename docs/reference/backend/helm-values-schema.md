@@ -429,9 +429,10 @@ networkPolicy:
     ports: [6443]
 ```
 
-**c5c3-operator — single-namespace, hardened.** The ControlPlane operator has no
-`federation` or `networkPolicy` key; namespace-scoped RBAC is the main hardening
-knob (it requires `webhook.enabled: false`):
+**c5c3-operator — resources and monitoring.** The ControlPlane operator has no
+`federation` or `networkPolicy` key, and its chart refuses
+`rbac.namespaceScoped: true`: the ControlPlane controller watches cluster-scoped
+kinds and creates ClusterRoleBindings, which a namespaced Role cannot grant.
 
 ```yaml
 # c5c3-overrides.yaml
@@ -442,18 +443,14 @@ resources:
   limits:
     cpu: "1"
     memory: 256Mi
-rbac:
-  namespaceScoped: true    # bounds the operator to its release namespace
-webhook:
-  enabled: false           # required by namespaceScoped: true
 monitoring:
   serviceMonitor:
     enabled: true
 ```
 
-See the [Multi-Tenant Deployment guide](../../guides/multi-tenant-deployment.md#security-trade-off-the-cluster-wide-rbac-default)
-for the privilege-escalation path `rbac.namespaceScoped: true` closes and the
-[capabilities that still need cluster scope](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required).
+See the [Multi-Tenant Deployment guide](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required)
+for the charts that refuse the mode and the other capabilities that still need
+cluster scope.
 
 **Any operator chart: dedicated nodes and a priority class.** Run the operator
 pods on nodes labelled and tainted for the platform, and rank them above tenant

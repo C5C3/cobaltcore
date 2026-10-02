@@ -659,7 +659,7 @@ a new operator chart in that layout is validated without editing the job.
 | 2 — webhook disabled | `webhook.enabled=false` | Validates conditional exclusion of webhook resources |
 | 3 — external service account | `serviceAccount.create=false`, `serviceAccount.name=existing-sa` | Validates ServiceAccount conditional logic |
 | 4 — custom resources | `resources.limits.cpu=100m`, `resources.limits.memory=64Mi` | Validates resource override wiring |
-| 5 — namespace-scoped RBAC | `rbac.namespaceScoped=true`, `webhook.enabled=false` | Validates Role/RoleBinding rendering instead of ClusterRole/ClusterRoleBinding. A chart that refuses the mode by design (ovn-operator, neutron-operator) fails the render with the documented `is not supported by <chart>` message, which the job accepts; any other failure fails the job |
+| 5 — namespace-scoped RBAC | `rbac.namespaceScoped=true`, `webhook.enabled=false` | Validates Role/RoleBinding rendering instead of ClusterRole/ClusterRoleBinding. A chart that refuses the mode by design (ovn-operator, neutron-operator, c5c3-operator) fails the render with the documented `is not supported by <chart>` message, which the job accepts; any other failure fails the job |
 | 6 — node placement | `priorityClassName=cobaltcore-platform`, `nodeSelector.role=platform`, one `tolerations` entry | Validates that the generated schema admits the placement keys and that they render |
 
 **Unit test suites (step 9):** the shared templates are tested once, in the

@@ -4040,11 +4040,11 @@ agree on its lifecycle: they share that namespace's backing services and tenant
 store, so one must not have the teardown delete what the other declared
 untouchable.
 
-> **Chart mode:** the Helm chart's namespace-scoped RBAC mode
-> (`rbac.namespaceScoped: true`) does **not** support dedicated service
-> namespaces — the operator needs cluster-scoped `namespaces` (`create`,
-> `delete`) and cross-namespace child access, which only the default ClusterRole
-> mode grants.
+> **Chart mode:** the c5c3-operator chart refuses the namespace-scoped RBAC mode
+> (`rbac.namespaceScoped: true`) as a whole, so dedicated service namespaces
+> always run under the default ClusterRole mode. The operator needs
+> cluster-scoped `namespaces` (`create`, `delete`) and cross-namespace child
+> access, which only that mode grants.
 
 ---
 

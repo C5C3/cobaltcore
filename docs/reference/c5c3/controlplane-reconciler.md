@@ -57,7 +57,7 @@ bootstrap.Run(bootstrap.ManagerConfig{
     Scheme:           scheme,
     LeaderElectionID: leaderElectionID,
     TargetClusters:   true,
-    SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool) error {
+    SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, _ string) error {
         mgr := mcMgr.GetLocalManager()
         if err := (&controller.ControlPlaneReconciler{
             Client:   mgr.GetClient(),
@@ -339,19 +339,16 @@ details that privilege-escalation path. Two specifics apply to this operator:
   hand out no permission it does not already hold. The cluster-wide Secret read
   therefore remains the dominant risk.
 
-A single-namespace deployment — one where no service is placed in a namespace of
-its own — co-locates every projected resource in the ControlPlane's own
-namespace, so it can run the operator namespace-scoped
-(`rbac.namespaceScoped: true`), bounding both the RBAC grant and the informer
-cache to that namespace. Keep the default only when
-[cluster-wide RBAC is still required](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required).
-
-[Dedicated service namespaces](./controlplane-crd.md#service-namespaces) are
-**incompatible with namespace-scoped mode**: placing a service in a namespace of
-its own needs cluster-scoped `namespaces` verbs (`create`, `delete`) and
-cross-namespace access to the children, which only the default ClusterRole mode
-grants. The markers therefore add `core/namespaces` with
-`get;list;watch;create;delete`.
+The c5c3-operator chart refuses `rbac.namespaceScoped: true`: the render fails
+with `rbac.namespaceScoped=true is not supported by c5c3-operator`. The
+ControlPlane controller watches the cluster-scoped `Namespace`, `SizingProfile`
+and `ClusterSecretStore` kinds and creates `ClusterRoleBinding` objects. A
+namespaced Role grants none of them, so the manager would fail its cache sync at
+startup. Placing a service in a
+[dedicated namespace](./controlplane-crd.md#service-namespaces) needs the
+cluster-scoped `namespaces` verbs as well, which is why the markers add
+`core/namespaces` with `get;list;watch;create;delete`. See
+[When cluster-wide RBAC is still required](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required).
 
 ---
 
@@ -2187,8 +2184,6 @@ That resolution fails closed. An instance created without the egress rules is
 recoverable only by deleting it together with its PVC, and self-init is one-shot,
 so a pass that cannot resolve the addresses or the Service writes no
 `OpenBaoCluster` at all and reports `BarbicanReady=False/BarbicanOpenBaoError`.
-Under `rbac.namespaceScoped`, where the operator's Role cannot read across into
-`default`, every dedicated store takes that path.
 
 The store, and with it the child, waits until the instance is `Available`
 (`BarbicanReady=False/WaitingForOpenBaoInstance`): a store attached to an
