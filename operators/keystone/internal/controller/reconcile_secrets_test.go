@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
@@ -1807,4 +1808,30 @@ func TestFinalizeOpenBaoSecrets_RBACShape(t *testing.T) {
 	g.Expect(verbs["patch"]).To(BeFalse(), "handler must NOT Patch PushSecrets")
 	g.Expect(verbs["list"]).To(BeFalse(), "handler must NOT List PushSecrets")
 	g.Expect(verbs["watch"]).To(BeFalse(), "handler must NOT Watch PushSecrets")
+}
+
+// TestReconcileSecrets_NamespaceScopedRefusesClusterStore pins the refusal a
+// namespace-scoped operator gives a Keystone that omits spec.secretStoreRef: its
+// effective store is the cluster-scoped default, which a Role cannot grant, so
+// the gate sets SecretsReady=False/ClusterSecretStoreUnsupported and requeues
+// without reading the ClusterSecretStore at all.
+func TestReconcileSecrets_NamespaceScopedRefusesClusterStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := secretsTestKeystone()
+	ks.Spec.SecretStoreRef = nil
+	ks.Generation = 3
+	c := fake.NewClientBuilder().WithScheme(secretsTestScheme()).WithObjects(ks).
+		WithInterceptorFuncs(testutil.ForbidClusterSecretStoreGet(t)).
+		Build()
+	r := &KeystoneReconciler{Client: c, Scheme: secretsTestScheme(), Recorder: record.NewFakeRecorder(10), NamespaceScoped: true}
+
+	res, err := r.reconcileSecrets(context.Background(), r.Client, ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ClusterSecretStoreUnsupported"))
+	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }

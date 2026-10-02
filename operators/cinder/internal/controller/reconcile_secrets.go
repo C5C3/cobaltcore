@@ -55,8 +55,10 @@ func (r *CinderReconciler) reconcileSecrets(ctx context.Context, children client
 	// Cinder selected via spec.secretStoreRef (default: the shared cluster-scoped
 	// openbao-cluster-store); a namespaced store is resolved in the Cinder's own
 	// namespace.
+	// Under --namespace a cluster-scoped store is refused with
+	// ClusterSecretStoreUnsupported and not read.
 	storeReady, err := secrets.GateStoreReady(ctx, children,
-		secrets.EffectiveStoreRef(cinder.Spec.SecretStoreRef), cinder.Namespace,
+		secrets.EffectiveStoreRef(cinder.Spec.SecretStoreRef), cinder.Namespace, r.NamespaceScoped,
 		&cinder.Status.Conditions, cinder.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, "", err

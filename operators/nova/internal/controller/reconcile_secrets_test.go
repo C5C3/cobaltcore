@@ -18,6 +18,7 @@ import (
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
@@ -285,4 +286,31 @@ func TestEffectiveKeys(t *testing.T) {
 	g.Expect(effectiveServiceUserKey(explicit)).To(Equal("nova-password"))
 	g.Expect(effectiveSharedSecretKey(explicit)).To(Equal("metadata-proxy"))
 	g.Expect(effectiveMessagingCAKey(explicit)).To(Equal("bundle.pem"))
+}
+
+// TestReconcileSecrets_NamespaceScopedRefusesClusterStore pins the refusal a
+// namespace-scoped operator gives a Nova that omits spec.secretStoreRef: its
+// effective store is the cluster-scoped default, which a Role cannot grant, so
+// the gate sets SecretsReady=False/ClusterSecretStoreUnsupported and requeues
+// without reading the ClusterSecretStore at all.
+func TestReconcileSecrets_NamespaceScopedRefusesClusterStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+	nova := validNova()
+	nova.Spec.SecretStoreRef = nil
+	nova.Generation = 3
+	c := novaFakeClientBuilder(nova).
+		WithInterceptorFuncs(testutil.ForbidClusterSecretStoreGet(t)).
+		Build()
+	r := &NovaReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10), NamespaceScoped: true}
+
+	res, values, err := r.reconcileSecrets(context.Background(), r.Client, nova)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+	g.Expect(values).To(Equal(secretValues{}))
+	cond := novaCondition(nova, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ClusterSecretStoreUnsupported"))
+	g.Expect(cond.ObservedGeneration).To(Equal(nova.Generation))
 }

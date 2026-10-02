@@ -49,8 +49,10 @@ func (r *GlanceReconciler) reconcileSecrets(ctx context.Context, children client
 	// Glance selected via spec.secretStoreRef (default: the shared cluster-scoped
 	// openbao-cluster-store); a namespaced store is resolved in the Glance's own
 	// namespace.
+	// Under --namespace a cluster-scoped store is refused with
+	// ClusterSecretStoreUnsupported and not read.
 	storeReady, err := secrets.GateStoreReady(ctx, children,
-		secrets.EffectiveStoreRef(glance.Spec.SecretStoreRef), glance.Namespace,
+		secrets.EffectiveStoreRef(glance.Spec.SecretStoreRef), glance.Namespace, r.NamespaceScoped,
 		&glance.Status.Conditions, glance.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, "", err

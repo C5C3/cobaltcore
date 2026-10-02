@@ -48,8 +48,10 @@ func (r *BarbicanReconciler) reconcileSecrets(ctx context.Context, children clie
 	// Barbican selected via spec.secretStoreRef (default: the shared
 	// cluster-scoped openbao-cluster-store); a namespaced store is resolved in the
 	// Barbican's own namespace.
+	// Under --namespace a cluster-scoped store is refused with
+	// ClusterSecretStoreUnsupported and not read.
 	storeReady, err := secrets.GateStoreReady(ctx, children,
-		secrets.EffectiveStoreRef(barbican.Spec.SecretStoreRef), barbican.Namespace,
+		secrets.EffectiveStoreRef(barbican.Spec.SecretStoreRef), barbican.Namespace, r.NamespaceScoped,
 		&barbican.Status.Conditions, barbican.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, "", err

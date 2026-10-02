@@ -10,10 +10,14 @@ import (
 
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
 func TestReconcileSecrets_StoreNotReady(t *testing.T) {
@@ -178,4 +182,31 @@ func TestEffectiveSecretKeyKey_DefaultsWhenEmpty(t *testing.T) {
 
 	h.Spec.SecretKeyRef.Key = "custom"
 	g.Expect(effectiveSecretKeyKey(h)).To(Equal("custom"))
+}
+
+// TestReconcileSecrets_NamespaceScopedRefusesClusterStore pins the refusal a
+// namespace-scoped operator gives a Horizon that omits spec.secretStoreRef: its
+// effective store is the cluster-scoped default, which a Role cannot grant, so
+// the gate sets SecretsReady=False/ClusterSecretStoreUnsupported and requeues
+// without reading the ClusterSecretStore at all.
+func TestReconcileSecrets_NamespaceScopedRefusesClusterStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.SecretStoreRef = nil
+	h.Generation = 3
+	c := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(h).WithStatusSubresource(&horizonv1alpha1.Horizon{}).
+		WithInterceptorFuncs(testutil.ForbidClusterSecretStoreGet(t)).
+		Build()
+	r := &HorizonReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10), NamespaceScoped: true}
+
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, h)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+	g.Expect(digest).To(BeEmpty())
+	cond := conditions.GetCondition(h.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ClusterSecretStoreUnsupported"))
+	g.Expect(cond.ObservedGeneration).To(Equal(h.Generation))
 }

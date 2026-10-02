@@ -67,8 +67,10 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context, children clie
 	// Keystone selected via spec.secretStoreRef (default: the shared
 	// cluster-scoped openbao-cluster-store); a namespaced store is resolved in
 	// the Keystone's own namespace.
+	// Under --namespace a cluster-scoped store is refused with
+	// ClusterSecretStoreUnsupported and not read.
 	storeReady, err := secrets.GateStoreReady(ctx, children,
-		secrets.EffectiveStoreRef(keystone.Spec.SecretStoreRef), keystone.Namespace,
+		secrets.EffectiveStoreRef(keystone.Spec.SecretStoreRef), keystone.Namespace, r.NamespaceScoped,
 		&keystone.Status.Conditions, keystone.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, err
