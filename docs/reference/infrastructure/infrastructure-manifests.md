@@ -2452,15 +2452,19 @@ metal-stack cluster, planned in
 `EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)); the probe is applied
 by hand, and so is `controlplane/`, once the deploy has finished (see
 [Lab ControlPlane](#lab-controlplane)), and after it `hypervisor-fixtures/` and
-`hypervisor/` (see [Lab hypervisors](#lab-hypervisors)).
+`hypervisor/` (see [Lab hypervisors](#lab-hypervisors)). The
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md) is the
+walkthrough that runs them in order, from a bare cluster to a migrated server
+and back.
 
 ### Node probe
 
 **File:** `deploy/lab/metal-stack/probe/kustomization.yaml`
 
-The node probe is the prerequisite check of the lab. The lab's quick start
-([#1143](https://github.com/c5c3/cobaltcore/issues/1143)) has a reader run it
-first, against any metal-stack cluster, before anything else is deployed. It
+The node probe is the prerequisite check of the lab. The
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md#cp-probe) has a
+reader run it first, against any metal-stack cluster, before anything else is
+deployed. It
 is one Job, `node-probe`, that prints the node facts the lab depends on under
 ten fixed headers. It exits 0 whatever it finds: a node that lacks something
 prints `absent`, `none` or `NOT FOUND`, and the Job still completes, so
@@ -2597,7 +2601,8 @@ platform's namespaces and CRDs alone. Both are described in
 `deploy/lab/metal-stack/controlplane/ovncentral.yaml`,
 `deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`
 
-The kustomization is the `OVNCentral` and the ControlPlane CR of Step 3 of the
+The kustomization is the `OVNCentral` of Step 3 and the ControlPlane CR of
+Step 4 of the
 [Quick Start (ControlPlane)](../../quick-start-controlplane.md), with their data
 unchanged except for two keys the lab adds to the ControlPlane.
 `hack/deploy-infra.sh` names the directory in its `WITH_CONTROLPLANE=true`
@@ -2617,46 +2622,9 @@ directory.
 | `spec.services.neutron.extraConfig.DEFAULT.global_physnet_mtu` | `"1460"` | Tenant networks are Geneve. Neutron 27.0.3 computes their MTU as `global_physnet_mtu` minus 20 (the IPv4 header, `get_mtu` in `neutron/plugins/ml2/drivers/type_tunnel.py`) minus `[ml2_type_geneve] max_header_size`, which the Neutron operator owns at 38 (`operators/neutron/internal/controller/reconcile_config.go`): 1460 - 20 - 38 = 1402 for every tenant network. 1460 is the pod network's MTU (the `cali*` lines of the [node probe](#node-probe)). The chassis tunnels over the node network, whose uplinks `lan0` and `lan1` carry 9000, so 1460 is a bound, not a match: it holds without a path-MTU measurement between the two racks, and none exists yet. The value is a string, because `extraConfig` is `map[string]map[string]string` |
 | `spec.services.nova.hypervisorOperator` | `{}` | Provisions the Keystone user `hypervisor-operator` (project `service-hypervisor-operator`, role `admin`) and writes the Secret `controlplane-nova-hypervisor-operator-auth` into `openstack` (see [`ServiceNovaHypervisorOperatorSpec`](../c5c3/controlplane-crd.md#servicenovahypervisoroperatorspec)), which [Lab hypervisors](#lab-hypervisors) feeds into the hypervisor operator's chart |
 
-The sequence runs from the repository root with the lab's kubeconfig:
-
-```bash
-# 1. deploy the stack and the operator stack
-export KUBECONFIG="$PWD/kubeconfig"
-EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true make deploy-infra
-
-# 2. the OVNCentral and the ControlPlane
-kubectl apply -k deploy/lab/metal-stack/controlplane
-kubectl wait ovncentral/controlplane-ovn -n openstack --for=condition=Ready --timeout=10m
-
-# 3. the database-engine tenant (quick start, Step 4)
-kubectl wait mariadb/openstack-db -n openstack --for=condition=Ready --timeout=10m
-export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
-  -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
-deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
-unset BAO_TOKEN
-
-# 4. the chain (no image is preloaded on the lab, hence 30m instead of the quick start's 15m)
-kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=30m
-
-# 5. access, in a second terminal, for as long as the checks run
-kubectl -n envoy-gateway-system port-forward \
-  "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
-```
-
-`kubectl apply -k` fails with `no matches for kind` while a service operator's
-chart is still installing its CRDs, and with a webhook connection error while
-the c5c3-operator's webhook starts. Rerun it, as `hack/deploy-infra.sh` does
-for the bundled CR. `kubectl wait mariadb/openstack-db` exits 1 with
-`Error from server (NotFound)` until the c5c3-operator has created the MariaDB;
-rerun it too. Start the port-forward again when it ends, for example after the
-Envoy pod restarted.
-
-The checks are those of Step 6 of the
-[Quick Start (ControlPlane)](../../quick-start-controlplane.md), run with
-`--insecure` while the port-forward runs. On the lab the fake compute and the
-volume check are skipped, `openstack --insecure network show demo-net -c mtu -f value`
-prints `1402`, `openstack --insecure compute service list` shows no
-`nova-compute` row, and `openstack --insecure hypervisor list` prints nothing.
+Part 1 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md#cp-deploy)
+applies the directory and checks the ControlPlane, from the deploy in its
+Step 3 to the [checks](../../quick-start-metal-stack.md#cp-verify) of its Step 7.
 
 For the hypervisor package
 ([#1142](https://github.com/c5c3/cobaltcore/issues/1142)) the ControlPlane
@@ -2865,85 +2833,34 @@ OpenStack client). Onboarding also waits for `HaEnabled=True` while
 condition. hvo creates every `Hypervisor` with the field `true` and never writes
 it again, so the sequence patches it to `false` once per node.
 
-The run starts with the Lab ControlPlane `Ready`, its port-forward running in a
-second terminal and the `OS_*` variables of its checks exported; `openstack`
-needs the osc-placement plugin for the trait. A server on a network without a
-router is reached through its console only. In a browser that is the noVNC URL
-of [Expose the Console Proxy](../../guides/nova/expose-the-console-proxy.md)
-(the ControlPlane patch of step 1, the URL with `:8443` of step 2); from a
-shell it is `virsh console <instance name>` in the libvirt pod of the server's
-node. The cirros user is `cirros`, its password `gocubsgo`.
+[Part 2](../../quick-start-metal-stack.md#hypervisors) of the Quick Start
+(metal-stack) runs the sequence, from the node network to an Eviction.
+
+#### Checks outside the quick start
+
+These checks need a lab on which Part 2 of the quick start has booted `lab-a`
+and `lab-b`. They confirm that the images the manifests name are published,
+read the two values the manifests copy from the ControlPlane and the Gateway,
+show that a server survives a restart of its libvirt pod and that its console
+log keeps growing, and show that a live migration dials libvirt over TLS:
 
 ```bash
-export KUBECONFIG="$PWD/kubeconfig"
+# lab-a and lab-b run (Part 2, Step 5 of docs/quick-start-metal-stack.md),
+# lab-a on nodes[0]
 nodes=($(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'))
 
-# 1. the node network and the images
-hack/lab-node-ports.sh
+# the images
 docker manifest inspect ghcr.io/c5c3/libvirt:latest >/dev/null
 docker manifest inspect "ghcr.io/c5c3/openstack-hypervisor-operator:sha-$(hack/ci-resolve-hvo-commit.sh)" >/dev/null
 docker manifest inspect "ghcr.io/c5c3/kvm-node-agent:sha-$(hack/ci-resolve-kna-commit.sh)" >/dev/null
 
-# 2. the node labels, the custom trait and its Placement trait
-kubectl label node --all openstack.c5c3.io/chassis=true \
-  openstack.c5c3.io/nova-compute-pool=lab \
-  nova.openstack.cloud.sap/virt-driver=kvm \
-  cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests
-kubectl annotate node --all nova.openstack.cloud.sap/custom-traits=CUSTOM_C5C3_LAB
-openstack --insecure --os-placement-api-version 1.6 trait create CUSTOM_C5C3_LAB
-
-# 3. the fixtures, after a K-ORC restart
-kubectl rollout restart deployment/orc-controller-manager -n orc-system
-kubectl rollout status deployment/orc-controller-manager -n orc-system
-kubectl apply -k deploy/lab/metal-stack/hypervisor-fixtures
-kubectl kustomize deploy/lab/metal-stack/hypervisor-fixtures |
-  kubectl wait -f - --for=condition=Available --timeout=15m
-
-# 4. the Keystone URL hvo-release.yaml carries, and the Envoy Service
-#    gateway-alias.yaml copies
+# the Keystone URL hvo-release.yaml carries, and the Envoy Service
+# gateway-alias.yaml copies
 kubectl get nova controlplane-nova -n openstack -o jsonpath='{.spec.keystoneEndpoint}{"\n"}'
 kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw \
   -o jsonpath='{.items[0].spec.selector}{"\n"}{.items[0].spec.ports[?(@.port==443)].targetPort}{"\n"}'
 
-# 5. the hypervisors, and the highAvailability patch once each exists
-kubectl apply -k deploy/lab/metal-stack/hypervisor
-for node in "${nodes[@]}"; do
-  kubectl wait --for=create "hypervisor/${node}" --timeout=10m
-  kubectl patch hypervisor "${node}" --type merge -p '{"spec":{"highAvailability":false}}'
-done
-kubectl wait certificate --all -n hypervisor-system --for=condition=Ready --timeout=10m
-kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=15m
-
-# 6. onboarding and the node layer
-kubectl wait hypervisor --all --timeout=20m \
-  --for=jsonpath='{.status.conditions[?(@.type=="Onboarding")].reason}'=Succeeded
-kubectl wait ovnchassis/lab-chassis neutronmetadataagent/lab-metadata-agent novacompute/lab \
-  -n openstack --for=condition=Ready --timeout=20m
-kubectl get hypervisor -o custom-columns='NAME:.metadata.name,LIBVIRTD:.status.conditions[?(@.type=="libvirtd.service")].status,LIBVIRT:.status.conditions[?(@.type=="LibVirtConnection")].status,TLS:.status.conditions[?(@.type=="TLSCertificateInstalled")].status'
-openstack --insecure hypervisor list
-openstack --insecure aggregate list
-
-# 7. host discovery, a network without a router, one server per node
-for node in "${nodes[@]}"; do
-  tests/e2e/nova/discover-hosts.sh controlplane-nova openstack "${node}"
-done
-openstack --insecure network create lab-net
-openstack --insecure subnet create lab-subnet --network lab-net --subnet-range 192.168.77.0/24
-openstack --insecure server create lab-a --image cirros-kvm --flavor 1 --network lab-net \
-  --availability-zone "eqx-mu4:${nodes[0]}" --wait
-openstack --insecure server create lab-b --image cirros-kvm --flavor 1 --network lab-net \
-  --availability-zone "eqx-mu4:${nodes[1]}" --wait
-for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
-  kubectl exec -n openstack "${pod}" -c libvirtd -- virsh list
-done
-
-# 8. on the console of lab-a, with lab-b's address from `openstack server show lab-b`
-#      curl http://169.254.169.254/latest/meta-data/instance-id
-#      ping -c 3 <lab-b>
-#      ping -c 3 -s 1374 -M do <lab-b>
-#      ping -c 1 -s 1375 -M do <lab-b>
-
-# 9. a libvirt restart under a running server, whose console log keeps growing
+# a libvirt restart under a running server, whose console log keeps growing
 kubectl delete pod -n openstack -l app.kubernetes.io/name=libvirt \
   --field-selector "spec.nodeName=${nodes[0]}"
 kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=10m
@@ -2958,33 +2875,21 @@ sleep 30
 kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- stat -c %s "${console_log}"
 openstack --insecure console log show lab-a | tail -n 3
 
-# 10. a live migration over libvirt TLS, with the source libvirtd logging its
-#     migration steps
+# the source libvirtd logs its migration steps
 kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
   bash -c 'virt-admin daemon-log-filters 1:qemu.qemu_migration && virt-admin daemon-log-outputs 1:stderr'
-openstack --insecure server migrate --live-migration --wait lab-a
-openstack --insecure server show lab-a -c OS-EXT-SRV-ATTR:host -f value
-openstack --insecure server migration list --server lab-a
-kubectl logs -n openstack "${libvirt_pod}" -c libvirtd | grep -o 'qemu+tls://[^ ,]*' | sort -u
-
-# 11. an Eviction through manual maintenance, and back
-kubectl patch hypervisor "${nodes[1]}" --type merge \
-  -p '{"spec":{"maintenance":"manual","maintenanceReason":"lab eviction check"}}'
-kubectl wait "eviction/${nodes[1]}" --timeout=20m \
-  --for=jsonpath='{.status.conditions[?(@.type=="Evicting")].reason}'=Succeeded
-openstack --insecure server list --all-projects --host "${nodes[1]}"
-kubectl patch hypervisor "${nodes[1]}" --type merge \
-  -p '{"spec":{"maintenance":"","maintenanceReason":""}}'
-openstack --insecure compute service list --service nova-compute
 ```
 
-Step 9 prints the size of `lab-a`'s console log before and after a reset of
-the guest, and the second number is larger. Step 11 evicts whichever node holds
-the servers; after step 10 both sit on `nodes[1]`. Delete the servers before
-the teardown: `EXTERNAL_CLUSTER=true make teardown-infra` removes the
-hypervisors in its step 0, before the ControlPlane, and exits 1 while a pool
-still holds a server (see
-[`make teardown-infra`](e2e-deployment.md#make-teardown-infra)).
+The restart check prints the size of `lab-a`'s console log before and after a
+reset of the guest, and the second number is larger.
+
+Then run the live migration of
+[Part 2, Step 7](../../quick-start-metal-stack.md#hv-migrate) and read the
+URIs the source libvirtd dialed, in the same shell:
+
+```bash
+kubectl logs -n openstack "${libvirt_pod}" -c libvirtd | grep -o 'qemu+tls://[^ ,]*' | sort -u
+```
 
 A lab that moves to the kna image of this repository in place keeps its 0644
 keys: kna writes the files only when the node's Secret changes. Deleting
@@ -3025,8 +2930,8 @@ predates the change, and prints the pod's CPU keys and the server's `<cpu>`
 element at each point:
 
 ```bash
-# after steps 1 to 7 above, the discover-hosts.sh loop of step 8 and lab-net
-# with lab-subnet of step 8, without lab-a and lab-b
+# after Part 2, Steps 1 to 5 of docs/quick-start-metal-stack.md, without
+# lab-a and lab-b; nodes and zone come from the opening block of Part 2
 
 compute_selector=app.kubernetes.io/instance=lab,app.kubernetes.io/component=nova-compute
 # prints the name of the nova-compute pod on nodes[0]
@@ -3103,7 +3008,7 @@ kubectl patch novacompute lab -n openstack --type merge \
   -p '{"spec":{"libvirt":{"cpuMode":"host-passthrough","cpuModels":null}}}'
 wait_pool; pool_state
 wait_compute && openstack --insecure server create cpu-a --image cirros-kvm --flavor 1 \
-  --network lab-net --availability-zone "eqx-mu4:${nodes[0]}" --wait
+  --network lab-net --availability-zone "${zone}:${nodes[0]}" --wait
 domain_cpu
 
 # B. the cpuMode change with the rollout awaited
@@ -3161,10 +3066,11 @@ lab.
 
 The run of 2026-10-01 on the lab ran upstream's kna v0.2.0 image and chart,
 with uid 0 set in the release, on two Xeon D-2141I workers on Debian 12 with
-kernel 6.1. It passed every step above but the kna image check of step 1,
-which came with the image of
+kernel 6.1. It passed every step of the sequence that is now Part 2 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md#hypervisors) and
+of the checks above, but the kna image check, which came with the image of
 [#1178](https://github.com/c5c3/cobaltcore/issues/1178) and has not run on the
-lab, and the console-log check of step 9, which came with
+lab, and the console-log part of the restart check, which came with
 [#1174](https://github.com/c5c3/cobaltcore/issues/1174) and ran on 2026-10-02
 (below). The run also created `/var/lib/nova/instances` by hand. The
 `NovaCompute` pod creates it since
