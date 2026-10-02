@@ -51,6 +51,11 @@ DERIVED_IMAGES="nova-compute"
 # no build args either. Its contract is
 # tests/container-images/verify_hvo.sh together with the build-hvo job in
 # build-images.yaml.
+#
+# kvm-node-agent is release-independent and absent from the list for the same
+# reason: it is compiled from a pinned commit of the upstream agent's main
+# branch. Its contract is tests/container-images/verify_kna.sh together with
+# the build-kna job in build-images.yaml.
 
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"

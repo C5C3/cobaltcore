@@ -20,7 +20,9 @@ FAIL=0
 # python-base, so each has its own function below. libvirt keeps root and
 # creates no user at all, and has its own function too. The
 # openstack-hypervisor-operator image is a static Go binary on distroless that
-# runs as uid 65532 and creates no user either; it has its own function.
+# runs as uid 65532 and creates no user either; it has its own function. The
+# kvm-node-agent image is a static Go binary on distroless too, but runs as
+# root, and has its own function as well.
 SERVICES="keystone horizon glance placement barbican neutron cinder nova nova-compute"
 
 # shellcheck source=tests/lib/assertions.sh
@@ -114,6 +116,26 @@ test_hvo_deviation_comment() {
     "$dockerfile" '^USER 65532:65532$'
 }
 
+# --- Test 7: the kvm-node-agent image runs as root on distroless ---
+test_kna_deviation_comment() {
+  echo "Test: kvm-node-agent Dockerfile has DEVIATION comment (distroless, root)"
+
+  local dockerfile="$PROJECT_ROOT/images/kvm-node-agent/Dockerfile"
+
+  assert_file_contains "kvm-node-agent/Dockerfile contains DEVIATION comment" \
+    "$dockerfile" "# DEVIATION"
+  assert_contains "DEVIATION comment names the distroless base" \
+    "$(deviation_block "$dockerfile")" "distroless"
+  assert_contains "DEVIATION comment names the openstack user it does not create" \
+    "$(deviation_block "$dockerfile")" "openstack"
+  assert_contains "DEVIATION comment says why the agent runs as root" \
+    "$(deviation_block "$dockerfile")" "root"
+  assert_file_contains "kvm-node-agent/Dockerfile ignores hadolint's root-user rule" \
+    "$dockerfile" '^# hadolint ignore=DL3002$'
+  assert_file_contains "kvm-node-agent/Dockerfile runs as 0:0" \
+    "$dockerfile" '^USER 0:0$'
+}
+
 # --- Run all tests ---
 echo "=== DEVIATION comment verification tests ==="
 echo ""
@@ -130,6 +152,8 @@ echo ""
 test_libvirt_deviation_comment
 echo ""
 test_hvo_deviation_comment
+echo ""
+test_kna_deviation_comment
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
