@@ -172,8 +172,10 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 //  2. When no K-ORC CR and no owned PushSecret remain, force-release the children
 //     of every projected registration still present
 //     (releaseStalledRegistrationChildren, Warning
-//     ServiceRegistrationResourcesOrphaned), then release the finalizer so GC tears
-//     down the rest.
+//     ServiceRegistrationResourcesOrphaned). Then delete the co-located Keystone
+//     (deleteColocatedKeystoneBeforeRelease) and the managed message bus
+//     (deleteManagedMessagingBeforeRelease) in the same pass, wait for both, and
+//     release the finalizer so GC tears down the rest.
 //  3. When every CR still present is an Unmanaged import or a detach-on-delete
 //     resource (the adopted Region), force-remove their K-ORC finalizers right
 //     away: their deletion is CR-only, but K-ORC builds an authenticated delete
@@ -285,13 +287,36 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 		}
 
+		// The co-located Keystone goes by hand, and the release waits for it: its
+		// backup PushSecrets purge their OpenBao paths through the tenant store the
+		// cascade reaps in no order (see deleteColocatedKeystoneBeforeRelease). It
+		// stays behind the K-ORC gate above, because K-ORC revokes and deletes
+		// through the Keystone API.
+		keystoneGone, err := r.deleteColocatedKeystoneBeforeRelease(ctx, cp)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
 		// The managed message bus goes by hand, with foreground propagation, and
 		// the release waits for it: a GC-driven background delete opens a window
 		// in which the RabbitMQ Cluster Operator re-creates the broker unowned
-		// (see deleteManagedMessagingBeforeRelease).
+		// (see deleteManagedMessagingBeforeRelease). It is deleted in the same pass
+		// as the Keystone, whichever of the two is still pending: its wait is
+		// bounded by messagingTeardownDeadline from the deletion timestamp, and a
+		// Keystone wait ahead of it would spend that window.
 		busGone, err := r.deleteManagedMessagingBeforeRelease(ctx, cp)
 		if err != nil {
 			return ctrl.Result{}, err
+		}
+		if !keystoneGone {
+			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+				Type:               conditionTypeKeystoneReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: cp.Generation,
+				Reason:             "FinalizingKeystone",
+				Message: fmt.Sprintf("waiting for the Keystone child %q to finish its OpenBao cleanup before "+
+					"releasing the ControlPlane", keystoneName(cp)),
+			})
 		}
 		if !busGone {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
@@ -302,10 +327,12 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 				Message: fmt.Sprintf("waiting for the managed RabbitmqCluster %q to be deleted before releasing the ControlPlane",
 					cp.Spec.Infrastructure.Messaging.ClusterRef.Name),
 			})
+		}
+		if !keystoneGone || !busGone {
 			return ctrl.Result{RequeueAfter: namespaceRequeueAfter}, nil
 		}
 
-		// Release the finalizers so GC tears down Keystone/MariaDB and the rest. The
+		// Release the finalizers so GC tears down MariaDB and the rest. The
 		// remote-children one goes with it: the sweep above visited every placed
 		// namespace, on the cluster it lives on or, past the abandon window, not at
 		// all — either way nothing is left for it to hold the CR open for.
@@ -772,6 +799,79 @@ func (r *ControlPlaneReconciler) teardownReader(c client.Client) client.Reader {
 		return commonmulticluster.LiveReader(c)
 	}
 	return r.apiReader()
+}
+
+// deleteColocatedKeystoneBeforeRelease deletes the Keystone child in the
+// ControlPlane's own namespace and reports whether it is gone, so the finalizer is
+// released only once the Keystone has left etcd. The Keystone owns two backup
+// PushSecrets with DeletionPolicy=Delete (its fernet and credential keys), and the
+// keystone-operator's openbao-finalizer holds it until ESO has purged their OpenBao
+// paths. That purge authenticates through the per-tenant SecretStore and its
+// eso-tenant-auth ServiceAccount. Left to the owner-reference cascade, all of them
+// are deleted at once and in no order: the PushSecrets lose the store, the
+// keystone-operator's stall breaker strips their finalizers without the OpenBao
+// delete, and the keys stay in OpenBao with no object naming them.
+//
+// The delete uses BACKGROUND propagation, as deleteServiceChildrenIn does for a
+// Keystone in a dedicated namespace: the wait is for the keystone-operator's
+// finalizer, and GC reaps the Keystone's own children behind it.
+//
+// A Keystone in a dedicated namespace is left to teardownDedicatedNamespaces, which
+// deletes and waits for it already. Only a Keystone this ControlPlane owns is
+// touched (isControlPlaneChild). External mode, which projects no child, and a
+// cluster that does not serve the kind read as nothing to wait for. The wait shares
+// orcTeardownDeadline with the sweeps that run before it. Past that deadline it is
+// abandoned with a Warning naming the two OpenBao paths, and the Keystone falls back
+// to the cascade: a missing or wedged keystone-operator must not make the
+// ControlPlane undeletable. The escape paths (K-ORC stall, remote-children finish)
+// release without this wait.
+func (r *ControlPlaneReconciler) deleteColocatedKeystoneBeforeRelease(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) (bool, error) {
+	if cp.KeystoneNamespace() != cp.Namespace {
+		return true, nil
+	}
+	name := keystoneName(cp)
+	keystone := &keystonev1alpha1.Keystone{}
+	switch err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cp.Namespace}, keystone); {
+	case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("reading Keystone %q before release: %w", name, err)
+	}
+	if !isControlPlaneChild(keystone, cp) {
+		return true, nil
+	}
+	if keystone.DeletionTimestamp.IsZero() {
+		if err := client.IgnoreNotFound(
+			r.Delete(ctx, keystone, client.PropagationPolicy(metav1.DeletePropagationBackground)),
+		); err != nil {
+			return false, fmt.Errorf("deleting Keystone %q before release: %w", name, err)
+		}
+		return false, nil
+	}
+	if time.Since(cp.DeletionTimestamp.Time) <= orcTeardownDeadline {
+		return false, nil
+	}
+	paths := keystoneBackupRemoteKeysFor(cp)
+	r.Recorder.Event(cp, "Warning", "KeystoneTeardownStalled", fmt.Sprintf(
+		"Keystone %q stayed present longer than %s after the ControlPlane's deletion started; releasing the "+
+			"ControlPlane and leaving it to the owner-reference cascade. Its backup PushSecrets may lose the "+
+			"tenant SecretStore before ESO purges the kv-v2 paths %s — delete them by hand if they remain",
+		name, orcTeardownDeadline, strings.Join(paths, " and ")))
+	log.FromContext(ctx).Info("co-located Keystone teardown stalled; releasing the ControlPlane anyway",
+		"keystone", name, "deadline", orcTeardownDeadline, "paths", paths)
+	return true, nil
+}
+
+// keystoneBackupRemoteKeysFor returns the OpenBao paths, relative to the kv-v2
+// mount, the ControlPlane's Keystone child backs its fernet and credential keys up
+// to. They mirror the RemoteKey the keystone-operator writes in
+// fernetKeysPushSecret and credentialKeysPushSecret
+// (operators/keystone/internal/controller); keep the two in step.
+func keystoneBackupRemoteKeysFor(cp *c5c3v1alpha1.ControlPlane) []string {
+	base := "openstack/keystone/" + cp.KeystoneNamespace() + "/" + keystoneName(cp) + "/"
+	return []string{base + "fernet-keys", base + "credential-keys"}
 }
 
 // deleteManagedMessagingBeforeRelease tears the managed message bus down by hand
