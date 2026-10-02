@@ -39,7 +39,7 @@ see [Target Clusters](../target-clusters.md).
 | `messaging` | [`commonv1.MessagingSpec`](../c5c3/controlplane-crd.md#messagingspec) pointer | no | `nil` | The RabbitMQ connection. Optional, because the agent opens no RPC and no notification connection of its own. It exists so a deployment can give the agent the same bus configuration the API pods carry: `config.init` calls `n_rpc.init` unconditionally, which parses oslo.messaging's default `rabbit://` URL without dialing it. When set, the agent gets the same `OS_DEFAULT__TRANSPORT_URL` override the API pods get, and the `[oslo_messaging_rabbit]` section is rendered |
 | `novaMetadata` | [`NovaMetadataSpec`](#novametadataspec) pointer | no | `nil` | The Nova metadata API the agent proxies to. A nil block renders none of its four keys and the oslo defaults apply, which is what an agent standing beside a control plane that runs no compute service wants |
 | `metadataWorkers` | `*int32` (Minimum=0) | no | operator-resolved `4` | Rendered as `[DEFAULT] metadata_workers`. In 2026.1 it sizes the thread pool the agent serves metadata requests from, and `0` serves them one at a time in the main process, which is upstream's ML2/OVN default. 2025.2 ignores the option and starts one thread per request. The count does not follow the node's CPU count. The default is resolved when the config is rendered and never written into the CR |
-| `resources` | `corev1.ResourceRequirements` | no | `{}` | Requests and limits for the init container and the agent container, applied to both. The operator never writes defaults into this field; it resolves them per resource when it renders the pod: a CPU the block names neither as request nor as limit gets a 70m request and no limit, and a memory it names neither way gets 368Mi as both request and limit (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). A resource the block names is used as written, and anything else it sets is kept. A CR that names none still lands in the Burstable QoS class instead of BestEffort. Before the per-resource rule, the operator rendered a block that named anything as written, so a block that names only CPU gains a memory request and limit on the upgrade |
+| `resources` | `corev1.ResourceRequirements` | no | `{}` | Requests and limits for the init container and the agent container, applied to both. The operator never writes defaults into this field; it resolves them per resource when it renders the pod: a CPU the block names neither as request nor as limit gets a 70m request and no limit, and a memory it names neither way gets 2Gi as both request and limit, which fits 32 networks on the node (see [Memory sizing](#memory-sizing) and the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). A resource the block names is used as written, and anything else it sets is kept. A CR that names none still lands in the Burstable QoS class instead of BestEffort. Before the per-resource rule, the operator rendered a block that named anything as written, so a block that names only CPU gains a memory request and limit on the upgrade |
 | `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the agent DaemonSet (`{name}-metadata-agent`) into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `logging` | [`*LoggingSpec`](../keystone/keystone-crd.md#loggingspec) | no | `text` / `INFO` / `debug: false` | oslo.log derivation: `format` (`text` or `json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook. The `json` format ships a `logging.conf` in the config ConfigMap and points `[DEFAULT] log_config_append` at it |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSet, the config ConfigMaps and the transport-URL Secret are created on. The CR itself, its status and its finalizer stay on the management cluster. Immutable, enforced by two CEL transition rules and by the webhook. It has to name the same cluster the referenced `OVNChassis` names. The chassis's `OVNCentral` may project onto another cluster, which then has to publish its Southbound database with `externallyReachable` |
@@ -113,6 +113,33 @@ The CA bundle is not delivered. The ControlPlane names only the Gateway's
 `parentRef` and hostname and does not manage its certificate, so the deployment
 places the bundle in the agent's namespace, for example with trust-manager.
 
+### Memory sizing
+
+The `metadata-agent` container holds more than the agent process. The agent
+starts its privsep daemons beside itself, and for every network with a port
+bound on its node it starts one haproxy in the same container. Its working set
+grows with the networks on the node, so the figure a single-process service
+gets does not fit it.
+
+A CR that names no memory gets `2Gi` as request and limit, on the agent
+container and on the `wait-for-chassis` init container. The figure covers 32
+networks on the node.
+[Sizing Calibration](../testing/sizing-calibration.md#metadata-agent-memory)
+describes the measurement and the rule behind it. A node that binds more
+networks needs a larger memory value in `spec.resources`, set as request and
+as limit.
+
+An agent at its limit shows `OOMKilled` as the last state of the
+`metadata-agent` container. A restart does not help. The new process provisions
+every network of the node again and is killed at the same point, so the
+instances on that node get no metadata until the limit is raised.
+
+Upgrading the operator changes the pod template of every agent whose CR names
+no memory. The DaemonSet replaces its pods one node at a time, and each new pod
+needs `2Gi` of memory that no other pod on its node has requested. A LimitRange
+whose `max` memory lies below `2Gi` rejects the pods, and the DaemonSet reports
+`FailedCreate` events.
+
 ## Defaulting and validation
 
 The mutating webhook does three things. It materializes `spec.logging` and its
@@ -124,7 +151,8 @@ an empty `protocol` with `http`, an empty `sharedSecretRef.key` with
 keys.
 
 Three defaults are resolved at reconcile time and never written into the stored
-CR: the container resources fall back to the shared `DeploymentSpec` values, a
+CR: of the container resources, the CPU request falls back to the shared default
+and the memory to the agent's own figure (see [Memory sizing](#memory-sizing)), a
 `spec.messaging.secretRef` without a `key` reads `transport_url`, and an unset
 `spec.metadataWorkers` renders `metadata_workers = 4` (`DefaultMetadataWorkers`).
 

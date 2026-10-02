@@ -247,8 +247,8 @@ leaves out, so a CPU-only block gains a memory request and limit, and its pods
 roll once on the upgrade. To keep the pod spec unchanged, set that resource in
 the block before you upgrade.
 
-Jobs, CronJobs and the fixed-budget sidecars follow the same per-resource rule
-with their own figures:
+Jobs, CronJobs, the fixed-budget sidecars and the Neutron metadata agent follow
+the same per-resource rule with their own figures:
 
 | Container | Block | CPU request | Memory |
 | --- | --- | --- | --- |
@@ -256,6 +256,7 @@ with their own figures:
 | The OVN backup and Neutron `ovn-db-sync` pods | `spec.jobs.resources` of those CRs | `70m` | `256Mi` request, no limit (the working set grows with the logical model) |
 | The `federation-proxy` sidecar | [`spec.federation.proxyResources`](#federationspec) | `25m` | `256Mi` request and limit |
 | The Glance `cache-maintenance` sidecar | `spec.imageCache.maintenanceResources` | `25m` | `256Mi` request and limit |
+| The Neutron metadata agent and its `wait-for-chassis` init container | [`spec.resources` of the `NeutronMetadataAgent`](../neutron/neutron-metadata-agent-crd.md#memory-sizing) | `70m` | `2Gi` request and limit, sized for 32 networks on the node |
 
 The Job memory does not follow the service formula and stays pinned at
 `368Mi`. The sizing measurement's VPA recommender samples once a minute and
