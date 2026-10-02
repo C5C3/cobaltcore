@@ -12,7 +12,6 @@ import (
 	"sync"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
-	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -47,6 +46,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -252,6 +252,12 @@ type KeystoneReconciler struct {
 	// reach the Keystone API on TCP 5000. Empty when the namespace could not be
 	// determined, in which case no operator-namespace peer is added.
 	OperatorNamespace string
+
+	// NamespaceScoped is true when the operator runs with --namespace. The
+	// ClusterSecretStore watch leg is then not registered, because a Role
+	// cannot grant the cluster-scoped kind. The zero value is the cluster-wide
+	// operator.
+	NamespaceScoped bool
 
 	// gatewayAPIAvailable is set during SetupWithManager from the
 	// management cluster's RESTMapper and indicates whether the
@@ -1195,13 +1201,11 @@ func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcont
 	// soon as ESO flips the selected store's Ready condition, rather than
 	// waiting for the next periodic requeue. Each mapper enqueues only the
 	// Keystones whose effective store ref matches the changed store.
-	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &esov1.ClusterSecretStore{},
-		storeToKeystoneMapper(local.GetClient(), commonv1.SecretStoreKindCluster))
-	if err != nil {
-		return err
-	}
-	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &esov1.SecretStore{},
-		storeToKeystoneMapper(local.GetClient(), commonv1.SecretStoreKindNamespaced))
+	// Under --namespace the ClusterSecretStore leg is not registered: a Role
+	// cannot grant the cluster-scoped kind, so its informer would never sync
+	// and the manager would fail its cache sync at startup.
+	b, err = secrets.AddStoreWatches(b, local.GetScheme(), targets, r.NamespaceScoped,
+		local.GetClient(), storeToKeystoneMapper)
 	if err != nil {
 		return err
 	}
