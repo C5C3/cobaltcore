@@ -11,7 +11,11 @@
 # live CR); it keeps polling through a missing kind, an unreachable
 # webhook, a refused connection and a stderr without a record;
 # it never applies anything for real; and it exits 1 with the operators'
-# pods and logs on timeout.
+# pods and logs on timeout. The static tests at the end check the
+# WITH_CONTROLPLANE block of main(): the ten-release and CRD waits behind
+# the INFRA_ONLY gate, a probe before each of the three endings, and one
+# apply of the bundled CR that ends the run when it fails. The last test
+# runs preflight_checks, which refuses the bundled CR under INFRA_ONLY=true.
 #
 # Follows the stub-kubectl + source-and-invoke pattern of
 # deploy_infra_cert_manager_webhook_test.sh. The stub answers the n-th
@@ -168,6 +172,52 @@ run_wait() {
 
 line_count() {
   wc -l <"$1" | tr -d ' '
+}
+
+# line_between <fixed string> <after> <before>
+# Prints the number of the first line of deploy-infra.sh that holds the
+# string and lies strictly between the two line numbers.
+line_between() {
+  awk -v s="$1" -v a="$2" -v b="$3" \
+    'NR > a && NR < b && index($0, s) { print NR; exit }' "$DEPLOY_INFRA_SH"
+}
+
+# line_of <fixed string> — the first line of deploy-infra.sh holding it.
+line_of() {
+  line_between "$1" 0 999999
+}
+
+# last_line_between <fixed string> <after> <before>
+# Like line_between, but prints the last such line.
+last_line_between() {
+  awk -v s="$1" -v a="$2" -v b="$3" \
+    'NR > a && NR < b && index($0, s) { n = NR } END { if (n) print n }' "$DEPLOY_INFRA_SH"
+}
+
+# continued_call <fixed string>
+# Prints every command of deploy-infra.sh whose first line holds the string,
+# its backslash-continued lines joined into one line.
+continued_call() {
+  awk -v s="$1" '
+    !inside && index($0, s) { inside = 1; call = "" }
+    inside {
+      line = $0
+      more = sub(/\\[[:space:]]*$/, "", line)
+      call = call " " line
+      if (!more) { print call; inside = 0 }
+    }
+  ' "$DEPLOY_INFRA_SH"
+}
+
+# assert_before <description> <line a> <line b> — a is a line before b.
+assert_before() {
+  if [ -n "$2" ] && [ -n "$3" ] && [ "$2" -lt "$3" ]; then
+    echo "  PASS: $1"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $1 (line '${2}' is not before line '${3}')"
+    FAIL=$((FAIL + 1))
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -403,6 +453,221 @@ test_no_manifest_exits_one_before_polling() {
 }
 
 # ---------------------------------------------------------------------------
+# Tests 13-16: the WITH_CONTROLPLANE block of main() (static text, so these
+# stay independent of the stub plumbing above)
+# ---------------------------------------------------------------------------
+test_main_waits_for_every_operator_release_and_its_crd() {
+  echo "Test: main() waits for every operator release of the flux path, then one CRD per operator"
+
+  # The expected set is the flux path's un-suspend list, which
+  # check-service-parity requires of every service the kind base suspends,
+  # plus the c5c3-operator, which the base applies active. An operator that
+  # is added to that list but missing from either wait fails here.
+  local unsuspended releases_call want got
+  unsuspended="$(awk '
+    pending && index($0, "\"suspend\":false") { print pending }
+    { pending = "" }
+    $1 == "kubectl" && $2 == "patch" && $3 == "helmrelease" && $4 ~ /^[a-z0-9-]+-operator$/ &&
+      $5 == "-n" && $NF == "\\" { pending = $6 "/" $4 }
+  ' "$DEPLOY_INFRA_SH")"
+  assert_not_empty "the flux path un-suspends service operator releases" "$unsuspended"
+  want="$(printf '%s\nc5c3-system/c5c3-operator\n' "$unsuspended" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  releases_call="$(continued_call 'wait_for_helmreleases "${HELMRELEASE_TIMEOUT}"' |
+    grep -F 'c5c3-system/c5c3-operator' || true)"
+  assert_not_empty "a HELMRELEASE_TIMEOUT release wait names c5c3-system/c5c3-operator" "$releases_call"
+  got="$(tr ' ' '\n' <<<"$releases_call" | grep -E '^[a-z0-9-]+/[a-z0-9-]+$' | sort | tr '\n' ' ' | sed 's/ $//' || true)"
+  assert_eq "the wait names every un-suspended release and the c5c3-operator, namespace-qualified, and nothing else" "$want" "$got"
+  assert_file_not_contains "no soft operator wait remains" "$DEPLOY_INFRA_SH" 'not Ready yet (continuing'
+
+  local releases_end crds_line
+  releases_end="$(line_of 'nova-system/nova-operator c5c3-system/c5c3-operator')"
+  crds_line="$(line_between 'wait_for_crds "${POD_TIMEOUT}"' "$releases_end" 999999)"
+  assert_eq "the CRD wait follows the release wait directly" "$((releases_end + 1))" "$crds_line"
+
+  local crds_call names name plural group op file count=0 ops
+  crds_call="$(continued_call 'wait_for_crds "${POD_TIMEOUT}"' | grep -F 'controlplanes.c5c3.io' || true)"
+  assert_not_empty "a POD_TIMEOUT CRD wait names controlplanes.c5c3.io" "$crds_call"
+  names="$(tr ' ' '\n' <<<"$crds_call" | grep -E '^[a-z0-9]+(\.[a-z0-9]+)+$' || true)"
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    count=$((count + 1))
+    plural="${name%%.*}"
+    group="${name#*.}"
+    op="${group%%.*}"
+    file="operators/${op}/helm/${op}-operator/crds/${group}_${plural}.yaml"
+    if [[ -f "$PROJECT_ROOT/$file" ]]; then
+      echo "  PASS: ${name} ships as ${file}"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: ${name} has no ${file}"
+      FAIL=$((FAIL + 1))
+    fi
+  done <<<"$names"
+  assert_eq "the CRD wait names one CRD per awaited release" "$(wc -w <<<"$want" | tr -d ' ')" "$count"
+  ops="$(sed -E 's/^[a-z0-9]+\.([a-z0-9]+).*$/\1/' <<<"$names" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  assert_eq "one CRD per operator" \
+    "$(tr ' ' '\n' <<<"$want" | sed -E 's#^.*/([a-z0-9]+)-operator$#\1#' | sort | tr '\n' ' ' | sed 's/ $//')" "$ops"
+}
+
+test_main_applies_the_bundled_cr_once_after_the_probe() {
+  echo "Test: main() applies the bundled ControlPlane CR once, after the probe, and fails loudly"
+
+  assert_file_not_contains "the apply retry counter is gone" "$DEPLOY_INFRA_SH" 'cp_attempt'
+  assert_file_not_contains "the warm-up retry message is gone" "$DEPLOY_INFRA_SH" 'webhook warming up?'
+
+  local apply_lines
+  apply_lines="$(grep -F 'kubectl apply -f "${cp_manifest}"' "$DEPLOY_INFRA_SH" || true)"
+  assert_eq "the bundled CR is applied on one line" "1" "$(grep -c . <<<"$apply_lines")"
+  assert_not_contains "the apply keeps its stderr" "$apply_lines" "2>/dev/null"
+
+  local apply_line fi_line branch applied_line render_line probe_line
+  apply_line="$(line_of 'if ! kubectl apply -f "${cp_manifest}"; then')"
+  assert_not_empty "the apply is tested for failure" "$apply_line"
+  fi_line="$(awk -v a="${apply_line:-0}" 'NR > a && /^[[:space:]]*fi$/ { print NR; exit }' "$DEPLOY_INFRA_SH")"
+  branch="$(sed -n "${apply_line:-1},${fi_line:-1}p" "$DEPLOY_INFRA_SH")"
+  assert_contains "a failed apply is named" "$branch" "applying the ControlPlane CR failed"
+  assert_contains "a failed apply ends the run" "$branch" "exit 1"
+  applied_line="$(line_of 'ControlPlane CR applied (WITH_CONTROLPLANE_CR=true)')"
+  assert_before "'ControlPlane CR applied' follows the failure branch" "$fi_line" "$applied_line"
+
+  render_line="$(line_of 'render_controlplane_replicas "${cp_manifest}"')"
+  probe_line="$(line_between 'wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}" "${cp_manifest}"' \
+    "${render_line:-0}" "${apply_line:-0}")"
+  assert_not_empty "the bundled CR is probed between its last rewrite and its apply" "$probe_line"
+}
+
+test_main_probes_before_each_by_hand_hint() {
+  echo "Test: main() probes the manifests of each by-hand hint before printing it"
+
+  local gate hint_overlay hint_kind
+  gate="$(line_of 'elif [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then')"
+  hint_overlay="$(line_of 'kubectl apply -k ${OVERLAY_ROOT}/controlplane')"
+  hint_kind="$(line_of 'kubectl apply -f deploy/kind/controlplane/controlplane.yaml')"
+  assert_not_empty "the overlay ending's gate found" "$gate"
+  assert_not_empty "the overlay hint found" "$hint_overlay"
+  assert_not_empty "the kind hint found" "$hint_kind"
+  gate="${gate:-0}"
+  hint_overlay="${hint_overlay:-0}"
+  hint_kind="${hint_kind:-0}"
+
+  assert_not_empty "the overlay ending renders the overlay's controlplane directory" \
+    "$(line_between 'kubectl kustomize "${OVERLAY_ROOT}/controlplane"' "$gate" "$hint_overlay")"
+  assert_not_empty "the overlay ending probes before its hint" \
+    "$(line_between 'wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}"' "$gate" "$hint_overlay")"
+  local render_err
+  render_err="$(line_between 'cannot render ${OVERLAY_ROOT}/controlplane (the error is above).' "$gate" "$hint_overlay")"
+  assert_not_empty "the overlay ending names a failed render" "$render_err"
+  assert_not_empty "a failed overlay render ends the run" \
+    "$(line_between 'exit 1' "${render_err:-0}" "$((${render_err:-0} + 3))")"
+
+  local probe
+  probe="$(line_between 'wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}"' "$hint_overlay" "$hint_kind")"
+  assert_not_empty "the kind ending probes before its hint" "$probe"
+  assert_contains "the kind probe names the bundled CR the hint applies" \
+    "$(sed -n "${probe:-1}p" "$DEPLOY_INFRA_SH")" '"${REPO_ROOT}/deploy/kind/controlplane/controlplane.yaml"'
+  assert_file_contains_fixed "the bundled CR the kind probe names is a ControlPlane" \
+    "$PROJECT_ROOT/deploy/kind/controlplane/controlplane.yaml" 'kind: ControlPlane'
+  assert_contains "the kind probe adds the OVNCentral of Step 3" \
+    "$(sed -n "${probe:-1}p" "$DEPLOY_INFRA_SH")" '"${REPO_ROOT}/deploy/lab/metal-stack/controlplane/ovncentral.yaml"'
+}
+
+test_main_gates_the_waits_on_infra_only() {
+  echo "Test: main() runs the operator waits only on the flux path without INFRA_ONLY"
+
+  local gate_count
+  gate_count="$(grep -cF '"${INFRA_ONLY}" == "true"' "$DEPLOY_INFRA_SH" || true)"
+  assert_eq "deploy-infra.sh still has exactly 1 strict INFRA_ONLY==true gate" "1" "$gate_count"
+
+  local infra_gate flux_branch external_branch crds awaited skip
+  infra_gate="$(line_of 'if [[ "${INFRA_ONLY}" != "true" ]]; then')"
+  assert_not_empty "the operator waits are gated on INFRA_ONLY != true" "$infra_gate"
+  infra_gate="${infra_gate:-0}"
+  assert_contains "the gate opens with the ten-release wait" \
+    "$(sed -n "$((infra_gate + 1))p" "$DEPLOY_INFRA_SH")" 'wait_for_helmreleases "${HELMRELEASE_TIMEOUT}"'
+  flux_branch="$(last_line_between 'if [[ "${CONTROLPLANE_OPERATORS}" == "flux" ]]; then' 0 "$infra_gate")"
+  external_branch="$(line_of '# CONTROLPLANE_OPERATORS=external: the Flux stack is suspended')"
+  assert_before "the gate sits in the flux branch" "$flux_branch" "$infra_gate"
+  assert_before "the gate sits before the external branch" "$infra_gate" "$external_branch"
+
+  crds="$(line_between 'novas.nova.openstack.c5c3.io' "$infra_gate" 999999)"
+  awaited="$(line_between 'operators_awaited=true' "$infra_gate" 999999)"
+  skip="$(line_of 'Skipping the operator waits and the admission probe (INFRA_ONLY=true')"
+  assert_before "operators_awaited turns true after the CRD wait" "$crds" "$awaited"
+  assert_before "the INFRA_ONLY skip is logged after the waits" "$awaited" "$skip"
+  assert_before "the INFRA_ONLY skip is logged in the flux branch" "$skip" "$external_branch"
+  assert_before "operators_awaited starts false before the WITH_CONTROLPLANE banner" \
+    "$(line_of 'local operators_awaited=false')" "$(line_of '=== WITH_CONTROLPLANE: bringing up')"
+
+  local gate hint_overlay hint_kind probe awaited_gate
+  gate="$(line_of 'elif [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then')"
+  hint_overlay="$(line_of 'kubectl apply -k ${OVERLAY_ROOT}/controlplane')"
+  hint_kind="$(line_of 'kubectl apply -f deploy/kind/controlplane/controlplane.yaml')"
+  probe="$(line_between 'wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}"' "${gate:-0}" "${hint_overlay:-0}")"
+  awaited_gate="$(last_line_between 'if [[ "${operators_awaited}" == "true" ]]; then' "${gate:-0}" "${probe:-0}")"
+  assert_not_empty "the overlay probe runs only once the operators were awaited" "$awaited_gate"
+  probe="$(line_between 'wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}"' "${hint_overlay:-0}" "${hint_kind:-0}")"
+  awaited_gate="$(last_line_between 'if [[ "${operators_awaited}" == "true" ]]; then' "${hint_overlay:-0}" "${probe:-0}")"
+  assert_not_empty "the kind probe runs only once the operators were awaited" "$awaited_gate"
+}
+
+# ---------------------------------------------------------------------------
+# Test 17: preflight refuses the bundled CR on a cluster without operators
+# ---------------------------------------------------------------------------
+
+# run_preflight <stub_dir> [env_var=value...]
+# Sources the script with the given overrides and runs preflight_checks with
+# exit-0 stubs of the tools it looks for first on the PATH. Echoes combined
+# stdout/stderr; returns the exit status.
+run_preflight() {
+  local stub_dir="$1"
+  shift
+  (
+    unset EXTERNAL_CLUSTER INFRA_ONLY WITH_CONTROLPLANE WITH_CONTROLPLANE_CR
+    for assignment in "$@"; do
+      export "${assignment?}"
+    done
+    local tool
+    for tool in docker kind kubectl jq yq; do
+      printf '#!/bin/bash\nexit 0\n' >"$stub_dir/$tool"
+      chmod +x "$stub_dir/$tool"
+    done
+    PATH="$stub_dir:$PATH"
+    export PATH
+    # shellcheck source=/dev/null
+    source "$DEPLOY_INFRA_SH"
+    preflight_checks
+  ) 2>&1
+}
+
+test_preflight_refuses_infra_only_with_the_bundled_cr() {
+  echo "Test: preflight refuses INFRA_ONLY=true together with WITH_CONTROLPLANE_CR=true"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  local output exit_code
+  output="$(run_preflight "$tmp" INFRA_ONLY=true WITH_CONTROLPLANE=true WITH_CONTROLPLANE_CR=true)"
+  exit_code=$?
+  assert_nonzero_exit "the combination fails preflight" "$exit_code"
+  assert_contains "the refusal names both flags and the reason" "$output" \
+    "ERROR: INFRA_ONLY=true does not support WITH_CONTROLPLANE_CR=true: this cluster runs no CobaltCore operator to admit or reconcile the ControlPlane CR."
+
+  output="$(run_preflight "$tmp" INFRA_ONLY=true WITH_CONTROLPLANE=true WITH_CONTROLPLANE_CR=false)"
+  exit_code=$?
+  assert_eq "INFRA_ONLY=true with the by-hand ending passes preflight" "0" "$exit_code"
+  assert_not_contains "no refusal without WITH_CONTROLPLANE_CR=true" "$output" "does not support"
+
+  output="$(run_preflight "$tmp" INFRA_ONLY=true WITH_CONTROLPLANE=false WITH_CONTROLPLANE_CR=true)"
+  exit_code=$?
+  assert_eq "WITH_CONTROLPLANE_CR=true is ignored without WITH_CONTROLPLANE=true" "0" "$exit_code"
+
+  output="$(run_preflight "$tmp" INFRA_ONLY=false WITH_CONTROLPLANE=true WITH_CONTROLPLANE_CR=true)"
+  exit_code=$?
+  assert_eq "the bundled CR passes preflight on a cluster with operators" "0" "$exit_code"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_admitted_first_poll_returns_zero
@@ -417,6 +682,11 @@ test_a_failed_webhook_patch_and_a_refused_connection_keep_polling
 test_a_stderr_without_a_record_keeps_polling
 test_timeout_dumps_operator_diagnostics_and_exits_one
 test_no_manifest_exits_one_before_polling
+test_main_waits_for_every_operator_release_and_its_crd
+test_main_applies_the_bundled_cr_once_after_the_probe
+test_main_probes_before_each_by_hand_hint
+test_main_gates_the_waits_on_infra_only
+test_preflight_refuses_infra_only_with_the_bundled_cr
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
