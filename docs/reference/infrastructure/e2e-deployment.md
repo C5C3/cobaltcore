@@ -136,10 +136,12 @@ while its controller still exists:
    ends with a wait, bounded by `TEARDOWN_TIMEOUT`, until no CR of the stack's
    namespaced CRDs in `openstack` is still being reaped, that is, carries a
    deletion timestamp or has lost an owner of a stack kind. The ControlPlane
-   delete of step 1 returns when the ControlPlane is gone, and garbage
-   collection reaps its children afterwards (a Keystone behind its OpenBao
-   finalizer, the PushSecrets and SecretStore that finalizer waits on, the
-   dedicated Barbican OpenBao instance); their finalizers need the operators
+   delete of step 1 returns when the ControlPlane is gone. Its finalizer
+   deletes the co-located Keystone and waits for it first, so the Keystone and
+   the backup PushSecrets its OpenBao finalizer purges are finalized by then.
+   Garbage collection reaps the other children afterwards (the SecretStore, the
+   dedicated Barbican OpenBao instance), and the Keystone too when the
+   finalizer gave up on it at its deadline; their finalizers need the operators
    step 3 uninstalls. Without the wait a slow finalizer loses its controller
    and holds the namespace in `Terminating`. The base overlay's Gateway and
    the objects the deploy applies outside the overlays are nobody's children
