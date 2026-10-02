@@ -24,8 +24,8 @@
 #
 # The image tag is latest because it is the only tag of ghcr.io/c5c3/libvirt
 # that does not name a commit of this repository; Always pulls it on every
-# start. The resources bound this pod's cgroup, which keeps bash, virtlogd
-# and the probes. libvirtd and QEMU run in the host scope, outside it.
+# start. The resources bound this pod's cgroup, which keeps bash and the
+# probes. libvirtd and QEMU run in the host scope, outside it.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:

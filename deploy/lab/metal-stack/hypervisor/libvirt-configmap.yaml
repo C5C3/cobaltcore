@@ -32,7 +32,10 @@
 # runs as root here (kna-release.yaml) and opens it either way. qemu.conf runs
 # QEMU as root: the host's
 # /dev/kvm is root:103 and the image's kvm group has another ID
-# (docs/reference/ci-cd/container-images.md, libvirt).
+# (docs/reference/ci-cd/container-images.md, libvirt). qemu.conf sets
+# stdio_handler to file, so libvirtd opens QEMU's log files itself and no
+# virtlogd runs, because a virtlogd in the pod dies with the pod and takes
+# the console log of every running domain with it (#1174).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -131,7 +134,6 @@ data:
     systemctl stop cobaltcore-libvirtd.scope 2>/dev/null || true
     systemctl reset-failed cobaltcore-libvirtd.scope 2>/dev/null || true
     rm -f /run/libvirtd.pid
-    virtlogd -d
     systemd-run --collect --scope --slice=system --unit=cobaltcore-libvirtd libvirtd --listen &
     libvirtd_pid=$!
 
@@ -198,3 +200,4 @@ data:
     security_driver = "none"
     default_tls_x509_cert_dir = "/etc/pki/qemu"
     default_tls_x509_verify = 1
+    stdio_handler = "file"
