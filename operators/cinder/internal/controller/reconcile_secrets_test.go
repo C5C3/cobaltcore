@@ -11,9 +11,11 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 )
 
 func TestReconcileSecrets_StoreNotReady(t *testing.T) {
@@ -144,4 +146,31 @@ func TestEffectiveServiceUserKey(t *testing.T) {
 	custom := validCinder()
 	custom.Spec.ServiceUser.SecretRef.Key = "cinder-password"
 	g.Expect(effectiveServiceUserKey(custom)).To(Equal("cinder-password"))
+}
+
+// TestReconcileSecrets_NamespaceScopedRefusesClusterStore pins the refusal a
+// namespace-scoped operator gives a Cinder that omits spec.secretStoreRef: its
+// effective store is the cluster-scoped default, which a Role cannot grant, so
+// the gate sets SecretsReady=False/ClusterSecretStoreUnsupported and requeues
+// without reading the ClusterSecretStore at all.
+func TestReconcileSecrets_NamespaceScopedRefusesClusterStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cinder := validCinder()
+	cinder.Spec.SecretStoreRef = nil
+	cinder.Generation = 3
+	c := cinderFakeClientBuilder(cinder).
+		WithInterceptorFuncs(testutil.ForbidClusterSecretStoreGet(t)).
+		Build()
+	r := &CinderReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10), NamespaceScoped: true}
+
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, cinder)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+	g.Expect(digest).To(BeEmpty())
+	cond := cinderCondition(cinder, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ClusterSecretStoreUnsupported"))
+	g.Expect(cond.ObservedGeneration).To(Equal(cinder.Generation))
 }

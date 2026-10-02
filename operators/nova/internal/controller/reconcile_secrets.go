@@ -103,8 +103,10 @@ func (r *NovaReconciler) reconcileSecrets(ctx context.Context, children client.C
 	// selected via spec.secretStoreRef (default: the shared cluster-scoped
 	// openbao-cluster-store); a namespaced store is resolved in the Nova's own
 	// namespace.
+	// Under --namespace a cluster-scoped store is refused with
+	// ClusterSecretStoreUnsupported and not read.
 	storeReady, err := secrets.GateStoreReady(ctx, children,
-		secrets.EffectiveStoreRef(nova.Spec.SecretStoreRef), nova.Namespace,
+		secrets.EffectiveStoreRef(nova.Spec.SecretStoreRef), nova.Namespace, r.NamespaceScoped,
 		&nova.Status.Conditions, nova.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, secretValues{}, err

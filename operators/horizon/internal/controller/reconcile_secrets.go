@@ -45,8 +45,10 @@ func (r *HorizonReconciler) reconcileSecrets(ctx context.Context, children clien
 	// this Horizon selected via spec.secretStoreRef (default: the shared
 	// cluster-scoped openbao-cluster-store); a namespaced store is resolved in
 	// the Horizon's own namespace.
+	// Under --namespace a cluster-scoped store is refused with
+	// ClusterSecretStoreUnsupported and not read.
 	storeReady, err := secrets.GateStoreReady(ctx, children,
-		secrets.EffectiveStoreRef(horizon.Spec.SecretStoreRef), horizon.Namespace,
+		secrets.EffectiveStoreRef(horizon.Spec.SecretStoreRef), horizon.Namespace, r.NamespaceScoped,
 		&horizon.Status.Conditions, horizon.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, "", err

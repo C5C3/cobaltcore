@@ -2297,9 +2297,13 @@ spec:
                   gates SecretsReady for this Horizon. When omitted the operator uses the
                   shared cluster-scoped openbao-cluster-store, so existing deployments keep
                   working unchanged. Set kind to SecretStore with the name of a namespaced
-                  store in THIS Horizon's namespace to gate on a per-tenant identity. The
-                  ControlPlane operator projects this field onto the Horizon it owns, so
-                  operators normally configure it there rather than here.
+                  store in THIS Horizon's namespace to gate on a per-tenant identity. An
+                  operator started with --namespace cannot read a ClusterSecretStore and
+                  refuses one, this default included
+                  (SecretsReady=False/ClusterSecretStoreUnsupported), so it needs kind set
+                  to SecretStore explicitly. The ControlPlane operator projects this field
+                  onto the Horizon it owns, so operators normally configure it there rather
+                  than here.
                 properties:
                   kind:
                     default: ClusterSecretStore

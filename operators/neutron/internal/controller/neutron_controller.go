@@ -208,10 +208,11 @@ type NeutronReconciler struct {
 	// determined, in which case no operator-namespace peer is added.
 	OperatorNamespace string
 
-	// NamespaceScoped is true when the operator runs with --namespace. The
-	// ClusterSecretStore watch leg is then not registered, because a Role
-	// cannot grant the cluster-scoped kind. The zero value is the cluster-wide
-	// operator.
+	// NamespaceScoped is true when the operator runs with --namespace. A Role
+	// cannot grant the cluster-scoped ClusterSecretStore, so its watch leg is
+	// then not registered and reconcileSecrets refuses a CR whose effective
+	// store is cluster-scoped with ClusterSecretStoreUnsupported instead of
+	// reading it. The zero value is the cluster-wide operator.
 	NamespaceScoped bool
 
 	// MaxConcurrentReconciles bounds how many Neutron CRs reconcile concurrently.
