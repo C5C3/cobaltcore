@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 
-	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -40,6 +39,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
@@ -160,6 +160,12 @@ type PlacementReconciler struct {
 	// check can reach the Placement API. Empty when the namespace could not be
 	// determined, in which case no operator-namespace peer is added.
 	OperatorNamespace string
+
+	// NamespaceScoped is true when the operator runs with --namespace. The
+	// ClusterSecretStore watch leg is then not registered, because a Role
+	// cannot grant the cluster-scoped kind. The zero value is the cluster-wide
+	// operator.
+	NamespaceScoped bool
 
 	// MaxConcurrentReconciles bounds how many Placement CRs reconcile
 	// concurrently. It is threaded from the --max-concurrent-reconciles flag and
@@ -705,13 +711,11 @@ func (r *PlacementReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	// SecretStore a Placement can select via spec.secretStoreRef, so the
 	// operator reflects upstream secret-backend outages in SecretsReady as soon
 	// as ESO flips the selected store's Ready condition.
-	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &esov1.ClusterSecretStore{},
-		storeToPlacementMapper(local.GetClient(), commonv1.SecretStoreKindCluster))
-	if err != nil {
-		return err
-	}
-	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &esov1.SecretStore{},
-		storeToPlacementMapper(local.GetClient(), commonv1.SecretStoreKindNamespaced))
+	// Under --namespace the ClusterSecretStore leg is not registered: a Role
+	// cannot grant the cluster-scoped kind, so its informer would never sync
+	// and the manager would fail its cache sync at startup.
+	b, err = secrets.AddStoreWatches(b, local.GetScheme(), targets, r.NamespaceScoped,
+		local.GetClient(), storeToPlacementMapper)
 	if err != nil {
 		return err
 	}
