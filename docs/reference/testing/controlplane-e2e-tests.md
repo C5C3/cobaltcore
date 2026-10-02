@@ -837,7 +837,11 @@ cluster-scoped.
 The teardown is part of the contract rather than cleanup: deleting the
 registration has to reach Keystone through K-ORC, drop the consumer Secret with
 its ExternalSecret, and let the plane collect the tenant store once the namespace
-holds no registration.
+holds no registration. Deleting the plane itself has to finish with the projected
+Keystone gone and no `OpenBaoCleanupStalled` or `KeystoneTeardownStalled` event
+in the namespace. The suite leaves the Keystone to the ControlPlane's finalizer,
+which deletes it and waits for its OpenBao cleanup before it releases (see
+[Owner-ref / GC model](../c5c3/controlplane-reconciler.md#owner-ref-gc-model)).
 
 Run it locally against a full ControlPlane stack with
 `E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it after
@@ -923,6 +927,17 @@ lands in the Job object.
 drive the same CLI as the cloud admin, for the rows only an admin can see or
 create. Both print a `SERVICE_ID=` and a `USER_ID=` line the test script parses
 out of the Job log, with `ABSENT` for a row that is gone.
+
+The teardown proves the order the ControlPlane's finalizer keeps for its
+Keystone and leaves the Keystone to that finalizer. Before the plane is deleted the
+suite requires a live value at the Keystone's fernet-keys backup path, so the
+purge check that follows cannot pass on a path that was never written. Once the
+plane is gone, the Keystone `cp-keystone` must be absent, the namespace must hold
+no `OpenBaoCleanupStalled` or `KeystoneTeardownStalled` event, and neither
+`openstack/keystone/{namespace}/cp-keystone/fernet-keys` nor
+`.../credential-keys` may hold a live value. A teardown that let the cascade
+reap the tenant store together with the Keystone would end through one of those
+stall breakers and leave the keys in OpenBao.
 
 Run it locally against a full ControlPlane stack with
 `E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it third,
