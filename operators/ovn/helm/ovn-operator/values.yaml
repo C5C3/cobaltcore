@@ -37,8 +37,8 @@ rbac:
   # is NOT supported by this chart, and setting it to true fails the render.
   # The OVNChassis controller watches Nodes, which are cluster-scoped: a Role
   # accepts the rule and grants nothing for it, the manager never syncs its
-  # Node informer, and it dies on its cache-sync timeout at startup. The other
-  # operator charts support the mode; ovn-operator is the one that cannot.
+  # Node informer, and it dies on its cache-sync timeout at startup.
+  # ovn-operator, neutron-operator and c5c3-operator are the charts that cannot.
   namespaceScoped: false
 
 leaderElection:

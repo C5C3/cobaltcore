@@ -1,32 +1,22 @@
-# Role unit tests for namespace-scoped mode.
-#
-# The Role renders the same generated rule set as the ClusterRole (see
-# clusterrole_test.yaml), so this suite pins the rendering and guards plus a
-# wiring check, not the individual rules.
+# The namespace-scoped Role is not rendered by this chart: the ControlPlane
+# controller watches cluster-scoped Namespaces, SizingProfiles and
+# ClusterSecretStores and creates ClusterRoleBindings. A Role accepts rules
+# naming them while granting nothing for them, so the operator would deploy and
+# then die on its cache-sync timeout. The rules themselves are pinned by
+# clusterrole_test.yaml, which covers the one scope this chart supports.
 suite: Role
 templates:
   - templates/role.yaml
 tests:
-  - it: should render Role when rbac.namespaceScoped is true
+  - it: should fail when rbac.namespaceScoped is true
     set:
       rbac:
         namespaceScoped: true
       webhook:
         enabled: false
     asserts:
-      - hasDocuments:
-          count: 1
-      - equal:
-          path: kind
-          value: Role
-      - equal:
-          path: metadata.name
-          value: RELEASE-NAME-c5c3-operator
-      - isSubset:
-          path: metadata.labels
-          content:
-            app.kubernetes.io/name: c5c3-operator
-            app.kubernetes.io/instance: RELEASE-NAME
+      - failedTemplate:
+          errorPattern: cluster-scoped Namespaces
 
   - it: should fail when rbac.namespaceScoped is true and webhook.enabled is true
     set:
@@ -38,55 +28,7 @@ tests:
       - failedTemplate:
           errorPattern: webhook/enabled
 
-  - it: should not render Role when rbac.namespaceScoped is false
+  - it: should render nothing when rbac.namespaceScoped is false
     asserts:
       - hasDocuments:
           count: 0
-
-  - it: should grant full CRUD on controlplanes
-    set:
-      rbac:
-        namespaceScoped: true
-      webhook:
-        enabled: false
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - c5c3.io
-            resources:
-              - controlplanes
-              - credentialrotations
-              - keystoneservices
-            verbs:
-              - create
-              - delete
-              - get
-              - list
-              - patch
-              - update
-              - watch
-
-  - it: should grant full CRUD on leases for leader election
-    set:
-      rbac:
-        namespaceScoped: true
-      webhook:
-        enabled: false
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - coordination.k8s.io
-            resources:
-              - leases
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete

@@ -910,7 +910,9 @@ jobs:
             echo "--- Scenario 4: custom resources ---"
             helm template test "$chart" --set resources.limits.cpu=100m --set resources.limits.memory=64Mi
             # A chart may refuse the mode by design (ovn-operator watches
-            # cluster-scoped Nodes; neutron-operator reads across namespaces):
+            # cluster-scoped Nodes; c5c3-operator watches cluster-scoped
+            # Namespaces, SizingProfiles and ClusterSecretStores;
+            # neutron-operator reads across namespaces):
             # it overrides the operator-library.chart.namespaceScopedUnsupported
             # hook, the shared Role template fails the render with the
             # documented "is not supported by <chart>" message, and the chart's
