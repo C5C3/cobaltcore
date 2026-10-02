@@ -155,6 +155,9 @@ test_all_jobs_defined() {
   assert_file_contains "build-hvo job defined" "$WORKFLOW" "build-hvo:"
   assert_file_contains "merge-hvo-image job defined" "$WORKFLOW" "merge-hvo-image:"
   assert_file_contains "verify-hvo-image job defined" "$WORKFLOW" "verify-hvo-image:"
+  assert_file_contains "build-kna job defined" "$WORKFLOW" "build-kna:"
+  assert_file_contains "merge-kna-image job defined" "$WORKFLOW" "merge-kna-image:"
+  assert_file_contains "verify-kna-image job defined" "$WORKFLOW" "verify-kna-image:"
   assert_file_contains "build-nova-compute-image job defined" "$WORKFLOW" "build-nova-compute-image:"
   assert_file_contains "merge-nova-compute-image job defined" "$WORKFLOW" "merge-nova-compute-image:"
   assert_file_contains "verify-nova-compute-image job defined" "$WORKFLOW" "verify-nova-compute-image:"
@@ -421,6 +424,96 @@ test_hvo_jobs() {
   assert_contains "verify-hvo-image verifies on an arm64 runner" "$verify_runners" "ubuntu-24.04-arm"
 }
 
+# --- kvm-node-agent build/merge/verify job structure ---
+test_kna_jobs() {
+  echo "Test: kvm-node-agent job structure"
+
+  local needs
+  needs=$(yq_raw '.jobs["build-kna"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "build-kna needs lint-dockerfiles" "$needs" "lint-dockerfiles"
+  assert_contains "build-kna needs prepare" "$needs" "prepare"
+
+  # Release-independent: no release axis, a static multi-arch include matrix.
+  local matrix_platforms
+  matrix_platforms=$(yq_raw '.jobs["build-kna"]["strategy"]["matrix"]["include"][]["platform"]' "$WORKFLOW" || true)
+  assert_contains "build-kna matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
+  assert_contains "build-kna matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
+
+  # PR-inline verification wiring (the tempest pattern).
+  local verify_script
+  verify_script=$(yq_raw '.jobs["build-kna"]["steps"][] | select(.id == "build-kna") | .with["verify-script"]' "$WORKFLOW" || echo "null")
+  assert_eq "build step wires the verify script" \
+    "tests/container-images/verify_kna.sh" "$verify_script"
+
+  # The lint matrix covers the new Dockerfile.
+  local lint_matrix
+  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
+  assert_contains "lint-dockerfiles covers the kvm-node-agent Dockerfile" \
+    "$lint_matrix" "images/kvm-node-agent/Dockerfile"
+
+  # Merge job: PR-skipped, needs the build.
+  local merge_if
+  merge_if=$(yq_raw '.jobs["merge-kna-image"]["if"]' "$WORKFLOW" || echo "null")
+  assert_contains "merge job skipped on PRs" "$merge_if" "github.event_name != 'pull_request'"
+
+  local merge_needs
+  merge_needs=$(yq_raw '.jobs["merge-kna-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "merge job needs the build job" "$merge_needs" "build-kna"
+
+  # Tags: sha-<kna-commit>-<sha> everywhere; sha-<kna-commit> (what the
+  # upstream chart of that commit renders), upstream-<kna-commit> (the
+  # retention keeper) and latest on main only. The first line is the
+  # unconditional one, the line with the main check carries the other three.
+  # The trailing space keeps the plain sha- tag from matching the composite.
+  local kna_tags_run first_line main_line
+  kna_tags_run=$(yq_raw '.jobs["merge-kna-image"]["steps"][] | select(.id == "kna-tags") | .run' "$WORKFLOW" || echo "null")
+  first_line="${kna_tags_run%%$'\n'*}"
+  main_line=$(grep -F '"${GITHUB_REF_NAME}" == "main"' <<<"$kna_tags_run" || true)
+  assert_contains "the first tag line sets the composite tag" \
+    "$first_line" '${IMAGE}:sha-${KNA_COMMIT}-${COMMIT_SHA}'
+  assert_not_contains "the composite tag line is not gated on main" "$first_line" "GITHUB_REF_NAME"
+  assert_not_contains "the composite tag line carries no upstream- tag" "$first_line" "upstream-"
+  assert_contains "the plain sha- tag is main-only" "$main_line" '${IMAGE}:sha-${KNA_COMMIT} '
+  assert_contains "the upstream- tag is main-only" "$main_line" '${IMAGE}:upstream-${KNA_COMMIT}'
+  assert_contains "the latest tag is main-only" "$main_line" '${IMAGE}:latest'
+
+  # The tag lines name the pin only while KNA_COMMIT carries it: both jobs
+  # resolve it through the one parser, and the tag step reads that output. A
+  # renamed step id leaves it empty, which publishes sha- and upstream- and
+  # still passes the merge and the digest-pinned verify job.
+  local job resolve_run kna_commit_env
+  for job in build-kna merge-kna-image; do
+    resolve_run=$(yq_raw ".jobs[\"$job\"][\"steps\"][] | select(.id == \"kna-commit\") | .run" "$WORKFLOW" || echo "null")
+    assert_contains "$job resolves the pin through the resolver" "$resolve_run" "hack/ci-resolve-kna-commit.sh"
+  done
+  kna_commit_env=$(yq_raw '.jobs["merge-kna-image"]["steps"][] | select(.id == "kna-tags") | .env.KNA_COMMIT' "$WORKFLOW" || echo "null")
+  assert_eq "the tag step reads the resolved pin" '${{ steps.kna-commit.outputs.commit }}' "$kna_commit_env"
+
+  # Post-merge verify job: pulls the merged manifest, read-only permissions.
+  local verify_needs
+  verify_needs=$(yq_raw '.jobs["verify-kna-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "verify-kna-image needs merge-kna-image" "$verify_needs" "merge-kna-image"
+
+  local verify_pkg_perms
+  verify_pkg_perms=$(yq_raw '.jobs["verify-kna-image"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
+  assert_eq "verify-kna-image has packages: read" "read" "$verify_pkg_perms"
+
+  local verify_contents_perms
+  verify_contents_perms=$(yq_raw '.jobs["verify-kna-image"]["permissions"]["contents"]' "$WORKFLOW" || echo "null")
+  assert_eq "verify-kna-image has contents: read (for checkout)" "read" "$verify_contents_perms"
+
+  # The arm64 image is never compiled on a PR (docker load takes one platform),
+  # so this job is the only place its binary runs. A single ubuntu-latest
+  # runner would pull the amd64 variant and report green for both.
+  local verify_runner verify_runners
+  verify_runner=$(yq_raw '.jobs["verify-kna-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+  assert_contains "verify-kna-image uses matrix runner expression" "$verify_runner" "matrix.runner"
+
+  verify_runners=$(yq_raw '.jobs["verify-kna-image"]["strategy"]["matrix"]["runner"][]' "$WORKFLOW" || true)
+  assert_contains "verify-kna-image verifies on an amd64 runner" "$verify_runners" "ubuntu-latest"
+  assert_contains "verify-kna-image verifies on an arm64 runner" "$verify_runners" "ubuntu-24.04-arm"
+}
+
 # --- nova-compute build/merge/verify job structure ---
 test_nova_compute_jobs() {
   echo "Test: nova-compute job structure"
@@ -573,7 +666,7 @@ test_changes_job_gates_matrix_jobs() {
   local outputs
   outputs=$(yq_raw '.jobs["changes"]["outputs"] | keys | .[]' "$WORKFLOW" || true)
   local key
-  for key in services has-services build-tempest build-ovn build-proxy build-shifter build-libvirt build-hvo; do
+  for key in services has-services build-tempest build-ovn build-proxy build-shifter build-libvirt build-hvo build-kna; do
     assert_contains "changes exports $key" "$outputs" "$key"
   done
 
@@ -598,6 +691,9 @@ test_changes_job_gates_matrix_jobs() {
   assert_contains "the resolve step is handed FILTER_hvo" "$resolve_env" "FILTER_hvo"
   assert_file_contains_fixed "FILTER_hvo reads the hvo filter" "$WORKFLOW" \
     'FILTER_hvo: ${{ steps.filter.outputs.hvo }}'
+  assert_contains "the resolve step is handed FILTER_kna" "$resolve_env" "FILTER_kna"
+  assert_file_contains_fixed "FILTER_kna reads the kna filter" "$WORKFLOW" \
+    'FILTER_kna: ${{ steps.filter.outputs.kna }}'
 
   # The filters input is a YAML document of its own; parse it a second time so
   # the globs are read from the libvirt key, not from anywhere in the block.
@@ -608,18 +704,25 @@ test_changes_job_gates_matrix_jobs() {
   assert_contains "the libvirt filter covers its verify script" \
     "$libvirt_globs" "tests/container-images/verify_libvirt.sh"
 
-  local filters hvo_globs plumbing_globs
+  local filters hvo_globs kna_globs plumbing_globs
   filters=$(yq_raw '.jobs["changes"]["steps"][] | select(.id == "filter") | .with.filters' "$WORKFLOW" || true)
   hvo_globs=$(yq_raw '.hvo[]' - <<<"$filters" || true)
   assert_contains "the hvo filter covers the image sources" \
     "$hvo_globs" "images/openstack-hypervisor-operator/**"
   assert_contains "the hvo filter covers its verify script" \
     "$hvo_globs" "tests/container-images/verify_hvo.sh"
+  kna_globs=$(yq_raw '.kna[]' - <<<"$filters" || true)
+  assert_contains "the kna filter covers the image sources" \
+    "$kna_globs" "images/kvm-node-agent/**"
+  assert_contains "the kna filter covers its verify script" \
+    "$kna_globs" "tests/container-images/verify_kna.sh"
   # The resolver is the only parser of the pin, so a change to it rebuilds
   # every image like any other script the workflow calls.
   plumbing_globs=$(yq_raw '.plumbing[]' - <<<"$filters" || true)
   assert_contains "the plumbing filter covers the hvo commit resolver" \
     "$plumbing_globs" "hack/ci-resolve-hvo-commit.sh"
+  assert_contains "the plumbing filter covers the kna commit resolver" \
+    "$plumbing_globs" "hack/ci-resolve-kna-commit.sh"
 
   local gen_needs gen_env
   gen_needs=$(yq_raw '.jobs["generate-matrix"]["needs"][]' "$WORKFLOW" || true)
@@ -652,6 +755,9 @@ test_changes_job_gates_matrix_jobs() {
   assert_contains "build-hvo gates on its own flag" \
     "$(yq_raw '.jobs["build-hvo"]["if"]' "$WORKFLOW" || true)" \
     "needs.changes.outputs.build-hvo == 'true'"
+  assert_contains "build-kna gates on its own flag" \
+    "$(yq_raw '.jobs["build-kna"]["if"]' "$WORKFLOW" || true)" \
+    "needs.changes.outputs.build-kna == 'true'"
 
   # The pull-request trigger names the inputs this workflow reads; the push
   # trigger keeps the broad list, so the publish path is unchanged.
@@ -662,6 +768,8 @@ test_changes_job_gates_matrix_jobs() {
   assert_contains "the pull-request trigger names overrides/**" "$pr_paths" "overrides/**"
   assert_contains "the pull-request trigger names the hvo commit resolver" \
     "$pr_paths" "hack/ci-resolve-hvo-commit.sh"
+  assert_contains "the pull-request trigger names the kna commit resolver" \
+    "$pr_paths" "hack/ci-resolve-kna-commit.sh"
   assert_contains "the pull-request trigger names one composite action" \
     "$pr_paths" ".github/actions/build-push-image/**"
   assert_not_contains "the pull-request trigger drops the .github/actions/ catch-all" \
@@ -965,6 +1073,15 @@ test_runs_on_ubuntu_latest() {
   assert_contains "build-hvo uses matrix runner expression" "$hvo_runner" "matrix.runner"
   assert_eq "merge-hvo-image uses ubuntu-latest" "ubuntu-latest" "$hvo_merge_runner"
   assert_contains "verify-hvo-image uses matrix runner expression" "$hvo_verify_runner" "matrix.runner"
+
+  local kna_runner kna_merge_runner kna_verify_runner
+  kna_runner=$(yq_raw '.jobs["build-kna"]["runs-on"]' "$WORKFLOW" || echo "null")
+  kna_merge_runner=$(yq_raw '.jobs["merge-kna-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+  kna_verify_runner=$(yq_raw '.jobs["verify-kna-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+
+  assert_contains "build-kna uses matrix runner expression" "$kna_runner" "matrix.runner"
+  assert_eq "merge-kna-image uses ubuntu-latest" "ubuntu-latest" "$kna_merge_runner"
+  assert_contains "verify-kna-image uses matrix runner expression" "$kna_verify_runner" "matrix.runner"
 }
 
 # --- Base images always push unconditionally ---
@@ -1412,6 +1529,13 @@ test_verify_jobs_no_sbom_permissions() {
 
   assert_eq "verify-hvo-image has no id-token permission" "null" "$verify_hvo_id_token"
   assert_eq "verify-hvo-image has no attestations permission" "null" "$verify_hvo_attestations"
+
+  local verify_kna_id_token verify_kna_attestations
+  verify_kna_id_token=$(yq_raw '.jobs["verify-kna-image"]["permissions"]["id-token"]' "$WORKFLOW" || echo "null")
+  verify_kna_attestations=$(yq_raw '.jobs["verify-kna-image"]["permissions"]["attestations"]' "$WORKFLOW" || echo "null")
+
+  assert_eq "verify-kna-image has no id-token permission" "null" "$verify_kna_id_token"
+  assert_eq "verify-kna-image has no attestations permission" "null" "$verify_kna_attestations"
 }
 
 # --- SBOM generation steps exist ---
@@ -2061,11 +2185,11 @@ test_security_events_permission_scoped_to_merge_jobs() {
   # SARIF (the composite skips the upload on pull requests), so they hold no
   # security-events permission. The merge jobs upload on push and keep it.
   local job perm
-  for job in build-tempest build-keystone-federation-proxy build-backup-shifter build-libvirt build-ovn build-hvo build-service-images build-nova-compute-image; do
+  for job in build-tempest build-keystone-federation-proxy build-backup-shifter build-libvirt build-ovn build-hvo build-kna build-service-images build-nova-compute-image; do
     perm=$(yq_raw ".jobs[\"$job\"][\"permissions\"][\"security-events\"]" "$WORKFLOW" || echo "null")
     assert_eq "$job has no security-events permission" "null" "$perm"
   done
-  for job in merge-base-images merge-tempest-image merge-keystone-federation-proxy-image merge-backup-shifter-image merge-libvirt-image merge-ovn-image merge-hvo-image merge-service-images merge-nova-compute-image; do
+  for job in merge-base-images merge-tempest-image merge-keystone-federation-proxy-image merge-backup-shifter-image merge-libvirt-image merge-ovn-image merge-hvo-image merge-kna-image merge-service-images merge-nova-compute-image; do
     perm=$(yq_raw ".jobs[\"$job\"][\"permissions\"][\"security-events\"]" "$WORKFLOW" || echo "null")
     assert_eq "$job has security-events: write" "write" "$perm"
   done
@@ -2135,6 +2259,10 @@ test_verify_jobs_no_security_events_permission() {
   verify_hvo_perm=$(yq_raw '.jobs["verify-hvo-image"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
   assert_eq "verify-hvo-image has no security-events permission" "null" "$verify_hvo_perm"
 
+  local verify_kna_perm
+  verify_kna_perm=$(yq_raw '.jobs["verify-kna-image"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
+  assert_eq "verify-kna-image has no security-events permission" "null" "$verify_kna_perm"
+
   local verify_nova_compute_perm
   verify_nova_compute_perm=$(yq_raw '.jobs["verify-nova-compute-image"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
   assert_eq "verify-nova-compute-image has no security-events permission" "null" "$verify_nova_compute_perm"
@@ -2197,6 +2325,8 @@ echo ""
 test_ovn_jobs
 echo ""
 test_hvo_jobs
+echo ""
+test_kna_jobs
 echo ""
 test_nova_compute_jobs
 echo ""
