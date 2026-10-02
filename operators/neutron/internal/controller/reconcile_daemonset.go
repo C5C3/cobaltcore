@@ -305,8 +305,9 @@ func buildAgentDaemonSet(cr *neutronv1alpha1.NeutronMetadataAgent, chassis resol
 //
 // RunAsUser and RunAsNonRoot are spelled out because PrivilegedSecurityContext
 // leaves both unset, which would leave the container on the image's own
-// openstack user; privsep-helper is invoked through sudo and the namespaces the
-// agent creates are the node's, so neither works unprivileged.
+// openstack user. privsep-helper is started through env and needs uid 0 for the
+// capabilities it keeps, and the namespaces the agent creates are the node's,
+// so neither works unprivileged.
 func agentSecurityContext() *corev1.SecurityContext {
 	sc := deployment.PrivilegedSecurityContext()
 	sc.RunAsUser = ptr.To(int64(0))
