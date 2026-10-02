@@ -13,7 +13,8 @@
 #     chassis pods create, and the agent container is ready without a restart
 #   - the rendered neutron_ovn_metadata_agent.ini points the agent at that local
 #     database and at the Southbound address the OVNCentral published, pins
-#     metadata_workers = 4, and carries no transport_url line
+#     metadata_workers = 4 and root_helper = env, and carries no transport_url
+#     line
 #
 # That last assertion is what #904 owes this suite: an agent with spec.messaging
 # unset opens no broker connection, and the decision that the transport URL
@@ -34,8 +35,7 @@
 # Steps 9 to 11 measure the memory of the agent container with networks on its
 # node (#1173). The operator's memory default is sized for 32 networks, and no
 # other suite makes the agent provision one:
-#   - step 9 lets the agent start its privsep helper and takes the reading of
-#     an agent with no network
+#   - step 9 takes the reading of an agent with no network
 #   - step 10 writes one network and then 31 more into the Northbound database,
 #     binds a port of each on the node, and reads the container's cgroup once
 #     the agent runs one haproxy per network
@@ -310,6 +310,11 @@ spec:
   #
   # The CR sets no spec.metadataWorkers, so the file carries the operator
   # default, metadata_workers = 4.
+  #
+  # The CR sets no spec.extraConfig either, so the command the agent starts
+  # privsep-helper through is the operator's own, env. Steps 10 and 11 prove it
+  # on the node: an agent that cannot start privsep-helper provisions no
+  # network.
   - try:
     - script:
         content: |
@@ -325,11 +330,12 @@ spec:
           test -n "$SB"
           grep -Fxq "ovn_sb_connection = ${SB}" /tmp/neutron-agent.ini
           grep -Fxq 'metadata_workers = 4' /tmp/neutron-agent.ini
+          grep -Fxq 'root_helper = env' /tmp/neutron-agent.ini
           if grep -q '^transport_url' /tmp/neutron-agent.ini; then
             echo "ERROR: neutron_ovn_metadata_agent.ini carries a transport_url line"
             exit 1
           fi
-          echo "OK: $CM reads the local database and ${SB}, pins metadata_workers = 4, and renders no transport_url"
+          echo "OK: $CM reads the local database and ${SB}, pins metadata_workers = 4 and root_helper = env, and renders no transport_url"
     catch:
     - script:
         content: |
@@ -514,7 +520,7 @@ spec:
           kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 9: Let the agent provision, and take the idle reading ─────────
+  # ── Step 9: Take the idle reading ──────────────────────────────────────
   # Steps 9 to 11 read the memory of the agent container out of its cgroup
   # while the agent provisions networks. Each phase prints one MEMORY-READING
   # line and fails on a restart, an OOM kill or a working set above 90% of
@@ -527,39 +533,6 @@ spec:
   # runs the step cleanups last-in first-out, so this step's ConfigMap outlives
   # the cleanup of the step after it.
   - try:
-    - script:
-        timeout: 6m
-        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
-        shell: bash
-        content: |
-          set -euo pipefail
-
-          # The shipped neutron image cannot start privsep-helper through sudo:
-          # its secure_path lacks /var/lib/openstack/bin (#1172). Without the
-          # helper the agent provisions no network, so the suite runs it with
-          # root_helper = env, the workaround of the lab run. Remove this patch
-          # and the generation poll below once #1172 is closed.
-          #
-          # The poll waits for the operator to render the patched config into the
-          # DaemonSet. Without it the rollout status below can return for the old
-          # generation, and the next reading would come from a pod that is about
-          # to be deleted.
-          GENERATION="$(kubectl get ds neutron-agent-metadata-agent -n "$NAMESPACE" -o 'jsonpath={.metadata.generation}')"
-          kubectl patch neutronmetadataagent neutron-agent -n "$NAMESPACE" --type merge -p '{"spec":{"extraConfig":{"agent":{"root_helper":"env"}}}}'
-          ROLLED=""
-          for _ in $(seq 1 24); do
-            if [ "$(kubectl get ds neutron-agent-metadata-agent -n "$NAMESPACE" -o 'jsonpath={.metadata.generation}')" != "$GENERATION" ]; then
-              ROLLED=yes
-              break
-            fi
-            sleep 5
-          done
-          if [ -z "$ROLLED" ]; then
-            echo "FAIL: the DaemonSet still has generation ${GENERATION} 2m after the root_helper patch"
-            exit 1
-          fi
-
-          kubectl rollout status ds/neutron-agent-metadata-agent -n "$NAMESPACE" --timeout=3m
     - assert:
         resource:
           apiVersion: neutron.openstack.c5c3.io/v1alpha1
