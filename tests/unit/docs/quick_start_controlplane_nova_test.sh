@@ -4,13 +4,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the compute service in docs/quick-start-controlplane.md:
-#   - Step 6 carries the `### Boot a first server` check
-#   - the Step 5 chain runs CinderReady -> NovaReady -> ServiceAccountsReady, and
+#   - Step 7 carries the `### Boot a first server` check
+#   - the Step 6 chain runs CinderReady -> NovaReady -> ServiceAccountsReady, and
 #     both the aggregate's count and the chain's length match the operator's
 #     subConditionTypes
 #   - the optional server boot applies the deploy/kind/fake-compute overlay and
 #     boots with --nic none, since the devstack runs no OVN chassis
-#   - the `# controlplane.yaml` CR of Step 3 publishes the compute API on
+#   - the `# controlplane.yaml` CR of Step 4 publishes the compute API on
 #     nova.127-0-0-1.nip.io with the :8443 public endpoint, carries none of the
 #     optional nova blocks, and the hostname is a listener of the kind Gateway
 #
@@ -42,15 +42,15 @@ if [[ ! -f "$QUICK_START_DOC" ]]; then
   exit 1
 fi
 
-# --- Test 1: the Step 6 walkthrough heading ---
+# --- Test 1: the Step 7 walkthrough heading ---
 test_boot_heading() {
-  echo "Test: Step 6 carries the '### Boot a first server' check"
+  echo "Test: Step 7 carries the '### Boot a first server' check"
   assert_file_contains "'### Boot a first server' heading present" \
     "$QUICK_START_DOC" \
     '^### Boot a first server$'
 }
 
-# --- Test 2: the Step 5 condition chain ---
+# --- Test 2: the Step 6 condition chain ---
 test_condition_chain() {
   echo "Test: the chain runs CinderReady -> NovaReady -> ServiceAccountsReady"
   assert_file_contains_fixed "NovaReady sits between CinderReady and ServiceAccountsReady" \
@@ -72,7 +72,7 @@ test_condition_chain() {
     "$QUICK_START_DOC" \
     "all $want sub-conditions"
   chain="$(grep -m1 '^SizingReady →' "$QUICK_START_DOC")"
-  assert_eq "the Step 5 chain names all $want sub-conditions" \
+  assert_eq "the Step 6 chain names all $want sub-conditions" \
     "$want" "$(( $(grep -o '→' <<<"$chain" | wc -l) + 1 ))"
 }
 
@@ -92,7 +92,7 @@ test_condition_chain
 test_fake_compute_boot
 
 # Extract the first fenced yaml block that begins with the `# controlplane.yaml`
-# filename marker: the Step 3 CR the reader applies (the fully expanded form
+# filename marker: the Step 4 CR the reader applies (the fully expanded form
 # further down carries the same marker and comes second).
 CONTROLPLANE_YAML="$(mktemp)"
 trap 'rm -f "$CONTROLPLANE_YAML"' EXIT

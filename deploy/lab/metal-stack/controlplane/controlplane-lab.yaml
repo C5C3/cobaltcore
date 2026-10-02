@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The ControlPlane of the ControlPlane Quick Start (docs/quick-start-controlplane.md,
-# Step 3, the first `# controlplane.yaml` block), data unchanged except for two
+# Step 4, the first `# controlplane.yaml` block), data unchanged except for two
 # keys the lab adds: spec.services.neutron.extraConfig and
 # spec.services.nova.hypervisorOperator. The comments above those two keys and
 # above spec.sizing give the reasons.
