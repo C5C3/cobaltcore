@@ -55,8 +55,13 @@ type ManagerConfig struct {
 	// out a client for a cluster other than the local one; operators that talk
 	// to the management cluster only take its GetLocalManager. The third
 	// argument is the resolved --max-concurrent-reconciles value; controllers
-	// that do not tune concurrency may ignore it.
-	SetupFunc func(mgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error
+	// that do not tune concurrency may ignore it. The fourth argument is the
+	// resolved --namespace value: empty for a cluster-wide operator, the
+	// watched namespace otherwise. It is neither --clusters-namespace nor the
+	// namespace the operator Pod runs in. A controller uses it to leave out
+	// what a namespaced Role cannot grant, such as a watch on a cluster-scoped
+	// kind.
+	SetupFunc func(mgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, namespace string) error
 
 	// RegisterFlags is an optional, nil-safe hook for registering
 	// operator-specific flags on the shared flag set. It is invoked after the
@@ -300,7 +305,7 @@ func run(cfg ManagerConfig, opts runOptions) error {
 	}
 
 	if cfg.SetupFunc != nil {
-		if err := cfg.SetupFunc(mgr, opts.enableWebhooks, opts.maxConcurrentReconciles); err != nil {
+		if err := cfg.SetupFunc(mgr, opts.enableWebhooks, opts.maxConcurrentReconciles, opts.namespace); err != nil {
 			return fmt.Errorf("unable to set up controllers: %w", err)
 		}
 	}

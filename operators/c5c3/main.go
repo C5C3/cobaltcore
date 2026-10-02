@@ -117,7 +117,7 @@ func main() {
 		// engages nothing while it holds none, which is the single-cluster
 		// default every existing install keeps.
 		TargetClusters: true,
-		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error {
+		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, _ string) error {
 			// The ControlPlane reconciler completes through the multicluster
 			// builder, so it takes mcMgr. The local manager is what the
 			// CredentialRotation reconciler and the webhook run on: both only

@@ -51,7 +51,7 @@ func main() {
 		// The reconcilers resolve spec.targetClusterRef, so the binary engages
 		// the clusters registered in --clusters-namespace.
 		TargetClusters: true,
-		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error {
+		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, namespace string) error {
 			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
 			// controller-runtime registry before wiring controllers, so a
@@ -67,6 +67,7 @@ func main() {
 				Scheme:                  mgr.GetScheme(),
 				Recorder:                mgr.GetEventRecorderFor("cinder-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 				OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
+				NamespaceScoped:         namespace != "",
 				MaxConcurrentReconciles: maxConcurrentReconciles,
 				Resolver:                mcMgr,
 			}).SetupWithManager(mcMgr); err != nil {

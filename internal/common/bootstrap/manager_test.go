@@ -59,7 +59,7 @@ func TestManagerConfig_validate_validWithSetupFunc(t *testing.T) {
 	cfg := ManagerConfig{
 		Scheme:           runtime.NewScheme(),
 		LeaderElectionID: "test.c5c3.io",
-		SetupFunc: func(_ mcmanager.Manager, _ bool, _ int) error {
+		SetupFunc: func(_ mcmanager.Manager, _ bool, _ int, _ string) error {
 			return nil
 		},
 	}
