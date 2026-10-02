@@ -15,6 +15,8 @@
 #   - the CPU median takes the upper middle key, counts a key measured in two
 #     legs once at its larger value, rounds up to 10m and never drops below
 #     10m;
+#   - a container with a fixed memory figure, cinder-backup or the Neutron
+#     metadata agent, stays out of the memory fit;
 #   - the backing-service figures keep their memory floors, and a backing row
 #     of another job is ignored;
 #   - the budget projection lowers minimalServiceCPURequest in 5m steps until
@@ -293,6 +295,38 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Test 4b: the metadata agent's memory stays out of the fit
+# The agent's memory is the operator's metadataAgentMemory, which follows the
+# networks on its node. A 900Mi target at one process, above every other
+# one-process row, must not raise memoryBase (it would reach 768Mi).
+# ---------------------------------------------------------------------------
+test_agent_memory_stays_out_of_the_fit() {
+  echo "Test: the metadata agent stays out of the memory fit"
+  new_tmp
+  write_complete_run "$TMP/run"
+  derive "$TMP/run" --budget-total 3000m,12000Mi
+  local base per_process
+  base="$(value_of memoryBase)"
+  per_process="$(value_of defaultMemoryPerProcess)"
+
+  tr ' ' '\t' >>"$TMP/run/sizing-e2e-controlplane/recommendations.tsv" <<'EOF'
+openstack DaemonSet neutron-agent-metadata-agent - NeutronMetadataAgent neutron-agent neutronmetadataagent metadata-agent metadata-agent - - 12 900 - - 70 368 368 t
+EOF
+
+  derive "$TMP/run" --budget-total 3000m,12000Mi
+  assert_eq "exit code is 0" "0" "$RC"
+  assert_eq "the run without the agent row derives memoryBase" "160Mi" "$base"
+  assert_eq "the agent row leaves memoryBase where it is" "$base" "$(value_of memoryBase)"
+  assert_eq "the agent row leaves defaultMemoryPerProcess where it is" \
+    "$per_process" "$(value_of defaultMemoryPerProcess)"
+  assert_contains "the formula section names the agent" "$(cat "$OUT")" \
+    "These containers have a fixed memory figure and stay out of the fit: \`NeutronMetadataAgent/metadata-agent/metadata-agent\`."
+  assert_contains "the input table marks the agent row" "$(cat "$OUT")" \
+    "| e2e-controlplane | - | openstack | NeutronMetadataAgent | metadata-agent | neutron-agent-metadata-agent | metadata-agent | formula, fixed memory | 1 | 1 | 12 | 900 | 900 |"
+  rm -rf "$TMP"
+}
+
+# ---------------------------------------------------------------------------
 # Test 5: the budget projection lowers the Minimal service CPU
 # ---------------------------------------------------------------------------
 test_budget_lowers_minimal_cpu() {
@@ -445,6 +479,7 @@ else
   test_cpu_median
   test_database_above_floor
   test_fixed_memory_stays_out_of_the_fit
+  test_agent_memory_stays_out_of_the_fit
   test_budget_lowers_minimal_cpu
   test_memory_over_budget
   test_incomplete_input

@@ -65,9 +65,11 @@ SIDECARS = {"federation-proxy", "cache-maintenance"}
 # Containers whose memory the operator fixes in place of the formula, as
 # (owner_kind, component). cinder-backup's backupMemory follows the backup
 # chunk size, not the process count (operators/cinder/internal/controller/
-# reconcile_backupservice.go). Their CPU counts like any service's; their
+# reconcile_backupservice.go). The metadata agent's metadataAgentMemory
+# follows the networks on its node (operators/neutron/internal/controller/
+# reconcile_daemonset.go). Their CPU counts like any service's; their
 # memory stays out of the fit and keeps its figure in the projection.
-FIXED_MEMORY = {("Cinder", "backup")}
+FIXED_MEMORY = {("Cinder", "backup"), ("NeutronMetadataAgent", "metadata-agent")}
 # The workloads the ControlPlane does not size, so the Minimal profile does
 # not reach them.
 NOT_PROFILED_OWNERS = {"NeutronMetadataAgent", "OVNCentral"}

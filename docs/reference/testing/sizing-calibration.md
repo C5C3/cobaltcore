@@ -146,11 +146,14 @@ step `s` means rounding up to the next multiple of `s`, and a job is the
    `OpenBaoCluster` is a backing row when it comes from `e2e-controlplane`;
    the Tempest legs' database and broker are ignored. Every other row is
    printed as `ignored` and used for nothing, except that rule 5 reads the
-   OVN `nb` and `sb` rows. A `Cinder` row with the component `backup` is a
-   formula row with a fixed memory figure: the operator sets its memory to
-   `backupMemory` (`2Gi`), because a backup's footprint follows its chunk
-   size. Its CPU counts in rules 5 and 6 like
-   any formula row's; its memory counts in neither rule 3 nor rule 9.
+   OVN `nb` and `sb` rows. Two kinds of formula row have a fixed memory
+   figure. A `Cinder` row with the component `backup` gets `backupMemory`
+   (`2Gi`), because a backup's footprint follows its chunk size. A
+   `NeutronMetadataAgent` row with the component `metadata-agent` gets
+   `metadataAgentMemory`, because the agent's footprint follows the networks
+   on its node (see [Metadata agent memory](#metadata-agent-memory)). The CPU
+   of such a row counts in rules 5 and 6 like any formula row's; its memory
+   counts in neither rule 3 nor rule 9.
 2. Process and thread counts. A formula or Glance row takes its process count
    `p` and thread count `t` from its `processes` and `threads` columns. The
    Nova scheduler and conductor and an eventlet Glance take their worker
@@ -264,7 +267,7 @@ Input: 196 rows from 14 job runs. T is the memory target less 32Mi per extra thr
 
 The steepest slope between two process counts is 344.5Mi, which rounds up to 352Mi.
 
-These containers have a fixed memory figure and stay out of the fit: `Cinder/backup/backup`.
+These containers have a fixed memory figure and stay out of the fit: `Cinder/backup/backup`, `NeutronMetadataAgent/metadata-agent/metadata-agent`.
 
 ### Glance
 
@@ -398,7 +401,7 @@ The node budget is 4000m CPU and 16384Mi of memory.
 | e2e-controlplane | - | openstack | Neutron | api | controlplane-keystone-neutron | neutron-api | formula | 1 | 1 | 11 | 237 | 237 |
 | e2e-controlplane | - | openstack | Neutron | ovn-maintenance-worker | controlplane-keystone-neutron-ovn-maintenance-worker | ovn-maintenance-worker | formula | 1 | 1 | 11 | 309 | 309 |
 | e2e-controlplane | - | openstack | Neutron | periodic-workers | controlplane-keystone-neutron-periodic-workers | periodic-workers | formula | 1 | 1 | 11 | 335 | 335 |
-| e2e-controlplane | - | openstack | NeutronMetadataAgent | metadata-agent | controlplane-keystone-agent-metadata-agent | metadata-agent | formula | 1 | 1 | 11 | 175 | 175 |
+| e2e-controlplane | - | openstack | NeutronMetadataAgent | metadata-agent | controlplane-keystone-agent-metadata-agent | metadata-agent | formula, fixed memory | 1 | 1 | 11 | 175 | 175 |
 | e2e-controlplane | - | openstack | Nova | api | controlplane-keystone-nova | nova-api | formula | 1 | 1 | 11 | 215 | 215 |
 | e2e-controlplane | - | openstack | Nova | conductor | controlplane-keystone-nova-conductor | conductor | formula | 1 | 1 | 864 | 284 | 284 |
 | e2e-controlplane | - | openstack | Nova | metadata | controlplane-keystone-nova-metadata | nova-metadata | formula | 1 | 1 | 11 | 156 | 156 |
@@ -539,7 +542,7 @@ The node budget is 4000m CPU and 16384Mi of memory.
 | tempest | nova-2025.2 | openstack | Neutron | api | neutron-nova-tempest-2025-2 | neutron-api | formula | 4 | 1 | 716 | 1052 | 1052 |
 | tempest | nova-2025.2 | openstack | Neutron | ovn-maintenance-worker | neutron-nova-tempest-2025-2-ovn-maintenance-worker | ovn-maintenance-worker | formula | 1 | 1 | 23 | 309 | 309 |
 | tempest | nova-2025.2 | openstack | Neutron | periodic-workers | neutron-nova-tempest-2025-2-periodic-workers | periodic-workers | formula | 1 | 1 | 11 | 335 | 335 |
-| tempest | nova-2025.2 | openstack | NeutronMetadataAgent | metadata-agent | neutron-nova-tempest-2025-2-agent-metadata-agent | metadata-agent | formula | 1 | 1 | 23 | 175 | 175 |
+| tempest | nova-2025.2 | openstack | NeutronMetadataAgent | metadata-agent | neutron-nova-tempest-2025-2-agent-metadata-agent | metadata-agent | formula, fixed memory | 1 | 1 | 23 | 175 | 175 |
 | tempest | nova-2025.2 | openstack | Nova | api | nova-tempest-2025-2 | nova-api | formula | 4 | 1 | 143 | 826 | 826 |
 | tempest | nova-2025.2 | openstack | Nova | conductor | nova-tempest-2025-2-conductor | conductor | formula | 2 | 1 | 203 | 309 | 309 |
 | tempest | nova-2025.2 | openstack | Nova | metadata | nova-tempest-2025-2-metadata | nova-metadata | formula | 2 | 1 | 11 | 309 | 309 |
@@ -564,7 +567,7 @@ The node budget is 4000m CPU and 16384Mi of memory.
 | tempest | nova-2026.1 | openstack | Neutron | api | neutron-nova-tempest-2026-1 | neutron-api | formula | 4 | 1 | 627 | 991 | 991 |
 | tempest | nova-2026.1 | openstack | Neutron | ovn-maintenance-worker | neutron-nova-tempest-2026-1-ovn-maintenance-worker | ovn-maintenance-worker | formula | 1 | 1 | 23 | 309 | 309 |
 | tempest | nova-2026.1 | openstack | Neutron | periodic-workers | neutron-nova-tempest-2026-1-periodic-workers | periodic-workers | formula | 1 | 1 | 11 | 260 | 260 |
-| tempest | nova-2026.1 | openstack | NeutronMetadataAgent | metadata-agent | neutron-nova-tempest-2026-1-agent-metadata-agent | metadata-agent | formula | 1 | 1 | 11 | 156 | 156 |
+| tempest | nova-2026.1 | openstack | NeutronMetadataAgent | metadata-agent | neutron-nova-tempest-2026-1-agent-metadata-agent | metadata-agent | formula, fixed memory | 1 | 1 | 11 | 156 | 156 |
 | tempest | nova-2026.1 | openstack | Nova | api | nova-tempest-2026-1 | nova-api | formula | 4 | 1 | 247 | 826 | 826 |
 | tempest | nova-2026.1 | openstack | Nova | conductor | nova-tempest-2026-1-conductor | conductor | formula | 2 | 1 | 203 | 309 | 309 |
 | tempest | nova-2026.1 | openstack | Nova | metadata | nova-tempest-2026-1-metadata | nova-metadata | formula | 2 | 1 | 11 | 309 | 309 |
