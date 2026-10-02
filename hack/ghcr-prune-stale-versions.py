@@ -75,18 +75,18 @@ DEFAULT_KEEP_PATTERNS = (
     # 1.2.0-rc1 -- semver prerelease from a v* tag push
     r"^[0-9]+(\.[0-9]+)+-(alpha|beta|rc)[0-9.]*$",
     # upstream-<sha40> -- a pinned upstream commit that a chart of that commit
-    # names (openstack-hypervisor-operator: the chart renders sha-<sha40>, which
-    # sits on the same manifest)
+    # names (openstack-hypervisor-operator and kvm-node-agent: the chart renders
+    # sha-<sha40>, which sits on the same manifest)
     r"^upstream-[0-9a-f]{40}$",
 )
 
 # Commit-SHA tag shapes across the four publishing paths in this repo:
 # service images (short SHA), base images (long SHA), operator images
 # (docker/metadata-action type=sha,format=long), tempest (<release>-<long SHA>).
-# openstack-hypervisor-operator's sha-<upstream commit> matches the sha- shape
-# too, and its upstream- keeper protects it; its composite
-# sha-<upstream commit>-<sha> matches none, so only the full sweep removes
-# that image's branch builds.
+# The sha-<upstream commit> tag of openstack-hypervisor-operator and
+# kvm-node-agent matches the sha- shape too, and the image's upstream- keeper
+# protects it; the composite sha-<upstream commit>-<sha> matches none, so only
+# the full sweep removes those images' branch builds.
 SHA_TAG_PATTERNS = (
     r"^[0-9a-f]{7}$",
     r"^[0-9a-f]{40}$",

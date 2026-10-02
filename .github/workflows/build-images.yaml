@@ -48,6 +48,7 @@ name: Build Images
       - hack/ci-resolve-image-changes.sh
       - hack/ci-resolve-ovn-version.sh
       - hack/ci-resolve-hvo-commit.sh
+      - hack/ci-resolve-kna-commit.sh
       - hack/ci-resolve-ubuntu-digest.sh
       - hack/ci-run-unit-tests.sh
       - hack/ci-wait-for-image.sh
@@ -112,6 +113,7 @@ jobs:
       build-shifter: ${{ steps.result.outputs.build-shifter }}
       build-libvirt: ${{ steps.result.outputs.build-libvirt }}
       build-hvo: ${{ steps.result.outputs.build-hvo }}
+      build-kna: ${{ steps.result.outputs.build-kna }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -201,6 +203,9 @@ jobs:
             hvo:
               - 'images/openstack-hypervisor-operator/**'
               - 'tests/container-images/verify_hvo.sh'
+            kna:
+              - 'images/kvm-node-agent/**'
+              - 'tests/container-images/verify_kna.sh'
             # ---------------------------------------------------------------
             # The workflow itself, and everything any of its jobs may call.
             # ---------------------------------------------------------------
@@ -222,6 +227,7 @@ jobs:
               - 'hack/ci-resolve-image-changes.sh'
               - 'hack/ci-resolve-ovn-version.sh'
               - 'hack/ci-resolve-hvo-commit.sh'
+              - 'hack/ci-resolve-kna-commit.sh'
               - 'hack/ci-resolve-ubuntu-digest.sh'
               - 'hack/ci-run-unit-tests.sh'
               - 'hack/ci-wait-for-image.sh'
@@ -248,6 +254,7 @@ jobs:
           FILTER_shifter: ${{ steps.filter.outputs.shifter }}
           FILTER_libvirt: ${{ steps.filter.outputs.libvirt }}
           FILTER_hvo: ${{ steps.filter.outputs.hvo }}
+          FILTER_kna: ${{ steps.filter.outputs.kna }}
           FILTER_plumbing: ${{ steps.filter.outputs.plumbing }}
         run: hack/ci-resolve-image-changes.sh
 
@@ -276,6 +283,7 @@ jobs:
           - images/backup-shifter/Dockerfile
           - images/libvirt/Dockerfile
           - images/openstack-hypervisor-operator/Dockerfile
+          - images/kvm-node-agent/Dockerfile
           - operators/Dockerfile
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1254,6 +1262,171 @@ jobs:
         run: |
           docker pull "$HVO_IMAGE"
           bash tests/container-images/verify_hvo.sh "$HVO_IMAGE"
+
+  # Release-independent kvm-node-agent compiled from a pinned commit of its
+  # upstream main branch with the patches under images/kvm-node-agent/patches/:
+  # the image has no release axis. Per-platform builds pushed by digest,
+  # verified inline on PRs, tagged sha-<kna-commit>-<sha> on every push and
+  # sha-<kna-commit>, upstream-<kna-commit> + latest on main.
+  build-kna:
+    needs: [changes, lint-dockerfiles, prepare]
+    if: needs.changes.outputs.build-kna == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Reject fork PRs
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: echo "::error::Fork PRs cannot push to GHCR. Open your PR from a branch in the upstream repository." && exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Prepare platform pair
+        id: platform-pair
+        uses: ./.github/actions/platform-pair
+        with:
+          platform: ${{ matrix.platform }}
+
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          install-cosign: 'false'
+
+      - name: Resolve kna commit
+        id: kna-commit
+        run: |
+          commit=$(hack/ci-resolve-kna-commit.sh)
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+
+      - name: Build kvm-node-agent
+        id: build-kna
+        # PR mode loads locally for the inline scan+verify; ARM64 is skipped
+        # on PRs because docker load supports a single platform.
+        if: github.event_name != 'pull_request' || matrix.platform == 'linux/amd64'
+        uses: ./.github/actions/build-push-image
+        with:
+          image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/kvm-node-agent
+          context: images/kvm-node-agent
+          platform: ${{ matrix.platform }}
+          platform-pair: ${{ steps.platform-pair.outputs.value }}
+          # The Dockerfile fetches the upstream source from github.com; the
+          # token authenticates that fetch (see images/ovn/Dockerfile). A
+          # secret, not a build-arg: it reaches no layer.
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
+          labels-title: kvm-node-agent
+          labels-description: kvm-node-agent built from a pinned upstream main commit with CobaltCore patches
+          metadata-tags: |
+            type=raw,value=sha-${{ steps.kna-commit.outputs.commit }}
+          cache-scope: kna
+          push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
+          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/kvm-node-agent:pr-verify', needs.prepare.outputs.image-owner) || format('ghcr.io/{0}/kvm-node-agent', needs.prepare.outputs.image-owner) }}
+          artifact-name: digests-kna-${{ steps.platform-pair.outputs.value }}
+          grype-category: grype-kna-${{ steps.platform-pair.outputs.value }}
+          image-ref-for-scan: ghcr.io/${{ needs.prepare.outputs.image-owner }}/kvm-node-agent:pr-verify
+          verify-script: tests/container-images/verify_kna.sh
+          verify-image-ref: ghcr.io/${{ needs.prepare.outputs.image-owner }}/kvm-node-agent:pr-verify
+
+  merge-kna-image:
+    if: github.event_name != 'pull_request'
+    needs: [build-kna, prepare]
+    runs-on: ubuntu-latest
+    timeout-minutes: 23
+    permissions:
+      contents: read
+      packages: write
+      id-token: write #: Sigstore OIDC signing
+      attestations: write #: GitHub Attestations API
+      artifact-metadata: write # gh#108: actions/attest v4.1.0 storage record
+      security-events: write #: GitHub Security tab SARIF upload
+    outputs:
+      kna-image: ghcr.io/${{ needs.prepare.outputs.image-owner }}/kvm-node-agent@${{ steps.merge-kna.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve kna commit
+        id: kna-commit
+        run: |
+          commit=$(hack/ci-resolve-kna-commit.sh)
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+
+      # sha-<kna-commit> is the tag the upstream chart of that commit renders
+      # from its appVersion, upstream-<kna-commit> is the one
+      # hack/ghcr-prune-stale-versions.py keeps once a newer pin holds
+      # latest. Both and latest are main-only so that two branches building
+      # the same pin cannot silently overwrite them;
+      # sha-<kna-commit>-<sha> is pushed from every branch.
+      - name: Build kna tags
+        id: kna-tags
+        env:
+          IMAGE: ghcr.io/${{ needs.prepare.outputs.image-owner }}/kvm-node-agent
+          KNA_COMMIT: ${{ steps.kna-commit.outputs.commit }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          TAGS="${IMAGE}:sha-${KNA_COMMIT}-${COMMIT_SHA}"
+          [[ "${GITHUB_REF_NAME}" == "main" ]] && TAGS="${TAGS} ${IMAGE}:sha-${KNA_COMMIT} ${IMAGE}:upstream-${KNA_COMMIT} ${IMAGE}:latest"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Merge and attest kvm-node-agent
+        id: merge-kna
+        uses: ./.github/actions/merge-manifest-and-attest
+        with:
+          image: ghcr.io/${{ needs.prepare.outputs.image-owner }}/kvm-node-agent
+          artifact-pattern: digests-kna-*
+          tags: ${{ steps.kna-tags.outputs.tags }}
+          inspect-tag: ghcr.io/${{ needs.prepare.outputs.image-owner }}/kvm-node-agent:sha-${{ steps.kna-commit.outputs.commit }}-${{ github.sha }}
+          sbom-output-file: sbom-kna.cyclonedx.json
+          grype-category: grype-kna
+
+  # Runs on both architectures: PR mode compiles amd64 only (docker load takes
+  # a single platform), so the arm64 half of the published manifest is first
+  # executed here. docker pull resolves the manifest to the runner's own
+  # architecture, so the runner is what selects the variant under test.
+  verify-kna-image:
+    if: github.event_name != 'pull_request'
+    needs: [merge-kna-image]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          install-cosign: 'false'
+
+      - name: Pull and verify kvm-node-agent image
+        env:
+          KNA_IMAGE: ${{ needs.merge-kna-image.outputs.kna-image }}
+        run: |
+          docker pull "$KNA_IMAGE"
+          bash tests/container-images/verify_kna.sh "$KNA_IMAGE"
 
   # Per-platform service builds pushed by digest or loaded locally for PR verification.
   build-service-images:

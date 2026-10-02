@@ -7,10 +7,10 @@ name: Cleanup Images
 # Retention is decided from each package version's whole tag set, not from a
 # "keep the newest N" counter: a version survives only while it carries `latest`,
 # a bare version / release tag (`32.0.0`, `2026.1`), or an `upstream-<sha40>`
-# pin tag (openstack-hypervisor-operator). Everything else -- SHA tags,
-# run-scoped E2E tags, composite tags whose release tag has since moved to a
-# newer manifest, and untagged leftovers -- is a build artifact with a
-# successor and goes.
+# pin tag (openstack-hypervisor-operator, kvm-node-agent). Everything else --
+# SHA tags, run-scoped E2E tags, composite tags whose release tag has since
+# moved to a newer manifest, and untagged leftovers -- is a build artifact
+# with a successor and goes.
 #
 # The three jobs share one implementation (hack/ghcr-prune-stale-versions.py)
 # and differ only in which candidates they consider. The two narrow jobs run

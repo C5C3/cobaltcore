@@ -18,9 +18,9 @@
 # also builds the Tempest image, which is built FROM python-base and
 # venv-builder and reads releases/<release>/. The OVN, federation proxy, backup
 # shifter and libvirt images build FROM ubuntu:noble and read neither, so they
-# come from their own filters only. The openstack-hypervisor-operator image
-# builds FROM golang and distroless, reads neither either, and follows its own
-# filter too.
+# come from their own filters only. The openstack-hypervisor-operator and
+# kvm-node-agent images build FROM golang and distroless, read neither either,
+# and follow their own filters too.
 #
 # Required env vars:
 #   EVENT_NAME   — github.event_name
@@ -36,6 +36,7 @@
 #   FILTER_shifter       — Backup shifter image sources
 #   FILTER_libvirt       — Libvirt image sources
 #   FILTER_hvo           — openstack-hypervisor-operator image sources
+#   FILTER_kna           — kvm-node-agent image sources
 #   FILTER_plumbing      — The workflow, its composite actions and hack scripts
 #   Anything but the literal "true" is false, including the empty string the
 #   skipped filter step yields on push and workflow_dispatch.
@@ -51,6 +52,7 @@
 #   build-shifter — true or false
 #   build-libvirt — true or false
 #   build-hvo     — true or false
+#   build-kna     — true or false
 #
 # To add a new service: add a svc_<service> paths filter, its FILTER_svc_<service>
 # env line, and the name to ALL_SERVICES, all in the changes job of
@@ -109,6 +111,7 @@ if [[ "${build_everything}" == "true" ]]; then
   build_shifter=true
   build_libvirt=true
   build_hvo=true
+  build_kna=true
 else
   build_tempest=$(yesno filter_on tempest)
   build_ovn=$(yesno filter_on ovn)
@@ -116,6 +119,7 @@ else
   build_shifter=$(yesno filter_on shifter)
   build_libvirt=$(yesno filter_on libvirt)
   build_hvo=$(yesno filter_on hvo)
+  build_kna=$(yesno filter_on kna)
 
   services=""
   if filter_on base; then
@@ -143,3 +147,4 @@ emit build-proxy "${build_proxy}"
 emit build-shifter "${build_shifter}"
 emit build-libvirt "${build_libvirt}"
 emit build-hvo "${build_hvo}"
+emit build-kna "${build_kna}"
