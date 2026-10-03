@@ -6,7 +6,9 @@
 # nova-compute on the kind node through the fake driver, and the suite walks the
 # pool's whole lifecycle against a real Nova:
 #   - the pool reaches Ready=True/AllReady, its node is Active with the compute
-#     service enabled and up, the pod's create-instances-dir init container
+#     service enabled and up, the pool's host discovery Job mapped the host
+#     into the cell (the Nova runs no discovery periodic, so a Ready pool
+#     proves the Job did), the pod's create-instances-dir init container
 #     created /var/lib/nova/instances on the node, below a /var/lib/nova the
 #     suite gave to another user, the pod passed its wait-for-chassis gate and
 #     runs ghcr.io/c5c3/nova-compute:2025.2 as uid 0, and Nova carries the zone
@@ -165,7 +167,7 @@ spec:
           kubectl get deploy,pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-pool -o wide 2>&1 || true
           echo "=== Job logs ==="
           for job in nova-pool-catalog-setup nova-pool-image-seed nova-pool-verify \
-                     nova-pool-boot-server nova-pool-delete-server \
+                     nova-pool-discover-hosts nova-pool-boot-server nova-pool-delete-server \
                      nova-pool-state-dir-owner; do
             echo "--- job/$job ---"
             kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
@@ -249,6 +251,24 @@ spec:
               serviceStatus: enabled
               serviceState: up
             installedImage: ghcr.io/c5c3/nova-compute:2025.2
+    # 10-nova-cr.yaml turns the scheduler's discovery periodic off, so only the
+    # pool's discovery Job can have mapped the host. The Job that did is still
+    # there: the pool leaves it alone once the host is mapped, and its TTL is
+    # 300 seconds.
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+          NODE="$(kubectl get configmap nova-pool-verify -n "$NAMESPACE" -o jsonpath='{.data.node}')"
+          kubectl wait --for=condition=complete job/nova-pool-discover-hosts \
+            -n "$NAMESPACE" --timeout=2m || {
+            kubectl logs -n "$NAMESPACE" job/nova-pool-discover-hosts 2>&1 || true
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-pool-discover-hosts)"
+          echo "$LOGS"
+          grep -q "Creating host mapping for compute host '$NODE'" <<<"$LOGS"
     - assert:
         resource:
           apiVersion: v1
@@ -388,18 +408,15 @@ spec:
           kubectl delete novacompute pool-b -n "$NAMESPACE" --wait --timeout=3m
           echo "OK: pool-b is gone"
     catch: *pool-dump
-  # ── Step 5 and 6: Map the host and boot a server onto it ───────────────
+  # ── Step 5 and 6: Boot a server onto the node ──────────────────────────
+  # The pool turned Ready in step 3 only once Nova listed the host as mapped,
+  # so the server is scheduled without a host discovery here.
   - try:
     - script:
         shell: bash
         timeout: 10m
         content: |
           set -euo pipefail
-          NODE="$(kubectl get configmap nova-pool-verify -n "$NAMESPACE" -o jsonpath='{.data.node}')"
-          # The host mapping by hand: the scheduler's periodic would take up to
-          # 300 seconds.
-          ../discover-hosts.sh nova-pool "$NAMESPACE" "$NODE"
-
           kubectl delete job nova-pool-boot-server -n "$NAMESPACE" --ignore-not-found
           kubectl apply -f 15-boot-server-job.yaml
           kubectl wait --for=condition=complete job/nova-pool-boot-server \
