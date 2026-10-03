@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Admits only the nodes to port 2049 of the lab's NFS server (#1196). The
+# export is sec=sys with no_root_squash and a wildcard client list
+# (kustomization.yaml, POSTURE), so without this policy every pod of the
+# cluster that dials 2049 reads and writes both shares as root.
+#
+# Both clients mount from a node's network namespace: csi-nfs-node, which
+# mounts for the Cinder pods and for the nfs-health probe, and nova-compute
+# are host-network pods. A pod selector cannot name them; the node network in
+# an ipBlock can. Calico routes the lab's pod network without encapsulation,
+# so the server sees a node's own address as the source, through the Service's
+# ClusterIP too. A probe on forge on 2026-10-04 showed 10.128.44.1 and
+# 10.128.44.3 for host-network clients on both workers, and under this policy
+# they connected and pods on either worker timed out. The kubelet's probes
+# come from the server's own node.
+#
+# What the policy does not close: a pod that names an inline nfs.csi.k8s.io
+# volume is mounted by csi-nfs-node, from the node. Every principal that can
+# create a pod still reaches both shares that way.
+#
+# This file is a template and no resource of kustomization.yaml, because the
+# node network differs per cluster and no overlay value names it.
+# hack/deploy-infra.sh reads it in Step 1 from data.nodeNetwork of the
+# ConfigMap kube-system/shoot-info, which Gardener writes into every shoot,
+# refuses a cluster where a node's InternalIP lies outside it, and applies
+# this file in Step 3 with the placeholder NODE_NETWORK replaced, before the
+# server exists. Applied as it is, the API server rejects the placeholder.
+# EXTERNAL_CLUSTER=true make teardown-infra deletes the policy after the
+# server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nfs-server-clients
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nfs-server
+    app.kubernetes.io/part-of: lab-nfs
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nfs-server
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: NODE_NETWORK
+      ports:
+        - protocol: TCP
+          port: 2049
