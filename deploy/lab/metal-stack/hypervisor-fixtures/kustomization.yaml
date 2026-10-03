@@ -10,15 +10,7 @@
 # and docs/reference/infrastructure/infrastructure-manifests.md (Lab
 # hypervisors) gives the reason behind each setting. This directory's part is:
 #
-#   kubectl rollout restart deployment/orc-controller-manager -n orc-system
-#   kubectl rollout status deployment/orc-controller-manager -n orc-system
 #   kubectl apply -k deploy/lab/metal-stack/hypervisor-fixtures
-#
-# The restart comes first, every time. K-ORC caches one client per
-# clouds.yaml for about 30 minutes, with the service catalog of the token it
-# authenticated with, so within that time of the ControlPlane's bring-up the
-# flavor reports "No suitable endpoint could be found in the service catalog"
-# (k-orc/openstack-resource-controller#941).
 #
 # The hypervisor operator scopes a token to project "test" in domain
 # "cc3test" at start and exits when that fails, so the domain, the project,

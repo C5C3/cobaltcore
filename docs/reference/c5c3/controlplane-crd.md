@@ -1385,14 +1385,16 @@ On a cloud that already has a `cc3test` domain or a `premium` volume type,
 the overlay's documented teardown therefore deletes them: `cc3test` with every
 project, user and group in it, and `premium` unless a volume still uses it.
 
-K-ORC caches one client per `clouds.yaml` for half the token lifetime (about
-30 minutes at Keystone defaults), together with the service catalog of the
-token it authenticated with. Within that time of the ControlPlane's bring-up,
-the cached catalog has no `compute`, `network` or `block-storage` row yet, and
-the overlay's flavor, volume type, network and subnet report `No suitable
-endpoint could be found in the service catalog` until the entry expires. Restart
-K-ORC (`kubectl rollout restart deployment/orc-controller-manager -n
-orc-system`) before applying the overlay, as its header describes.
+The c5c3-operator restarts K-ORC once the ControlPlane's registrations are
+settled, so the overlay needs no restart by hand. K-ORC then resolves the
+overlay's flavor, volume type, network and subnet against a service catalog with
+the `compute`, `network` and `block-storage` rows. See
+[reconcileKORCCatalogRefresh](./controlplane-reconciler.md#reconcilekorccatalogrefresh).
+A `Warning` event `KORCRestartSkipped` on the ControlPlane means the operator
+could not restart K-ORC, for example under a c5c3-operator chart older than
+0.15.0, which lacks the Deployment grant. Restart it by hand
+(`kubectl rollout restart deployment/orc-controller-manager -n orc-system`)
+before applying the overlay.
 
 ### NovaDedicatedBackingServicesSpec
 

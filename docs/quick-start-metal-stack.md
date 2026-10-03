@@ -283,17 +283,10 @@ them the flavor `1` and the image `cirros-kvm` the servers boot. K-ORC creates
 them:
 
 ```bash
-kubectl rollout restart deployment/orc-controller-manager -n orc-system
-kubectl rollout status deployment/orc-controller-manager -n orc-system
 kubectl apply -k deploy/lab/metal-stack/hypervisor-fixtures
 kubectl kustomize deploy/lab/metal-stack/hypervisor-fixtures |
   kubectl wait -f - --for=condition=Available --timeout=15m
 ```
-
-The restart comes first because K-ORC caches one client per `clouds.yaml` for
-about 30 minutes, with the service catalog of the token it authenticated with,
-and within that time of the ControlPlane's bring-up the flavor reports
-`No suitable endpoint could be found in the service catalog`.
 
 ### Step 3: Apply the hypervisors {#hv-apply}
 

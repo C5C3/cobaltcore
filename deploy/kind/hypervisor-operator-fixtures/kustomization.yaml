@@ -11,18 +11,6 @@
 #
 #   kubectl apply -k deploy/kind/hypervisor-operator-fixtures
 #
-# K-ORC caches one client per clouds.yaml for half the token lifetime (about
-# 30 minutes at Keystone's defaults), and the client keeps the service catalog
-# of the token it authenticated with. Within that time of the ControlPlane's
-# bring-up the cached catalog predates the compute, network and block-storage
-# rows: the flavor, the volume type, the network and the subnet then report
-# "No suitable endpoint could be found in the service catalog" until the entry
-# expires (k-orc/openstack-resource-controller#941). Restart K-ORC before
-# applying the overlay to start from the current catalog:
-#
-#   kubectl rollout restart deployment/orc-controller-manager -n orc-system
-#   kubectl rollout status deployment/orc-controller-manager -n orc-system
-#
 # The hypervisor operator scopes a second token to project "test" in domain
 # "cc3test" at start and exits when that fails, so the project and a role for
 # its user on it are needed even with the smoke test skipped. The smoke test
