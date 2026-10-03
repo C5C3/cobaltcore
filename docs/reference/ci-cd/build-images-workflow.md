@@ -993,7 +993,7 @@ These jobs build the compute image of `images/nova-compute/` (see
 with nova's patches and constraint overrides. The image gets jobs of its own
 because a failed leg of `build-service-images` on a main push skips
 `merge-service-images` for every service. Extra steps in the nova leg would add
-a compiled binding and nine apt packages to that blast radius. A failed compute
+a compiled binding and ten apt packages to that blast radius. A failed compute
 leg skips `merge-nova-compute-image` for both releases and leaves every other
 merge job alone.
 
@@ -1016,7 +1016,7 @@ place. `lint-dockerfiles` lints `images/nova-compute/Dockerfile`.
 - `checkout-service-source` with `service: nova`, which applies nova's patches
   and constraint overrides
 - `hack/ci-resolve-extra-packages.sh` with `MATRIX_SERVICE=nova-compute`, which
-  reads the `nova-compute` block: `libvirt-python` as `PIP_PACKAGES` and nine
+  reads the `nova-compute` block: `libvirt-python` as `PIP_PACKAGES` and ten
   apt packages as `EXTRA_APT_PACKAGES`
 - `derive-service-tags` with `service: nova` and `image: nova-compute`: nova's
   version and patch count under the `nova-compute` name

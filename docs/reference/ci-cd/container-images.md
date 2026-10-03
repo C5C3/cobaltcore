@@ -1056,8 +1056,9 @@ four tags as `ghcr.io/c5c3/nova` (see
 and `nova:2025.2` therefore carry the same nova. On top of nova the image
 carries the libvirt binding and client libraries, `qemu-img`, the host tools
 for iSCSI, multipath and NVMe that os-brick (the library nova attaches volumes
-with) runs, `cryptsetup` and `genisoimage`, and a rootwrap and sudo posture
-that lets the unprivileged `openstack` user start nova's privileged helpers.
+with) runs, `mount.nfs` for the NFS exports nova mounts itself, `cryptsetup`
+and `genisoimage`, and a rootwrap and sudo posture that lets the unprivileged
+`openstack` user start nova's privileged helpers.
 The [nova](#nova) control-plane image carries none of it (decision D14 of
 issue #1014). Its consumer is the [NovaCompute](../nova/novacompute-crd.md)
 node pool, which runs it under the tag of the Nova's installed release.
@@ -1112,13 +1113,18 @@ releases):
 | `nvme-cli` | `nvme` (`os_brick/initiator/connectors/nvmeof.py`, `os_brick/privileged/nvmeof.py`) |
 | `lsscsi` | `lsscsi` (`os_brick/initiator/linuxscsi.py`) |
 | `udev` | `/lib/udev/scsi_id` (`get_scsi_wwn` in `os_brick/initiator/linuxscsi.py`) |
+| `nfs-common` | `mount.nfs`, the helper `mount -t nfs` runs. nova mounts a Cinder NFS export itself, without os-brick: `LibvirtNFSVolumeDriver` (`nova/virt/libvirt/volume/nfs.py`) goes through `nova/virt/libvirt/volume/mount.py` to `mount` in `nova/privsep/fs.py`, below `[libvirt] nfs_mount_point_base` (default `$state_path/mnt`) |
 | `cryptsetup-bin` | `cryptsetup` (`os_brick/encryptors/luks.py`) for encrypted volumes; the compute contract renders `[key_manager] backend = barbican` when Barbican is enabled |
 | `genisoimage` | The default of `[DEFAULT] mkisofs_cmd` (`nova/conf/configdrive.py`), which builds config drives |
 
 `open-iscsi` and `multipath-tools` pull `systemd`, `initramfs-tools` and
 `sg3-utils` as hard dependencies. The 2025.2 image is about 170 MB larger than
-the nova image. There is no `libpython3.12t64`, because nothing in this image
-runs uWSGI, and `sudo` comes from `python-base`.
+the nova image. `nfs-common` pulls `rpcbind`, `keyutils`, `libnfsidmap1`,
+`libevent-core-2.1-7t64`, `libwrap0` and `ucf`, about 3 MB together. No
+process in the pod starts `rpcbind` or `rpc.statd`; an NFSv4 mount needs
+neither, and the in-cluster server of `deploy/kind/nfs/nfs-server.yaml` speaks
+NFSv4 only. There is no `libpython3.12t64`, because nothing in this image runs
+uWSGI, and `sudo` comes from `python-base`.
 
 **Node identities:** the postinst scripts of `open-iscsi` and `nvme-cli`
 write `/etc/iscsi/initiatorname.iscsi`, `/etc/nvme/hostnqn` and
@@ -1128,7 +1134,10 @@ initiator name and the host NQN to Cinder as the node's identity, so baked
 files would give every compute node the same IQN and NQN. A baked multipath
 configuration can also disagree with the host's `multipathd`. The image removes
 all four files, and `iscsiadm --version` and `nvme version` still run without
-them.
+them. `nfs-common` and `rpcbind` bake none: their postinst scripts create the
+`statd` and `_rpc` users and install `/etc/idmapd.conf`,
+`/etc/default/nfs-common` and `/etc/nfs.conf`, and none of these names the
+node.
 
 **Rootwrap and sudo posture:** nova's root helper is
 `sudo nova-rootwrap <[DEFAULT] rootwrap_config>`, and `rootwrap_config`
@@ -1238,7 +1247,7 @@ tests:
    pin each fail with a message naming the value.
 3. `nova.virt.libvirt.driver`, the os-brick iSCSI and NVMe connectors, the
    LUKS encryptor and `vif_plug_ovs.ovsdb.impl_idl` import.
-4. The eight host tools run, one assertion per tool, so a missing package
+4. The nine host tools run, one assertion per tool, so a missing package
    names itself.
 5. The four identity files are absent.
 6. The posture holds: the two `rootwrap.conf` lines, `compute.filters`, six
@@ -1254,7 +1263,7 @@ tests:
 8. `gcc`, `pkg-config`, `uv`, `python3-dev` and `libvirt-dev` are absent.
 9. The state directories match `verify_nova.sh` test 13.
 
-Both release images pass all 47 assertions. Pointed at the nova control-plane
+Both release images pass all 48 assertions. Pointed at the nova control-plane
 image, the script exits 1: test 2 reports
 `ModuleNotFoundError: No module named 'libvirt'` and test 4 fails once per
 tool. A build without any `--build-arg` succeeds and fails the same two tests,
