@@ -166,6 +166,7 @@ test_host_tools() {
     "nvme version"
     "lsscsi --version"
     "/lib/udev/scsi_id --version"
+    "mount.nfs -V"
     "cryptsetup --version"
     "genisoimage --version"
   )
