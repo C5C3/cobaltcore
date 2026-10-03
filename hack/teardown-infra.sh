@@ -471,11 +471,11 @@ teardown_hypervisors() {
 #      STACK_CHART_OBJECT_KINDS whose helm.toolkit.fluxcd.io/namespace label
 #      names one of them: Helm hook objects, which no uninstall removes;
 #   8. the CRDs of STACK_CRD_GROUPS.
-# It ends with the count of stack CRDs and namespaces still present, which must
-# both be zero. Every delete ignores absence, so a second run finds nothing and
-# exits 0; a wait that runs out exits 1 (delete_and_wait). In kube-system only
-# the maint-<node> objects of step 0 are deleted; the platform's namespaces and
-# CRDs are never named.
+# It ends with the count of stack CRDs, stack namespaces and cluster-scoped
+# chart objects still present, which must all be zero. Every delete ignores
+# absence, so a second run finds nothing and exits 0; a wait that runs out
+# exits 1 (delete_and_wait). In kube-system only the maint-<node> objects of
+# step 0 are deleted; the platform's namespaces and CRDs are never named.
 # ---------------------------------------------------------------------------
 teardown_external_cluster() {
   local cmd
@@ -627,8 +627,9 @@ teardown_external_cluster() {
     delete_and_wait "the stack CRDs" "${crds[@]}"
   fi
 
-  # 9. What is left.
-  local crds_left namespaces_left
+  # 9. What is left: the stack CRDs, the stack namespaces and the cluster-scoped
+  # objects of their charts. A chart object still present is named.
+  local crds_left namespaces_left chart_objects_left
   read_stack_crds
   crds_left="$(grep -c . <<<"${STACK_CRDS}" || true)"
   if ! namespaces_left="$(kubectl get namespace "${namespaces[@]}" --ignore-not-found -o name)"; then
@@ -636,8 +637,14 @@ teardown_external_cluster() {
     exit 1
   fi
   namespaces_left="$(grep -c . <<<"${namespaces_left}" || true)"
-  log "Stack CRDs left: ${crds_left}; stack namespaces left: ${namespaces_left}"
-  if [[ "${crds_left}" != "0" || "${namespaces_left}" != "0" ]]; then
+  read_stack_chart_objects "${namespaces[@]}"
+  chart_objects_left="$(grep -c . <<<"${STACK_CHART_OBJECTS}" || true)"
+  log "Stack CRDs left: ${crds_left}; stack namespaces left: ${namespaces_left}; cluster-scoped chart objects left: ${chart_objects_left}"
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    log "  Still present: ${line}"
+  done <<<"${STACK_CHART_OBJECTS}"
+  if [[ "${crds_left}" != "0" || "${namespaces_left}" != "0" || "${chart_objects_left}" != "0" ]]; then
     log "ERROR: the teardown left stack objects behind."
     exit 1
   fi
