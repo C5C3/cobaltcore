@@ -3094,8 +3094,8 @@ grew, and `openstack console log show` returned the new boot output.
 A second run on 2026-10-02 executed the
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md) from commit
 `715eafd3`, from a bare cluster through the teardown, on the same two workers.
-Every block of the page exited 0, two of them after the repeats their steps
-name. The kna pods ran
+Every block of the page exited 0, two of them after repeats: Part 1, Step 4,
+which named a repeat then, and Part 2, Step 3. The kna pods ran
 `ghcr.io/c5c3/kvm-node-agent:sha-1e4e4b8e7050bbfa2d5a990aa21b849ba7b51700`
 with no `runAsUser` in their pod spec and restarted once each; the run did not
 read why. Both `Hypervisor` objects showed `TLSCertificateInstalled` `True`,

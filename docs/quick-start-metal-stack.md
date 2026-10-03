@@ -471,13 +471,13 @@ worker first. With one worker left, no node can receive them.
 Every `bash` block of this page but the `git clone` and the CA file of Part 1,
 Step 7 ran in page order on
 2026-10-02, from commit `715eafd3`, on shoot `forge` with two workers and
-Kubernetes v1.35.6, from a bare cluster to a bare cluster. The block of Part 1,
-Step 4 took three attempts, each repeat after `no matches for kind` or a
-webhook connection error, and the block of Part 2, Step 3 two, after the error
-its step names; every other block exited 0 on its first. The wait at the
-end of Part 1, Step 3 replaced those repeats of Step 4 afterwards and has not
-run on the lab. The console commands of Part 2, Step 6 were typed by a
-script. The teardown waited five minutes for the stack's objects in `openstack`
+Kubernetes v1.35.6, from a bare cluster to a bare cluster. Part 1, Steps 3 and
+4 ran again from a bare cluster on 2026-10-03, from commit `290752e0`, with the
+wait at the end of Step 3: the deploy exited 0 and the apply of Step 4 exited 0
+on its first attempt. Of the other blocks, that of Part 2, Step 3 took two
+attempts, after the error its step names; the rest exited 0 on their first.
+The console commands of Part 2, Step 6 were typed by a script. The teardown of
+the 2026-10-02 run waited five minutes for the stack's objects in `openstack`
 ([#1186](https://github.com/c5c3/cobaltcore/issues/1186)) and then finished.
 That run passed `--insecure` to every `openstack` command. The CA file of
 Part 1, Step 7 replaced the flag afterwards and has not run on the lab: the
