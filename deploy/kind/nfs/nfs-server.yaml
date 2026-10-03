@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # NFS server for the CI/e2e stack, an in-cluster NFSv4 export that the Cinder
-# suites of #979 mount through csi-driver-nfs (release.yaml).
+# suites of #979 mount through csi-driver-nfs (release.yaml). The metal-stack
+# lab runs the same server through deploy/lab/metal-stack/nfs (#1196).
 #
 # IMAGE docker.io/itsthenetwork/nfs-server-alpine:12 (source:
 # github.com/sjiveson/nfs-server-alpine). Its entrypoint /usr/bin/nfsd.sh
@@ -27,7 +28,8 @@
 # server and fails. Those two share strings are what the CinderBackend and
 # CinderBackupBackend of #979 carry.
 #
-# CI-ONLY posture:
+# NON-PRODUCTION posture, accepted for kind and for the metal-stack lab, one
+# tenant's cluster (D1 of #1193):
 #   - The server container runs privileged, because the image drives the host
 #     kernel's rpc.nfsd rather than a userspace server.
 #   - Plain sec=sys, with no_root_squash and a wildcard PERMITTED. Every pod
@@ -92,9 +94,12 @@ spec:
       # the cluster — PERMITTED=*, no_root_squash, sec=sys, a 2019 image that
       # receives no patches) has CAP_SYS_ADMIN and reads every token the
       # kubelet has projected on the node out of /var/lib/kubelet/pods anyway.
-      # What contains that is the stack being kind-only and opt-in behind
-      # WITH_NFS, never the flag below. Restricting who may dial 2049 needs a
-      # NetworkPolicy in `openstack`, which this overlay does not ship.
+      # What contains that is where the stack runs, never the flag below: it
+      # is opt-in behind WITH_NFS, on a kind cluster or on the metal-stack
+      # lab, and neither has an untrusted tenant. Restricting who may dial
+      # 2049 needs a NetworkPolicy in `openstack`, which this overlay does not
+      # ship. The lab ships one that admits its nodes alone
+      # (deploy/lab/metal-stack/nfs/client-policy.yaml).
       automountServiceAccountToken: false
       initContainers:
         - name: prepare-exports

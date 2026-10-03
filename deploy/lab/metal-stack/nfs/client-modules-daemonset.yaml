@@ -1,0 +1,114 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Loads the kernel's NFS client, the modules nfs and nfsv4, on every node of
+# the metal-stack lab (#1196). Two clients mount the shares of the lab's NFS
+# server: the csi-nfs-node DaemonSet of csi-driver-nfs, for the Cinder pods on
+# whatever node they run on, and nova-compute, for the volumes it attaches to a
+# server. Both mount through the node's kernel. On kind, hack/deploy-infra.sh
+# loads the modules on the host; on the lab it runs on a workstation, so a pod
+# loads them on each node, as D2 of #1193 decided.
+#
+# A DaemonSet, because neither client can carry an init container from this
+# repository: the chart renders csi-nfs-node and the nova-operator renders
+# nova-compute. The tolerations follow csi-nfs-node, which tolerates every
+# taint. nfsd, the server's module, is loaded by the init container load-nfsd
+# of the server pod (kustomization.yaml), not here.
+#
+# A reboot unloads the modules, so the pod has to start again then: the
+# container hold only keeps the pod running, without a privilege. bash is its
+# PID 1 and ignores a SIGTERM it has no trap for, so the trap ends it. The
+# modules stay loaded when the pod is deleted, also after
+# `EXTERNAL_CLUSTER=true make teardown-infra`, until the node reboots.
+#
+# The default RollingUpdate strategy stays, because `kubectl rollout status`,
+# the deploy script's gate on this DaemonSet, does not support OnDelete. The
+# image is host-prepare's (../hypervisor/libvirt-daemonset.yaml), unpinned like
+# it until #1216 gives that image a tag a digest pin can hold on to, and hold
+# reuses it, so the overlay adds no image;
+# tests/unit/deploy/metal_stack_nfs_test.sh keeps the three equal.
+#
+# The load prints one line per pod, `nfs-client-modules: nfs and nfsv4 are
+# loaded` or `nfs-client-modules: cannot load <module> from
+# /lib/modules/<kernel>`. Read them with:
+#
+#   kubectl logs -n openstack -l app.kubernetes.io/name=nfs-client-modules -c load --prefix --tail=-1
+#
+# With a label selector, kubectl logs prints only the last 10 lines of each
+# pod unless --tail says otherwise.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nfs-client-modules
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nfs-client-modules
+    app.kubernetes.io/part-of: lab-nfs
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nfs-client-modules
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nfs-client-modules
+        app.kubernetes.io/part-of: lab-nfs
+    spec:
+      # Neither container calls the Kubernetes API.
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 5
+      # csi-nfs-node tolerates every taint, so the loader follows it.
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: load
+          image: ghcr.io/c5c3/libvirt:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              for m in nfs nfsv4; do
+                if ! modprobe "$m"; then
+                  echo "nfs-client-modules: cannot load $m from /lib/modules/$(uname -r)"
+                  exit 1
+                fi
+              done
+              echo "nfs-client-modules: nfs and nfsv4 are loaded"
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+      containers:
+        - name: hold
+          image: ghcr.io/c5c3/libvirt:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              memory: 32Mi
+      volumes:
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
