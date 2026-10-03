@@ -39,9 +39,9 @@ const (
 // waitForChassisScript blocks until the OVNChassis on this node has registered
 // it: the chassis writes external_ids:system-id into the local Open vSwitch
 // database, and until that row exists an instance port has no chassis to be
-// bound to. It is the gate the metadata agent runs, written against the
-// OVSDB JSON-RPC protocol in the Python standard library, because the
-// nova-compute image ships no ovsdb-client.
+// bound to. The query is written against the OVSDB JSON-RPC protocol in the
+// Python standard library, because the nova-compute image ships no
+// ovsdb-client.
 //
 // Every failure (no socket yet, a refused or reset connection, a reply that is
 // not the one asked for, an error reply, a row without the key) reads as "not

@@ -406,10 +406,9 @@ probe; the service state Nova reports is the health signal.
 
 The `wait-for-chassis` init container runs the image's `python3` under the
 restricted profile and waits until the node's OVN chassis has written
-`external_ids:system-id` into the local Open vSwitch database, the gate the
-[metadata agent](../neutron/index.md) runs. It speaks the OVSDB JSON-RPC
-protocol itself, because the image ships no `ovsdb-client`, so a pool's nodes
-need an [OVNChassis](../ovn/ovn-chassis-crd.md).
+`external_ids:system-id` into the local Open vSwitch database. It speaks the
+OVSDB JSON-RPC protocol itself, because the image ships no `ovsdb-client`, so a
+pool's nodes need an [OVNChassis](../ovn/ovn-chassis-crd.md).
 
 The `create-instances-dir` init container runs first, as uid 0 and gid 0. It is
 not privileged, and every capability is dropped but `DAC_OVERRIDE`. It runs
