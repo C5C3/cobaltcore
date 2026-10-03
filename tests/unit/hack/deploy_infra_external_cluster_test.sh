@@ -488,6 +488,7 @@ test_check_external_cluster() {
   rc=$?
   assert_nonzero_exit "refuses a cluster without a default StorageClass" "$rc"
   assert_contains "names the missing default class" "$output" "no default StorageClass"
+  assert_contains "names the overlay's volumes" "$output" "The lab overlay"
 
   output="$(run_fn "$tmp/bin" check_external_cluster KUBECTL_DS_PRESENT=true \
     KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
