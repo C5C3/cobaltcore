@@ -182,7 +182,8 @@ after the Envoy pod restarted, start it again.
 
 The Gateway serves one self-signed certificate per hostname, each in a Secret
 `<service>-nip-io-tls` in `openstack` whose `ca.crt` is the certificate
-itself. Collect them into one CA file for the OpenStack CLI:
+itself. Each names its hostname as its subject, which lets one CA file hold
+all of them. Collect them into that file for the OpenStack CLI:
 
 ```bash
 kubectl get secret -n openstack --field-selector type=kubernetes.io/tls -o json |
