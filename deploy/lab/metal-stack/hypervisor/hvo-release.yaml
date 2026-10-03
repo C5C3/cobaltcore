@@ -4,8 +4,9 @@
 
 # openstack-hypervisor-operator (hvo) from the upstream chart of the pinned
 # hvo commit (sources.yaml), running the image #1163 builds from that commit
-# with the Eviction patch: the chart renders <repository>:<appVersion>, and
-# only the repository is overridden.
+# with the patches under images/openstack-hypervisor-operator/patches/: the
+# chart renders <repository>:<appVersion>, and only the repository is
+# overridden.
 #
 # The release sits in openstack because its two inputs do: the auth Secret
 # the lab ControlPlane writes (spec.services.nova.hypervisorOperator), read
@@ -37,7 +38,18 @@
 # Envoy (gateway-alias.yaml) and trusts the four self-signed gateway
 # certificates: hvo is a Go program, and Go reads every certificate file in
 # the directories SSL_CERT_DIR lists. /etc/ssl/certs keeps the image's public
-# roots.
+# roots. It also sets imagePullPolicy Always, which the chart has no value
+# for: build-images.yaml moves the tag sha-<commit> to every main build, so
+# the tag changes content whenever patches/ changes, and a node that cached
+# an image without patch 0002 would start a binary that refuses the flag
+# below.
+#
+# The post-renderer's second patch appends one argument to the list the chart
+# renders from controllerManager.manager.args, which stays untouched:
+#   - --default-high-availability=false, the flag of the image's patch 0002:
+#     hvo creates each Hypervisor with spec.highAvailability false. While
+#     the field is true, onboarding waits for the HaEnabled condition, which
+#     only SAP's kvm-ha-service sets.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -120,6 +132,7 @@ spec:
                           - neutron.127-0-0-1.nip.io
                     containers:
                       - name: manager
+                        imagePullPolicy: Always
                         env:
                           - name: SSL_CERT_DIR
                             value: /etc/lab-gateway-ca:/etc/ssl/certs
@@ -151,3 +164,11 @@ spec:
                                 items:
                                   - key: ca.crt
                                     path: neutron.crt
+          # The chart has no value for this flag of patch 0002, so the
+          # argument is appended to the list it renders.
+          - target:
+              kind: Deployment
+            patch: |
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --default-high-availability=false

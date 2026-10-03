@@ -27,7 +27,9 @@
 #      the lab values and a fullnameOverride that keeps every object name
 #      within 63 characters, and its post-renderer aliases the four gateway
 #      names to the alias Service's ClusterIP and trusts the gateway
-#      certificates.
+#      certificates. A second post-renderer patch appends
+#      --default-high-availability=false to the manager's arguments, and the
+#      values set no argument list.
 #   9. The kna release runs the image ghcr.io/c5c3/kvm-node-agent without a
 #      tag, sets the libvirt URI, the node label field path, DAC_OVERRIDE
 #      alone without a runAsUser or runAsGroup, and NAMESPACE.
@@ -463,7 +465,7 @@ test_ca_and_compute() {
 test_hvo_release() {
   echo "Test: the openstack-hypervisor-operator release"
 
-  render "$HYPERVISOR_DIR" 19 || return
+  render "$HYPERVISOR_DIR" 23 || return
 
   local release=openstack-hypervisor-operator env='.spec.values.controllerManager.manager.env'
   assert_eq "the release lives in openstack" "openstack" \
@@ -515,6 +517,8 @@ test_hvo_release() {
     "$(val Service openstack-gw-8443 '.spec.ports[0].port')"
   assert_eq "the manager trusts the gateway certificates first" "/etc/lab-gateway-ca:/etc/ssl/certs" \
     "$(hvo_patch '.spec.template.spec.containers[] | select(.name == "manager") | .env[] | select(.name == "SSL_CERT_DIR") | .value')"
+  assert_eq "the manager pulls its image on every start: the tag moves to each main build" "Always" \
+    "$(hvo_patch '.spec.template.spec.containers[] | select(.name == "manager") | .imagePullPolicy')"
   assert_eq "the gateway certificates are mounted read-only there" "lab-gateway-ca /etc/lab-gateway-ca true" \
     "$(hvo_patch '.spec.template.spec.containers[] | select(.name == "manager") | .volumeMounts[0] | .name + " " + .mountPath + " " + (.readOnly | tostring)')"
   assert_eq "the projected volume holds the ca.crt of the four gateway Secrets" \
@@ -522,6 +526,19 @@ test_hvo_release() {
       nova-nip-io-tls/ca.crt=nova.crt placement-nip-io-tls/ca.crt=placement.crt)" \
     "$(hvo_patch '.spec.template.spec.volumes[] | select(.name == "lab-gateway-ca") | .projected.sources[] |
       .secret.name + "/" + .secret.items[0].key + "=" + .secret.items[0].path' | sort)"
+
+  # The chart has no value for patch 0002's flag, so a second patch appends
+  # it and the chart's own argument list stays as it renders.
+  assert_eq "the post-renderer holds two patches" "2" \
+    "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches | length')"
+  assert_eq "the second patch targets the Deployment" "Deployment" \
+    "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches[1].target.kind')"
+  assert_eq "the second patch appends --default-high-availability=false to the manager's arguments" \
+    "1 add /spec/template/spec/containers/0/args/- --default-high-availability=false" \
+    "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches[1].patch | from_yaml |
+      (length | tostring) + " " + .[0].op + " " + .[0].path + " " + .[0].value')"
+  assert_eq "the values set no argument list" "false" \
+    "$(val HelmRelease "$release" '.spec.values.controllerManager.manager | has("args")')"
 }
 
 # --- Test 9: the kna release ---
