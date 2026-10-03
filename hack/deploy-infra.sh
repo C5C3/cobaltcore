@@ -560,18 +560,24 @@ dump_pod_logs() {
 # wait_for_cert_manager_webhook — Wait until the cert-manager webhook admits
 # a request.
 #
-# HelmRelease/cert-manager Ready means helm-controller saw the chart's
-# Deployments roll out. It says nothing about the admission path that the
-# first ClusterIssuer create takes: the webhook pod opens its TLS listener
-# after the readiness probe passes, and cainjector copies the serving CA
-# into the cert-manager-webhook Validating/MutatingWebhookConfigurations on
-# its own reconcile pass. Until both have happened the apiserver answers
+# On an install, HelmRelease/cert-manager Ready includes the chart's
+# startup API check, which deploy/flux-system/releases/cert-manager.yaml
+# enables: its post-install Job waits for the admission path that the
+# first ClusterIssuer create takes, and helm-controller waits for the Job.
+# An upgrade runs no post-install hook, so there, and with the check off,
+# Ready means only that the chart's Deployments rolled out: the webhook
+# pod opens its TLS listener after the readiness probe passes, and
+# cainjector copies the serving CA into the cert-manager-webhook
+# Validating/MutatingWebhookConfigurations on its own reconcile pass.
+# Until both have happened the apiserver answers
 #   failed calling webhook "webhook.cert-manager.io": ... connection refused
 #   failed calling webhook "webhook.cert-manager.io": ... x509: certificate
 #     signed by unknown authority
 # and a plain `kubectl apply` aborts a deploy that would have succeeded a
 # few seconds later (e2e-operator/neutron in run 33166067165 hit the x509
-# variant in the same second the HelmRelease turned Ready).
+# variant in the same second the HelmRelease turned Ready). The probe stays
+# as this script's own gate in front of the Phase 2 applies for those two
+# cases.
 #
 # Polls every 5s up to the supplied timeout with a server-side dry-run of
 # the supplied manifest: the apiserver runs the full admission chain for a
@@ -3174,9 +3180,10 @@ main() {
   # Phase 1: cert-manager must be Ready before we can create TLS resources.
   log "Phase 1: Waiting for cert-manager..."
   wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" cert-manager
-  # Ready covers the rollout, not the admission path the Phase 2 applies
-  # take: the webhook's listener and its injected caBundle trail it by
-  # seconds. Probe with the manifest Phase 2 applies first.
+  # On an install, Ready includes the chart's startup API check, which
+  # waits for the admission path the Phase 2 applies take. An upgrade runs
+  # no hook, so the probe stays as the script's own gate and uses the
+  # manifest Phase 2 applies first.
   wait_for_cert_manager_webhook "${REPO_ROOT}/deploy/flux-system/infrastructure/cluster-issuer.yaml" "${WEBHOOK_TIMEOUT}"
 
   # Phase 2: Apply TLS prerequisites that OpenBao and MariaDB need to start.
