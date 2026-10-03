@@ -79,7 +79,8 @@ func TestReconcileNovaComputeNova_Waits(t *testing.T) {
 
 // TestReconcileNovaComputeNova_Resolves pins what a resolved Nova hands the
 // later steps: the default image on the installed release, the contract name,
-// the internal compute URL and the service user's credentials.
+// the internal compute URL, the service user's credentials, and the Nova with
+// the client of its cluster for the host discovery Job.
 func TestReconcileNovaComputeNova_Resolves(t *testing.T) {
 	g := NewGomegaWithT(t)
 	nova := readyNovaForCompute()
@@ -102,6 +103,8 @@ func TestReconcileNovaComputeNova_Resolves(t *testing.T) {
 	g.Expect(pass.creds.Password).To(Equal("pw"))
 	g.Expect(pass.creds.Username).To(Equal(nova.Spec.ServiceUser.Username))
 	g.Expect(pass.doer).To(BeIdenticalTo(api))
+	g.Expect(client.ObjectKeyFromObject(pass.nova)).To(Equal(client.ObjectKeyFromObject(nova)))
+	g.Expect(pass.novaChildren).To(BeIdenticalTo(r.Client), "a local Nova's children live on the local cluster")
 
 	cond := novaComputeCondition(cr, conditionTypeNovaReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
