@@ -21,12 +21,14 @@
 #      CRDs of a mixed list, names no namespace outside the stack's, and
 #      reads, logs and deletes the cluster-scoped objects whose
 #      helm.toolkit.fluxcd.io/namespace label names a stack namespace after
-#      the stack namespaces are gone and before the CRDs, and reads them again
-#      in the final count.
+#      the stack namespaces are gone and before the CRDs, reads them again in
+#      the final count, and deletes the two cert-manager leader election
+#      Leases in kube-system after those objects and before the CRDs.
 #   3. It exits 1 before any delete when the API server does not answer, yq
 #      is missing or yq is not mikefarah/yq v4.40.1 or newer, exits 1 when a
 #      wait runs out (naming the object, the OVNCentral delete included, after
-#      which nothing else is deleted), when
+#      which nothing else is deleted), when the Lease delete is refused
+#      (before any CRD is deleted), when
 #      a stack CR in openstack that is being deleted or whose owner is gone
 #      outlives the wait, or the read of those CRs keeps failing (naming the
 #      object or kubectl's error, before any operator is removed), when the
@@ -100,6 +102,8 @@ ippools.crd.projectcalico.org"
 #   KUBECTL_DELETE_RC      exit code of every waiting delete (default 0)
 #   KUBECTL_OVNCENTRAL_DELETE_RC
 #                          exit code of the OVNCentral delete alone (default 0)
+#   KUBECTL_LEASE_DELETE_RC
+#                          exit code of the Lease delete alone (default 0)
 #   KUBECTL_OPENBAO_PATCH_RC
 #                          exit code of the OpenBao instance patch (default 0)
 #   KUBECTL_CRD_RC         non-empty: `get crd -o name` fails
@@ -448,6 +452,12 @@ case "$args" in
           exit "${KUBECTL_CHART_OBJECT_DELETE_RC}"
         fi
         ;;
+      "delete lease "*)
+        if [ "${KUBECTL_LEASE_DELETE_RC:-0}" != "0" ]; then
+          echo 'Error from server (Forbidden): leases.coordination.k8s.io "cert-manager-controller" is forbidden: User "lab" cannot delete resource "leases" in API group "coordination.k8s.io" in the namespace "kube-system"' >&2
+          exit "${KUBECTL_LEASE_DELETE_RC}"
+        fi
+        ;;
       "delete novacomputes.nova.openstack.c5c3.io "*)
         if [ "${KUBECTL_NOVACOMPUTE_DELETE_RC:-0}" != "0" ]; then
           echo "error: timed out waiting for the condition on novacomputes/lab" >&2
@@ -641,7 +651,8 @@ test_external_teardown_order() {
     'kubectl delete clusterrolebinding flux-operator-cluster-admin' \
     'kubectl delete clusterrole flux-operator-edit flux-operator-view flux-web-admin flux-web-user' \
     "kubectl delete namespace $(stack_namespace_names)" \
-    "kubectl delete $(paste -sd' ' "$tmp/bin/chart-objects.txt")")"
+    "kubectl delete $(paste -sd' ' "$tmp/bin/chart-objects.txt")" \
+    'kubectl delete lease cert-manager-cainjector-leader-election cert-manager-controller -n kube-system')"
   local actual
   actual="$(mutations "$CALL_LOG" | grep -v 'customresourcedefinition')"
   assert_eq "the deletes run in finalizer order, the lab hypervisors first (patches only for installed, suspended objects)" \
@@ -750,8 +761,8 @@ test_external_teardown_failures() {
   echo "Test: the external teardown aborts on an unreachable cluster, a timeout or leftovers"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (66 checks skipped)"
-    SKIP=$((SKIP + 66))
+    echo "  SKIP: yq not installed (71 checks skipped)"
+    SKIP=$((SKIP + 71))
     return
   fi
 
@@ -901,6 +912,9 @@ test_external_teardown_failures() {
   assert_not_contains "and deletes no chart object when the read finds none" \
     "$(cat "$CALL_LOG")" "delete clusterrole.rbac.authorization.k8s.io/"
   assert_not_contains "and does not print kubectl's empty-read notice" "$output" "No resources found"
+  assert_contains "and still deletes the cert-manager Leases, which --ignore-not-found lets pass" \
+    "$(cat "$CALL_LOG")" \
+    "kubectl delete lease cert-manager-cainjector-leader-election cert-manager-controller -n kube-system"
 
   # The chart objects cannot be read: exit 1 after the stack namespaces, with
   # kubectl's error, and before any CRD is deleted.
@@ -943,6 +957,17 @@ test_external_teardown_failures() {
     "error: timed out waiting for the condition on ovncentrals/controlplane-ovn"
   assert_eq "and no later step deletes an overlay" "" \
     "$(grep 'kubectl delete -k' "$CALL_LOG" | grep -v '/deploy/lab/metal-stack/hypervisor' || true)"
+
+  # A Lease delete the cluster refuses: exit 1 before step 8 deletes a CRD.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_LEASE_DELETE_RC=1)"
+  rc=$?
+  assert_eq "a refused Lease delete exits 1" "1" "$rc"
+  assert_contains "the error names the Lease step" "$output" \
+    "deleting the cert-manager leader election Leases in kube-system failed or did not finish within 600s"
+  assert_contains "and quotes kubectl's error" "$output" \
+    'leases.coordination.k8s.io "cert-manager-controller" is forbidden'
+  assert_not_contains "and no CRD is deleted" "$(cat "$CALL_LOG")" "delete customresourcedefinition"
   unset CALL_LOG
 }
 
