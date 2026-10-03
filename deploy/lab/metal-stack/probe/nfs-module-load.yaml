@@ -1,0 +1,148 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NFS module load test for metal-stack clusters, #1194. node-probe.yaml beside
+# it shows which NFS module files the node's kernel ships; this Job shows
+# whether a pod can load them. It loads nfsd, nfs and nfsv4 with modprobe,
+# reports each result and the registered NFS filesystems, and removes what it
+# loaded. Its output decides D1 (which NFS server) and D2 (where the modules
+# get loaded) of #1193.
+#
+# NOT READ-ONLY: the Job changes the node for the seconds it runs. It loads up
+# to three modules and their dependencies and removes them again with rmmod.
+# It removes the modules its own load added and nothing that was loaded
+# before: the modules that are new since a /proc/modules snapshot taken before
+# the load and are one of nfsd, nfs and nfsv4 it tried to load or one of their
+# dependencies, as `modprobe --show-depends` lists them. A module that prints
+# `already loaded` is not tried: one loaded before the run is left alone, and
+# so is one another pod loaded since the snapshot. A module outside that list,
+# such as vhost_net that host-prepare loads while the Job runs, is neither
+# counted nor removed; modprobe -r would also remove unused modules that were
+# there before. Any other NFS module that another pod loads in the seconds
+# between the snapshot and the unload can be taken for the run's own, so run
+# the test on a node where nothing else loads NFS modules. A module it cannot
+# remove stays loaded until the node reboots and is named on the last line,
+# `still loaded: ...`. This bends decision D1 of #1138 ("the host is not
+# modified"), so kustomization.yaml leaves this file out of its resources and
+# `kubectl apply -k deploy/lab/metal-stack/probe` stays read-only.
+#
+# IMAGE AND MOUNT mirror the init container host-prepare of
+# deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml, which loads
+# vhost_net from a pod the same way: ghcr.io/c5c3/libvirt:latest, whose kmod
+# package (images/libvirt/Dockerfile) supplies modprobe and rmmod, privileged,
+# as root, with the node's /lib/modules mounted read-only so modprobe finds the
+# running kernel's module files. The image string is the DaemonSet's, unpinned
+# like it, and tests/unit/deploy/metal_stack_probe_test.sh keeps the two
+# equal. No hostPID, no hostNetwork, no ServiceAccount token, a read-only root
+# filesystem.
+#
+# NAMESPACE default, as for the probe: the test runs before the lab stack has
+# created any namespace of its own.
+#
+# The Job exits 0 whatever it finds, so `kubectl wait` returns and the result
+# is read from the log: `<module>: loaded`, `already loaded` or
+# `FAILED: <modprobe's message>`, then `registered` or `not registered` for
+# nfs4 and nfsd, the modules the load added, and a last line
+# `module list as before` or `still loaded: ...`. Run it on one node, read it
+# and remove it; the first delete clears a Job left from an interrupted run,
+# whose immutable pod template would reject the apply:
+#   kubectl delete job -n default nfs-module-load --ignore-not-found
+#   yq '.spec.template.spec.nodeName = "<node>"' deploy/lab/metal-stack/probe/nfs-module-load.yaml | kubectl apply -f -
+#   kubectl wait --for=condition=complete job/nfs-module-load -n default --timeout=5m
+#   kubectl logs -n default job/nfs-module-load
+#   kubectl delete job -n default nfs-module-load
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nfs-module-load
+  namespace: default
+  labels:
+    app.kubernetes.io/name: nfs-module-load
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nfs-module-load
+    spec:
+      restartPolicy: Never
+      # The load test never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      containers:
+        - name: load
+          image: ghcr.io/c5c3/libvirt:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              snapshot() { cut -d ' ' -f1 /proc/modules 2>/dev/null | sort; }
+              # The modules this run tried to load and the modules they depend
+              # on, by module name. A module that prints `already loaded` is
+              # left out, also as a dependency of one tried, nfs of nfsv4:
+              # another pod may have loaded it since the snapshot.
+              tried=""
+              skipped=""
+              closure() {
+                for m in $tried; do modprobe --show-depends "$m" 2>/dev/null; done \
+                  | awk -v skip="$skipped" 'BEGIN { split(skip, s, " "); for (i in s) drop[s[i]] = 1 }
+                      { n = $2; sub(/.*\//, "", n); sub(/\.ko.*$/, "", n); gsub(/-/, "_", n); if (!(n in drop)) print n }' | sort -u
+              }
+              before="$(snapshot)"
+              echo "== load"
+              for m in nfsd nfs nfsv4; do
+                if [ -d "/sys/module/$m" ]; then
+                  echo "$m: already loaded"
+                  skipped="$skipped $m"
+                  continue
+                fi
+                tried="$tried $m"
+                if err="$(modprobe "$m" 2>&1)"; then
+                  echo "$m: loaded"
+                else
+                  echo "$m: FAILED: $err"
+                fi
+              done
+              echo "== filesystems"
+              for fs in nfs4 nfsd; do
+                if grep -qE "[[:space:]]$fs\$" /proc/filesystems 2>/dev/null; then echo "$fs: registered"; else echo "$fs: not registered"; fi
+              done
+              echo "== modules the load added"
+              deps="$(closure)"
+              ours() { comm -13 <(printf '%s\n' "$before") <(snapshot) | comm -12 - <(printf '%s\n' "$deps"); }
+              added="$(ours)"
+              printf '%s\n' "${added:-none}"
+              echo "== unload"
+              # rmmod refuses a module another one still uses, so each pass
+              # removes one layer of the dependency tree: nfsv4 needs nfs,
+              # which needs lockd, which needs sunrpc, four deep; six passes
+              # leave a margin. $added, like $left below, stays unquoted: each
+              # module must be its own word.
+              for _ in 1 2 3 4 5 6; do
+                rmmod $added 2>/dev/null
+              done
+              left="$(ours)"
+              if [ -z "$left" ]; then echo "module list as before"; else echo "still loaded: $(printf '%s ' $left)"; fi
+              exit 0
+          securityContext:
+            # modprobe needs a privileged root container to load a module
+            # into the node's kernel, as host-prepare does.
+            privileged: true
+            runAsUser: 0
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+      volumes:
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
