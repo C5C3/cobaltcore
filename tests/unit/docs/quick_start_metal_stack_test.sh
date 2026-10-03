@@ -17,7 +17,7 @@
 #   5. the page holds the deploy and teardown commands, and the guide
 #      conventions list it as a devstack with the same deploy command
 #   6. Part 2 links no anchor of Part 1 and defines `nodes` and `zone` itself
-#   7. four commands of the run sequence occur once on the page and not in
+#   7. three commands of the run sequence occur once on the page and not in
 #      docs/reference/infrastructure/infrastructure-manifests.md, which links
 #      the page
 #   8. Proven by names the date of a lab run and no chainsaw suite
@@ -28,6 +28,9 @@
 #      Step 3 follows the waits for the operator's release and its CRD, and
 #      the node port check of Part 2, Step 1 follows the reservation of the
 #      migration ports and its rollout
+#  11. no line of the page holds a hand step the operators took over: the
+#      highAvailability patch, the custom trait (its annotation and its
+#      create) and the host discovery, nor any other file under tests/
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -292,7 +295,6 @@ test_one_runbook() {
   for command in \
     'kubectl apply -k deploy/lab/metal-stack/controlplane' \
     'kubectl apply -k deploy/lab/metal-stack/hypervisor-fixtures' \
-    'trait create CUSTOM_C5C3_LAB' \
     'server create lab-a'; do
     count="$(grep -cF -- "$command" "$QUICK_START_DOC" || true)"
     assert_eq "'$command' occurs on one line of the page" "1" "$count"
@@ -370,6 +372,20 @@ test_blocks_pass_on_first_run() {
     "$(if [[ -n "$line" ]]; then sed -n "$((line + 2))p" "$QUICK_START_DOC"; fi)"
 }
 
+# --- Test 11: no hand steps ---
+# The hvo image creates each Hypervisor with spec.highAvailability false and
+# sets TraitsUpdated without a custom trait, and the NovaCompute pool maps its
+# hosts, so the page runs none of the three by hand, and no script of the e2e
+# suites.
+test_no_hand_steps() {
+  echo "Test: the page holds no hand step the operators took over"
+  local pattern lines
+  for pattern in 'highAvailability":false' 'custom-traits' 'trait create' 'discover-hosts' 'tests/'; do
+    lines="$(grep -nF -- "$pattern" "$QUICK_START_DOC" || true)"
+    assert_eq "no line of the page contains '$pattern'" "" "$lines"
+  done
+}
+
 test_frontmatter
 test_sidebar
 test_sections
@@ -380,6 +396,7 @@ test_one_runbook
 test_proven_by
 test_step_4_has_no_retry_instruction
 test_blocks_pass_on_first_run
+test_no_hand_steps
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
