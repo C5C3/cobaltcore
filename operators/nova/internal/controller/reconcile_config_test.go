@@ -406,6 +406,124 @@ func TestReconcileConfig_ControlCharKeepsLastGood(t *testing.T) {
 		g.Expect(art.configMapName).To(BeEmpty())
 		g.Expect(art.dataKeys).To(BeEmpty())
 	})
+
+	t.Run("a live Deployment without the config volume has nothing to keep", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nova := newNova()
+		r := newNovaTestReconciler(nova, novaAPIDeployment(nova, ""), liveConfigMap.DeepCopy())
+
+		_, art, err := r.reconcileConfig(context.Background(), r.Client, nova)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(art).To(Equal(configArtifacts{}))
+	})
+}
+
+// novaAPIDeployment returns the Nova API Deployment as the config step reads it
+// back: the nova-api container on the Nova's image, a scratch volume and,
+// unless configMapName is "", the config volume backed by that ConfigMap.
+func novaAPIDeployment(nova *novav1alpha1.Nova, configMapName string) *appsv1.Deployment {
+	volumes := []corev1.Volume{{
+		Name:         tmpVolumeName,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}}
+	if configMapName != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: configVolumeName,
+			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
+			}},
+		})
+	}
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: nova.Name, Namespace: nova.Namespace},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: novaAPIContainerName, Image: nova.Spec.Image.Reference()}},
+				Volumes:    volumes,
+			}},
+		},
+	}
+}
+
+// TestLiveAPIDeployment covers the read the last-good config and the host
+// discovery Job share: only a ConfigMap behind the config volume of the API
+// Deployment names one, only the nova-api container names the image, and only
+// NotFound is no error.
+func TestLiveAPIDeployment(t *testing.T) {
+	nova := validNova()
+
+	t.Run("a missing Deployment names none", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		name, image, err := liveAPIDeployment(context.Background(), novaFakeClientBuilder().Build(), nova)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(name).To(BeEmpty())
+		g.Expect(image).To(BeEmpty())
+	})
+
+	t.Run("a Deployment without the config volume names none", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		c := novaFakeClientBuilder(novaAPIDeployment(nova, "")).Build()
+		name, _, err := liveAPIDeployment(context.Background(), c, nova)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(name).To(BeEmpty())
+	})
+
+	t.Run("a config volume that is no ConfigMap names none", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		deploy := novaAPIDeployment(nova, "")
+		deploy.Spec.Template.Spec.Volumes = append(deploy.Spec.Template.Spec.Volumes, corev1.Volume{
+			Name:         configVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+		name, _, err := liveAPIDeployment(context.Background(), novaFakeClientBuilder(deploy).Build(), nova)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(name).To(BeEmpty())
+	})
+
+	t.Run("the config volume names its ConfigMap", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		c := novaFakeClientBuilder(novaAPIDeployment(nova, "nova-config-abc")).Build()
+		name, _, err := liveAPIDeployment(context.Background(), c, nova)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(name).To(Equal("nova-config-abc"))
+	})
+
+	t.Run("the nova-api container names the image, not the spec", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		deploy := novaAPIDeployment(nova, "nova-config-abc")
+		deploy.Spec.Template.Spec.Containers = []corev1.Container{
+			{Name: "sidecar", Image: "example.com/sidecar:1"},
+			{Name: novaAPIContainerName, Image: "ghcr.io/c5c3/nova:running"},
+		}
+		_, image, err := liveAPIDeployment(context.Background(), novaFakeClientBuilder(deploy).Build(), nova)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(image).To(Equal("ghcr.io/c5c3/nova:running"))
+	})
+
+	t.Run("a Deployment without the nova-api container names no image", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		deploy := novaAPIDeployment(nova, "nova-config-abc")
+		deploy.Spec.Template.Spec.Containers = nil
+		_, image, err := liveAPIDeployment(context.Background(), novaFakeClientBuilder(deploy).Build(), nova)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(image).To(BeEmpty())
+	})
+
+	t.Run("any other read failure is returned", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		boom := errors.New("deployments.apps is forbidden")
+		c := novaFakeClientBuilder(novaAPIDeployment(nova, "nova-config-abc")).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+					return boom
+				},
+			}).
+			Build()
+		name, image, err := liveAPIDeployment(context.Background(), c, nova)
+		g.Expect(err).To(MatchError(boom))
+		g.Expect(name).To(BeEmpty())
+		g.Expect(image).To(BeEmpty())
+	})
 }
 
 // TestReconcileConfig_ConfigMapFailuresMarkSecretsReady covers the two
