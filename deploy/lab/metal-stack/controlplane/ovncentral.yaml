@@ -8,8 +8,8 @@
 # tests/unit/deploy/metal_stack_controlplane_test.sh fails when this file and
 # the page's block drift apart.
 #
-# No storage class is named, so the two 1Gi database volumes bind to the lab's
-# default class, `premium`.
+# No storage class is named, so the two 1Gi database volumes bind to the
+# cluster's default class.
 apiVersion: ovn.openstack.c5c3.io/v1alpha1
 kind: OVNCentral
 metadata:
