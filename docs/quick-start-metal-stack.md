@@ -476,21 +476,19 @@ worker first. With one worker left, no node can receive them.
 
 ## Proven by
 
-Every `bash` block of this page but the `git clone` and the CA file of Part 1,
-Step 7 ran in page order on
-2026-10-02, from commit `715eafd3`, on shoot `forge` with two workers and
-Kubernetes v1.35.6, from a bare cluster to a bare cluster. Part 1, Steps 3 and
-4 ran again from a bare cluster on 2026-10-03, from commit `290752e0`, with the
-wait at the end of Step 3: the deploy exited 0 and the apply of Step 4 exited 0
-on its first attempt. Of the other blocks, that of Part 2, Step 3 took two
-attempts, after the error its step names; the rest exited 0 on their first.
-The console commands of Part 2, Step 6 were typed by a script. The teardown of
-the 2026-10-02 run waited five minutes for the stack's objects in `openstack`
-([#1186](https://github.com/c5c3/cobaltcore/issues/1186)) and then finished.
-That run passed `--insecure` to every `openstack` command. The CA file of
-Part 1, Step 7 replaced the flag afterwards and has not run on the lab: the
-OpenStack CLI 8.2.0 verified a certificate of the Gateway's shape (self-signed,
-`CA:FALSE`, empty subject) against such a file on a workstation.
+Every `bash` block of this page but the `git clone` ran in page order on
+2026-10-03, from commit `e6a34f1b`, on shoot `forge` with two workers and
+Kubernetes v1.35.6, from a bare cluster to a bare cluster, and each block
+exited 0 on its first attempt. The port-forward of Part 1, Step 6 ran in a
+second terminal until the teardown had finished and was then stopped. The
+console commands of Part 2, Step 6 were typed by a script. The teardown waited
+93 seconds for the stack's objects in `openstack` to be finalized and then
+finished. Two things were done on the workers before the run. `calico-node` on
+`shoot--df33f0b4c1--forge-group-0-666b6-qmhrg` was restarted, because it held
+port 49152 from before the reservation of Part 2, Step 1. The Open vSwitch
+database an earlier lab stack had left on both workers was removed, because
+the metadata agents otherwise read its old chassis name and the servers get no
+metadata ([#1205](https://github.com/c5c3/cobaltcore/issues/1205)).
 No chainsaw suite runs against the lab, because CI has no metal-stack cluster.
 The findings of the lab runs so far, upstream and in this repository, are
 listed under
