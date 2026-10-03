@@ -106,7 +106,7 @@ That adds the NFS server to `openstack` and `csi-driver-nfs` to `kube-system`.
 On a Linux host it also loads the `nfsd`, `nfs` and `nfsv4` kernel modules
 through sudo. On macOS the script skips the module step: those modules belong
 to the Linux VM kernel Docker Desktop runs. The
-[NFS storage stack](./reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-kind-only-opt-in)
+[NFS storage stack](./reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-opt-in)
 reference describes the overlay.
 
 ## Step 3 — Deploy the OVN control plane

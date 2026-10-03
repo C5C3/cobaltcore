@@ -80,7 +80,7 @@ server and the mount fails.
 
 The stack is kind-only and opt-in. For the chart pin, the server image, and the
 reasons it stays out of the default flow, see
-[NFS storage stack](../../reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-kind-only-opt-in).
+[NFS storage stack](../../reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-opt-in).
 
 ## Step 2 — Read the attached backend
 

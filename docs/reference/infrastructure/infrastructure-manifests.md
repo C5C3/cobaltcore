@@ -2260,7 +2260,7 @@ explicit, the opt-in flag has a single documented name (`WITH_DIZZY`), and the
 kind overlay is self-contained under `deploy/kind/dizzy/` so the production
 kustomization root ships none of it.
 
-### NFS storage stack (kind-only opt-in)
+### NFS storage stack (opt-in)
 
 **File:** `deploy/kind/nfs/kustomization.yaml`
 
@@ -2268,7 +2268,9 @@ The NFS storage stack, an in-cluster NFSv4 server plus the
 [csi-driver-nfs](https://github.com/kubernetes-csi/csi-driver-nfs) mounter,
 ships as a separate **opt-in** kind overlay for the Cinder e2e suites of
 [#979](https://github.com/c5c3/cobaltcore/issues/979). The default
-`make deploy-infra` flow does **not** install it. Production omits it for two
+`make deploy-infra` flow does **not** install it. Unlike the other opt-ins of
+this section it is not kind-only: the metal-stack lab builds its
+[Lab NFS stack](#lab-nfs-stack) on this overlay. Production omits it for two
 reasons: users bring their own NFS server (a `CinderBackend` takes a `server`
 and a `path` per backend), and the mounter is a prerequisite of the target
 cluster. Shipping `csi-driver-nfs` from `deploy/flux-system/releases/` would
@@ -2297,7 +2299,7 @@ its one accepted co-tenant.
 | Target namespaces | `kube-system` for the chart, `openstack` for the server (both pre-existing; no inline Namespace) |
 | Chart | `csi-driver-nfs` |
 | Chart version | `4.13.4`, an exact pin tracked by a Renovate `customManager` (majors disabled, no automerge). Unlike the chaos-mesh, metrics-server and dizzy overlays this one carries no `>=x <y` range: a range would let Flux adopt a new chart on its next reconcile with no repo diff, and this release installs a privileged `hostNetwork` DaemonSet whose relied-on chart defaults it does not override |
-| Source | `csi-driver-nfs` HelmRepository (`https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts`). That is the only place upstream publishes the chart; every index entry carries an absolute tarball URL back under `master/charts/`, so pinning the repository URL to a tag would freeze the index without making the downloaded chart more immutable. The version pin therefore controls which version Flux installs, not which bytes: Flux `spec.verify` is OCI-only and nothing records a checksum, so a rewrite of the pinned tarball upstream is adopted on the next reconcile. Accepted for a kind-only overlay; a content pin means mirroring the chart into a registry this project controls and referencing it by digest |
+| Source | `csi-driver-nfs` HelmRepository (`https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts`). That is the only place upstream publishes the chart; every index entry carries an absolute tarball URL back under `master/charts/`, so pinning the repository URL to a tag would freeze the index without making the downloaded chart more immutable. The version pin therefore controls which version Flux installs, not which bytes: Flux `spec.verify` is OCI-only and nothing records a checksum, so a rewrite of the pinned tarball upstream is adopted on the next reconcile. Accepted for the kind overlay and for the lab, which takes the release unchanged; a content pin means mirroring the chart into a registry this project controls and referencing it by digest |
 | Server image | `docker.io/itsthenetwork/nfs-server-alpine:12`, digest-pinned, tracked by a Renovate `customManager` |
 | Dependencies | none |
 
@@ -2330,10 +2332,13 @@ Everything else stays at the chart default: `driver.name: nfs.csi.k8s.io`,
 `attachRequired: false`, `fsGroupPolicy: File` and
 `kubeletDir: /var/lib/kubelet`.
 
-When `WITH_NFS=true`, `hack/deploy-infra.sh` does four things. It loads
-`nfsd`, `nfs` and `nfsv4` on the host before the cluster is created,
+When `WITH_NFS=true`, `hack/deploy-infra.sh` does four things. In kind mode it
+loads `nfsd`, `nfs` and `nfsv4` on the host before the cluster is created,
 best-effort through the same loader as `WITH_OVN_KERNEL_MODULES` (Linux only,
-root or passwordless sudo, otherwise a warning). On a cluster whose
+root or passwordless sudo, otherwise a warning). Under `EXTERNAL_CLUSTER=true`
+it loads nothing on the host and applies the overlay's `nfs/` in place of
+`deploy/kind/nfs`, whose pods load the modules on the nodes; see
+[Lab NFS stack](#lab-nfs-stack). On a cluster whose
 `CSIDriver/nfs.csi.k8s.io` lists no `Ephemeral` lifecycle mode it deletes that
 object, because the field is immutable and the chart's patch would otherwise
 be rejected for the lifetime of the cluster: a reused cluster (a second run,
@@ -2354,12 +2359,12 @@ forced reconcile. The wait is on the recreated object's
 `spec.volumeLifecycleModes`, not only on its existence: a remediation rollback
 racing the delete puts the pre-`Ephemeral` object back, which an
 existence-only check would accept.
-It applies `deploy/kind/nfs` in Step 3 and waits for the `nfs-server`
-Deployment to roll out; a failed rollout is an error that stops the run and
-names the `nfsd` module, because a CrashLooping server on a host without
-`nfsd` must not end in a green summary. It appends `csi-driver-nfs` to the
-Phase 3 HelmRelease wait list. All four actions are gated strictly on the
-flag; the default run is unchanged.
+In kind mode it applies `deploy/kind/nfs` in Step 3 and waits for the
+`nfs-server` Deployment to roll out; a failed rollout is an error that stops
+the run and names the `nfsd` module, because a CrashLooping server on a host
+without `nfsd` must not end in a green summary. It appends `csi-driver-nfs`
+to the Phase 3 HelmRelease wait list. All four actions are gated strictly on
+the flag; the default run is unchanged.
 
 **Opt-in usage:**
 
@@ -2373,17 +2378,19 @@ shares mount under `restricted` PodSecurity.
 
 **Posture summary.** Same shape as the entries above: the production omission
 is explicit, the opt-in flag has a single documented name (`WITH_NFS`), and
-the kind overlay is self-contained under `deploy/kind/nfs/`. The CI-only
-posture is recorded in the header of `nfs-server.yaml`: a privileged server,
+the kind overlay is self-contained under `deploy/kind/nfs/`. The
+non-production posture is recorded in the header of `nfs-server.yaml`: a
+privileged server,
 `sec=sys` with `no_root_squash` and a wildcard client list, an amd64-only
 image, and `ghcr.io/nfs-ganesha/nfs-ganesha` as the recorded fallback if a
 runner kernel lacks `nfsd`. The `Ephemeral` lifecycle mode widens that posture
-by one step, which is another reason it stays kind-only: reaching the export
-no longer needs a cluster-scoped `PersistentVolume`, so anyone who can create
-a Pod in a namespace that is not PodSecurity `restricted` mounts both shares
-as root from the pod spec alone. This cluster has no untrusted tenant; a
-non-kind deployment brings its own CSI mounter against an export that
-squashes root.
+by one step: reaching the export no longer needs a cluster-scoped
+`PersistentVolume`, so anyone who can create a Pod mounts both shares from the
+pod spec alone. PodSecurity does not bound that. In a namespace that is not
+`restricted` the pod mounts them as root. A `restricted` namespace admits a
+`csi` volume and the UID 42424, the owner of both exports, which is how the
+`nfs-health` probe mounts them. The metal-stack lab carries the same posture,
+as [Lab NFS stack](#lab-nfs-stack) states.
 
 ### Message bus (kind-only opt-in)
 
@@ -2484,10 +2491,12 @@ metal-stack cluster, planned in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138).
 `deploy/flux-system/kustomization.yaml` does not reference the tree.
 `hack/deploy-infra.sh` applies its `base/` and `infrastructure/` under
-`EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)); the probe is applied
-by hand, and so is `controlplane/`, once the deploy has finished (see
-[Lab ControlPlane](#lab-controlplane)), and after it `hypervisor-fixtures/` and
-`hypervisor/` (see [Lab hypervisors](#lab-hypervisors)). The
+`EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), and its `nfs/` as
+well when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)); the
+probe is applied by hand, and so is `controlplane/`, once the deploy has
+finished (see [Lab ControlPlane](#lab-controlplane)), and after it
+`hypervisor-fixtures/` and `hypervisor/` (see
+[Lab hypervisors](#lab-hypervisors)). The
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md) is the
 walkthrough that runs them in order, from a bare cluster to a migrated server
 and back.
@@ -2665,10 +2674,11 @@ EXTERNAL_CLUSTER=true make teardown-infra
 ```
 
 The deploy runs against the current kubeconfig context and never switches it.
-It refuses the kind-only opt-ins, checks the cluster for a default
-StorageClass, for the absence of a `node-local-dns` DaemonSet (the instance's
-NetworkPolicy would need `spec.network.dnsEndpointIPs` for a host-networked
-resolver) and for a Ready node, and prints the port-forward command when it
+It refuses the kind-only opt-ins (`WITH_NFS` aside, which applies `nfs/`),
+checks the cluster for a default StorageClass, for the absence of a
+`node-local-dns` DaemonSet (the instance's NetworkPolicy would need
+`spec.network.dnsEndpointIPs` for a host-networked resolver) and for a Ready
+node, and prints the port-forward command when it
 completes. The teardown removes the stack in finalizer order and leaves the
 platform's namespaces and CRDs alone. Both are described in
 [E2E Deployment](e2e-deployment.md#make-teardown-infra), with every variable.
@@ -2680,6 +2690,132 @@ platform's namespaces and CRDs alone. Both are described in
 | Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry |
 | Gardener | `apiserver-proxy.networking.gardener.cloud/inject: disable` on every namespace of the base render |
 | Dependencies | a default StorageClass and no `node-local-dns` on the cluster |
+
+### Lab NFS stack
+
+**Files:** `deploy/lab/metal-stack/nfs/kustomization.yaml`,
+`deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml`,
+`deploy/lab/metal-stack/nfs/client-policy.yaml`
+
+The NFS server and the `csi-driver-nfs` mounter of
+[NFS storage stack](#nfs-storage-stack-opt-in), for the metal-stack
+lab ([#1196](https://github.com/c5c3/cobaltcore/issues/1196)). Cinder's volume
+and backup backends are NFS shares, so the lab runs Cinder only with this
+stack. `hack/deploy-infra.sh` applies the directory in Step 3 when
+`WITH_NFS=true` is set beside `EXTERNAL_CLUSTER=true`, in place of
+`deploy/kind/nfs`:
+
+```bash
+EXTERNAL_CLUSTER=true WITH_NFS=true make deploy-infra
+```
+
+The kustomization takes `deploy/kind/nfs` as its base, the way the
+[Lab overlay](#lab-overlay) takes the kind base, and adds the DaemonSet
+`nfs-client-modules`. Its render holds six objects and no Namespace. The three
+differences from kind follow the decisions D1 to D3 of
+[#1193](https://github.com/c5c3/cobaltcore/issues/1193); the load test of the
+[Node probe](#node-probe) settled D1 and D2. A fourth difference sits outside
+the kustomization: the deploy script applies the NetworkPolicy of
+`client-policy.yaml`.
+
+| Property | Value |
+| --- | --- |
+| Export claim | `nfs-server-exports`, 100Gi, `ReadWriteOnce` (D3), with no storage class. The patch removes the kind pin `standard`, so the claim binds to the cluster's default class like the volumes of the [Lab overlay](#lab-overlay). D3 named `premium`, which is the default class of `forge`. One volume holds both exports, so 100Gi bounds every Cinder volume and backup of the lab together. The kind claim asks for 5Gi on `standard` |
+| Server and shares | as on kind: `itsthenetwork/nfs-server-alpine:12` by digest, the Service on 2049, and the shares `nfs-server.openstack.svc.cluster.local:/volumes` and `:/backups`. The image is amd64 only, and so are both workers |
+| Mounter | as on kind: the `csi-driver-nfs` HelmRelease in `kube-system`, chart `4.13.4` with its three values. The chart's `kubeletDir`, `/var/lib/kubelet`, is the lab's kubelet root |
+| `nfsd` | the init container `load-nfsd` of the server pod, before `prepare-exports` (D1, D2). It runs `ghcr.io/c5c3/libvirt:latest`, the image of `host-prepare` in [Lab hypervisors](#lab-hypervisors), privileged, as root, with a read-only root filesystem and the node's `/lib/modules` mounted read-only. In the server's own pod the load precedes the server on every start, also after a node reboot |
+| `nfs` and `nfsv4` | the DaemonSet `nfs-client-modules` in `openstack`, on every node, tolerating every taint as `csi-nfs-node` does. A privileged init container `load` on the same image loads both, and an unprivileged container `hold` keeps the pod running, so the load repeats after a reboot. `csi-nfs-node` and `nova-compute` mount the shares through the node's kernel, and the chart and the nova-operator render them, so neither can carry an init container from this repository |
+| Client policy | the NetworkPolicy `nfs-server-clients` in `openstack`, from the template `client-policy.yaml`. It selects the server's pods and admits one `ipBlock`, the cluster's node network, to TCP 2049. `csi-nfs-node` and `nova-compute` are host-network pods, so the node network names every client. The template carries the placeholder `NODE_NETWORK`; the deploy script replaces it with `data.nodeNetwork` of the ConfigMap `kube-system/shoot-info`, which Gardener writes into every shoot, `10.128.44.0/22` on `forge` |
+| Namespaces | `openstack` for the server and `nfs-client-modules`, `kube-system` for the chart, `flux-system` for the HelmRepository |
+| Gardener label | none added. The server and `nfs-client-modules` pods run in `openstack`, which the [Lab overlay](#lab-overlay) labels, and mount no ServiceAccount token. The chart's pods are host-network pods in `kube-system`, the platform's namespace, so the lab's `gardener.cloud--deny-all` NetworkPolicy there does not apply to them, and they reach the API server as the platform's own host-network pods do |
+| Pinned by | `tests/unit/deploy/metal_stack_nfs_test.sh` |
+
+In this mode the deploy script's preflight accepts `WITH_NFS=true` only for an
+overlay with `nfs/kustomization.yaml` and refuses any other before it contacts
+the cluster. Step 1 then refuses a cluster whose `CSIDriver/nfs.csi.k8s.io`
+the HelmRelease `kube-system/csi-driver-nfs` did not install, read from its
+`helm.toolkit.fluxcd.io` labels: that cluster runs its own NFS CSI driver,
+which Step 3 would replace and the HelmRelease would adopt, and the teardown
+would uninstall. Step 1 also reads the node network for the client policy and
+logs it as `NFS client network  : <cidr>`. It refuses a cluster whose
+ConfigMap `kube-system/shoot-info` is missing or names no IPv4 CIDR, and one
+where a node has no IPv4 `InternalIP` inside that network, because the policy
+would drop that node's mounts. The script loads no module on the machine it
+runs on; it logs
+`Skipping the host-side NFS kernel modules (EXTERNAL_CLUSTER=true; ...)`
+instead. Step 3 runs the `CSIDriver` lifecycle-mode guard of the kind mode,
+applies the client policy and then `<overlay>/nfs`, so the server never
+listens without the policy, and waits up to `POD_TIMEOUT` seconds for the
+`nfs-server` Deployment and then for the `nfs-client-modules` DaemonSet. A
+failed wait exits 1 and names the log to read. Phase 3 waits for the
+`csi-driver-nfs` HelmRelease, as on kind. The two loaders log one line per pod:
+
+```bash
+kubectl logs -n openstack deployment/nfs-server -c load-nfsd
+kubectl logs -n openstack -l app.kubernetes.io/name=nfs-client-modules -c load --prefix --tail=-1
+```
+
+A pod prints `load-nfsd: nfsd is loaded` or
+`nfs-client-modules: nfs and nfsv4 are loaded`. When `modprobe` fails, it
+prints `cannot load <module> from /lib/modules/<kernel>` after its prefix and
+exits 1, and its pod stays in `Init`.
+
+**Posture.** The lab carries the kind posture (D1 of #1193), narrowed in one
+place by the client policy. The server container is privileged, the export is
+`sec=sys` with `no_root_squash` and a wildcard client list, and with the
+`Ephemeral` lifecycle mode every principal that can create a pod mounts both
+shares from the pod spec. PodSecurity does not bound that: in a namespace that
+is not `restricted` the pod mounts them as root, and a `restricted` namespace
+admits a `csi` volume and the UID 42424, the owner of both exports.
+`kube-system` enforces no PodSecurity level on the lab and already runs
+privileged host-network pods (`calico-node`, `lb-csi-node`), so it admits the
+privileged `csi-nfs-node`. The lab is one tenant's cluster, and the Service is
+a ClusterIP.
+
+The client policy narrows one path. On kind every pod that dials 2049 reads
+and writes both shares as root. On the lab only the node network reaches the
+port, so a pod gets to the shares only through a volume the node mounts for
+it. The policy does not narrow who can ask for such a volume. Calico routes
+the lab's pod network without encapsulation, so the server sees a node's own
+address, also through the Service's ClusterIP. A probe on `forge` on
+2026-10-04 confirmed it: host-network clients on both workers appeared as
+`10.128.44.1` and `10.128.44.3`, and under a policy with the `ipBlock`
+`10.128.44.0/22` they connected while pods on either worker timed out.
+
+**Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes the stack at
+the end of its step 2, once the ControlPlane and its Cinder are gone and while
+the helm-controller still runs (see
+[E2E Deployment](e2e-deployment.md#make-teardown-infra)). While the HelmRelease
+`csi-driver-nfs` exists, it waits until no pod mounts an inline
+`nfs.csi.k8s.io` volume and no PersistentVolume of that driver is `Bound`,
+because the kubelet unmounts one through `csi-nfs-node`; a driver the platform
+runs has its pods and claims left alone. Then it
+deletes the overlay, whose HelmRelease finalizer has the helm-controller
+uninstall the chart, and the `CSIDriver` the release created, selected by the
+two labels the helm-controller sets on every object of a release. The client
+policy is deleted after the overlay, once the server it guarded is gone. The
+claim goes with the overlay. Where the default class has the reclaim policy
+`Delete`, as `premium` on `forge` has, its volume and every Cinder volume and
+backup on it go too.
+
+**What the pods change on a node.**
+
+- `load-nfsd` loads `nfsd` and its dependencies on the node of the server pod,
+  and `nfs-client-modules` loads `nfs`, `nfsv4` and their dependencies on every
+  node. Together these are the eleven modules the load test of #1194 listed:
+  `auth_rpcgss`, `dns_resolver`, `fscache`, `grace`, `lockd`, `netfs`, `nfs`,
+  `nfs_acl`, `nfsd`, `nfsv4` and `sunrpc`. Nothing unloads them; they stay
+  until the node reboots, also after a teardown.
+- The server pod runs the kernel's NFS server threads and mounts the `nfsd`
+  control filesystem inside the pod; port 2049 listens in the pod's network
+  namespace.
+- `csi-nfs-node` registers its socket under
+  `/var/lib/kubelet/plugins/csi-nfsplugin` and
+  `/var/lib/kubelet/plugins_registry` and mounts the shares below
+  `/var/lib/kubelet/pods`; these go with the pods.
+- The deploy script itself runs no `modprobe` and writes no file on a node.
+
+No lab run of this stack is recorded yet.
 
 ### Lab ControlPlane
 
