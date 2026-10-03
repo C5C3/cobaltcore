@@ -48,16 +48,19 @@ test_version() {
 
 # --- Test 2: the binary is a main build ---
 test_main_build_flags() {
-  echo "Test: manager --help lists the flags only main carries"
-  # v1.2.3 has neither flag, so their presence proves a main build. The check
-  # reads the usage text and not a start without flags: upstream logs its
-  # "--agent-namespaces is required" error before it installs a logger
-  # (cmd/main.go), so that message never reaches the output.
+  echo "Test: manager --help lists the flags only main and patch 0002 carry"
+  # v1.2.3 has neither of the first two flags, so their presence proves a
+  # main build. -default-high-availability comes from patch 0002, so it
+  # proves the patch was applied. The check reads the usage text and not a
+  # start without flags: upstream logs its "--agent-namespaces is required"
+  # error before it installs a logger (cmd/main.go), so that message never
+  # reaches the output.
   local output
 
   output=$(docker run --rm "$IMAGE" --help 2>&1 || true)
   assert_contains "--help lists -agent-namespaces" "$output" "-agent-namespaces"
   assert_contains "--help lists -eviction-concurrency" "$output" "-eviction-concurrency"
+  assert_contains "--help lists -default-high-availability" "$output" "-default-high-availability"
 }
 
 # --- Test 3: non-root user and the manager entrypoint ---

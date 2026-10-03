@@ -74,10 +74,14 @@ RUN for p in /patches/*.patch; do \
 # name on its line lets the line pass, so a comment passes while a '/' in a
 # string or a division does not. The test the patch brings proves its body;
 # 'go test -run' exits 0 with "[no tests to run]" when the test is missing, so
-# the grep for its PASS line is what fails a patch that lost its test hunk. The
-# ldflags are upstream's (Makefile, the build/manager target) with the
-# version set to the tag the image is published under. Upstream's 'generate'
-# step is skipped: the generated files are committed.
+# the grep for its PASS line is what fails a patch that lost its test hunk.
+# The second go test and its two greps are the checks of patches 0002 and
+# 0003, one test each. Its -run expression does not match the package's
+# Ginkgo entry point (TestControllers in suite_test.go), so no envtest binary
+# is needed, and the space after each test name keeps a subtest's PASS line
+# from matching. The ldflags are upstream's (Makefile, the build/manager
+# target) with the version set to the tag the image is published under.
+# Upstream's 'generate' step is skipped: the generated files are committed.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     if grep -rnE --include='*.go' --exclude='*_test.go' '^([^/"]|/[^/]|"([^"\\]|\\.)*")*\bLiveMigrateOpts\b' .; then \
         echo "a live migration still sends servers.LiveMigrateOpts; extend patch 0001" >&2; exit 1; \
@@ -85,6 +89,11 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go test -count=1 -v -run '^TestLiveMigrateAutoBody$' ./internal/controller/eviction/ \
         | tee /tmp/patch-test.log && \
     grep -q -- '--- PASS: TestLiveMigrateAutoBody' /tmp/patch-test.log && \
+    go test -count=1 -v \
+        -run '^(TestHypervisorCreatedWithDefaultHighAvailability|TestTraitsInSyncSetsTraitsUpdated)$' \
+        ./internal/controller/ | tee /tmp/patch-test-controller.log && \
+    grep -q -- '--- PASS: TestHypervisorCreatedWithDefaultHighAvailability ' /tmp/patch-test-controller.log && \
+    grep -q -- '--- PASS: TestTraitsInSyncSetsTraitsUpdated ' /tmp/patch-test-controller.log && \
     go build -trimpath \
         -ldflags "-s -w \
           -X github.com/sapcc/go-api-declarations/bininfo.binName=manager \
