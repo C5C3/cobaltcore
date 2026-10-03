@@ -367,8 +367,8 @@ test_failing_ports() {
   rc=$?
   assert_eq "a port the listener could not bind exits 1" "1" "$rc"
   assert_contains "it is reported as unbound, not closed" "$out" "64/65 open, listener bind failed: 49160"
-  assert_contains "a NOTE: says the port was not tested and names the retry timeout" "$out" \
-    "NOTE: a port reported as 'listener bind failed' was held by another socket on its node for 10s and was not tested; set NODE_PORTS_BIND_TIMEOUT to wait longer."
+  assert_contains "a NOTE: says the port was not tested and names the retry timeout and the restart" "$out" \
+    "NOTE: a port reported as 'listener bind failed' was held by another socket on its node for 10s and was not tested; set NODE_PORTS_BIND_TIMEOUT to wait longer, or restart the process that holds the port (Node port check in docs/reference/infrastructure/infrastructure-manifests.md says how to find it)."
 }
 
 # ---------------------------------------------------------------------------

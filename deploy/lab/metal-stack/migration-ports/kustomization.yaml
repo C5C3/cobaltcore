@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The reservation of QEMU's migration ports on every node of the metal-stack
+# lab (#1189), applied by hand before the node port check:
+#
+#   kubectl apply -k deploy/lab/metal-stack/migration-ports
+#
+# It renders the namespace hypervisor-system and the DaemonSet
+# migration-port-reservation in it. ../hypervisor takes this directory as a
+# resource, so the hypervisor overlay applies both again and
+# EXTERNAL_CLUSTER=true make teardown-infra removes both with it. Part 2,
+# Step 1 of docs/quick-start-metal-stack.md applies it;
+# docs/reference/infrastructure/infrastructure-manifests.md (Node port check)
+# gives the reason.
+#
+# All resource references are local to this directory, so `kubectl apply -k`
+# renders it under kustomize's default LoadRestrictionsRootOnly check.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - reservation-daemonset.yaml

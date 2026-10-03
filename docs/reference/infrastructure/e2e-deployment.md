@@ -107,8 +107,8 @@ finalizer run while its controller still exists:
       flavor. A read of the domain that fails exits 1 before the delete:
       K-ORC applies no spec change to a domain that is being deleted, so one
       deleted while enabled could never be disabled;
-   4. the hypervisor overlay, with the two operators and the libvirt
-      DaemonSet;
+   4. the hypervisor overlay, with the two operators, the libvirt DaemonSet
+      and the migration port reservation;
    5. the `Deployment` and `PodDisruptionBudget` `maint-<node>` the hypervisor
       operator leaves in `kube-system`, for every node. Its lifecycle
       controller recreates them while it runs, so they go after sub-step 4;
@@ -119,7 +119,8 @@ finalizer run while its controller still exists:
       `nova.openstack.cloud.sap/custom-traits`, from every node.
 
    What the hypervisors left on the nodes, under `/var/lib/nova`,
-   `/var/lib/libvirt` and `/etc/pki`, stays.
+   `/var/lib/libvirt` and `/etc/pki`, stays, and so do the reserved ports in
+   `net.ipv4.ip_local_reserved_ports` until a node reboots.
 1. Every `ControlPlane` in `openstack`, when the `controlplanes.c5c3.io` CRD
    exists, so the c5c3-operator reaps its children. Then every `OVNCentral` in
    `openstack`, when the `ovncentrals.ovn.openstack.c5c3.io` CRD exists: the
@@ -417,8 +418,7 @@ deploy/lab/metal-stack/
 │   ├── ovncentral.yaml             OVNCentral controlplane-ovn, as on the quick-start page
 │   └── controlplane-lab.yaml       ControlPlane controlplane, plus global_physnet_mtu and hypervisorOperator
 ├── hypervisor/                     The two workers as KVM hypervisors (#1142), applied by hand
-│   ├── kustomization.yaml          Lists the nine manifests below; the apply order and node labels in its header
-│   ├── namespace.yaml              Namespace hypervisor-system
+│   ├── kustomization.yaml          Lists ../migration-ports and the eight manifests below; the apply order and node labels in its header
 │   ├── libvirt-ca.yaml             The libvirt migration CA and Issuer nova-hypervisor-agents-ca-issuer
 │   ├── libvirt-configmap.yaml      host-prepare.sh, libvirtd.sh, libvirtd.conf, qemu.conf
 │   ├── libvirt-daemonset.yaml      DaemonSet libvirt on the pool's nodes
@@ -433,6 +433,10 @@ deploy/lab/metal-stack/
 ├── infrastructure/
 │   └── kustomization.yaml          References ../../../kind/infrastructure/
 │                                    Patches MariaDB CR, GarageCluster → storage class premium
+├── migration-ports/                The reservation of QEMU's migration ports (#1189), applied by hand
+│   ├── kustomization.yaml          Lists the two manifests below
+│   ├── namespace.yaml              Namespace hypervisor-system
+│   └── reservation-daemonset.yaml  DaemonSet migration-port-reservation on every node
 └── probe/                          Node probe and NFS module load test, applied by hand
     ├── kustomization.yaml          Lists node-probe.yaml alone
     ├── node-probe.yaml             Read-only node probe Job (#1139)

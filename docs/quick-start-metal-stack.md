@@ -256,14 +256,20 @@ prints one line per ordered pair of nodes and exits 0 when all 65 ports are
 open in both directions:
 
 ```bash
+kubectl apply -k deploy/lab/metal-stack/migration-ports
+kubectl rollout status daemonset/migration-port-reservation -n hypervisor-system --timeout=5m
 hack/lab-node-ports.sh
 ```
 
-The migration ports lie in Linux's ephemeral port range, so an outgoing
-connection on a node can hold one of them. The listener tries such a port
-again every second for 10 seconds. A port that is still taken then is reported
-as `listener bind failed` and fails the check, because nothing could listen on
-it; the check's `NOTE:` line names the variable that lengthens the retry.
+The migration ports lie in Linux's ephemeral port range, where an outgoing
+connection on a node can get one of them as its local port. The first two
+commands reserve them on every node, so the kernel hands out none of them from
+then on. A connection that took one before keeps it: the listener tries such a
+port again every second for 10 seconds, and a port still taken then is
+reported as `listener bind failed` and fails the check, because nothing could
+listen on it. The reservation's log names the process that holds the port, and
+[Migration port reservation](./reference/infrastructure/infrastructure-manifests.md#migration-port-reservation)
+says how to free it.
 
 Then label the nodes, annotate their custom trait and create the trait in
 Placement:
