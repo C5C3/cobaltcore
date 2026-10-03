@@ -2631,11 +2631,11 @@ overlay patches:
   replica, and the single-replica MariaDB, Memcached and Garage;
 - the Flux controller requests.
 
-The patches move the OpenBao, MariaDB and Garage volumes from `standard` to
-`premium`. The lab has a `standard` class too, so the kind pin would otherwise
-bind to it by coincidence. The proving `OpenBaoCluster` names no class and
-binds to the default, `premium`. No metrics-server or VPA release is rendered,
-because the platform runs both.
+The patches remove the kind pin `standard` from the OpenBao, MariaDB and
+Garage volumes. The lab has a `standard` class too, so the pin would bind to it
+by coincidence. These volumes and the proving `OpenBaoCluster` name no class
+and bind to the cluster's default class, `premium` on `forge`. No
+metrics-server or VPA release is rendered, because the platform runs both.
 
 The base overlay also labels every namespace it renders with
 `apiserver-proxy.networking.gardener.cloud/inject: disable`. The lab is a
@@ -2675,7 +2675,7 @@ platform's namespaces and CRDs alone. Both are described in
 
 | Property | Value |
 | --- | --- |
-| Storage class | `premium` (OpenBao, MariaDB, Garage; the proving `OpenBaoCluster` through the default class) |
+| Storage class | the cluster's default class; no manifest names one |
 | Access | `kubectl port-forward` to the Envoy Service on local port 8443; the `*.127-0-0-1.nip.io` hostnames are unchanged |
 | Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry |
 | Gardener | `apiserver-proxy.networking.gardener.cloud/inject: disable` on every namespace of the base render |
@@ -2721,16 +2721,15 @@ credentials `controlplane-nova-hypervisor-operator-auth`. The auth Secret's
 `auth_url` is `https://keystone.127-0-0-1.nip.io:8443/v3`, the loopback URL the
 public catalog carries, and from inside a pod it resolves to the pod itself. The
 hypervisor operator of [Lab hypervisors](#lab-hypervisors) therefore takes the
-in-cluster URL `http://controlplane-keystone.openstack.svc:5000/v3` for Keystone,
-reaches the public compute, placement, image and network endpoints through host
-aliases onto the Service `openstack-gw-8443`, and trusts their four
-certificates through `SSL_CERT_DIR`.
+in-cluster URL `http://controlplane-keystone.openstack.svc:5000/v3` for Keystone.
+With `OS_INTERFACE=internal` it takes the internal compute, placement, image and
+network endpoints of the catalog, which are the in-cluster Service URLs.
 
 | Property | Value |
 | --- | --- |
 | Namespace | `openstack` |
 | Applied | by hand, after `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true make deploy-infra` |
-| Storage | through the default class `premium`; neither CR names a `storageClassName` |
+| Storage | through the cluster's default class; neither CR names a `storageClassName` |
 | Metadata gateway | none; the metadata API stays in-cluster at `controlplane-nova-metadata.openstack.svc:8775` |
 | Block storage | none; `CinderReady` reports `True` with reason `CinderNotManaged` |
 | Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, which deletes the ControlPlane and then the `OVNCentral` in its first step |
@@ -2739,7 +2738,7 @@ certificates through `SSL_CERT_DIR`.
 ### Lab hypervisors
 
 **Files:** `deploy/lab/metal-stack/hypervisor-fixtures/kustomization.yaml`,
-`deploy/lab/metal-stack/hypervisor/kustomization.yaml` and the eight manifests
+`deploy/lab/metal-stack/hypervisor/kustomization.yaml` and the seven manifests
 it lists, `deploy/lab/metal-stack/migration-ports/kustomization.yaml` and the
 two manifests it lists
 
@@ -2767,7 +2766,6 @@ on its own before the [node port check](#node-port-check).
 | `hypervisor/libvirt-configmap.yaml` | ConfigMap `libvirt-lab`: `host-prepare.sh`, `libvirtd.sh`, `libvirtd.conf` and `qemu.conf` |
 | `hypervisor/libvirt-daemonset.yaml` | DaemonSet `libvirt` in `openstack` |
 | `hypervisor/compute.yaml` | `OVNChassis/lab-chassis` on `controlplane-ovn`, `NeutronMetadataAgent/lab-metadata-agent` on the in-cluster Nova metadata API, and `NovaCompute/lab` with `virtType: kvm`, `cpuMode: custom`, `cpuModels: [Skylake-Server-IBRS]` and `imagesType: qcow2`, all in `openstack` |
-| `hypervisor/gateway-alias.yaml` | Service `openstack-gw-8443` in `envoy-gateway-system` on the ClusterIP `10.248.0.200`, port `8443`, in front of the `openstack-gw` Envoy pods |
 | `hypervisor/sources.yaml` | One digest-pinned `OCIRepository` per chart in `flux-system` |
 | `hypervisor/hvo-release.yaml` | `HelmRelease/openstack-hypervisor-operator` in `openstack` |
 | `hypervisor/kna-release.yaml` | `HelmRelease/kvm-node-agent` in `hypervisor-system` |
@@ -2874,8 +2872,8 @@ status XML of a switched domain, `/run/libvirt/qemu/<instance_name>.xml`,
 carries no `<chardevStdioLogd/>`.
 
 The DaemonSet, the three compute CRs and hvo run in `openstack`. hvo sits there
-because its release reads the ControlPlane's auth Secret through `valuesFrom`
-and its pod mounts the gateway certificates, both in `openstack`. The CA, its
+because its release reads the ControlPlane's auth Secret through `valuesFrom`,
+which reads only Secrets of the release's own namespace. The CA, its
 Issuer, the per-node Certificates `libvirt-<node>` with their Secrets
 `tls-libvirt-<node>`, and kna live in `hypervisor-system`: every CobaltCore
 operator reads Secrets in `openstack`, and a `tls-libvirt-<node>` Secret is
@@ -2886,14 +2884,14 @@ root on its node's libvirtd (see
 | --- | --- | --- | --- |
 | hvo | chart | `1.2.3_sha-a2baf3f` | The upstream chart of the pinned hvo commit, the `ARG HVO_COMMIT` line of `images/openstack-hypervisor-operator/Dockerfile`. Its `appVersion`, `sha-<commit>`, is the image tag |
 | hvo | `fullnameOverride` | `hypervisor-operator` | The chart names its metrics Service `<fullname>-controller-manager-metrics-service`, 64 characters with the release name as fullname, and the install fails |
-| hvo | `controllerManager.manager.image.repository` | `ghcr.io/c5c3/openstack-hypervisor-operator` | The image built from that commit with its three patches: the Eviction patch, which leaves block migration to Nova, and the two below that let onboarding finish (see [openstack-hypervisor-operator](../ci-cd/container-images.md#openstack-hypervisor-operator)) |
+| hvo | `controllerManager.manager.image.repository` | `ghcr.io/c5c3/openstack-hypervisor-operator` | The image built from that commit with its four patches: the Eviction patch, which leaves block migration to Nova, the two below that let onboarding finish, and patch 0004, which reads the catalog interface from `OS_INTERFACE` (see [openstack-hypervisor-operator](../ci-cd/container-images.md#openstack-hypervisor-operator)) |
 | hvo | `valuesFrom` | six keys of `controlplane-nova-hypervisor-operator-auth` | The account the ControlPlane provisions: `password` into `secret.servicePassword`; `username`, `user_domain_name`, `project_name`, `project_domain_name` and `region_name` into the matching `controllerManager.manager.env.os*` values |
 | hvo | `env.osAuthUrl` | `http://controlplane-keystone.openstack.svc:5000/v3` | The in-cluster Keystone URL, the `spec.keystoneEndpoint` of `controlplane-nova`. The auth Secret's `auth_url` is the public loopback URL |
 | hvo | `env.certificateNamespace` | `hypervisor-system` | The Issuer's namespace |
 | hvo | `env.agentNamespaces` | `openstack` | The namespace of the pool, chassis and metadata agent pods, which an offboarding waits for |
 | hvo | `serviceMonitor.enabled`, `prometheusRules.create`, `dashboards.create`, `customResourceMetrics.create` | `false` | The lab runs no Prometheus Operator |
-| hvo | post-renderer | `hostAliases`, `SSL_CERT_DIR` | hvo takes the first `public` endpoint of `compute`, `placement`, `image` and `network`, and has no CA option. The aliases point `nova`, `placement`, `glance` and `neutron` under `.127-0-0-1.nip.io` at `10.248.0.200`, so the catalog's `:8443` URLs reach the Gateway from the pod. The `ca.crt` of the four `*-nip-io-tls` Secrets is mounted at `/etc/lab-gateway-ca`, which `SSL_CERT_DIR=/etc/lab-gateway-ca:/etc/ssl/certs` makes the Go program trust |
-| hvo | post-renderer | `imagePullPolicy: Always` on the manager | The chart sets no pull policy, so a node would keep the image it cached under `sha-<commit>`. `build-images.yaml` moves that tag to every `main` build, so its content changes whenever a patch does, and an image built before patch 0002 refuses the flag below |
+| hvo | post-renderer | `OS_INTERFACE=internal` on the manager | hvo takes the endpoints of `compute`, `placement`, `image` and `network` from the catalog interface `OS_INTERFACE` names (patch 0004), and the chart has no value for the variable. The internal endpoints are the in-cluster Service URLs over plain HTTP, so the pod needs neither a host alias nor the gateway certificates. Without the variable hvo reads the `public` endpoints, the `*.127-0-0-1.nip.io:8443` URLs, which resolve to the pod itself |
+| hvo | post-renderer | `imagePullPolicy: Always` on the manager | The chart sets no pull policy, so a node would keep the image it cached under `sha-<commit>`. `build-images.yaml` moves that tag to every `main` build, so its content changes whenever a patch does. An image built before patch 0002 refuses the flag below, and one built before patch 0004 ignores `OS_INTERFACE` |
 | hvo | post-renderer | `--default-high-availability=false` appended to the manager's `args` | The flag of the image's patch 0002: hvo creates each `Hypervisor` with `spec.highAvailability: false`. While the field is `true`, onboarding waits for `HaEnabled=True`, which only SAP's kvm-ha-service sets. The chart has no value for the flag, so a JSON patch appends it to the argument list the chart renders, and `controllerManager.manager.args` stays unset |
 | kna | chart | `0.2.0_sha-1e4e4b8` | The upstream chart of the pinned kna commit, the `ARG KNA_COMMIT` line of `images/kvm-node-agent/Dockerfile`. Its `appVersion`, `sha-<commit>`, is the image tag. Upstream publishes no image under that tag, and the tag `0.2.0` would leave the private keys at 0644 |
 | kna | `controllerManager.manager.image.repository` | `ghcr.io/c5c3/kvm-node-agent` | The image built from that commit with the key mode patch, which writes the private keys with mode 0600 (see [kvm-node-agent](../ci-cd/container-images.md#kvm-node-agent)) |
@@ -2903,12 +2901,7 @@ root on its node's libvirtd (see
 | kna | post-renderer | `NAMESPACE=hypervisor-system` | kna falls back to `monsoon3` without it, and the chart sets none |
 
 `Hypervisor.spec.createCertManagerCertificate` stays at its default `false`, so
-each node's certificate is hvo's alone. The Service `openstack-gw-8443` copies
-the selector and the HTTPS `targetPort` of the Service Envoy Gateway generates
-for `openstack-gw`. `10.248.0.200` lies in the static band of the lab's service
-network `10.248.0.0/18`; an apply that answers `provided IP is already allocated`
-needs another address of `10.248.0.0/24`, changed in `gateway-alias.yaml` and
-in the release's `hostAliases` together.
+each node's certificate is hvo's alone.
 
 No manifest can patch a Node, so each node gets four labels by hand:
 
@@ -2940,7 +2933,7 @@ carries.
 
 These checks need a lab on which Part 2 of the quick start has booted `lab-a`
 and `lab-b`. They confirm that the images the manifests name are published,
-read the two values the manifests copy from the ControlPlane and the Gateway,
+read the value the manifests copy from the ControlPlane,
 show that a server survives a restart of its libvirt pod and that its console
 log keeps growing, and show that a live migration dials libvirt over TLS:
 
@@ -2954,11 +2947,8 @@ docker manifest inspect ghcr.io/c5c3/libvirt:latest >/dev/null
 docker manifest inspect "ghcr.io/c5c3/openstack-hypervisor-operator:sha-$(hack/ci-resolve-hvo-commit.sh)" >/dev/null
 docker manifest inspect "ghcr.io/c5c3/kvm-node-agent:sha-$(hack/ci-resolve-kna-commit.sh)" >/dev/null
 
-# the Keystone URL hvo-release.yaml carries, and the Envoy Service
-# gateway-alias.yaml copies
+# the Keystone URL hvo-release.yaml carries
 kubectl get nova controlplane-nova -n openstack -o jsonpath='{.spec.keystoneEndpoint}{"\n"}'
-kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw \
-  -o jsonpath='{.items[0].spec.selector}{"\n"}{.items[0].spec.ports[?(@.port==443)].targetPort}{"\n"}'
 
 # a libvirt restart under a running server, whose console log keeps growing
 kubectl delete pod -n openstack -l app.kubernetes.io/name=libvirt \
@@ -3158,7 +3148,7 @@ lab.
 
 | Property | Value |
 | --- | --- |
-| Namespaces | `openstack` (libvirt, the compute CRs, hvo), `hypervisor-system` (the CA, the node certificates, kna, the migration port reservation), `envoy-gateway-system` (the alias Service), `flux-system` (the chart sources) |
+| Namespaces | `openstack` (libvirt, the compute CRs, hvo), `hypervisor-system` (the CA, the node certificates, kna, the migration port reservation), `flux-system` (the chart sources) |
 | Applied | by hand: `migration-ports/`, then the node labels, then `hypervisor-fixtures/`, then `hypervisor/`, after the Lab ControlPlane is `Ready` |
 | Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, step 0, labels and `maint-<node>` objects included. The node state under `/var/lib/nova`, `/var/lib/libvirt` and `/etc/pki` stays, and so do the reserved ports in `net.ipv4.ip_local_reserved_ports` until a node reboots |
 | Pinned by | `tests/unit/deploy/metal_stack_hypervisor_test.sh`; the hvo chart tag follows `hack/ci-resolve-hvo-commit.sh`, and the kna chart tag `hack/ci-resolve-kna-commit.sh` |
@@ -3227,7 +3217,7 @@ what would have to change upstream. Each item with what it did on the lab:
 | Agent uid | kna's image runs as uid 42438 and authenticates to the system bus with it | the host has no such user, and its dbus-daemon drops the connection; kna exits at start. Run as uid 0 from the release, upstream's image started. The image of #1178 ran on 2026-10-02 with no `runAsUser` in the pod spec | the image of [#1178](https://github.com/c5c3/cobaltcore/issues/1178) runs as uid 0; the release keeps `DAC_OVERRIDE` |
 | Key mode | kna writes every TLS file with mode 0644, the private keys included ([#1175](https://github.com/c5c3/cobaltcore/issues/1175), found in upstream's code) | not checked with upstream's image. With the image of #1178, both keys showed `600` on both nodes on 2026-10-02 | patched in the image ([#1178](https://github.com/c5c3/cobaltcore/issues/1178)): 0600, or 0640 for QEMU's and Cloud Hypervisor's keys with `PKI_KEY_GROUP` |
 | `monsoon3` fallback | kna's namespace without `NAMESPACE`, which its chart does not set | with `NAMESPACE` kna installs the certificates of `hypervisor-system` | `NAMESPACE` set by a post-renderer |
-| Catalog interface | hvo reads only the `public` endpoints and takes no CA | through the aliases and `SSL_CERT_DIR` hvo ran 35 minutes without a restart and without an `x509` or `connection refused` line | host aliases and `SSL_CERT_DIR` |
+| Catalog interface | hvo reads only the `public` endpoints and takes no CA | through host aliases onto an Envoy Service and `SSL_CERT_DIR`, hvo ran 35 minutes without a restart and without an `x509` or `connection refused` line. `OS_INTERFACE=internal` has not run on the lab yet | patched in the image: `OS_INTERFACE` (patch 0004), set to `internal` by the release |
 | Chart object names | the chart builds names from the fullname, the release name when it contains the chart name | `openstack-hypervisor-operator` makes the metrics Service name 64 characters, and the install fails | `fullnameOverride: hypervisor-operator` |
 | Hand-set node labels | hvo flags changes made with kubectl | both Hypervisors reported `Tainted=True`, reason `Kubectl`. The taint controller reads `kubectl` from the managers of the `Hypervisor`'s own managed fields (`hypervisor_taint_controller.go`), which the `kubectl patch` of `spec.highAvailability` wrote; the labels sit on the Nodes. No run without that patch has read the condition yet | none |
 | Images per main commit | hvo and kna publish a chart for every main commit but no image under its tag; hvo pushes only `latest` | the chart of `a2baf3f` ran `ghcr.io/c5c3/openstack-hypervisor-operator:sha-a2baf3f…`; the kna chart of `1e4e4b8` ran `ghcr.io/c5c3/kvm-node-agent:sha-1e4e4b8…` on 2026-10-02 | the images of [#1163](https://github.com/c5c3/cobaltcore/issues/1163) and [#1178](https://github.com/c5c3/cobaltcore/issues/1178) |

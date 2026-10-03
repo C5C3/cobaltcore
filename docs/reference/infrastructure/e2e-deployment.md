@@ -452,19 +452,18 @@ patched — they are single-replica or stateless by default.
 deploy/lab/metal-stack/
 ├── base/
 │   └── kustomization.yaml          References ../../../kind/base/
-│                                    Patches OpenBao HelmRelease → storage class premium,
+│                                    Patches OpenBao HelmRelease → removes the storage class,
 │                                    every Namespace → Gardener apiserver-proxy opt-out label
 ├── controlplane/                   The quick start's OVNCentral and ControlPlane CR (#1141), applied by hand
 │   ├── kustomization.yaml          Lists the two manifests below
 │   ├── ovncentral.yaml             OVNCentral controlplane-ovn, as on the quick-start page
 │   └── controlplane-lab.yaml       ControlPlane controlplane, plus global_physnet_mtu and hypervisorOperator
 ├── hypervisor/                     The two workers as KVM hypervisors (#1142), applied by hand
-│   ├── kustomization.yaml          Lists ../migration-ports and the eight manifests below; the apply order and node labels in its header
+│   ├── kustomization.yaml          Lists ../migration-ports and the seven manifests below; the apply order and node labels in its header
 │   ├── libvirt-ca.yaml             The libvirt migration CA and Issuer nova-hypervisor-agents-ca-issuer
 │   ├── libvirt-configmap.yaml      host-prepare.sh, libvirtd.sh, libvirtd.conf, qemu.conf
 │   ├── libvirt-daemonset.yaml      DaemonSet libvirt on the pool's nodes
 │   ├── compute.yaml                OVNChassis, NeutronMetadataAgent, NovaCompute
-│   ├── gateway-alias.yaml          Service openstack-gw-8443 in front of the Envoy pods
 │   ├── sources.yaml                OCIRepository of each chart, digest-pinned
 │   ├── hvo-release.yaml            HelmRelease openstack-hypervisor-operator
 │   └── kna-release.yaml            HelmRelease kvm-node-agent
@@ -473,7 +472,7 @@ deploy/lab/metal-stack/
 │                                    Deletes VolumeType, Network and Subnet
 ├── infrastructure/
 │   └── kustomization.yaml          References ../../../kind/infrastructure/
-│                                    Patches MariaDB CR, GarageCluster → storage class premium
+│                                    Patches MariaDB CR, GarageCluster → removes the storage class
 ├── migration-ports/                The reservation of QEMU's migration ports (#1189), applied by hand
 │   ├── kustomization.yaml          Lists the two manifests below
 │   ├── namespace.yaml              Namespace hypervisor-system
@@ -486,19 +485,19 @@ deploy/lab/metal-stack/
 
 `EXTERNAL_CLUSTER=true` applies `base/` in Step 3 and `infrastructure/` in
 Step 5 in place of the kind overlays. Both take the kind overlay as their base,
-so the lab inherits every patch above and changes only the storage class and
-the Namespaces, which carry Gardener's apiserver-proxy opt-out label. The
-script never applies `controlplane/`; the completion hint of
+so the lab inherits every patch above. It removes the storage class, labels
+the Namespaces with Gardener's apiserver-proxy opt-out and changes nothing
+else. The script never applies `controlplane/`; the completion hint of
 `WITH_CONTROLPLANE=true` names it. Nor does it apply `hypervisor/` or
-`hypervisor-fixtures/`, which follow the ControlPlane by hand. The
-proving `OpenBaoCluster` names no class and binds to the cluster's default,
-`premium` on the lab, which Step 1 checks exists.
+`hypervisor-fixtures/`, which follow the ControlPlane by hand. Every volume of
+the lab, the proving `OpenBaoCluster`'s included, binds to the cluster's
+default class, which Step 1 checks exists.
 
 | Setting | Kind | Lab |
 | --- | --- | --- |
-| OpenBao storage class (`dataStorage`) | `standard` | `premium` |
-| MariaDB storage class | `standard` | `premium` |
-| Garage storage class (metadata and data) | `standard` | `premium` |
+| OpenBao storage class (`dataStorage`) | `standard` | the cluster's default class |
+| MariaDB storage class | `standard` | the cluster's default class |
+| Garage storage class (metadata and data) | `standard` | the cluster's default class |
 | Namespace label `apiserver-proxy.networking.gardener.cloud/inject` | absent | `disable` |
 | Everything else | as above | inherited from the kind overlay |
 
