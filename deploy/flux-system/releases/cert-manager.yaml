@@ -22,8 +22,17 @@ spec:
       enabled: true
     prometheus:
       enabled: false
+    # Run the chart's startup API check. Its post-install Job
+    # (quay.io/jetstack/cert-manager-startupapicheck) asks the API server
+    # until the webhook admits a request, and helm-controller waits for the
+    # hook, so the release is Ready only then and dependsOn holds every
+    # release that creates an Issuer or a Certificate until the webhook
+    # answers. With the check off the release was Ready up to 78 seconds
+    # earlier on the metal-stack lab, and a dependent release used up its
+    # install retries and stayed Stalled (#1189, #1207). The hook runs on
+    # install only; an upgrade starts no Job.
     startupapicheck:
-      enabled: false
+      enabled: true
   install:
     crds: CreateReplace
     createNamespace: true

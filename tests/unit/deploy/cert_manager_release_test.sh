@@ -3,21 +3,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify that the cert-manager HelmRelease hack/deploy-infra.sh applies turns
-# Ready only once its webhook admits a request:
+# Verify that the cert-manager HelmRelease turns Ready only once its webhook
+# admits a request:
 #
-#   1. The kind base overlay and the metal-stack lab base overlay render the
-#      release with the chart's startupapicheck Job enabled.
-#   2. Neither render disables install hooks, which is what runs the Job.
+#   1. The production release (deploy/flux-system/releases/cert-manager.yaml)
+#      enables the chart's startupapicheck Job, and the three renders that
+#      carry it (deploy/flux-system, the kind base overlay and the metal-stack
+#      lab base overlay) show the value.
+#   2. No render disables install hooks, which is what runs the Job.
+#   3. Neither base overlay carries a startupapicheck patch of its own: both
+#      inherit the value from the production release.
 #
 # Every release that depends on cert-manager creates an Issuer or a
 # Certificate. With the check off, the release was Ready up to 78 seconds
 # before the webhook admitted on the metal-stack lab, and a dependent release
-# used up its install retries and stayed Stalled (#1189). The production
-# release (deploy/flux-system/releases/cert-manager.yaml) keeps the check off;
-# the kind base overlay patches it.
+# used up its install retries and stayed Stalled (#1189, #1207).
 #
-# The checks are counted as SKIP when kustomize or yq is not on PATH.
+# The render checks are counted as SKIP when kustomize or yq is not on PATH;
+# the two file checks always run.
 #
 # Usage: bash tests/unit/deploy/cert_manager_release_test.sh
 
@@ -37,11 +40,11 @@ source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
 RENDERED=""
 
-# --- Tests 1 and 2: the overlays deploy-infra applies ---
-test_overlays_enable_the_check() {
-  echo "Test: the kind and the lab base overlay enable the startup API check"
+# --- Tests 1 and 2: the production release and the two base overlays ---
+test_renders_enable_the_check() {
+  echo "Test: the production, the kind and the lab base render enable the startup API check"
   local dir
-  for dir in deploy/kind/base deploy/lab/metal-stack/base; do
+  for dir in deploy/flux-system deploy/kind/base deploy/lab/metal-stack/base; do
     render "$PROJECT_ROOT/$dir" 2 || continue
     assert_eq "$dir renders HelmRelease/cert-manager with the check enabled" "true" \
       "$(val HelmRelease cert-manager '.spec.values.startupapicheck.enabled')"
@@ -50,7 +53,18 @@ test_overlays_enable_the_check() {
   done
 }
 
-test_overlays_enable_the_check
+# --- Test 3: neither overlay patches the value ---
+test_overlays_carry_no_patch() {
+  echo "Test: neither base overlay carries a startupapicheck patch"
+  local file
+  for file in deploy/kind/base/kustomization.yaml deploy/lab/metal-stack/base/kustomization.yaml; do
+    assert_file_not_contains "$file carries no startupapicheck patch" \
+      "$PROJECT_ROOT/$file" "startupapicheck"
+  done
+}
+
+test_renders_enable_the_check
+test_overlays_carry_no_patch
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
