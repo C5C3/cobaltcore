@@ -6,14 +6,14 @@
 # Verify the lab hypervisors under deploy/lab/metal-stack/hypervisor,
 # deploy/lab/metal-stack/migration-ports and
 # deploy/lab/metal-stack/hypervisor-fixtures, applied by hand on the lab:
-#   1. The thirteen files exist with SPDX headers, and each kustomization
+#   1. The twelve files exist with SPDX headers, and each kustomization
 #      lists exactly its resources.
 #   2. The fixtures render is the kind fixtures without the volume type, the
 #      network and the subnet.
-#   3. The hypervisor render is the fourteen objects of the two operators,
+#   3. The hypervisor render is the thirteen objects of the two operators,
 #      the libvirt DaemonSet, the migration port reservation, the CA, the
-#      compute CRs, the gateway alias and the chart sources, and the namespace
-#      carries the Gardener opt-out label.
+#      compute CRs and the chart sources, and the namespace carries the
+#      Gardener opt-out label.
 #   4. The libvirt DaemonSet runs in the host's namespaces, OnDelete, with the
 #      image, the hostPaths and the mount propagation libvirtd and
 #      nova-compute share, and without a liveness probe.
@@ -25,9 +25,10 @@
 #      Nova's live-migration pre-check accepts; NovaCompute has no extraConfig.
 #   8. The hvo release feeds the auth Secret into the six chart values, sets
 #      the lab values and a fullnameOverride that keeps every object name
-#      within 63 characters, and its post-renderer aliases the four gateway
-#      names to the alias Service's ClusterIP and trusts the gateway
-#      certificates. A second post-renderer patch appends
+#      within 63 characters, and its post-renderer sets OS_INTERFACE to
+#      internal and the pull policy on the manager and nothing else on the
+#      pod: no host alias, no volume, and no gateway hostname or lab service
+#      address anywhere in the render. A second post-renderer patch appends
 #      --default-high-availability=false to the manager's arguments, and the
 #      values set no argument list.
 #   9. The kna release runs the image ghcr.io/c5c3/kvm-node-agent without a
@@ -86,7 +87,6 @@ HYPERVISOR_FILES="libvirt-ca.yaml
 libvirt-configmap.yaml
 libvirt-daemonset.yaml
 compute.yaml
-gateway-alias.yaml
 sources.yaml
 hvo-release.yaml
 kna-release.yaml"
@@ -174,7 +174,7 @@ test_files_spdx_and_resources() {
   done
 
   if [[ -f "$HYPERVISOR_DIR/kustomization.yaml" ]]; then
-    assert_eq "the hypervisor kustomization lists the migration ports and its eight manifests alone" \
+    assert_eq "the hypervisor kustomization lists the migration ports and its seven manifests alone" \
       "../migration-ports"$'\n'"$HYPERVISOR_FILES" "$(resource_entries "$HYPERVISOR_DIR/kustomization.yaml")"
   else
     echo "  FAIL: no hypervisor kustomization.yaml whose resources could be read"
@@ -227,7 +227,7 @@ test_hypervisor_render_objects() {
 
   render "$HYPERVISOR_DIR" 3 || return
 
-  assert_eq "the render is the fourteen objects of the lab hypervisors" \
+  assert_eq "the render is the thirteen objects of the lab hypervisors" \
     "$(printf '%s\n' \
       Certificate/libvirt-migration-ca \
       ConfigMap/libvirt-lab \
@@ -241,12 +241,11 @@ test_hypervisor_render_objects() {
       NovaCompute/lab \
       OCIRepository/kvm-node-agent \
       OCIRepository/openstack-hypervisor-operator \
-      OVNChassis/lab-chassis \
-      Service/openstack-gw-8443)" \
+      OVNChassis/lab-chassis)" \
     "$(printf '%s\n' "$RENDERED" |
       yq -N -r 'select(. != null) | .kind + "/" + .metadata.name' - | sort)"
-  assert_eq "the namespaced objects live in openstack, hypervisor-system, envoy-gateway-system and flux-system" \
-    "$(printf '%s\n' envoy-gateway-system flux-system hypervisor-system openstack)" \
+  assert_eq "the namespaced objects live in openstack, hypervisor-system and flux-system" \
+    "$(printf '%s\n' flux-system hypervisor-system openstack)" \
     "$(printf '%s\n' "$RENDERED" |
       yq -N -r 'select(. != null and .kind != "Namespace") | .metadata.namespace' - | sort -u)"
   assert_eq "hypervisor-system opts out of Gardener's apiserver-proxy injection" "disable" \
@@ -507,25 +506,21 @@ test_hvo_release() {
 
   assert_eq "the post-renderer patches the Deployment" "Deployment" \
     "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches[0].target.kind')"
-  assert_eq "the four public hostnames are aliased" \
-    "$(printf '%s\n' glance.127-0-0-1.nip.io neutron.127-0-0-1.nip.io nova.127-0-0-1.nip.io placement.127-0-0-1.nip.io)" \
-    "$(hvo_patch '.spec.template.spec.hostAliases[0].hostnames[]' | sort)"
-  assert_eq "the aliases point at the alias Service's ClusterIP" \
-    "$(val Service openstack-gw-8443 '.spec.clusterIP')" \
-    "$(hvo_patch '.spec.template.spec.hostAliases[0].ip')"
-  assert_eq "the alias Service listens on 8443" "8443" \
-    "$(val Service openstack-gw-8443 '.spec.ports[0].port')"
-  assert_eq "the manager trusts the gateway certificates first" "/etc/lab-gateway-ca:/etc/ssl/certs" \
-    "$(hvo_patch '.spec.template.spec.containers[] | select(.name == "manager") | .env[] | select(.name == "SSL_CERT_DIR") | .value')"
+  # Patch 0004 lets OS_INTERFACE pick the catalog's internal endpoints, the
+  # in-cluster Service URLs over plain HTTP, so the pod needs no alias and no
+  # gateway certificate.
+  assert_eq "the post-renderer adds one environment variable to the manager, OS_INTERFACE=internal" "OS_INTERFACE=internal" \
+    "$(hvo_patch '.spec.template.spec.containers[] | select(.name == "manager") | .env[] | .name + "=" + .value')"
   assert_eq "the manager pulls its image on every start: the tag moves to each main build" "Always" \
     "$(hvo_patch '.spec.template.spec.containers[] | select(.name == "manager") | .imagePullPolicy')"
-  assert_eq "the gateway certificates are mounted read-only there" "lab-gateway-ca /etc/lab-gateway-ca true" \
-    "$(hvo_patch '.spec.template.spec.containers[] | select(.name == "manager") | .volumeMounts[0] | .name + " " + .mountPath + " " + (.readOnly | tostring)')"
-  assert_eq "the projected volume holds the ca.crt of the four gateway Secrets" \
-    "$(printf '%s\n' glance-nip-io-tls/ca.crt=glance.crt neutron-nip-io-tls/ca.crt=neutron.crt \
-      nova-nip-io-tls/ca.crt=nova.crt placement-nip-io-tls/ca.crt=placement.crt)" \
-    "$(hvo_patch '.spec.template.spec.volumes[] | select(.name == "lab-gateway-ca") | .projected.sources[] |
-      .secret.name + "/" + .secret.items[0].key + "=" + .secret.items[0].path' | sort)"
+  assert_eq "the pod gets no host alias" "false" \
+    "$(hvo_patch '.spec.template.spec | has("hostAliases")')"
+  assert_eq "the pod gets no volume" "false" \
+    "$(hvo_patch '.spec.template.spec | has("volumes")')"
+  assert_eq "the manager mounts nothing" "false" \
+    "$(hvo_patch '.spec.template.spec.containers[] | select(.name == "manager") | has("volumeMounts")')"
+  assert_eq "the render names no gateway hostname and no lab service address" "" \
+    "$(printf '%s\n' "$RENDERED" | grep -E '127-0-0-1\.nip\.io|10\.248\.')"
 
   # The chart has no value for patch 0002's flag, so a second patch appends
   # it and the chart's own argument list stays as it renders.
