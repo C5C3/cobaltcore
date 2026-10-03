@@ -79,8 +79,11 @@ RUN for p in /patches/*.patch; do \
 # 0003, one test each. Its -run expression does not match the package's
 # Ginkgo entry point (TestControllers in suite_test.go), so no envtest binary
 # is needed, and the space after each test name keeps a subtest's PASS line
-# from matching. The ldflags are upstream's (Makefile, the build/manager
-# target) with the version set to the tag the image is published under.
+# from matching. The third go test and its grep are patch 0004's check; its
+# -run expression does not match the openstack package's Ginkgo entry point
+# (TestOpenstack in suite_test.go), so that suite does not run either. The
+# ldflags are upstream's (Makefile, the build/manager target) with the version
+# set to the tag the image is published under.
 # Upstream's 'generate' step is skipped: the generated files are committed.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     if grep -rnE --include='*.go' --exclude='*_test.go' '^([^/"]|/[^/]|"([^"\\]|\\.)*")*\bLiveMigrateOpts\b' .; then \
@@ -94,6 +97,9 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         ./internal/controller/ | tee /tmp/patch-test-controller.log && \
     grep -q -- '--- PASS: TestHypervisorCreatedWithDefaultHighAvailability ' /tmp/patch-test-controller.log && \
     grep -q -- '--- PASS: TestTraitsInSyncSetsTraitsUpdated ' /tmp/patch-test-controller.log && \
+    go test -count=1 -v -run '^TestServiceClientInterface$' ./internal/openstack/ \
+        | tee /tmp/patch-test-openstack.log && \
+    grep -q -- '--- PASS: TestServiceClientInterface ' /tmp/patch-test-openstack.log && \
     go build -trimpath \
         -ldflags "-s -w \
           -X github.com/sapcc/go-api-declarations/bininfo.binName=manager \
