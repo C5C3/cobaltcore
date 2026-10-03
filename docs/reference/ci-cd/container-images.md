@@ -1539,10 +1539,17 @@ metal-stack lab (see
   string before the name lets the line pass, so a comment passes while a `/`
   in a string or a division does not. That catches a live migration a pin
   move adds or reshapes, and a re-cut patch that lost its `controller.go` hunk
-- Runs `TestLiveMigrateAutoBody`, the test the patch brings, and fails unless
+- Runs `TestLiveMigrateAutoBody`, the test patch 0001 brings, and fails unless
   the log shows `--- PASS: TestLiveMigrateAutoBody`. `go test -run` exits 0
   with `[no tests to run]` when the test is missing, so the grep is what
   catches a patch that lost its test hunk
+- Runs `TestHypervisorCreatedWithDefaultHighAvailability` and
+  `TestTraitsInSyncSetsTraitsUpdated`, the tests of patches 0002 and 0003, in
+  one `go test` of `./internal/controller/`, and fails unless the log shows the
+  top-level `--- PASS:` line of each. The `-run` expression does not match the
+  package's Ginkgo entry point, `TestControllers` in `suite_test.go`, so the
+  run needs no envtest binary. The space after each test name in the grep
+  keeps a subtest's PASS line from matching
 - Builds `./cmd` with `CGO_ENABLED=0`, `GOTOOLCHAIN=local` and upstream's
   ldflags, with the version set to `sha-<commit>`, the tag the image is
   published under. `manager --version` therefore prints
@@ -1559,9 +1566,11 @@ publishes a chart for every `main` commit, version `1.2.3+sha-<short>` with
 `sha-<commit>`, so the chart of the pinned commit runs it with only the
 repository overridden.
 
-**Source patch:**
-`images/openstack-hypervisor-operator/patches/0001-eviction-let-nova-choose-block-migration.patch`.
-Upstream's `liveMigrate` (`internal/controller/eviction/controller.go`) asks
+**Source patches:** three files under
+`images/openstack-hypervisor-operator/patches/`, applied in order. Each brings a
+plain Go test outside upstream's Ginkgo suite, which the build step runs.
+
+`0001-eviction-let-nova-choose-block-migration.patch`. Upstream's `liveMigrate` (`internal/controller/eviction/controller.go`) asks
 Nova for a live migration with `block_migration: false`. Nova refuses that for
 a server on the hypervisor's local disks with `InvalidSharedStorage`. Every
 server on the metal-stack lab boots from a local disk, so the Eviction cannot
@@ -1571,8 +1580,31 @@ and chooses block migration per server. gophercloud types
 `LiveMigrateOptsBuilder` of its own that sends
 `{"os-migrateLive": {"block_migration": "auto", "host": null}}`, plus the plain
 Go test `TestLiveMigrateAutoBody` that pins the body; no upstream test pins
-it. The patch header records `Upstream status: not submitted`. Its author
-submits it upstream, and issue #1066 tracks it until `main` carries it.
+it.
+
+`0002-hypervisor-make-the-high-availability-default-configurable.patch`.
+Upstream's `HypervisorController.Reconcile`
+(`internal/controller/hypervisor_controller.go`) creates every `Hypervisor`
+with `spec.highAvailability: true`, and onboarding then waits for the
+`HaEnabled` condition, which only SAP's kvm-ha-service sets. The patch adds the
+flag `--default-high-availability` (default `true`, upstream's behaviour) and
+writes its value on create; an existing `Hypervisor` keeps its value.
+`TestHypervisorCreatedWithDefaultHighAvailability` reconciles a Node with the
+fake client and asserts `true` for the default and `false` once the flag's
+variable is `false`. The lab release sets the flag to `false`.
+
+`0003-traits-report-traitsupdated-when-nothing-differs.patch`. Upstream's
+`TraitsController.Reconcile` (`internal/controller/traits_controller.go`) sets
+`TraitsUpdated` only on the path that calls Placement, so only when a custom
+trait differs, while onboarding and the aggregates controller wait for
+`TraitsUpdated=True`. The patch sets the condition, reason `Succeeded` and the
+message `Custom traits are in sync`, when nothing differs, without calling
+Placement and without writing `status.traits`. `TestTraitsInSyncSetsTraitsUpdated`
+runs the controller with no Placement client: the condition in `Handover`, no
+second write on a repeat, and no condition in `Testing`.
+
+Each patch header records `Upstream status: not submitted`. Their author
+submits them upstream, and issue #1066 tracks them until `main` carries them.
 
 **Tags:** CI publishes `ghcr.io/c5c3/openstack-hypervisor-operator` as
 `sha-<hvo-commit>-<sha>` on every push, and on `main` also as
@@ -1588,17 +1620,21 @@ pin that reached `main` stays pullable under both tags.
 of upstream `main`, weekly and without automerge (see
 [Dependency Management](../../contributing/dependency-management.md)).
 `hack/ci-resolve-hvo-commit.sh` is the only parser of the line. A new commit
-on which the patch no longer applies fails the build at the `git apply` step;
-the patch is then re-cut against the new commit. Once upstream carries the
-change, the patch is dropped together with its two checks in the build step,
-the `servers.LiveMigrateOpts` grep and the `TestLiveMigrateAutoBody` run. With
-the last patch gone, the `COPY patches/` and `git apply` steps go too, because
-both fail without a patch.
+on which a patch no longer applies fails the build at the `git apply` step;
+that patch is then re-cut against the new commit. Once upstream carries a
+patch's change, the patch is dropped together with its checks in the build
+step: for 0001 the `servers.LiveMigrateOpts` grep and the
+`TestLiveMigrateAutoBody` run, for 0002 and 0003 the test's name in the
+controller `go test` run and the `grep` for its `--- PASS:` line, and that run
+itself once neither test is left. With the last patch gone, the
+`COPY patches/` and `git apply` steps go too, because both fail without a
+patch.
 
 **Image contract check:** `tests/container-images/verify_hvo.sh` runs four
 tests against a built image. `manager --version` names `sha-<pin>` and ends
 with the pin. `manager --help` lists `-agent-namespaces` and
-`-eviction-concurrency`, which v1.2.3 does not have. The image runs
+`-eviction-concurrency`, which v1.2.3 does not have, and
+`-default-high-availability`, which only patch 0002 brings. The image runs
 `/usr/bin/manager` as `65532:65532`, and its `io.c5c3.upstream-commit` label
 equals the pin. The script reads the usage text instead of starting the binary
 without flags: upstream logs its `--agent-namespaces is required` error before
@@ -2081,7 +2117,7 @@ the two `make -j"$(nproc)"` runs dominate either way.
 ### Building openstack-hypervisor-operator locally
 
 The build needs no source checkout and no build args: the Dockerfile fetches
-the pinned commit, applies the patches and runs the patch's test itself. Pass
+the pinned commit, applies the patches and runs their tests itself. Pass
 `GITHUB_TOKEN` as a BuildKit secret when the anonymous fetch inside the build
 fails; CI always does.
 
@@ -2099,8 +2135,9 @@ hack/ci-resolve-hvo-commit.sh
 bash tests/container-images/verify_hvo.sh
 ```
 
-`--progress=plain` keeps the `--- PASS: TestLiveMigrateAutoBody` line in the
-build output.
+`--progress=plain` keeps the `--- PASS:` lines of `TestLiveMigrateAutoBody`,
+`TestHypervisorCreatedWithDefaultHighAvailability` and
+`TestTraitsInSyncSetsTraitsUpdated` in the build output.
 
 ### Building kvm-node-agent locally
 
