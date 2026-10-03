@@ -256,12 +256,15 @@ The contract is half of the handover. The compute cluster provides the rest:
 ### Onboarding latency
 
 A new compute registers itself when it starts, but the scheduler places nothing
-on it until it has a host mapping. The scheduler's discovery periodic writes the
-mapping within 300 seconds. A consumer that polls for it adds its own interval:
-openstack-hypervisor-operator polls every 60 seconds, so it sees a new node as
-mapped up to 360 seconds after the compute registered.
+on it until it has a host mapping. A NovaCompute pool runs the discovery itself
+as soon as it sees the registered, unmapped host, so a pool's node is mapped
+within about a minute of the registration, and the pool reports `Ready` only
+after that. For a compute without a pool, the scheduler's discovery periodic
+writes the mapping within 300 seconds. A consumer that polls for it adds its own
+interval: openstack-hypervisor-operator polls every 60 seconds, so it sees such
+a node as mapped up to 360 seconds after the compute registered.
 [Nova Cells](../../reference/nova/nova-cells.md#host-discovery) describes the
-periodic and the command that maps a host at once.
+pool's discovery Job, the periodic and the command that maps a host at once.
 
 ### Offboarding
 

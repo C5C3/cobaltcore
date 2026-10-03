@@ -112,6 +112,14 @@ others skip the pass. Every replica registers under its pod name, so that is the
 lowest-named scheduler pod that reports up. A new compute is therefore mapped
 within 300 seconds of registering.
 
+A [NovaCompute](./novacompute-crd.md) node pool does not wait for the periodic.
+As soon as it sees a node whose service is registered and whose host is not
+mapped, it runs the same discovery in the Job `<nova>-discover-hosts` and looks
+again every 10 seconds, so a pool's host is mapped within about a minute of
+registering. The pool keeps such a node `Pending` and reports `Ready` only once
+the host is mapped (see [Reaching Nova](./novacompute-crd.md#reaching-nova)).
+The periodic still covers a compute without a pool.
+
 A consumer that polls for the mapping adds its own interval on top.
 [openstack-hypervisor-operator](https://github.com/cobaltcore-dev/openstack-hypervisor-operator)
 polls every 60 seconds, so it sees a newly registered compute as mapped within
@@ -149,8 +157,8 @@ A [NovaCompute](./novacompute-crd.md) node pool does this delete itself for a
 node that leaves the pool: once Nova counts no instance on the host and the
 node's `nova-compute` pod is gone, it calls `DELETE /os-services/{id}`, so the
 host mapping goes with the service (see
-[The drain](./novacompute-crd.md#the-drain)). A pool never maps a host either;
-the scheduler's periodic above does that for the nodes it registers.
+[The drain](./novacompute-crd.md#the-drain)). A pool maps the hosts of its own
+nodes through its discovery Job, described in [Host discovery](#host-discovery).
 
 A service record removed any other way leaves the mapping behind, and a compute
 registering again under the same name then finds a stale row. Remove it with
