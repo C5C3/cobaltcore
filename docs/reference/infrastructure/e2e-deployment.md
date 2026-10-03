@@ -161,7 +161,19 @@ finalizer run while its controller still exists:
 6. The `flux-system` namespace and the flux-operator's ClusterRoles and
    ClusterRoleBinding.
 7. The namespaces of `deploy/flux-system/namespaces.yaml`, `envoy-gateway-system`
-   and `headlamp-system`.
+   and `headlamp-system`. Then every ClusterRole, ClusterRoleBinding,
+   MutatingWebhookConfiguration and ValidatingWebhookConfiguration whose label
+   `helm.toolkit.fluxcd.io/namespace` names one of these namespaces or
+   `flux-system`. The helm-controller sets that label, the namespace of the
+   HelmRelease, on every object it renders, hooks included. Helm does not track
+   a hook object as part of its release, so no uninstall removes one:
+   `gateway-helm` 1.9.2 leaves the ClusterRole and the ClusterRoleBinding
+   `envoy-gateway-gateway-helm-certgen:envoy-gateway-system` and the
+   MutatingWebhookConfiguration
+   `envoy-gateway-topology-injector.envoy-gateway-system`. The read runs once
+   the namespaces are gone, when no HelmRelease is left to own such an object.
+   Each object is logged as `Chart leftover: <kind>.<group>/<name>` before it is
+   deleted, and a read that fails exits 1 with kubectl's error.
 8. The CRDs of the stack's API groups (the cert-manager, External Secrets,
    MariaDB, Memcached, OpenBao, Garage, RabbitMQ, Gateway API, Envoy Gateway,
    Prometheus Operator, CobaltCore, K-ORC, Flux and flux-operator groups, and
@@ -173,7 +185,12 @@ names `firewall`, `metallb-system` or `default`, nor a CRD of the platform (`aut
 `dns.gardener.cloud`, `crd.projectcalico.org`, `metallb.io`). Every delete
 ignores absence, so a second run finds nothing and exits 0. A delete that does
 not finish within `TEARDOWN_TIMEOUT` seconds exits 1 with the objects kubectl
-names, and so does a final count of stack CRDs or namespaces above zero.
+names, and so does a final count of stack CRDs, stack namespaces or
+cluster-scoped chart objects above zero. Each chart object still present is
+logged as `Still present: <kind>.<group>/<name>`. The teardown selects the
+chart objects by label and names none of them: the Envoy Gateway release
+floats inside `>=1.9.2 <2.0.0`, so Flux can install a chart whose hook objects
+carry other names.
 
 ### `make install-test-deps`
 
