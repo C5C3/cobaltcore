@@ -150,11 +150,12 @@ func (f doerFunc) Do(req *http.Request) (*http.Response, error) { return f(req) 
 // compute request sends.
 func TestRequests_CarryTheMicroversionAndToken(t *testing.T) {
 	g := NewGomegaWithT(t)
-	doer := tokenThen(status(http.StatusOK, `{"services":[],"aggregates":[],"servers":[]}`))
+	doer := tokenThen(status(http.StatusOK, `{"services":[],"aggregates":[],"servers":[],"hypervisors":[]}`))
 	c := newClient(t, doer)
 	ctx := context.Background()
 
 	_, _ = c.ListComputeServices(ctx)
+	_, _ = c.ListMappedHosts(ctx)
 	_, _ = c.ListAggregates(ctx)
 	_, _ = c.CountServersOnHost(ctx, "node-1")
 	_ = c.DisableService(ctx, "id", "reason")
@@ -164,13 +165,17 @@ func TestRequests_CarryTheMicroversionAndToken(t *testing.T) {
 	_ = c.DeleteAggregate(ctx, 1)
 
 	compute := doer.requests[1:]
-	g.Expect(compute).To(HaveLen(8))
+	g.Expect(compute).To(HaveLen(9))
 	for _, req := range compute {
-		// The service list alone asks for 2.69, which reports a cell that did
-		// not answer instead of leaving its services out.
+		// The service list asks for 2.69, which reports a cell that did not
+		// answer instead of leaving its services out, and the hypervisor list
+		// for 2.88, whose entries drop cpu_info and the resource counters.
 		version := "2.53"
-		if req.Method == http.MethodGet && req.URL.Path == "/v2.1/os-services" {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v2.1/os-services":
 			version = "2.69"
+		case req.Method == http.MethodGet && req.URL.Path == "/v2.1/os-hypervisors/detail":
+			version = "2.88"
 		}
 		g.Expect(req.Header.Get("X-Auth-Token")).To(Equal("tok"), "%s %s", req.Method, req.URL)
 		g.Expect(req.Header.Get("X-OpenStack-Nova-API-Version")).To(Equal(version), "%s %s", req.Method, req.URL)
@@ -247,6 +252,127 @@ func TestListComputeServices(t *testing.T) {
 		c := newClient(t, tokenThen(status(http.StatusOK, "<html>")))
 		_, err := c.ListComputeServices(context.Background())
 		g.Expect(err).To(MatchError(ContainSubstring("decoding GET /v2.1/os-services")))
+	})
+}
+
+func TestListMappedHosts(t *testing.T) {
+	t.Run("every page is read, each after the previous page's last id", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		previous := hypervisorPageLimit
+		hypervisorPageLimit = 2
+		t.Cleanup(func() { hypervisorPageLimit = previous })
+
+		fake := computeapitest.New()
+		for _, host := range []string{"node-1", "node-2", "node-3"} {
+			fake.AddService(host, "enabled", "up")
+		}
+		c := newClient(t, fake)
+
+		hosts, err := c.ListMappedHosts(context.Background())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(hosts).To(Equal(map[string]bool{"node-1": true, "node-2": true, "node-3": true}))
+
+		calls := fake.CallsTo(http.MethodGet, "/v2.1/os-hypervisors/detail")
+		g.Expect(calls).To(HaveLen(3), "two pages with entries and the empty page that ends the list")
+		g.Expect(calls[0].Query).To(Equal("limit=2"))
+		g.Expect(calls[1].Query).To(Equal("limit=2&marker=10000000-0000-0000-0000-000000000002"))
+		g.Expect(calls[2].Query).To(Equal("limit=2&marker=10000000-0000-0000-0000-000000000003"))
+	})
+
+	t.Run("a page an unmapped node shortens does not end the list", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		previous := hypervisorPageLimit
+		hypervisorPageLimit = 2
+		t.Cleanup(func() { hypervisorPageLimit = previous })
+
+		fake := computeapitest.New()
+		for _, host := range []string{"node-1", "node-2", "node-3"} {
+			fake.AddService(host, "enabled", "up")
+		}
+		fake.SetHostMapped("node-2", false)
+		c := newClient(t, fake)
+
+		hosts, err := c.ListMappedHosts(context.Background())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(hosts).To(Equal(map[string]bool{"node-1": true, "node-3": true}))
+
+		calls := fake.CallsTo(http.MethodGet, "/v2.1/os-hypervisors/detail")
+		g.Expect(calls).To(HaveLen(3), "a page holding node-1 alone, one holding node-3 and the empty end")
+		g.Expect(calls[1].Query).To(Equal("limit=2&marker=10000000-0000-0000-0000-000000000001"))
+		g.Expect(calls[2].Query).To(Equal("limit=2&marker=10000000-0000-0000-0000-000000000003"))
+	})
+
+	t.Run("an empty list is an empty set", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		doer := tokenThen(status(http.StatusOK, `{"hypervisors": []}`))
+		c := newClient(t, doer)
+		hosts, err := c.ListMappedHosts(context.Background())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(hosts).NotTo(BeNil())
+		g.Expect(hosts).To(BeEmpty())
+		g.Expect(doer.requests[1].URL.RequestURI()).To(Equal("/v2.1/os-hypervisors/detail?limit=500"))
+	})
+
+	t.Run("an entry without a service or a host is skipped", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		pages := []string{
+			`{"hypervisors":[{"id":"a","service":{"host":"node-1"}},{"id":"b"},{"id":"c","service":{"host":""}}]}`,
+			`{"hypervisors":[]}`,
+		}
+		c := newClient(t, tokenThen(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, pages[0])
+			pages = pages[1:]
+		}))
+		hosts, err := c.ListMappedHosts(context.Background())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(hosts).To(Equal(map[string]bool{"node-1": true}))
+	})
+
+	t.Run("an unmapped host is absent while its service is listed", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		fake := computeapitest.New()
+		fake.AddService("node-1", "enabled", "up")
+		fake.AddService("node-2", "enabled", "up")
+		fake.SetHostMapped("node-2", false)
+		c := newClient(t, fake)
+
+		hosts, err := c.ListMappedHosts(context.Background())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(hosts).To(Equal(map[string]bool{"node-1": true}))
+		services, err := c.ListComputeServices(context.Background())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(services).To(HaveLen(2))
+
+		fake.SetHostMapped("node-2", true)
+		hosts, err = c.ListMappedHosts(context.Background())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(hosts).To(HaveKey("node-2"))
+	})
+
+	t.Run("a server error is an APIError", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		fake := computeapitest.New()
+		fake.AddService("node-1", "enabled", "up")
+		fake.FailNext(http.MethodGet, "/v2.1/os-hypervisors", http.StatusInternalServerError)
+		c := newClient(t, fake)
+
+		hosts, err := c.ListMappedHosts(context.Background())
+		g.Expect(hosts).To(BeNil())
+		var apiErr *APIError
+		g.Expect(errors.As(err, &apiErr)).To(BeTrue(), "got %v", err)
+		g.Expect(apiErr.StatusCode).To(Equal(http.StatusInternalServerError))
+		g.Expect(apiErr.Method).To(Equal(http.MethodGet))
+		g.Expect(apiErr.Path).To(Equal("/v2.1/os-hypervisors/detail?limit=500"))
+	})
+
+	t.Run("a list that never ends is an error", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		doer := tokenThen(status(http.StatusOK, `{"hypervisors":[{"id":"a","service":{"host":"node-1"}}]}`))
+		c := newClient(t, doer)
+		hosts, err := c.ListMappedHosts(context.Background())
+		g.Expect(err).To(MatchError("the hypervisor list did not end after 100 pages"))
+		g.Expect(hosts).To(BeNil())
+		g.Expect(doer.requests[1:]).To(HaveLen(100))
 	})
 }
 
@@ -417,6 +543,10 @@ func TestRequestTimeout(t *testing.T) {
 		_, err := c.ListComputeServices(context.Background())
 		g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
 		g.Expect(err.Error()).To(HavePrefix("GET /v2.1/os-services?binary=nova-compute: "))
+
+		_, err = c.ListMappedHosts(context.Background())
+		g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
+		g.Expect(err.Error()).To(HavePrefix("GET /v2.1/os-hypervisors/detail?limit=500: "))
 	})
 }
 
