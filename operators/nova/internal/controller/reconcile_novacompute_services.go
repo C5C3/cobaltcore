@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
@@ -27,11 +29,13 @@ import (
 // The reasons of the ServicesReady condition. ComputeAPIError is shared with
 // AggregatesReady.
 const (
-	conditionReasonServicesUp         = "ServicesUp"
-	conditionReasonDraining           = "Draining"
-	conditionReasonWaitingForServices = "WaitingForServices"
-	conditionReasonServicesDown       = "ServicesDown"
-	conditionReasonPodListError       = "PodListError"
+	conditionReasonServicesUp            = "ServicesUp"
+	conditionReasonDraining              = "Draining"
+	conditionReasonWaitingForServices    = "WaitingForServices"
+	conditionReasonServicesDown          = "ServicesDown"
+	conditionReasonPodListError          = "PodListError"
+	conditionReasonWaitingForHostMapping = "WaitingForHostMapping"
+	conditionReasonHostDiscoveryError    = "HostDiscoveryError"
 )
 
 // The os-services values the step reads and writes.
@@ -46,7 +50,11 @@ const (
 // is the pool's periodic poll of Nova.
 //
 //   - Pending and Active follow whether a service is registered under the node
-//     name.
+//     name and its host is mapped into its cell. A Pending node turns Active
+//     once Nova lists its host as a hypervisor, which it does only for a
+//     mapped host; an Active node is not checked again. While a registered
+//     host is unmapped, the step runs the Nova's host discovery Job
+//     (ensureHostDiscovery) and polls every RequeueHostDiscoveryPolling.
 //   - Draining disables the node's service once, with a reason naming this
 //     CR, and waits until Nova counts no server on the host. The satellite
 //     never migrates an instance and never enables a service: emptying the
@@ -84,6 +92,18 @@ func (r *NovaComputeReconciler) reconcileNovaComputeServices(ctx context.Context
 	for _, svc := range services {
 		byHost[svc.Host] = svc
 	}
+	// The mapping is read only while a Pending node has a registered service,
+	// so a settled pool makes no further call. A failed read leaves those nodes
+	// Pending; the walk still moves the other nodes, and the failure is
+	// reported after it.
+	var mapped map[string]bool
+	var mappedErr error
+	if slices.ContainsFunc(cr.Status.Nodes, func(entry novav1alpha1.NovaComputeNodeStatus) bool {
+		_, registered := byHost[entry.Name]
+		return registered && entry.Phase == novav1alpha1.NovaComputeNodePending
+	}) {
+		mapped, mappedErr = api.ListMappedHosts(ctx)
+	}
 
 	podReader, err := commonmulticluster.ResolveChildrenAPIReader(ctx, r.Resolver, r.APIReader, cr.Spec.TargetClusterRef)
 	if err != nil {
@@ -104,6 +124,9 @@ func (r *NovaComputeReconciler) reconcileNovaComputeServices(ctx context.Context
 	}
 
 	nodes := make([]novav1alpha1.NovaComputeNodeStatus, 0, len(cr.Status.Nodes))
+	// unmapped are the Pending nodes with a registered service whose host Nova
+	// does not list as mapped yet.
+	var unmapped []string
 	// stepErr stops the walk at the first failed call; the entries not yet
 	// walked are kept as they were.
 	var stepErr error
@@ -118,10 +141,14 @@ func (r *NovaComputeReconciler) reconcileNovaComputeServices(ctx context.Context
 		case novav1alpha1.NovaComputeNodeConflict:
 			// Another pool holds the node, and its service with it.
 		case novav1alpha1.NovaComputeNodePending, novav1alpha1.NovaComputeNodeActive:
+			wasActive := entry.Phase == novav1alpha1.NovaComputeNodeActive
 			copyService(&entry, svc, registered)
 			entry.Phase = novav1alpha1.NovaComputeNodePending
-			if registered {
+			switch {
+			case registered && (wasActive || mapped[entry.Name]):
 				entry.Phase = novav1alpha1.NovaComputeNodeActive
+			case registered:
+				unmapped = append(unmapped, entry.Name)
 			}
 		case novav1alpha1.NovaComputeNodeDraining:
 			copyService(&entry, svc, registered)
@@ -155,8 +182,27 @@ func (r *NovaComputeReconciler) reconcileNovaComputeServices(ctx context.Context
 		}
 		return computeAPIFailed(cr, conditionTypeServicesReady, stepErr)
 	}
+	// Both failures below leave a Pending node behind, which holds requeue at
+	// RequeueComputeDrainPolling or below. They requeue at that poll rather
+	// than return an error, whose growing backoff would stretch the polls of
+	// the pool's other nodes too.
+	if mappedErr != nil {
+		novaComputeSkeleton.MarkFailed(cr, conditionTypeServicesReady, conditionReasonComputeAPIError,
+			fmt.Errorf("listing hypervisors: %w", mappedErr))
+		return ctrl.Result{RequeueAfter: requeue}, nil
+	}
 
-	conditions.SetCondition(&cr.Status.Conditions, servicesCondition(cr, nodes))
+	note := ""
+	if len(unmapped) > 0 {
+		if note, err = r.ensureHostDiscovery(ctx, cr, pass, unmapped); err != nil {
+			log.FromContext(ctx).Error(err, "unable to run the host discovery Job")
+			novaComputeSkeleton.MarkFailed(cr, conditionTypeServicesReady, conditionReasonHostDiscoveryError, err)
+			return ctrl.Result{RequeueAfter: requeue}, nil
+		}
+		requeue = min(requeue, RequeueHostDiscoveryPolling)
+	}
+
+	conditions.SetCondition(&cr.Status.Conditions, servicesCondition(cr, nodes, unmapped, note))
 	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 
@@ -270,13 +316,21 @@ func phasePollInterval(phase novav1alpha1.NovaComputeNodePhase) time.Duration {
 	return RequeueComputeServicePolling
 }
 
-// servicesCondition derives ServicesReady from the walked nodes.
-func servicesCondition(cr *novav1alpha1.NovaCompute, nodes []novav1alpha1.NovaComputeNodeStatus) metav1.Condition {
+// servicesCondition derives ServicesReady from the walked nodes. unmapped are
+// the Pending nodes the walk found registered but not mapped, the hosts the
+// discovery Job was run for: each waits for its host mapping, and
+// discoveryNote says what the Job is doing about it. Any other Pending node
+// waits for its service to register.
+func servicesCondition(cr *novav1alpha1.NovaCompute, nodes []novav1alpha1.NovaComputeNodeStatus,
+	unmapped []string, discoveryNote string,
+) metav1.Condition {
 	var pending, down, leaving []string
 	for _, entry := range nodes {
 		switch entry.Phase {
 		case novav1alpha1.NovaComputeNodePending:
-			pending = append(pending, entry.Name)
+			if !slices.Contains(unmapped, entry.Name) {
+				pending = append(pending, entry.Name)
+			}
 		case novav1alpha1.NovaComputeNodeActive:
 			if entry.ServiceState == serviceStateDown {
 				down = append(down, entry.Name)
@@ -294,6 +348,10 @@ func servicesCondition(cr *novav1alpha1.NovaCompute, nodes []novav1alpha1.NovaCo
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = conditionReasonWaitingForServices
 		condition.Message = "Waiting for a compute service to register on " + strings.Join(pending, ", ")
+	case len(unmapped) > 0:
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = conditionReasonWaitingForHostMapping
+		condition.Message = "Waiting for the host mapping of " + strings.Join(unmapped, ", ") + ": " + discoveryNote
 	case len(down) > 0:
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = conditionReasonServicesDown

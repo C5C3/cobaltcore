@@ -1287,13 +1287,23 @@ func TestIntegrationNovaCompute_ReachesReady(t *testing.T) {
 	// namespace to keep them apart from any other test's.
 	nodeName := "compute-" + ns
 	poolLabel := map[string]string{"openstack.c5c3.io/nova-compute-pool": ns}
+	// The service registers before Nova maps its host, so the pool runs the
+	// host discovery first.
 	api.AddService(nodeName, "enabled", "up")
+	api.SetHostMapped(nodeName, false)
 
 	nova := integrationNovaCR(integrationNovaName, ns, nil)
 	g.Expect(c.Create(ctx, nova)).To(Succeed())
 	nova.Status.InstalledRelease = integrationInitialRelease
 	nova.Status.ComputeConfigSecretRef = &corev1.LocalObjectReference{Name: computeConfigSecretName(nova)}
 	g.Expect(c.Status().Update(ctx, nova)).To(Succeed(), "publish the Nova's release and contract")
+
+	// No Nova controller runs here, so the API Deployment the discovery Job
+	// takes its image and config from is written by hand.
+	apiDeployment := novaAPIDeployment(nova, integrationNovaName+"-config-it")
+	apiDeployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: apiSelectorLabels(nova)}
+	apiDeployment.Spec.Template.Labels = apiSelectorLabels(nova)
+	g.Expect(c.Create(ctx, apiDeployment)).To(Succeed())
 
 	for _, secret := range []*corev1.Secret{
 		{
@@ -1329,6 +1339,27 @@ func TestIntegrationNovaCompute_ReachesReady(t *testing.T) {
 
 	poolKey := client.ObjectKeyFromObject(pool)
 	dsKey := client.ObjectKey{Namespace: ns, Name: "pool-it-nova-compute"}
+
+	// The API server accepts the Job, and the Nova owns it.
+	jobKey := client.ObjectKey{Namespace: ns, Name: hostDiscoveryJobName(integrationNovaName)}
+	g.Eventually(func(ig Gomega) {
+		_ = simulators.MarkDaemonSetReady(ctx, c, dsKey)
+
+		got := &novav1alpha1.NovaCompute{}
+		ig.Expect(c.Get(ctx, poolKey, got)).To(Succeed())
+		cond := meta.FindStatusCondition(got.Status.Conditions, conditionTypeServicesReady)
+		ig.Expect(cond).NotTo(BeNil())
+		ig.Expect(cond.Reason).To(Equal(conditionReasonWaitingForHostMapping), "conditions: %+v", got.Status.Conditions)
+		ig.Expect(got.Status.Nodes).To(ConsistOf(HaveField("Phase", novav1alpha1.NovaComputeNodePending)))
+
+		discovery := &batchv1.Job{}
+		ig.Expect(c.Get(ctx, jobKey, discovery)).To(Succeed())
+		ig.Expect(metav1.IsControlledBy(discovery, nova)).To(BeTrue(), "the Nova is the Job's controller")
+		ig.Expect(discovery.Spec.Template.Spec.Containers[0].Image).To(Equal(nova.Spec.Image.Reference()))
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+
+	// The discovery mapped the host.
+	api.SetHostMapped(nodeName, true)
 	g.Eventually(func(ig Gomega) {
 		// Every template change bumps the generation, so the rollout is marked
 		// complete on every poll; a DaemonSet not created yet is simply retried.

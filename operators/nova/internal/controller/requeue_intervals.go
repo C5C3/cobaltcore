@@ -36,4 +36,10 @@ const (
 	// is Releasing, waiting for its pod to leave before the compute service is
 	// deleted. The wait is a pod termination, so it is short.
 	RequeueComputeReleasePolling = 10 * time.Second
+
+	// RequeueHostDiscoveryPolling is how often a NovaCompute with a registered
+	// node whose host is not mapped into its cell yet looks at Nova and at the
+	// Nova's host discovery Job. The pool sets no watch on Jobs, so this is the
+	// signal that a discovery finished.
+	RequeueHostDiscoveryPolling = 10 * time.Second
 )
