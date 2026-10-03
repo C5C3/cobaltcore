@@ -120,7 +120,7 @@ the tag to the commit it names.
 
 ### Re-cutting the openstack-hypervisor-operator patch
 
-The three patches under `images/openstack-hypervisor-operator/patches/` are cut
+The four patches under `images/openstack-hypervisor-operator/patches/` are cut
 against the pinned upstream commit, each as one commit on top of the ones before:
 
 | Patch | Subject | Test command |
@@ -128,6 +128,7 @@ against the pinned upstream commit, each as one commit on top of the ones before
 | `0001-eviction-let-nova-choose-block-migration.patch` | `Eviction: let Nova choose block migration` | `go test -count=1 -run '^TestLiveMigrateAutoBody$' ./internal/controller/eviction/` |
 | `0002-hypervisor-make-the-high-availability-default-configurable.patch` | `Hypervisor: make the default of spec.highAvailability configurable` | `go test -count=1 -run '^TestHypervisorCreatedWithDefaultHighAvailability$' ./internal/controller/` |
 | `0003-traits-report-traitsupdated-when-nothing-differs.patch` | `Traits: report TraitsUpdated when no custom trait differs` | `go test -count=1 -run '^TestTraitsInSyncSetsTraitsUpdated$' ./internal/controller/` |
+| `0004-openstack-select-the-catalog-interface-with-os-interface.patch` | `openstack: select the catalog interface with OS_INTERFACE` | `go test -count=1 -run '^TestServiceClientInterface$' ./internal/openstack/` |
 
 When a Renovate PR moves `ARG HVO_COMMIT` to a commit on which one of them no
 longer applies, `build-hvo` fails at the `git apply` step and nothing is
@@ -135,7 +136,8 @@ published. If upstream now carries a patch's change, delete that patch on the
 Renovate branch together with its checks in the Dockerfile's build step: for 0001
 the `servers.LiveMigrateOpts` grep and the `TestLiveMigrateAutoBody` run, for
 0002 and 0003 the test's name in the controller `go test` run and the `grep` for
-its `--- PASS:` line. Each test passes only while upstream ships it. With no patch
+its `--- PASS:` line, for 0004 the `TestServiceClientInterface` run and its
+`grep`. Each test passes only while upstream ships it. With no patch
 left, the `COPY patches/` and `git apply` steps fail as well, so drop them in the
 same change. Otherwise re-cut the patches in order in a scratch clone that holds
 both the old and the new commit, so a three-way apply finds the blobs each patch
@@ -150,8 +152,8 @@ git apply --3way <repo>/images/openstack-hypervisor-operator/patches/0001-*.patc
 # resolve the conflicts, then prove the test still passes
 go test -count=1 -run '^TestLiveMigrateAutoBody$' ./internal/controller/eviction/
 git commit -am "Eviction: let Nova choose block migration"
-# the same for 0002 and 0003, each with its test command and subject from the table
-git format-patch -3 --no-signature -o /tmp/hvo-patches
+# the same for 0002, 0003 and 0004, each with its test command and subject from the table
+git format-patch -4 --no-signature -o /tmp/hvo-patches
 ```
 
 `git am -3` does not take the checked-in files: each carries the house header instead
