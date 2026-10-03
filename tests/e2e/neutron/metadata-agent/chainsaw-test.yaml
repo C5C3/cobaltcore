@@ -8,9 +8,12 @@
 #     the aggregate Ready=True with reason AllReady
 #   - the DaemonSet lands on the node the OVNChassis selects, with the chassis's
 #     own nodeSelector copied verbatim and hostNetwork on, and runs a ready pod
-#   - the wait-for-chassis init container exited 0, which means it found this
-#     node's system-id in the local Open vSwitch database over the socket the
-#     chassis pods create, and the agent container is ready without a restart
+#   - the wait-for-chassis init container exited 0, which means it read this
+#     node's system-id from the local Open vSwitch database over the socket the
+#     chassis pods create and found its Chassis_Private row in the Southbound
+#     database; its log names the id the OVNChassis reports for the node, the
+#     agent wrote its registration into that row, and the agent container is
+#     ready without a restart
 #   - the rendered neutron_ovn_metadata_agent.ini points the agent at that local
 #     database and at the Southbound address the OVNCentral published, pins
 #     metadata_workers = 4 and root_helper = env, and carries no transport_url
@@ -229,11 +232,20 @@ spec:
           status:
             desiredNumberScheduled: 1
             numberReady: 1
-    # A ready pod says nothing about how it got there. The init container polls
-    # the local Open vSwitch database until the chassis on this node has written
-    # its system-id, and an agent container that crash-looped its way to
-    # readiness would have spent that time not answering instances.
+    # A ready pod says nothing about how it got there. The init container waits
+    # until the system-id in the local Open vSwitch database has a
+    # Chassis_Private row in the Southbound database, and its last log line
+    # names that id. The agent reads the same id once at start and writes its
+    # registration (the key neutron:ovn-metadata-id) into that row, so an agent
+    # on a stale id is ready and never registers. The id therefore has to be the
+    # one the OVNChassis reports for the pod's node, and the key has to appear
+    # on its row. An agent container that crash-looped its way to readiness
+    # would have spent that time not answering instances.
+    #
+    # The poll for the key takes up to 60 seconds, longer than the shared exec
+    # timeout allows.
     - script:
+        timeout: 2m
         content: |
           set -eu
           PODS="$(kubectl get pods -n openstack \
@@ -241,6 +253,12 @@ spec:
             -o name)"
           if [ -z "${PODS}" ]; then
             echo "FAIL: no pod of the metadata-agent DaemonSet found"
+            exit 1
+          fi
+          SB="$(kubectl get ovncentral neutron-agent-ovn -n openstack \
+            -o 'jsonpath={.status.southbound.internalDbAddress}')"
+          if [ -z "${SB}" ]; then
+            echo "FAIL: OVNCentral neutron-agent-ovn reports no Southbound address"
             exit 1
           fi
           STATUS=0
@@ -264,8 +282,40 @@ spec:
               echo "FAIL: ${pod} container metadata-agent restarted ${RESTARTS} time(s)"
               POD_STATUS=1
             fi
+            NODE="$(kubectl get "${pod}" -n openstack -o 'jsonpath={.spec.nodeName}')"
+            ID="$(kubectl get ovnchassis neutron-agent-chassis -n openstack -o \
+              "jsonpath={.status.nodes[?(@.name=='${NODE}')].systemID}")"
+            if [ -z "${ID}" ]; then
+              echo "FAIL: ${pod} OVNChassis neutron-agent-chassis reports no systemID for node '${NODE}'"
+              POD_STATUS=1
+            else
+              LINE="chassis ${ID} is registered in the Southbound database"
+              if ! kubectl logs "${pod}" -n openstack -c wait-for-chassis | grep -Fxq "${LINE}"; then
+                echo "FAIL: ${pod} wait-for-chassis log lacks the line '${LINE}'"
+                POD_STATUS=1
+              fi
+              REGISTERED=""
+              DEADLINE=$(( $(date +%s) + 60 ))
+              while :; do
+                if kubectl exec "${pod}" -n openstack -c metadata-agent -- \
+                  ovsdb-client --timeout=5 --no-leader-only \
+                  -p /etc/ovn/tls/tls.key -c /etc/ovn/tls/tls.crt -C /etc/ovn/tls/ca.crt \
+                  transact "${SB}" \
+                  '["OVN_Southbound",{"op":"select","table":"Chassis_Private","where":[["name","==","'"${ID}"'"]],"columns":["external_ids"]}]' \
+                  2>/dev/null | grep -q 'neutron:ovn-metadata-id'; then
+                  REGISTERED=yes
+                  break
+                fi
+                [ "$(date +%s)" -lt "${DEADLINE}" ] || break
+                sleep 2
+              done
+              if [ -z "${REGISTERED}" ]; then
+                echo "FAIL: ${pod} Chassis_Private row ${ID} carries no neutron:ovn-metadata-id after 60s"
+                POD_STATUS=1
+              fi
+            fi
             if [ "${POD_STATUS}" -eq 0 ]; then
-              echo "OK: ${pod} wait-for-chassis exited 0, metadata-agent ready, no restart"
+              echo "OK: ${pod} wait-for-chassis exited 0 on chassis ${ID}, metadata-agent ready and registered, no restart"
             else
               STATUS=1
             fi
