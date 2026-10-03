@@ -22,10 +22,16 @@
 #
 # Two things are lab-specific. The first is the OpenBao data volume's storage
 # class. The kind base pins `standard`, and the lab has a Lightbits `standard`
-# class too, so leaving the pin in place would bind the volume to a class
-# chosen by coincidence. `premium` is the lab's default class (#1138); it is
-# pinned rather than left to the default so a change of the default does not
-# move the volume.
+# class too, so the pin would bind the volume to a class chosen by
+# coincidence. The patch removes the class (a null value deletes the key), and
+# the volume binds to the cluster's default class like every volume the
+# ControlPlane provisions. hack/deploy-infra.sh checks that a default class
+# exists before Step 2. A lab deployed while this patch still pinned
+# `premium` keeps that class in the OpenBao StatefulSet's volume claim
+# template and in the MariaDB and GarageCluster specs of ../infrastructure.
+# Volume claim templates cannot change and the mariadb-operator webhook
+# refuses a new storageClassName, so such a lab is not updated in place: it
+# is torn down (EXTERNAL_CLUSTER=true make teardown-infra) and deployed again.
 #
 # The second is the label apiserver-proxy.networking.gardener.cloud/inject:
 # disable on every namespace the stack declares. The lab is a Gardener shoot,
@@ -97,4 +103,4 @@ patches:
         values:
           server:
             dataStorage:
-              storageClass: premium
+              storageClass: null

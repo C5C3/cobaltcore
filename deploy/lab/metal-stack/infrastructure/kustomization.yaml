@@ -10,10 +10,12 @@
 # single-replica MariaDB and Memcached, the single-node GarageCluster, the
 # NodePort EnvoyProxy (nodePort 31443), the nip.io Certificates, the
 # ExternalSecret shims and the proving OpenBaoCluster with its tenant. The
-# patches move the MariaDB and Garage volumes from the kind `standard` class
-# to the lab's `premium` class (see ../base/kustomization.yaml for why the
-# class is pinned). The proving OpenBaoCluster names no class and binds to the
-# cluster's default, which hack/deploy-infra.sh checks exists before Step 2.
+# patches remove the kind overlay's `standard` class from the MariaDB and
+# Garage volumes (a null value deletes the key; see ../base/kustomization.yaml
+# for why, and for why a lab deployed with the earlier `premium` pin is torn
+# down instead of updated in place). Those volumes and the proving
+# OpenBaoCluster, which names no class, bind to the cluster's default, which
+# hack/deploy-infra.sh checks exists before Step 2.
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -36,7 +38,7 @@ patches:
         namespace: openstack
       spec:
         storage:
-          storageClassName: premium
+          storageClassName: null
 
   - target:
       group: garage.rajsingh.info
@@ -53,6 +55,6 @@ patches:
       spec:
         storage:
           metadata:
-            storageClassName: premium
+            storageClassName: null
           data:
-            storageClassName: premium
+            storageClassName: null
