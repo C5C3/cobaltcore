@@ -280,6 +280,34 @@ tests:
             verbs:
               - bind
 
+  # reconcileKORCCatalogRefresh reads and patches the one K-ORC Deployment to
+  # restart it. The second assert catches a second rule shaped exactly
+  # apps/deployments; a Deployment grant merged with other resources is caught
+  # by TestRBAC_DeploymentGrantIsScopedToKORC.
+  - it: should grant get and patch on the orc-controller-manager Deployment only
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resourceNames:
+              - orc-controller-manager
+            resources:
+              - deployments
+            verbs:
+              - get
+              - patch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - deployments
+          any: true
+          count: 1
+
   # reconcileDBCredentials uses CreateOrUpdate on a
   # per-ControlPlane externalsecret, which requires both create and update.
   # The full externalsecrets rule (which includes create and update) must be

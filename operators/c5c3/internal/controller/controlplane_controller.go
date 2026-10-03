@@ -396,6 +396,13 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // Progressing condition. No other status verb is granted.
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects;roles;roleassignments;regions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials/status;services/status;endpoints/status;users/status;domains/status;projects/status;roles/status;roleassignments/status;regions/status,verbs=patch
+// reconcileKORCCatalogRefresh restarts K-ORC once a ControlPlane's catalog
+// registrations settle, by patching one annotation onto the pod template of the
+// K-ORC Deployment. No list or watch: it reads that one Deployment by exact name
+// through the uncached reader. RBAC cannot narrow patch to one annotation, so
+// the grant covers the whole object of that name. #1202 removes the rule with
+// the member.
+// +kubebuilder:rbac:groups=apps,resources=deployments,resourceNames=orc-controller-manager,verbs=get;patch
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // Required so the operator can observe the shared cluster store's Ready condition
 // and reflect upstream secret-backend outages. A ControlPlane that sets an
