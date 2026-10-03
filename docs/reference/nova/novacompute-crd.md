@@ -288,11 +288,16 @@ deleted, so the record of a drain outlives the selection.
 
 | Phase | Meaning |
 | --- | --- |
-| `Pending` | Selected; no compute service is registered under the node name yet |
-| `Active` | Selected; the service is registered |
+| `Pending` | Selected; no compute service is registered under the node name yet, or its host is not mapped into the cell yet |
+| `Active` | Selected; the service is registered and the pool has seen its host mapped |
 | `Draining` | The node left the pool. Its pod stays, its service is disabled, and Nova still counts instances on it |
 | `Releasing` | No instance is left, or another pool took the node over. The pod is released, and the service is deleted once the pod is gone |
 | `Conflict` | Selected, but another NovaCompute of the same Nova on the same cluster holds the node. No pod of this CR runs there |
+
+A `Pending` node with a registered service turns `Active` once Nova lists its
+host as a hypervisor, which Nova does only for a host with a host mapping.
+Until then the pool runs the host discovery (see [Reaching Nova](#reaching-nova)).
+An `Active` node is not checked again.
 
 A node is held by a CR when it appears in that CR's `status.nodes` in any phase
 but `Conflict`. The rules, in order:
@@ -348,9 +353,11 @@ stays out of the aggregate. For the pipeline see
 | `AggregatesReady` | False | `NovaComputeListError` | Listing the other NovaComputes of the Nova failed, on a pass that did not run the Nodes step |
 | `ServicesReady` | True | `ServicesUp` | Every node's compute service is registered and up |
 | `ServicesReady` | True | `Draining` | Nodes are Draining or Releasing; the message counts the instances per node |
-| `ServicesReady` | False | `WaitingForServices` | A selected node has no compute service yet |
+| `ServicesReady` | False | `WaitingForServices` | A selected node has no compute service yet. Reported before `WaitingForHostMapping` |
+| `ServicesReady` | False | `WaitingForHostMapping` | A selected node's service is registered, but Nova has not mapped its host into the cell yet. The message names the hosts and the state of the host discovery Job; the pool looks again after 10 seconds |
+| `ServicesReady` | False | `HostDiscoveryError` | Reading the Nova API Deployment, or reading, creating or deleting the host discovery Job failed, or a Job of that name on a target cluster does not belong to the Nova. Logged and retried at the pool's poll, after 30 seconds at most |
 | `ServicesReady` | False | `ServicesDown` | Nova reports an Active node's service down |
-| `ServicesReady` | False | `ComputeAPIError` | A Keystone or Nova call failed, or a cell did not answer the service list. Retried after 30 seconds |
+| `ServicesReady` | False | `ComputeAPIError` | A Keystone or Nova call failed, or a cell did not answer the service list. Retried after 30 seconds at most: a failed hypervisor list keeps a `Releasing` node's 10-second poll |
 | `ServicesReady` | False | `PodListError` | Listing the pods on a Releasing node failed |
 | `Ready` | True | `AllReady` | All six sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
@@ -368,7 +375,9 @@ stays out of the aggregate. For the pipeline see
 | ConfigMap | `{name}-config-<hash>` | The immutable `compute-pool.conf`; the three newest before the mounted one are kept |
 
 The compute contract Secret is not a child: the Nova publishes it, or the
-ControlPlane mirrors it. On a target cluster the children carry the ownership
+ControlPlane mirrors it. Neither is the host discovery Job
+`{nova}-discover-hosts`, which belongs to the Nova (see
+[Reaching Nova](#reaching-nova)). On a target cluster the children carry the ownership
 labels instead of an owner reference, and the teardown sweeps them.
 
 ## Node contract
@@ -444,7 +453,8 @@ to it on onboarding.
 ### Reaching Nova
 
 The operator calls Keystone and the Nova API itself: it lists and disables the
-compute services, counts the servers on a host and keeps the aggregates. It
+compute services, reads the hypervisor list, counts the servers on a host and
+keeps the aggregates. It
 authenticates as the Nova's `spec.serviceUser` at microversion 2.53, and lists
 the services at 2.69: below it Nova leaves out a cell that does not answer, and
 the servers list skips that cell as well, so its draining hosts would read as
@@ -456,6 +466,28 @@ user lacks it reports `ComputeAPIError` with HTTP 403. The operator reaches the
 local Nova at its Service URL and a placed one through the target cluster's
 service proxy, so a NetworkPolicy in front of Keystone or Nova has to admit the
 nova-operator.
+
+Nova 32.0.0 and 33.0.0 leave the compute node of a host without a host mapping
+out of `GET /os-hypervisors/detail`, so a registered host missing from that
+list is not mapped into its cell yet. The pool reads the list, page by page
+at microversion 2.88, whose entries carry no `cpu_info` or resource counters,
+only while a `Pending` node has a registered service. A failed read keeps
+those nodes `Pending`, and the pool's other nodes still move. For such a host
+it runs `nova-manage cell_v2 discover_hosts --verbose` in the Job
+`<nova>-discover-hosts`, which the operator creates in the Nova's namespace on
+the Nova's cluster as a child of the Nova: with an owner reference locally,
+with the Nova's ownership labels on a target cluster. Its pod is the one the
+archive CronJob runs `nova-manage` in, with the image and the config of the
+Nova API Deployment. That Deployment rolls to `spec.image` only once the Nova
+has migrated its schemas, so during an upgrade the Job runs the release the
+schemas are at. No Job is created while that Deployment mounts no config.
+Every pool of the Nova shares the Job. While a host stays unmapped, a finished
+Job is replaced 30 seconds after it ended, a failed one after the
+`HostDiscoveryFailed` event; the last Job is removed 300 seconds after it
+finished. The
+`[scheduler] discover_hosts_in_cells_interval` periodic of
+[Host discovery](./nova-cells.md#host-discovery) still maps a compute without
+a pool.
 
 ### The aggregates
 
