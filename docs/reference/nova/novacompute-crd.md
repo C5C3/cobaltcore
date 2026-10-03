@@ -395,7 +395,7 @@ probe; the service state Nova reports is the health signal.
 | the contract Secret | `/etc/nova/compute-config` | read-only; the fragment's `ssl_ca_file` names `ca.crt` here |
 | the pool ConfigMap | `/etc/nova/compute-pool.conf.d` | read-only |
 | hostPath `/run/libvirt` | same | `DirectoryOrCreate`; the libvirt socket |
-| hostPath `/var/lib/nova` | same | `DirectoryOrCreate`, `mountPropagation: Bidirectional`, so the NFS volumes os-brick mounts below it reach the host's QEMU. The node's `compute_id` lives here, so a restarted pod keeps its identity. The `create-instances-dir` init container mounts it as well, without propagation |
+| hostPath `/var/lib/nova` | same | `DirectoryOrCreate`, `mountPropagation: Bidirectional`, so the NFS exports nova mounts below it (in `/var/lib/nova/mnt`) reach the host's QEMU. The node's `compute_id` lives here, so a restarted pod keeps its identity. The `create-instances-dir` init container mounts it as well, without propagation |
 | hostPath `/run/openvswitch` | same | `DirectoryOrCreate`; the node's Open vSwitch database |
 | hostPath `/dev` | same | |
 | hostPath `/sys/fs/cgroup` | same | read-only |

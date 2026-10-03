@@ -266,7 +266,7 @@ func buildNovaComputeDaemonSet(cr *novav1alpha1.NovaCompute, image commonv1.Imag
 		SecurityContext: createInstancesDirSecurityContext(),
 		Resources:       resources,
 		// No Bidirectional propagation here: mkdir creates no mount below
-		// state_path, so nothing has to reach the host the way os-brick's NFS
+		// state_path, so nothing has to reach the host the way nova's NFS
 		// mounts in nova-compute do.
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: varLibNovaVolume, MountPath: novaStatePath},
@@ -302,8 +302,8 @@ func buildNovaComputeDaemonSet(cr *novav1alpha1.NovaCompute, image commonv1.Imag
 			{Name: computeContractVolume, MountPath: computeConfigMountPath, ReadOnly: true},
 			{Name: poolConfigVolume, MountPath: poolConfigMountPath, ReadOnly: true},
 			{Name: runLibvirtVolume, MountPath: "/run/libvirt"},
-			// Bidirectional: os-brick mounts NFS volumes below state_path, and
-			// the host's QEMU has to see those mounts.
+			// Bidirectional: nova mounts NFS exports below state_path, and the
+			// host's QEMU has to see those mounts.
 			{
 				Name:             varLibNovaVolume,
 				MountPath:        novaStatePath,
