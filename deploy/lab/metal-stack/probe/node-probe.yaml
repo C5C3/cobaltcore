@@ -5,7 +5,7 @@
 # Read-only node probe for metal-stack clusters, the survey of #1138 (work
 # package 0) as a reusable Job. It is the prerequisite check of the CobaltCore
 # lab: run it against a metal-stack cluster before anything of the lab is
-# deployed. It prints the node facts the lab depends on under ten fixed
+# deployed. It prints the node facts the lab depends on under eleven fixed
 # headers and exits 0 whatever it finds, so a node that lacks something
 # prints `absent`, `none` or `NOT FOUND` and the Job still completes.
 #
@@ -162,15 +162,19 @@ spec:
               lscpu 2>/dev/null | grep -E '^(Model name|CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)|Virtualization|NUMA node\(s\)):' || echo absent
               echo "cpus with vmx|svm: $(grep -cE '^flags[[:space:]]*:.* (vmx|svm)( |$)' /proc/cpuinfo 2>/dev/null)"
               echo "== loaded modules"
-              cut -d ' ' -f1 /proc/modules 2>/dev/null | grep -E '^(kvm|vhost|openvswitch|geneve|vxlan|nbd|tun|bridge|br_netfilter|dm_multipath|nvme_tcp|nfsd)' || echo none
+              cut -d ' ' -f1 /proc/modules 2>/dev/null | grep -E '^(kvm|vhost|openvswitch|geneve|vxlan|nbd|tun|bridge|br_netfilter|dm_multipath|nvme_tcp|nfs|sunrpc)' || echo none
               KVER="$(uname -r)"
               echo "== module files for $KVER"
-              for m in kvm kvm-intel kvm-amd vhost_net openvswitch geneve nbd tun bridge br_netfilter dm-multipath; do
+              for m in kvm kvm-intel kvm-amd vhost_net openvswitch geneve nbd tun bridge br_netfilter dm-multipath nfsd nfs nfsv4 lockd sunrpc; do
                 f="$(find "/host/lib/modules/$KVER" -name "$m.ko*" -print -quit 2>/dev/null)"
                 if [ -z "$f" ] && grep -qE "/$m\.ko\$" "/host/lib/modules/$KVER/modules.builtin" 2>/dev/null; then
                   f="builtin"
                 fi
                 echo "$m: ${f:-NOT FOUND}"
+              done
+              echo "== filesystems"
+              for fs in nfs4 nfsd; do
+                if grep -qE "[[:space:]]$fs\$" /proc/filesystems 2>/dev/null; then echo "$fs: registered"; else echo "$fs: not registered"; fi
               done
               echo "== nested / iommu"
               nested=""

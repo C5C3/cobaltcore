@@ -16,14 +16,19 @@
 #      digest-pinned debian image with the host root as its one volume,
 #      mounted read-only at /host. node-probe.yaml read alone, the file the
 #      per-node yq form applies past kustomize, equals the render.
-#   4. The container's script reads the NIC list from the host's sysfs, ends
-#      with exit 0, names none of nsenter, chroot, modprobe, insmod, rmmod,
-#      mount, umount, sysctl, apt-get, apt, tee, dd, mknod and rm, and
-#      redirects nothing but stderr to /dev/null.
+#   4. The container's script reads the NIC list from the host's sysfs and
+#      the registered filesystems from /proc/filesystems, ends with exit 0,
+#      names none of nsenter, chroot, modprobe, insmod, rmmod, mount, umount,
+#      sysctl, apt-get, apt, tee, dd, mknod and rm, and redirects nothing but
+#      stderr to /dev/null.
 #   5. Run against an empty stand-in for the host root, the script exits 0 and
-#      prints the ten headers in order with its absent and NOT FOUND
-#      fallbacks; against a populated one it reports a module file, a module
-#      built into the kernel, the NFS server binary and a NIC. A script that
+#      prints the eleven headers in order with its absent and NOT FOUND
+#      fallbacks, NOT FOUND for each of the five NFS module files, and nfs4
+#      and nfsd as not registered; against a populated one it reports a
+#      module file, a module built into the kernel, the NFS server binary and
+#      a NIC, nfs stays NOT FOUND beside an nfsd.ko, the loaded modules are
+#      the NFS ones and sunrpc alone, and nfs4 is registered. Each stand-in
+#      brings its own /proc/modules and /proc/filesystems. A script that
 #      fails the command or redirection check of 4 is not run.
 #
 # Checks 3 to 5 are counted as SKIP when kustomize or yq is not on PATH; a
@@ -54,6 +59,7 @@ EXPECTED_HEADERS="$(printf '%s\n' \
   '== cpu' \
   '== loaded modules' \
   '== module files for' \
+  '== filesystems' \
   '== nested / iommu' \
   '== memory' \
   '== disks' \
@@ -247,7 +253,7 @@ without_stderr_discard() {
 test_script_ends_with_exit_0_and_writes_nothing() {
   echo "Test: the probe script ends with exit 0 and writes nothing"
 
-  render_probe 7 || return
+  render_probe 8 || return
 
   local container='select(.kind == "Job") | .spec.template.spec.containers[0]'
   local script
@@ -269,55 +275,103 @@ test_script_ends_with_exit_0_and_writes_nothing() {
     "$script" "/host/sys/class/net/"
   assert_contains "the script looks up module files in the host's module tree" \
     "$script" "/host/lib/modules/"
+  assert_contains "the script reads the registered filesystems" \
+    "$script" "/proc/filesystems"
+}
+
+# The lines of a script's output under the header $2, up to the next header.
+section() {
+  printf '%s\n' "$1" | awk -v h="$2" '/^== / { inside = ($0 == h); next } inside'
+}
+
+# The probe script run against stand-ins: the host root $2 for /host, and
+# $3/modules and $3/filesystems for the /proc files it reports.
+run_probe_on() {
+  local s="${1//\/host/$2}"
+  s="${s//\/proc\/modules/$3/modules}"
+  sh -c "${s//\/proc\/filesystems/$3/filesystems}" 2>/dev/null
 }
 
 # --- Test 5: the script completes on any node and reports what it finds ---
 test_script_reports_the_host_root_and_completes() {
   echo "Test: the probe script exits 0 on an empty host root and reports a populated one"
 
-  render_probe 9 || return
+  render_probe 20 || return
 
   local script
   script="$(rendered_script)"
 
-  # Only /host is swapped for a stand-in: every other path the script touches
-  # is this machine's own, outside the pod's read-only mounts.
+  # Only /host, /proc/modules and /proc/filesystems are swapped for stand-ins:
+  # every other path the script touches is this machine's own, outside the
+  # pod's read-only mounts.
   if [[ -n "$(forbidden_commands "$script")" || "$(without_stderr_discard "$script")" == *">"* ]]; then
-    echo "  FAIL: the script fails the forbidden-command or redirection check; not running it on this host (9 checks)"
-    FAIL=$((FAIL + 9))
+    echo "  FAIL: the script fails the forbidden-command or redirection check; not running it on this host (20 checks)"
+    FAIL=$((FAIL + 20))
     return
   fi
 
   # Two stand-ins for the host root the pod mounts at /host: an empty one, and
-  # one with a module file, a built-in module, the NFS server binary and a NIC.
+  # one with two module files, two built-in modules, the NFS server binary and
+  # a NIC. Each comes with a /proc/modules and a /proc/filesystems: empty ones,
+  # and ones with the NFS server, its helpers and two other modules loaded and
+  # nfs4 registered.
   local tmp kver
   tmp="$(mktemp -d)"
   kver="$(uname -r)"
   mkdir -p "$tmp/empty" "$tmp/node/lib/modules/$kver/kernel/arch/x86/kvm" \
-    "$tmp/node/usr/sbin" "$tmp/node/sys/class/net/lan0"
+    "$tmp/node/lib/modules/$kver/kernel/fs/nfsd" \
+    "$tmp/node/usr/sbin" "$tmp/node/sys/class/net/lan0" \
+    "$tmp/empty-proc" "$tmp/node-proc"
   : >"$tmp/node/lib/modules/$kver/kernel/arch/x86/kvm/kvm.ko"
-  echo "kernel/drivers/net/tun.ko" >"$tmp/node/lib/modules/$kver/modules.builtin"
+  : >"$tmp/node/lib/modules/$kver/kernel/fs/nfsd/nfsd.ko"
+  printf '%s\n' "kernel/drivers/net/tun.ko" "kernel/net/sunrpc/sunrpc.ko" \
+    >"$tmp/node/lib/modules/$kver/modules.builtin"
   : >"$tmp/node/usr/sbin/rpc.nfsd"
   echo 9000 >"$tmp/node/sys/class/net/lan0/mtu"
   echo up >"$tmp/node/sys/class/net/lan0/operstate"
+  : >"$tmp/empty-proc/modules"
+  : >"$tmp/empty-proc/filesystems"
+  # The probe lists nfsd, nfs_acl and sunrpc, not ip_tunnel, which has `tun`
+  # inside its name, nor ext4.
+  printf '%s\n' 'nfsd 811008 13 - Live 0x0' 'nfs_acl 16384 1 nfsd, Live 0x0' \
+    'ip_tunnel 32768 0 - Live 0x0' 'sunrpc 704512 2 nfsd,nfs_acl, Live 0x0' \
+    'ext4 1003520 1 - Live 0x0' >"$tmp/node-proc/modules"
+  printf 'nodev\tsysfs\n\text4\nnodev\tnfs\nnodev\tnfs4\n' >"$tmp/node-proc/filesystems"
 
   local empty node rc=0
-  empty="$(sh -c "${script//\/host/$tmp/empty}" 2>/dev/null)" || rc=$?
-  node="$(sh -c "${script//\/host/$tmp/node}" 2>/dev/null)"
+  empty="$(run_probe_on "$script" "$tmp/empty" "$tmp/empty-proc")" || rc=$?
+  node="$(run_probe_on "$script" "$tmp/node" "$tmp/node-proc")"
 
   assert_eq "the script exits 0 on a host root that lacks everything" "0" "$rc"
   # The kernel version after `== module files for` is not part of the header.
-  assert_eq "the script prints the ten headers in order" "$EXPECTED_HEADERS" \
+  assert_eq "the script prints the eleven headers in order" "$EXPECTED_HEADERS" \
     "$(printf '%s\n' "$empty" | grep -E '^== ' | sed -E 's/^(== module files for) .*/\1/')"
   assert_contains "a missing module file prints NOT FOUND" "$empty" "kvm: NOT FOUND"
   assert_contains "a missing binary prints absent" "$empty" "usr/sbin/libvirtd: absent"
   assert_contains "a host without NICs prints absent" "$empty" $'== nics\nabsent'
+  local m
+  for m in nfsd nfs nfsv4 lockd sunrpc; do
+    assert_contains "a missing $m module file prints NOT FOUND" "$empty" "$m: NOT FOUND"
+  done
+  assert_eq "a kernel without NFS filesystems prints not registered for nfs4 and nfsd" \
+    "$(printf '%s\n' 'nfs4: not registered' 'nfsd: not registered')" \
+    "$(section "$empty" '== filesystems')"
 
   assert_contains "a module file prints its path" \
     "$node" "kvm: $tmp/node/lib/modules/$kver/kernel/arch/x86/kvm/kvm.ko"
   assert_contains "a module built into the kernel prints builtin" "$node" "tun: builtin"
   assert_contains "an installed NFS server prints present" "$node" "usr/sbin/rpc.nfsd: present"
   assert_contains "a NIC prints its MTU and state" "$node" "lan0: mtu=9000 operstate=up"
+  assert_contains "the nfsd module file prints its path" \
+    "$node" "nfsd: $tmp/node/lib/modules/$kver/kernel/fs/nfsd/nfsd.ko"
+  assert_contains "a built-in sunrpc prints builtin" "$node" "sunrpc: builtin"
+  assert_contains "nfs does not match nfsd.ko and prints NOT FOUND" "$node" "nfs: NOT FOUND"
+  assert_eq "the loaded-modules section lists the NFS modules and sunrpc only" \
+    "$(printf '%s\n' nfsd nfs_acl sunrpc)" \
+    "$(section "$node" '== loaded modules')"
+  assert_eq "a registered nfs4 prints registered, beside an nfsd that is not" \
+    "$(printf '%s\n' 'nfs4: registered' 'nfsd: not registered')" \
+    "$(section "$node" '== filesystems')"
 
   rm -rf "$tmp"
 }
