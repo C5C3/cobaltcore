@@ -8,11 +8,11 @@
 # chart renders <repository>:<appVersion>, and only the repository is
 # overridden.
 #
-# The release sits in openstack because its two inputs do: the auth Secret
+# The release sits in openstack because its one input does: the auth Secret
 # the lab ControlPlane writes (spec.services.nova.hypervisorOperator), read
-# through valuesFrom, and the gateway certificates its pod mounts. Every key
-# of the auth Secret but auth_url feeds the chart value it names; the
-# password goes into the chart's own Secret.
+# through valuesFrom, which reads only Secrets of the release's own
+# namespace. Every key of the auth Secret but auth_url feeds the chart value
+# it names; the password goes into the chart's own Secret.
 #
 # The values that differ from the chart's defaults, and why:
 #   - fullnameOverride is hypervisor-operator: the chart names its metrics
@@ -32,17 +32,17 @@
 #     custom-resource metrics ConfigMaps are off: the lab runs no Prometheus
 #     Operator.
 #
-# hvo reads the compute, placement, image and network endpoints from the
-# catalog's public interface and has no CA option. The post-renderer
-# therefore points the four public hostnames at the 8443 Service in front of
-# Envoy (gateway-alias.yaml) and trusts the four self-signed gateway
-# certificates: hvo is a Go program, and Go reads every certificate file in
-# the directories SSL_CERT_DIR lists. /etc/ssl/certs keeps the image's public
-# roots. It also sets imagePullPolicy Always, which the chart has no value
-# for: build-images.yaml moves the tag sha-<commit> to every main build, so
-# the tag changes content whenever patches/ changes, and a node that cached
-# an image without patch 0002 would start a binary that refuses the flag
-# below.
+# hvo takes the compute, placement, image and network endpoints from the
+# catalog interface OS_INTERFACE names (patch 0004 of the image), and the
+# chart has no value for the variable, so the post-renderer sets internal.
+# The internal endpoints are the in-cluster Service URLs over plain HTTP, so
+# the pod needs neither a host alias nor the gateway certificates. The
+# post-renderer also sets imagePullPolicy Always, which the chart has no
+# value for either: build-images.yaml moves the tag sha-<commit> to every
+# main build, so the tag changes content whenever patches/ changes. A node
+# that cached an image without patch 0002 would start a binary that refuses
+# the flag below, and one without patch 0004 ignores the variable and dials
+# the public URLs.
 #
 # The post-renderer's second patch appends one argument to the list the chart
 # renders from controllerManager.manager.args, which stays untouched:
@@ -123,47 +123,12 @@ spec:
               spec:
                 template:
                   spec:
-                    hostAliases:
-                      - ip: 10.248.0.200
-                        hostnames:
-                          - nova.127-0-0-1.nip.io
-                          - placement.127-0-0-1.nip.io
-                          - glance.127-0-0-1.nip.io
-                          - neutron.127-0-0-1.nip.io
                     containers:
                       - name: manager
                         imagePullPolicy: Always
                         env:
-                          - name: SSL_CERT_DIR
-                            value: /etc/lab-gateway-ca:/etc/ssl/certs
-                        volumeMounts:
-                          - name: lab-gateway-ca
-                            mountPath: /etc/lab-gateway-ca
-                            readOnly: true
-                    volumes:
-                      - name: lab-gateway-ca
-                        projected:
-                          sources:
-                            - secret:
-                                name: nova-nip-io-tls
-                                items:
-                                  - key: ca.crt
-                                    path: nova.crt
-                            - secret:
-                                name: placement-nip-io-tls
-                                items:
-                                  - key: ca.crt
-                                    path: placement.crt
-                            - secret:
-                                name: glance-nip-io-tls
-                                items:
-                                  - key: ca.crt
-                                    path: glance.crt
-                            - secret:
-                                name: neutron-nip-io-tls
-                                items:
-                                  - key: ca.crt
-                                    path: neutron.crt
+                          - name: OS_INTERFACE
+                            value: internal
           # The chart has no value for this flag of patch 0002, so the
           # argument is appended to the list it renders.
           - target:
