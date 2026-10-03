@@ -8,8 +8,8 @@
 # openstack-hypervisor-operator and kvm-node-agent with their chart sources,
 # and the Service that lets the operator reach the gateway. Applied by hand,
 # like ../controlplane; hack/deploy-infra.sh never applies it. It needs the
-# lab ControlPlane Ready, node labels, a Placement trait and
-# ../hypervisor-fixtures before it, and hand steps after it. Part 2 of
+# lab ControlPlane Ready, the node labels and ../hypervisor-fixtures before
+# it. Part 2 of
 # docs/quick-start-metal-stack.md runs the sequence;
 # docs/reference/infrastructure/infrastructure-manifests.md (Lab hypervisors)
 # gives the reason behind each setting.
