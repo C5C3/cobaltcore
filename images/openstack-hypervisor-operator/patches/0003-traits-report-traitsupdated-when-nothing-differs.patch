@@ -1,0 +1,180 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Traits: report TraitsUpdated when no custom trait differs
+
+TraitsController.Reconcile in internal/controller/traits_controller.go
+returns without setting a condition when spec.customTraits equals the
+custom traits of status.traits. The TraitsUpdated condition is set only
+on the path that calls Placement, so only when a trait differs. In the
+Handover phase OnboardingController.completeOnboarding and the
+aggregates controller both wait for TraitsUpdated=True. A node without
+the nova.openstack.cloud.sap/custom-traits annotation has
+spec.customTraits: [], nothing ever differs, and onboarding stops at
+Handover until a custom trait is created in Placement and annotated on
+the node.
+
+When nothing differs and the condition is not True yet, the controller
+now sets TraitsUpdated=True with reason Succeeded and the message
+"Custom traits are in sync" without calling Placement. status.traits is
+not written on that path. Once the condition is True, a repeat returns
+without a write.
+
+No upstream test covers a Hypervisor whose traits are in sync. The
+patch adds TestTraitsInSyncSetsTraitsUpdated, a plain Go test outside
+the Ginkgo suite with controller-runtime's fake client and no
+Placement client, so it runs without envtest and proves that no
+Placement call happens; the CobaltCore image build runs it and fails
+when it does not pass.
+
+Applies-to: cobaltcore-dev/openstack-hypervisor-operator main @ a2baf3f4002e39ff93f105fae9594b357ba55b21
+
+Upstream status: not submitted
+
+diff --git a/internal/controller/traits_controller.go b/internal/controller/traits_controller.go
+index b079676..7ca2128 100644
+--- a/internal/controller/traits_controller.go
++++ b/internal/controller/traits_controller.go
+@@ -92,8 +92,14 @@ func (tc *TraitsController) Reconcile(ctx context.Context, req ctrl.Request) (ct
+ 	})
+ 
+ 	if slices.Equal(hv.Spec.CustomTraits, customTraitsApplied) {
+-		// Nothing to be done
+-		return ctrl.Result{}, nil
++		if meta.IsStatusConditionTrue(hv.Status.Conditions, kvmv1.ConditionTypeTraitsUpdated) {
++			return ctrl.Result{}, nil
++		}
++		// Nothing differs, so Placement is not called. Onboarding and the
++		// aggregates controller still wait for the condition.
++		return ctrl.Result{}, utils.PatchHypervisorStatusWithRetry(ctx, tc.Client, hv.Name, TraitsControllerName, func(h *kvmv1.Hypervisor) {
++			meta.SetStatusCondition(&h.Status.Conditions, getTraitCondition(nil, "Custom traits are in sync"))
++		})
+ 	}
+ 
+ 	toAdd := utils.Difference(customTraitsApplied, hv.Spec.CustomTraits)
+diff --git a/internal/controller/traits_in_sync_test.go b/internal/controller/traits_in_sync_test.go
+new file mode 100644
+index 0000000..f251486
+--- /dev/null
++++ b/internal/controller/traits_in_sync_test.go
+@@ -0,0 +1,120 @@
++/*
++SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company and cobaltcore-dev contributors
++SPDX-License-Identifier: Apache-2.0
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package controller
++
++import (
++	"slices"
++	"testing"
++
++	"k8s.io/apimachinery/pkg/api/meta"
++	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
++	"k8s.io/apimachinery/pkg/runtime"
++	"k8s.io/apimachinery/pkg/types"
++	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
++	ctrl "sigs.k8s.io/controller-runtime"
++	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
++	"sigs.k8s.io/controller-runtime/pkg/client/fake"
++
++	kvmv1 "github.com/cobaltcore-dev/openstack-hypervisor-operator/api/v1"
++)
++
++// TestTraitsInSyncSetsTraitsUpdated reconciles a Hypervisor whose custom
++// traits are already in sync. The TraitsController has no Placement client, so
++// any Placement call would panic.
++func TestTraitsInSyncSetsTraitsUpdated(t *testing.T) {
++	key := types.NamespacedName{Name: "hv-in-sync"}
++	otherTraits := []string{"HW_CPU_X86_VMX"}
++
++	setup := func(t *testing.T, onboardingReason string) (k8sclient.Client, *TraitsController) {
++		t.Helper()
++		scheme := runtime.NewScheme()
++		if err := clientgoscheme.AddToScheme(scheme); err != nil {
++			t.Fatalf("adding the client-go scheme: %v", err)
++		}
++		if err := kvmv1.AddToScheme(scheme); err != nil {
++			t.Fatalf("adding the kvm scheme: %v", err)
++		}
++		hv := &kvmv1.Hypervisor{
++			Name: key.Name,
++			Spec: kvmv1.HypervisorSpec{
++				LifecycleEnabled: true,
++				CustomTraits:     []string{},
++			},
++			Status: kvmv1.HypervisorStatus{
++				HypervisorID: "c3c8e8d6-0c55-4d9b-9e3c-6f1f8a0f2a11",
++				Traits:       otherTraits,
++				Conditions: []metav1.Condition{{
++					Type:               kvmv1.ConditionTypeOnboarding,
++					Status:             metav1.ConditionTrue,
++					Reason:             onboardingReason,
++					LastTransitionTime: metav1.Now(),
++				}},
++			},
++		}
++		c := fake.NewClientBuilder().WithScheme(scheme).
++			WithStatusSubresource(&kvmv1.Hypervisor{}).WithObjects(hv).Build()
++		return c, &TraitsController{Client: c, Scheme: scheme}
++	}
++
++	reconcile := func(t *testing.T, c k8sclient.Client, tc *TraitsController) *kvmv1.Hypervisor {
++		t.Helper()
++		if _, err := tc.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
++			t.Fatalf("Reconcile: %v", err)
++		}
++		hv := &kvmv1.Hypervisor{}
++		if err := c.Get(t.Context(), key, hv); err != nil {
++			t.Fatalf("getting the Hypervisor: %v", err)
++		}
++		return hv
++	}
++
++	t.Run("Handover sets TraitsUpdated", func(t *testing.T) {
++		c, tc := setup(t, kvmv1.ConditionReasonHandover)
++		hv := reconcile(t, c, tc)
++
++		cond := meta.FindStatusCondition(hv.Status.Conditions, kvmv1.ConditionTypeTraitsUpdated)
++		if cond == nil {
++			t.Fatalf("no %s condition", kvmv1.ConditionTypeTraitsUpdated)
++		}
++		if cond.Status != metav1.ConditionTrue || cond.Reason != kvmv1.ConditionReasonSucceeded ||
++			cond.Message != "Custom traits are in sync" {
++			t.Errorf("%s = %s/%s %q, want True/%s %q", cond.Type, cond.Status, cond.Reason, cond.Message,
++				kvmv1.ConditionReasonSucceeded, "Custom traits are in sync")
++		}
++		if !slices.Equal(hv.Status.Traits, otherTraits) {
++			t.Errorf("status.traits = %v, want %v unchanged", hv.Status.Traits, otherTraits)
++		}
++	})
++
++	t.Run("a repeat writes nothing", func(t *testing.T) {
++		c, tc := setup(t, kvmv1.ConditionReasonHandover)
++		first := reconcile(t, c, tc)
++		second := reconcile(t, c, tc)
++		if second.ResourceVersion != first.ResourceVersion {
++			t.Errorf("resourceVersion moved from %s to %s on a repeat", first.ResourceVersion, second.ResourceVersion)
++		}
++	})
++
++	t.Run("Testing sets no condition", func(t *testing.T) {
++		c, tc := setup(t, kvmv1.ConditionReasonTesting)
++		hv := reconcile(t, c, tc)
++		if cond := meta.FindStatusCondition(hv.Status.Conditions, kvmv1.ConditionTypeTraitsUpdated); cond != nil {
++			t.Errorf("%s set during Testing: %s/%s", cond.Type, cond.Status, cond.Reason)
++		}
++	})
++}
