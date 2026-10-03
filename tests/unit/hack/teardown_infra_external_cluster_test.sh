@@ -21,7 +21,8 @@
 #      CRDs of a mixed list, names no namespace outside the stack's, and
 #      reads, logs and deletes the cluster-scoped objects whose
 #      helm.toolkit.fluxcd.io/namespace label names a stack namespace after
-#      the stack namespaces are gone and before the CRDs.
+#      the stack namespaces are gone and before the CRDs, and reads them again
+#      in the final count.
 #   3. It exits 1 before any delete when the API server does not answer, yq
 #      is missing or yq is not mikefarah/yq v4.40.1 or newer, exits 1 when a
 #      wait runs out (naming the object, the OVNCentral delete included, after
@@ -31,11 +32,12 @@
 #      object or kubectl's error, before any operator is removed), when the
 #      CRD scope cannot be read (before any operator is removed), when the
 #      proving OpenBao instance cannot be switched to DeletePVCs, when a stack
-#      CRD or namespace is left, when the read of those chart objects fails
-#      or their delete runs out (before any CRD is deleted), and when the
-#      base render, the CRD list of step 8 or the final namespace read fails,
-#      and exits 0 on a second run that finds nothing, without printing
-#      kubectl's "No resources found".
+#      CRD, namespace or chart object is left (naming the chart object), when
+#      the read of those chart objects fails or their delete runs out (before
+#      any CRD is deleted), and when the base render, the CRD list of step 8,
+#      the final namespace read or the final chart-object read fails, and
+#      exits 0 on a second run that finds nothing, without printing kubectl's
+#      "No resources found".
 #   4. Step 0 removes the lab hypervisors before the ControlPlane: the
 #      NovaComputes, metadata agents and OVNChassis, the kvm.cloud.sap
 #      objects, the fixtures after disabling their domain and waiting for
@@ -129,6 +131,12 @@ ippools.crd.projectcalico.org"
 #   KUBECTL_CHART_OBJECTS_RC
 #                          non-empty: every read of the cluster-scoped chart
 #                          objects fails with Forbidden
+#   KUBECTL_CHART_OBJECTS_FINAL_RC
+#                          non-empty: that read fails the same way once the
+#                          CRDs are deleted, that is, in the final count
+#   KUBECTL_CHART_OBJECT_LEFT
+#                          a chart object that read still answers after the
+#                          chart objects are deleted
 #   KUBECTL_CHART_OBJECT_DELETE_RC
 #                          exit code of the delete of those objects alone
 #                          (default 0)
@@ -405,13 +413,16 @@ case "$args" in
     if [ -n "${KUBECTL_NS_LEFT:-}" ]; then echo "namespace/${KUBECTL_NS_LEFT}"; fi
     ;;
   "get clusterrole,clusterrolebinding,mutatingwebhookconfiguration,validatingwebhookconfiguration -l "*)
-    if [ -n "${KUBECTL_CHART_OBJECTS_RC:-}" ]; then
+    if [ -n "${KUBECTL_CHART_OBJECTS_RC:-}" ] ||
+      { [ -n "${KUBECTL_CHART_OBJECTS_FINAL_RC:-}" ] && grep -q 'delete customresourcedefinition' "$CALL_LOG"; }; then
       echo 'Error from server (Forbidden): clusterroles.rbac.authorization.k8s.io is forbidden: User "lab" cannot list resource "clusterroles" in API group "rbac.authorization.k8s.io" at the cluster scope' >&2
       exit 1
     fi
     if [ -z "${KUBECTL_SECOND_RUN:-}" ] &&
       ! grep -qF 'kubectl delete clusterrole.rbac.authorization.k8s.io/' "$CALL_LOG"; then
       cat "$dir/chart-objects.txt"
+    elif [ -n "${KUBECTL_CHART_OBJECT_LEFT:-}" ]; then
+      echo "${KUBECTL_CHART_OBJECT_LEFT}"
     else
       [[ "$args" == *--ignore-not-found* ]] || echo 'No resources found' >&2
     fi
@@ -575,8 +586,8 @@ test_external_teardown_order() {
   echo "Test: the external teardown removes the stack in finalizer order"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (23 checks skipped)"
-    SKIP=$((SKIP + 23))
+    echo "  SKIP: yq not installed (24 checks skipped)"
+    SKIP=$((SKIP + 24))
     return
   fi
 
@@ -596,7 +607,7 @@ test_external_teardown_order() {
     "$(cat "$CALL_LOG")" "docker "
   assert_contains "the context is logged" "$output" "Kubeconfig context  : lab-forge"
   assert_contains "the final report counts nothing left" "$output" \
-    "Stack CRDs left: 0; stack namespaces left: 0"
+    "Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0"
 
   local expected
   expected="$(printf '%s\n' \
@@ -679,6 +690,8 @@ test_external_teardown_order() {
   assert_eq "the chart objects are read after the stack namespaces are deleted" "true" \
     "$([[ -n "$namespaces_line" && -n "$chart_read_line" && "$chart_read_line" -gt "$namespaces_line" ]] && echo true || echo false)"
   assert_eq "each of the three chart objects is logged" "3" "$(grep -c 'Chart leftover: ' <<<"$output")"
+  assert_eq "the chart objects are read twice: before their delete and in the final count" "2" \
+    "$(grep -cxF "$chart_read" "$CALL_LOG")"
 
   local deletes without_flag
   deletes="$(grep -E '^kubectl delete ' "$CALL_LOG")"
@@ -737,8 +750,8 @@ test_external_teardown_failures() {
   echo "Test: the external teardown aborts on an unreachable cluster, a timeout or leftovers"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (59 checks skipped)"
-    SKIP=$((SKIP + 59))
+    echo "  SKIP: yq not installed (66 checks skipped)"
+    SKIP=$((SKIP + 66))
     return
   fi
 
@@ -824,6 +837,16 @@ test_external_teardown_failures() {
   assert_contains "and says objects were left" "$output" "the teardown left stack objects behind"
 
   : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true \
+    KUBECTL_CHART_OBJECT_LEFT=clusterrole.rbac.authorization.k8s.io/new-hook)"
+  rc=$?
+  assert_eq "a chart object left behind exits 1" "1" "$rc"
+  assert_contains "the report counts it" "$output" \
+    "Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 1"
+  assert_contains "and names it" "$output" "Still present: clusterrole.rbac.authorization.k8s.io/new-hook"
+  assert_contains "and says objects were left" "$output" "the teardown left stack objects behind"
+
+  : >"$CALL_LOG"
   output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CRD_RC=1)"
   rc=$?
   assert_eq "a CRD list that cannot be read exits 1" "1" "$rc"
@@ -844,6 +867,16 @@ test_external_teardown_failures() {
   assert_eq "a final namespace read that fails exits 1" "1" "$rc"
   assert_contains "says the namespaces cannot be read" "$output" "cannot read the stack namespaces"
 
+  # The final read of the chart objects fails: an unreadable cluster is not one
+  # without leftovers, so no report is printed.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CHART_OBJECTS_FINAL_RC=1)"
+  rc=$?
+  assert_eq "a final chart-object read that fails exits 1" "1" "$rc"
+  assert_contains "says the chart objects cannot be read" "$output" \
+    "cannot read the cluster-scoped objects of the stack's charts"
+  assert_not_contains "and prints no report" "$output" "Stack CRDs left"
+
   : >"$CALL_LOG"
   yq 'select(.kind != "Gateway" and .kind != "GatewayClass")' "$tmp/bin/base-render.yaml" \
     >"$tmp/no-gateway.yaml"
@@ -855,7 +888,8 @@ test_external_teardown_failures() {
   output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_SECOND_RUN=1)"
   rc=$?
   assert_eq "a second run that finds nothing exits 0" "0" "$rc"
-  assert_contains "and reports nothing left" "$output" "Stack CRDs left: 0; stack namespaces left: 0"
+  assert_contains "and reports nothing left" "$output" \
+    "Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0"
   assert_not_contains "and deletes no ControlPlane without the c5c3 CRD" \
     "$(cat "$CALL_LOG")" "delete controlplane"
   assert_not_contains "and deletes no OVNCentral without the ovn CRD" \
