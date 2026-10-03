@@ -731,6 +731,15 @@ namespaces every resource into it, so no `spec.targetNamespace` is set.
 The short, stable name `k-orc` (not the upstream `openstack-resource-controller`) keeps
 diagnostics and cross-references terse.
 
+The c5c3-operator patches one pod-template annotation per ControlPlane,
+`c5c3.io/korc-catalog-epoch-<hash>`, onto `Deployment orc-controller-manager` under
+the field manager `cobaltcore-operator` whenever the service catalog registered
+through that ControlPlane settles on a new value. Each change rolls the K-ORC pod,
+and the new process logs in against the current catalog
+([`reconcileKORCCatalogRefresh`](../c5c3/controlplane-reconciler.md#reconcilekorccatalogrefresh)).
+The `k-orc` Kustomization sets no such annotation, and kustomize-controller reverts
+only the fields a `kubectl` manager owns, so it leaves the key alone.
+
 The upstream installer has no global-cloud-config knob (the previous HelmRelease set
 `globalCloudConfig.secretName`). That is not on the credential critical path: K-ORC
 authenticates **per resource** via each CR's `CloudCredentialsRef`, resolved in the
