@@ -2533,9 +2533,9 @@ never completes and has to be deleted by hand; the Job keeps each run bounded.
 The values a lab-ready node shows come from the 2026-09-29 survey in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138). The header comment of
 `deploy/lab/metal-stack/probe/node-probe.yaml` lists them in the probe's own
-output format, from a run on the survey's node the same day. The survey's NIC
-lines show the pod's own `eth0`; the probe reads the host's sysfs and lists the
-host's interfaces instead.
+output format, from a run on the survey's node on 2026-10-03 that includes the
+NFS lines. The survey's NIC lines show the pod's own `eth0`; the probe reads
+the host's sysfs and lists the host's interfaces instead.
 
 **File:** `deploy/lab/metal-stack/probe/nfs-module-load.yaml`
 
@@ -2575,6 +2575,17 @@ kubectl wait --for=condition=complete job/nfs-module-load -n default --timeout=5
 kubectl logs -n default job/nfs-module-load
 kubectl delete job -n default nfs-module-load
 ```
+
+On the lab, the probe found the five NFS module files on both workers on
+2026-10-03, and the load test on `shoot--df33f0b4c1--forge-group-0-666b6-qmhrg`
+loaded all three modules, registered `nfs4` and `nfsd`, and removed the eleven
+modules the load added. That settled the two open decisions of #1193: the NFS
+server is the kernel's `nfsd` in a privileged pod, as on kind (D1), and a
+privileged init container loads the modules from the node's `/lib/modules`
+(D2). The
+[comment on #1193](https://github.com/c5c3/cobaltcore/issues/1193#issuecomment-5969676743)
+holds the output of both runs; the header comment of `nfs-module-load.yaml`
+carries the load test's.
 
 ### Lab overlay
 

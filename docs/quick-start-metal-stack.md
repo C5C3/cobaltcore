@@ -28,6 +28,7 @@ The lab assumes a cluster of this shape:
 | A Gardener shoot on metal-stack with two Ready workers that carry the same `topology.kubernetes.io/zone` label | `kubectl get nodes -L topology.kubernetes.io/zone` |
 | `/dev/kvm` on both workers and the same CPU model; `deploy/lab/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe, `== kvm device` and `== cpu` |
 | The module files `vhost_net`, `openvswitch` and `geneve` for the running kernel | probe, `== module files for <kernel>` |
+| For the NFS stack of block storage ([#1193](https://github.com/c5c3/cobaltcore/issues/1193)), which the lab does not deploy yet: the module files `nfsd`, `nfs` and `nfsv4` for the running kernel | probe, `== module files for <kernel>` |
 | cgroup v2 | probe, `== cgroup` |
 | `/var/lib` on a volume with room for the instance disks (192 GiB on the surveyed node) | probe, `== disks` |
 | No `libvirtd`, `qemu-system-x86_64` or `ovs-vswitchd` on the host | probe, `== host os / binaries` |
@@ -90,7 +91,7 @@ done
 Compare each node's output with the [Prerequisites](#prerequisites) table and
 with the expected output in the header of
 `deploy/lab/metal-stack/probe/node-probe.yaml`, which a lab-ready node printed
-on 2026-09-29. The probe completes whatever it finds, so a missing piece shows
+on 2026-10-03. The probe completes whatever it finds, so a missing piece shows
 up as `absent`, `none` or `NOT FOUND` in the output and not as a failed Job.
 
 ### Step 3: Deploy the stack {#cp-deploy}

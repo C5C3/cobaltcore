@@ -52,6 +52,39 @@
 #   kubectl wait --for=condition=complete job/nfs-module-load -n default --timeout=5m
 #   kubectl logs -n default job/nfs-module-load
 #   kubectl delete job -n default nfs-module-load
+#
+# EXPECTED OUTPUT of the 2026-10-03 run on
+# shoot--df33f0b4c1--forge-group-0-666b6-qmhrg, the node whose probe output
+# node-probe.yaml carries:
+#   == load
+#   nfsd: loaded
+#   nfs: loaded
+#   nfsv4: loaded
+#   == filesystems
+#   nfs4: registered
+#   nfsd: registered
+#   == modules the load added
+#   auth_rpcgss
+#   dns_resolver
+#   fscache
+#   grace
+#   lockd
+#   netfs
+#   nfs
+#   nfs_acl
+#   nfsd
+#   nfsv4
+#   sunrpc
+#   == unload
+#   module list as before
+#
+# Reading it: a pod loads the kernel's NFS server and client, the kernel then
+# registers nfs4 and nfsd, and the eleven modules the load added are removed
+# again. The nfs module registers nfs4, not nfsv4, so it is the `nfsv4:` line,
+# not `nfs4: registered`, that shows the NFSv4 client code loads. This decided
+# D1 of #1193 for the kernel nfsd in a privileged pod, as on kind, and D2 for
+# a privileged init container that loads the modules from the node's
+# /lib/modules, as this Job does.
 ---
 apiVersion: batch/v1
 kind: Job
