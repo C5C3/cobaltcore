@@ -412,10 +412,11 @@ arriving on the node's own interfaces. Two host paths are mounted, both
 
 With `spec.novaMetadata.caBundleSecretRef` set, the agent container mounts the
 named Secret read-only at `/etc/nova-metadata-ca`, mode `0444`, projecting the
-configured key as `ca.crt`; the init container makes no https request and gets
-no mount. The path lies outside the read-only `/etc/neutron` config mount.
-Neutron opens the file on every proxied request and the volume has no
-`subPath`, so a rotated bundle reaches the running pods without a rollout.
+configured key as `ca.crt`. The init container sends no request to the Nova
+metadata API and does not get this mount. The path lies outside the read-only
+`/etc/neutron` config mount. Neutron opens the file on every proxied request
+and the volume has no `subPath`, so a rotated bundle reaches the running pods
+without a rollout.
 
 The agent container runs privileged and pinned to uid 0, with
 `runAsNonRoot: false`. It creates network namespaces, moves interfaces into them
@@ -429,21 +430,46 @@ because it would be applied to the host directories the pod mounts, where the
 ownership is the node's business. The `wait-for-chassis` init container runs
 under the Restricted profile.
 
-That init container is the same-node gate. It polls the local database until the
-chassis has registered itself:
+That init container is the same-node gate. The agent reads
+`external_ids:system-id` from the local Open vSwitch database once, at start,
+and takes it as its chassis name. It then writes its registration into the
+`Chassis_Private` row of that name in the Southbound database and retries for
+as long as the row is missing, with its proxy socket open and the pod `Ready`.
+The chassis's `host-prepare` init container creates `/run/openvswitch/conf.db`
+only when the file is missing, so on a node whose database outlived an earlier
+OVNChassis the `system-id` is that chassis's old id until the new chassis's
+`apply-node` init container writes the new one. An agent started in between
+never registers, and the servers on its node get no metadata.
 
-```text
-until ovsdb-client --timeout=5 transact unix:/run/openvswitch/db.sock \
-  '["Open_vSwitch",{"op":"select","table":"Open_vSwitch","where":[],"columns":["external_ids"]}]' \
-  2>/dev/null | grep -q system-id; do sleep 2; done
-```
+The gate waits for the registration the agent depends on. Every 2 seconds it
+reads the local `system-id` again and decides:
 
-`external_ids:system-id` is what the chassis's own `apply-node` init container
-writes, and until that row exists the agent has no chassis to read port bindings
-for. Both workloads select the same nodes and nothing orders the two DaemonSets,
-so the gate is per node rather than per cluster. The query goes through
-`ovsdb-client` because the neutron image ships the OVS Python client without the
-`ovs-vsctl` binary.
+| State | Log line | Outcome |
+| --- | --- | --- |
+| No UUID-shaped `system-id` in the local database (socket missing, query failed, key absent, value not a UUID) | `waiting for the chassis to write its system-id into the local Open vSwitch database` | wait |
+| A `system-id` without a `Chassis_Private` row of that name (the id is stale, ovn-controller has not registered it yet, or the Southbound query failed) | `waiting for chassis <id> to register in the Southbound database` | wait |
+| A `system-id` and its `Chassis_Private` row | `chassis <id> is registered in the Southbound database` | exit 0 |
+
+On a reused database the gate waits in the second state on the old id and
+passes on the new one. It prints a message only when the message changes, so a
+pod held in `Init:0/1` logs the id it waits for without a line every 2 seconds.
+While a pod is held there, the DaemonSet step reports `DaemonSetReady=False`
+with reason `DaemonSetProgressing`. A Southbound fault that persists (a wrong
+address, an unreadable key, a rejected certificate) logs the same second line,
+because the gate discards the errors of its queries.
+
+The init container carries `OVN_SB_CONNECTION`, the Southbound address the
+agent's `[ovn] ovn_sb_connection` gets, and mounts the `ovn-tls` client Secret
+read-only at `/etc/ovn/tls` beside `/run/openvswitch`. It queries the
+Southbound database with `--no-leader-only`, as the agent's own connection
+does, so a leader election does not hold it. An empty `OVN_SB_CONNECTION` is a
+rendering fault no wait repairs: the gate prints `OVN_SB_CONNECTION is not set`
+on stderr and exits 1.
+
+Both workloads select the same nodes and nothing orders the two DaemonSets, so
+the gate is per node rather than per cluster. The queries go through
+`ovsdb-client` because the neutron image ships the OVS Python client without
+the `ovs-vsctl` binary.
 
 Readiness is the metadata proxy socket, tested with
 `test -S /var/lib/neutron/metadata_proxy` after a 5 s initial delay, every 5 s,

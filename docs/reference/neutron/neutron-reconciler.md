@@ -847,11 +847,12 @@ chassis selects, mirror `desiredNumberScheduled` and `numberReady` into status,
 and stamp `status.installedImage`. The pod runs with `hostNetwork: true` and
 mounts `/run/openvswitch` and `/run/netns` from the host, the second with
 bidirectional mount propagation so the namespaces the agent creates are visible
-to the node. The `wait-for-chassis` init container polls the local Open vSwitch
-database until `external_ids:system-id` exists, which is what the chassis's own
-`apply-node` init container writes: both workloads select the same nodes and
-nothing orders the two DaemonSets, so the gate is per node. Readiness is the
-metadata proxy socket, tested with `test -S /var/lib/neutron/metadata_proxy`.
+to the node. The `wait-for-chassis` init container reads
+`external_ids:system-id` from the local Open vSwitch database and waits until
+the Southbound database holds a `Chassis_Private` row of that name, the row the
+agent registers in: both workloads select the same nodes and nothing orders the
+two DaemonSets, so the gate is per node. Readiness is the metadata proxy
+socket, tested with `test -S /var/lib/neutron/metadata_proxy`.
 While `spec.novaMetadata.caBundleSecretRef` is set, the `nova-metadata-ca`
 Secret volume projects the configured key as `ca.crt`, mode `0444`, read-only at
 `/etc/nova-metadata-ca` on the agent container alone. Neutron reads the file on
