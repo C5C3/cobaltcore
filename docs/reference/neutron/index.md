@@ -85,8 +85,10 @@ this operator implements.
   compute nodes, projected by this operator rather than by the ovn-operator,
   because this operator is the one that renders
   `neutron_ovn_metadata_agent.ini`. It carries a same-node startup gate on
-  chassis readiness, expressed as an init container that waits on the local
-  ovsdb socket.
+  chassis readiness, expressed as an init container that reads the node's
+  `system-id` from the local ovsdb socket and waits until the Southbound
+  database holds the `Chassis_Private` row of that name. See
+  [Node contract](neutron-metadata-agent-crd.md#node-contract).
 - D10 (neutron-server launch mode): one launch mode for the API on both
   releases. `neutron/wsgi/api.py` is byte-identical at 27.0.3 and 28.0.1 and
   neither release ships a `neutron-server` binary, so the API is
