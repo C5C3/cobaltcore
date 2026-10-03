@@ -74,6 +74,34 @@ patches:
               requests:
                 cpu: 100m
 
+  # cert-manager: run the chart's startup API check, which the production
+  # release turns off. Its post-install Job runs `cmctl check api` until the
+  # webhook admits a request, helm-controller waits for that hook, and the
+  # release turns Ready only then. Every release that depends on cert-manager
+  # creates an Issuer or a Certificate. Without the check the release was
+  # Ready while the webhook still answered `x509: certificate signed by
+  # unknown authority`, because cainjector had not written the CA into the
+  # webhook configurations yet, and a dependent release used up its install
+  # retries and stayed Stalled. hack/deploy-infra.sh then ran into its release
+  # wait: on the metal-stack lab the gap was 58 and 78 seconds on two deploys,
+  # and ovn-operator and garage-operator each stalled once (#1189).
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: cert-manager
+      namespace: cert-manager
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: cert-manager
+        namespace: cert-manager
+      spec:
+        values:
+          startupapicheck:
+            enabled: true
+
   # Memcached operator: disable webhooks in kind to avoid cert-manager
   # webhook TLS provisioning issues (liveness probe kills the container
   # after ~2.5min when the webhook server cannot bind its TLS port).
