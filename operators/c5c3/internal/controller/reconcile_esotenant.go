@@ -632,7 +632,7 @@ func (r *ControlPlaneReconciler) registrationCountsByNamespace(
 ) (map[string]int, error) {
 	var registrations c5c3v1alpha1.KeystoneServiceList
 	if err := r.List(ctx, &registrations, client.MatchingFields{
-		KeystoneServiceControlPlaneRefIndexKey: cp.Namespace + "/" + cp.Name,
+		KeystoneServiceControlPlaneRefIndexKey: keystoneServiceControlPlaneRefIndexValue(cp.Namespace, cp.Name),
 	}); err != nil {
 		return nil, fmt.Errorf("listing KeystoneServices for registration tenant stores: %w", err)
 	}
