@@ -138,6 +138,12 @@ nova-compute:
     - lsscsi
     # /lib/udev/scsi_id (os_brick/initiator/linuxscsi.py, get_scsi_wwn).
     - udev
+    # mount.nfs, the helper mount(8) runs for `mount -t nfs`. nova mounts a
+    # Cinder NFS export itself, below [libvirt] nfs_mount_point_base
+    # ($state_path/mnt): nova/virt/libvirt/volume/nfs.py,
+    # nova/virt/libvirt/volume/mount.py and mount() in nova/privsep/fs.py.
+    # os-brick takes no part in it. The postinst bakes no node identity.
+    - nfs-common
     # cryptsetup, run by the LUKS encryptors (os_brick/encryptors/luks.py)
     # when an encrypted volume attaches. The compute contract enables the
     # Barbican key manager whenever Barbican is enabled.
