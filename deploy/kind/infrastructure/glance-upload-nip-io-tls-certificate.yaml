@@ -40,5 +40,8 @@ spec:
   issuerRef:
     name: selfsigned-cluster-issuer
     kind: ClusterIssuer
+  # The subject. Without it the Gateway certificates share an empty one, and
+  # OpenSSL trusts only the first certificate of a CA file that holds several.
+  commonName: glance-upload.127-0-0-1.nip.io
   dnsNames:
     - glance-upload.127-0-0-1.nip.io

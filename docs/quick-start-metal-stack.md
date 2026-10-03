@@ -143,6 +143,7 @@ Once it is `Ready`, onboard the OpenBao database-engine tenant that issues the
 services' database credentials:
 
 ```bash
+kubectl wait --for=create mariadb/openstack-db -n openstack --timeout=10m
 kubectl wait mariadb/openstack-db -n openstack --for=condition=Ready --timeout=10m
 export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
@@ -150,10 +151,11 @@ deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
 unset BAO_TOKEN
 ```
 
-The wait exits 1 with `Error from server (NotFound)` until the c5c3-operator
-has created the MariaDB; run it again. Step 5 of the
-[Quick Start (ControlPlane)](./quick-start-controlplane.md) explains what the
-script sets up.
+The first wait gives the c5c3-operator time to create the MariaDB: without it
+the Ready wait fails at once with `Error from server (NotFound)` while the
+MariaDB is missing.
+Step 5 of the [Quick Start (ControlPlane)](./quick-start-controlplane.md)
+explains what the script sets up.
 
 ### Step 6: Wait for the chain and open the port-forward {#cp-access}
 
@@ -179,7 +181,8 @@ after the Envoy pod restarted, start it again.
 
 The Gateway serves one self-signed certificate per hostname, each in a Secret
 `<service>-nip-io-tls` in `openstack` whose `ca.crt` is the certificate
-itself. Collect them into one CA file for the OpenStack CLI:
+itself. Each names its hostname as its subject, which lets one CA file hold
+all of them. Collect them into that file for the OpenStack CLI:
 
 ```bash
 kubectl get secret -n openstack --field-selector type=kubernetes.io/tls -o json |
@@ -252,12 +255,20 @@ prints one line per ordered pair of nodes and exits 0 when all 65 ports are
 open in both directions:
 
 ```bash
+kubectl apply -k deploy/lab/metal-stack/migration-ports
+kubectl rollout status daemonset/migration-port-reservation -n hypervisor-system --timeout=5m
 hack/lab-node-ports.sh
 ```
 
-The migration ports lie in Linux's ephemeral port range, so an outgoing
-connection on a node can hold one of them, and the check reports that port as
-`listener bind failed`. Run the check again when that happens.
+The migration ports lie in Linux's ephemeral port range, where an outgoing
+connection on a node can get one of them as its local port. The first two
+commands reserve them on every node, so the kernel hands out none of them from
+then on. A connection that took one before keeps it: the listener tries such a
+port again every second for 10 seconds, and a port still taken then is
+reported as `listener bind failed` and fails the check, because nothing could
+listen on it. The reservation's log names the process that holds the port, and
+[Migration port reservation](./reference/infrastructure/infrastructure-manifests.md#migration-port-reservation)
+says how to free it.
 
 Then label the nodes, annotate their custom trait and create the trait in
 Placement:
@@ -297,6 +308,8 @@ openstack-hypervisor-operator and kvm-node-agent:
 
 ```bash
 kubectl apply -k deploy/lab/metal-stack/hypervisor
+kubectl wait helmrelease/openstack-hypervisor-operator -n openstack --for=condition=Ready --timeout=10m
+kubectl wait crd/hypervisors.kvm.cloud.sap --for=condition=Established --timeout=2m
 for node in "${nodes[@]}"; do
   kubectl wait --for=create "hypervisor/${node}" --timeout=10m
   kubectl patch hypervisor "${node}" --type merge -p '{"spec":{"highAvailability":false}}'
@@ -307,10 +320,11 @@ kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=
 
 The hypervisor operator creates a `Hypervisor` per node with
 `spec.highAvailability: true`, and onboarding then waits for an HA service the
-lab does not run, so the loop sets the field to `false`. The wait in the loop
-fails at once with `the server doesn't have a resource type` while the
-operator's chart still installs its CRD; run the loop again. A libvirt pod
-turns `Ready` once kvm-node-agent has written its node's TLS files.
+lab does not run, so the loop sets the field to `false`. The two waits in
+front of the loop give the operator's chart time to install: without them the
+wait in the loop fails at once with `the server doesn't have a resource type`
+while the `Hypervisor` CRD is missing. A libvirt pod turns `Ready` once
+kvm-node-agent has written its node's TLS files.
 
 ### Step 4: Wait for onboarding {#hv-onboarding}
 
@@ -462,21 +476,19 @@ worker first. With one worker left, no node can receive them.
 
 ## Proven by
 
-Every `bash` block of this page but the `git clone` and the CA file of Part 1,
-Step 7 ran in page order on
-2026-10-02, from commit `715eafd3`, on shoot `forge` with two workers and
-Kubernetes v1.35.6, from a bare cluster to a bare cluster. Part 1, Steps 3 and
-4 ran again from a bare cluster on 2026-10-03, from commit `290752e0`, with the
-wait at the end of Step 3: the deploy exited 0 and the apply of Step 4 exited 0
-on its first attempt. Of the other blocks, that of Part 2, Step 3 took two
-attempts, after the error its step names; the rest exited 0 on their first.
-The console commands of Part 2, Step 6 were typed by a script. The teardown of
-the 2026-10-02 run waited five minutes for the stack's objects in `openstack`
-([#1186](https://github.com/c5c3/cobaltcore/issues/1186)) and then finished.
-That run passed `--insecure` to every `openstack` command. The CA file of
-Part 1, Step 7 replaced the flag afterwards and has not run on the lab: the
-OpenStack CLI 8.2.0 verified a certificate of the Gateway's shape (self-signed,
-`CA:FALSE`, empty subject) against such a file on a workstation.
+Every `bash` block of this page but the `git clone` ran in page order on
+2026-10-03, from commit `e6a34f1b`, on shoot `forge` with two workers and
+Kubernetes v1.35.6, from a bare cluster to a bare cluster, and each block
+exited 0 on its first attempt. The port-forward of Part 1, Step 6 ran in a
+second terminal until the teardown had finished and was then stopped. The
+console commands of Part 2, Step 6 were typed by a script. The teardown waited
+93 seconds for the stack's objects in `openstack` to be finalized and then
+finished. Two things were done on the workers before the run. `calico-node` on
+`shoot--df33f0b4c1--forge-group-0-666b6-qmhrg` was restarted, because it held
+port 49152 from before the reservation of Part 2, Step 1. The Open vSwitch
+database an earlier lab stack had left on both workers was removed, because
+the metadata agents otherwise read its old chassis name and the servers get no
+metadata ([#1205](https://github.com/c5c3/cobaltcore/issues/1205)).
 No chainsaw suite runs against the lab, because CI has no metal-stack cluster.
 The findings of the lab runs so far, upstream and in this repository, are
 listed under

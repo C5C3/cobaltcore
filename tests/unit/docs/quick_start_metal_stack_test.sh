@@ -23,6 +23,11 @@
 #   8. Proven by names the date of a lab run and no chainsaw suite
 #   9. Part 1, Step 4 holds no instruction to repeat the apply: deploy-infra
 #      returns only once the cluster admits it
+#  10. the page holds no instruction to run a block again: the MariaDB wait of
+#      Part 1, Step 5 follows a create wait, the Hypervisor loop of Part 2,
+#      Step 3 follows the waits for the operator's release and its CRD, and
+#      the node port check of Part 2, Step 1 follows the reservation of the
+#      migration ports and its rollout
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -319,6 +324,52 @@ test_step_4_has_no_retry_instruction() {
   assert_not_contains "Step 4 holds no 'until it succeeds'" "$step" "until it succeeds"
 }
 
+# --- Test 10: every block passes on its first run ---
+test_blocks_pass_on_first_run() {
+  echo "Test: the page holds no instruction to run a block again, and the waits that replace them"
+  local retries line count
+  retries="$(tr '\n' ' ' <"$QUICK_START_DOC" | grep -oE '[Rr]un (it|the [a-z-]+) again' || true)"
+  assert_eq "the page holds no 'run it again' or 'run the <block> again'" "" "$retries"
+
+  count="$(grep -cF -- 'kubectl wait --for=create mariadb/openstack-db -n openstack' "$QUICK_START_DOC" || true)"
+  assert_eq "the MariaDB create wait occurs on one line" "1" "$count"
+  line="$(grep -nF -- 'kubectl wait --for=create mariadb/openstack-db -n openstack' "$QUICK_START_DOC" | head -n 1 | cut -d: -f1)"
+  assert_contains "the MariaDB Ready wait follows it on the next line" \
+    "$(if [[ -n "$line" ]]; then sed -n "$((line + 1))p" "$QUICK_START_DOC"; fi)" \
+    'kubectl wait mariadb/openstack-db -n openstack --for=condition=Ready'
+
+  local wait previous=0 ordered=1
+  for wait in \
+    'kubectl wait helmrelease/openstack-hypervisor-operator -n openstack --for=condition=Ready' \
+    'kubectl wait crd/hypervisors.kvm.cloud.sap --for=condition=Established' \
+    'kubectl wait --for=create "hypervisor/${node}"'; do
+    count="$(grep -cF -- "$wait" "$QUICK_START_DOC" || true)"
+    assert_eq "'$wait' occurs on one line" "1" "$count"
+    line="$(grep -nF -- "$wait" "$QUICK_START_DOC" | head -n 1 | cut -d: -f1)"
+    if [[ -z "$line" ]] || ((line <= previous)); then
+      ordered=0
+    else
+      previous="$line"
+    fi
+  done
+  if [[ "$ordered" -eq 1 ]]; then
+    echo "  PASS: the release wait, the CRD wait and the Hypervisor wait are in this order"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: the release wait, the CRD wait and the Hypervisor wait are missing or out of order"
+    FAIL=$((FAIL + 1))
+  fi
+
+  count="$(grep -cF -- 'kubectl apply -k deploy/lab/metal-stack/migration-ports' "$QUICK_START_DOC" || true)"
+  assert_eq "the apply of the migration port reservation occurs on one line" "1" "$count"
+  line="$(grep -nF -- 'kubectl apply -k deploy/lab/metal-stack/migration-ports' "$QUICK_START_DOC" | head -n 1 | cut -d: -f1)"
+  assert_contains "the wait for its rollout follows it on the next line" \
+    "$(if [[ -n "$line" ]]; then sed -n "$((line + 1))p" "$QUICK_START_DOC"; fi)" \
+    'kubectl rollout status daemonset/migration-port-reservation -n hypervisor-system'
+  assert_eq "the node port check is the line after that" "hack/lab-node-ports.sh" \
+    "$(if [[ -n "$line" ]]; then sed -n "$((line + 2))p" "$QUICK_START_DOC"; fi)"
+}
+
 test_frontmatter
 test_sidebar
 test_sections
@@ -328,6 +379,7 @@ test_part_2_standalone
 test_one_runbook
 test_proven_by
 test_step_4_has_no_retry_instruction
+test_blocks_pass_on_first_run
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

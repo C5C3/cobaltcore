@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the CA file of the metal-stack quick start
+# (docs/quick-start-metal-stack.md, Part 1, Step 7): one file that holds the
+# certificate of every Gateway hostname verifies each of them (#1189).
+# Auto-discovered by the e2e-infra job, which runs `chainsaw test
+# tests/e2e/infrastructure/` after `make deploy-infra`.
+#
+# The Gateway Certificates are self-signed. Without a commonName they share an
+# empty subject, and OpenSSL, which finds a trust anchor by its subject, then
+# trusts only the first of them in a CA file: every other hostname fails to
+# verify, although each Certificate reports Ready. The suite collects the file
+# with the page's command and runs `openssl verify` for every hostname.
+# tests/unit/deploy/gateway_certificates_test.sh pins the manifests; this suite
+# proves what cert-manager issues from them.
+#
+# The suite is read-only: it applies no fixture and creates nothing.
+#
+# Scope gate (`metadata.labels.overlay: kind`): the Gateway Certificates come
+# from the kind overlay (deploy/kind/infrastructure/), which the metal-stack
+# lab takes as its base; the production stack ships none. Non-kind runs exclude
+# this suite with `chainsaw test --selector 'overlay!=kind'
+# tests/e2e/infrastructure/`, the same gate nova-deploy-stack carries.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-ca-file
+  labels:
+    # Overlay gate, see header.
+    overlay: kind
+spec:
+  # The script waits up to 5m per Certificate, matching the assert timeout of
+  # the sibling infrastructure suites, while the rest of the stack converges.
+  timeouts:
+    exec: 6m
+  steps:
+  - try:
+    - script:
+        content: |
+          set -eu
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          # Every Certificate whose Secret the page collects, one line each:
+          # <name> <secret> <hostname>.
+          kubectl get certificate -n openstack -o json |
+            jq -r '.items[] | select(.spec.secretName | endswith("-nip-io-tls")) |
+              .metadata.name + " " + .spec.secretName + " " + .spec.dnsNames[0]' >"$tmp/certificates"
+          count="$(grep -c . "$tmp/certificates" || true)"
+          if [ "$count" -eq 0 ]; then
+            echo "ERROR: no Certificate in openstack writes a Secret ending in -nip-io-tls"
+            exit 1
+          fi
+          while read -r name _ _; do
+            kubectl wait --for=condition=Ready "certificate/$name" -n openstack --timeout=5m
+          done <"$tmp/certificates"
+
+          # The command of Part 1, Step 7.
+          kubectl get secret -n openstack --field-selector type=kubernetes.io/tls -o json |
+            jq -r '.items[] | select(.metadata.name | endswith("-nip-io-tls")) | .data["ca.crt"] | @base64d' >"$tmp/gateway-ca.pem"
+          collected="$(grep -c 'BEGIN CERTIFICATE' "$tmp/gateway-ca.pem" || true)"
+          if [ "$collected" -ne "$count" ]; then
+            echo "ERROR: the CA file holds $collected certificates, one per Certificate would be $count"
+            exit 1
+          fi
+
+          while read -r _ secret host; do
+            kubectl get secret "$secret" -n openstack -o jsonpath='{.data.tls\.crt}' | base64 -d >"$tmp/$host.pem"
+            openssl verify -CAfile "$tmp/gateway-ca.pem" -verify_hostname "$host" "$tmp/$host.pem"
+          done <"$tmp/certificates"
+          echo "OK: one CA file verifies all $count Gateway hostnames"

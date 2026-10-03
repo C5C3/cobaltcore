@@ -14,18 +14,21 @@
 #      node aimed at the destination's first InternalIP (six for three nodes),
 #      prints one line per pair and exits 0 when every port is open.
 #   3. A closed port, an empty client log and a port the listener could not
-#      bind each exit 1 and name the port; one node, an unreadable node list, a
-#      node without an InternalIP, one whose first InternalIP is IPv6 (the
-#      address live migration dials) or not an address, and listeners that
-#      never become Ready exit 2; a dual-stack node listing IPv4 first is
-#      checked on that address.
+#      bind even after its retry each exit 1 and name the port, the last with a
+#      NOTE: line; a port the listener bound on a retry passes; one node, an
+#      unreadable node list, a node without an InternalIP, one whose first
+#      InternalIP is IPv6 (the address live migration dials) or not an
+#      address, an invalid timeout and listeners that never become Ready exit
+#      2; a dual-stack node listing IPv4 first is checked on that address.
 #   4. A listener that never reports `listening` exits 2; a client that never
 #      finishes is waited for the Pod timeout plus a connect timeout per port,
 #      and its ports have no result.
 #   5. An earlier run's Pods are deleted before any Pod is created, so their
 #      logs are never read; a failed delete or create exits 2.
 #   6. The rendered listener and client programs run locally (perl, timeout
-#      and bash /dev/tcp) and print what the result parser reads.
+#      and bash /dev/tcp) and print what the result parser reads; a port held
+#      past the retry is reported as unbound, and a port released during the
+#      retry is bound and found open.
 #   7. The last kubectl call is the label-selected Pod delete on every path.
 #
 # The script runs against a recording kubectl stub first on PATH and the real
@@ -169,7 +172,7 @@ run_check() {
   shift
   (
     unset NODE_PORTS_TCP NODE_PORTS_NAMESPACE NODE_PORTS_IMAGE NODE_PORTS_NODE_SELECTOR \
-      NODE_PORTS_CONNECT_TIMEOUT NODE_PORTS_POD_TIMEOUT LISTENER_LOG_FILE LISTENER_SILENT \
+      NODE_PORTS_CONNECT_TIMEOUT NODE_PORTS_BIND_TIMEOUT NODE_PORTS_POD_TIMEOUT LISTENER_LOG_FILE LISTENER_SILENT \
       KUBECTL_NODES_RC KUBECTL_DELETE_RC KUBECTL_CREATE_RC KUBECTL_WAIT_RC KUBECTL_POD_PHASE
     for assignment in "$@"; do
       export "${assignment?}"
@@ -292,7 +295,9 @@ test_two_nodes_all_open() {
   assert_eq "no Pod mounts a ServiceAccount token" "false" \
     "$(printf '%s\n%s\n' "$listeners" "$clients" | jq -r '.spec.automountServiceAccountToken' | sort -u)"
   assert_eq "the listener command names all 65 ports" "65" \
-    "$(jq -r '.spec.containers[0].command[4:] | length' <<<"$listeners" | sort -u)"
+    "$(jq -r '.spec.containers[0].command[5:] | length' <<<"$listeners" | sort -u)"
+  assert_eq "the listener command passes the default bind retry timeout in front of the ports" "10" \
+    "$(jq -r '.spec.containers[0].command[4]' <<<"$listeners" | sort -u)"
   assert_eq "the listener command runs perl" "perl" \
     "$(jq -r '.spec.containers[0].command[0]' <<<"$listeners" | sort -u)"
 
@@ -302,6 +307,11 @@ test_two_nodes_all_open() {
   assert_contains "the a -> b client connects to b's InternalIP" \
     "$(jq -r '.spec.containers[0].command[2]' <<<"$a_to_b")" "/dev/tcp/10.128.44.11/"
   assert_last_call_is_cleanup "all open" "$tmp"
+
+  rm -f "$tmp"/bin/manifest.*
+  run_check "$tmp" NODE_PORTS_BIND_TIMEOUT=3 >/dev/null
+  assert_eq "NODE_PORTS_BIND_TIMEOUT sets the listener's retry timeout" "3" \
+    "$(manifests "$tmp" listener | jq -r '.spec.containers[0].command[4]' | sort -u)"
 }
 
 # ---------------------------------------------------------------------------
@@ -340,6 +350,7 @@ test_failing_ports() {
   assert_eq "a closed port exits 1" "1" "$rc"
   assert_contains "the line names the closed port" "$out" \
     "worker-a (10.128.44.10) -> worker-b (10.128.44.11): 64/65 open, closed: 16514"
+  assert_not_contains "a closed port prints no NOTE: about an untested port" "$out" "NOTE:"
   assert_last_call_is_cleanup "closed port" "$tmp"
 
   : >"$tmp/calls.log"
@@ -356,6 +367,31 @@ test_failing_ports() {
   rc=$?
   assert_eq "a port the listener could not bind exits 1" "1" "$rc"
   assert_contains "it is reported as unbound, not closed" "$out" "64/65 open, listener bind failed: 49160"
+  assert_contains "a NOTE: says the port was not tested and names the retry timeout and the restart" "$out" \
+    "NOTE: a port reported as 'listener bind failed' was held by another socket on its node for 10s and was not tested; set NODE_PORTS_BIND_TIMEOUT to wait longer, or restart the process that holds the port (Node port check in docs/reference/infrastructure/infrastructure-manifests.md says how to find it)."
+}
+
+# ---------------------------------------------------------------------------
+# Test 4b: a port the listener bound on a retry passes
+# ---------------------------------------------------------------------------
+test_bind_retry() {
+  echo "Test: a port the listener bound on a retry is tested like any other"
+
+  local tmp out rc
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  setup "$tmp" open worker-a:10.128.44.10 worker-b:10.128.44.11
+
+  printf 'bind retry 49160\n' >"$tmp/listener.log"
+  out="$(run_check "$tmp" LISTENER_LOG_FILE="$tmp/listener.log")"
+  rc=$?
+  assert_eq "a port bound on a retry exits 0" "0" "$rc"
+  assert_contains "the a -> b line counts it open" "$out" \
+    "worker-a (10.128.44.10) -> worker-b (10.128.44.11): 65/65 open"
+  assert_contains "the b -> a line counts it open" "$out" \
+    "worker-b (10.128.44.11) -> worker-a (10.128.44.10): 65/65 open"
+  assert_not_contains "a 'bind retry' line is not read as a failed bind" "$out" "listener bind failed"
+  assert_not_contains "and prints no NOTE:" "$out" "NOTE:"
 }
 
 # ---------------------------------------------------------------------------
@@ -463,6 +499,17 @@ test_cluster_errors() {
   out="$(run_check "$tmp" NODE_PORTS_CONNECT_TIMEOUT=0)"
   rc=$?
   assert_eq "a zero connect timeout exits 2" "2" "$rc"
+
+  out="$(run_check "$tmp" NODE_PORTS_BIND_TIMEOUT=0)"
+  rc=$?
+  assert_eq "a zero bind retry timeout exits 2" "2" "$rc"
+  assert_contains "says it is not a number of seconds" "$out" \
+    "NODE_PORTS_BIND_TIMEOUT='0' is not a positive number of seconds"
+  out="$(run_check "$tmp" NODE_PORTS_BIND_TIMEOUT=abc)"
+  rc=$?
+  assert_eq "a non-numeric bind retry timeout exits 2" "2" "$rc"
+  assert_contains "says it is not a number of seconds" "$out" \
+    "NODE_PORTS_BIND_TIMEOUT='abc' is not a positive number of seconds"
 }
 
 # ---------------------------------------------------------------------------
@@ -471,16 +518,19 @@ test_cluster_errors() {
 test_timeouts() {
   echo "Test: a silent listener exits 2, a client that never finishes has no result"
 
-  local tmp out rc
+  local tmp out rc started
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
   setup "$tmp" open worker-a:10.128.44.10 worker-b:10.128.44.11
 
-  out="$(run_check "$tmp" LISTENER_SILENT=1 NODE_PORTS_POD_TIMEOUT=1)"
+  started=$SECONDS
+  out="$(run_check "$tmp" LISTENER_SILENT=1 NODE_PORTS_POD_TIMEOUT=1 NODE_PORTS_BIND_TIMEOUT=3)"
   rc=$?
   assert_eq "a listener that never reports 'listening' exits 2" "2" "$rc"
   assert_contains "names the listener" "$out" \
     "listener lab-node-ports-listen-worker-a never reported 'listening'"
+  assert_gte "the listener wait is the Pod timeout plus the bind retry timeout" \
+    "$((SECONDS - started))" 4
   assert_eq "no client is created" "" "$(manifests "$tmp" client)"
   assert_last_call_is_cleanup "silent listener" "$tmp"
 
@@ -564,12 +614,12 @@ test_programs_run() {
   echo "Test: the rendered listener and client run and print what the parser reads"
 
   if ! command -v perl >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then
-    echo "  SKIP: perl or timeout not installed (9 checks skipped)"
-    SKIP=$((SKIP + 9))
+    echo "  SKIP: perl or timeout not installed (13 checks skipped)"
+    SKIP=$((SKIP + 13))
     return
   fi
 
-  local tmp out rc p1 p2 holder="" listener="" arg lcmd=() ccmd=()
+  local tmp out rc p1 p2 p3 p4 holder="" listener="" arg lcmd=() ccmd=()
   tmp="$(mktemp -d)"
   trap 'kill ${holder:-} ${listener:-} 2>/dev/null; rm -rf "$tmp"' RETURN
 
@@ -585,8 +635,9 @@ test_programs_run() {
   holder=$!
   wait_for_line "$tmp/holder.log" held
 
+  # p2 stays held, and wait_for_line allows ten seconds for `listening`.
   setup "$tmp" open worker-a:127.0.0.1 worker-b:127.0.0.1
-  run_check "$tmp" NODE_PORTS_TCP="$p1 $p2" >/dev/null
+  run_check "$tmp" NODE_PORTS_TCP="$p1 $p2" NODE_PORTS_BIND_TIMEOUT=1 >/dev/null
   while IFS= read -r -d '' arg; do lcmd+=("$arg"); done < <(command_of "$tmp" listener)
   while IFS= read -r -d '' arg; do ccmd+=("$arg"); done < <(command_of "$tmp" client)
 
@@ -595,8 +646,9 @@ test_programs_run() {
   wait_for_line "$tmp/listener.log" listening
   assert_eq "the listener prints 'listening' once every bind was tried" "listening" \
     "$(grep -x listening "$tmp/listener.log")"
-  assert_eq "the listener names the port it could not bind" "bind failed $p2" \
-    "$(grep -x "bind failed $p2" "$tmp/listener.log")"
+  assert_eq "the listener names the port it could not bind after the retry, then listens" \
+    "bind failed $p2"$'\n'"listening" \
+    "$(grep -x -e "bind failed $p2" -e listening "$tmp/listener.log")"
   assert_eq "the listener binds the free port" "" "$(grep -x "bind failed $p1" "$tmp/listener.log")"
 
   "${ccmd[@]}" >"$tmp/client.log" 2>&1
@@ -619,6 +671,42 @@ test_programs_run() {
   assert_eq "the parser fails the run on the closed ports" "1" "$rc"
   assert_contains "and tells the closed port from the unbound one" "$out" \
     "0/2 open, closed: $p1, listener bind failed: $p2"
+
+  # Two more free ports; p4 is held while the listener starts and released
+  # during its retry, the way an outgoing connection ends.
+  read -r p3 p4 < <(perl -MIO::Socket::INET -e '
+    my @s = map { IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => 0, Listen => 1) or die "bind: $!" } 1 .. 2;
+    print join(" ", map { $_->sockport } @s), "\n"')
+  perl -MIO::Socket::INET -e '
+    my $s = IO::Socket::INET->new(LocalAddr => "0.0.0.0", LocalPort => $ARGV[0], Proto => "tcp", Listen => 1)
+      or die "hold: $!";
+    $| = 1; print "held\n"; sleep 60' "$p4" >"$tmp/holder-retry.log" 2>&1 &
+  holder=$!
+  wait_for_line "$tmp/holder-retry.log" held
+
+  rm -f "$tmp"/bin/manifest.*
+  run_check "$tmp" NODE_PORTS_TCP="$p3 $p4" NODE_PORTS_BIND_TIMEOUT=10 >/dev/null
+  lcmd=()
+  ccmd=()
+  while IFS= read -r -d '' arg; do lcmd+=("$arg"); done < <(command_of "$tmp" listener)
+  while IFS= read -r -d '' arg; do ccmd+=("$arg"); done < <(command_of "$tmp" client)
+
+  "${lcmd[@]}" >"$tmp/listener-retry.log" 2>&1 &
+  listener=$!
+  wait_for_line "$tmp/listener-retry.log" "bind retry $p4"
+  kill "$holder" 2>/dev/null
+  wait "$holder" 2>/dev/null
+  holder=""
+  wait_for_line "$tmp/listener-retry.log" listening
+  assert_eq "the listener retries a port another socket holds" "bind retry $p4" \
+    "$(grep -x "bind retry $p4" "$tmp/listener-retry.log" | head -n 1)"
+  assert_eq "the listener prints 'listening' once the retried port is bound" "listening" \
+    "$(grep -x listening "$tmp/listener-retry.log")"
+  assert_eq "the listener reports no failed bind" "" \
+    "$(grep '^bind failed' "$tmp/listener-retry.log")"
+  "${ccmd[@]}" >"$tmp/client-retry.log" 2>&1
+  assert_eq "the client finds the retried port open" "$p4 open" \
+    "$(grep -x "$p4 open" "$tmp/client-retry.log")"
 }
 
 # ---------------------------------------------------------------------------
@@ -635,6 +723,7 @@ test_defaults
 test_two_nodes_all_open
 test_three_nodes
 test_failing_ports
+test_bind_retry
 test_cluster_errors
 test_timeouts
 test_earlier_run
