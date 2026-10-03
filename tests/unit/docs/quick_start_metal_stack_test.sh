@@ -31,6 +31,9 @@
 #  11. no line of the page holds a hand step the operators took over: the
 #      highAvailability patch, the custom trait (its annotation and its
 #      create) and the host discovery, nor any other file under tests/
+#  12. the Prerequisites name no value only one shoot has: no class
+#      `premium`, no address of the 10.248. service network, and no row whose
+#      failure shows only later (`nothing checks it`, `already allocated`)
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -386,6 +389,20 @@ test_no_hand_steps() {
   done
 }
 
+# --- Test 12: the Prerequisites pin no value of one shoot ---
+# The lab overlay names no storage class and hvo reads the catalog's internal
+# endpoints, so the page asks for no class name and no service address, and
+# every row names a check that runs before the step that needs it.
+test_prerequisites_name_no_pinned_value() {
+  echo "Test: the Prerequisites name no value only one shoot has"
+  local body needle
+  body="$(section '^## Prerequisites$')"
+  assert_not_empty "the page holds the Prerequisites" "$body"
+  for needle in 'premium' '10.248.' 'nothing checks it' 'already allocated'; do
+    assert_not_contains "the Prerequisites do not contain '$needle'" "$body" "$needle"
+  done
+}
+
 test_frontmatter
 test_sidebar
 test_sections
@@ -397,6 +414,7 @@ test_proven_by
 test_step_4_has_no_retry_instruction
 test_blocks_pass_on_first_run
 test_no_hand_steps
+test_prerequisites_name_no_pinned_value
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

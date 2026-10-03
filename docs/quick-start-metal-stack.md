@@ -33,9 +33,7 @@ The lab assumes a cluster of this shape:
 | `/var/lib` on a volume with room for the instance disks (192 GiB on the surveyed node) | probe, `== disks` |
 | No `libvirtd`, `qemu-system-x86_64` or `ovs-vswitchd` on the host | probe, `== host os / binaries` |
 | A pod-network MTU of 1460 or more, the value of `global_physnet_mtu` | probe, `== nics`, the `cali*` lines |
-| A default StorageClass and no DaemonSet `kube-system/node-local-dns` | Step 1 of `EXTERNAL_CLUSTER=true make deploy-infra` exits 1 otherwise |
-| A StorageClass named `premium`, which `deploy/lab/metal-stack/base/kustomization.yaml` and `deploy/lab/metal-stack/infrastructure/kustomization.yaml` pin for OpenBao, MariaDB and Garage; nothing checks it | `kubectl get storageclass premium` |
-| The address `10.248.0.200` free in the service network (`10.248.0.0/18` on the surveyed shoot) | `kubectl apply -k deploy/lab/metal-stack/hypervisor` answers `provided IP is already allocated` otherwise |
+| A default StorageClass, which every volume of the stack binds to, and no DaemonSet `kube-system/node-local-dns` | Step 1 of `EXTERNAL_CLUSTER=true make deploy-infra` exits 1 otherwise |
 | Egress on TCP 443 to `ghcr.io`, the Helm repositories and the cirros download | the shoot's firewall |
 | TCP 16514 and 49152 to 49215 open between the workers | `hack/lab-node-ports.sh` |
 
