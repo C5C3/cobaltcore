@@ -1559,6 +1559,11 @@ metal-stack lab (see
   package's Ginkgo entry point, `TestControllers` in `suite_test.go`, so the
   run needs no envtest binary. The space after each test name in the grep
   keeps a subtest's PASS line from matching
+- Runs `TestServiceClientInterface`, the test of patch 0004, in a `go test` of
+  `./internal/openstack/`, and fails unless the log shows
+  `--- PASS: TestServiceClientInterface ` with the same trailing space. The
+  `-run` expression does not match that package's Ginkgo entry point,
+  `TestOpenstack` in `suite_test.go`, so the suite does not run
 - Builds `./cmd` with `CGO_ENABLED=0`, `GOTOOLCHAIN=local` and upstream's
   ldflags, with the version set to `sha-<commit>`, the tag the image is
   published under. `manager --version` therefore prints
@@ -1575,7 +1580,7 @@ publishes a chart for every `main` commit, version `1.2.3+sha-<short>` with
 `sha-<commit>`, so the chart of the pinned commit runs it with only the
 repository overridden.
 
-**Source patches:** three files under
+**Source patches:** four files under
 `images/openstack-hypervisor-operator/patches/`, applied in order. Each brings a
 plain Go test outside upstream's Ginkgo suite, which the build step runs.
 
@@ -1612,6 +1617,23 @@ Placement and without writing `status.traits`. `TestTraitsInSyncSetsTraitsUpdate
 runs the controller with no Placement client: the condition in `Handover`, no
 second write on a repeat, and no condition in `Testing`.
 
+`0004-openstack-select-the-catalog-interface-with-os-interface.patch`.
+Upstream's `ServiceClientFromProvider` (`internal/openstack/service_client.go`)
+builds every OpenStack client of the operator from an empty
+`gophercloud.EndpointOpts`, so hvo reads the catalog's `public` endpoints and
+no other. The patch reads the environment variable `OS_INTERFACE`: `public`,
+`internal` or `admin` selects that interface, and unset or empty keeps
+`public`, upstream's behaviour. Any other value, `Internal` included, is an
+error before the catalog is read, and hvo exits at start. An error of the
+catalog lookup, gophercloud's `ErrEndpointNotFound` when the catalog has no
+endpoint of that interface, is returned unchanged.
+`TestServiceClientInterface` builds a compute client on a provider whose
+endpoint locator records the options it gets: for each of the three values,
+for unset and empty, for `Internal`, `internalURL` and `internal` with a
+leading space or a trailing newline (no lookup happens) and for a locator
+error. The lab release sets `internal`, whose endpoints are the in-cluster
+Service URLs.
+
 Each patch header records `Upstream status: not submitted`. Their author
 submits them upstream, and issue #1066 tracks them until `main` carries them.
 
@@ -1635,7 +1657,8 @@ patch's change, the patch is dropped together with its checks in the build
 step: for 0001 the `servers.LiveMigrateOpts` grep and the
 `TestLiveMigrateAutoBody` run, for 0002 and 0003 the test's name in the
 controller `go test` run and the `grep` for its `--- PASS:` line, and that run
-itself once neither test is left. With the last patch gone, the
+itself once neither test is left; for 0004 the `TestServiceClientInterface` run
+and its `grep`. With the last patch gone, the
 `COPY patches/` and `git apply` steps go too, because both fail without a
 patch.
 
@@ -2145,8 +2168,9 @@ bash tests/container-images/verify_hvo.sh
 ```
 
 `--progress=plain` keeps the `--- PASS:` lines of `TestLiveMigrateAutoBody`,
-`TestHypervisorCreatedWithDefaultHighAvailability` and
-`TestTraitsInSyncSetsTraitsUpdated` in the build output.
+`TestHypervisorCreatedWithDefaultHighAvailability`,
+`TestTraitsInSyncSetsTraitsUpdated` and `TestServiceClientInterface` in the
+build output.
 
 ### Building kvm-node-agent locally
 
