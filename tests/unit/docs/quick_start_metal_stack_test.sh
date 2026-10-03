@@ -24,8 +24,10 @@
 #   9. Part 1, Step 4 holds no instruction to repeat the apply: deploy-infra
 #      returns only once the cluster admits it
 #  10. the page holds no instruction to run a block again: the MariaDB wait of
-#      Part 1, Step 5 follows a create wait, and the Hypervisor loop of Part 2,
-#      Step 3 follows the waits for the operator's release and its CRD
+#      Part 1, Step 5 follows a create wait, the Hypervisor loop of Part 2,
+#      Step 3 follows the waits for the operator's release and its CRD, and
+#      the node port check of Part 2, Step 1 follows the reservation of the
+#      migration ports and its rollout
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -357,6 +359,15 @@ test_blocks_pass_on_first_run() {
     echo "  FAIL: the release wait, the CRD wait and the Hypervisor wait are missing or out of order"
     FAIL=$((FAIL + 1))
   fi
+
+  count="$(grep -cF -- 'kubectl apply -k deploy/lab/metal-stack/migration-ports' "$QUICK_START_DOC" || true)"
+  assert_eq "the apply of the migration port reservation occurs on one line" "1" "$count"
+  line="$(grep -nF -- 'kubectl apply -k deploy/lab/metal-stack/migration-ports' "$QUICK_START_DOC" | head -n 1 | cut -d: -f1)"
+  assert_contains "the wait for its rollout follows it on the next line" \
+    "$(if [[ -n "$line" ]]; then sed -n "$((line + 1))p" "$QUICK_START_DOC"; fi)" \
+    'kubectl rollout status daemonset/migration-port-reservation -n hypervisor-system'
+  assert_eq "the node port check is the line after that" "hack/lab-node-ports.sh" \
+    "$(if [[ -n "$line" ]]; then sed -n "$((line + 2))p" "$QUICK_START_DOC"; fi)"
 }
 
 test_frontmatter

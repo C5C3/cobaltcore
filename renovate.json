@@ -444,7 +444,8 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/lab/metal-stack/probe/node-probe\\.yaml$/"
+        "/deploy/lab/metal-stack/probe/node-probe\\.yaml$/",
+        "/deploy/lab/metal-stack/migration-ports/reservation-daemonset\\.yaml$/"
       ],
       "matchStrings": [
         "image: (?<depName>docker\\.io/library/debian):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
@@ -926,14 +927,20 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/lab/metal-stack/probe/node-probe.yaml"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/probe/node-probe.yaml",
+        "deploy/lab/metal-stack/migration-ports/reservation-daemonset.yaml"
+      ],
       "matchPackageNames": ["docker.io/library/debian"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/lab/metal-stack/probe/node-probe.yaml"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/probe/node-probe.yaml",
+        "deploy/lab/metal-stack/migration-ports/reservation-daemonset.yaml"
+      ],
       "matchPackageNames": ["docker.io/library/debian"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "automerge": true,

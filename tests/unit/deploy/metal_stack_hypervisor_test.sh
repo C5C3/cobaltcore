@@ -3,16 +3,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the lab hypervisors under deploy/lab/metal-stack/hypervisor and
+# Verify the lab hypervisors under deploy/lab/metal-stack/hypervisor,
+# deploy/lab/metal-stack/migration-ports and
 # deploy/lab/metal-stack/hypervisor-fixtures, applied by hand on the lab:
-#   1. The eleven files exist with SPDX headers, and each kustomization lists
-#      exactly its resources.
+#   1. The thirteen files exist with SPDX headers, and each kustomization
+#      lists exactly its resources.
 #   2. The fixtures render is the kind fixtures without the volume type, the
 #      network and the subnet.
-#   3. The hypervisor render is the thirteen objects of the two operators,
-#      the libvirt DaemonSet, the CA, the compute CRs, the gateway alias and
-#      the chart sources, and the namespace carries the Gardener opt-out
-#      label.
+#   3. The hypervisor render is the fourteen objects of the two operators,
+#      the libvirt DaemonSet, the migration port reservation, the CA, the
+#      compute CRs, the gateway alias and the chart sources, and the namespace
+#      carries the Gardener opt-out label.
 #   4. The libvirt DaemonSet runs in the host's namespaces, OnDelete, with the
 #      image, the hostPaths and the mount propagation libvirtd and
 #      nova-compute share, and without a liveness probe.
@@ -41,9 +42,16 @@
 #      leaves no failed scope behind when a stop runs out.
 #  14. Each chart's tag and digest resolve to the same upstream artifact
 #      (one SKIP per chart when ghcr.io cannot be reached).
+#  15. The migration port reservation renders on its own as the namespace and
+#      one DaemonSet in the host's network and PID namespaces, with a
+#      privileged init container, an unprivileged second container and the
+#      node probe's image in both. Its range is the migration range of the
+#      node port check, and its script, run against a directory, adds the
+#      range to the reserved ports, keeps what is there, names the sockets
+#      that hold a port of the range, and fails without the sysctl file.
 #
-# Checks 2 to 5, 7 to 10, 12 and 13 are counted as SKIP when kustomize or yq
-# is not on PATH. A failing kustomize build counts them as FAIL and prints the
+# Checks 2 to 5, 7 to 10, 12, 13 and 15 are counted as SKIP when kustomize or
+# yq is not on PATH. A failing kustomize build counts them as FAIL and prints the
 # build's error. Checks 1, 6 and 11 read the files and need neither tool.
 #
 # Usage: bash tests/unit/deploy/metal_stack_hypervisor_test.sh
@@ -63,14 +71,16 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
 HYPERVISOR_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor"
+MIGRATION_PORTS_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/migration-ports"
 FIXTURES_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor-fixtures"
+PROBE_FILE="$PROJECT_ROOT/deploy/lab/metal-stack/probe/node-probe.yaml"
+NODE_PORTS_SH="$PROJECT_ROOT/hack/lab-node-ports.sh"
 CONFIGMAP_FILE="$HYPERVISOR_DIR/libvirt-configmap.yaml"
 SOURCES_FILE="$HYPERVISOR_DIR/sources.yaml"
 RESOLVE_HVO_COMMIT="$PROJECT_ROOT/hack/ci-resolve-hvo-commit.sh"
 RESOLVE_KNA_COMMIT="$PROJECT_ROOT/hack/ci-resolve-kna-commit.sh"
 
-HYPERVISOR_FILES="namespace.yaml
-libvirt-ca.yaml
+HYPERVISOR_FILES="libvirt-ca.yaml
 libvirt-configmap.yaml
 libvirt-daemonset.yaml
 compute.yaml
@@ -78,6 +88,9 @@ gateway-alias.yaml
 sources.yaml
 hvo-release.yaml
 kna-release.yaml"
+
+MIGRATION_PORTS_FILES="namespace.yaml
+reservation-daemonset.yaml"
 
 AUTH_SECRET="controlplane-nova-hypervisor-operator-auth"
 
@@ -137,10 +150,14 @@ chart_ref() {
 test_files_spdx_and_resources() {
   echo "Test: the lab hypervisor files carry SPDX headers and are listed"
 
-  local files=("$FIXTURES_DIR/kustomization.yaml" "$HYPERVISOR_DIR/kustomization.yaml") name f
+  local files=("$FIXTURES_DIR/kustomization.yaml" "$HYPERVISOR_DIR/kustomization.yaml"
+    "$MIGRATION_PORTS_DIR/kustomization.yaml") name f
   while IFS= read -r name; do
     files+=("$HYPERVISOR_DIR/$name")
   done <<<"$HYPERVISOR_FILES"
+  while IFS= read -r name; do
+    files+=("$MIGRATION_PORTS_DIR/$name")
+  done <<<"$MIGRATION_PORTS_FILES"
   for f in "${files[@]}"; do
     name="${f#"$PROJECT_ROOT"/}"
     if [[ ! -f "$f" ]]; then
@@ -155,10 +172,17 @@ test_files_spdx_and_resources() {
   done
 
   if [[ -f "$HYPERVISOR_DIR/kustomization.yaml" ]]; then
-    assert_eq "the hypervisor kustomization lists the nine manifests alone" \
-      "$HYPERVISOR_FILES" "$(resource_entries "$HYPERVISOR_DIR/kustomization.yaml")"
+    assert_eq "the hypervisor kustomization lists the migration ports and its eight manifests alone" \
+      "../migration-ports"$'\n'"$HYPERVISOR_FILES" "$(resource_entries "$HYPERVISOR_DIR/kustomization.yaml")"
   else
     echo "  FAIL: no hypervisor kustomization.yaml whose resources could be read"
+    FAIL=$((FAIL + 1))
+  fi
+  if [[ -f "$MIGRATION_PORTS_DIR/kustomization.yaml" ]]; then
+    assert_eq "the migration ports kustomization lists its two manifests alone" \
+      "$MIGRATION_PORTS_FILES" "$(resource_entries "$MIGRATION_PORTS_DIR/kustomization.yaml")"
+  else
+    echo "  FAIL: no migration ports kustomization.yaml whose resources could be read"
     FAIL=$((FAIL + 1))
   fi
   if [[ -f "$FIXTURES_DIR/kustomization.yaml" ]]; then
@@ -201,11 +225,12 @@ test_hypervisor_render_objects() {
 
   render "$HYPERVISOR_DIR" 3 || return
 
-  assert_eq "the render is the thirteen objects of the lab hypervisors" \
+  assert_eq "the render is the fourteen objects of the lab hypervisors" \
     "$(printf '%s\n' \
       Certificate/libvirt-migration-ca \
       ConfigMap/libvirt-lab \
       DaemonSet/libvirt \
+      DaemonSet/migration-port-reservation \
       HelmRelease/kvm-node-agent \
       HelmRelease/openstack-hypervisor-operator \
       Issuer/nova-hypervisor-agents-ca-issuer \
@@ -965,6 +990,148 @@ test_chart_tag_and_digest_agree_upstream() {
   chart_tag_and_digest_agree kna kvm-node-agent
 }
 
+# --- Test 15: the migration port reservation ---
+
+# reservation_script
+# The script of the reservation's init container, as rendered. Not through
+# val, which keeps the first line alone.
+reservation_script() {
+  printf '%s\n' "$RENDERED" |
+    yq -N -r 'select(.kind == "DaemonSet" and .metadata.name == "migration-port-reservation") |
+      .spec.template.spec.initContainers[0].args[0]' -
+}
+
+# fake_proc <dir> <reserved ports> [<tcp line>...]
+# Builds <dir> as a /proc for the reservation script: the sysctl file with
+# <reserved ports> and net/tcp with its header and the <tcp line>s.
+fake_proc() {
+  local dir="$1" reserved="$2"
+  shift 2
+  mkdir -p "$dir/sys/net/ipv4" "$dir/net"
+  printf '%s\n' "$reserved" >"$dir/sys/net/ipv4/ip_local_reserved_ports"
+  printf '%s\n' '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode' \
+    "$@" >"$dir/net/tcp"
+}
+
+# tcp_line <local port, hex> <inode> [<state, hex>]
+# One line of /proc/net/tcp, for an established socket unless <state> says
+# otherwise.
+tcp_line() {
+  printf '   0: 012C800A:%s 02C0299A:01BB %s 00000000:00000000 02:00000A2B 00000000     0        0 %s 2 0000000000000000 20 4 30 10 -1' "$1" "${3:-01}" "$2"
+}
+
+test_migration_port_reservation() {
+  echo "Test: the migration port reservation"
+
+  render "$MIGRATION_PORTS_DIR" 26 || return
+
+  assert_eq "the render is the namespace and the reservation" \
+    "$(printf '%s\n' DaemonSet/migration-port-reservation Namespace/hypervisor-system)" \
+    "$(printf '%s\n' "$RENDERED" |
+      yq -N -r 'select(. != null) | .kind + "/" + .metadata.name' - | sort)"
+
+  local pod='.spec.template.spec'
+  assert_eq "the DaemonSet lives in hypervisor-system" "hypervisor-system" \
+    "$(val DaemonSet migration-port-reservation '.metadata.namespace')"
+  assert_eq "it selects every node" "null" \
+    "$(val DaemonSet migration-port-reservation "$pod.nodeSelector")"
+  assert_eq "it uses the host's network, whose reserved ports it sets" "true" \
+    "$(val DaemonSet migration-port-reservation "$pod.hostNetwork")"
+  assert_eq "it uses the host's PID namespace, to name a port's holder" "true" \
+    "$(val DaemonSet migration-port-reservation "$pod.hostPID")"
+  assert_eq "it mounts no ServiceAccount token" "false" \
+    "$(val DaemonSet migration-port-reservation "$pod.automountServiceAccountToken")"
+  assert_eq "the init container reserve is privileged" "reserve=true" \
+    "$(val DaemonSet migration-port-reservation \
+      "$pod.initContainers[] | .name + \"=\" + (.securityContext.privileged | tostring)")"
+  assert_eq "the second container runs as nobody, without a privilege or a capability" \
+    "hold user=65534 nonroot=true privileged=false escalation=false drop=ALL" \
+    "$(val DaemonSet migration-port-reservation \
+      "$pod.containers[] | .name + \" user=\" + (.securityContext.runAsUser | tostring)
+        + \" nonroot=\" + (.securityContext.runAsNonRoot | tostring)
+        + \" privileged=\" + (.securityContext.privileged // false | tostring)
+        + \" escalation=\" + (.securityContext.allowPrivilegeEscalation | tostring)
+        + \" drop=\" + (.securityContext.capabilities.drop | join(\",\"))")"
+
+  local probe_image
+  probe_image="$(sed -n 's/^[[:space:]]*image: //p' "$PROBE_FILE" | head -n 1)"
+  assert_not_empty "the node probe names an image" "$probe_image"
+  assert_eq "both containers run the node probe's image" \
+    "$(printf '%s\n' "$probe_image" "$probe_image")" \
+    "$(printf '%s\n' "$RENDERED" |
+      yq -N -r 'select(.kind == "DaemonSet" and .metadata.name == "migration-port-reservation") |
+        (.spec.template.spec.initContainers + .spec.template.spec.containers)[] | .image' -)"
+
+  local script range
+  script="$(reservation_script)"
+  range="$(sed -n 's/^range=//p' <<<"$script")"
+  assert_eq "the reserved range is the migration range the node port check defaults to" \
+    "$(sed -n 's/^NODE_PORTS_TCP="${NODE_PORTS_TCP:-16514 \(.*\)}"$/\1/p' "$NODE_PORTS_SH")" "$range"
+
+  if ! have dash; then
+    echo "  SKIP: dash not installed (15 checks skipped)"
+    SKIP=$((SKIP + 15))
+    return
+  fi
+
+  local tmp out rc knob
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # An empty value, and no socket in the range.
+  fake_proc "$tmp/empty" ""
+  knob="$tmp/empty/sys/net/ipv4/ip_local_reserved_ports"
+  out="$(PROC_ROOT="$tmp/empty" dash -c "$script" 2>&1)"
+  rc=$?
+  assert_eq "an empty value: the script exits 0" "0" "$rc"
+  assert_eq "an empty value: the range is written" "49152-49215" "$(cat "$knob")"
+  assert_eq "an empty value: both lines" \
+    "$(printf '%s\n' 'reserved: 49152-49215 (before: none)' 'in use: none')" "$out"
+
+  # A value the node already carries is kept, and a second run changes nothing.
+  fake_proc "$tmp/kept" "1000-1010"
+  knob="$tmp/kept/sys/net/ipv4/ip_local_reserved_ports"
+  out="$(PROC_ROOT="$tmp/kept" dash -c "$script" 2>&1)"
+  assert_eq "an existing value is kept in front of the range" "1000-1010,49152-49215" "$(cat "$knob")"
+  assert_contains "and the line names it" "$out" "reserved: 1000-1010,49152-49215 (before: 1000-1010)"
+  out="$(PROC_ROOT="$tmp/kept" dash -c "$script" 2>&1)"
+  assert_eq "a second run leaves the value as it is" "1000-1010,49152-49215" "$(cat "$knob")"
+  assert_contains "and says it was there" "$out" "(before: 1000-1010,49152-49215)"
+
+  # Sockets: one of the range with an owner, one without, one in TIME_WAIT
+  # (state 06), which no file refers to (inode 0) and which still blocks a bind
+  # to its port, and one outside the range. The tcp6 table is absent in all of
+  # these directories.
+  fake_proc "$tmp/held" "" "$(tcp_line C000 4711)" "$(tcp_line C03F 4712)" "$(tcp_line C001 0 06)" \
+    "$(tcp_line 8000 4713)"
+  mkdir -p "$tmp/held/42/fd" "$tmp/held/43/fd"
+  echo calico-node >"$tmp/held/42/comm"
+  echo other >"$tmp/held/43/comm"
+  ln -s 'socket:[4711]' "$tmp/held/42/fd/9"
+  ln -s 'socket:[4713]' "$tmp/held/43/fd/3"
+  out="$(PROC_ROOT="$tmp/held" dash -c "$script" 2>&1)"
+  rc=$?
+  assert_eq "held ports: the script exits 0 without a tcp6 table" "0" "$rc"
+  assert_contains "a held port names its process and pid" "$out" "in use: port 49152 by calico-node (pid 42)"
+  assert_contains "a socket no process holds has an unknown owner" "$out" "in use: port 49215 by an unknown owner"
+  assert_contains "a closing connection without an inode has an unknown owner" "$out" "in use: port 49153 by an unknown owner"
+  assert_not_contains "a port outside the range is not named" "$out" "32768"
+  assert_not_contains "and no 'in use: none' beside a held port" "$out" "in use: none"
+
+  # No sysctl file: cat fails under set -e, and nothing is written.
+  mkdir -p "$tmp/missing/net"
+  out="$(PROC_ROOT="$tmp/missing" dash -c "$script" 2>&1)"
+  rc=$?
+  assert_eq "a missing sysctl file ends the script with cat's status" "1" "$rc"
+  if [[ -e "$tmp/missing/sys" ]]; then
+    echo "  FAIL: a missing sysctl file is not created"
+    FAIL=$((FAIL + 1))
+  else
+    echo "  PASS: a missing sysctl file is not created"
+    PASS=$((PASS + 1))
+  fi
+}
+
 # --- Run ---
 test_files_spdx_and_resources
 test_fixtures_render
@@ -980,6 +1147,7 @@ test_chart_lockstep
 test_scripts_lint
 test_libvirtd_exits
 test_chart_tag_and_digest_agree_upstream
+test_migration_port_reservation
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
