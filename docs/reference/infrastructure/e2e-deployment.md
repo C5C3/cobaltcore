@@ -174,24 +174,32 @@ finalizer run while its controller still exists:
    `envoy-gateway-topology-injector.envoy-gateway-system`. The read runs once
    the namespaces are gone, when no HelmRelease is left to own such an object.
    Each object is logged as `Chart leftover: <kind>.<group>/<name>` before it is
-   deleted, and a read that fails exits 1 with kubectl's error.
+   deleted, and a read that fails exits 1 with kubectl's error. Then the Leases
+   `cert-manager-cainjector-leader-election` and `cert-manager-controller` in
+   `kube-system`, on which cert-manager's cainjector and controller elect their
+   leader. The chart keeps them outside the `cert-manager` namespace, so the
+   namespace delete leaves them, and a cainjector deployed within the lease
+   duration waits for the old holder's Lease before it injects the webhook's
+   CA. They go after the namespaces because a cert-manager pod that still runs
+   writes its Lease again.
 8. The CRDs of the stack's API groups (the cert-manager, External Secrets,
    MariaDB, Memcached, OpenBao, Garage, RabbitMQ, Gateway API, Envoy Gateway,
    Prometheus Operator, CobaltCore, K-ORC, Flux and flux-operator groups, and
    `kvm.cloud.sap`, whose CRDs the lab hypervisors' charts install and Helm
    leaves behind).
 
-In `kube-system` it deletes only the `maint-<node>` objects of step 0. It never
-names `firewall`, `metallb-system` or `default`, nor a CRD of the platform (`autoscaling.k8s.io`, `cert.gardener.cloud`,
-`dns.gardener.cloud`, `crd.projectcalico.org`, `metallb.io`). Every delete
-ignores absence, so a second run finds nothing and exits 0. A delete that does
-not finish within `TEARDOWN_TIMEOUT` seconds exits 1 with the objects kubectl
-names, and so does a final count of stack CRDs, stack namespaces or
-cluster-scoped chart objects above zero. Each chart object still present is
-logged as `Still present: <kind>.<group>/<name>`. The teardown selects the
-chart objects by label and names none of them: the Envoy Gateway release
-floats inside `>=1.9.2 <2.0.0`, so Flux can install a chart whose hook objects
-carry other names.
+In `kube-system` it deletes only the `maint-<node>` objects of step 0 and the
+two cert-manager Leases of step 7. It never names `firewall`, `metallb-system`
+or `default`, nor a CRD of the platform (`autoscaling.k8s.io`,
+`cert.gardener.cloud`, `dns.gardener.cloud`, `crd.projectcalico.org`,
+`metallb.io`). Every delete ignores absence, so a second run finds nothing and
+exits 0. A delete that does not finish within `TEARDOWN_TIMEOUT` seconds exits
+1 with the objects kubectl names, and so does a final count of stack CRDs,
+stack namespaces or cluster-scoped chart objects above zero. Each chart object
+still present is logged as `Still present: <kind>.<group>/<name>`. The teardown
+selects the chart objects by label and names none of them: the Envoy Gateway
+release floats inside `>=1.9.2 <2.0.0`, so Flux can install a chart whose hook
+objects carry other names.
 
 ### `make install-test-deps`
 
@@ -265,11 +273,12 @@ Step 4 ── Wait for HelmReleases Ready
      │         external-secrets, memcached-operator
      │
      ├── Phase 1 → 2: cert-manager webhook admits a dry-run
-     │         HelmRelease Ready covers the rollout, not the admission
-     │         path: the webhook's TLS listener and the caBundle that
-     │         cainjector copies into its webhook configurations trail
-     │         it by seconds. A server-side dry-run of cluster-issuer.yaml
-     │         (WEBHOOK_TIMEOUT) gates the TLS-prerequisite applies.
+     │         On an install, the release's startup API check holds
+     │         Ready until the webhook admits a request. A server-side
+     │         dry-run of cluster-issuer.yaml (WEBHOOK_TIMEOUT) is the
+     │         script's own gate in front of the TLS-prerequisite
+     │         applies, for an upgrade, which runs no hook, and for an
+     │         overlay that turns the check off.
      │
      ├── Phase 3b: kustomization/rabbitmq-cluster-operator Ready
      │         The RabbitMQ Cluster Operator arrives as a Flux

@@ -78,8 +78,9 @@ patches:
   # A third-party chart: a merge patch on spec.values with the chart's own
   # keys, checked against cert-manager chart v1.21.2. The top-level keys size
   # and place the controller; webhook.* and cainjector.* take the same keys
-  # for the other two Deployments. global.priorityClassName applies to all
-  # three.
+  # for the other two Deployments, and startupapicheck.* for the Job the
+  # release runs once at install. global.priorityClassName applies to all
+  # four pods.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2

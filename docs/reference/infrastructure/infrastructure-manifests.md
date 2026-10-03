@@ -372,18 +372,33 @@ install it. See [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
 | --- | --- | --- |
 | `crds.enabled` | `true` | Install CRDs via the Helm chart |
 | `prometheus.enabled` | `false` | Prometheus metrics disabled |
-| `startupapicheck.enabled` | `false` | Disable startup API check job |
+| `startupapicheck.enabled` | `true` | Run the startup API check Job, so the release is Ready only once the webhook admits a request |
 
-The kind base overlay (`deploy/kind/base/kustomization.yaml`), and the
-metal-stack lab's base with it, patches `startupapicheck.enabled` to `true`.
-The chart's post-install Job then waits until the cert-manager webhook admits a
-request, so the release turns `Ready` only then and `dependsOn: cert-manager`
-holds every dependent release until the webhook answers. Without the check a
-dependent release, each of which creates an `Issuer` or a `Certificate`, could
-use up its install retries against a webhook that was not ready and stay
-`Stalled`, which made `make deploy-infra` run into its release wait.
-`tests/unit/deploy/cert_manager_release_test.sh` pins the patch in both
-renders.
+The production release sets `startupapicheck.enabled`, and the kind and the
+metal-stack lab base renders inherit it. Every release that depends on
+cert-manager creates an `Issuer` or a `Certificate`. Without the check the
+release turns `Ready` before the webhook admits, and a dependent release can
+use up its install retries and stay `Stalled`.
+
+The chart renders the check as Job `cert-manager-startupapicheck`, a
+`post-install` hook. It runs on install, and helm-controller waits for it, so
+`dependsOn: cert-manager` holds the dependent releases until the webhook
+answers. An upgrade of an existing installation starts no Job.
+
+A fresh install pulls `quay.io/jetstack/cert-manager-startupapicheck` at the
+chart's app version. It is a fourth image beside the controller, cainjector
+and webhook, from the same registry, and a cluster that mirrors or allowlists
+images has to provide it.
+
+The Job runs `check api --wait=1m` and restarts up to `backoffLimit: 4`. The
+release sets no `spec.timeout`, so helm-controller's default release timeout
+of 5 minutes bounds the wait. When the check does not pass in that time, the
+install fails. The release has no install remediation, so it stays failed and
+not `Ready`, the terminal state the install comment in
+`deploy/flux-system/releases/external-secrets.yaml` describes. Every dependent
+release waits at `dependsOn`, so the release that reports the failure is
+cert-manager itself. `tests/unit/deploy/cert_manager_release_test.sh` pins the
+value in the three renders.
 
 ### Prometheus Operator CRDs
 
@@ -1646,7 +1661,7 @@ One row per entry of `deploy/flux-system/kustomization.yaml` and
 | Entry | Kind | Field to patch | Sizing keys |
 | --- | --- | --- | --- |
 | `fluxinstance.yaml` | FluxInstance | `spec.kustomize.patches`, one entry per controller Deployment (`source-controller`, `kustomize-controller`, `helm-controller`, `notification-controller`) | [JSON6902 recipe](#patching-the-upstream-installers-and-the-flux-controllers) |
-| `releases/cert-manager.yaml` | HelmRelease | `spec.values` | Checked against chart v1.21.2: `resources`, `nodeSelector` and `tolerations` for the controller, the same keys under `webhook` and `cainjector` for the other two Deployments, and `global.priorityClassName` for all three |
+| `releases/cert-manager.yaml` | HelmRelease | `spec.values` | Checked against chart v1.21.2: `resources`, `nodeSelector` and `tolerations` for the controller, the same keys under `webhook` and `cainjector` for the other two Deployments and under `startupapicheck` for the Job the release runs once at install, and `global.priorityClassName` for all four pods |
 | `releases/mariadb-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `https://mariadb-operator.github.io/mariadb-operator` (`sources/mariadb-operator.yaml`) |
 | `releases/external-secrets.yaml` | HelmRelease | `spec.values` | The chart's values reference at `https://charts.external-secrets.io` (`sources/external-secrets.yaml`) |
 | `releases/memcached-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/c5c3/charts` (`sources/c5c3-charts.yaml`) |
