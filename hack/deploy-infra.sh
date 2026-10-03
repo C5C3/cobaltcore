@@ -1625,9 +1625,10 @@ check_relocated_infrastructure() {
 # of relocated_object_exists, on any other kubectl failure too: an unreadable
 # cluster is not one that passed.
 #
-#   1. A default StorageClass. The proving OpenBaoCluster (storage.size 1Gi, no
-#      class) and every volume the ControlPlane provisions bind to it; without
-#      one they pend forever behind a green Step 5.
+#   1. A default StorageClass. The lab overlay's OpenBao, MariaDB and Garage
+#      volumes, the proving OpenBaoCluster (storage.size 1Gi) and every volume
+#      the ControlPlane provisions name no class and bind to it; without one
+#      the claims stay Pending and the first wait on them times out.
 #   2. No DaemonSet node-local-dns in kube-system. The openbao-operator's
 #      NetworkPolicy allows DNS to the pods of spec.network.dnsNamespace; a
 #      host-networked resolver needs spec.network.dnsEndpointIPs, which nothing
@@ -1651,10 +1652,10 @@ check_external_cluster() {
   local default_class
   default_class="$(jq -r '[.items[] | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name] | first // empty' <<<"${out}")"
   if [[ -z "${default_class}" ]]; then
-    log "ERROR: the cluster has no default StorageClass. The proving OpenBaoCluster"
-    log "       (storage.size 1Gi, no class) and every volume the ControlPlane"
-    log "       provisions bind to the default class, and would pend forever behind"
-    log "       a green Step 5. Annotate one class with"
+    log "ERROR: the cluster has no default StorageClass. The lab overlay, the proving"
+    log "       OpenBaoCluster and the ControlPlane name no class, so every volume of"
+    log "       the stack binds to the default one; without it the claims stay Pending"
+    log "       and the first wait on them times out. Annotate one class with"
     log "       storageclass.kubernetes.io/is-default-class=true and rerun."
     exit 1
   fi
