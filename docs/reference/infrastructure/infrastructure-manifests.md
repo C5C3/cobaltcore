@@ -374,6 +374,17 @@ install it. See [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
 | `prometheus.enabled` | `false` | Prometheus metrics disabled |
 | `startupapicheck.enabled` | `false` | Disable startup API check job |
 
+The kind base overlay (`deploy/kind/base/kustomization.yaml`), and the
+metal-stack lab's base with it, patches `startupapicheck.enabled` to `true`.
+The chart's post-install Job then waits until the cert-manager webhook admits a
+request, so the release turns `Ready` only then and `dependsOn: cert-manager`
+holds every dependent release until the webhook answers. Without the check a
+dependent release, each of which creates an `Issuer` or a `Certificate`, could
+use up its install retries against a webhook that was not ready and stay
+`Stalled`, which made `make deploy-infra` run into its release wait.
+`tests/unit/deploy/cert_manager_release_test.sh` pins the patch in both
+renders.
+
 ### Prometheus Operator CRDs
 
 **File:** `deploy/flux-system/releases/prometheus-operator-crds.yaml`
