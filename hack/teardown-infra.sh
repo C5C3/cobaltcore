@@ -472,13 +472,16 @@ teardown_hypervisors() {
 #   6. the flux-system namespace and the flux-operator's cluster-scoped RBAC;
 #   7. the stack namespaces (stack_namespaces), by name, then the objects of
 #      STACK_CHART_OBJECT_KINDS whose helm.toolkit.fluxcd.io/namespace label
-#      names one of them: Helm hook objects, which no uninstall removes;
+#      names one of them: Helm hook objects, which no uninstall removes, then
+#      the two Leases cert-manager's leader election leaves in kube-system,
+#      once no cert-manager pod is left to renew them;
 #   8. the CRDs of STACK_CRD_GROUPS.
 # It ends with the count of stack CRDs, stack namespaces and cluster-scoped
 # chart objects still present, which must all be zero. Every delete ignores
 # absence, so a second run finds nothing and exits 0; a wait that runs out
 # exits 1 (delete_and_wait). In kube-system only the maint-<node> objects of
-# step 0 are deleted; the platform's namespaces and CRDs are never named.
+# step 0 and the two cert-manager Leases of step 7 are deleted; the platform's
+# namespaces and CRDs are never named.
 # ---------------------------------------------------------------------------
 teardown_external_cluster() {
   local cmd
@@ -617,6 +620,14 @@ teardown_external_cluster() {
   if [[ ${#chart_objects[@]} -gt 0 ]]; then
     delete_and_wait "the cluster-scoped objects the stack's charts left behind" "${chart_objects[@]}"
   fi
+  # The Leases cert-manager's controller and cainjector elect their leader on.
+  # The chart keeps them in kube-system (global.leaderElection.namespace), so
+  # deleting the cert-manager namespace leaves them, and a cainjector deployed
+  # within the lease duration waits for the old holder's Lease before it
+  # injects the webhook's CA. Not earlier: a pod that still runs writes its
+  # Lease again when it renews it.
+  delete_and_wait "the cert-manager leader election Leases in kube-system" \
+    lease cert-manager-cainjector-leader-election cert-manager-controller -n kube-system
 
   # 8. The stack CRDs, by API group.
   local crds=()
