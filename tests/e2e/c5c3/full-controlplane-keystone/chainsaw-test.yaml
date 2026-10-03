@@ -1958,16 +1958,37 @@ spec:
             "$(printf '%s\n' auth_url password project_domain_name project_name region_name user_domain_name username)" \
             "${HVO_KEYS}"
 
-          # K-ORC caches one client per clouds.yaml for half the token lifetime
-          # (about 30 minutes), and the client keeps the service catalog of the
-          # token it authenticated with. The plane's credential was first used
-          # before the compute, network and block-storage rows existed, so until
-          # that entry expires the flavor, volume type, network and subnet fail
-          # with "No suitable endpoint could be found in the service catalog". A
-          # restart empties the cache; the overlay's header tells users the same.
-          # Drop it once k-orc/openstack-resource-controller#941 is fixed.
-          kubectl rollout restart deployment/orc-controller-manager -n orc-system
+          # The c5c3-operator restarted K-ORC when the plane's catalog registrations
+          # settled, and recorded the epoch on the pod template. Without that restart
+          # the flavor, volume type, network and subnet below fail for the whole wait
+          # with "No suitable endpoint could be found in the service catalog".
+          KORC_EPOCHS="$(kubectl get deployment orc-controller-manager -n orc-system \
+            -o jsonpath='{.spec.template.metadata.annotations}')"
+          grep -q "\"${CP_NS}/${CP_NAME}=" <<<"${KORC_EPOCHS}" \
+            || { echo "ERROR: the c5c3-operator recorded no catalog epoch for ${CP_NS}/${CP_NAME} on orc-controller-manager: ${KORC_EPOCHS}"; exit 1; }
+          # An epoch written before the plane's last catalog row turned Ready, or
+          # never updated after it, passes the grep. So once the rollout is done, the
+          # running K-ORC pod must be no older than the last CatalogReady=True
+          # transition among the plane's catalog registrations. Both timestamps
+          # have second granularity, so the same second passes.
           kubectl rollout status deployment/orc-controller-manager -n orc-system --timeout=5m
+          LAST_CATALOG_READY="$(kubectl get keystoneservice -A -o json | jq -r --arg cp "${CP_NS}/${CP_NAME}" '
+            [.items[] | select(.spec.catalog != null)
+              | select((.spec.controlPlaneRef.namespace // .metadata.namespace) + "/" + .spec.controlPlaneRef.name == $cp)
+              | .status.conditions[]? | select(.type == "CatalogReady" and .status == "True") | .lastTransitionTime]
+            | max // empty')"
+          test -n "${LAST_CATALOG_READY}" \
+            || { echo "ERROR: no catalog registration of ${CP_NS}/${CP_NAME} reports CatalogReady=True"; exit 1; }
+          KORC_SELECTOR="$(kubectl get deployment orc-controller-manager -n orc-system \
+            -o go-template='{{range $k, $v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}')"
+          KORC_POD_START="$(kubectl get pods -n orc-system -l "${KORC_SELECTOR%,}" -o json \
+            | jq -r '[.items[] | select(.metadata.deletionTimestamp == null) | .metadata.creationTimestamp] | max // empty')"
+          if [[ -z "${KORC_POD_START}" || "${KORC_POD_START}" < "${LAST_CATALOG_READY}" ]]; then
+            echo "ERROR: the running K-ORC pod (created ${KORC_POD_START:-never}) predates the last CatalogReady=True transition of ${CP_NS}/${CP_NAME} (${LAST_CATALOG_READY})"
+            kubectl get pods -n orc-system -l "${KORC_SELECTOR%,}" -o wide || true
+            exit 1
+          fi
+          echo "OK: K-ORC restarted (pod created ${KORC_POD_START}) after the last catalog row of ${CP_NS}/${CP_NAME} turned Ready (${LAST_CATALOG_READY})"
 
           # The fixtures the hypervisor operator's start and smoke test look up
           # by fixed names, from the example overlay. fixtures.yaml alone: the
