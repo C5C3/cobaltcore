@@ -616,8 +616,8 @@ test_main_gates_the_waits_on_infra_only() {
 
 # run_preflight <stub_dir> [env_var=value...]
 # Sources the script with the given overrides and runs preflight_checks with
-# exit-0 stubs of the tools it looks for first on the PATH. Echoes combined
-# stdout/stderr; returns the exit status.
+# exit-0 stubs of the tools it looks for first on the PATH; the yq stub answers
+# the version probe. Echoes combined stdout/stderr; returns the exit status.
 run_preflight() {
   local stub_dir="$1"
   shift
@@ -627,10 +627,13 @@ run_preflight() {
       export "${assignment?}"
     done
     local tool
-    for tool in docker kind kubectl jq yq; do
+    for tool in docker kind kubectl jq; do
       printf '#!/bin/bash\nexit 0\n' >"$stub_dir/$tool"
       chmod +x "$stub_dir/$tool"
     done
+    # A current mikefarah/yq as far as the preflight probes it: strenv resolves.
+    printf '#!/bin/bash\necho "${YQ_PROBE:-}"\n' >"$stub_dir/yq"
+    chmod +x "$stub_dir/yq"
     PATH="$stub_dir:$PATH"
     export PATH
     # shellcheck source=/dev/null

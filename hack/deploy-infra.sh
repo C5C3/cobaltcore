@@ -426,6 +426,28 @@ log() {
 }
 
 # ---------------------------------------------------------------------------
+# require_mikefarah_yq — Exit 1 unless the yq on PATH is mikefarah/yq v4.40.1
+# or newer.
+#
+# The probe uses what this script needs of it: strenv, the -r shorthand
+# (v4.25.3) and tonumber (v4.40.1). An older v4 lacks the latter two, and Debian
+# and PyPI ship a jq wrapper under the same name that knows neither strenv nor
+# `yq -i`. Either would fail at the first expression that uses one, after the
+# cluster and part of the stack already exist. Call it once `yq` is known to be
+# on PATH.
+# ---------------------------------------------------------------------------
+require_mikefarah_yq() {
+  if [[ "$(YQ_PROBE=1 yq -n -r 'strenv(YQ_PROBE) | tonumber' 2>/dev/null)" == "1" ]]; then
+    return 0
+  fi
+  local yq_version
+  yq_version="$(yq --version 2>&1)" || true
+  log "ERROR: 'yq' on PATH is not mikefarah/yq v4.40.1 or newer (yq --version: ${yq_version%%$'\n'*})."
+  log "       Install a current release from https://github.com/mikefarah/yq; the yq package of Debian and PyPI is a jq wrapper with another expression language."
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
 # wait_for_helmreleases — Wait until all HelmReleases show Ready=True.
 #
 # Polls every 10 seconds up to HELMRELEASE_TIMEOUT. Checks that every
@@ -1372,9 +1394,12 @@ preflight_checks() {
   # CRs (the ControlPlane provisions those in managed mode). Check it up front so
   # the run fails here instead of deep in Step 5 after a kind cluster already
   # exists. The default Quick Start stays yq-free.
-  if [[ "${WITH_CONTROLPLANE}" == "true" ]] && ! command -v yq &>/dev/null; then
-    log "ERROR: WITH_CONTROLPLANE=true requires 'yq' on PATH (used to drop MariaDB/Memcached from the infrastructure overlay)."
-    exit 1
+  if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
+    if ! command -v yq &>/dev/null; then
+      log "ERROR: WITH_CONTROLPLANE=true requires 'yq' on PATH (used to drop MariaDB/Memcached from the infrastructure overlay)."
+      exit 1
+    fi
+    require_mikefarah_yq
   fi
 
   if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
@@ -2258,7 +2283,8 @@ warn_unused_kind_config() {
 # Errors:
 #   - exits 1 if KIND_CONFIG does not exist or is not readable
 #   - exits 1 if KIND_HOST_PORT is not a positive integer in [1, 65535]
-#   - exits 1 if `yq` is required (either transform) but not on PATH
+#   - exits 1 if `yq` is required (either transform) but not on PATH, or is
+#     not mikefarah/yq v4.40.1 or newer
 # ---------------------------------------------------------------------------
 render_kind_config() {
   local out_path="$1"
@@ -2288,6 +2314,7 @@ render_kind_config() {
     log "ERROR: rendering the kind config requires 'yq' on PATH (KIND_HOST_PORT override and/or WITH_REGISTRY_CACHE=true)."
     exit 1
   fi
+  require_mikefarah_yq
 
   cp "${src}" "${out_path}"
 

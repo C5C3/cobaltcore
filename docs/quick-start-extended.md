@@ -54,7 +54,8 @@ prefer; the host-port override path documents the privileged-port tradeoffs for
 those runtimes below.
 
 You need `make` for the install and deployment targets below. The `KIND_HOST_PORT`
-override path also needs `yq` v4.x on `PATH`.
+override path also needs [`yq`](https://github.com/mikefarah/yq) v4.40.1 or
+newer on `PATH`.
 
 ::: tip Nix users
 Instead of `make install-test-deps`, you can run `nix develop` to get every

@@ -35,7 +35,8 @@ Follow that tutorial through its **Step 2 — Cluster + infrastructure stack** a
 stop there. `INFRA_ONLY=true` keeps every CobaltCore operator off this cluster, which
 is what the two-cluster split is for, so the tutorial's operator and CR steps do
 not apply here. Host port 9443 leaves 8443 free for a `cobaltcore` devstack you may
-already be running, and overriding `KIND_HOST_PORT` needs `yq` v4.x on `PATH`.
+already be running, and overriding `KIND_HOST_PORT` needs
+[`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer on `PATH`.
 This bring-up creates the `openstack` namespace and every infrastructure name
 the examples below resolve on the target: `openstack-db`,
 `openstack-memcached`, `openbao-tenant-store`, `keystone-db`, `keystone-admin`.

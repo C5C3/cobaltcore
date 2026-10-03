@@ -192,12 +192,50 @@ test_main_uses_rendered_config() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 5: the override path rejects a yq that is not mikefarah/yq v4.40.1 or
+# newer before it rewrites anything.
+# ---------------------------------------------------------------------------
+test_override_rejects_jq_wrapper_yq() {
+  echo "Test: render_kind_config with KIND_HOST_PORT=8443 rejects a yq that is not mikefarah/yq v4.40.1 or newer"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # The jq wrapper Debian packages as yq: it hands the expression to jq, which
+  # does not know strenv.
+  mkdir -p "$tmp/bin"
+  cat >"$tmp/bin/yq" <<'STUB'
+#!/bin/bash
+if [ "$1" = "--version" ]; then
+  echo "yq 3.4.3"
+  exit 0
+fi
+echo "jq: error: strenv/1 is not defined at <top-level>, line 1:" >&2
+exit 3
+STUB
+  chmod +x "$tmp/bin/yq"
+
+  local out="$tmp/rendered.yaml"
+  local output exit_code
+  output="$(PATH="$tmp/bin:$PATH" run_render "$out" "8443")"
+  exit_code=$?
+
+  assert_nonzero_exit "render_kind_config exits non-zero with the jq wrapper" "$exit_code"
+  assert_contains "names the yq it wants" "$output" "is not mikefarah/yq v4.40.1 or newer"
+  assert_contains "names the yq it found" "$output" "yq --version: yq 3.4.3"
+  assert_eq "no config is rendered" "absent" \
+    "$([[ -e "$out" ]] && echo present || echo absent)"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_default_port_byte_equal_copy
 test_override_rewrites_only_hostport
 test_invalid_port_rejected
 test_main_uses_rendered_config
+test_override_rejects_jq_wrapper_yq
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

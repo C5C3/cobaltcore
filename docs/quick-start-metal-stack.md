@@ -40,7 +40,8 @@ The lab assumes a cluster of this shape:
 
 The shoot's kubeconfig is saved as `kubeconfig` in the root of the clone;
 `.gitignore` keeps that file out of git. The workstation needs `kubectl`, `jq`,
-`yq` v4, `make`, and the OpenStack CLI
+[`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer, `make`, and the
+OpenStack CLI
 ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/))
 with the [`osc-placement`](https://docs.openstack.org/osc-placement/latest/)
 plugin. Neither Docker nor kind is needed: the deploy creates no cluster and

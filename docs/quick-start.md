@@ -31,7 +31,7 @@ the local-build path, the production HelmRelease, E2E and Tempest, see
   export PATH="${HOME}/.local/bin:${PATH}"
   ```
 
-- `yq` v4.x on `PATH` (only required because `KIND_HOST_PORT` is overridden)
+- [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer on `PATH` (only required because `KIND_HOST_PORT` is overridden)
 - A stable internet connection for the initial image pulls and package downloads
 
 ## Step 1 — Clone

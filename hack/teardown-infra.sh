@@ -457,6 +457,18 @@ teardown_external_cluster() {
       exit 1
     fi
   done
+  # mikefarah/yq v4.40.1 or newer, the floor hack/deploy-infra.sh holds too
+  # (require_mikefarah_yq): the -r shorthand came with v4.25.3, and the jq
+  # wrapper Debian packages under the same name knows neither strenv nor any_c.
+  # wait_for_stack_crs_gone would retry either one's error until
+  # TEARDOWN_TIMEOUT, after the deletes of steps 0 to 2.
+  if [[ "$(YQ_PROBE=1 yq -n -r 'strenv(YQ_PROBE) | tonumber' 2>/dev/null)" != "1" ]]; then
+    local yq_version
+    yq_version="$(yq --version 2>&1)" || true
+    log "ERROR: 'yq' on PATH is not mikefarah/yq v4.40.1 or newer (yq --version: ${yq_version%%$'\n'*})."
+    log "       Install a current release from https://github.com/mikefarah/yq; the yq package of Debian and PyPI is a jq wrapper with another expression language."
+    exit 1
+  fi
 
   if [[ ! -f "${OVERLAY_ROOT}/base/kustomization.yaml" ||
     ! -f "${OVERLAY_ROOT}/infrastructure/kustomization.yaml" ]]; then
