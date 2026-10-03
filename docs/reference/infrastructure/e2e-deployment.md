@@ -433,7 +433,10 @@ deploy/lab/metal-stack/
 ├── infrastructure/
 │   └── kustomization.yaml          References ../../../kind/infrastructure/
 │                                    Patches MariaDB CR, GarageCluster → storage class premium
-└── probe/                          Read-only node probe Job (#1139), applied by hand
+└── probe/                          Node probe and NFS module load test, applied by hand
+    ├── kustomization.yaml          Lists node-probe.yaml alone
+    ├── node-probe.yaml             Read-only node probe Job (#1139)
+    └── nfs-module-load.yaml        NFS module load test Job (#1194), outside the kustomization
 ```
 
 `EXTERNAL_CLUSTER=true` applies `base/` in Step 3 and `infrastructure/` in

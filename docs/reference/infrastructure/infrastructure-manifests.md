@@ -2475,7 +2475,7 @@ The node probe is the prerequisite check of the lab. The
 reader run it first, against any metal-stack cluster, before anything else is
 deployed. It
 is one Job, `node-probe`, that prints the node facts the lab depends on under
-ten fixed headers. It exits 0 whatever it finds: a node that lacks something
+eleven fixed headers. It exits 0 whatever it finds: a node that lacks something
 prints `absent`, `none` or `NOT FOUND`, and the Job still completes, so
 `kubectl wait --for=condition=complete` returns.
 
@@ -2520,8 +2520,9 @@ never completes and has to be deleted by hand; the Job keeps each run bounded.
 | --- | --- |
 | `== kvm device` | Whether the node has `/dev/kvm`. With `== cpu` it decides `virtType: kvm` |
 | `== cpu` | CPU model, count and topology, the virtualization extension, and how many CPUs carry the `vmx` or `svm` flag |
-| `== loaded modules` | Which KVM, vhost, Open vSwitch, Geneve, VXLAN, bridge, NBD, multipath, NVMe/TCP and NFS server (`nfsd`) modules are loaded |
-| `== module files for <kernel>` | Whether the running kernel ships `kvm`, `vhost_net`, `openvswitch`, `geneve` and the other module files, so the OVN chassis and the libvirt DaemonSet can load what they need. A module compiled into the kernel prints `builtin` |
+| `== loaded modules` | Which KVM, vhost, Open vSwitch, Geneve, VXLAN, bridge, NBD, multipath, NVMe/TCP and NFS modules are loaded: the NFS server (`nfsd`), the NFS client (`nfs`, `nfsv4`) and `sunrpc` |
+| `== module files for <kernel>` | Whether the running kernel ships `kvm`, `vhost_net`, `openvswitch`, `geneve` and the other module files, so the OVN chassis and the libvirt DaemonSet can load what they need. The five NFS files, `nfsd`, `nfs`, `nfsv4`, `lockd` and `sunrpc`, decide whether the NFS server and clients of [#1193](https://github.com/c5c3/cobaltcore/issues/1193) can use the node's kernel. A module compiled into the kernel prints `builtin` |
+| `== filesystems` | Whether the kernel has registered `nfs4`, the filesystem type of an NFSv4 mount, and `nfsd`, the NFS server's control filesystem. Each prints `registered` or `not registered`, whether the code is a loaded module or compiled into the kernel. The `nfs` module registers `nfs4`, not `nfsv4`: only the `nfsv4` module file, or the load test's `nfsv4:` line, shows that the NFSv4 client code is there |
 | `== nested / iommu` | The `nested` parameter of `kvm_intel` or `kvm_amd`, and the number of IOMMU groups |
 | `== memory` | `MemTotal` and the hugepage reservations |
 | `== disks` | The block devices, where `/var/lib` lives and how much it holds |
@@ -2535,6 +2536,45 @@ The values a lab-ready node shows come from the 2026-09-29 survey in
 output format, from a run on the survey's node the same day. The survey's NIC
 lines show the pod's own `eth0`; the probe reads the host's sysfs and lists the
 host's interfaces instead.
+
+**File:** `deploy/lab/metal-stack/probe/nfs-module-load.yaml`
+
+The NFS module load test answers the one question of #1193 the probe cannot:
+whether a pod can load the NFS modules on a lab worker. It is one Job,
+`nfs-module-load` in `default`, that loads `nfsd`, `nfs` and `nfsv4` with
+`modprobe`, prints each result and the `nfs4` and `nfsd` filesystem lines, and
+removes what it loaded. A failed load prints `<module>: FAILED:` with
+`modprobe`'s message. The Job exits 0 whatever it finds, so the result is read
+from the log.
+
+Unlike the probe, the load test is not read-only. It loads up to three modules
+and their dependencies into the node's kernel and removes them again with
+`rmmod`. It removes the modules its own load added: those that are new since a
+`/proc/modules` snapshot taken before the load and are one of `nfsd`, `nfs`
+and `nfsv4` it tried to load or one of their dependencies, as
+`modprobe --show-depends` lists them. A module that prints `already loaded` is
+not tried: one loaded before the run stays, and so does one another pod loaded
+since the snapshot. A module outside that list, such as `vhost_net`, is
+neither counted nor removed. Any other NFS module that another pod loads in
+the seconds between the snapshot and the unload can be taken for the run's
+own, so run the test on a node where nothing else loads NFS modules. A module
+it cannot remove stays loaded until the node reboots and is named on the last
+line, `still loaded: ...`; otherwise the last line is `module list as before`. The container mirrors the init
+container `host-prepare` of the [lab hypervisors](#lab-hypervisors), which
+loads `vhost_net` the same way: `ghcr.io/c5c3/libvirt:latest`, privileged, as
+root, with the node's `/lib/modules` mounted read-only as its one volume.
+
+The probe's `kustomization.yaml` leaves the file out of `resources`, so
+`kubectl apply -k deploy/lab/metal-stack/probe` stays read-only. The load test
+is applied by file, pinned to one node:
+
+```bash
+kubectl delete job -n default nfs-module-load --ignore-not-found
+yq '.spec.template.spec.nodeName = "<node>"' deploy/lab/metal-stack/probe/nfs-module-load.yaml | kubectl apply -f -
+kubectl wait --for=condition=complete job/nfs-module-load -n default --timeout=5m
+kubectl logs -n default job/nfs-module-load
+kubectl delete job -n default nfs-module-load
+```
 
 ### Lab overlay
 
