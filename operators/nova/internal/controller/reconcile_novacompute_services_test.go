@@ -10,10 +10,13 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -537,4 +540,203 @@ func TestReconcileNovaComputeServices_Failures(t *testing.T) {
 			g.Expect(cond.Message).To(ContainSubstring(tc.want))
 		})
 	}
+}
+
+// servicesRun is what one Services step run with the host discovery returned,
+// with the cluster it ran against and the events it recorded.
+type servicesRun struct {
+	result ctrl.Result
+	err    error
+	client client.Client
+	events []string
+}
+
+// runServicesWithDiscovery runs the Services step for cr against api on a fake
+// cluster that holds the Nova API Deployment, so the step can start the host
+// discovery Job. funcs intercepts the cluster's calls.
+func runServicesWithDiscovery(api *computeapitest.Fake, cr *novav1alpha1.NovaCompute,
+	funcs interceptor.Funcs,
+) servicesRun {
+	c := novaFakeClientBuilder(cr, novaAPIDeployment(validNova(), testNovaConfigMap)).
+		WithInterceptorFuncs(funcs).Build()
+	r := &NovaComputeReconciler{Client: c, Scheme: c.Scheme(), Recorder: record.NewFakeRecorder(100), HTTPClient: api}
+	result, err := r.reconcileNovaComputeServices(context.Background(), c, cr, discoveryPass(api, c))
+	return servicesRun{result: result, err: err, client: c, events: collectEvents(r.Recorder.(*record.FakeRecorder))}
+}
+
+func TestReconcileNovaComputeServices_HostMapping(t *testing.T) {
+	t.Run("a registered, mapped host makes the node active", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		id := api.AddService(testNodeName, "enabled", "up")
+		cr := poolWith(novav1alpha1.NovaComputeNodePending)
+
+		run := runServicesWithDiscovery(api, cr, interceptor.Funcs{})
+
+		g.Expect(run.err).NotTo(HaveOccurred())
+		entry := onlyEntry(g, cr)
+		g.Expect(entry.Phase).To(Equal(novav1alpha1.NovaComputeNodeActive))
+		g.Expect(entry.ServiceID).To(Equal(id))
+		cond := novaComputeCondition(cr, conditionTypeServicesReady)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(cond.Reason).To(Equal(conditionReasonServicesUp))
+		g.Expect(api.CallsTo(http.MethodGet, "/v2.1/os-hypervisors")).NotTo(BeEmpty())
+		g.Expect(discoveryJobExists(g, run.client)).To(BeFalse())
+	})
+
+	t.Run("a registered, unmapped host keeps the node pending and starts the discovery", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		id := api.AddService(testNodeName, "enabled", "up")
+		api.SetHostMapped(testNodeName, false)
+		cr := poolWith(novav1alpha1.NovaComputeNodePending)
+
+		run := runServicesWithDiscovery(api, cr, interceptor.Funcs{})
+
+		g.Expect(run.err).NotTo(HaveOccurred())
+		entry := onlyEntry(g, cr)
+		g.Expect(entry.Phase).To(Equal(novav1alpha1.NovaComputeNodePending))
+		g.Expect(entry.ServiceID).To(Equal(id))
+		cond := novaComputeCondition(cr, conditionTypeServicesReady)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForHostMapping))
+		g.Expect(cond.Message).To(Equal(
+			"Waiting for the host mapping of node-1: started discovery Job " + testDiscoveryJob.String()))
+		g.Expect(run.result.RequeueAfter).To(Equal(RequeueHostDiscoveryPolling))
+		g.Expect(RequeueHostDiscoveryPolling).To(Equal(10 * time.Second))
+		g.Expect(discoveryJobExists(g, run.client)).To(BeTrue())
+		g.Expect(run.events).To(HaveLen(1))
+
+		// Once the discovery mapped the host, the next pass makes the node
+		// Active.
+		api.SetHostMapped(testNodeName, true)
+		run = runServicesWithDiscovery(api, cr, interceptor.Funcs{})
+		g.Expect(run.err).NotTo(HaveOccurred())
+		g.Expect(onlyEntry(g, cr).Phase).To(Equal(novav1alpha1.NovaComputeNodeActive))
+		g.Expect(novaComputeCondition(cr, conditionTypeServicesReady).Reason).To(Equal(conditionReasonServicesUp))
+	})
+
+	t.Run("a node without a service waits for it and reads no mapping", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		cr := poolWith(novav1alpha1.NovaComputeNodePending)
+
+		run := runServicesWithDiscovery(api, cr, interceptor.Funcs{})
+
+		g.Expect(run.err).NotTo(HaveOccurred())
+		g.Expect(novaComputeCondition(cr, conditionTypeServicesReady).Reason).To(Equal(conditionReasonWaitingForServices))
+		g.Expect(api.CallsTo(http.MethodGet, "/v2.1/os-hypervisors")).To(BeEmpty())
+	})
+
+	t.Run("a node without a service wins over an unmapped one", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		api.AddService("node-2", "enabled", "up")
+		api.SetHostMapped("node-2", false)
+		cr := validNovaCompute()
+		cr.Status.Nodes = []novav1alpha1.NovaComputeNodeStatus{
+			{Name: testNodeName, Phase: novav1alpha1.NovaComputeNodePending, Zone: testZone},
+			{Name: "node-2", Phase: novav1alpha1.NovaComputeNodePending, Zone: testZone},
+		}
+
+		run := runServicesWithDiscovery(api, cr, interceptor.Funcs{})
+
+		g.Expect(run.err).NotTo(HaveOccurred())
+		cond := novaComputeCondition(cr, conditionTypeServicesReady)
+		g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForServices))
+		g.Expect(cond.Message).To(Equal("Waiting for a compute service to register on node-1"))
+		g.Expect(discoveryJobExists(g, run.client)).To(BeTrue(), "node-2 still gets its discovery")
+	})
+
+	t.Run("an active node is not checked again", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		api.AddService(testNodeName, "enabled", "up")
+		api.SetHostMapped(testNodeName, false)
+		cr := poolWith(novav1alpha1.NovaComputeNodeActive)
+
+		run := runServicesWithDiscovery(api, cr, interceptor.Funcs{})
+
+		g.Expect(run.err).NotTo(HaveOccurred())
+		g.Expect(onlyEntry(g, cr).Phase).To(Equal(novav1alpha1.NovaComputeNodeActive))
+		g.Expect(novaComputeCondition(cr, conditionTypeServicesReady).Reason).To(Equal(conditionReasonServicesUp))
+		g.Expect(api.CallsTo(http.MethodGet, "/v2.1/os-hypervisors")).To(BeEmpty())
+		g.Expect(discoveryJobExists(g, run.client)).To(BeFalse())
+	})
+
+	t.Run("a failed hypervisor list keeps the node pending", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		id := api.AddService(testNodeName, "enabled", "up")
+		api.FailNext(http.MethodGet, "/v2.1/os-hypervisors", http.StatusInternalServerError)
+		cr := poolWith(novav1alpha1.NovaComputeNodePending)
+
+		run := runServicesWithDiscovery(api, cr, interceptor.Funcs{})
+
+		g.Expect(run.err).NotTo(HaveOccurred())
+		g.Expect(run.result.RequeueAfter).To(Equal(RequeueComputeDrainPolling))
+		entry := onlyEntry(g, cr)
+		g.Expect(entry.Phase).To(Equal(novav1alpha1.NovaComputeNodePending))
+		g.Expect(entry.ServiceID).To(Equal(id))
+		cond := novaComputeCondition(cr, conditionTypeServicesReady)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonComputeAPIError))
+		// The client names the path with its query, as for the service list.
+		g.Expect(cond.Message).To(ContainSubstring("listing hypervisors: GET /v2.1/os-hypervisors/detail"))
+		g.Expect(cond.Message).To(ContainSubstring(": HTTP 500"))
+		g.Expect(discoveryJobExists(g, run.client)).To(BeFalse(), "no discovery runs on an unknown mapping")
+	})
+
+	// A node replacement: one node leaves while its successor joins.
+	t.Run("a failed hypervisor list still moves the pool's other nodes", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		api.AddService(testNodeName, "enabled", "up")
+		api.AddService("node-2", "disabled", "up")
+		api.FailNext(http.MethodGet, "/v2.1/os-hypervisors", http.StatusInternalServerError)
+		cr := validNovaCompute()
+		cr.Status.Nodes = []novav1alpha1.NovaComputeNodeStatus{
+			{Name: testNodeName, Phase: novav1alpha1.NovaComputeNodePending, Zone: testZone},
+			{Name: "node-2", Phase: novav1alpha1.NovaComputeNodeDraining, Zone: testZone},
+		}
+
+		run := runServicesWithDiscovery(api, cr, interceptor.Funcs{})
+
+		g.Expect(run.err).NotTo(HaveOccurred())
+		g.Expect(cr.Status.Nodes).To(HaveLen(2))
+		g.Expect(cr.Status.Nodes[0].Phase).To(Equal(novav1alpha1.NovaComputeNodePending))
+		g.Expect(cr.Status.Nodes[1].Phase).To(Equal(novav1alpha1.NovaComputeNodeReleasing),
+			"the drained node moves on although the mapping is unknown")
+		g.Expect(run.result.RequeueAfter).To(Equal(RequeueComputeReleasePolling))
+		g.Expect(novaComputeCondition(cr, conditionTypeServicesReady).Reason).To(Equal(conditionReasonComputeAPIError))
+	})
+
+	t.Run("a refused Job create keeps the walked nodes and the pool's poll", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		id := api.AddService(testNodeName, "enabled", "up")
+		api.SetHostMapped(testNodeName, false)
+		cr := poolWith(novav1alpha1.NovaComputeNodePending)
+		forbidden := apierrors.NewForbidden(schema.GroupResource{Group: "batch", Resource: "jobs"},
+			testDiscoveryJob.Name, errors.New("jobs.batch is forbidden"))
+
+		run := runServicesWithDiscovery(api, cr, interceptor.Funcs{
+			Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+				return forbidden
+			},
+		})
+
+		// A returned error would put the pool on the controller's growing
+		// backoff; the requeue keeps the poll its nodes need.
+		g.Expect(run.err).NotTo(HaveOccurred())
+		g.Expect(run.result.RequeueAfter).To(Equal(RequeueComputeDrainPolling))
+		cond := novaComputeCondition(cr, conditionTypeServicesReady)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonHostDiscoveryError))
+		g.Expect(cond.Message).To(ContainSubstring("creating discovery Job " + testDiscoveryJob.String()))
+		g.Expect(cond.Message).To(ContainSubstring("jobs.batch is forbidden"))
+		entry := onlyEntry(g, cr)
+		g.Expect(entry.Phase).To(Equal(novav1alpha1.NovaComputeNodePending))
+		g.Expect(entry.ServiceID).To(Equal(id), "the walked entry is kept")
+	})
 }
