@@ -3,11 +3,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify hack/deploy-infra.sh gates the NFS storage stack behind WITH_NFS: the
-# host-side nfsd/nfs/nfsv4 module load, the deploy/kind/nfs overlay apply with
-# its rollout wait on the nfs-server Deployment, and the csi-driver-nfs
-# HelmRelease wait. The default Quick Start must install none of it, and a
-# typo like WITH_NFS=yes must take the skip branch at all three gates.
+# Verify hack/deploy-infra.sh gates the NFS storage stack behind WITH_NFS, in
+# both modes: the host-side nfsd/nfs/nfsv4 module load of the kind mode, the
+# overlay apply (deploy/kind/nfs in kind mode, the overlay's nfs/ under
+# EXTERNAL_CLUSTER=true) with its rollout wait on the nfs-server Deployment,
+# and the csi-driver-nfs HelmRelease wait. The default Quick Start must install
+# none of it, and a typo like WITH_NFS=yes must take the skip branch at all
+# three install gates; the other two strict comparisons are the external-mode
+# preflight refusal and the CSIDriver check of check_external_cluster. The
+# external mode's preflight, that check and its nfs-client-modules gate are
+# pinned in tests/unit/hack/deploy_infra_external_cluster_test.sh.
 #
 # It also pins the loader half: load_nfs_kernel_modules delegates to the shared
 # load_host_kernel_modules with the three module names, and that loader keeps
@@ -24,7 +29,7 @@
 # `BASH_SOURCE[0] == ${0}` guard at the bottom of deploy-infra.sh keeps main()
 # from auto-running) to read the resolved flag default and to drive
 # load_host_kernel_modules against shell functions that shadow uname, id, sudo,
-# modprobe and apt-get; grep the script source for the three strict gates, the
+# modprobe and apt-get; grep the script source for the five strict gates, the
 # gate-before-action order, and the delegation line.
 #
 # Usage: bash tests/unit/hack/deploy_infra_nfs_flag_test.sh
@@ -137,7 +142,7 @@ test_explicit_false() {
 # Test 4: defensive non-true value
 # A typo like WITH_NFS=yes must not install anything, because every gate site
 # uses the strict `== "true"` comparison. Assert the value passes through
-# verbatim AND that all three gate sites are exact-match.
+# verbatim AND that all five gate sites are exact-match.
 # ---------------------------------------------------------------------------
 test_non_true_value_does_not_trigger_install() {
   echo "Test: WITH_NFS=yes passes through but does not trigger install"
@@ -148,7 +153,7 @@ test_non_true_value_does_not_trigger_install() {
 
   local gate_count
   gate_count="$(grep -cE '"\$\{WITH_NFS\}" == "true"' "$DEPLOY_INFRA_SH" || true)"
-  assert_eq "deploy-infra.sh has exactly 3 strict WITH_NFS==true gates" "3" "$gate_count"
+  assert_eq "deploy-infra.sh has exactly 5 strict WITH_NFS==true gates" "5" "$gate_count"
 }
 
 # ---------------------------------------------------------------------------
@@ -185,13 +190,15 @@ test_kernel_module_call_is_gated() {
 
 # ---------------------------------------------------------------------------
 # Test 7: the overlay apply is gated
-# The kustomize apply for deploy/kind/nfs must live inside the WITH_NFS gate.
+# The one kustomize apply of ${OVERLAY_ROOT}/nfs, deploy/kind/nfs in kind mode
+# and the overlay's nfs/ under EXTERNAL_CLUSTER=true, must live inside the
+# WITH_NFS gate.
 # ---------------------------------------------------------------------------
 test_nfs_kustomize_is_gated() {
-  echo "Test: the deploy/kind/nfs apply is gated by WITH_NFS"
+  echo "Test: the NFS overlay apply (deploy/kind/nfs, or the overlay's nfs/ under EXTERNAL_CLUSTER=true) is gated by WITH_NFS"
 
   local apply_line gate_line
-  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -n 'kubectl apply -k "${OVERLAY_ROOT}/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   gate_line="$(grep -n '"${WITH_NFS}" == "true"' "$DEPLOY_INFRA_SH" | awk -F: -v target="${apply_line:-0}" '$1 < target { last = $1 } END { print last }')"
 
   assert_not_empty "kustomize apply line for the NFS overlay is found" "$apply_line"
@@ -208,7 +215,7 @@ test_rollout_guard_follows_the_apply() {
   echo "Test: the nfs-server rollout wait follows the overlay apply"
 
   local apply_line guard_line
-  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -n 'kubectl apply -k "${OVERLAY_ROOT}/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   guard_line="$(grep -n 'kubectl rollout status deployment/nfs-server -n openstack' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
 
   assert_not_empty "the rollout wait on nfs-server is found" "$guard_line"
@@ -265,7 +272,7 @@ test_immutable_csidriver_is_dropped_before_the_apply() {
 
   local delete_line apply_line gate_line
   delete_line="$(grep -n 'kubectl delete csidriver nfs.csi.k8s.io' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
-  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -n 'kubectl apply -k "${OVERLAY_ROOT}/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
 
   assert_not_empty "the CSIDriver delete is found" "$delete_line"
   assert_not_empty "the NFS overlay apply is found" "$apply_line"
@@ -314,7 +321,7 @@ test_dropped_csidriver_is_forced_back() {
   done
 
   local apply_line annotate_line wait_line
-  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -n 'kubectl apply -k "${OVERLAY_ROOT}/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   annotate_line="$(grep -n 'reconcile.fluxcd.io/forceAt=' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   wait_line="$(grep -n 'kubectl wait --for=create csidriver/nfs.csi.k8s.io' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
 
@@ -382,10 +389,32 @@ test_absent_csidriver_is_healed_on_a_later_run() {
   # the HelmRelease and a fresh one would be dragged into the wait too.
   local probe_line apply_line
   probe_line="$(grep -n 'kubectl get helmrelease csi-driver-nfs -n kube-system' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
-  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -n 'kubectl apply -k "${OVERLAY_ROOT}/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   assert_not_empty "the HelmRelease probe is found" "$probe_line"
   assert_gte "the overlay apply follows the HelmRelease probe" \
     "${apply_line:-0}" "$((${probe_line:-0} + 1))"
+}
+
+# ---------------------------------------------------------------------------
+# Test 8e: a failed nfs-server rollout names what loads nfsd in each mode
+# Under EXTERNAL_CLUSTER=true no module is loaded on the host, so the server's
+# own init container load-nfsd is what a failed rollout points at; the kind
+# server has no such container, and its error names the host's nfsd.
+# ---------------------------------------------------------------------------
+test_rollout_error_follows_the_mode() {
+  echo "Test: a failed nfs-server rollout names load-nfsd under EXTERNAL_CLUSTER=true and the host's nfsd in kind mode"
+
+  local branch
+  branch="$(grep -A5 'kubectl rollout status deployment/nfs-server -n openstack' "$DEPLOY_INFRA_SH" | sed 's/^[[:space:]]*//')"
+  assert_eq "the rollout error branches on EXTERNAL_CLUSTER, load-nfsd first" \
+    "$(printf '%s\n' \
+      'if ! kubectl rollout status deployment/nfs-server -n openstack --timeout="${POD_TIMEOUT}s"; then' \
+      'if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then' \
+      "log \"ERROR: the NFS server did not roll out. Its init container load-nfsd loads the nfsd module from the node's /lib/modules; read 'kubectl logs -n openstack deployment/nfs-server -c load-nfsd'.\"" \
+      'else' \
+      'log "ERROR: the NFS server did not roll out. The host kernel needs the nfsd module; deploy-infra loads it best-effort and only warns when it cannot."' \
+      'fi')" \
+    "$branch"
 }
 
 # ---------------------------------------------------------------------------
@@ -498,7 +527,12 @@ test_loader_survives_failing_modprobe() {
 #       `--load-restrictor`, no pipe through `kustomize build` to
 #       `kubectl apply -f -`); and
 #   (b) deploy/kind/nfs/kustomization.yaml has zero parent-directory resource
-#       entries, so the default LoadRestrictionsRootOnly check is satisfied.
+#       entries. The lab's deploy/lab/metal-stack/nfs, which the same line
+#       applies under EXTERNAL_CLUSTER=true, references it as a directory
+#       (../../../kind/nfs), which LoadRestrictionsRootOnly allows; a file
+#       reference outside the root would not be.
+#       tests/unit/deploy/metal_stack_nfs_test.sh pins that resource list and
+#       renders it under the default restrictor.
 #
 # Either half changing must update the other.
 # ---------------------------------------------------------------------------
@@ -507,7 +541,7 @@ test_production_caller_matches_self_contained_overlay() {
 
   # (a) The apply line is the bare kubectl form — no pipe, no flag.
   local raw
-  raw="$(grep -E 'kubectl apply -k "\$\{REPO_ROOT\}/deploy/kind/nfs"' "$DEPLOY_INFRA_SH" | head -1)"
+  raw="$(grep -E 'kubectl apply -k "\$\{OVERLAY_ROOT\}/nfs"' "$DEPLOY_INFRA_SH" | head -1)"
   assert_not_empty "deploy-infra.sh has the NFS kubectl apply line" "$raw"
 
   if grep -q -- '--load-restrictor' <<<"$raw"; then
@@ -571,6 +605,7 @@ test_rollout_guard_follows_the_apply
 test_immutable_csidriver_is_dropped_before_the_apply
 test_dropped_csidriver_is_forced_back
 test_absent_csidriver_is_healed_on_a_later_run
+test_rollout_error_follows_the_mode
 test_nfs_appended_dynamically
 test_entry_point_delegates_to_the_shared_loader
 test_loader_skips_non_linux

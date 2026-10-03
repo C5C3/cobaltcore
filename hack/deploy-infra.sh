@@ -162,13 +162,15 @@ if [[ "${WITH_VPA}" == "true" ]]; then WITH_METRICS_SERVER=true; fi
 # kind Quick Start stays minimal; set WITH_DIZZY=true to install.
 WITH_DIZZY="${WITH_DIZZY:-false}"
 
-# Gates the opt-in NFS kind overlay (deploy/kind/nfs): the NFS server in
-# `openstack` plus the csi-driver-nfs mounter in `kube-system`. It also gates
-# the host-side load of the modules that stack needs, `nfsd` for the
-# in-cluster server and `nfs` plus `nfsv4` for the csi-driver-nfs node plugin.
-# Defaults to false so the kind Quick Start stays minimal and needs no sudo;
-# set WITH_NFS=true to install it. The server image is amd64 only and runs
-# privileged, so the stack stays opt-in.
+# Gates the opt-in NFS storage stack: the NFS server in `openstack` plus the
+# csi-driver-nfs mounter in `kube-system`. In kind mode it applies
+# deploy/kind/nfs and gates the host-side load of the modules that stack needs,
+# `nfsd` for the in-cluster server and `nfs` plus `nfsv4` for the csi-driver-nfs
+# node plugin. Under EXTERNAL_CLUSTER=true it applies the overlay's nfs/
+# instead, whose pods load those modules on the nodes, and loads nothing on the
+# machine that runs this script. Defaults to false so the kind Quick Start
+# stays minimal and needs no sudo; set WITH_NFS=true to install it. The server
+# image is amd64 only and runs privileged, so the stack stays opt-in.
 WITH_NFS="${WITH_NFS:-false}"
 
 # Gates the opt-in message-bus kind overlay (deploy/kind/messaging): a single
@@ -331,11 +333,13 @@ INFRA_ONLY="${INFRA_ONLY:-false}"
 # Selects the external-cluster mode: deploy onto whatever cluster the current
 # kubeconfig context points at (KUBECONFIG or ~/.kube/config, as kubectl
 # resolves it) instead of a kind cluster this script creates. The script never
-# switches contexts. Docker and kind are not needed; the kind-bound opt-ins
+# switches contexts. Docker and kind are not needed; the six kind-bound opt-ins
 # (WITH_VPA, WITH_METRICS_SERVER, WITH_REGISTRY_CACHE, WITH_CHAOS_MESH,
-# WITH_OVN_KERNEL_MODULES, WITH_NFS, WITH_DIZZY) are refused in preflight_checks,
-# the cluster is checked for a default StorageClass, no node-local-dns and a
-# Ready node before anything is applied (check_external_cluster), and the
+# WITH_OVN_KERNEL_MODULES, WITH_DIZZY) are refused in preflight_checks, and
+# WITH_NFS=true is accepted only for an overlay with an nfs/ kustomization;
+# the cluster is checked for a default StorageClass, no node-local-dns, a
+# Ready node and, under WITH_NFS=true, a foreign NFS CSIDriver and the node
+# network before anything is applied (check_external_cluster), and the
 # Gateway is reached with `kubectl port-forward` on 8443. Defaults to false; any
 # value other than `true` keeps the kind mode.
 EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
@@ -347,7 +351,15 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # and sets this. An overlay may also carry a controlplane/ kustomization, which
 # this script never applies: preflight renders it to check that its one
 # ControlPlane is openstack/CONTROLPLANE_NAME, and the WITH_CONTROLPLANE=true
-# completion hint names it. Read only under EXTERNAL_CLUSTER=true.
+# completion hint names it. An overlay may carry an nfs/ kustomization too,
+# which Step 3 applies under WITH_NFS=true in place of deploy/kind/nfs. It has
+# to render the Deployment nfs-server and the DaemonSet nfs-client-modules in
+# openstack and the HelmRelease csi-driver-nfs in kube-system, the three names
+# this script waits for. Beside it nfs/ may ship client-policy.yaml, a
+# NetworkPolicy template outside the kustomization: Step 3 applies it before
+# nfs/, with the node network Step 1 read from Gardener's ConfigMap
+# kube-system/shoot-info in place of its placeholder NODE_NETWORK. Read only
+# under EXTERNAL_CLUSTER=true.
 EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
 
 # Derived from the two knobs above, not overridable. OVERLAY_ROOT is the
@@ -1425,10 +1437,11 @@ preflight_checks() {
 # preflight_external_cluster — The EXTERNAL_CLUSTER=true half of preflight_checks.
 #
 # Refuses every kind-bound opt-in that is set, then an EXTERNAL_OVERLAY without
-# the two kustomizations Steps 3 and 5 apply, then an overlay whose by-hand
-# controlplane/ does not render exactly one ControlPlane, openstack/CONTROLPLANE_NAME,
-# then a kubeconfig context whose API server does not answer, cheapest first and
-# each before anything is applied.
+# the two kustomizations Steps 3 and 5 apply, then WITH_NFS=true for an overlay
+# without the nfs/ kustomization Step 3 applies in place of deploy/kind/nfs, then
+# an overlay whose by-hand controlplane/ does not render exactly one
+# ControlPlane, openstack/CONTROLPLANE_NAME, then a kubeconfig context whose API
+# server does not answer, cheapest first and each before anything is applied.
 # The refusals are checked in the order below so the message names the flag the
 # caller set: WITH_VPA=true has already folded into WITH_METRICS_SERVER=true at
 # the top of the script. The flags are read by indirect expansion (${!flag})
@@ -1447,7 +1460,6 @@ preflight_external_cluster() {
     "WITH_REGISTRY_CACHE|the pull-through cache needs the kind Docker network" \
     "WITH_CHAOS_MESH|it loads kernel modules on the host and tunes the kind nodes" \
     "WITH_OVN_KERNEL_MODULES|it loads kernel modules on the host" \
-    "WITH_NFS|it loads kernel modules on the host and runs a privileged kind NFS server" \
     "WITH_DIZZY|it reads the kind node's published ports with docker port"; do
     flag="${entry%%|*}"
     if [[ "${!flag}" == "true" ]]; then
@@ -1459,6 +1471,14 @@ preflight_external_cluster() {
   if [[ ! -f "${OVERLAY_ROOT}/base/kustomization.yaml" ||
     ! -f "${OVERLAY_ROOT}/infrastructure/kustomization.yaml" ]]; then
     log "ERROR: EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}' has no base/ and infrastructure/ kustomization (resolved to ${OVERLAY_ROOT})."
+    exit 1
+  fi
+
+  # The kind NFS overlay needs nfsd, nfs and nfsv4, which this mode does not
+  # load on the host, so WITH_NFS=true takes the overlay's own nfs/. The file is
+  # tested, so an nfs/ directory without a kustomization is refused as well.
+  if [[ "${WITH_NFS}" == "true" && ! -f "${OVERLAY_ROOT}/nfs/kustomization.yaml" ]]; then
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_NFS=true needs ${OVERLAY_ROOT}/nfs/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/nfs is not applied to an external cluster: its server needs kernel modules that this mode does not load on the host."
     exit 1
   fi
 
@@ -1626,17 +1646,26 @@ check_relocated_infrastructure() {
 # cluster is not one that passed.
 #
 #   1. A default StorageClass. The lab overlay's OpenBao, MariaDB and Garage
-#      volumes, the proving OpenBaoCluster (storage.size 1Gi) and every volume
-#      the ControlPlane provisions name no class and bind to it; without one
-#      the claims stay Pending and the first wait on them times out.
+#      volumes, its NFS export claim under WITH_NFS=true, the proving
+#      OpenBaoCluster (storage.size 1Gi) and every volume the ControlPlane
+#      provisions name no class and bind to it; without one the claims stay
+#      Pending and the first wait on them times out.
 #   2. No DaemonSet node-local-dns in kube-system. The openbao-operator's
 #      NetworkPolicy allows DNS to the pods of spec.network.dnsNamespace; a
 #      host-networked resolver needs spec.network.dnsEndpointIPs, which nothing
 #      in this repository sets.
 #   3. At least one Ready node.
+#   4. Under WITH_NFS=true, no CSIDriver nfs.csi.k8s.io that the HelmRelease
+#      kube-system/csi-driver-nfs did not install, read from the two labels
+#      the helm-controller sets on every object of a release. Step 3 would
+#      delete a platform driver's CSIDriver that lacks the Ephemeral mode, and
+#      the HelmRelease would adopt the platform's Helm release of the same
+#      name, which the teardown then uninstalls.
+#   5. Under WITH_NFS=true, when the overlay ships nfs/client-policy.yaml: a
+#      node network that holds every node (resolve_nfs_node_network).
 #
-# The class and the node names are logged, so the transcript records what the
-# cluster had.
+# The class, the node names and the node network are logged, so the transcript
+# records what the cluster had.
 # ---------------------------------------------------------------------------
 check_external_cluster() {
   local out rc
@@ -1683,6 +1712,7 @@ check_external_cluster() {
     log "ERROR: cannot list the cluster's nodes (kubectl's error is above)."
     exit 1
   fi
+  local nodes_json="${out}"
   local ready_nodes
   ready_nodes="$(jq -r '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .metadata.name] | join(" ")' <<<"${out}")"
   if [[ -z "${ready_nodes}" ]]; then
@@ -1690,6 +1720,103 @@ check_external_cluster() {
     exit 1
   fi
   log "Ready nodes         : ${ready_nodes}"
+
+  if [[ "${WITH_NFS}" == "true" ]]; then
+    # An absent CSIDriver prints nothing under --ignore-not-found, and stderr
+    # stays out of the capture, so a kubectl warning cannot pass for a label.
+    rc=0
+    out="$(kubectl get csidriver nfs.csi.k8s.io --ignore-not-found \
+      -o 'jsonpath={.metadata.labels.helm\.toolkit\.fluxcd\.io/namespace}/{.metadata.labels.helm\.toolkit\.fluxcd\.io/name}')" || rc=$?
+    if [[ ${rc} -ne 0 ]]; then
+      log "ERROR: cannot determine whether CSIDriver/nfs.csi.k8s.io exists (kubectl's error is above)."
+      exit 1
+    fi
+    if [[ -n "${out}" && "${out}" != "kube-system/csi-driver-nfs" ]]; then
+      log "ERROR: CSIDriver/nfs.csi.k8s.io exists and was not installed by the HelmRelease"
+      log "       kube-system/csi-driver-nfs (helm.toolkit.fluxcd.io namespace/name labels: '${out}')."
+      log "       The cluster runs its own NFS CSI driver; WITH_NFS=true would replace or"
+      log "       adopt it. Deploy without WITH_NFS=true."
+      exit 1
+    fi
+
+    if [[ -f "${OVERLAY_ROOT}/nfs/client-policy.yaml" ]]; then
+      resolve_nfs_node_network "${nodes_json}"
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# resolve_nfs_node_network NODES_JSON — Set NFS_NODE_NETWORK, the CIDR the
+# overlay's nfs/client-policy.yaml admits to the NFS server's port 2049.
+#
+# Check 5 of check_external_cluster. The NFS clients, csi-nfs-node and
+# nova-compute, are host-network pods, so the policy names the node network.
+# No overlay value carries it: it is read from data.nodeNetwork of the
+# ConfigMap kube-system/shoot-info, which Gardener writes into every shoot. An
+# overlay for a cluster without that ConfigMap ships no client-policy.yaml.
+#
+# Aborts when the ConfigMap cannot be read or names no IPv4 CIDR, and when a
+# node of NODES_JSON (`kubectl get nodes -o json`) has no IPv4 InternalIP
+# inside the network: the policy would drop that node's mounts, which shows
+# only later, as a pod that hangs in ContainerCreating.
+# ---------------------------------------------------------------------------
+resolve_nfs_node_network() {
+  local nodes_json="$1" rc=0
+
+  # An absent ConfigMap prints nothing under --ignore-not-found, and stderr
+  # stays out of the capture, as in the CSIDriver read above.
+  NFS_NODE_NETWORK="$(kubectl get configmap shoot-info -n kube-system --ignore-not-found \
+    -o 'jsonpath={.data.nodeNetwork}')" || rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    log "ERROR: cannot read ConfigMap kube-system/shoot-info (kubectl's error is above)."
+    exit 1
+  fi
+  if [[ ! "${NFS_NODE_NETWORK}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]]; then
+    log "ERROR: ConfigMap kube-system/shoot-info names no IPv4 node network"
+    log "       (data.nodeNetwork: '${NFS_NODE_NETWORK}'). ${OVERLAY_ROOT}/nfs/client-policy.yaml"
+    log "       admits that network to the NFS server, and nothing else names it."
+    exit 1
+  fi
+
+  local outside
+  outside="$(jq -r --arg cidr "${NFS_NODE_NETWORK}" '
+    def ipnum: split(".") | map(tonumber) | .[0] * 16777216 + .[1] * 65536 + .[2] * 256 + .[3];
+    ($cidr | split("/")) as [$network, $length]
+    | pow(2; 32 - ($length | tonumber)) as $size
+    | [.items[]
+       | .metadata.name as $name
+       | [.status.addresses[]? | select(.type == "InternalIP") | .address
+          | select(test("^[0-9]+(\\.[0-9]+){3}$"))] as $ips
+       | select(($ips | length) == 0
+                or any($ips[]; ((ipnum / $size) | floor) != ((($network | ipnum) / $size) | floor)))
+       | "\($name) (\(if ($ips | length) == 0 then "no IPv4 InternalIP" else ($ips | join(",")) end))"]
+    | join(" ")' <<<"${nodes_json}")" || rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    log "ERROR: cannot read the nodes' InternalIPs (jq's error is above)."
+    exit 1
+  fi
+  if [[ -n "${outside}" ]]; then
+    log "ERROR: not every node lies in the node network ${NFS_NODE_NETWORK} of ConfigMap"
+    log "       kube-system/shoot-info: ${outside}."
+    log "       ${OVERLAY_ROOT}/nfs/client-policy.yaml admits only that network to the NFS"
+    log "       server, so these nodes could not mount a share."
+    exit 1
+  fi
+  log "NFS client network  : ${NFS_NODE_NETWORK}"
+}
+
+# ---------------------------------------------------------------------------
+# apply_nfs_client_policy — Apply the overlay's nfs/client-policy.yaml, the
+# NetworkPolicy that admits only the nodes to the NFS server, with
+# NFS_NODE_NETWORK in place of the template's placeholder NODE_NETWORK.
+#
+# Runs in Step 3 under EXTERNAL_CLUSTER=true WITH_NFS=true, before the overlay's
+# nfs/ is applied; resolve_nfs_node_network set the value in Step 1.
+# ---------------------------------------------------------------------------
+apply_nfs_client_policy() {
+  sed "s|cidr: NODE_NETWORK\$|cidr: ${NFS_NODE_NETWORK}|" "${OVERLAY_ROOT}/nfs/client-policy.yaml" |
+    kubectl apply -f -
+  log "NFS client policy ${OVERLAY_ROOT}/nfs/client-policy.yaml applied for ${NFS_NODE_NETWORK}."
 }
 
 # ---------------------------------------------------------------------------
@@ -1816,10 +1943,12 @@ load_ovn_kernel_modules() {
 # ---------------------------------------------------------------------------
 # load_nfs_kernel_modules — Ensure the NFS server and client prerequisites on the host.
 #
-# The in-cluster NFS server drives the host kernel's nfsd instead of a
-# userspace server, so nfsd has to be loadable on the node. The csi-driver-nfs
-# node plugin mounts the exports through the host kernel's NFS client, which
-# needs nfs and nfsv4.
+# The kind mode's module load. The in-cluster NFS server drives the host
+# kernel's nfsd instead of a userspace server, so nfsd has to be loadable on
+# the node. The csi-driver-nfs node plugin mounts the exports through the host
+# kernel's NFS client, which needs nfs and nfsv4. Under EXTERNAL_CLUSTER=true
+# main() does not call it: this script then runs on a workstation, and the
+# pods of the overlay's nfs/ load the modules on the nodes.
 #
 # Best-effort, like every caller of load_host_kernel_modules. The Step 3
 # rollout wait on the server is the hard gate.
@@ -2716,7 +2845,7 @@ main() {
   log "metrics-server      : ${WITH_METRICS_SERVER} (set WITH_METRICS_SERVER=true to install)"
   log "VPA recommender    : ${WITH_VPA} (set WITH_VPA=true to install the recommender and metrics-server)"
   log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
-  log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the kind NFS server + csi-driver-nfs, and to modprobe nfsd/nfs/nfsv4 on the host)"
+  log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the NFS server + csi-driver-nfs; in kind mode it also modprobes nfsd/nfs/nfsv4 on the host, under EXTERNAL_CLUSTER=true the pods of the overlay's nfs/ load them on the nodes)"
   log "Message bus         : ${WITH_MESSAGING} (set WITH_MESSAGING=true for the kind-only shared-rabbitmq broker)"
   log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
@@ -2750,9 +2879,15 @@ main() {
   fi
 
   # Load the NFS server and client modules the same way, gated on WITH_NFS so
-  # the default Quick Start needs neither sudo nor modprobe access.
+  # the default Quick Start needs neither sudo nor modprobe access. In external
+  # mode this machine is not a node of the cluster; the pods of the overlay's
+  # nfs/ load the modules on the nodes instead.
   if [[ "${WITH_NFS}" == "true" ]]; then
-    load_nfs_kernel_modules
+    if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+      log "Skipping the host-side NFS kernel modules (EXTERNAL_CLUSTER=true; the pods of ${OVERLAY_ROOT}/nfs load them on the nodes)."
+    else
+      load_nfs_kernel_modules
+    fi
   else
     log "Skipping NFS kernel modules (WITH_NFS=false)."
   fi
@@ -2944,15 +3079,20 @@ main() {
 
   # Opt-in NFS overlay: the in-cluster NFS server plus the csi-driver-nfs
   # mounter. Layered on top of the base so the default Quick Start stays
-  # minimal; enable with WITH_NFS=true. The overlay is self-contained (no
-  # `../../` parent-dir references), so kubectl's embedded kustomize renders
-  # it under the default LoadRestrictionsRootOnly security check (no
-  # `--load-restrictor` flag required, kubernetes/kubectl#948), same contract
-  # as the chaos-mesh, prometheus, metrics-server and dizzy overlays.
+  # minimal; enable with WITH_NFS=true. The kind mode applies deploy/kind/nfs,
+  # which is self-contained (no `../../` parent-dir references); the external
+  # mode applies the overlay's nfs/, which references deploy/kind/nfs as a
+  # directory. kubectl's embedded kustomize renders both under the default
+  # LoadRestrictionsRootOnly security check (no `--load-restrictor` flag
+  # required, kubernetes/kubectl#948), same contract as the chaos-mesh,
+  # prometheus, metrics-server and dizzy overlays.
   #
-  # The rollout wait is a hard gate. The module load above only warns when the
-  # host has no nfsd, so asking for WITH_NFS=true and getting a CrashLooping
-  # server is an error, not a warning.
+  # The rollout waits are hard gates. In kind mode the module load above only
+  # warns when the host has no nfsd, so asking for WITH_NFS=true and getting a
+  # CrashLooping server is an error, not a warning. In external mode the
+  # server's init container load-nfsd loads nfsd, and the DaemonSet
+  # nfs-client-modules loads nfs and nfsv4 on every node; a node that cannot
+  # load them keeps its pod in Init, and the wait on it fails the run.
   if [[ "${WITH_NFS}" == "true" ]]; then
     # `CSIDriver.spec.volumeLifecycleModes` is immutable, so a cluster whose
     # nfs.csi.k8s.io predates `feature.enableInlineVolume` cannot be upgraded
@@ -3010,8 +3150,12 @@ main() {
       log "CSIDriver/nfs.csi.k8s.io is absent while the csi-driver-nfs HelmRelease exists; an earlier run dropped it without getting it back. Forcing the release to recreate it."
       nfs_csidriver_absent=true
     fi
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"
-    log "NFS kind overlay applied (WITH_NFS=true)."
+    # The policy goes first, so the server never listens without it.
+    if [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/nfs/client-policy.yaml" ]]; then
+      apply_nfs_client_policy
+    fi
+    kubectl apply -k "${OVERLAY_ROOT}/nfs"
+    log "NFS overlay ${OVERLAY_ROOT}/nfs applied (WITH_NFS=true)."
     if [[ "${nfs_csidriver_absent}" == "true" ]]; then
       # The apply above is a no-op on the cluster that needs it most: one that
       # already ran this overlay, had its upgrade rejected on the immutable
@@ -3062,10 +3206,23 @@ main() {
       log "CSIDriver/nfs.csi.k8s.io recreated by csi-driver-nfs with the Ephemeral lifecycle mode."
     fi
     if ! kubectl rollout status deployment/nfs-server -n openstack --timeout="${POD_TIMEOUT}s"; then
-      log "ERROR: the NFS server did not roll out. The host kernel needs the nfsd module; deploy-infra loads it best-effort and only warns when it cannot."
+      if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+        log "ERROR: the NFS server did not roll out. Its init container load-nfsd loads the nfsd module from the node's /lib/modules; read 'kubectl logs -n openstack deployment/nfs-server -c load-nfsd'."
+      else
+        log "ERROR: the NFS server did not roll out. The host kernel needs the nfsd module; deploy-infra loads it best-effort and only warns when it cannot."
+      fi
       exit 1
     fi
     log "NFS server rolled out."
+    # The clients, csi-nfs-node and nova-compute, mount through the kernel of
+    # whatever node they run on, so every node needs nfs and nfsv4.
+    if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+      if ! kubectl rollout status daemonset/nfs-client-modules -n openstack --timeout="${POD_TIMEOUT}s"; then
+        log "ERROR: DaemonSet openstack/nfs-client-modules did not roll out, so not every node has the nfs and nfsv4 modules. Read 'kubectl logs -n openstack -l app.kubernetes.io/name=nfs-client-modules -c load --prefix --tail=-1'."
+        exit 1
+      fi
+      log "NFS client modules loaded on every node."
+    fi
   fi
 
   # the c5c3 ControlPlane stack (c5c3-operator + image and the K-ORC

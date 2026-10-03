@@ -7,8 +7,11 @@
 #   1. EXTERNAL_CLUSTER and EXTERNAL_OVERLAY default and pass through verbatim,
 #      and the derived OVERLAY_ROOT and PUBLIC_PORT follow the mode.
 #   2. preflight_checks in external mode needs only kubectl and jq, still needs
-#      yq under WITH_CONTROLPLANE=true, refuses each of the seven kind-bound
-#      opt-ins by name, refuses an overlay without its two kustomizations, a
+#      yq under WITH_CONTROLPLANE=true, refuses each of the six kind-bound
+#      opt-ins by name, accepts WITH_NFS=true only for an overlay with an
+#      nfs/ kustomization (refusing an nfs/ without one, and only after the
+#      base/ check, before the cluster is contacted), refuses an overlay
+#      without its two kustomizations, a
 #      CONTROLPLANE_NAME the overlay's rendered by-hand ControlPlane does not
 #      carry (and nothing else with that name), a controlplane/ that does not
 #      render and a context whose API server does not answer; the kind mode
@@ -16,15 +19,28 @@
 #   3. check_external_cluster refuses a cluster without a default StorageClass,
 #      one with a node-local-dns DaemonSet, one without a Ready node, and one it
 #      cannot read, and passes a cluster with a default class, a NotFound
-#      DaemonSet and a Ready node, logging both.
+#      DaemonSet and a Ready node, logging both. Under WITH_NFS=true it also
+#      refuses a CSIDriver nfs.csi.k8s.io the HelmRelease
+#      kube-system/csi-driver-nfs did not install and one it cannot read (an
+#      error that says "not found" included), and passes an absent one or that
+#      release's, beside a kubectl warning on stderr as well. For an overlay
+#      with nfs/client-policy.yaml it then reads the node network from
+#      ConfigMap kube-system/shoot-info and logs it, and refuses an absent or
+#      unreadable ConfigMap, a value that is no IPv4 CIDR, and a node whose
+#      InternalIP lies outside the network or is missing; without that file
+#      or without WITH_NFS=true it reads no ConfigMap. apply_nfs_client_policy
+#      applies the template with the network in place of NODE_NETWORK.
 #   4. resolve_api_server_egress renders one egress rule per address on the
 #      port EndpointSlice default/kubernetes publishes, /128 for IPv6, and
 #      aborts on a slice without a port, without an address, or unreadable.
 #   5. The script keeps one strict INFRA_ONLY gate, the un-pause patch carries
 #      egressRules beside apiServerEndpointIPs and paused:false and follows
 #      resolve_api_server_egress, the external Step 1 runs
-#      check_external_cluster, Steps 3 and 5 apply the overlay root, the nofile
-#      cap and the Keystone preload sit behind an EXTERNAL_CLUSTER gate, the CR
+#      check_external_cluster, Steps 3 and 5 apply the overlay root, Step 3
+#      applies the client policy before its nfs/, behind an EXTERNAL_CLUSTER
+#      and file gate, and waits for the nfs-client-modules rollout behind an
+#      EXTERNAL_CLUSTER gate, the host NFS module load, the nofile cap and the
+#      Keystone preload sit behind an EXTERNAL_CLUSTER gate, the CR
 #      rewrite and the by-hand CR hint key on PUBLIC_PORT, the external
 #      by-hand hint names the overlay's controlplane/ kustomization behind an
 #      EXTERNAL_CLUSTER and file gate and its CR by CONTROLPLANE_NAME while the
@@ -66,6 +82,19 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 #   KUBECTL_SLICE_RC        exit code of that lookup (default 0)
 #   KUBECTL_KUSTOMIZE       file answering `kustomize <dir>` (default: empty)
 #   KUBECTL_KUSTOMIZE_RC    exit code of that render (default 0)
+#   KUBECTL_CSIDRIVER_OWNER the namespace/name labels `get csidriver` prints
+#                           (default: no CSIDriver, which prints nothing under
+#                           --ignore-not-found)
+#   KUBECTL_CSIDRIVER_ERROR non-empty: that read fails with this message
+#   KUBECTL_CSIDRIVER_NOISE non-empty: that read first writes an aggregated-API
+#                           error to stderr, as kubectl does while the
+#                           metrics-server APIService is down
+#   KUBECTL_NODE_NETWORK    data.nodeNetwork of ConfigMap kube-system/shoot-info,
+#                           which `get configmap` prints (default
+#                           10.128.44.0/22; empty: no such ConfigMap, which
+#                           prints nothing under --ignore-not-found)
+#   KUBECTL_SHOOT_INFO_ERROR non-empty: that read fails with this message
+#   KUBECTL_APPLY_STDIN     file that receives the stdin of `apply -f -`
 make_kubectl_stub() {
   local dir="$1"
   mkdir -p "$dir"
@@ -110,6 +139,21 @@ case "${1:-}" in
         exit 1
         ;;
       nodes) cat "${KUBECTL_NODES}" ;;
+      csidriver)
+        if [ -n "${KUBECTL_CSIDRIVER_NOISE:-}" ]; then
+          echo 'E1003 10:00:00.000000    4242 memcache.go:287] couldn'"'"'t get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request' >&2
+        fi
+        if [ -n "${KUBECTL_CSIDRIVER_ERROR:-}" ]; then echo "${KUBECTL_CSIDRIVER_ERROR}" >&2; exit 1; fi
+        # The namespace/name labels the jsonpath read prints.
+        if [ -n "${KUBECTL_CSIDRIVER_OWNER:-}" ]; then printf '%s' "${KUBECTL_CSIDRIVER_OWNER}"; exit 0; fi
+        [[ "$*" != *--ignore-not-found* ]] || exit 0
+        echo 'Error from server (NotFound): csidrivers.storage.k8s.io "nfs.csi.k8s.io" not found' >&2
+        exit 1
+        ;;
+      configmap)
+        if [ -n "${KUBECTL_SHOOT_INFO_ERROR:-}" ]; then echo "${KUBECTL_SHOOT_INFO_ERROR}" >&2; exit 1; fi
+        printf '%s' "${KUBECTL_NODE_NETWORK-10.128.44.0/22}"
+        ;;
       endpointslice)
         if [ "${KUBECTL_SLICE_RC:-0}" != "0" ]; then
           echo 'Error from server (Forbidden): endpointslices.discovery.k8s.io "kubernetes" is forbidden' >&2
@@ -118,6 +162,9 @@ case "${1:-}" in
         cat "${KUBECTL_SLICE}"
         ;;
     esac
+    ;;
+  apply)
+    if [ "$*" = "apply -f -" ] && [ -n "${KUBECTL_APPLY_STDIN:-}" ]; then cat >"${KUBECTL_APPLY_STDIN}"; fi
     ;;
 esac
 exit 0
@@ -228,8 +275,15 @@ STORAGECLASSES_WITHOUT_DEFAULT='{"items":[
   {"metadata":{"name":"premium","annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}},
   {"metadata":{"name":"standard"}}]}'
 NODES_READY='{"items":[
-  {"metadata":{"name":"shoot-worker-a"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
-  {"metadata":{"name":"shoot-worker-b"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}'
+  {"metadata":{"name":"shoot-worker-a"},"status":{"conditions":[{"type":"Ready","status":"True"}],
+    "addresses":[{"type":"InternalIP","address":"10.128.44.1"},{"type":"Hostname","address":"shoot-worker-a"}]}},
+  {"metadata":{"name":"shoot-worker-b"},"status":{"conditions":[{"type":"Ready","status":"True"}],
+    "addresses":[{"type":"InternalIP","address":"10.128.44.3"},{"type":"InternalIP","address":"fd00::3"}]}}]}'
+NODES_WITHOUT_ADDRESS='{"items":[
+  {"metadata":{"name":"shoot-worker-a"},"status":{"conditions":[{"type":"Ready","status":"True"}],
+    "addresses":[{"type":"InternalIP","address":"10.128.44.1"}]}},
+  {"metadata":{"name":"shoot-worker-b"},"status":{"conditions":[{"type":"Ready","status":"True"}],
+    "addresses":[{"type":"Hostname","address":"shoot-worker-b"}]}}]}'
 NODES_NOT_READY='{"items":[
   {"metadata":{"name":"shoot-worker-a"},"status":{"conditions":[{"type":"Ready","status":"False"}]}}]}'
 
@@ -421,7 +475,7 @@ test_refused_flags() {
   # WITH_VPA=true folds into WITH_METRICS_SERVER=true at the top of the script,
   # so it has to be checked first to be named at all.
   for flag in WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE WITH_CHAOS_MESH \
-    WITH_OVN_KERNEL_MODULES WITH_NFS WITH_DIZZY; do
+    WITH_OVN_KERNEL_MODULES WITH_DIZZY; do
     : >"$KUBECTL_LOG"
     output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true "${flag}=true")"
     rc=$?
@@ -436,6 +490,67 @@ test_refused_flags() {
   output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true WITH_MESSAGING=true INFRA_ONLY=true)"
   rc=$?
   assert_eq "WITH_PROMETHEUS, WITH_MESSAGING and INFRA_ONLY stay allowed" "0" "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# Test 3b: WITH_NFS=true needs the overlay's nfs/ kustomization
+# ---------------------------------------------------------------------------
+test_nfs_overlay_preflight() {
+  echo "Test: preflight_checks under EXTERNAL_CLUSTER=true accepts WITH_NFS=true only with an nfs/ kustomization"
+
+  local tmp output rc
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stub_path "$tmp/bin" kubectl jq
+  export KUBECTL_LOG="$tmp/kubectl.log"
+
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_NFS=true)"
+  rc=$?
+  assert_eq "WITH_NFS=true passes with the default overlay, which has nfs/" "0" "$rc"
+  assert_contains "and reaches the end of preflight" "$output" "Pre-flight checks passed."
+
+  # An overlay with the two kustomizations Steps 3 and 5 apply and no nfs/.
+  mkdir -p "$tmp/no-nfs/base" "$tmp/no-nfs/infrastructure"
+  : >"$tmp/no-nfs/base/kustomization.yaml"
+  : >"$tmp/no-nfs/infrastructure/kustomization.yaml"
+  local refusal="EXTERNAL_CLUSTER=true WITH_NFS=true needs $tmp/no-nfs/nfs/kustomization.yaml, which does not exist"
+
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_NFS=true EXTERNAL_OVERLAY="$tmp/no-nfs")"
+  rc=$?
+  assert_nonzero_exit "WITH_NFS=true is refused for an overlay without nfs/" "$rc"
+  assert_contains "the refusal names the missing kustomization" "$output" "$refusal"
+  assert_eq "and comes before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
+
+  # The check tests the file, not the directory.
+  mkdir -p "$tmp/no-nfs/nfs"
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_NFS=true EXTERNAL_OVERLAY="$tmp/no-nfs")"
+  rc=$?
+  assert_nonzero_exit "an nfs/ directory without a kustomization is refused too" "$rc"
+  assert_contains "with the same message" "$output" "$refusal"
+  assert_eq "before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
+
+  # Only the value true turns the stack on.
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-nfs")"
+  rc=$?
+  assert_eq "the overlay without an nfs/ kustomization passes without WITH_NFS" "0" "$rc"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_NFS=yes EXTERNAL_OVERLAY="$tmp/no-nfs")"
+  rc=$?
+  assert_eq "and with WITH_NFS=yes" "0" "$rc"
+  assert_not_contains "WITH_NFS=yes is not refused" "$output" "WITH_NFS=true needs"
+
+  # The overlay check comes first: an overlay with neither base/ nor nfs/ is
+  # reported for its base/.
+  mkdir -p "$tmp/empty"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_NFS=true EXTERNAL_OVERLAY="$tmp/empty")"
+  rc=$?
+  assert_nonzero_exit "an overlay with neither base/ nor nfs/ is refused" "$rc"
+  assert_contains "for its missing base/ and infrastructure/" "$output" \
+    "EXTERNAL_OVERLAY='$tmp/empty' has no base/ and infrastructure/ kustomization"
+  assert_not_contains "and not for its nfs/" "$output" "WITH_NFS=true needs"
+  unset KUBECTL_LOG
 }
 
 # ---------------------------------------------------------------------------
@@ -513,6 +628,176 @@ test_check_external_cluster() {
   rc=$?
   assert_nonzero_exit "refuses a cluster without a Ready node" "$rc"
   assert_contains "names the missing Ready node" "$output" "no Ready node"
+
+  # WITH_NFS=true: a CSIDriver nfs.csi.k8s.io must be absent or the one the
+  # HelmRelease kube-system/csi-driver-nfs installed.
+  output="$(run_fn "$tmp/bin" check_external_cluster WITH_NFS=true \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_eq "WITH_NFS=true passes a cluster without the CSIDriver" "0" "$rc"
+
+  output="$(run_fn "$tmp/bin" check_external_cluster WITH_NFS=true \
+    KUBECTL_CSIDRIVER_OWNER=kube-system/csi-driver-nfs \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_eq "and one whose CSIDriver an earlier run's HelmRelease installed" "0" "$rc"
+
+  output="$(run_fn "$tmp/bin" check_external_cluster WITH_NFS=true KUBECTL_CSIDRIVER_OWNER=/ \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_nonzero_exit "refuses a CSIDriver the platform installed with helm" "$rc"
+  assert_contains "names the CSIDriver and the HelmRelease it expected" "$output" \
+    "ERROR: CSIDriver/nfs.csi.k8s.io exists and was not installed by the HelmRelease"
+  assert_contains "quotes the labels it read" "$output" "namespace/name labels: '/'"
+  assert_contains "and says why it refuses" "$output" "WITH_NFS=true would replace or"
+
+  output="$(run_fn "$tmp/bin" check_external_cluster WITH_NFS=true \
+    KUBECTL_CSIDRIVER_OWNER=flux-system/platform-nfs \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_nonzero_exit "refuses one another HelmRelease installed" "$rc"
+  assert_contains "naming that release's labels" "$output" "labels: 'flux-system/platform-nfs'"
+
+  output="$(run_fn "$tmp/bin" check_external_cluster WITH_NFS=true \
+    KUBECTL_CSIDRIVER_ERROR="Error from server (Forbidden): csidrivers.storage.k8s.io \"nfs.csi.k8s.io\" is forbidden" \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_nonzero_exit "refuses when the CSIDriver lookup fails with anything but not found" "$rc"
+  assert_contains "quotes that lookup's error" "$output" "csidrivers.storage.k8s.io \"nfs.csi.k8s.io\" is forbidden"
+  assert_contains "and says it cannot tell whether the CSIDriver exists" "$output" \
+    "ERROR: cannot determine whether CSIDriver/nfs.csi.k8s.io exists"
+
+  # A failure whose message happens to say "not found" is still a failure.
+  output="$(run_fn "$tmp/bin" check_external_cluster WITH_NFS=true \
+    KUBECTL_CSIDRIVER_ERROR="Unable to connect to the server: getting credentials: exec: executable kubectl-oidc_login not found" \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_nonzero_exit "refuses when a credential plugin is not found, which is no absent CSIDriver" "$rc"
+  assert_contains "and quotes that error" "$output" "executable kubectl-oidc_login not found"
+
+  # kubectl warns on stderr and still exits 0 while an aggregated API is down;
+  # the warning is no label.
+  output="$(run_fn "$tmp/bin" check_external_cluster WITH_NFS=true KUBECTL_CSIDRIVER_NOISE=1 \
+    KUBECTL_CSIDRIVER_OWNER=kube-system/csi-driver-nfs \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_eq "passes the HelmRelease's CSIDriver beside a kubectl warning" "0" "$rc"
+  output="$(run_fn "$tmp/bin" check_external_cluster WITH_NFS=true KUBECTL_CSIDRIVER_NOISE=1 \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_eq "and an absent CSIDriver beside one" "0" "$rc"
+
+  output="$(run_fn "$tmp/bin" check_external_cluster WITH_NFS=false KUBECTL_CSIDRIVER_OWNER=/ \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_eq "without WITH_NFS=true the platform's CSIDriver is no concern" "0" "$rc"
+
+  # The node network of the overlay's nfs/client-policy.yaml. The checks above
+  # ran in kind mode, whose overlay root ships no such file.
+  printf '%s\n' "$NODES_WITHOUT_ADDRESS" >"$tmp/nodes-no-address.json"
+  export KUBECTL_LOG="$tmp/kubectl.log"
+  local shoot_info_read='kubectl get configmap shoot-info -n kube-system'
+
+  : >"$KUBECTL_LOG"
+  output="$(run_fn "$tmp/bin" check_external_cluster EXTERNAL_CLUSTER=true WITH_NFS=true \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_eq "the lab overlay under WITH_NFS=true passes nodes inside the node network" "0" "$rc"
+  assert_contains "and logs the network" "$output" "NFS client network  : 10.128.44.0/22"
+  assert_contains "read from ConfigMap kube-system/shoot-info" "$(cat "$KUBECTL_LOG")" \
+    "$shoot_info_read --ignore-not-found -o jsonpath={.data.nodeNetwork}"
+
+  output="$(run_fn "$tmp/bin" check_external_cluster EXTERNAL_CLUSTER=true WITH_NFS=true \
+    KUBECTL_NODE_NETWORK= \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_nonzero_exit "refuses a cluster without ConfigMap kube-system/shoot-info" "$rc"
+  assert_contains "says it names no node network" "$output" \
+    "ERROR: ConfigMap kube-system/shoot-info names no IPv4 node network"
+  assert_contains "quotes the empty value and names the template" "$output" \
+    "(data.nodeNetwork: ''). $PROJECT_ROOT/deploy/lab/metal-stack/nfs/client-policy.yaml"
+
+  output="$(run_fn "$tmp/bin" check_external_cluster EXTERNAL_CLUSTER=true WITH_NFS=true \
+    KUBECTL_NODE_NETWORK=fd00:10::/64 \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_nonzero_exit "refuses an IPv6 node network" "$rc"
+  assert_contains "quoting it" "$output" "(data.nodeNetwork: 'fd00:10::/64')"
+
+  output="$(run_fn "$tmp/bin" check_external_cluster EXTERNAL_CLUSTER=true WITH_NFS=true \
+    KUBECTL_NODE_NETWORK=10.128.44.0/33 \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_nonzero_exit "refuses a prefix length above 32" "$rc"
+
+  output="$(run_fn "$tmp/bin" check_external_cluster EXTERNAL_CLUSTER=true WITH_NFS=true \
+    KUBECTL_SHOOT_INFO_ERROR='Error from server (Forbidden): configmaps "shoot-info" is forbidden' \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_nonzero_exit "refuses when the ConfigMap read fails" "$rc"
+  assert_contains "says it cannot read the ConfigMap" "$output" \
+    "ERROR: cannot read ConfigMap kube-system/shoot-info"
+  assert_contains "and quotes the read's error" "$output" 'configmaps "shoot-info" is forbidden'
+
+  # 10.128.44.0/31 holds .0 and .1: shoot-worker-b's 10.128.44.3 is outside.
+  output="$(run_fn "$tmp/bin" check_external_cluster EXTERNAL_CLUSTER=true WITH_NFS=true \
+    KUBECTL_NODE_NETWORK=10.128.44.0/31 \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_nonzero_exit "refuses a node whose InternalIP lies outside the node network" "$rc"
+  assert_contains "names that node and its address" "$output" \
+    "kube-system/shoot-info: shoot-worker-b (10.128.44.3)."
+  assert_not_contains "and not the node inside" "$output" "shoot-worker-a ("
+  assert_contains "and says what the policy would do to it" "$output" \
+    "server, so these nodes could not mount a share."
+
+  output="$(run_fn "$tmp/bin" check_external_cluster EXTERNAL_CLUSTER=true WITH_NFS=true \
+    KUBECTL_NODE_NETWORK=10.128.44.2/31 \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  assert_contains "the comparison is on the network bits, not the text" "$output" \
+    "kube-system/shoot-info: shoot-worker-a (10.128.44.1)."
+
+  output="$(run_fn "$tmp/bin" check_external_cluster EXTERNAL_CLUSTER=true WITH_NFS=true \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-no-address.json")"
+  rc=$?
+  assert_nonzero_exit "refuses a node without an IPv4 InternalIP" "$rc"
+  assert_contains "naming it" "$output" "shoot-worker-b (no IPv4 InternalIP)."
+
+  # An overlay whose nfs/ ships no client-policy.yaml, and a deploy without
+  # WITH_NFS=true: no ConfigMap is read.
+  mkdir -p "$tmp/no-policy/nfs"
+  : >"$tmp/no-policy/nfs/kustomization.yaml"
+  : >"$KUBECTL_LOG"
+  output="$(run_fn "$tmp/bin" check_external_cluster EXTERNAL_CLUSTER=true WITH_NFS=true \
+    EXTERNAL_OVERLAY="$tmp/no-policy" KUBECTL_NODE_NETWORK= \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_eq "an overlay without nfs/client-policy.yaml needs no node network" "0" "$rc"
+  assert_not_contains "and reads no ConfigMap" "$(cat "$KUBECTL_LOG")" "$shoot_info_read"
+
+  : >"$KUBECTL_LOG"
+  output="$(run_fn "$tmp/bin" check_external_cluster EXTERNAL_CLUSTER=true WITH_NFS=false \
+    KUBECTL_NODE_NETWORK= \
+    KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")"
+  rc=$?
+  assert_eq "without WITH_NFS=true the lab overlay needs no node network" "0" "$rc"
+  assert_not_contains "and reads no ConfigMap either" "$(cat "$KUBECTL_LOG")" "$shoot_info_read"
+
+  # apply_nfs_client_policy: the template with the network in place of its
+  # placeholder, and nothing else changed.
+  local template="$PROJECT_ROOT/deploy/lab/metal-stack/nfs/client-policy.yaml"
+  : >"$KUBECTL_LOG"
+  output="$(run_fn "$tmp/bin" apply_nfs_client_policy EXTERNAL_CLUSTER=true \
+    NFS_NODE_NETWORK=10.128.44.0/22 KUBECTL_APPLY_STDIN="$tmp/applied.yaml")"
+  rc=$?
+  assert_eq "apply_nfs_client_policy succeeds" "0" "$rc"
+  assert_contains "it pipes the policy into kubectl apply" "$(cat "$KUBECTL_LOG")" "kubectl apply -f -"
+  assert_eq "the applied policy differs from the template in the cidr line alone" \
+    "$(printf '%s\n' '<             cidr: NODE_NETWORK' '>             cidr: 10.128.44.0/22')" \
+    "$(diff "$template" "$tmp/applied.yaml" | grep '^[<>]')"
+  assert_contains "and the log names the template and the network" "$output" \
+    "NFS client policy $template applied for 10.128.44.0/22."
+  unset KUBECTL_LOG
 }
 
 # ---------------------------------------------------------------------------
@@ -609,6 +894,38 @@ test_main_gates() {
   assert_file_contains_fixed "the WITH_CONTROLPLANE render of Step 5 reads the overlay root" \
     "$DEPLOY_INFRA_SH" 'kubectl kustomize "${OVERLAY_ROOT}/infrastructure"'
 
+  # WITH_NFS=true: the overlay's nfs/ in place of deploy/kind/nfs, no modprobe
+  # on this machine, and a rollout gate on the client modules of every node.
+  assert_file_contains_fixed "Step 3 applies the overlay root's nfs/" \
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${OVERLAY_ROOT}/nfs"'
+  assert_eq "the host NFS module load is the else branch of the EXTERNAL_CLUSTER gate, the skip log its then branch" \
+    "$(printf '%s\n' \
+      'if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then' \
+      'log "Skipping the host-side NFS kernel modules (EXTERNAL_CLUSTER=true; the pods of ${OVERLAY_ROOT}/nfs load them on the nodes)."' \
+      'else' \
+      'load_nfs_kernel_modules')" \
+    "$(grep -B3 -E '^[[:space:]]+load_nfs_kernel_modules$' "$DEPLOY_INFRA_SH" | sed 's/^[[:space:]]*//')"
+  assert_before "the client policy is applied before the overlay's nfs/" \
+    "$(line_of '      apply_nfs_client_policy')" "$(line_of 'kubectl apply -k "${OVERLAY_ROOT}/nfs"')"
+  assert_eq "behind an EXTERNAL_CLUSTER gate and a gate on the template" \
+    'if [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/nfs/client-policy.yaml" ]]; then' \
+    "$(grep -B1 -E '^      apply_nfs_client_policy$' "$DEPLOY_INFRA_SH" | head -n1 | sed 's/^[[:space:]]*//')"
+  assert_eq "check_external_cluster resolves the node network behind the same template gate" \
+    'if [[ -f "${OVERLAY_ROOT}/nfs/client-policy.yaml" ]]; then' \
+    "$(grep -B1 -E '^      resolve_nfs_node_network "\$\{nodes_json\}"$' "$DEPLOY_INFRA_SH" | head -n1 | sed 's/^[[:space:]]*//')"
+  local ds_wait='kubectl rollout status daemonset/nfs-client-modules -n openstack --timeout="${POD_TIMEOUT}s"'
+  assert_before "the nfs-client-modules rollout wait follows the overlay's nfs/ apply" \
+    "$(line_of 'kubectl apply -k "${OVERLAY_ROOT}/nfs"')" "$(line_of "$ds_wait")"
+  assert_before "and the nfs-server rollout wait" \
+    "$(line_of 'kubectl rollout status deployment/nfs-server -n openstack')" "$(line_of "$ds_wait")"
+  assert_contains "the nfs-client-modules wait sits behind an EXTERNAL_CLUSTER gate" \
+    "$(grep -B1 -F "$ds_wait" "$DEPLOY_INFRA_SH")" 'if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then'
+  local ds_failure
+  ds_failure="$(grep -A3 -F "$ds_wait" "$DEPLOY_INFRA_SH")"
+  assert_contains "a failed nfs-client-modules rollout names the DaemonSet and the log command" "$ds_failure" \
+    "ERROR: DaemonSet openstack/nfs-client-modules did not roll out, so not every node has the nfs and nfsv4 modules. Read 'kubectl logs -n openstack -l app.kubernetes.io/name=nfs-client-modules -c load --prefix --tail=-1'."
+  assert_contains "and exits 1" "$ds_failure" "exit 1"
+
   assert_contains "the Keystone preload sits behind an EXTERNAL_CLUSTER gate" \
     "$(grep -B3 -F 'docker pull "ghcr.io/c5c3/keystone:' "$DEPLOY_INFRA_SH")" \
     'if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then'
@@ -668,6 +985,7 @@ test_main_gates() {
 test_knobs_and_derived_variables
 test_external_preflight
 test_refused_flags
+test_nfs_overlay_preflight
 test_kind_preflight_unchanged
 test_check_external_cluster
 test_resolve_api_server_egress
