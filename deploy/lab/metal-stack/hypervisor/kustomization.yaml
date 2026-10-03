@@ -17,14 +17,17 @@
 # EXTERNAL_CLUSTER=true make teardown-infra removes all of it in its step 0,
 # labels included (docs/reference/infrastructure/e2e-deployment.md).
 #
-# All resource references are local to this directory, so `kubectl apply -k`
-# renders it under kustomize's default LoadRestrictionsRootOnly check.
+# The namespace and the migration port reservation come from
+# ../migration-ports, which Part 2, Step 1 applies on its own before the node
+# port check. Every other resource is local to this directory, and a directory
+# is no file reference, so `kubectl apply -k` renders the overlay under
+# kustomize's default LoadRestrictionsRootOnly check.
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - namespace.yaml
+  - ../migration-ports
   - libvirt-ca.yaml
   - libvirt-configmap.yaml
   - libvirt-daemonset.yaml

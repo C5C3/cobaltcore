@@ -328,12 +328,15 @@ delete_where_crd_exists() {
 #      domain that fails exits 1 before the delete: K-ORC applies no spec
 #      change to an object that is being deleted, so a domain deleted while
 #      enabled could never be disabled;
-#   4. the hypervisor overlay, the two operators with it;
+#   4. the hypervisor overlay, the two operators and the migration port
+#      reservation (deploy/lab/metal-stack/migration-ports) with it;
 #   5. the Deployment and PodDisruptionBudget maint-<node> the hypervisor
 #      operator leaves in kube-system for every node. Its lifecycle controller
 #      recreates them while it runs, hence after step 4;
 #   6. the four node labels and the annotation the lab sets by hand.
-# Node state under /var/lib/nova, /var/lib/libvirt and /etc/pki stays.
+# Node state under /var/lib/nova, /var/lib/libvirt and /etc/pki stays, and so
+# does the reservation in net.ipv4.ip_local_reserved_ports until the node
+# reboots.
 # ---------------------------------------------------------------------------
 teardown_hypervisors() {
   if [[ ! -f "${OVERLAY_ROOT}/hypervisor/kustomization.yaml" ]]; then

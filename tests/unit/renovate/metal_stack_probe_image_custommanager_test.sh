@@ -14,6 +14,10 @@
 #     3-day minimumReleaseAge, the shape of the aws-cli fixture's rules.
 #     bookworm-slim is a codename tag that docker versioning never reads as a
 #     minor or major, so only the digest moves under it.
+#   - the manager and both rules also name the migration port reservation
+#     (deploy/lab/metal-stack/migration-ports/reservation-daemonset.yaml),
+#     whose two containers run the probe's image, and the regex captures the
+#     whole pin of both image: lines, so one group moves all three pins.
 #
 # This is the regression test the check-renovate-coverage skill requires for
 # every customManager; that skill's audit does not scan deploy/lab/, so this
@@ -41,6 +45,8 @@ MANIFEST_FILE="$PROJECT_ROOT/deploy/lab/metal-stack/probe/node-probe.yaml"
 
 PROBE_PACKAGE="docker.io/library/debian"
 MANIFEST_PATH="deploy/lab/metal-stack/probe/node-probe.yaml"
+RESERVATION_PATH="deploy/lab/metal-stack/migration-ports/reservation-daemonset.yaml"
+RESERVATION_FILE="$PROJECT_ROOT/$RESERVATION_PATH"
 
 # --- Test 1: customManager targets the manifest and captures depName/tag/digest ---
 test_custom_manager_captures_image() {
@@ -155,9 +161,53 @@ test_package_rules() {
     "metal-stack node probe image" "$(jq -r '.groupName' <<<"$minor_rule")"
 }
 
+# --- Test 3: the manager and both rules cover the migration port reservation ---
+test_reservation_is_covered() {
+  echo "Test: the manager and its packageRules cover the migration port reservation's image pins"
+
+  if ! command -v jq >/dev/null 2>&1 || ! command -v perl >/dev/null 2>&1; then
+    echo "  SKIP: jq or perl not installed (5 checks skipped)"
+    SKIP=$((SKIP + 5))
+    return
+  fi
+
+  local entry
+  entry="$(jq -c '.customManagers[]
+    | select(.datasourceTemplate == "docker")
+    | select((.managerFilePatterns // []) | join(",") | contains("deploy/lab/metal-stack/probe/node-probe"))' \
+    "$RENOVATE_FILE")"
+  assert_contains "managerFilePatterns targets the reservation manifest" \
+    "$(jq -r '.managerFilePatterns | join(",")' <<<"$entry")" \
+    "deploy/lab/metal-stack/migration-ports/reservation-daemonset"
+
+  # Both image: lines, each with its whole pin captured: a line the regex
+  # misses would keep its digest while the probe's moves.
+  local lines captured
+  lines="$( { grep -E '^[[:space:]]*image: ' "$RESERVATION_FILE" || true; } | sed -E 's/^[[:space:]]*//')"
+  assert_eq "the reservation manifest has two image: lines" "2" "$(grep -c . <<<"$lines")"
+  captured="$(REGEX="$(jq -r '.matchStrings[0]' <<<"$entry")" LINES="$lines" perl -e '
+    my $re = $ENV{REGEX};
+    for my $l (split /\n/, $ENV{LINES}) {
+      print "image: $+{depName}:$+{currentValue}\@$+{currentDigest}\n" if $l =~ /$re/;
+    }
+  ')"
+  assert_eq "the regex captures the whole pin of both lines" "$lines" "$captured"
+
+  local types rule
+  for types in major minor; do
+    rule="$(jq -c --arg p "$PROBE_PACKAGE" --arg f "$MANIFEST_PATH" --arg t "$types" '.packageRules[]
+      | select(((.matchPackageNames // []) | index($p)) != null
+               and ((.matchFileNames // []) | index($f)) != null
+               and ((.matchUpdateTypes // []) | index($t)) != null)' "$RENOVATE_FILE" | head -1)"
+    assert_contains "the $types rule of the probe image names the reservation manifest" \
+      "$(jq -r '(.matchFileNames // []) | join(",")' <<<"${rule:-{\}}")" "$RESERVATION_PATH"
+  done
+}
+
 # --- Run ---
 test_custom_manager_captures_image
 test_package_rules
+test_reservation_is_covered
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

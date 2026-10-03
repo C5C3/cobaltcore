@@ -2662,23 +2662,30 @@ certificates through `SSL_CERT_DIR`.
 ### Lab hypervisors
 
 **Files:** `deploy/lab/metal-stack/hypervisor-fixtures/kustomization.yaml`,
-`deploy/lab/metal-stack/hypervisor/kustomization.yaml` and the nine manifests
-it lists
+`deploy/lab/metal-stack/hypervisor/kustomization.yaml` and the eight manifests
+it lists, `deploy/lab/metal-stack/migration-ports/kustomization.yaml` and the
+two manifests it lists
 
-The two kustomizations turn the lab's two workers into KVM hypervisors of the
-[Lab ControlPlane](#lab-controlplane), planned in
+`hypervisor-fixtures/` and `hypervisor/` turn the lab's two workers into KVM
+hypervisors of the [Lab ControlPlane](#lab-controlplane), planned in
 [#1142](https://github.com/c5c3/cobaltcore/issues/1142). They add libvirt in a
 DaemonSet, the OVN chassis, the metadata agent and a `NovaCompute` pool, and
 run openstack-hypervisor-operator (hvo) and kvm-node-agent (kna) from upstream
 with the settings that carry both on a Debian node under Gardener. Both are
-applied by hand once the ControlPlane is `Ready`; `hack/deploy-infra.sh`
-applies neither. `tests/unit/deploy/metal_stack_hypervisor_test.sh` pins both
-renders.
+applied by hand once the ControlPlane is `Ready`. `hypervisor/` pulls in
+`migration-ports/`, which reserves QEMU's migration ports on every node and
+which Part 2, Step 1 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md#hv-nodes) applies
+on its own before the [node port check](#node-port-check).
+`hack/deploy-infra.sh` applies none of the three.
+`tests/unit/deploy/metal_stack_hypervisor_test.sh` pins the three renders.
 
 | File | Content |
 | --- | --- |
 | `hypervisor-fixtures/kustomization.yaml` | The kind fixtures of `deploy/kind/hypervisor-operator-fixtures/` without `VolumeType/hvo-premium`, `Network/hvo-smoke-test` and `Subnet/hvo-smoke-test`: the lab has no Cinder, and only the smoke test uses the network. The domain `cc3test` and the project `test`, which hvo scopes a token to at start, stay, and so do the flavor ID `1` (1 vCPU, 256 MiB, 1 GiB) and the image `cirros-kvm` the run boots |
-| `hypervisor/namespace.yaml` | Namespace `hypervisor-system`, with the lab's Gardener opt-out label |
+| `migration-ports/namespace.yaml` | Namespace `hypervisor-system`, with the lab's Gardener opt-out label |
+| `migration-ports/reservation-daemonset.yaml` | DaemonSet `migration-port-reservation` in `hypervisor-system`, on every node: it reserves QEMU's migration ports (see [Migration port reservation](#migration-port-reservation)) |
+| `hypervisor/kustomization.yaml` | Takes `../migration-ports` as a resource, so the hypervisor overlay applies the namespace and the reservation too and the teardown removes both with it |
 | `hypervisor/libvirt-ca.yaml` | Certificate `libvirt-migration-ca` (ECDSA 256, three years, bootstrapped from `selfsigned-cluster-issuer`) and Issuer `nova-hypervisor-agents-ca-issuer`, hvo's default issuer name, in `hypervisor-system`. The CA signs nothing else |
 | `hypervisor/libvirt-configmap.yaml` | ConfigMap `libvirt-lab`: `host-prepare.sh`, `libvirtd.sh`, `libvirtd.conf` and `qemu.conf` |
 | `hypervisor/libvirt-daemonset.yaml` | DaemonSet `libvirt` in `openstack` |
@@ -3067,9 +3074,9 @@ lab.
 
 | Property | Value |
 | --- | --- |
-| Namespaces | `openstack` (libvirt, the compute CRs, hvo), `hypervisor-system` (the CA, the node certificates, kna), `envoy-gateway-system` (the alias Service), `flux-system` (the chart sources) |
-| Applied | by hand: the node labels and the Placement trait, then `hypervisor-fixtures/`, then `hypervisor/`, after the Lab ControlPlane is `Ready` |
-| Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, step 0, labels and `maint-<node>` objects included. The node state under `/var/lib/nova`, `/var/lib/libvirt` and `/etc/pki` stays |
+| Namespaces | `openstack` (libvirt, the compute CRs, hvo), `hypervisor-system` (the CA, the node certificates, kna, the migration port reservation), `envoy-gateway-system` (the alias Service), `flux-system` (the chart sources) |
+| Applied | by hand: `migration-ports/`, then the node labels and the Placement trait, then `hypervisor-fixtures/`, then `hypervisor/`, after the Lab ControlPlane is `Ready` |
+| Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, step 0, labels and `maint-<node>` objects included. The node state under `/var/lib/nova`, `/var/lib/libvirt` and `/etc/pki` stays, and so do the reserved ports in `net.ipv4.ip_local_reserved_ports` until a node reboots |
 | Pinned by | `tests/unit/deploy/metal_stack_hypervisor_test.sh`; the hvo chart tag follows `hack/ci-resolve-hvo-commit.sh`, and the kna chart tag `hack/ci-resolve-kna-commit.sh` |
 | Dependencies | the Lab ControlPlane with `spec.services.nova.hypervisorOperator`; `/dev/kvm` and `vhost_net` on every node; TCP 16514 and 49152 to 49215 open between the nodes ([Node port check](#node-port-check)) |
 
@@ -3187,11 +3194,13 @@ A port is `closed` when the connect fails, `listener bind failed` when the
 destination's listener could not bind it, and `no result` when the client
 produced no line for it before the client wait ran out. The migration range
 sits in Linux's ephemeral port range, so an outgoing connection on the node can
-hold one of its ports. The listener tries such a port again every second for
-`NODE_PORTS_BIND_TIMEOUT` seconds before it reports it. A port a long-lived
-connection holds stays `listener bind failed` and fails the run, which then
-prints a `NOTE:` line saying the port was not tested; a longer
-`NODE_PORTS_BIND_TIMEOUT` or a `NODE_PORTS_TCP` without that port gets past it.
+hold one of its ports. `deploy/lab/metal-stack/migration-ports` reserves the
+range on every node, which keeps new connections off it. The listener tries a
+port it cannot bind again every second for `NODE_PORTS_BIND_TIMEOUT` seconds
+before it reports it. A port a connection took before the reservation stays
+`listener bind failed` and fails the run, which then prints a `NOTE:` line
+saying the port was not tested; restarting the process that holds the port
+frees it.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -3208,3 +3217,67 @@ prints a `NOTE:` line saying the port was not tested; a longer
 | `0` | Every port of every ordered pair is open |
 | `1` | At least one port is closed, has no result, or was not bound by the listener within `NODE_PORTS_BIND_TIMEOUT` |
 | `2` | Usage or cluster error: a missing tool or image, an invalid variable, fewer than two nodes, a node without an InternalIP or whose first one is IPv6 (the listeners bind IPv4 only) or not an address, Pods of an earlier run that cannot be deleted, Pods that cannot be created, or listeners that never became Ready |
+
+#### Migration port reservation
+
+**Files:** `deploy/lab/metal-stack/migration-ports/kustomization.yaml`,
+`namespace.yaml` and `reservation-daemonset.yaml` beside it
+
+The kernel picks the local port of an outgoing connection from
+`net.ipv4.ip_local_port_range`, `32768` to `65535` on the lab's nodes, which
+holds the migration range. A host-network process can therefore get a
+migration port for a connection that lasts for days: on shoot `forge`, `calico-node` held
+`49152` for its connection to the API server, and the check answered
+`listener bind failed: 49152` on every run. libvirt skips a migration port it
+cannot bind, so migrations go on; the check cannot test the port.
+
+The DaemonSet `migration-port-reservation` in `hypervisor-system` runs on
+every node. Its init container `reserve` adds `49152-49215` to
+`net.ipv4.ip_local_reserved_ports`, which the kernel leaves out when it picks a
+local port; a bind to a named port, QEMU's and the check's, is not affected. It
+keeps a value the node already carries. The setting belongs to the host's
+network namespace and `/proc/sys` is writable only in a privileged container,
+so the pod uses the host's network and that container is privileged. The second
+container, `hold`, only keeps the pod running, as UID 65534 without a
+capability: the setting is gone after a reboot, and the init container then
+runs again. Both run the node probe's pinned debian image, and Renovate moves
+the pins in one group.
+
+Part 2, Step 1 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md#hv-nodes) applies
+the directory in front of the check. The hypervisor overlay takes it as a
+resource, so `EXTERNAL_CLUSTER=true make teardown-infra` removes the DaemonSet
+with that overlay. The reserved ports stay on a node until it reboots.
+
+The reservation closes no connection. One that held a port of the range before
+it keeps the port, and the check then still reports `listener bind failed`.
+The init container names such a socket and the process that owns it, which is
+what the pod's host PID namespace is for:
+
+```bash
+kubectl logs -n hypervisor-system -l app.kubernetes.io/name=migration-port-reservation \
+  -c reserve --prefix --tail=-1
+```
+
+```text
+[pod/migration-port-reservation-5gm99/reserve] reserved: 49152-49215 (before: none)
+[pod/migration-port-reservation-5gm99/reserve] in use: port 49152 by calico-node (pid 3798)
+[pod/migration-port-reservation-bjjzt/reserve] reserved: 49152-49215 (before: none)
+[pod/migration-port-reservation-bjjzt/reserve] in use: none
+```
+
+`--tail=-1` keeps every line: with a label selector, `kubectl logs` prints only
+the last 10 lines of each pod, which can drop a pod's `reserved:` line and its
+first holders. `kubectl get pod -n hypervisor-system -o wide` maps each pod to
+its node. A socket no process holds prints `by an unknown owner`. Restarting
+the named process frees its port, and its next connection gets a port outside
+the range. For a process a DaemonSet runs, delete its pod on that node, as for
+`calico-node` on `forge`:
+
+```bash
+kubectl delete pod -n kube-system -l k8s-app=calico-node --field-selector spec.nodeName=<node>
+```
+
+The lines describe the moment the pod started. Delete the reservation's pod on
+the node to read them anew.
+

@@ -1,0 +1,132 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keeps outgoing connections off QEMU's migration ports on every node (#1189).
+# The ports 49152 to 49215 lie in Linux's ephemeral range (32768 to 65535 on
+# the lab's nodes), so a host-network process can get one of them as the local
+# port of a connection that lasts for days. Nothing can listen on such a port:
+# the node port check (hack/lab-node-ports.sh) reports it as `listener bind
+# failed`, and libvirt skips it for a migration.
+#
+# The init container adds the range to net.ipv4.ip_local_reserved_ports, which
+# the kernel then leaves out when it picks a local port. A bind to a named
+# port, QEMU's and the check's, is not affected. The setting belongs to the
+# host's network namespace, hence hostNetwork, and /proc/sys is writable only
+# in a privileged container. A value the node already carries is kept.
+#
+# The reservation does not close a connection that holds a port already. The
+# init container prints one `in use:` line per socket with a local port in the
+# range and the process that owns it, which needs hostPID; restarting that
+# process frees the port. Read the lines with:
+#
+#   kubectl logs -n hypervisor-system -l app.kubernetes.io/name=migration-port-reservation \
+#     -c reserve --prefix --tail=-1
+#
+# With a label selector, kubectl logs prints only the last 10 lines of each
+# pod unless --tail says otherwise.
+#
+# The setting lasts until the node reboots, so the pod has to start again
+# then: the second container only keeps the pod running, without a privilege.
+# It ends on SIGTERM because hostPID keeps it from being PID 1.
+#
+# The image is the node probe's (../probe/node-probe.yaml); Renovate bumps
+# both in one group, and tests/unit/deploy/metal_stack_hypervisor_test.sh
+# keeps them equal. The range is the default of hack/lab-node-ports.sh.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: migration-port-reservation
+  namespace: hypervisor-system
+  labels:
+    app.kubernetes.io/name: migration-port-reservation
+    app.kubernetes.io/part-of: lab-hypervisor
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: migration-port-reservation
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: migration-port-reservation
+        app.kubernetes.io/part-of: lab-hypervisor
+    spec:
+      hostNetwork: true
+      hostPID: true
+      # Neither container calls the Kubernetes API.
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 5
+      initContainers:
+        - name: reserve
+          image: docker.io/library/debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              range=49152-49215
+              # PROC_ROOT lets the unit test run this script against a directory.
+              proc="${PROC_ROOT:-/proc}"
+              knob="$proc/sys/net/ipv4/ip_local_reserved_ports"
+              before="$(cat "$knob")"
+              case ",$before," in
+                *",$range,"*) ;;
+                *) echo "${before:+$before,}$range" >"$knob" ;;
+              esac
+              echo "reserved: $(cat "$knob") (before: ${before:-none})"
+              first="${range%-*}"
+              last="${range#*-}"
+              in_use() {
+                for table in "$proc/net/tcp" "$proc/net/tcp6"; do
+                  [ -r "$table" ] || continue
+                  tail -n +2 "$table" | while read -r _ local_address _ _ _ _ _ _ _ inode _; do
+                    port=$((0x${local_address##*:}))
+                    if [ "$port" -lt "$first" ] || [ "$port" -gt "$last" ]; then
+                      continue
+                    fi
+                    # Inode 0 is a closing connection, TIME_WAIT for one, that
+                    # no file refers to; looking for its owner would read every
+                    # fd on the node and find none.
+                    if [ "$inode" = 0 ]; then
+                      echo "in use: port $port by an unknown owner"
+                      continue
+                    fi
+                    fd="$(find "$proc"/[0-9]*/fd -maxdepth 1 -lname "socket:\[$inode\]" -print -quit 2>/dev/null || true)"
+                    if [ -z "$fd" ]; then
+                      echo "in use: port $port by an unknown owner"
+                      continue
+                    fi
+                    pid="${fd#"$proc"/}"
+                    pid="${pid%%/*}"
+                    echo "in use: port $port by $(cat "$proc/$pid/comm" 2>/dev/null || echo '?') (pid $pid)"
+                  done
+                done
+              }
+              holders="$(in_use)"
+              echo "${holders:-in use: none}"
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+      containers:
+        - name: hold
+          image: docker.io/library/debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+          command: ["sleep", "infinity"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 1m
+              memory: 4Mi
+            limits:
+              memory: 16Mi

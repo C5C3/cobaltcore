@@ -35,7 +35,9 @@
 # retries such a port once per second for NODE_PORTS_BIND_TIMEOUT seconds
 # first), and `no result` when the client produced no line for it (the Pod
 # never ran, its image did not pull, or the client wait ran out). All three
-# fail the run.
+# fail the run. deploy/lab/metal-stack/migration-ports keeps new connections
+# off the migration range; a connection older than it holds its port until
+# its process is restarted, which a retry does not outlast.
 #
 # Optional env vars:
 #   NODE_PORTS_TCP             — ports and inclusive ranges, space-separated
@@ -438,7 +440,7 @@ main() {
   echo ""
 
   if (( unbound_pairs > 0 )); then
-    log "NOTE: a port reported as 'listener bind failed' was held by another socket on its node for ${NODE_PORTS_BIND_TIMEOUT}s and was not tested; set NODE_PORTS_BIND_TIMEOUT to wait longer."
+    log "NOTE: a port reported as 'listener bind failed' was held by another socket on its node for ${NODE_PORTS_BIND_TIMEOUT}s and was not tested; set NODE_PORTS_BIND_TIMEOUT to wait longer, or restart the process that holds the port (Node port check in docs/reference/infrastructure/infrastructure-manifests.md says how to find it)."
   fi
   if (( failed_pairs > 0 )); then
     log "FAIL: ${failed_pairs} of ${pairs} node pairs have a port that is not open."
