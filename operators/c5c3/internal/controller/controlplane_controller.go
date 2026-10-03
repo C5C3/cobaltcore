@@ -573,14 +573,15 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// genuinely feeds the next: a later step applying before its predecessor
 	// converged would fail or wedge.
 	//
-	// The tail is a RunSequentialGroup of nine independent projections (Horizon,
-	// KORC, AdminCredential, Catalog, Glance, Placement, Barbican, ServiceAccounts,
-	// RegistrationTenantStores). Running every member on every pass is safe: every
-	// member runs each pass, its condition always persists, the members' requeues
-	// aggregate to the shortest member interval, and one member's failure no longer
-	// suppresses its peers (member errors are joined). A still-converging Horizon
-	// therefore no longer parks KORC, the AdminCredential/Catalog identity
-	// bootstrap, Glance, Placement, or Barbican.
+	// The tail is a RunSequentialGroup of fourteen members (Horizon, KORC,
+	// AdminCredential, Catalog, Glance, Placement, Barbican, OVN, Neutron, Cinder,
+	// Nova, ServiceAccounts, KORCCatalogRefresh, RegistrationTenantStores).
+	// Running every member on every pass is safe: every member runs each pass, its
+	// condition always persists, the members' requeues aggregate to the shortest
+	// member interval, and one member's failure no longer suppresses its peers
+	// (member errors are joined). A still-converging Horizon therefore no longer
+	// parks KORC, the AdminCredential/Catalog identity bootstrap, Glance,
+	// Placement, or Barbican.
 	//
 	// Correctness rests on each member gating itself on the conditions it
 	// consumes rather than on its position in the chain — the prefix's
@@ -593,9 +594,16 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// reads the KeystoneService children the service legs applied earlier in the
 	// same pass, so there is no projection it could defer.
 	//
+	// Two members depend on their position all the same. ServiceAccounts runs
+	// after the service legs, for the reason above. KORCCatalogRefresh runs after
+	// ServiceAccounts, because it reads the ServiceAccountsReady that member wrote
+	// in this same pass. Ahead of it, it would act on the previous pass's
+	// aggregate and could restart K-ORC before a child projected in this pass is
+	// counted, and then once more when that child settles.
+	//
 	// Onboarding rule: a future service whose projection is independent of the
 	// others joins the tail group rather than the blocking prefix — and MUST
-	// carry its own condition gate, following the six gated members rather than
+	// carry its own condition gate, following the gated members rather than
 	// KORC. RegistrationTenantStores is ungated for the same reason KORC is, not
 	// as an exemption from that rule: it consumes no condition this chain
 	// produces, because the tenant-store trio depends on cert-manager and OpenBao
@@ -742,6 +750,16 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				// reads only, so it carries no condition gate.
 				{Name: "ServiceAccounts", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileServiceAccounts(ctx, &cp)
+				}},
+				// KORCCatalogRefresh restarts K-ORC once the catalog
+				// registered through the plane has settled on a new epoch. It
+				// is gated on the ServiceAccountsReady the member above wrote
+				// in this same pass, which is why it sits after it: the
+				// built-in registrations turn Ready one after another, and the
+				// gate keeps a bring-up to one restart instead of one per
+				// registration. It sets no condition.
+				{Name: "KORCCatalogRefresh", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileKORCCatalogRefresh(ctx, &cp)
 				}},
 				// RegistrationTenantStores provisions the per-tenant store in the
 				// allowlisted namespaces standalone KeystoneService CRs register
