@@ -112,6 +112,8 @@ func (r *NovaComputeReconciler) reconcileNovaComputeNova(ctx context.Context, cr
 	}
 
 	pass.image = image
+	pass.nova = nova
+	pass.novaChildren = novaChildren
 	pass.secretName = nova.Status.ComputeConfigSecretRef.Name
 	pass.doer = doer
 	pass.keystoneURL = nova.Spec.KeystoneEndpoint

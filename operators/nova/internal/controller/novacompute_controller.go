@@ -83,6 +83,8 @@ const (
 	eventReasonAggregateKept             = "AggregateKept"
 	eventReasonComputeConfigMirrorReaped = "ComputeConfigMirrorReaped"
 	eventReasonNodeConflict              = "NodeConflict"
+	eventReasonHostDiscoveryStarted      = "HostDiscoveryStarted"
+	eventReasonHostDiscoveryFailed       = "HostDiscoveryFailed"
 )
 
 // novaComputeSubConditionTypes lists the condition types the NovaCompute
@@ -187,6 +189,11 @@ type novaComputePass struct {
 	keystoneURL string
 	computeURL  string
 	creds       computeapi.Credentials
+
+	// nova and novaChildren are the Nova and the client of its cluster, through
+	// which the Services step runs the Nova's host discovery Job.
+	nova         *novav1alpha1.Nova
+	novaChildren client.Client
 
 	// api is built on first use and shared by the Aggregates and Services
 	// steps, so a pass requests one token.
