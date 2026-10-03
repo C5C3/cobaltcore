@@ -77,6 +77,11 @@ const metadataProxySocketPath = neutronStatePath + "/metadata_proxy"
 // #nosec G101 -- an oslo.config env override key, not a credential.
 const metadataProxySharedSecretEnvVarName = "OS_DEFAULT__METADATA_PROXY_SHARED_SECRET"
 
+// sbConnectionEnvVarName carries the resolved Southbound address into the
+// wait-for-chassis gate, which reads no config file. The value is the one the
+// agent's [ovn] ovn_sb_connection gets.
+const sbConnectionEnvVarName = "OVN_SB_CONNECTION"
+
 // metadataSecretHashAnnotation carries the digest of that shared secret on the
 // pod template. The env var is resolved only when a container starts, so a
 // rotated value rolls the pods through this stamp, named after the one the Nova
@@ -84,18 +89,62 @@ const metadataProxySharedSecretEnvVarName = "OS_DEFAULT__METADATA_PROXY_SHARED_S
 // #nosec G101 -- annotation key naming a digest, not a credential.
 const metadataSecretHashAnnotation = "neutron.c5c3.io/metadata-secret-hash"
 
-// waitForChassisScript blocks until the OVNChassis on this node has registered
-// itself: its apply-node init container writes external_ids:system-id into the
-// local Open vSwitch database, and until that row exists the agent has no
-// chassis to read port bindings for. Both workloads select the same nodes, but
-// nothing orders the two DaemonSets, so the gate is per node rather than per
-// cluster.
+// waitForChassisScript blocks until the chassis this node registers now is in
+// the Southbound database. The agent reads external_ids:system-id from the local
+// Open vSwitch database once, at start, takes it as its chassis name, and then
+// retries writing its registration into the Chassis_Private row of that name
+// forever, with its proxy socket open and the pod Ready. The OVNChassis's
+// host-prepare keeps an existing conf.db, so a node whose database outlived an
+// earlier OVNChassis holds that chassis's id until apply-node writes the new
+// one, and an agent started in between never registers. Both workloads select
+// the same nodes, but nothing orders the two DaemonSets, so the gate is per node
+// rather than per cluster.
 //
-// The query goes through ovsdb-client rather than ovs-vsctl: the neutron image
+// Every 2 seconds the gate reads the local system-id again and decides:
+//
+//   - no UUID-shaped system-id in the local database: wait;
+//   - a system-id without a Chassis_Private row of that name: wait, because the
+//     id is stale or ovn-controller has not registered it yet;
+//   - a system-id and its row: exit 0.
+//
+// Every failed query (no socket yet, a refused connection, a failed TLS
+// handshake, a --timeout=5 expiry, an error reply) reads as "not yet". The sed
+// pattern accepts only the UUID shape the ovn-operator's systemIDPattern
+// renders, which is also what makes the value safe to splice into the second
+// query and the grep pattern. --no-leader-only matches the agent's own
+// Southbound connection, which does not insist on the leader either, so a
+// leader election does not hold the gate. say prints a message only when it
+// changes, so a pod held in Init:0/1 logs why without a line every 2 seconds.
+// An empty OVN_SB_CONNECTION is a rendering fault no wait repairs, so the gate
+// exits 1 on it.
+//
+// The queries go through ovsdb-client rather than ovs-vsctl: the neutron image
 // ships the OVS Python client and not the ovs-vsctl binary.
-const waitForChassisScript = `until ovsdb-client --timeout=5 transact unix:/run/openvswitch/db.sock ` +
-	`'["Open_vSwitch",{"op":"select","table":"Open_vSwitch","where":[],"columns":["external_ids"]}]' ` +
-	`2>/dev/null | grep -q system-id; do sleep 2; done`
+const waitForChassisScript = `if [ -z "${OVN_SB_CONNECTION:-}" ]; then
+  echo "OVN_SB_CONNECTION is not set" >&2
+  exit 1
+fi
+ovs_query='["Open_vSwitch",{"op":"select","table":"Open_vSwitch","where":[],"columns":["external_ids"]}]'
+last=
+say() { if [ "$1" != "$last" ]; then echo "$1"; last=$1; fi; }
+while :; do
+  id=$(ovsdb-client --timeout=5 transact ` + ovsdbSocketPath + ` "$ovs_query" 2>/dev/null |
+    sed -n 's/.*\["system-id", *"\([0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}\)"\].*/\1/p')
+  if [ -z "$id" ]; then
+    say "waiting for the chassis to write its system-id into the local Open vSwitch database"
+  elif ovsdb-client --timeout=5 --no-leader-only -p ` + ovnClientKeyPath + ` -c ` + ovnClientCertPath +
+	` -C ` + ovnClientCAPath + ` \
+    transact "$OVN_SB_CONNECTION" \
+    '["OVN_Southbound",{"op":"select","table":"Chassis_Private","where":[["name","==","'"$id"'"]],"columns":["name"]}]' \
+    2>/dev/null | grep -q "\"name\": *\"$id\""; then
+    echo "chassis $id is registered in the Southbound database"
+    exit 0
+  else
+    say "waiting for chassis $id to register in the Southbound database"
+  fi
+  sleep 2
+done
+`
 
 // reconcileDaemonSet projects the metadata-agent DaemonSet onto the chassis's
 // nodes and mirrors its node counters into status.
@@ -171,10 +220,12 @@ func buildAgentDaemonSet(cr *neutronv1alpha1.NeutronMetadataAgent, chassis resol
 		Name:            "wait-for-chassis",
 		Image:           image,
 		Command:         []string{"/bin/sh", "-c", waitForChassisScript},
+		Env:             []corev1.EnvVar{{Name: sbConnectionEnvVarName, Value: chassis.sbAddress}},
 		SecurityContext: deployment.RestrictedSecurityContext(),
 		Resources:       resources,
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: runOVSVolumeName, MountPath: ovsRunDir},
+			{Name: ovnTLSVolumeName, MountPath: ovnTLSMountPath, ReadOnly: true},
 		},
 	}}
 
@@ -260,9 +311,9 @@ func buildAgentDaemonSet(cr *neutronv1alpha1.NeutronMetadataAgent, chassis resol
 	}
 
 	// The Nova metadata CA bundle reaches the agent container alone: the init
-	// container makes no https request. Neutron reads the file on every proxied
-	// request and the volume carries no subPath, so a rotated bundle reaches the
-	// running pods without a rollout.
+	// container sends no request to the Nova metadata API. Neutron reads the file
+	// on every proxied request and the volume carries no subPath, so a rotated
+	// bundle reaches the running pods without a rollout.
 	if ref := agentNovaMetadataCARef(cr); ref != nil {
 		containers[0].VolumeMounts = append(containers[0].VolumeMounts, corev1.VolumeMount{
 			Name: novaMetadataCAVolumeName, MountPath: novaMetadataCAMountPath, ReadOnly: true,

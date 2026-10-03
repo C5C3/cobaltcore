@@ -189,8 +189,14 @@ func TestBuildAgentDaemonSet_ContainerPostures(t *testing.T) {
 	g.Expect(init.Command).To(Equal([]string{"/bin/sh", "-c", waitForChassisScript}))
 	g.Expect(init.Command[2]).To(ContainSubstring("ovsdb-client --timeout=5 transact"),
 		"ovs-vsctl is not in the neutron image")
-	g.Expect(init.Command[2]).To(ContainSubstring("grep -q system-id"))
-	g.Expect(init.VolumeMounts).To(ConsistOf(corev1.VolumeMount{Name: runOVSVolumeName, MountPath: ovsRunDir}))
+	g.Expect(init.Command[2]).To(ContainSubstring("Chassis_Private"),
+		"a system-id left in a reused database must not pass the gate")
+	g.Expect(init.Command[2]).To(ContainSubstring("--no-leader-only"))
+	g.Expect(init.Env).To(Equal([]corev1.EnvVar{{Name: "OVN_SB_CONNECTION", Value: testSouthboundAddress}}))
+	g.Expect(init.VolumeMounts).To(Equal([]corev1.VolumeMount{
+		{Name: "run-ovs", MountPath: "/run/openvswitch"},
+		{Name: "ovn-tls", MountPath: "/etc/ovn/tls", ReadOnly: true},
+	}))
 
 	agent := ds.Spec.Template.Spec.Containers[0]
 	g.Expect(agent.Name).To(Equal(metadataAgentComponent))
