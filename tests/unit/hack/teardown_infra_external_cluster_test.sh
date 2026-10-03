@@ -18,7 +18,10 @@
 #      nothing reaps), passes --ignore-not-found to every delete, resumes only
 #      the suspended Flux objects that installed something, splits the base
 #      render into the Gateway pass and the rest, deletes exactly the stack
-#      CRDs of a mixed list, and names no namespace outside the stack's.
+#      CRDs of a mixed list, names no namespace outside the stack's, and
+#      reads, logs and deletes the cluster-scoped objects whose
+#      helm.toolkit.fluxcd.io/namespace label names a stack namespace after
+#      the stack namespaces are gone and before the CRDs.
 #   3. It exits 1 before any delete when the API server does not answer, yq
 #      is missing or yq is not mikefarah/yq v4.40.1 or newer, exits 1 when a
 #      wait runs out (naming the object, the OVNCentral delete included, after
@@ -28,9 +31,11 @@
 #      object or kubectl's error, before any operator is removed), when the
 #      CRD scope cannot be read (before any operator is removed), when the
 #      proving OpenBao instance cannot be switched to DeletePVCs, when a stack
-#      CRD or namespace is left, and when the base render, the CRD list of
-#      step 8 or the final namespace read fails, and exits 0 on a second run
-#      that finds nothing.
+#      CRD or namespace is left, when the read of those chart objects fails
+#      or their delete runs out (before any CRD is deleted), and when the
+#      base render, the CRD list of step 8 or the final namespace read fails,
+#      and exits 0 on a second run that finds nothing, without printing
+#      kubectl's "No resources found".
 #   4. Step 0 removes the lab hypervisors before the ControlPlane: the
 #      NovaComputes, metadata agents and OVNChassis, the kvm.cloud.sap
 #      objects, the fixtures after disabling their domain and waiting for
@@ -87,8 +92,9 @@ ippools.crd.projectcalico.org"
 # kubectl stub answers from the environment:
 #   KUBECTL_VERSION_RC     exit code of `version` (default 0)
 #   KUBECTL_SECOND_RUN     non-empty: the stack is gone (no Flux, c5c3 or ovn
-#                          CRD, no OpenBao instance, no stack CRD, deletes of
-#                          CR kinds report a missing mapping)
+#                          CRD, no OpenBao instance, no stack CRD, no chart
+#                          object, deletes of CR kinds report a missing
+#                          mapping)
 #   KUBECTL_DELETE_RC      exit code of every waiting delete (default 0)
 #   KUBECTL_OVNCENTRAL_DELETE_RC
 #                          exit code of the OVNCentral delete alone (default 0)
@@ -120,8 +126,17 @@ ippools.crd.projectcalico.org"
 #   KUBECTL_DOMAIN_NOISE   non-empty: that read first writes an aggregated-API
 #                          error to stderr, as kubectl does while the
 #                          metrics-server APIService is down
+#   KUBECTL_CHART_OBJECTS_RC
+#                          non-empty: every read of the cluster-scoped chart
+#                          objects fails with Forbidden
+#   KUBECTL_CHART_OBJECT_DELETE_RC
+#                          exit code of the delete of those objects alone
+#                          (default 0)
 # The step 0 reads answer two nodes, lab-a and lab-b, and a fixtures domain
-# hvo-cc3test that a second run no longer finds.
+# hvo-cc3test that a second run no longer finds. The read of the cluster-scoped
+# chart objects answers the three of chart-objects.txt until they are deleted;
+# afterwards, and on a second run, it answers nothing and, without
+# --ignore-not-found, writes kubectl's "No resources found" to stderr.
 # A `delete -f -` records the kinds it received on stdin, and fails the way
 # kubectl does when stdin holds no object.
 make_stubs() {
@@ -152,6 +167,12 @@ ippools.crd.projectcalico.org                Cluster      IPPool
 COLUMNS
   grep -E '(autoscaling\.k8s\.io|cert\.gardener\.cloud|crd\.projectcalico\.org) ' \
     "$dir/crd-columns.txt" >"$dir/crd-columns-after.txt"
+  # The Helm hook objects gateway-helm 1.9.2 leaves behind, in kubectl's order.
+  cat >"$dir/chart-objects.txt" <<'OBJECTS'
+clusterrole.rbac.authorization.k8s.io/envoy-gateway-gateway-helm-certgen:envoy-gateway-system
+clusterrolebinding.rbac.authorization.k8s.io/envoy-gateway-gateway-helm-certgen:envoy-gateway-system
+mutatingwebhookconfiguration.admissionregistration.k8s.io/envoy-gateway-topology-injector.envoy-gateway-system
+OBJECTS
   # What the stack-CR read finds in openstack after steps 1 and 2 when no
   # ControlPlane was ever applied: the base overlay's Gateway, the eso-tenant
   # Certificate hack/deploy-infra.sh applies, and its CertificateRequest. Nothing
@@ -383,6 +404,18 @@ case "$args" in
     fi
     if [ -n "${KUBECTL_NS_LEFT:-}" ]; then echo "namespace/${KUBECTL_NS_LEFT}"; fi
     ;;
+  "get clusterrole,clusterrolebinding,mutatingwebhookconfiguration,validatingwebhookconfiguration -l "*)
+    if [ -n "${KUBECTL_CHART_OBJECTS_RC:-}" ]; then
+      echo 'Error from server (Forbidden): clusterroles.rbac.authorization.k8s.io is forbidden: User "lab" cannot list resource "clusterroles" in API group "rbac.authorization.k8s.io" at the cluster scope' >&2
+      exit 1
+    fi
+    if [ -z "${KUBECTL_SECOND_RUN:-}" ] &&
+      ! grep -qF 'kubectl delete clusterrole.rbac.authorization.k8s.io/' "$CALL_LOG"; then
+      cat "$dir/chart-objects.txt"
+    else
+      [[ "$args" == *--ignore-not-found* ]] || echo 'No resources found' >&2
+    fi
+    ;;
   "kustomize "*)
     if [ -n "${KUBECTL_RENDER_RC:-}" ]; then
       echo 'error: accumulating resources: must build at directory: not a valid directory' >&2
@@ -396,6 +429,12 @@ case "$args" in
         if [ "${KUBECTL_OVNCENTRAL_DELETE_RC:-0}" != "0" ]; then
           echo "error: timed out waiting for the condition on ovncentrals/controlplane-ovn" >&2
           exit "${KUBECTL_OVNCENTRAL_DELETE_RC}"
+        fi
+        ;;
+      "delete clusterrole.rbac.authorization.k8s.io/"*)
+        if [ "${KUBECTL_CHART_OBJECT_DELETE_RC:-0}" != "0" ]; then
+          echo "error: timed out waiting for the condition on clusterroles/envoy-gateway-gateway-helm-certgen:envoy-gateway-system" >&2
+          exit "${KUBECTL_CHART_OBJECT_DELETE_RC}"
         fi
         ;;
       "delete novacomputes.nova.openstack.c5c3.io "*)
@@ -536,8 +575,8 @@ test_external_teardown_order() {
   echo "Test: the external teardown removes the stack in finalizer order"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (20 checks skipped)"
-    SKIP=$((SKIP + 20))
+    echo "  SKIP: yq not installed (23 checks skipped)"
+    SKIP=$((SKIP + 23))
     return
   fi
 
@@ -590,7 +629,8 @@ test_external_teardown_order() {
     'kubectl delete namespace flux-system' \
     'kubectl delete clusterrolebinding flux-operator-cluster-admin' \
     'kubectl delete clusterrole flux-operator-edit flux-operator-view flux-web-admin flux-web-user' \
-    "kubectl delete namespace $(stack_namespace_names)")"
+    "kubectl delete namespace $(stack_namespace_names)" \
+    "kubectl delete $(paste -sd' ' "$tmp/bin/chart-objects.txt")")"
   local actual
   actual="$(mutations "$CALL_LOG" | grep -v 'customresourcedefinition')"
   assert_eq "the deletes run in finalizer order, the lab hypervisors first (patches only for installed, suspended objects)" \
@@ -626,6 +666,19 @@ test_external_teardown_order() {
   assert_eq "the one read names every namespaced stack kind and nothing else" \
     "$(grep -vx -e 'gatewayclasses.gateway.networking.k8s.io' -e 'hypervisors.kvm.cloud.sap' \
       -e 'evictions.kvm.cloud.sap' <<<"$STACK_CRDS" | sort)" "$read_kinds"
+
+  # The cluster-scoped objects the charts left behind: selected by the release
+  # namespace label, read once the stack namespaces are gone (before that the
+  # selector also matches the objects of every installed chart), and named.
+  local chart_read namespaces_line chart_read_line
+  chart_read="kubectl get clusterrole,clusterrolebinding,mutatingwebhookconfiguration,validatingwebhookconfiguration -l helm.toolkit.fluxcd.io/namespace in ($(stack_namespace_names | tr ' ' ','),flux-system) --ignore-not-found -o name"
+  assert_contains "the chart objects are read by the label of every stack namespace" \
+    "$(cat "$CALL_LOG")" "$chart_read"
+  namespaces_line="$(grep -nF "kubectl delete namespace $(stack_namespace_names) " "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  chart_read_line="$(grep -nxF "$chart_read" "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  assert_eq "the chart objects are read after the stack namespaces are deleted" "true" \
+    "$([[ -n "$namespaces_line" && -n "$chart_read_line" && "$chart_read_line" -gt "$namespaces_line" ]] && echo true || echo false)"
+  assert_eq "each of the three chart objects is logged" "3" "$(grep -c 'Chart leftover: ' <<<"$output")"
 
   local deletes without_flag
   deletes="$(grep -E '^kubectl delete ' "$CALL_LOG")"
@@ -684,8 +737,8 @@ test_external_teardown_failures() {
   echo "Test: the external teardown aborts on an unreachable cluster, a timeout or leftovers"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (49 checks skipped)"
-    SKIP=$((SKIP + 49))
+    echo "  SKIP: yq not installed (59 checks skipped)"
+    SKIP=$((SKIP + 59))
     return
   fi
 
@@ -809,6 +862,33 @@ test_external_teardown_failures() {
     "$(cat "$CALL_LOG")" "delete ovncentrals"
   assert_not_contains "and patches no OpenBao instance that is gone" \
     "$(cat "$CALL_LOG")" "patch openbaoclusters"
+  # Step 6 deletes the flux-operator ClusterRoles on every run; the chart
+  # objects are named with their group.
+  assert_not_contains "and deletes no chart object when the read finds none" \
+    "$(cat "$CALL_LOG")" "delete clusterrole.rbac.authorization.k8s.io/"
+  assert_not_contains "and does not print kubectl's empty-read notice" "$output" "No resources found"
+
+  # The chart objects cannot be read: exit 1 after the stack namespaces, with
+  # kubectl's error, and before any CRD is deleted.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CHART_OBJECTS_RC=1)"
+  rc=$?
+  assert_eq "a chart-object read that fails exits 1" "1" "$rc"
+  assert_contains "says the chart objects cannot be read" "$output" \
+    "cannot read the cluster-scoped objects of the stack's charts"
+  assert_contains "and quotes kubectl's error" "$output" "clusterroles.rbac.authorization.k8s.io is forbidden"
+  assert_contains "in step 7, after the stack namespaces are deleted" "$(cat "$CALL_LOG")" \
+    "kubectl delete namespace $(stack_namespace_names)"
+  assert_not_contains "and deletes no CRD" "$(cat "$CALL_LOG")" "delete customresourcedefinition"
+
+  # The delete of the chart objects runs out: exit 1, and the CRDs stay.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CHART_OBJECT_DELETE_RC=1)"
+  rc=$?
+  assert_eq "a chart-object delete that runs out exits 1" "1" "$rc"
+  assert_contains "the error names the chart-object step" "$output" \
+    "deleting the cluster-scoped objects the stack's charts left behind failed or did not finish within 600s"
+  assert_not_contains "and no CRD is deleted afterwards" "$(cat "$CALL_LOG")" "delete customresourcedefinition"
 
   : >"$CALL_LOG"
   output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO_PATCH_RC=1)"

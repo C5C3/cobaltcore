@@ -53,6 +53,14 @@ TEARDOWN_TIMEOUT="${TEARDOWN_TIMEOUT:-600}"
 # purpose and must stay absent.
 STACK_CRD_GROUPS='cert-manager\.io|external-secrets\.io|k8s\.mariadb\.com|openbao\.org|garage\.rajsingh\.info|rabbitmq\.com|gateway\.networking\.k8s\.io|gateway\.envoyproxy\.io|monitoring\.coreos\.com|c5c3\.io|openstack\.k-orc\.cloud|(source|kustomize|helm|notification|image)\.toolkit\.fluxcd\.io|fluxcd\.controlplane\.io|kvm\.cloud\.sap'
 
+# The kinds of the cluster-scoped objects the stack's charts leave behind. Helm
+# does not track a hook object as part of its release, so no uninstall removes
+# it. The helm-controller labels every object of a HelmRelease, hooks included,
+# with helm.toolkit.fluxcd.io/namespace, the namespace of the release, which is
+# how the teardown finds them. These four kinds exist on every cluster, so the
+# read needs no CRD check.
+STACK_CHART_OBJECT_KINDS='clusterrole,clusterrolebinding,mutatingwebhookconfiguration,validatingwebhookconfiguration'
+
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).
 # ---------------------------------------------------------------------------
@@ -206,6 +214,24 @@ read_stack_crds() {
     exit 1
   fi
   STACK_CRDS="$(grep -E "\.(${STACK_CRD_GROUPS})$" <<<"${all}" || true)"
+}
+
+# ---------------------------------------------------------------------------
+# read_stack_chart_objects NAMESPACE... — Set STACK_CHART_OBJECTS to the objects
+# of STACK_CHART_OBJECT_KINDS whose helm.toolkit.fluxcd.io/namespace label names
+# one of the NAMESPACEs, one `<kind>.<group>/<name>` per line. Exits 1 when the
+# objects cannot be listed: an unreadable cluster is not one without leftovers.
+# --ignore-not-found keeps kubectl's "No resources found" off stderr when
+# nothing matches, as on a second run and in the final count.
+# ---------------------------------------------------------------------------
+read_stack_chart_objects() {
+  local selector
+  selector="helm.toolkit.fluxcd.io/namespace in ($(printf '%s\n' "$@" | paste -sd, -))"
+  if ! STACK_CHART_OBJECTS="$(kubectl get "${STACK_CHART_OBJECT_KINDS}" \
+    -l "${selector}" --ignore-not-found -o name)"; then
+    log "ERROR: cannot read the cluster-scoped objects of the stack's charts (kubectl's error is above)."
+    exit 1
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -444,7 +470,9 @@ teardown_hypervisors() {
 #      chart is uninstalled;
 #   5. the FluxInstance, so the flux-operator uninstalls the toolkit;
 #   6. the flux-system namespace and the flux-operator's cluster-scoped RBAC;
-#   7. the stack namespaces (stack_namespaces), by name;
+#   7. the stack namespaces (stack_namespaces), by name, then the objects of
+#      STACK_CHART_OBJECT_KINDS whose helm.toolkit.fluxcd.io/namespace label
+#      names one of them: Helm hook objects, which no uninstall removes;
 #   8. the CRDs of STACK_CRD_GROUPS.
 # It ends with the count of stack CRDs and namespaces still present, which must
 # both be zero. Every delete ignores absence, so a second run finds nothing and
@@ -558,8 +586,9 @@ teardown_external_cluster() {
   delete_and_wait "the flux-operator ClusterRoles" \
     clusterrole flux-operator-edit flux-operator-view flux-web-admin flux-web-user
 
-  # 7. The stack namespaces, flux-system aside: step 6 deleted it. The same list
-  # is counted in step 9.
+  # 7. The stack namespaces, flux-system aside: step 6 deleted it, then the
+  # cluster-scoped objects their charts left behind. The same list is counted
+  # in step 9.
   local namespace_list namespaces=() namespaces_to_delete=() line
   if ! namespace_list="$(stack_namespaces)"; then
     log "ERROR: cannot read the stack namespaces from deploy/flux-system/namespaces.yaml (yq's error is above)."
@@ -573,6 +602,21 @@ teardown_external_cluster() {
     fi
   done <<<"${namespace_list}"
   delete_and_wait "the stack namespaces" namespace "${namespaces_to_delete[@]}"
+  # Read only now: with every stack namespace gone, no HelmRelease is left in
+  # one, so an object whose label names one belongs to no release. Before step
+  # 3 the same read also finds the objects of every installed chart. Each
+  # object is logged before the delete, since no step names it, and the delete
+  # comes before step 8, so the CRDs go last.
+  local chart_objects=()
+  read_stack_chart_objects "${namespaces[@]}"
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    log "  Chart leftover: ${line}"
+    chart_objects+=("${line}")
+  done <<<"${STACK_CHART_OBJECTS}"
+  if [[ ${#chart_objects[@]} -gt 0 ]]; then
+    delete_and_wait "the cluster-scoped objects the stack's charts left behind" "${chart_objects[@]}"
+  fi
 
   # 8. The stack CRDs, by API group.
   local crds=()
