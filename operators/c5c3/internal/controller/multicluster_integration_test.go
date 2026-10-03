@@ -199,6 +199,12 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 				// children are written with.
 				Resolver: mcMgr,
 			}
+			// In production the KeystoneService controller registers the
+			// spec.controlPlaneRef index the K-ORC catalog refresh lists
+			// registrations through. That controller does not run here.
+			if err := registerKeystoneServiceControlPlaneRefIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
+				return err
+			}
 			// The production watch wiring, shared with SetupWithManager: the legs
 			// pinned to the management cluster, and the same kinds again on the
 			// clusters a service can be placed on, keyed on the ownership labels.
