@@ -3,11 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package computeapi is the operator's minimal client for the parts of the
-// Nova compute API a NovaCompute drives: the nova-compute services, the host
-// aggregates, and the server count on a host. It authenticates once per client
+// Nova compute API a NovaCompute drives: the nova-compute services, the hosts
+// the hypervisor list names, the host aggregates, and the server count on a
+// host. It authenticates once per client
 // with a password-scoped Keystone token and speaks microversion 2.53, where a
-// service is addressed by its UUID; the service list alone asks for 2.69 (see
-// ListComputeServices).
+// service is addressed by its UUID; the service list asks for 2.69 (see
+// ListComputeServices) and the hypervisor list for 2.88 (see ListMappedHosts).
 //
 // It is stdlib only (net/http and encoding/json). Every request goes through a
 // Doer, the same seam the operator's health check uses, so a placed Nova is
@@ -106,7 +107,8 @@ func (e *APIError) Error() string {
 var requestTimeout = 10 * time.Second
 
 // MicroVersion is the compute API microversion every request but the service
-// list asks for. 2.53 is the first that addresses a service by UUID.
+// and hypervisor lists asks for. 2.53 is the first that addresses a service by
+// UUID.
 const MicroVersion = "2.53"
 
 // serviceListMicroVersion is what the service list asks for. From 2.69 on,
@@ -116,6 +118,11 @@ const serviceListMicroVersion = "2.69"
 
 // serviceStatusUnknown is the status of such a record.
 const serviceStatusUnknown = "UNKNOWN"
+
+// hypervisorListMicroVersion is what the hypervisor list asks for. From 2.88
+// on, a detail entry no longer carries cpu_info and the resource counters, the
+// bulk of a page; the id and the service host stay.
+const hypervisorListMicroVersion = "2.88"
 
 // maxResponseBody bounds how much of a response body the client decodes. A
 // servers list at the default page limit of a thousand entries is a fraction
@@ -218,6 +225,54 @@ func (c *Client) ListComputeServices(ctx context.Context) ([]Service, error) {
 		}
 	}
 	return out.Services, nil
+}
+
+// hypervisorPageLimit is the page size of the hypervisor list. It is a var
+// only so the tests can page through a few entries.
+var hypervisorPageLimit = 500
+
+// hypervisorMaxPages bounds the pages ListMappedHosts reads.
+const hypervisorMaxPages = 100
+
+// ListMappedHosts returns the hosts of the compute nodes Nova lists as
+// hypervisors. Nova leaves a compute node out of that list while its host has
+// no host mapping, so a registered service whose host is absent is not mapped
+// into its cell yet.
+//
+// It reads the list page by page, each page after the id of the previous
+// page's last entry, until a page comes back empty. A short page does not end
+// the list: Nova counts its page limit before it drops the unmapped nodes. An
+// entry without a service host is skipped.
+func (c *Client) ListMappedHosts(ctx context.Context) (map[string]bool, error) {
+	hosts := map[string]bool{}
+	marker := ""
+	for range hypervisorMaxPages {
+		path := "/v2.1/os-hypervisors/detail?limit=" + strconv.Itoa(hypervisorPageLimit)
+		if marker != "" {
+			path += "&marker=" + url.QueryEscape(marker)
+		}
+		var out struct {
+			Hypervisors []struct {
+				ID      string `json:"id"`
+				Service *struct {
+					Host string `json:"host"`
+				} `json:"service"`
+			} `json:"hypervisors"`
+		}
+		if err := c.doVersion(ctx, hypervisorListMicroVersion, http.MethodGet, path, nil, &out); err != nil {
+			return nil, err
+		}
+		if len(out.Hypervisors) == 0 {
+			return hosts, nil
+		}
+		for _, hv := range out.Hypervisors {
+			if hv.Service != nil && hv.Service.Host != "" {
+				hosts[hv.Service.Host] = true
+			}
+		}
+		marker = out.Hypervisors[len(out.Hypervisors)-1].ID
+	}
+	return nil, fmt.Errorf("the hypervisor list did not end after %d pages", hypervisorMaxPages)
 }
 
 // DisableService disables the service with the given id and records reason.
