@@ -2,7 +2,7 @@ apiVersion: v2
 name: c5c3-operator
 description: A Helm chart for deploying the c5c3 ControlPlane operator
 type: application
-version: 0.14.0
+version: 0.15.0
 appVersion: "0.1.0"
 # The shared naming/label helpers and the Deployment skeleton live in the
 # operator-library library chart so they are defined once for both operator
@@ -15,6 +15,8 @@ dependencies:
 annotations:
   artifacthub.io/prerelease: "true"
   artifacthub.io/changes: |
+    - kind: added
+      description: RBAC for get and patch on the orc-controller-manager Deployment (resourceNames-scoped), so the operator can restart K-ORC when a ControlPlane's service catalog changes
     - kind: added
       description: nodeSelector, tolerations and priorityClassName values place and prioritize the operator pods (operator-library 0.9.0)
     - kind: added
