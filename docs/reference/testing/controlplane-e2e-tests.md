@@ -356,11 +356,15 @@ paths any other chassis or metadata agent would share.
    instead. The auth Secret `controlplane-keystone-nova-hypervisor-operator-auth`
    has to carry exactly the seven keys of the hypervisor operator's chart values;
    the script reads and prints the key names only, never the values, because
-   the Secret carries a cloud-admin password. It then restarts K-ORC: the client
-   K-ORC cached for the plane's `clouds.yaml` still holds the service catalog of
-   a token issued before the `compute`, `network` and `block-storage` rows
-   existed, and keeps it for up to 30 minutes. With a fresh cache it applies
-   `fixtures.yaml` of the example overlay
+   the Secret carries a cloud-admin password. It then asserts the catalog epoch
+   annotation the c5c3-operator wrote on the pod template of
+   `orc-controller-manager` for `openstack/controlplane-keystone` (see
+   [reconcileKORCCatalogRefresh](../c5c3/controlplane-reconciler.md#reconcilekorccatalogrefresh)),
+   waits for the K-ORC rollout, and checks that the running K-ORC pod is no
+   older than the last `CatalogReady=True` transition among the plane's catalog
+   registrations. That pins the restart after the `compute`, `network` and
+   `block-storage` rows exist. The script then applies `fixtures.yaml` of the
+   example overlay
    `deploy/kind/hypervisor-operator-fixtures/` (not its `image.yaml`, so CI
    downloads no cirros image) and waits up to 10 minutes for every K-ORC
    resource in that file to report `Available`.
