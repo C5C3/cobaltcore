@@ -18,7 +18,12 @@
 # Every process runs one replica: the suite asserts the node pool, not the
 # control plane, and the leg runs it beside two other full stacks. The compute
 # the pool registers is the one the NovaCompute CRs of this suite run, so the
-# Nova carries no override of its own.
+# Nova carries no compute override of its own.
+#
+# The scheduler's host discovery periodic is off (-1, nova's own default), so
+# the pool's discovery Job is the only thing that maps the node's host and step
+# 3 can assert that Job. The operator renders 300 otherwise and reports the
+# override with ExtraConfigHealthy=False, which Ready does not aggregate.
 apiVersion: nova.openstack.c5c3.io/v1alpha1
 kind: Nova
 metadata:
@@ -63,3 +68,6 @@ spec:
   metadata:
     sharedSecretRef:
       name: nova-pool-metadata-secret
+  extraConfig:
+    scheduler:
+      discover_hosts_in_cells_interval: "-1"
