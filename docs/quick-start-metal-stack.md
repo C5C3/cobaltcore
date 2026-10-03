@@ -256,8 +256,10 @@ hack/lab-node-ports.sh
 ```
 
 The migration ports lie in Linux's ephemeral port range, so an outgoing
-connection on a node can hold one of them, and the check reports that port as
-`listener bind failed`. Run the check again when that happens.
+connection on a node can hold one of them. The listener tries such a port
+again every second for 10 seconds. A port that is still taken then is reported
+as `listener bind failed` and fails the check, because nothing could listen on
+it; the check's `NOTE:` line names the variable that lengthens the retry.
 
 Then label the nodes, annotate their custom trait and create the trait in
 Placement:

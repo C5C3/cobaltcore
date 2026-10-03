@@ -3187,8 +3187,11 @@ A port is `closed` when the connect fails, `listener bind failed` when the
 destination's listener could not bind it, and `no result` when the client
 produced no line for it before the client wait ran out. The migration range
 sits in Linux's ephemeral port range, so an outgoing connection on the node can
-hold one of its ports; rerun the check or narrow `NODE_PORTS_TCP` when that
-happens.
+hold one of its ports. The listener tries such a port again every second for
+`NODE_PORTS_BIND_TIMEOUT` seconds before it reports it. A port a long-lived
+connection holds stays `listener bind failed` and fails the run, which then
+prints a `NOTE:` line saying the port was not tested; a longer
+`NODE_PORTS_BIND_TIMEOUT` or a `NODE_PORTS_TCP` without that port gets past it.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -3197,10 +3200,11 @@ happens.
 | `NODE_PORTS_IMAGE` | the `image:` of `deploy/lab/metal-stack/probe/node-probe.yaml` | Image with `bash`, `perl` and `timeout`; the check exits 2 when it is unset and the probe manifest is missing |
 | `NODE_PORTS_NODE_SELECTOR` | empty (every node) | Label selector limiting the nodes |
 | `NODE_PORTS_CONNECT_TIMEOUT` | `5` | Seconds per connect |
+| `NODE_PORTS_BIND_TIMEOUT` | `10` | Seconds the listener keeps retrying a port it cannot bind, once per second. The wait for the listeners' `listening` line adds it to `NODE_PORTS_POD_TIMEOUT` |
 | `NODE_PORTS_POD_TIMEOUT` | `120` | Seconds for the listener waits and for removing an earlier run's Pods. The client wait adds `NODE_PORTS_CONNECT_TIMEOUT` per port, because a client probes its ports one after another and a firewall that drops the packets makes every probe take the full connect timeout |
 
 | Exit code | Meaning |
 | --- | --- |
 | `0` | Every port of every ordered pair is open |
-| `1` | At least one port is closed, has no result, or was not bound by the listener |
+| `1` | At least one port is closed, has no result, or was not bound by the listener within `NODE_PORTS_BIND_TIMEOUT` |
 | `2` | Usage or cluster error: a missing tool or image, an invalid variable, fewer than two nodes, a node without an InternalIP or whose first one is IPv6 (the listeners bind IPv4 only) or not an address, Pods of an earlier run that cannot be deleted, Pods that cannot be created, or listeners that never became Ready |
