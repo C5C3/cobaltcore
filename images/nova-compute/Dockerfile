@@ -72,9 +72,10 @@ ARG EXTRA_APT_PACKAGES=""
 COPY --from=build --link /var/lib/openstack /var/lib/openstack
 
 # Runtime system packages: the libvirt client libraries, qemu-img, the os-brick
-# host tools for iSCSI, multipath and NVMe, cryptsetup and genisoimage. The
-# extra-packages.yaml entries name the code that runs each of them. No uWSGI
-# runs here, so no libpython3.12t64; sudo comes from python-base.
+# host tools for iSCSI, multipath and NVMe, the NFS client nova mounts Cinder
+# NFS exports with, cryptsetup and genisoimage. The extra-packages.yaml entries
+# name the code that runs each of them. No uWSGI runs here, so no
+# libpython3.12t64; sudo comes from python-base.
 # The postinst scripts of open-iscsi and nvme-cli generate
 # /etc/iscsi/initiatorname.iscsi, /etc/nvme/hostnqn and /etc/nvme/hostid at
 # build time, and multipath-tools ships /etc/multipath.conf with
@@ -82,7 +83,10 @@ COPY --from=build --link /var/lib/openstack /var/lib/openstack
 # NQN to Cinder as the node's identity, so baked files would give every
 # compute node the same IQN and NQN, and a baked multipath configuration can
 # disagree with the host's multipathd. The rm removes all four; the consumer
-# mounts the host's files (#1061). It sits outside the guard, so a local build
+# mounts the host's files (#1061). nfs-common and its dependency rpcbind add
+# nothing to that list: their postinst scripts create the statd and _rpc users
+# and install /etc/idmapd.conf, /etc/default/nfs-common and /etc/nfs.conf, none
+# of which names the node. The rm sits outside the guard, so a local build
 # without --build-arg EXTRA_APT_PACKAGES stays a clean no-op.
 # /var/lib/apt/lists is a cache mount for the duration of the RUN, so its
 # contents never reach the layer.
