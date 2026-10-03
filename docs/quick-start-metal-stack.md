@@ -271,20 +271,17 @@ listen on it. The reservation's log names the process that holds the port, and
 [Migration port reservation](./reference/infrastructure/infrastructure-manifests.md#migration-port-reservation)
 says how to free it.
 
-Then label the nodes, annotate their custom trait and create the trait in
-Placement:
+Then label the nodes:
 
 ```bash
 kubectl label node --all openstack.c5c3.io/chassis=true \
   openstack.c5c3.io/nova-compute-pool=lab \
   nova.openstack.cloud.sap/virt-driver=kvm \
   cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests
-kubectl annotate node --all nova.openstack.cloud.sap/custom-traits=CUSTOM_C5C3_LAB
-openstack --os-placement-api-version 1.6 trait create CUSTOM_C5C3_LAB
 ```
 
 The labels select the nodes for the OVN chassis, the `NovaCompute` pool, the
-libvirt DaemonSet and the hypervisor operator; onboarding waits for the trait.
+libvirt DaemonSet and the hypervisor operator.
 The label table of
 [Lab hypervisors](./reference/infrastructure/infrastructure-manifests.md#lab-hypervisors)
 gives the reason behind each.
@@ -313,19 +310,19 @@ kubectl wait helmrelease/openstack-hypervisor-operator -n openstack --for=condit
 kubectl wait crd/hypervisors.kvm.cloud.sap --for=condition=Established --timeout=2m
 for node in "${nodes[@]}"; do
   kubectl wait --for=create "hypervisor/${node}" --timeout=10m
-  kubectl patch hypervisor "${node}" --type merge -p '{"spec":{"highAvailability":false}}'
 done
 kubectl wait certificate --all -n hypervisor-system --for=condition=Ready --timeout=10m
 kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=15m
 ```
 
 The hypervisor operator creates a `Hypervisor` per node with
-`spec.highAvailability: true`, and onboarding then waits for an HA service the
-lab does not run, so the loop sets the field to `false`. The two waits in
-front of the loop give the operator's chart time to install: without them the
-wait in the loop fails at once with `the server doesn't have a resource type`
-while the `Hypervisor` CRD is missing. A libvirt pod turns `Ready` once
-kvm-node-agent has written its node's TLS files.
+`spec.highAvailability: false`, because the release starts it with
+`--default-high-availability=false`: onboarding would otherwise wait for an HA
+service the lab does not run. The two waits in front of the loop give the
+operator's chart time to install: without them the wait in the loop fails at
+once with `the server doesn't have a resource type` while the `Hypervisor` CRD
+is missing. A libvirt pod turns `Ready` once kvm-node-agent has written its
+node's TLS files.
 
 ### Step 4: Wait for onboarding {#hv-onboarding}
 
@@ -339,6 +336,9 @@ openstack hypervisor list
 openstack aggregate list
 ```
 
+`novacompute/lab` turns `Ready` only once Nova has mapped both hosts into the
+cell, so the servers of Step 5 can be scheduled at once.
+
 Each `Hypervisor` shows `True` in the `LIBVIRTD`, `LIBVIRT` and `TLS` columns.
 The hypervisor list prints one row per node, and the aggregate list holds the
 aggregate named after the nodes' zone, the availability zone the servers of
@@ -346,13 +346,9 @@ the next step name.
 
 ### Step 5: Boot a server on each node {#hv-boot}
 
-Map the hosts into the cell, create a network without a router, and boot one
-server on each node:
+Create a network without a router and boot one server on each node:
 
 ```bash
-for node in "${nodes[@]}"; do
-  tests/e2e/nova/discover-hosts.sh controlplane-nova openstack "${node}"
-done
 openstack network create lab-net
 openstack subnet create lab-subnet --network lab-net --subnet-range 192.168.77.0/24
 openstack network show lab-net -c mtu -f value
