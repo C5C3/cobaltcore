@@ -201,6 +201,21 @@ selects the chart objects by label and names none of them: the Envoy Gateway
 release floats inside `>=1.9.2 <2.0.0`, so Flux can install a chart whose hook
 objects carry other names.
 
+The startup API check and the Lease delete were run on the metal-stack lab
+(shoot `forge`) on 2026-10-03, from commit `36a34e4b`.
+`EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true make deploy-infra` exited 0, and
+`kubectl get events -n cert-manager --field-selector involvedObject.name=cert-manager-startupapicheck`
+listed the Job's `Completed` event. In that deploy cainjector waited 87 seconds
+for the Lease an earlier stack had left in `kube-system`, and the cert-manager
+release was `Ready` 97 seconds after its pods started.
+`EXTERNAL_CLUSTER=true make teardown-infra` exited 0, and
+`kubectl get lease -n kube-system cert-manager-cainjector-leader-election cert-manager-controller`
+answered `NotFound` for both names. The same deploy, started one second after
+the teardown's `=== Done ===` line, exited 0, and none of its 22 HelmReleases
+had a `Stalled` condition with status `True`. Its cainjector took the Lease on
+the first attempt, and the cert-manager release was `Ready` 18 seconds after
+its pods started.
+
 ### `make install-test-deps`
 
 Installs pinned versions of chainsaw, flux, kind, and kubectl by running
