@@ -31,9 +31,11 @@
 #
 # A port is `closed` when the connect fails, `listener bind failed` when the
 # destination's listener could not bind it (49152-49215 sit in Linux's ephemeral
-# range, so an outgoing connection on the node can hold one), and `no result`
-# when the client produced no line for it (the Pod never ran, its image did not
-# pull, or the client wait ran out). All three fail the run.
+# range, so an outgoing connection on the node can hold one; the listener
+# retries such a port once per second for NODE_PORTS_BIND_TIMEOUT seconds
+# first), and `no result` when the client produced no line for it (the Pod
+# never ran, its image did not pull, or the client wait ran out). All three
+# fail the run.
 #
 # Optional env vars:
 #   NODE_PORTS_TCP             — ports and inclusive ranges, space-separated
@@ -43,10 +45,14 @@
 #                                image: line of the node probe manifest)
 #   NODE_PORTS_NODE_SELECTOR   — label selector limiting the nodes (default: all)
 #   NODE_PORTS_CONNECT_TIMEOUT — seconds per connect (default: 5)
+#   NODE_PORTS_BIND_TIMEOUT    — seconds the listener keeps retrying a port it
+#                                cannot bind (default: 10)
 #   NODE_PORTS_POD_TIMEOUT     — seconds for the listener waits and the removal
-#                                of an earlier run's Pods; the client wait adds
-#                                NODE_PORTS_CONNECT_TIMEOUT per port, the scan's
-#                                length when a firewall drops the packets
+#                                of an earlier run's Pods; the wait for the
+#                                listeners' `listening` line adds
+#                                NODE_PORTS_BIND_TIMEOUT, and the client wait
+#                                adds NODE_PORTS_CONNECT_TIMEOUT per port, the
+#                                scan's length when a firewall drops the packets
 #                                (default: 120)
 #
 # Exit codes:
@@ -72,6 +78,7 @@ NODE_PORTS_NAMESPACE="${NODE_PORTS_NAMESPACE:-default}"
 NODE_PORTS_IMAGE="${NODE_PORTS_IMAGE:-}"
 NODE_PORTS_NODE_SELECTOR="${NODE_PORTS_NODE_SELECTOR:-}"
 NODE_PORTS_CONNECT_TIMEOUT="${NODE_PORTS_CONNECT_TIMEOUT:-5}"
+NODE_PORTS_BIND_TIMEOUT="${NODE_PORTS_BIND_TIMEOUT:-10}"
 NODE_PORTS_POD_TIMEOUT="${NODE_PORTS_POD_TIMEOUT:-120}"
 
 # The label every Pod carries (pod_json); both Pod deletes select by it.
@@ -79,19 +86,32 @@ POD_LABEL_KEY="app.kubernetes.io/name"
 POD_LABEL_VALUE="lab-node-ports"
 POD_LABEL="${POD_LABEL_KEY}=${POD_LABEL_VALUE}"
 
-# The listener: one socket per port given as an argument, a line for each port
-# it cannot bind, `listening` once every bind was tried, then accept-and-close
-# forever. A TERM ends it at once (PID 1 ignores signals it does not handle).
+# The listener: the first argument is the retry timeout in seconds, the others
+# are ports, one socket each. A port it cannot bind is tried again once per
+# second until the timeout has passed, with a `bind retry <ports>` line before
+# each pause. Then a `bind failed <port>` line for each port still taken,
+# `listening`, and accept-and-close forever. A TERM ends it at once (PID 1
+# ignores signals it does not handle).
 LISTENER_SCRIPT="$(cat <<'PERL'
 use strict; use warnings; use IO::Socket::INET; use IO::Select;
 $| = 1;
 $SIG{TERM} = sub { exit 0 };
 my $sel = IO::Select->new;
-for my $port (@ARGV) {
-  my $sock = IO::Socket::INET->new(LocalAddr => "0.0.0.0", LocalPort => $port,
-    Proto => "tcp", Listen => 16, ReuseAddr => 1);
-  if ($sock) { $sel->add($sock) } else { print "bind failed $port\n" }
+my $deadline = time + shift @ARGV;
+my @pending = @ARGV;
+while (1) {
+  my @taken;
+  for my $port (@pending) {
+    my $sock = IO::Socket::INET->new(LocalAddr => "0.0.0.0", LocalPort => $port,
+      Proto => "tcp", Listen => 16, ReuseAddr => 1);
+    if ($sock) { $sel->add($sock) } else { push @taken, $port }
+  }
+  @pending = @taken;
+  last if !@pending || time >= $deadline;
+  print "bind retry @pending\n";
+  sleep 1;
 }
+print "bind failed $_\n" for @pending;
 print "listening\n";
 sleep while $sel->count == 0;
 while (1) {
@@ -247,7 +267,7 @@ main() {
     fi
   done
   local knob
-  for knob in NODE_PORTS_CONNECT_TIMEOUT NODE_PORTS_POD_TIMEOUT; do
+  for knob in NODE_PORTS_CONNECT_TIMEOUT NODE_PORTS_BIND_TIMEOUT NODE_PORTS_POD_TIMEOUT; do
     if [[ ! "${!knob}" =~ ^[1-9][0-9]*$ ]]; then
       log "ERROR: ${knob}='${!knob}' is not a positive number of seconds."
       exit 2
@@ -316,8 +336,8 @@ main() {
 
   # Listeners, one per node, in one create.
   local i j listener_cmd
-  listener_cmd="$(jq -nc --arg script "${LISTENER_SCRIPT}" \
-    '$ARGS.positional as $ports | ["perl", "-e", $script, "--"] + $ports' --args "${port_list[@]}")"
+  listener_cmd="$(jq -nc --arg script "${LISTENER_SCRIPT}" --arg wait "${NODE_PORTS_BIND_TIMEOUT}" \
+    '$ARGS.positional as $ports | ["perl", "-e", $script, "--", $wait] + $ports' --args "${port_list[@]}")"
   if ! for (( i = 0; i < ${#names[@]}; i++ )); do
     pod_json "lab-node-ports-listen-${names[i]}" listener "${names[i]}" "${image}" "${listener_cmd}"
   done | kubectl create -f - >/dev/null; then
@@ -332,10 +352,11 @@ main() {
     exit 2
   fi
 
-  # Every bind is tried before `listening` is printed, so the bind failures are
-  # known once the line is there.
+  # A taken port is retried for NODE_PORTS_BIND_TIMEOUT seconds before
+  # `listening` is printed, so the wait allows for the retry, and the bind
+  # failures are known once the line is there.
   local deadline listener_log unbound=()
-  deadline=$(( $(date +%s) + NODE_PORTS_POD_TIMEOUT ))
+  deadline=$(( $(date +%s) + NODE_PORTS_POD_TIMEOUT + NODE_PORTS_BIND_TIMEOUT ))
   for (( i = 0; i < ${#names[@]}; i++ )); do
     while true; do
       listener_log="$(kubectl logs "lab-node-ports-listen-${names[i]}" -n "${NODE_PORTS_NAMESPACE}" 2>/dev/null || true)"
@@ -370,7 +391,7 @@ main() {
   # Results, one line per pair. A client probes its ports one after another,
   # and each probe runs for the full connect timeout when a firewall drops the
   # packets, so the client wait grows with the port count.
-  local failed_pairs=0 pairs=0 client client_log open closed bind_failed no_result p
+  local failed_pairs=0 unbound_pairs=0 pairs=0 client client_log open closed bind_failed no_result p
   local open_ports closed_ports client_wait
   client_wait=$(( NODE_PORTS_POD_TIMEOUT + port_count * NODE_PORTS_CONNECT_TIMEOUT ))
   deadline=$(( $(date +%s) + client_wait ))
@@ -402,7 +423,10 @@ main() {
       done
       local line="${names[i]} (${ips[i]}) -> ${names[j]} (${ips[j]}): ${open}/${port_count} open"
       if [[ -n "${closed}" ]]; then line+=", closed:${closed}"; fi
-      if [[ -n "${bind_failed}" ]]; then line+=", listener bind failed:${bind_failed}"; fi
+      if [[ -n "${bind_failed}" ]]; then
+        line+=", listener bind failed:${bind_failed}"
+        unbound_pairs=$((unbound_pairs + 1))
+      fi
       if [[ -n "${no_result}" ]]; then line+=", no result:${no_result}"; fi
       echo "${line}"
       pairs=$((pairs + 1))
@@ -413,6 +437,9 @@ main() {
   done
   echo ""
 
+  if (( unbound_pairs > 0 )); then
+    log "NOTE: a port reported as 'listener bind failed' was held by another socket on its node for ${NODE_PORTS_BIND_TIMEOUT}s and was not tested; set NODE_PORTS_BIND_TIMEOUT to wait longer."
+  fi
   if (( failed_pairs > 0 )); then
     log "FAIL: ${failed_pairs} of ${pairs} node pairs have a port that is not open."
     exit 1
