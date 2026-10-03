@@ -26,7 +26,7 @@ Same toolchain as the [Quick Start](./quick-start.md), plus:
 - `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
 - The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 7, plus two plugins for the other checks in that step: [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) for the placement call and [`python-barbicanclient`](https://docs.openstack.org/python-barbicanclient/latest/) for the `openstack secret` subcommands.
 - A host with 4 CPU cores, 16 GB of memory for the container runtime, and 10 GB of free disk. On the `Minimal` sizing profile the full stack requests at most 4 CPU and 16 GiB; the [node budget gate](./reference/testing/controlplane-e2e-tests.md#node-budget-link-6z) of the e2e-controlplane CI job enforces that budget on the CI stack. The optional compute leg of Step 7 (the fake compute, the OVN chassis, and the metadata agent) runs beside that budget
-- `yq` v4.x on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
+- [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
 Docker Desktop and Podman are both valid kind providers. When using Podman,
 ensure its machine is already running and select it explicitly before running
 Step 2:

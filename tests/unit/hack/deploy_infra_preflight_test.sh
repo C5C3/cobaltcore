@@ -40,11 +40,14 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 # make_stub_path <dir> <cmd>...
 # Creates an executable shim for each <cmd> inside <dir> that always exits 0.
-# Use to populate a fake PATH containing only the listed commands.
+# Use to populate a fake PATH containing only the listed commands, beside the
+# real dirname and date the script needs to be sourced and to log.
 make_stub_path() {
   local dir="$1"
   shift
   mkdir -p "$dir"
+  ln -sf "$(command -v dirname)" "$dir/dirname"
+  ln -sf "$(command -v date)" "$dir/date"
   for cmd in "$@"; do
     cat >"$dir/$cmd" <<'STUB'
 #!/bin/bash
@@ -161,7 +164,13 @@ test_preflight_passes_with_yq_when_controlplane() {
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
 
-  make_stub_path "$tmp" docker kind kubectl jq yq
+  make_stub_path "$tmp" docker kind kubectl jq
+  # A current mikefarah/yq as far as the preflight probes it: strenv resolves.
+  cat >"$tmp/yq" <<'STUB'
+#!/bin/bash
+echo "${YQ_PROBE:-}"
+STUB
+  chmod +x "$tmp/yq"
 
   local output exit_code
   output="$(run_preflight_with_controlplane "$tmp")"
@@ -172,12 +181,47 @@ test_preflight_passes_with_yq_when_controlplane() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 5: preflight fails when WITH_CONTROLPLANE=true and yq is the jq wrapper
+# ---------------------------------------------------------------------------
+test_preflight_fails_with_jq_wrapper_yq_when_controlplane() {
+  echo "Test: preflight_checks fails when WITH_CONTROLPLANE=true and yq is not mikefarah/yq v4.40.1 or newer"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  make_stub_path "$tmp" docker kind kubectl jq
+  # The jq wrapper Debian packages as yq: it hands the expression to jq, which
+  # does not know strenv.
+  cat >"$tmp/yq" <<'STUB'
+#!/bin/bash
+if [ "$1" = "--version" ]; then
+  echo "yq 3.4.3"
+  exit 0
+fi
+echo "jq: error: strenv/1 is not defined at <top-level>, line 1:" >&2
+exit 3
+STUB
+  chmod +x "$tmp/yq"
+
+  local output exit_code
+  output="$(run_preflight_with_controlplane "$tmp")"
+  exit_code=$?
+
+  assert_nonzero_exit "preflight_checks exits non-zero with the jq wrapper under WITH_CONTROLPLANE" "$exit_code"
+  assert_contains "preflight names the yq it wants" "$output" "is not mikefarah/yq v4.40.1 or newer"
+  assert_contains "preflight names the yq it found" "$output" "yq --version: yq 3.4.3"
+  assert_not_contains "preflight does not report success" "$output" "Pre-flight checks passed."
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_preflight_passes_without_flux
 test_preflight_fails_without_kubectl
 test_preflight_fails_without_yq_when_controlplane
 test_preflight_passes_with_yq_when_controlplane
+test_preflight_fails_with_jq_wrapper_yq_when_controlplane
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

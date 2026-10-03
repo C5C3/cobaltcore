@@ -19,9 +19,10 @@
 #      the suspended Flux objects that installed something, splits the base
 #      render into the Gateway pass and the rest, deletes exactly the stack
 #      CRDs of a mixed list, and names no namespace outside the stack's.
-#   3. It exits 1 before any delete when the API server does not answer or yq
-#      is missing, exits 1 when a wait runs out (naming the object, the
-#      OVNCentral delete included, after which nothing else is deleted), when
+#   3. It exits 1 before any delete when the API server does not answer, yq
+#      is missing or yq is not mikefarah/yq v4.40.1 or newer, exits 1 when a
+#      wait runs out (naming the object, the OVNCentral delete included, after
+#      which nothing else is deleted), when
 #      a stack CR in openstack that is being deleted or whose owner is gone
 #      outlives the wait, or the read of those CRs keeps failing (naming the
 #      object or kubectl's error, before any operator is removed), when the
@@ -1006,6 +1007,45 @@ test_requires_yq() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 8: yq must be mikefarah/yq v4.40.1 or newer
+# ---------------------------------------------------------------------------
+test_requires_mikefarah_yq() {
+  echo "Test: the external teardown requires mikefarah/yq v4.40.1 or newer"
+
+  local tmp output rc
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  ln -s "$(command -v dirname)" "$tmp/bin/dirname"
+  ln -s "$(command -v date)" "$tmp/bin/date"
+  # The jq wrapper Debian packages as yq: it hands the expression to jq, which
+  # does not know strenv.
+  cat >"$tmp/bin/yq" <<'STUB'
+#!/bin/bash
+if [ "$1" = "--version" ]; then
+  echo "yq 3.4.3"
+  exit 0
+fi
+echo "jq: error: strenv/1 is not defined at <top-level>, line 1:" >&2
+exit 3
+STUB
+  chmod +x "$tmp/bin/yq"
+  export CALL_LOG="$tmp/calls.log"
+  : >"$CALL_LOG"
+
+  output="$(
+    unset TEARDOWN_TIMEOUT
+    EXTERNAL_CLUSTER=true PATH="$tmp/bin" "$BASH" "$TEARDOWN_SH" 2>&1
+  )"
+  rc=$?
+  assert_nonzero_exit "the external teardown exits non-zero with the jq wrapper" "$rc"
+  assert_contains "names the yq it wants" "$output" "is not mikefarah/yq v4.40.1 or newer"
+  assert_contains "names the yq it found" "$output" "yq --version: yq 3.4.3"
+  assert_not_contains "nothing is deleted" "$(cat "$CALL_LOG")" "kubectl delete"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_knobs
@@ -1015,6 +1055,7 @@ test_script_names_no_platform_namespace
 test_external_teardown_failures
 test_hypervisor_step_zero
 test_requires_yq
+test_requires_mikefarah_yq
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

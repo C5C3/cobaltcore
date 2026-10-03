@@ -83,8 +83,9 @@ succeeds silently if no cluster exists. The kind teardown always exits 0.
 
 `EXTERNAL_CLUSTER=true make teardown-infra` leaves the cluster in place and
 removes the stack that `EXTERNAL_CLUSTER=true make deploy-infra` put on it. It
-needs `kubectl` and `yq`, and deletes in an order that lets every finalizer run
-while its controller still exists:
+needs `kubectl` and [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer,
+checks both before the first delete, and deletes in an order that lets every
+finalizer run while its controller still exists:
 
 0. The lab hypervisors, when the overlay has a `hypervisor/` kustomization
    (see [Lab hypervisors](infrastructure-manifests.md#lab-hypervisors)), while
