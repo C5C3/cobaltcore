@@ -23,7 +23,14 @@
 #      helm.toolkit.fluxcd.io/namespace label names a stack namespace after
 #      the stack namespaces are gone and before the CRDs, reads them again in
 #      the final count, and deletes the two cert-manager leader election
-#      Leases in kube-system after those objects and before the CRDs.
+#      Leases in kube-system after those objects and before the CRDs. At the
+#      end of step 2 it reads the HelmRelease kube-system/csi-driver-nfs, then
+#      the pods of every namespace and the PersistentVolumes once (no pod
+#      mounts an inline nfs.csi.k8s.io volume, no PersistentVolume of that
+#      driver is Bound), then deletes the
+#      overlay's nfs/, the NetworkPolicy of its nfs/client-policy.yaml and
+#      the CSIDriver of the csi-driver-nfs release by its labels, before the
+#      first operator is resumed.
 #   3. It exits 1 before any delete when the API server does not answer, yq
 #      is missing or yq is not mikefarah/yq v4.40.1 or newer, exits 1 when a
 #      wait runs out (naming the object, the OVNCentral delete included, after
@@ -36,8 +43,19 @@
 #      proving OpenBao instance cannot be switched to DeletePVCs, when a stack
 #      CRD, namespace or chart object is left (naming the chart object), when
 #      the read of those chart objects fails or their delete runs out (before
-#      any CRD is deleted), and when the base render, the CRD list of step 8,
-#      the final namespace read or the final chart-object read fails, and
+#      any CRD is deleted), when a pod with an inline nfs.csi.k8s.io volume
+#      or a Bound PersistentVolume of that driver outlives the wait (naming
+#      it, not the pods without one or the other PersistentVolumes), or the
+#      read of the pods or the PersistentVolumes keeps failing or cannot be
+#      parsed (before any NFS delete and any operator patch), and goes on
+#      with the NFS stack once a pod that still mounted a share on the first
+#      read is gone on a later one, reads no pod or PersistentVolume without
+#      the HelmRelease csi-driver-nfs (a Bound one of nfs.csi.k8s.io then
+#      holds nothing) and on a second run, exits 1 when that HelmRelease
+#      cannot be read (before any NFS delete and any operator patch), and
+#      when the base render, the CRD list of
+#      step 8, the final namespace read or the final chart-object read fails,
+#      makes no pod read and no NFS delete for an overlay without nfs/, and
 #      exits 0 on a second run that finds nothing, without printing kubectl's
 #      "No resources found".
 #   4. Step 0 removes the lab hypervisors before the ControlPlane: the
@@ -144,8 +162,33 @@ ippools.crd.projectcalico.org"
 #   KUBECTL_CHART_OBJECT_DELETE_RC
 #                          exit code of the delete of those objects alone
 #                          (default 0)
+#   KUBECTL_NFS_POD_LEFT   non-empty: `get pods -A -o json` also answers the
+#                          pod openstack/cinder-volume-nfs1-0, which mounts an
+#                          inline nfs.csi.k8s.io volume
+#   KUBECTL_NFS_POD_READS  a number n: the first n of those reads answer that
+#                          pod, the later ones do not (the reads are counted
+#                          in pod-reads beside the stub)
+#   KUBECTL_PODS_RC        non-empty: that read fails with Forbidden
+#   KUBECTL_PODS_TRUNCATED non-empty: that read answers a truncated document
+#   KUBECTL_NFS_PV_BOUND   non-empty: `get pv -o json` also answers the
+#                          PersistentVolume nfs-health-volumes of driver
+#                          nfs.csi.k8s.io, Bound to the claim
+#                          nfs-health-probe/nfs-health-volumes
+#   KUBECTL_PVS_RC         non-empty: that read fails with Forbidden
+#   KUBECTL_NFS_RELEASE_ABSENT
+#                          non-empty: the HelmRelease kube-system/csi-driver-nfs
+#                          does not exist, as on a cluster deployed without
+#                          WITH_NFS=true
+#   KUBECTL_NFS_RELEASE_RC non-empty: the read of that HelmRelease fails with
+#                          Forbidden
 # The step 0 reads answer two nodes, lab-a and lab-b, and a fixtures domain
-# hvo-cc3test that a second run no longer finds. The read of the cluster-scoped
+# hvo-cc3test that a second run no longer finds. The read of the HelmRelease
+# kube-system/csi-driver-nfs answers it, and on a second run fails on the
+# missing HelmRelease kind. The pod read answers two pods
+# without an nfs.csi.k8s.io volume (pods.json), and {"items":[]} on a second
+# run. The PersistentVolume read answers a Bound volume of another driver and
+# a Released one of nfs.csi.k8s.io (pvs.json), and {"items":[]} on a second
+# run. The read of the cluster-scoped
 # chart objects answers the three of chart-objects.txt until they are deleted;
 # afterwards, and on a second run, it answers nothing and, without
 # --ignore-not-found, writes kubectl's "No resources found" to stderr.
@@ -194,6 +237,22 @@ OBJECTS
 {"apiVersion":"cert-manager.io/v1","kind":"Certificate","metadata":{"name":"eso-tenant-client-tls","uid":"uid-eso-cert"}},
 {"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","metadata":{"name":"eso-tenant-client-tls-1","uid":"uid-eso-cr",
  "ownerReferences":[{"apiVersion":"cert-manager.io/v1","kind":"Certificate","name":"eso-tenant-client-tls","uid":"uid-eso-cert"}]}}
+JSON
+  # Two pods that mount no share of csi-driver-nfs: one without volumes, one
+  # with a claim and an inline volume of another driver.
+  cat >"$dir/pods.json" <<'JSON'
+{"metadata":{"namespace":"openstack","name":"keystone-db-sync-x7k2p"},"spec":{"containers":[{"name":"db-sync"}]}},
+{"metadata":{"namespace":"shared-services","name":"garage-0"},"spec":{"volumes":[
+  {"name":"data","persistentVolumeClaim":{"claimName":"data-garage-0"}},
+  {"name":"secrets","csi":{"driver":"secrets-store.csi.k8s.io","readOnly":true}}]}}
+JSON
+  # Two PersistentVolumes no pod mounts a share of csi-driver-nfs through: a
+  # Bound one of another driver, and one of nfs.csi.k8s.io whose claim is gone.
+  cat >"$dir/pvs.json" <<'JSON'
+{"metadata":{"name":"pv-shoot-data-garage-0"},"spec":{"csi":{"driver":"io.lightbitslabs.lightos"},
+  "claimRef":{"namespace":"shared-services","name":"data-garage-0"}},"status":{"phase":"Bound"}},
+{"metadata":{"name":"nfs-health-backups"},"spec":{"csi":{"driver":"nfs.csi.k8s.io"},
+  "claimRef":{"namespace":"nfs-health-probe","name":"nfs-health-backups"}},"status":{"phase":"Released"}}
 JSON
   cat >"$dir/helmreleases.json" <<'JSON'
 {"items":[
@@ -356,6 +415,49 @@ case "$args" in
       cat "$dir/crd-columns.txt"
     fi
     ;;
+  "get pods -A -o json")
+    if [ -n "${KUBECTL_PODS_RC:-}" ]; then
+      echo 'Error from server (Forbidden): pods is forbidden: User "lab" cannot list resource "pods" in API group "" at the cluster scope' >&2
+      exit 1
+    fi
+    if [ -n "${KUBECTL_PODS_TRUNCATED:-}" ]; then
+      echo '{"apiVersion":"v1","kind":"List","items":['
+      exit 0
+    fi
+    if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
+      echo '{"items":[]}'
+      exit 0
+    fi
+    if [ -n "${KUBECTL_NFS_POD_READS:-}" ]; then
+      reads=$(( $(cat "$dir/pod-reads" 2>/dev/null || echo 0) + 1 ))
+      echo "$reads" >"$dir/pod-reads"
+      [ "$reads" -gt "$KUBECTL_NFS_POD_READS" ] || KUBECTL_NFS_POD_LEFT=1
+    fi
+    items="$(cat "$dir/pods.json")"
+    if [ -n "${KUBECTL_NFS_POD_LEFT:-}" ]; then
+      items="${items},{\"metadata\":{\"namespace\":\"openstack\",\"name\":\"cinder-volume-nfs1-0\",
+        \"deletionTimestamp\":\"2026-10-03T19:00:00Z\"},\"spec\":{\"volumes\":[
+        {\"name\":\"nfs-volumes\",\"csi\":{\"driver\":\"nfs.csi.k8s.io\",
+        \"volumeAttributes\":{\"server\":\"nfs-server.openstack.svc.cluster.local\",\"share\":\"/volumes\"}}}]}}"
+    fi
+    printf '{"apiVersion":"v1","kind":"List","items":[%s]}\n' "$items"
+    ;;
+  "get pv -o json")
+    if [ -n "${KUBECTL_PVS_RC:-}" ]; then
+      echo 'Error from server (Forbidden): persistentvolumes is forbidden: User "lab" cannot list resource "persistentvolumes" in API group "" at the cluster scope' >&2
+      exit 1
+    fi
+    if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
+      echo '{"items":[]}'
+      exit 0
+    fi
+    items="$(cat "$dir/pvs.json")"
+    if [ -n "${KUBECTL_NFS_PV_BOUND:-}" ]; then
+      items="${items},{\"metadata\":{\"name\":\"nfs-health-volumes\"},\"spec\":{\"csi\":{\"driver\":\"nfs.csi.k8s.io\"},
+        \"claimRef\":{\"namespace\":\"nfs-health-probe\",\"name\":\"nfs-health-volumes\"}},\"status\":{\"phase\":\"Bound\"}}"
+    fi
+    printf '{"apiVersion":"v1","kind":"List","items":[%s]}\n' "$items"
+    ;;
   "get "*" -n openstack -o json")
     if [ -n "${KUBECTL_CR_READ_RC:-}" ]; then
       echo 'error: You must be logged in to the server (Unauthorized)' >&2
@@ -401,6 +503,22 @@ case "$args" in
       exit 1
     fi
     cat "$dir/helmreleases.json"
+    ;;
+  "get helmrelease csi-driver-nfs -n kube-system"*)
+    if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
+      echo 'error: the server doesn'"'"'t have a resource type "helmrelease"' >&2
+      exit 1
+    fi
+    if [ -n "${KUBECTL_NFS_RELEASE_RC:-}" ]; then
+      echo 'Error from server (Forbidden): helmreleases.helm.toolkit.fluxcd.io "csi-driver-nfs" is forbidden: User "lab" cannot get resource "helmreleases" in API group "helm.toolkit.fluxcd.io" in the namespace "kube-system"' >&2
+      exit 1
+    fi
+    if [ -n "${KUBECTL_NFS_RELEASE_ABSENT:-}" ]; then
+      [[ "$args" != *--ignore-not-found* ]] || exit 0
+      echo 'Error from server (NotFound): helmreleases.helm.toolkit.fluxcd.io "csi-driver-nfs" not found' >&2
+      exit 1
+    fi
+    echo 'helmrelease.helm.toolkit.fluxcd.io/csi-driver-nfs'
     ;;
   "get kustomization -n flux-system -o json")
     if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
@@ -596,8 +714,8 @@ test_external_teardown_order() {
   echo "Test: the external teardown removes the stack in finalizer order"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (24 checks skipped)"
-    SKIP=$((SKIP + 24))
+    echo "  SKIP: yq not installed (30 checks skipped)"
+    SKIP=$((SKIP + 30))
     return
   fi
 
@@ -638,6 +756,9 @@ test_external_teardown_order() {
     'kubectl patch openbaoclusters.openbao.org openbao-instance -n openstack' \
     'kubectl delete -k deploy/lab/metal-stack/infrastructure' \
     'kubectl delete -k deploy/kind/messaging' \
+    'kubectl delete -k deploy/lab/metal-stack/nfs' \
+    'kubectl delete -f deploy/lab/metal-stack/nfs/client-policy.yaml' \
+    'kubectl delete csidriver -l helm.toolkit.fluxcd.io/name=csi-driver-nfs,helm.toolkit.fluxcd.io/namespace=kube-system' \
     'kubectl patch helmrelease c5c3-operator -n c5c3-system' \
     'kubectl patch kustomization k-orc -n flux-system' \
     'kubectl kustomize deploy/lab/metal-stack/base' \
@@ -688,6 +809,29 @@ test_external_teardown_order() {
   assert_eq "the one read names every namespaced stack kind and nothing else" \
     "$(grep -vx -e 'gatewayclasses.gateway.networking.k8s.io' -e 'hypervisors.kvm.cloud.sap' \
       -e 'evictions.kvm.cloud.sap' <<<"$STACK_CRDS" | sort)" "$read_kinds"
+
+  # The NFS stack goes after that wait, once no pod mounts a share through its
+  # node plugin, which the HelmRelease csi-driver-nfs installed. Neither pod of
+  # pods.json mounts one and neither PersistentVolume of pvs.json is a Bound
+  # one of the driver, so one read ends the wait.
+  local release_line pods_line pvs_line nfs_line
+  release_line="$(grep -n -- '^kubectl get helmrelease csi-driver-nfs -n kube-system ' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  pods_line="$(grep -nx -- 'kubectl get pods -A -o json' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  pvs_line="$(grep -nx -- 'kubectl get pv -o json' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  nfs_line="$(grep -n 'delete -k .*/deploy/lab/metal-stack/nfs ' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  assert_eq "the csi-driver-nfs HelmRelease is read after the stack CRs in openstack and before the pods" "true" \
+    "$([[ -n "$release_line" && -n "$wait_line" && -n "$pods_line" &&
+      "$release_line" -gt "$wait_line" && "$release_line" -lt "$pods_line" ]] && echo true || echo false)"
+  assert_eq "the pods are read after the stack CRs in openstack" "true" \
+    "$([[ -n "$pods_line" && -n "$wait_line" && "$pods_line" -gt "$wait_line" ]] && echo true || echo false)"
+  assert_eq "and before the NFS overlay is deleted" "true" \
+    "$([[ -n "$pods_line" && -n "$nfs_line" && "$pods_line" -lt "$nfs_line" ]] && echo true || echo false)"
+  assert_eq "so are the PersistentVolumes" "true" \
+    "$([[ -n "$pvs_line" && -n "$nfs_line" && "$pvs_line" -gt "$wait_line" && "$pvs_line" -lt "$nfs_line" ]] && echo true || echo false)"
+  assert_eq "pods without an nfs.csi.k8s.io volume end the wait on the first read" "1" \
+    "$(grep -cx -- 'kubectl get pods -A -o json' "$CALL_LOG")"
+  assert_eq "and so do another driver's Bound and the driver's Released PersistentVolume" "1" \
+    "$(grep -cx -- 'kubectl get pv -o json' "$CALL_LOG")"
 
   # The cluster-scoped objects the charts left behind: selected by the release
   # namespace label, read once the stack namespaces are gone (before that the
@@ -761,8 +905,8 @@ test_external_teardown_failures() {
   echo "Test: the external teardown aborts on an unreachable cluster, a timeout or leftovers"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (71 checks skipped)"
-    SKIP=$((SKIP + 71))
+    echo "  SKIP: yq not installed (116 checks skipped)"
+    SKIP=$((SKIP + 116))
     return
   fi
 
@@ -824,6 +968,131 @@ test_external_teardown_failures() {
   assert_eq "a CRD scope that cannot be read exits 1" "1" "$rc"
   assert_contains "says the scope cannot be read" "$output" "cannot read the scope of the cluster's CRDs"
   assert_not_contains "no operator is resumed or removed afterwards" "$(cat "$CALL_LOG")" "patch helmrelease"
+
+  # A pod that still mounts a share of csi-driver-nfs: exit 1 before any part
+  # of the NFS stack or any operator goes, naming that pod alone.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_NFS_POD_LEFT=1)"
+  rc=$?
+  assert_eq "a pod with an nfs.csi.k8s.io volume that outlives the wait exits 1" "1" "$rc"
+  assert_contains "the error says pods still mount a share" "$output" \
+    "ERROR: pods or bound PersistentVolumes still use an nfs.csi.k8s.io volume after 1s:"
+  assert_contains "and names the pod" "$output" "openstack/cinder-volume-nfs1-0"
+  assert_not_contains "and not the pod without volumes" "$output" "keystone-db-sync-x7k2p"
+  assert_not_contains "nor the pod with another driver's inline volume" "$output" "garage-0"
+  assert_contains "and says what has to happen first" "$output" \
+    "The csi-driver-nfs node plugin has to unmount them before it is removed; delete what owns these pods and claims and rerun."
+  assert_eq "the NFS overlay is not deleted" "" "$(grep -E 'delete -k .*/nfs ' "$CALL_LOG" || true)"
+  assert_not_contains "nor the CSIDriver" "$(cat "$CALL_LOG")" "delete csidriver"
+  assert_not_contains "and no operator is resumed or removed" "$(cat "$CALL_LOG")" "patch helmrelease"
+
+  # A share mounted through a claim, as the nfs-health probe does: its Bound
+  # PersistentVolume holds the wait, and the error names it with its claim.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_NFS_PV_BOUND=1)"
+  rc=$?
+  assert_eq "a Bound nfs.csi.k8s.io PersistentVolume that outlives the wait exits 1" "1" "$rc"
+  assert_contains "the error names the PersistentVolume and its claim" "$output" \
+    "pv/nfs-health-volumes (claim nfs-health-probe/nfs-health-volumes)"
+  assert_not_contains "and not the driver's Released one" "$output" "pv/nfs-health-backups"
+  assert_not_contains "nor another driver's Bound one" "$output" "pv-shoot-data-garage-0"
+  assert_eq "the NFS overlay is not deleted while the claim binds it" "" \
+    "$(grep -E 'delete -k .*/nfs ' "$CALL_LOG" || true)"
+  assert_not_contains "and no operator is resumed or removed" "$(cat "$CALL_LOG")" "patch helmrelease"
+
+  # A pod that unmounts its share during the wait: the second read finds none,
+  # and the NFS stack goes.
+  rm -f "$tmp/bin/pod-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=30 KUBECTL_NFS_POD_READS=1)"
+  rc=$?
+  assert_eq "a pod that unmounts its share during the wait lets the teardown go on" "0" "$rc"
+  assert_eq "after a second pod read" "2" "$(grep -cx -- 'kubectl get pods -A -o json' "$CALL_LOG")"
+  assert_contains "and the NFS overlay is deleted then" "$(cat "$CALL_LOG")" \
+    "delete -k $PROJECT_ROOT/deploy/lab/metal-stack/nfs "
+
+  # A read that keeps failing is not a cluster without mounts.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_PODS_RC=1)"
+  rc=$?
+  assert_eq "a pod read that keeps failing exits 1" "1" "$rc"
+  assert_contains "and names kubectl's error" "$output" \
+    "cannot read them: Error from server (Forbidden): pods is forbidden"
+  assert_eq "the NFS overlay is not deleted after a failed read" "" \
+    "$(grep -E 'delete -k .*/nfs ' "$CALL_LOG" || true)"
+  assert_not_contains "and no operator is resumed or removed" "$(cat "$CALL_LOG")" "patch helmrelease"
+
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_PVS_RC=1)"
+  rc=$?
+  assert_eq "a PersistentVolume read that keeps failing exits 1" "1" "$rc"
+  assert_contains "and names kubectl's error" "$output" \
+    "cannot read them: Error from server (Forbidden): persistentvolumes is forbidden"
+  assert_eq "the NFS overlay is not deleted after a failed PersistentVolume read" "" \
+    "$(grep -E 'delete -k .*/nfs ' "$CALL_LOG" || true)"
+
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_PODS_TRUNCATED=1)"
+  rc=$?
+  assert_eq "a pod read yq cannot parse exits 1" "1" "$rc"
+  assert_contains "and says yq cannot read it" "$output" "yq cannot read them (its error is above)"
+  assert_eq "the NFS overlay is not deleted after an unreadable answer" "" \
+    "$(grep -E 'delete -k .*/nfs ' "$CALL_LOG" || true)"
+
+  # A cluster whose NFS CSI driver the platform runs: the deploy refused
+  # WITH_NFS=true there, so no HelmRelease csi-driver-nfs exists, and a Bound
+  # PersistentVolume of nfs.csi.k8s.io is the platform's, not the teardown's
+  # to wait for.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 \
+    KUBECTL_NFS_RELEASE_ABSENT=1 KUBECTL_NFS_PV_BOUND=1)"
+  rc=$?
+  assert_eq "without the csi-driver-nfs HelmRelease a Bound nfs.csi.k8s.io PersistentVolume does not hold the teardown" \
+    "0" "$rc"
+  assert_not_contains "no pod is read" "$(cat "$CALL_LOG")" "get pods -A"
+  assert_not_contains "nor a PersistentVolume" "$(cat "$CALL_LOG")" "get pv "
+  assert_contains "and the NFS overlay delete still runs" "$(cat "$CALL_LOG")" \
+    "delete -k $PROJECT_ROOT/deploy/lab/metal-stack/nfs "
+
+  # A read of that HelmRelease that fails is not an absent one.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_NFS_RELEASE_RC=1)"
+  rc=$?
+  assert_eq "a csi-driver-nfs HelmRelease read that fails exits 1" "1" "$rc"
+  assert_contains "the error names the HelmRelease" "$output" \
+    "ERROR: cannot read the HelmRelease kube-system/csi-driver-nfs:"
+  assert_contains "and quotes kubectl's error" "$output" \
+    'helmreleases.helm.toolkit.fluxcd.io "csi-driver-nfs" is forbidden'
+  assert_eq "the NFS overlay is not deleted after that read failed" "" \
+    "$(grep -E 'delete -k .*/nfs ' "$CALL_LOG" || true)"
+  assert_not_contains "and no operator is resumed or removed" "$(cat "$CALL_LOG")" "patch helmrelease"
+
+  # An overlay without nfs/: no pod read, no NFS delete.
+  mkdir -p "$tmp/no-nfs/base" "$tmp/no-nfs/infrastructure"
+  : >"$tmp/no-nfs/base/kustomization.yaml"
+  : >"$tmp/no-nfs/infrastructure/kustomization.yaml"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-nfs")"
+  rc=$?
+  assert_eq "an overlay without nfs/ tears down" "0" "$rc"
+  assert_not_contains "without reading the pods" "$(cat "$CALL_LOG")" "get pods -A"
+  assert_not_contains "or the PersistentVolumes" "$(cat "$CALL_LOG")" "get pv "
+  assert_eq "without deleting an nfs/ overlay" "" "$(grep -E 'delete -k .*/nfs ' "$CALL_LOG" || true)"
+  assert_not_contains "or a client policy" "$(cat "$CALL_LOG")" "client-policy.yaml"
+  assert_not_contains "or a CSIDriver" "$(cat "$CALL_LOG")" "delete csidriver"
+
+  # An overlay whose nfs/ ships no client-policy.yaml: the overlay and the
+  # CSIDriver go, and no policy is named.
+  mkdir -p "$tmp/no-policy/base" "$tmp/no-policy/infrastructure" "$tmp/no-policy/nfs"
+  : >"$tmp/no-policy/base/kustomization.yaml"
+  : >"$tmp/no-policy/infrastructure/kustomization.yaml"
+  : >"$tmp/no-policy/nfs/kustomization.yaml"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-policy")"
+  rc=$?
+  assert_eq "an overlay whose nfs/ has no client-policy.yaml tears down" "0" "$rc"
+  assert_contains "its nfs/ overlay is deleted" "$(cat "$CALL_LOG")" "delete -k $tmp/no-policy/nfs "
+  assert_not_contains "and no client policy" "$(cat "$CALL_LOG")" "client-policy.yaml"
 
   # The cluster-scoped GatewayClass is never read in openstack: kubectl would
   # ignore -n and report the one step 3 deletes.
@@ -915,6 +1184,11 @@ test_external_teardown_failures() {
   assert_contains "and still deletes the cert-manager Leases, which --ignore-not-found lets pass" \
     "$(cat "$CALL_LOG")" \
     "kubectl delete lease cert-manager-cainjector-leader-election cert-manager-controller -n kube-system"
+  assert_not_contains "and, without the HelmRelease kind, reads no pod for the NFS wait" \
+    "$(cat "$CALL_LOG")" "get pods -A"
+  assert_not_contains "and no PersistentVolume" "$(cat "$CALL_LOG")" "get pv "
+  assert_contains "and its NFS overlay delete, whose HelmRelease kind has no mapping, passes" \
+    "$(cat "$CALL_LOG")" "kubectl delete -k $PROJECT_ROOT/deploy/lab/metal-stack/nfs "
 
   # The chart objects cannot be read: exit 1 after the stack namespaces, with
   # kubectl's error, and before any CRD is deleted.

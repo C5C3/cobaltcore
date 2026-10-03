@@ -322,6 +322,62 @@ wait_for_stack_crs_gone() {
 }
 
 # ---------------------------------------------------------------------------
+# wait_for_nfs_pods_gone — Wait until no pod in any namespace mounts an inline
+# volume of csi-driver-nfs (driver nfs.csi.k8s.io) and no PersistentVolume of
+# that driver is Bound, bounded by TEARDOWN_TIMEOUT.
+#
+# The kubelet unmounts such a volume through the driver's node plugin,
+# csi-nfs-node. A pod that garbage collection is still terminating when the
+# plugin goes stays in Terminating with its NFS mount on the node, and holds its
+# namespace until step 7 runs out of time. The cinder-operator mounts its
+# shares as inline `csi:` volumes. A pod that mounts a share through a claim,
+# as the probe of the nfs-health suite does, is found by the PersistentVolume
+# its claim binds instead: the teardown never deletes that namespace, so the
+# pod would keep its mount and the PersistentVolume would stay behind. The
+# match is by driver name across the cluster, so teardown_nfs calls this only
+# while the stack's own HelmRelease csi-driver-nfs exists.
+#
+# The loop is the one of wait_for_stack_crs_gone: a read that fails counts as
+# pods left, and so does a yq that cannot read the answer, so an unreadable
+# cluster never passes for one without mounts. Exits 1 when the wait runs out,
+# naming each pod as <namespace>/<name> and each PersistentVolume as
+# pv/<name> (claim <namespace>/<name>).
+# ---------------------------------------------------------------------------
+wait_for_nfs_pods_gone() {
+  local json pvs left errfile
+  log "Waiting until no pod or bound PersistentVolume uses an nfs.csi.k8s.io volume..."
+  local mounting='.items[] | select([(.spec.volumes // [])[] | select(.csi.driver == "nfs.csi.k8s.io")] | length > 0) | .metadata.namespace + "/" + .metadata.name'
+  local bound='.items[] | select(.spec.csi.driver == "nfs.csi.k8s.io" and .status.phase == "Bound") | "pv/" + .metadata.name + " (claim " + .spec.claimRef.namespace + "/" + .spec.claimRef.name + ")"'
+
+  errfile="$(mktemp)"
+  local deadline=$((SECONDS + TEARDOWN_TIMEOUT))
+  while :; do
+    if json="$(kubectl get pods -A -o json 2>"${errfile}")" &&
+      pvs="$(kubectl get pv -o json 2>"${errfile}")"; then
+      left="$(yq -r "${mounting}" <<<"${json}" && yq -r "${bound}" <<<"${pvs}")" ||
+        left="yq cannot read them (its error is above)"
+    else
+      left="cannot read them: $(head -n 1 "${errfile}")"
+    fi
+    if [[ -z "${left}" ]]; then
+      rm -f "${errfile}"
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      rm -f "${errfile}"
+      log "ERROR: pods or bound PersistentVolumes still use an nfs.csi.k8s.io volume after ${TEARDOWN_TIMEOUT}s:"
+      local line
+      while IFS= read -r line; do
+        [[ -n "${line}" ]] && log "         ${line}"
+      done <<<"${left}"
+      log "       The csi-driver-nfs node plugin has to unmount them before it is removed; delete what owns these pods and claims and rerun."
+      exit 1
+    fi
+    sleep 5
+  done
+}
+
+# ---------------------------------------------------------------------------
 # delete_where_crd_exists CRD WHAT ARGS... — delete_and_wait WHAT CRD ARGS...
 # when CRD is installed, and nothing otherwise: an operator that was never
 # installed, or is gone, has no objects left to delete.
@@ -440,6 +496,61 @@ teardown_hypervisors() {
 }
 
 # ---------------------------------------------------------------------------
+# teardown_nfs — The end of step 2 of teardown_external_cluster: remove the NFS
+# stack of the overlay's nfs/, which hack/deploy-infra.sh applies under
+# WITH_NFS=true. It runs once the ControlPlane and its Cinder are gone and
+# while the helm-controller, which uninstalls the chart, still runs (step 5
+# removes it). A no-op unless ${OVERLAY_ROOT}/nfs/kustomization.yaml exists.
+#   1. while the HelmRelease kube-system/csi-driver-nfs exists,
+#      wait_for_nfs_pods_gone, so csi-nfs-node is still there to unmount every
+#      inline nfs.csi.k8s.io volume and every one mounted through a claim.
+#      Without that release the stack runs no NFS CSI driver: a deploy without
+#      WITH_NFS=true, a cluster whose driver the platform runs (the deploy
+#      refuses WITH_NFS=true there), or a second run. The pods and claims of a
+#      driver the platform runs are not the teardown's to wait for. A read of
+#      the release that fails exits 1 before anything is deleted;
+#   2. the overlay: the HelmRepository, the HelmRelease csi-driver-nfs (its
+#      finalizer has the helm-controller uninstall the chart), the NFS server
+#      with its Service and claim, and the DaemonSet nfs-client-modules. The
+#      release lives in kube-system, which step 7 leaves alone, so without this
+#      delete the chart would stay on the cluster for good;
+#   3. the NetworkPolicy of the overlay's nfs/client-policy.yaml, when the
+#      overlay ships one, after the server it guarded. The deploy applies that
+#      template with the node network filled in; a delete needs only its name;
+#   4. the CSIDriver the release created, selected by the two labels the
+#      helm-controller sets on every object of a release, so a CSIDriver the
+#      platform ships is never named. After a clean uninstall it finds nothing.
+# The kernel modules the overlay's pods loaded (nfsd, nfs, nfsv4 and their
+# dependencies) stay on the nodes until they reboot.
+# ---------------------------------------------------------------------------
+teardown_nfs() {
+  if [[ ! -f "${OVERLAY_ROOT}/nfs/kustomization.yaml" ]]; then
+    return 0
+  fi
+  # A missing HelmRelease kind means there is no release.
+  local release
+  if ! release="$(kubectl get helmrelease csi-driver-nfs -n kube-system \
+    --ignore-not-found -o name 2>&1)"; then
+    if [[ "${release}" != *"doesn't have a resource type"* ]]; then
+      log "ERROR: cannot read the HelmRelease kube-system/csi-driver-nfs:"
+      log "         ${release}"
+      exit 1
+    fi
+    release=""
+  fi
+  # kubectl may write warnings beside an empty answer; only the name counts.
+  if grep -qxF 'helmrelease.helm.toolkit.fluxcd.io/csi-driver-nfs' <<<"${release}"; then
+    wait_for_nfs_pods_gone
+  fi
+  delete_and_wait "the NFS overlay" -k "${OVERLAY_ROOT}/nfs"
+  if [[ -f "${OVERLAY_ROOT}/nfs/client-policy.yaml" ]]; then
+    delete_and_wait "the NFS client policy" -f "${OVERLAY_ROOT}/nfs/client-policy.yaml"
+  fi
+  delete_and_wait "the CSIDriver of csi-driver-nfs" csidriver \
+    -l 'helm.toolkit.fluxcd.io/name=csi-driver-nfs,helm.toolkit.fluxcd.io/namespace=kube-system'
+}
+
+# ---------------------------------------------------------------------------
 # teardown_external_cluster — Remove the stack from the current context's cluster.
 #
 # The order makes every finalizer run while the controller that clears it still
@@ -458,7 +569,14 @@ teardown_hypervisors() {
 #      wait until no CR of the stack's namespaced CRDs in openstack is still
 #      being reaped, since what a ControlPlane owned is finalized by an
 #      operator step 3 removes (the ControlPlane delete of step 1 returns when
-#      the ControlPlane is gone, not its children);
+#      the ControlPlane is gone, not its children); then, when the overlay has
+#      nfs/, the NFS stack (teardown_nfs): while the HelmRelease
+#      kube-system/csi-driver-nfs exists, a wait until no pod mounts an
+#      inline nfs.csi.k8s.io volume and no PersistentVolume of that driver is
+#      Bound, then the overlay with that HelmRelease, while the
+#      helm-controller can still uninstall its chart, the NetworkPolicy of
+#      nfs/client-policy.yaml and the CSIDriver that release created. The
+#      modules its pods loaded stay on the nodes until they reboot;
 #   3. the base overlay without its Namespaces and FluxInstance, after resuming
 #      what was suspended, so the helm-controller uninstalls every chart and the
 #      Flux Kustomizations prune K-ORC and the RabbitMQ operator; the Gateway and
@@ -480,8 +598,9 @@ teardown_hypervisors() {
 # chart objects still present, which must all be zero. Every delete ignores
 # absence, so a second run finds nothing and exits 0; a wait that runs out
 # exits 1 (delete_and_wait). In kube-system only the maint-<node> objects of
-# step 0 and the two cert-manager Leases of step 7 are deleted; the platform's
-# namespaces and CRDs are never named.
+# step 0, the csi-driver-nfs HelmRelease of step 2 with its chart, and the two
+# cert-manager Leases of step 7 are deleted; the platform's namespaces and CRDs
+# are never named.
 # ---------------------------------------------------------------------------
 teardown_external_cluster() {
   local cmd
@@ -556,6 +675,9 @@ teardown_external_cluster() {
   # What the ControlPlane owned: garbage collection reaps it after step 1's
   # delete has returned, and its finalizers need the operators step 3 removes.
   wait_for_stack_crs_gone openstack
+  # The NFS stack, once Cinder no longer mounts its shares and while the
+  # helm-controller still runs.
+  teardown_nfs
 
   # 3. The Flux objects of the base overlay.
   resume_installed_flux_objects
