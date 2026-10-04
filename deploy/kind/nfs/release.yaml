@@ -26,10 +26,9 @@
 # and deploy/kind/dizzy/release-*.yaml. A range would let Flux adopt a new
 # chart on its next reconcile with no repo diff, and what it installs here is
 # a privileged hostNetwork DaemonSet whose chart defaults the stack relies on
-# (listed below) are not overridden and would flip unnoticed. Renovate tracks
-# the pin (customManager on `version:` in this file, packageRules
-# "csi-driver-nfs chart", major disabled, no automerge), so an upgrade is a
-# reviewed diff.
+# (listed below) are not overridden and would flip unnoticed. Renovate's flux
+# manager tracks the pin (packageRules "csi-driver-nfs chart", major disabled,
+# no automerge), so an upgrade is a reviewed diff.
 #
 # The HelmRepository still points at the upstream `master` chart directory
 # (source.yaml), because that is the only place upstream publishes: every
@@ -78,7 +77,7 @@ spec:
   chart:
     spec:
       chart: csi-driver-nfs
-      # Pinned, not a range. Renovate bumps it; see the header.
+      # Pinned, not a range. Renovate's flux manager bumps it; see the header.
       version: "4.13.4"
       sourceRef:
         kind: HelmRepository

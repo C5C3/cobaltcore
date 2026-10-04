@@ -28,8 +28,9 @@
 # The clone is scoped to /config via spec.ignore, as sources/k-orc.yaml does, so
 # the source artifact stays small: the installer reads nothing outside config/.
 #
-# Renovate's native flux manager does not cover this repo, so the tag and the
-# commit are bumped together by one customManager rule in renovate.json;
+# A packageRule switches Renovate's native flux manager off for this file,
+# because one customManager rule in renovate.json moves the tag and the commit
+# in one match;
 # tests/unit/renovate/rabbitmq_cluster_operator_source_custommanager_test.sh
 # guards that pairing.
 #
