@@ -149,8 +149,9 @@ func maintenanceJob(cr *ovnv1alpha1.OVNChassis, name, script string, env []corev
 		},
 		NodeName: nodeName,
 		Containers: []corev1.Container{{
-			Name:  componentMaintenance,
-			Image: effectiveImage(cr.Spec.Image).Reference(),
+			Name:            componentMaintenance,
+			Image:           effectiveImage(cr.Spec.Image).Reference(),
+			ImagePullPolicy: effectiveImage(cr.Spec.Image).EffectivePullPolicy(),
 			// The unprivileged posture is enough for all three: the apply Job
 			// reaches the local database through /run/openvswitch/db.sock, which
 			// host-prepare.sh hands to uid 42424, and the other two speak to a

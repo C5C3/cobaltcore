@@ -147,6 +147,7 @@ func (r *OVNChassisReconciler) reconcileOVS(ctx context.Context, children client
 // disconnected one.
 func buildOVSDaemonSet(cr *ovnv1alpha1.OVNChassis) *appsv1.DaemonSet {
 	image := effectiveImage(cr.Spec.Image).Reference()
+	pullPolicy := effectiveImage(cr.Spec.Image).EffectivePullPolicy()
 
 	// The one privileged container of the pod. It loads the datapath kernel
 	// modules and creates the host run directories the other containers write
@@ -158,6 +159,7 @@ func buildOVSDaemonSet(cr *ovnv1alpha1.OVNChassis) *appsv1.DaemonSet {
 	initContainers := []corev1.Container{{
 		Name:            "host-prepare",
 		Image:           image,
+		ImagePullPolicy: pullPolicy,
 		Command:         []string{"/bin/bash", path.Join(chassisScriptDir, hostPrepareScriptKey)},
 		SecurityContext: prepare,
 		// The init container finishes before ovs-vswitchd starts, so the
@@ -173,8 +175,9 @@ func buildOVSDaemonSet(cr *ovnv1alpha1.OVNChassis) *appsv1.DaemonSet {
 
 	containers := []corev1.Container{
 		{
-			Name:  "ovsdb-server",
-			Image: image,
+			Name:            "ovsdb-server",
+			Image:           image,
+			ImagePullPolicy: pullPolicy,
 			// The daemon is behind a script so that its umask is set before it
 			// creates the socket the two datapath containers connect to. The
 			// script carries the flags, including the manager_options remote that
@@ -209,8 +212,9 @@ func buildOVSDaemonSet(cr *ovnv1alpha1.OVNChassis) *appsv1.DaemonSet {
 			},
 		},
 		{
-			Name:  "ovs-vswitchd",
-			Image: image,
+			Name:            "ovs-vswitchd",
+			Image:           image,
+			ImagePullPolicy: pullPolicy,
 			// SYS_NICE beside NET_ADMIN: the daemon raises the priority of its own
 			// polling threads, and without the capability every start logs the
 			// failure and runs at ordinary priority.

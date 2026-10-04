@@ -131,11 +131,13 @@ func chassisEnv(cr *ovnv1alpha1.OVNChassis, central resolvedCentral) []corev1.En
 // the fault the readiness probe already reports.
 func buildControllerDaemonSet(cr *ovnv1alpha1.OVNChassis, central resolvedCentral) *appsv1.DaemonSet {
 	image := effectiveImage(cr.Spec.Image).Reference()
+	pullPolicy := effectiveImage(cr.Spec.Image).EffectivePullPolicy()
 	env := chassisEnv(cr, central)
 
 	initContainers := []corev1.Container{{
 		Name:            "apply-node",
 		Image:           image,
+		ImagePullPolicy: pullPolicy,
 		Command:         []string{"/bin/bash", path.Join(chassisScriptDir, applyNodeScriptKey)},
 		Env:             env,
 		SecurityContext: deployment.RestrictedSecurityContext(),
@@ -150,8 +152,9 @@ func buildControllerDaemonSet(cr *ovnv1alpha1.OVNChassis, central resolvedCentra
 	}}
 
 	containers := []corev1.Container{{
-		Name:  componentOVNController,
-		Image: image,
+		Name:            componentOVNController,
+		Image:           image,
+		ImagePullPolicy: pullPolicy,
 		// NET_ADMIN and uid 0: the daemon programs the datapath through netlink.
 		// It reaches the local database over the socket ovsdb-server creates, and
 		// that socket belongs to the unprivileged user, which is why the posture

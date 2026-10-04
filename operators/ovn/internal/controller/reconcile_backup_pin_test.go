@@ -141,6 +141,7 @@ spec:
             - name: RETENTION_DAYS
               value: "14"
             image: ghcr.io/c5c3/ovn:26.03.2
+            imagePullPolicy: Always
             name: backup
             resources:
               requests:
@@ -232,6 +233,7 @@ spec:
             - name: RETENTION_DAYS
               value: "3"
             image: ghcr.io/c5c3/ovn:26.03.2
+            imagePullPolicy: Always
             name: backup
             resources:
               requests:
@@ -340,6 +342,7 @@ spec:
             - name: PREFIX
               value: prod/ovn
             image: registry.example.com/backup-shifter@sha256:2222222222222222222222222222222222222222222222222222222222222222
+            imagePullPolicy: IfNotPresent
             name: shifter
             resources:
               requests:
@@ -374,6 +377,7 @@ spec:
             - name: RETENTION_DAYS
               value: "14"
             image: ghcr.io/c5c3/ovn:26.03.2
+            imagePullPolicy: Always
             name: backup
             resources:
               requests:

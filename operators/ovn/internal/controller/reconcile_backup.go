@@ -445,6 +445,7 @@ func backupContainer(cr *ovnv1alpha1.OVNCentral, backup ovnv1alpha1.OVNBackupSpe
 	return corev1.Container{
 		Name:            componentBackup,
 		Image:           effectiveImage(cr.Spec.Image).Reference(),
+		ImagePullPolicy: effectiveImage(cr.Spec.Image).EffectivePullPolicy(),
 		Command:         []string{"/bin/bash", centralScriptDir + "/" + backupScriptKey},
 		SecurityContext: deployment.RestrictedSecurityContext(),
 		Env: []corev1.EnvVar{
@@ -483,6 +484,7 @@ func shifterContainer(cr *ovnv1alpha1.OVNCentral, s3 *ovnv1alpha1.OVNBackupS3Spe
 	return corev1.Container{
 		Name:            "shifter",
 		Image:           effectiveShifterImage(s3.Image).Reference(),
+		ImagePullPolicy: effectiveShifterImage(s3.Image).EffectivePullPolicy(),
 		Command:         []string{"/bin/sh", "-c", `rclone copy ` + backupMountPath + ` ":s3:${BUCKET}/${PREFIX}"`},
 		SecurityContext: deployment.RestrictedSecurityContext(),
 		Env: []corev1.EnvVar{

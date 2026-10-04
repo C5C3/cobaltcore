@@ -96,6 +96,7 @@ spec:
         - /bin/bash
         - /etc/ovn-chassis/bin/run-ovsdb.sh
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -143,6 +144,7 @@ spec:
         - name: OVS_REVALIDATOR_THREADS
           value: "2"
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -194,6 +196,7 @@ spec:
         - /bin/bash
         - /etc/ovn-chassis/bin/host-prepare.sh
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         name: host-prepare
         resources: {}
         securityContext:
@@ -275,6 +278,7 @@ spec:
         - /bin/bash
         - /etc/ovn-chassis/bin/run-ovsdb.sh
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
+        imagePullPolicy: IfNotPresent
         lifecycle:
           preStop:
             exec:
@@ -322,6 +326,7 @@ spec:
         - name: OVS_REVALIDATOR_THREADS
           value: "2"
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
+        imagePullPolicy: IfNotPresent
         lifecycle:
           preStop:
             exec:
@@ -379,6 +384,7 @@ spec:
         - /bin/bash
         - /etc/ovn-chassis/bin/host-prepare.sh
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
+        imagePullPolicy: IfNotPresent
         name: host-prepare
         resources:
           limits:
