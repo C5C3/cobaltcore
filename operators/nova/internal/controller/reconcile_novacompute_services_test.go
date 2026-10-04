@@ -347,6 +347,39 @@ func TestReconcileNovaComputeServices_Releasing(t *testing.T) {
 	})
 }
 
+// TestReconcileNovaComputeServices_OffboardedNode pins what the pool reports
+// once openstack-hypervisor-operator deleted the service of a node the pool
+// still selects, and that the drain then drops the entry without a write to
+// Nova.
+func TestReconcileNovaComputeServices_OffboardedNode(t *testing.T) {
+	t.Run("an active node whose service is gone waits for it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := poolWith(novav1alpha1.NovaComputeNodeActive)
+
+		runServices(t, computeapitest.New(), cr, nil)
+
+		g.Expect(onlyEntry(g, cr).Phase).To(Equal(novav1alpha1.NovaComputeNodePending))
+		cond := novaComputeCondition(cr, conditionTypeServicesReady)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForServices))
+		g.Expect(cond.Message).To(ContainSubstring(testNodeName))
+	})
+
+	t.Run("a draining node with no service and no server is dropped with no write", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		cr := poolWith(novav1alpha1.NovaComputeNodeDraining)
+
+		runServices(t, api, cr, nil)
+		g.Expect(onlyEntry(g, cr).Phase).To(Equal(novav1alpha1.NovaComputeNodeReleasing))
+		runServices(t, api, cr, nil)
+
+		g.Expect(cr.Status.Nodes).To(BeEmpty())
+		g.Expect(api.CallsTo(http.MethodPut, "/v2.1/os-services/")).To(BeEmpty())
+		g.Expect(api.CallsTo(http.MethodDelete, "/v2.1/os-services/")).To(BeEmpty())
+	})
+}
+
 // TestReconcileNovaComputeServices_NeverEnables pins that a node relabelled
 // back into the pool mid-drain gets no service update: the satellite only ever
 // disables.
