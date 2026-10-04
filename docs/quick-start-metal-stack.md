@@ -73,7 +73,7 @@ directory with `KUBECONFIG` set this way.
 
 The [node probe](./reference/infrastructure/infrastructure-manifests.md#node-probe)
 is a read-only Job that prints the node facts the lab depends on under
-eleven fixed headers. The loop pins it to each node in turn, under a `=== <node>`
+twelve fixed headers. The loop pins it to each node in turn, under a `=== <node>`
 line, and deletes it before and after every run: a Job's pod template is
 immutable, so a Job left over from an interrupted run would make the apply
 fail and print another node's facts:
