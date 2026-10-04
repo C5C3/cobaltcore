@@ -44,6 +44,7 @@ name: Build Images
       - overrides/**
       - hack/ci-generate-build-matrix.sh
       - hack/ci-merge-manifest.sh
+      - hack/ci-tag-libvirt-keeper.sh
       - hack/ci-resolve-extra-packages.sh
       - hack/ci-resolve-image-changes.sh
       - hack/ci-resolve-ovn-version.sh
@@ -223,6 +224,7 @@ jobs:
               - '.github/actions/supply-chain-attest/**'
               - 'hack/ci-generate-build-matrix.sh'
               - 'hack/ci-merge-manifest.sh'
+              - 'hack/ci-tag-libvirt-keeper.sh'
               - 'hack/ci-resolve-extra-packages.sh'
               - 'hack/ci-resolve-image-changes.sh'
               - 'hack/ci-resolve-ovn-version.sh'
@@ -826,6 +828,9 @@ jobs:
   # image has no release axis: per-platform builds pushed by digest
   # (base-image pattern), verified inline on PRs (tempest pattern), merged +
   # attested with the base-image :latest / :<sha> tag scheme on push events.
+  # On main, a third tag <libvirt-package-version>-r<N> is minted once per
+  # value and never moved (hack/ci-tag-libvirt-keeper.sh); the lab manifests
+  # pin it by digest.
   build-libvirt:
     needs: [changes, lint-dockerfiles, prepare]
     if: needs.changes.outputs.build-libvirt == 'true'
@@ -906,7 +911,14 @@ jobs:
       artifact-metadata: write # gh#108: actions/attest v4.1.0 storage record
       security-events: write #: GitHub Security tab SARIF upload
     steps:
+      # The full history on main, where the keeper step runs:
+      # hack/ci-tag-libvirt-keeper.sh counts the commits under images/libvirt,
+      # and a shallow clone counts one. The count reads commits and trees
+      # only, so the blobs outside HEAD stay on the server.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: ${{ github.ref_name != 'main' && 1 || 0 }}
+          filter: blob:none
 
       - name: Setup Docker registry
         uses: ./.github/actions/setup-docker-registry
@@ -924,6 +936,17 @@ jobs:
           inspect-tag: ghcr.io/${{ needs.prepare.outputs.image-owner }}/libvirt:${{ github.sha }}
           sbom-output-file: sbom-libvirt.cyclonedx.json
           grype-category: grype-libvirt
+
+      # The keeper tag is main-only, as ovn:<ovn-version> is, so that two
+      # branches cannot claim one tag. A tag that exists already stays on the
+      # digest it names.
+      - name: Mint the libvirt keeper tag
+        id: keeper-tag
+        if: github.ref_name == 'main'
+        env:
+          IMAGE: ghcr.io/${{ needs.prepare.outputs.image-owner }}/libvirt
+          DIGEST: ${{ steps.merge-libvirt.outputs.digest }}
+        run: hack/ci-tag-libvirt-keeper.sh
 
   # Release-independent OVS + OVN daemons compiled from pinned upstream
   # sources: images/ovn/Dockerfile pins the OVN tag and takes OVS from that

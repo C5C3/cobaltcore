@@ -266,6 +266,52 @@ test_distro_image_jobs() {
   assert_contains "merge tags include the commit SHA" "$merge_tags" "$img"':${{ github.sha }}'
 }
 
+# --- libvirt keeper tag: minted once on main, from the full history ---
+test_libvirt_keeper_tag() {
+  echo "Test: merge-libvirt-image mints the keeper tag on main from the full history"
+
+  local job='.jobs["merge-libvirt-image"]'
+  local checkout="$job.steps[] | select(.uses == \"actions/checkout@*\")"
+  assert_eq "the checkout of merge-libvirt-image fetches the full history on main" \
+    "\${{ github.ref_name != 'main' && 1 || 0 }}" \
+    "$(yq_raw "$checkout | .with[\"fetch-depth\"]" "$WORKFLOW" || true)"
+  assert_eq "the checkout leaves the blobs outside HEAD on the server" "blob:none" \
+    "$(yq_raw "$checkout | .with.filter" "$WORKFLOW" || true)"
+
+  local merge_index keeper_index
+  merge_index=$(yq_raw "$job.steps | to_entries | .[] | select(.value.id == \"merge-libvirt\") | .key" "$WORKFLOW" || true)
+  keeper_index=$(yq_raw "$job.steps | to_entries | .[] | select(.value.id == \"keeper-tag\") | .key" "$WORKFLOW" || true)
+  if [[ "$merge_index" =~ ^[0-9]+$ && "$keeper_index" =~ ^[0-9]+$ && "$keeper_index" -gt "$merge_index" ]]; then
+    echo "  PASS: the step keeper-tag follows the step merge-libvirt"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: the step keeper-tag (index '$keeper_index') does not follow merge-libvirt (index '$merge_index')"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local keeper="$job.steps[] | select(.id == \"keeper-tag\")"
+  assert_eq "the keeper step runs hack/ci-tag-libvirt-keeper.sh" "hack/ci-tag-libvirt-keeper.sh" \
+    "$(yq_raw "$keeper | .run" "$WORKFLOW" || true)"
+  assert_eq "the keeper step runs on main only" "github.ref_name == 'main'" \
+    "$(yq_raw "$keeper | .if" "$WORKFLOW" || true)"
+  assert_eq "the keeper step tags the merged digest" '${{ steps.merge-libvirt.outputs.digest }}' \
+    "$(yq_raw "$keeper | .env.DIGEST" "$WORKFLOW" || true)"
+  assert_eq "the keeper step tags the libvirt image" \
+    'ghcr.io/${{ needs.prepare.outputs.image-owner }}/libvirt' \
+    "$(yq_raw "$keeper | .env.IMAGE" "$WORKFLOW" || true)"
+
+  # The script is push-only, like hack/ci-merge-manifest.sh; a change to it
+  # still runs the workflow on its pull request and rebuilds every image.
+  local filters plumbing_globs pr_paths
+  filters=$(yq_raw '.jobs["changes"]["steps"][] | select(.id == "filter") | .with.filters' "$WORKFLOW" || true)
+  plumbing_globs=$(yq_raw '.plumbing[]' - <<<"$filters" || true)
+  pr_paths=$(yq_raw '.on.pull_request.paths[]' "$WORKFLOW" || true)
+  assert_eq "the plumbing filter names hack/ci-tag-libvirt-keeper.sh" "1" \
+    "$(grep -cx 'hack/ci-tag-libvirt-keeper.sh' <<<"$plumbing_globs" || true)"
+  assert_eq "the pull-request trigger names hack/ci-tag-libvirt-keeper.sh" "1" \
+    "$(grep -cx 'hack/ci-tag-libvirt-keeper.sh' <<<"$pr_paths" || true)"
+}
+
 # --- ovn build/merge/verify job structure ---
 test_ovn_jobs() {
   echo "Test: ovn job structure"
@@ -2321,6 +2367,8 @@ echo ""
 test_distro_image_jobs backup-shifter tests/container-images/verify_backup_shifter.sh
 echo ""
 test_distro_image_jobs libvirt tests/container-images/verify_libvirt.sh
+echo ""
+test_libvirt_keeper_tag
 echo ""
 test_ovn_jobs
 echo ""
