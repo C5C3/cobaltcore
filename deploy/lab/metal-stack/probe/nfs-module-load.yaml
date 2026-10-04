@@ -29,13 +29,15 @@
 #
 # IMAGE AND MOUNT mirror the init container host-prepare of
 # deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml, which loads
-# vhost_net from a pod the same way: ghcr.io/c5c3/libvirt:latest, whose kmod
-# package (images/libvirt/Dockerfile) supplies modprobe and rmmod, privileged,
-# as root, with the node's /lib/modules mounted read-only so modprobe finds the
-# running kernel's module files. The image string is the DaemonSet's, unpinned
-# like it, and tests/unit/deploy/metal_stack_probe_test.sh keeps the two
-# equal. No hostPID, no hostNetwork, no ServiceAccount token, a read-only root
-# filesystem.
+# vhost_net from a pod the same way: ghcr.io/c5c3/libvirt, whose kmod package
+# (images/libvirt/Dockerfile) supplies modprobe and rmmod, privileged, as root,
+# with the node's /lib/modules mounted read-only so modprobe finds the running
+# kernel's module files. The image string is the DaemonSet's, pinned like it by
+# the keeper tag and digest <libvirt-package-version>-r<N>@sha256:<digest>;
+# hack/ci-tag-libvirt-keeper.sh mints that tag once and never moves it.
+# tests/unit/deploy/metal_stack_probe_test.sh keeps the two equal, and Renovate
+# moves this line in the pull request that moves the DaemonSet's. No hostPID,
+# no hostNetwork, no ServiceAccount token, a read-only root filesystem.
 #
 # NAMESPACE default, as for the probe: the test runs before the lab stack has
 # created any namespace of its own.
@@ -106,8 +108,8 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: load
-          image: ghcr.io/c5c3/libvirt:latest
-          imagePullPolicy: Always
+          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r1@sha256:3e45a6a1b091287acb73c982020a177e5c47b9442b263443c249e1525ae9624c
+          imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-c"]
           args:
             - |

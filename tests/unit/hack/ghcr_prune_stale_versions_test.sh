@@ -347,7 +347,10 @@ SHA_E=$(printf '%.0se' {1..40})
 
 test_libvirt_keeper_tag_keeps_the_pinned_build() {
   echo "Test: a <libvirt-package-version>-r<N> tag keeps its manifest without latest"
-  local fixture="$TMPDIR_BASE/libvirt.json" output mode
+  local fixture="$TMPDIR_BASE/libvirt.json" output mode pinned_tag
+  pinned_tag="$(grep -hoE 'image: ghcr\.io/c5c3/libvirt:[^@[:space:]]+' \
+    "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml" | head -1 | sed 's/.*libvirt://' || true)"
+  assert_not_empty "the DaemonSet carries a pinned tag to test" "$pinned_tag"
   cat > "$fixture" <<EOF
 {
   "now": "2026-10-04T00:00:00Z",
@@ -355,7 +358,7 @@ test_libvirt_keeper_tag_keeps_the_pinned_build() {
     {"id": 1, "name": "${LIBVIRT_CURRENT}", "created_at": "2026-10-02T00:00:00Z",
      "metadata": {"container": {"tags": ["latest", "${SHA_D}", "10.0.0-2ubuntu8.20-r1"]}}},
     {"id": 2, "name": "${LIBVIRT_PINNED}", "created_at": "2026-09-01T00:00:00Z",
-     "metadata": {"container": {"tags": ["${SHA_B}", "10.0.0-2ubuntu8.19-r1"]}}},
+     "metadata": {"container": {"tags": ["${SHA_B}", "${pinned_tag}"]}}},
     {"id": 3, "name": "${LIBVIRT_SUPERSEDED}", "created_at": "2026-09-15T00:00:00Z",
      "metadata": {"container": {"tags": ["${PIN_A}"]}}},
     {"id": 4, "name": "${LIBVIRT_BARE_VERSION}", "created_at": "2026-09-20T00:00:00Z",
