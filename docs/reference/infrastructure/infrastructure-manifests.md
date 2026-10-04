@@ -2569,9 +2569,23 @@ never completes and has to be deleted by hand; the Job keeps each run bounded.
 The values a lab-ready node shows come from the 2026-09-29 survey in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138). The header comment of
 `deploy/lab/metal-stack/probe/node-probe.yaml` lists them in the probe's own
-output format, from a run on the survey's node on 2026-10-03 that includes the
-NFS lines. The survey's NIC lines show the pod's own `eth0`; the probe reads
-the host's sysfs and lists the host's interfaces instead.
+output format, from a run on the survey's node on 2026-10-04 that includes the
+NFS lines, the Chaos Mesh module lines and the containerd socket lines. The
+survey's NIC lines show the pod's own `eth0`; the probe reads the host's sysfs
+and lists the host's interfaces instead.
+
+On the lab, the probe found the six Chaos Mesh module files on both workers
+on 2026-10-04, each with a path under `/lib/modules/6.1.0-49-amd64`. So D3
+of #1219 stands:
+[#1221](https://github.com/c5c3/cobaltcore/issues/1221) is to load `ip_set`,
+`ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf`.
+Loaded at the time of the run were `xt_set`, `ip_set_hash_ip`,
+`ip_set_hash_net` and `ip_set`. This does not shorten the list: a reboot or a
+replaced node starts without them. Both workers printed
+`run/containerd/containerd.sock: socket`, so #1221 can mount
+`/run/containerd/containerd.sock`, the kind overlay's value. The
+[comment on #1219](https://github.com/c5c3/cobaltcore/issues/1219#issuecomment-5981396257)
+holds the output of both workers.
 
 **File:** `deploy/lab/metal-stack/probe/nfs-module-load.yaml`
 
