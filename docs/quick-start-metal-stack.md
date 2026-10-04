@@ -16,8 +16,9 @@ the full ControlPlane, reached through a port-forward. Part 2 turns both
 workers into KVM hypervisors of that ControlPlane, boots a server on each,
 live-migrates one and evicts a node. The teardown leaves the cluster as bare
 as it was. The ControlPlane CR is the one of the
-[Quick Start (ControlPlane)](./quick-start-controlplane.md) with three lab
-settings; read Steps 3 and 4 there for its anatomy.
+[Quick Start (ControlPlane)](./quick-start-controlplane.md) with its
+block-storage block and three lab settings; read Steps 3 and 4 there for its
+anatomy.
 
 ## Prerequisites
 
@@ -112,7 +113,8 @@ describes every step and variable.
 [Lab NFS stack](./reference/infrastructure/infrastructure-manifests.md#lab-nfs-stack):
 an NFS server with the two shares that hold Cinder's volumes and backups, the
 `csi-driver-nfs` mounter, and pods that load the NFS kernel modules on the
-nodes.
+nodes. Without it the script exits 1 before it applies anything, because the
+ControlPlane of Step 4 puts Cinder's backends on that server.
 
 ### Step 4: Apply the OVN central and the ControlPlane {#cp-apply}
 
@@ -122,8 +124,10 @@ kubectl wait ovncentral/controlplane-ovn -n openstack --for=condition=Ready --ti
 ```
 
 The directory holds the `OVNCentral` `controlplane-ovn` and the ControlPlane
-`controlplane` of the Quick Start (ControlPlane), with three settings for the
-lab:
+`controlplane` of the Quick Start (ControlPlane). The ControlPlane carries that
+page's block-storage block, which runs Cinder with the volume backend `nfs1`
+and the backup backend `nfsbk` on the two shares of the NFS server of Step 3.
+It adds three settings for the lab:
 
 - `sizing.profile: Minimal` gives every component one replica and the database
   a 512Mi volume, which a worker carries beside its servers.
@@ -222,19 +226,23 @@ hypervisors:
 
 ```bash
 openstack catalog list
+openstack volume service list
 openstack compute service list
 openstack hypervisor list
 ```
 
-The catalog holds a row per service of the ControlPlane. The compute service
-list has no `nova-compute` row, and the hypervisor list is empty: no node runs
-a hypervisor yet. The image, placement and secret checks of the Quick Start
-(ControlPlane) run with these variables, with or without the `--insecure`
-they carry there:
+The catalog holds a row per service of the ControlPlane, among them
+`block-storage` for Cinder. The volume service list shows `cinder-scheduler`,
+`cinder-volume` on the host `controlplane-cinder@nfs1` and `cinder-backup`,
+each `up`. The compute service list has no `nova-compute` row, and the
+hypervisor list is empty: no node runs a hypervisor yet. The image, placement,
+secret and volume checks of the Quick Start (ControlPlane) run with these
+variables, with or without the `--insecure` they carry there:
 [Upload a first image](./quick-start-controlplane.md#upload-a-first-image),
-[List placement resource classes](./quick-start-controlplane.md#list-placement-resource-classes)
-and [Store and retrieve a first secret](./quick-start-controlplane.md#store-and-retrieve-a-first-secret),
-the last with the `python-barbicanclient` plugin.
+[List placement resource classes](./quick-start-controlplane.md#list-placement-resource-classes),
+[Store and retrieve a first secret](./quick-start-controlplane.md#store-and-retrieve-a-first-secret)
+with the `python-barbicanclient` plugin, and
+[Create a first volume](./quick-start-controlplane.md#create-a-first-volume).
 
 ## Part 2: The hypervisors {#hypervisors}
 

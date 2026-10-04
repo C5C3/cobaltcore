@@ -2825,16 +2825,22 @@ No lab run of this stack is recorded yet.
 
 The kustomization is the `OVNCentral` of Step 3 and the ControlPlane CR of
 Step 4 of the
-[Quick Start (ControlPlane)](../../quick-start-controlplane.md), with their data
-unchanged except for two keys the lab adds to the ControlPlane.
+[Quick Start (ControlPlane)](../../quick-start-controlplane.md), and the CR
+carries the `cinder` block of that page's optional `# block-storage.yaml`
+fragment. The data is unchanged except for two keys the lab adds to the
+ControlPlane.
 `hack/deploy-infra.sh` names the directory in its `WITH_CONTROLPLANE=true`
 completion hint and never applies it. Its preflight renders the directory and
 refuses it unless it holds exactly one ControlPlane,
 `openstack/<CONTROLPLANE_NAME>`, because Step 7 seeds the admin-password paths
 of that namespace and name only. The lab CR is `openstack/controlplane`, which
-the default name matches.
+the default name matches. Without `WITH_NFS=true` the preflight refuses the
+directory as well, because the CR's Cinder backends `nfs1` and `nfsbk` sit on
+the [Lab NFS stack](#lab-nfs-stack), which only `WITH_NFS=true` deploys.
 `tests/unit/deploy/metal_stack_controlplane_test.sh` compares both files with
-the page's blocks and fails when they drift apart. The CR file is not named
+three blocks of the page, the first `# controlplane.yaml` block, the
+`# block-storage.yaml` fragment and the `# controlplane-ovn.yaml` block, and
+fails when they drift apart. The CR file is not named
 `controlplane.yaml`, because `.gitignore` ignores that basename in every
 directory.
 
@@ -2867,7 +2873,7 @@ network endpoints of the catalog, which are the in-cluster Service URLs.
 | Applied | by hand, after `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra` |
 | Storage | through the cluster's default class; neither CR names a `storageClassName` |
 | Metadata gateway | none; the metadata API stays in-cluster at `controlplane-nova-metadata.openstack.svc:8775` |
-| Block storage | none; `CinderReady` reports `True` with reason `CinderNotManaged` |
+| Block storage | Cinder with the volume backend `nfs1` and the backup backend `nfsbk` on the shares `/volumes` and `/backups` of the [Lab NFS stack](#lab-nfs-stack); `CinderReady` reports `True` with reason `CinderReady` |
 | Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, which deletes the ControlPlane and then the `OVNCentral` in its first step |
 | Pinned by | `tests/unit/deploy/metal_stack_controlplane_test.sh` |
 
@@ -2894,7 +2900,7 @@ on its own before the [node port check](#node-port-check).
 
 | File | Content |
 | --- | --- |
-| `hypervisor-fixtures/kustomization.yaml` | The kind fixtures of `deploy/kind/hypervisor-operator-fixtures/` without `VolumeType/hvo-premium`, `Network/hvo-smoke-test` and `Subnet/hvo-smoke-test`: the lab has no Cinder, and only the smoke test uses the network. The domain `cc3test` and the project `test`, which hvo scopes a token to at start, stay, and so do the flavor ID `1` (1 vCPU, 256 MiB, 1 GiB) and the image `cirros-kvm` the run boots |
+| `hypervisor-fixtures/kustomization.yaml` | The kind fixtures of `deploy/kind/hypervisor-operator-fixtures/` without `VolumeType/hvo-premium`, `Network/hvo-smoke-test` and `Subnet/hvo-smoke-test`: only hvo's smoke test uses them, and every lab `Hypervisor` skips it through the node label `cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests`. The domain `cc3test` and the project `test`, which hvo scopes a token to at start, stay, and so do the flavor ID `1` (1 vCPU, 256 MiB, 1 GiB) and the image `cirros-kvm` the run boots |
 | `migration-ports/namespace.yaml` | Namespace `hypervisor-system`, with the lab's Gardener opt-out label |
 | `migration-ports/reservation-daemonset.yaml` | DaemonSet `migration-port-reservation` in `hypervisor-system`, on every node: it reserves QEMU's migration ports (see [Migration port reservation](#migration-port-reservation)) |
 | `hypervisor/kustomization.yaml` | Takes `../migration-ports` as a resource, so the hypervisor overlay applies the namespace and the reservation too and the teardown removes both with it |
@@ -3046,7 +3052,7 @@ No manifest can patch a Node, so each node gets four labels by hand:
 | `openstack.c5c3.io/chassis=true` | `OVNChassis/lab-chassis` selects it |
 | `openstack.c5c3.io/nova-compute-pool=lab` | `NovaCompute/lab` and the libvirt DaemonSet select it |
 | `nova.openstack.cloud.sap/virt-driver=kvm` | hvo creates a `Hypervisor` and a Certificate for such a node, and kna runs there |
-| `cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests` | The only way a `Hypervisor` gets `lifecycleEnabled` and `skipTests`. The smoke test boots from a Cinder volume |
+| `cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests` | The only way a `Hypervisor` gets `lifecycleEnabled` and `skipTests`. The smoke test boots onto a 64 GiB volume of the type `premium` on the network `hvo-smoke-test`, which the lab fixtures leave out |
 
 Onboarding waits at its `Handover` phase for two more conditions, and the hvo
 image of this repository patches the controller behind each. Upstream hvo sets

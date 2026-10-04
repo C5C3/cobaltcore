@@ -4,7 +4,8 @@
 
 # The OpenStack objects openstack-hypervisor-operator looks up on the
 # metal-stack lab: the kind fixtures of deploy/kind/hypervisor-operator-fixtures
-# without the volume type, the network and the subnet. Apply it by hand once
+# without the volume type, the network and the subnet of the operator's smoke
+# test. Apply it by hand once
 # the lab ControlPlane is Ready and the node labels are set, and before
 # ../hypervisor; Part 2 of docs/quick-start-metal-stack.md runs the sequence,
 # and docs/reference/infrastructure/infrastructure-manifests.md (Lab
@@ -16,11 +17,12 @@
 # "cc3test" at start and exits when that fails, so the domain, the project,
 # the imports and the role assignment stay. The flavor (ID "1", 1 vCPU,
 # 256 MiB, 1 GiB) and the image "cirros-kvm" stay as well: they are what the
-# lab run boots. Three objects go:
-#   - VolumeType hvo-premium, because the lab runs no Cinder;
-#   - Network and Subnet hvo-smoke-test, because only the operator's smoke
-#     test uses them, and every lab Hypervisor skips it (the node label
-#     cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests).
+# lab run boots. Three objects go, because only the operator's smoke test
+# uses them, and every lab Hypervisor skips it (the node label
+# cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests):
+#   - VolumeType hvo-premium, the type of the 64 GiB volume the test boots
+#     onto;
+#   - Network and Subnet hvo-smoke-test, the network the test boots on.
 #
 # Delete the fixtures before the ControlPlane, and disable the domain first:
 # Keystone refuses to delete an enabled domain, and K-ORC does not disable it.

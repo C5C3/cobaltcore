@@ -12,11 +12,13 @@
 #      controlplane, both in openstack.
 #   3. The rendered ControlPlane carries the lab settings: global_physnet_mtu
 #      as the string "1460", an empty hypervisorOperator map, the Minimal
-#      profile, and no profileRef, metadataGateway, cinder block or
-#      storageClassName.
+#      profile, the Cinder volume backend nfs1 on the share /volumes and the
+#      backup backend nfsbk on /backups of the lab NFS server, and no
+#      profileRef, metadataGateway or storageClassName.
 #   4. The two files do not drift from docs/quick-start-controlplane.md:
-#      controlplane-lab.yaml without the two lab keys equals the first
-#      `# controlplane.yaml` block, and ovncentral.yaml equals the
+#      controlplane-lab.yaml without the cinder block and the two lab keys
+#      equals the first `# controlplane.yaml` block, its cinder block equals
+#      the `# block-storage.yaml` fragment, and ovncentral.yaml equals the
 #      `# controlplane-ovn.yaml` block, compared without comments and with
 #      sorted keys.
 #   5. controlplane-lab.yaml states the tenant MTU 1402 the setting yields.
@@ -160,7 +162,7 @@ test_render_two_objects() {
 test_lab_settings() {
   echo "Test: the rendered ControlPlane carries the lab settings"
 
-  render "$CONTROLPLANE_DIR" 9 || return
+  render "$CONTROLPLANE_DIR" 11 || return
 
   local mtu='.spec.services.neutron.extraConfig.DEFAULT.global_physnet_mtu'
   assert_eq "neutron global_physnet_mtu is 1460" "1460" \
@@ -179,8 +181,15 @@ test_lab_settings() {
     "$(val ControlPlane controlplane '.spec.sizing | has("profileRef")')"
   assert_eq "no metadata gateway is published" "false" \
     "$(val ControlPlane controlplane '.spec.services.nova | has("metadataGateway")')"
-  assert_eq "no block storage is declared" "false" \
-    "$(val ControlPlane controlplane '.spec.services | has("cinder")')"
+  local cinder='.spec.services.cinder' share='.nfs.server + ":" + .nfs.path'
+  assert_eq "cinder declares the volume backend nfs1 alone" "nfs1" \
+    "$(val ControlPlane controlplane "$cinder.backends | map(.name) | join(\" \")")"
+  assert_eq "nfs1 is the share /volumes of the lab NFS server" \
+    "nfs-server.openstack.svc.cluster.local:/volumes" \
+    "$(val ControlPlane controlplane "$cinder.backends[] | select(.name == \"nfs1\") | $share")"
+  assert_eq "the backup backend nfsbk is the share /backups of the lab NFS server" \
+    "nfs-server.openstack.svc.cluster.local:/backups" \
+    "$(val ControlPlane controlplane "$cinder.backupBackend | select(.name == \"nfsbk\") | $share")"
   assert_not_contains "no storage class is named, so the default class applies" \
     "$RENDERED" "storageClassName"
 }
@@ -190,13 +199,13 @@ test_no_drift_from_the_quick_start() {
   echo "Test: the lab files match the quick start's blocks (${QUICK_START_DOC#"$PROJECT_ROOT"/})"
 
   if ! have yq; then
-    echo "  SKIP: yq not installed (2 checks skipped)"
-    SKIP=$((SKIP + 2))
+    echo "  SKIP: yq not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
     return
   fi
   if [[ ! -f "$QUICK_START_DOC" ]]; then
     echo "  FAIL: $QUICK_START_DOC does not exist"
-    FAIL=$((FAIL + 2))
+    FAIL=$((FAIL + 3))
     return
   fi
 
@@ -205,7 +214,9 @@ test_no_drift_from_the_quick_start() {
   trap 'rm -rf "$tmp"' RETURN
 
   compare_block "$tmp" '# controlplane.yaml' "$CONTROLPLANE_DIR/controlplane-lab.yaml" \
-    'del(.spec.services.neutron.extraConfig) | del(.spec.services.nova.hypervisorOperator)'
+    'del(.spec.services.neutron.extraConfig) | del(.spec.services.nova.hypervisorOperator) | del(.spec.services.cinder)'
+  compare_block "$tmp" '# block-storage.yaml' "$CONTROLPLANE_DIR/controlplane-lab.yaml" \
+    '{"cinder": .spec.services.cinder}'
   compare_block "$tmp" '# controlplane-ovn.yaml' "$CONTROLPLANE_DIR/ovncentral.yaml"
 }
 

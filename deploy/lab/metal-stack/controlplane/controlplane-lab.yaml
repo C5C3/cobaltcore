@@ -3,12 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The ControlPlane of the ControlPlane Quick Start (docs/quick-start-controlplane.md,
-# Step 4, the first `# controlplane.yaml` block), data unchanged except for two
-# keys the lab adds: spec.services.neutron.extraConfig and
+# Step 4): the data of the first `# controlplane.yaml` block, plus the
+# spec.services.cinder of the page's optional `# block-storage.yaml` fragment,
+# plus two keys the lab adds: spec.services.neutron.extraConfig and
 # spec.services.nova.hypervisorOperator. The comments above those two keys and
 # above spec.sizing give the reasons.
 # tests/unit/deploy/metal_stack_controlplane_test.sh fails when this file,
-# minus the two keys, and the page's block drift apart.
+# minus cinder and the two keys, and the first block drift apart, and when
+# cinder and the fragment do.
 #
 # The file is not named controlplane.yaml: .gitignore ignores that basename in
 # every directory.
@@ -107,6 +109,30 @@ spec:
       extraConfig:
         DEFAULT:
           global_physnet_mtu: "1460"
+    cinder:
+      publicEndpoint: https://cinder.127-0-0-1.nip.io:8443
+      # The openstack-gw listener for cinder.127-0-0-1.nip.io, which the lab's
+      # infrastructure overlay takes over from the kind overlay.
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: cinder.127-0-0-1.nip.io
+      # The two shares of the NFS server in deploy/lab/metal-stack/nfs/, which
+      # WITH_NFS=true deploys: /volumes holds the volumes, /backups the
+      # backups. The paths are NFSv4 share strings below the server's /exports
+      # pseudo-root, so /volumes, never /exports/volumes.
+      backends:
+        - name: nfs1
+          type: NFS
+          nfs:
+            server: nfs-server.openstack.svc.cluster.local
+            path: /volumes
+      backupBackend:
+        name: nfsbk
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /backups
     nova:
       # Both compute catalog rows append /v2.1 to this endpoint.
       publicEndpoint: https://nova.127-0-0-1.nip.io:8443
