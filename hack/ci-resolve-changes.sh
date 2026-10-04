@@ -168,8 +168,8 @@ if [[ "${noop}" == "true" ]]; then
   for out in go docs helm target-cluster-chart has-e2e-operators e2e-infra \
     e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso \
     e2e-external-keystone e2e-autoscaling e2e-multicluster e2e-ovn-overlay \
-    e2e-operator-upgrade tempest measure-sizing changed-tempest changed-proxy \
-    build-e2e-images actionlint; do
+    e2e-nova-libvirt e2e-operator-upgrade tempest measure-sizing changed-tempest \
+    changed-proxy build-e2e-images actionlint; do
     emit "$out" false
   done
   for out in changed-operators changed-services tempest-services; do
@@ -331,6 +331,19 @@ cond=false
 if filter_on tests_ovn_overlay || filter_on ovn || filter_on image_ovn; then cond=true; fi
 e2e_ovn_overlay=$(or_force "$cond")
 
+# The single-node libvirt job. Its inputs are the suite with the pool fixtures
+# it applies by path, the nova-operator, and the Nova and nova-compute images:
+# the libvirt path it proves runs through the pool's DaemonSet and the
+# nova-compute image that DaemonSet runs.
+#
+# Deliberately FILTER_nova rather than membership of op_changed, for the reason
+# the overlay gives above: the job brings up a full Nova stack on a self-hosted
+# runner, so a shared Go change must not schedule it. ci:full is how you ask
+# for it anyway.
+cond=false
+if filter_on tests_nova_libvirt || filter_on nova || filter_on image_nova; then cond=true; fi
+e2e_nova_libvirt=$(or_force "$cond")
+
 cond=false
 if filter_on tests_operator_upgrade || op_is_changed keystone; then cond=true; fi
 e2e_operator_upgrade=$(or_force "$cond")
@@ -454,6 +467,7 @@ if [[ "$has_e2e_operators" == "true" || "$e2e_chaos" == "true" ||
   "$e2e_controlplane_sso" == "true" || "$e2e_external_keystone" == "true" ||
   "$e2e_autoscaling" == "true" ||
   "$e2e_multicluster" == "true" || "$e2e_ovn_overlay" == "true" ||
+  "$e2e_nova_libvirt" == "true" ||
   "$e2e_operator_upgrade" == "true" || "$tempest" == "true" ]]; then
   build_e2e_images=true
 fi
@@ -478,6 +492,7 @@ emit e2e-external-keystone "$e2e_external_keystone"
 emit e2e-autoscaling "$e2e_autoscaling"
 emit e2e-multicluster "$e2e_multicluster"
 emit e2e-ovn-overlay "$e2e_ovn_overlay"
+emit e2e-nova-libvirt "$e2e_nova_libvirt"
 emit e2e-operator-upgrade "$e2e_operator_upgrade"
 emit tempest "$tempest"
 emit measure-sizing "$measure"

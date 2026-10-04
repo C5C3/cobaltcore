@@ -88,6 +88,7 @@ jobs:
       e2e-autoscaling: ${{ steps.result.outputs.e2e-autoscaling }}
       e2e-multicluster: ${{ steps.result.outputs.e2e-multicluster }}
       e2e-ovn-overlay: ${{ steps.result.outputs.e2e-ovn-overlay }}
+      e2e-nova-libvirt: ${{ steps.result.outputs.e2e-nova-libvirt }}
       e2e-operator-upgrade: ${{ steps.result.outputs.e2e-operator-upgrade }}
       tempest: ${{ steps.result.outputs.tempest }}
       measure-sizing: ${{ steps.result.outputs.measure-sizing }}
@@ -284,6 +285,14 @@ jobs:
               - 'deploy/target-cluster/**'
             tests_ovn_overlay:
               - 'tests/e2e-ovn-overlay/**'
+            # The libvirt suite and the compute-node-pool fixtures it applies by
+            # path. The operator and the images reach the job through the nova
+            # and image_nova filters.
+            tests_nova_libvirt:
+              - 'tests/e2e-nova-libvirt/**'
+              - 'tests/e2e/nova/compute-node-pool/**'
+              # The suite creates and deletes its vhost with this script.
+              - 'tests/e2e/cinder/broker-vhost.sh'
             tests_operator_upgrade:
               - 'tests/e2e-operator-upgrade/**'
               - 'hack/ci-fetch-released-operator.sh'
@@ -442,6 +451,7 @@ jobs:
           FILTER_tests_chaos: ${{ steps.filter.outputs.tests_chaos }}
           FILTER_tests_multicluster: ${{ steps.filter.outputs.tests_multicluster }}
           FILTER_tests_ovn_overlay: ${{ steps.filter.outputs.tests_ovn_overlay }}
+          FILTER_tests_nova_libvirt: ${{ steps.filter.outputs.tests_nova_libvirt }}
           FILTER_tests_operator_upgrade: ${{ steps.filter.outputs.tests_operator_upgrade }}
           FILTER_tests_prometheus: ${{ steps.filter.outputs.tests_prometheus }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
