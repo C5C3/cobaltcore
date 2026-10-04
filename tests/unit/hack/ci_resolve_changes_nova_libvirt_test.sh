@@ -13,7 +13,9 @@
 # nova-compute permanently unexercised.
 #
 # The resolve script is executed for real in all of its branches; the ci.yaml
-# sides are asserted against the workflow file.
+# sides are asserted against the workflow file. The last two tests follow the
+# signal to its two consumers: the job that reads it, and the Makefile target
+# that job calls, which is also how a developer reproduces the job locally.
 #
 # Modelled on the sibling ci_resolve_changes_ovn_overlay_test.sh, with the
 # shared scaffolding in tests/lib/ci_resolve.sh and tests/lib/ci_yaml.sh.
@@ -26,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # shellcheck disable=SC2034 # read by tests/lib/ci_resolve.sh and tests/lib/ci_yaml.sh
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
+MAKEFILE="$PROJECT_ROOT/Makefile"
 
 # The resolve script reads FILTER_${op} only for operators named here, so nova
 # must be in the list for the operator-change scenario to assert anything.
@@ -172,6 +175,66 @@ test_filter_names_the_suite_and_its_fixtures() {
     "$block" "deploy/**"
 }
 
+test_the_job_reads_the_signal() {
+  echo "Test: the job gates on the output and runs the suite non-blocking"
+
+  local job kind_load
+  job=$(job_block e2e-nova-libvirt)
+  kind_load=$(job_step e2e-nova-libvirt "Load images into kind")
+
+  assert_not_empty "the e2e-nova-libvirt job exists" "$job"
+  assert_contains "the job reads the output the resolve script wrote" "$job" \
+    "needs.changes.outputs.e2e-nova-libvirt == 'true'"
+  assert_contains "the job runs on pull requests only" "$job" \
+    "github.event_name == 'pull_request'"
+  assert_contains "the job runs on the self-hosted runners" "$job" \
+    "runs-on: self-hosted"
+  # Non-blocking under the kernel-module rule of ci-workflow.md: the pool's
+  # chassis gate needs openvswitch on the runner host.
+  assert_contains "the job does not block the pull request" "$job" \
+    "continue-on-error: true"
+  assert_contains "the job creates the single-node cluster" "$job" \
+    "config: hack/kind-config.yaml"
+  assert_contains "the job loads the OVN kernel modules" "$job" \
+    'WITH_OVN_KERNEL_MODULES: "true"'
+  assert_contains "the job deploys the message bus" "$job" \
+    'WITH_MESSAGING: "true"'
+  assert_contains "the job runs the suite through the Makefile" "$job" \
+    "make e2e-nova-libvirt"
+  assert_contains "the job uploads its JUnit report" "$job" \
+    "name: e2e-nova-libvirt-junit-report"
+  assert_contains "the job pulls the nova-compute image the pool runs" \
+    "$(job_step e2e-nova-libvirt "Load E2E images")" "nova-compute:2025.2"
+  # Without the kind load the node pulls main's published image and the job
+  # tests that instead of the PR's build.
+  assert_contains "the job loads that image into kind" "$kind_load" \
+    "\${{ env.IMAGE_PREFIX }}/nova-compute:2025.2"
+  assert_contains "the job loads the Nova service image into kind" "$kind_load" \
+    "\${{ env.IMAGE_PREFIX }}/nova:2025.2"
+
+  # cleanup-e2e-tags prunes the run-scoped image tags this job pulls, so it
+  # has to wait for the job.
+  assert_contains "cleanup-e2e-tags waits for the job" \
+    "$(job_block cleanup-e2e-tags)" "e2e-nova-libvirt"
+}
+
+test_makefile_target() {
+  echo "Test: the Makefile target exists and names each missing precondition"
+
+  assert_file_contains "the Makefile declares the target" "$MAKEFILE" \
+    "^e2e-nova-libvirt:$"
+  assert_file_contains "the target is phony" "$MAKEFILE" \
+    "^\\.PHONY: e2e-nova-libvirt$"
+  assert_file_contains_fixed "the first preflight names an unreachable cluster" \
+    "$MAKEFILE" "kubectl is not configured or no cluster is reachable"
+  assert_file_contains_fixed "the second preflight names the six operators" \
+    "$MAKEFILE" \
+    "the libvirt suite needs the nova-operator and its five siblings (keystone, placement, glance, ovn, neutron); deploy each with hack/ci-deploy-operator.sh first"
+  assert_file_contains_fixed "the third preflight names the one amd64 node and the cluster's architectures" \
+    "$MAKEFILE" \
+    "the libvirt suite boots an x86_64 guest on one amd64 node; this cluster's nodes are: \$\$archs"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -183,6 +246,8 @@ test_forced_runs_schedule_the_job
 test_the_signal_reaches_the_image_build
 test_ci_yaml_wires_the_signal
 test_filter_names_the_suite_and_its_fixtures
+test_the_job_reads_the_signal
+test_makefile_target
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
