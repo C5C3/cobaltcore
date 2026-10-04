@@ -42,6 +42,8 @@
 #  13. the bash block of the Teardown deletes the backup, the servers and the
 #      volume once each and in this order, and runs `make teardown-infra`
 #      after them
+#  14. no line of the page indexes a shell array by number or names a node
+#      as `nodes[<n>]`: bash counts an array index from 0 and zsh from 1
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -477,6 +479,26 @@ test_teardown_order() {
     'make teardown-infra'
 }
 
+# --- Test 14: no shell array indexed by number ---
+# bash counts an array index from 0 and zsh from 1, so `${nodes[0]}` names the
+# first node in bash and nothing in zsh, and `${nodes[1]}` a different node in
+# each. A command takes one node by slice, `${nodes[@]:0:1}`, which both shells
+# count from 0, and the prose names no node by its index.
+
+# assert_no_array_index <label> <text>
+assert_no_array_index() {
+  local label="$1" text="$2" lines
+  lines="$(grep -nE '\$\{[A-Za-z_][A-Za-z0-9_]*\[[0-9]+\]\}' <<<"$text" || true)"
+  assert_eq "no line of $label indexes a shell array by number" "" "$lines"
+  lines="$(grep -nE 'nodes\[[0-9]+\]' <<<"$text" || true)"
+  assert_eq "no line of $label names a node as nodes[<n>]" "" "$lines"
+}
+
+test_no_array_index() {
+  echo "Test: no shell array indexed by number"
+  assert_no_array_index "the page" "$(cat "$QUICK_START_DOC")"
+}
+
 test_frontmatter
 test_sidebar
 test_sections
@@ -490,6 +512,7 @@ test_blocks_pass_on_first_run
 test_no_hand_steps
 test_prerequisites_name_no_pinned_value
 test_teardown_order
+test_no_array_index
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
