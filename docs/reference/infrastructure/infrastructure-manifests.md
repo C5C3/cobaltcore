@@ -2855,7 +2855,11 @@ backup on it go too.
   namespace, and unmounts it with the node's last detach.
 - The deploy script itself runs no `modprobe` and writes no file on a node.
 
-No lab run of this stack is recorded yet.
+The stack ran on the lab on 2026-10-04 with the quick start's volume steps in
+Part 1, Step 7 and Part 2, Steps 7 and 10; its two outages under
+[Lab fault runs](#lab-fault-runs) left an attached volume failing until the
+Nova server it was attached to was hard-rebooted
+([#1245](https://github.com/c5c3/cobaltcore/issues/1245)).
 
 ### Lab Chaos Mesh
 
@@ -3239,18 +3243,23 @@ pids() {
   kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- \
     sh -c "echo qemu=\$(pgrep -f 'gues[t]=${domain},') libvirtd=\$(pgrep -x libvirtd)"
 }
+# one field: the output of "$@", and its error output only when it fails, so a
+# warning the CLI prints on stderr stays out of the field
+field() {
+  local err
+  { err=$("$@" 2>&1 1>&3 3>&-) || echo "${err}"; } 3>&1 | tr -s ' \n\r' '_'
+}
 # one line: what the APIs, the operators and libvirt report for lab-0 and its node
-flat() { tr -s ' \n\r' '_'; }
 state() {
-  echo "server=$(openstack server show lab-0 -c status -f value 2>&1 | flat)" \
-    "domain=$(timeout 10 kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- virsh domstate --reason "${domain}" 2>&1 | flat)" \
-    "compute=$(openstack compute service list --service nova-compute --host "${host}" -c State -f value 2>&1 | flat)" \
-    "agents=$(openstack network agent list --host "${host}" -c Alive -f value 2>&1 | flat)" \
-    "volume=$(openstack volume show lab-vol -c status -f value 2>&1 | flat)" \
-    "cinder-volume=$(openstack volume service list --service cinder-volume -c State -f value 2>&1 | flat)" \
-    "ready=$(kubectl get novacompute,ovnchassis,neutronmetadataagent,cinder,cinderbackend -n openstack -o jsonpath='{range .items[*]}{.kind}:{.status.conditions[?(@.type=="Ready")].status},{end}' 2>&1 | flat)" \
-    "hypervisor=$(kubectl get hypervisor "${host}" -o jsonpath='{.status.conditions[?(@.type=="LibVirtConnection")].status}' 2>&1 | flat)" \
-    "nfs-server=$(kubectl get pod -n openstack -l app.kubernetes.io/name=nfs-server -o jsonpath='{range .items[*]}{.spec.nodeName}/{.status.phase}/{.status.containerStatuses[0].ready},{end}' 2>&1 | flat)"
+  echo "server=$(field openstack server show lab-0 -c status -f value)" \
+    "domain=$(field timeout 10 kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- virsh domstate --reason "${domain}")" \
+    "compute=$(field openstack compute service list --service nova-compute --host "${host}" -c State -f value)" \
+    "agents=$(field openstack network agent list --host "${host}" -c Alive -f value)" \
+    "volume=$(field openstack volume show lab-vol -c status -f value)" \
+    "cinder-volume=$(field openstack volume service list --service cinder-volume -c State -f value)" \
+    "ready=$(field kubectl get novacompute,ovnchassis,neutronmetadataagent,cinder,cinderbackend -n openstack -o jsonpath='{range .items[*]}{.kind}:{.status.conditions[?(@.type=="Ready")].status},{end}')" \
+    "hypervisor=$(field kubectl get hypervisor "${host}" -o jsonpath='{.status.conditions[?(@.type=="LibVirtConnection")].status}')" \
+    "nfs-server=$(field kubectl get pod -n openstack -l app.kubernetes.io/name=nfs-server -o jsonpath='{range .items[*]}{.spec.nodeName}/{.status.phase}/{.status.containerStatuses[0].ready},{end}')"
 }
 # appends "<UTC time> <state>" to $1 whenever the state changes; runs until killed
 watch_state() {
@@ -3264,17 +3273,27 @@ watch_state() {
     sleep 5
   done
 }
-# the newest line of the guest probe $1 (net or disk); the serial console ends lines in \r\n
+# the last 120 lines of lab-0's console log, or a failure when the call fails or
+# prints nothing; the serial console ends lines in \r\n
+console_log() {
+  local log
+  log=$(openstack console log show --lines 120 lab-0 2>/dev/null) && [ -n "${log}" ] || return 1
+  tr -d '\r' <<<"${log}"
+}
+# the newest line of the guest probe $1 (net or disk) in the console log on stdin
 last_probe() {
-  openstack console log show --lines 120 lab-0 2>/dev/null | tr -d '\r' | grep "lab-probe $1 " | tail -n 1
+  grep "lab-probe $1 " | tail -n 1
 }
 # true when both probes wrote a new "ok" line in the next 20 seconds
 probes_ok() {
-  local net disk
-  net=$(last_probe net) disk=$(last_probe disk)
+  local before after
+  before=$(console_log) || return 1
   sleep 20
-  [ "$(last_probe net)" != "${net}" ] && last_probe net | grep -q ' ok$' &&
-    [ "$(last_probe disk)" != "${disk}" ] && last_probe disk | grep -q ' ok [0-9]*$'
+  after=$(console_log) || return 1
+  [ "$(last_probe net <<<"${after}")" != "$(last_probe net <<<"${before}")" ] &&
+    last_probe net <<<"${after}" | grep -q ' ok$' &&
+    [ "$(last_probe disk <<<"${after}")" != "$(last_probe disk <<<"${before}")" ] &&
+    last_probe disk <<<"${after}" | grep -q ' ok [0-9]*$'
 }
 # waits up to 300 s for pods of selector $1 without the UID(s) $2, on lab-0's node
 # when $3 is "node", then up to 600 s for every pod of $1 to be Ready
@@ -3295,13 +3314,15 @@ wait_replaced() {
   echo "GATE FAILED: no Ready replacement for $1"; return 1
 }
 # the gate before the next fault: within $1 seconds lab-0 is ACTIVE, nova-compute
-# on its node is up, every network agent of its node is alive, and both probes write "ok"
+# on its node is up, Neutron lists network agents of its node and every one is alive,
+# and both probes write "ok"
 recovered() {
-  local end=$((SECONDS + $1))
+  local end=$((SECONDS + $1)) agents
   while [ "${SECONDS}" -lt "${end}" ]; do
     if [ "$(openstack server show lab-0 -c status -f value)" = ACTIVE ] &&
       [ "$(openstack compute service list --service nova-compute --host "${host}" -c State -f value)" = up ] &&
-      ! openstack network agent list --host "${host}" -c Alive -f value | grep -qv True &&
+      agents=$(openstack network agent list --host "${host}" -c Alive -f value) &&
+      [ -n "${agents}" ] && ! grep -qv True <<<"${agents}" &&
       probes_ok; then
       echo "recovered at $(date -u +%T)"; return 0
     fi
@@ -3470,7 +3491,7 @@ pids >"$faults/nfs-server-scale.before"
 watch_state "$faults/nfs-server-scale.log" & watcher=$!
 echo "scaled to 0 at $(date -u +%T)" | tee -a "$faults/nfs-server-scale.log"
 kubectl scale deployment/nfs-server -n openstack --replicas=0
-timeout 120 bash -c 'until [ -z "$(kubectl get pod -n openstack -l app.kubernetes.io/name=nfs-server -o name)" ]; do sleep 2; done'
+kubectl wait pod -n openstack -l app.kubernetes.io/name=nfs-server --for=delete --timeout=120s
 sleep 300
 echo "scaled to 1 at $(date -u +%T)" | tee -a "$faults/nfs-server-scale.log"
 kubectl scale deployment/nfs-server -n openstack --replicas=1
@@ -3507,35 +3528,45 @@ to roll out, and the new volume gets 300. When a helper prints
    wait.
 2. Otherwise repeat the wait once, with the same bound.
 3. When it fails again, run `openstack server reboot --hard --wait lab-0`,
-   start both guest probes again and run `recovered 600`.
+   open `lab-0`'s console with the `virsh console` line of F1, because the
+   `libvirt_pod` of Part 2, Step 6 names the pod F1 killed, start both guest
+   probes again and run `recovered 600`.
 4. When that holds, go on with the next fault. Otherwise the remaining faults
    do not run, and the session goes to its end.
 
 A fault shows a defect when a gate fails, when the `qemu=` PID differs between
 `<f>.before` and `<f>.after` (the guest restarted), or when a field of
 `<f>.state` differs from `baseline.state`. `domain=` is compared by its
-`running_` prefix, `agents=` by holding only `True`, `nfs-server=` by its
-phase and ready flag, as its node may change, and every other field as text.
+`running_` prefix, `agents=` by holding one or more `True` and nothing else,
+`nfs-server=` by its phase and ready flag, as its node may change, and every
+other field as text.
 An F1 console that does not answer, a `lab-vol-after` that ends in `error` or
 not `available` in time, and a failed check at the session's end are defects
 as well. Each gets its own issue. A status that does not move during a fault
 is a finding, and so is a guest stall that ends by itself within the bound.
 
-At the session's end, stop the disk probe with `sudo pkill -f 'lab-probe disk'`
-on `lab-0`'s console and read its last line at once, because the network
-probe pushes it out of the 120 lines `last_probe` reads within minutes. Then
-run [Part 2, Step 10](../../quick-start-metal-stack.md#hv-backup) and read the
+At the session's end, open `lab-0`'s console with the `virsh console` line of
+F1 and stop the disk probe. cirros has no `pkill`, so the line finds the
+loop's PID with `ps`, and `[l]` keeps `awk` from matching itself:
+
+```sh
+sudo kill $(ps | awk '/[l]ab-probe disk/ {print $1}')
+```
+
+Read its last line at once, because the network probe pushes it out of the
+120 lines `console_log` reads within minutes. Then run
+[Part 2, Step 10](../../quick-start-metal-stack.md#hv-backup) and read the
 counter the disk probe wrote last from the volume file:
 
 ```bash
-# after sudo pkill -f 'lab-probe disk' on lab-0's console
-last_probe disk
+# after the disk probe stopped on lab-0's console
+console_log | last_probe disk
 # after Part 2, Step 10
 kubectl exec -n openstack deployment/controlplane-cinder-volume-nfs1 -- sh -c "f=\$(ls /var/lib/cinder/mnt/*/volume-${volume}); dd if=\"\$f\" bs=512 skip=8 count=1 2>/dev/null | head -c 16; echo"
 ```
 
 It prints `probe-<n>`. `<n>` is the counter of the last `ok` disk line or the
-one after it, because `pkill` can stop a write whose `sync` had not returned.
+one after it, because the kill can stop a write whose `sync` had not returned.
 Step 10's `head -c 17` still prints `lab-volume-marker`. Then run the
 [Teardown](../../quick-start-metal-stack.md#teardown) block without its last
 line, and step 6 of the [Proving run](#proving-run) in its place, which runs
@@ -3545,7 +3576,65 @@ port-forward, delete `gateway-ca.pem`, and check that
 `default`, `firewall`, `kube-node-lease`, `kube-public`, `kube-system` and
 `metallb-system`.
 
-No lab run of this block is recorded yet.
+The run of 2026-10-04 ran the block from commit `647736c1` on shoot
+`newforge`, three Xeon D-2141I workers on Kubernetes v1.35.6, with Chaos Mesh
+chart 2.8.4, in one session with the [Proving run](#proving-run). `lab-0` ran
+on `shoot--df33f0b4c1--newforge-group-0-85bcf-7znw9` and `lab-1` on
+`shoot--df33f0b4c1--newforge-group-0-85bcf-hmw67`, and the NFS server started
+on the third worker, `shoot--df33f0b4c1--newforge-group-0-85bcf-rt6kn`. Nova
+mounted the share as `nfs4` with `vers=4.2`, `hard`, `proto=tcp`,
+`timeo=600` and `retrans=2`. The guest's clock was within 2 seconds of the
+workstation's. A script typed the console input and fed the page's blocks to
+one bash shell, a section at a time, and the port-forward ran without a
+restart. The block ran with two changes, both on this page since. `field`
+took the place of `flat` in `state`, because the workstation's OpenStack CLI
+(Homebrew `openstackclient` 8.2.0) prints a readline warning on stderr with
+every call, which `2>&1 | flat` put into every field. The disk probe was
+stopped with `kill` and `ps`, because cirros 0.6.3 has no `pkill`. Since the
+run, F5 waits for the server's pod to go with `kubectl wait --for=delete` in
+place of a polling loop, with the same 120-second bound. Also since the run,
+`recovered` fails on an empty agent list, a failed agent call, or a console
+read that fails or prints nothing, which it passed before, and `probes_ok`
+reads the console log twice per check, where it read it up to six times. F4
+and F5 each failed their gate twice, and `lab-0` was hard-rebooted as the
+failed-gate steps order. The other hand actions only read: the empty and
+absent paths of the helpers after F1, whose pod gap fell between two samples
+of `watch_state`; `sudo head -c 17 /dev/vdb` on the console after F4's
+reboot; the guest's process tools before the kill; and the nodes' kernel
+logs, QEMU's block errors and the volume file, through the libvirt pods
+during F4 and F5. After each reboot the console was opened with
+`$(node_libvirt_pod)`, as F1 does, because Step 6's `libvirt_pod` named the
+pod F1 killed. The times count from the `applied at` line or the scale-down,
+the pod times come from each new pod's Ready condition, and the API states
+from `<f>.log`, sampled about every 14 seconds. The outputs are on
+[#1222](https://github.com/c5c3/cobaltcore/issues/1222).
+
+| Fault | Pod back Ready after | lab-0 and its QEMU | Guest network | Guest disk | Console | What the APIs and operators reported | Issue |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| F1 libvirt | 5 s | `ACTIVE`; QEMU PID 202830 kept, libvirtd 196513 replaced by 214332 | no gap, no `lost` line | no gap, no `error` line | the log kept growing; `virsh console` from the new pod answered with a prompt | no field moved; the gate held at 68 s | none |
+| F2 `nova-compute` | 4 s | `ACTIVE`; QEMU and libvirtd PIDs kept | no gap, no `lost` line | no gap, no `error` line | the log kept growing | no field moved, `compute=up` throughout; the share stayed mounted with the same options; the new pod logged no `ERROR` or `Traceback`; the gate held at 58 s | none |
+| F3 `ovn-controller` | 9 s | `ACTIVE`; QEMU and libvirtd PIDs kept | no gap, no `lost` line | no gap, no `error` line | the log kept growing | `OVNChassis` not Ready in the sample at 10 s and Ready again at 24 s; both agents of the node `True` before and after; the gate held at 52 s | none |
+| F4 NFS server killed | 24 s, moved from `rt6kn` to `hmw67` after one `Multi-Attach error` | `ACTIVE`, domain `running`; QEMU PID 202830 kept until the hard reboot at 1867 s, after two failed gates | no `lost` line; the reboot cut it for 91 s | last `ok` 1 s before the kill; no line for 107 s, then `error` every 2 s from 106 s on, 875 lines, until the reboot; next `ok` at 1957 s | the log kept growing; the guest kernel logged `I/O error, dev vdb` | nothing moved: `volume=in-use`, `cinder-volume=up`, every kind Ready; the node's kernel logged `lost 1 locks` at 108 s | [#1245](https://github.com/c5c3/cobaltcore/issues/1245) |
+| F5 NFS server scaled to 0 | gone after 9 s; Ready 7 s after the scale-up at 303 s, on `hmw67` | `ACTIVE`, domain `running`; QEMU PID 317898 kept until the hard reboot at 2200 s, after two failed gates | no `lost` line; the reboot cut it for 69 s | last `ok` 1 s before the scale-down; no line for 414 s, with `dd` blocked past 120 and 241 s, then `error` every 2 s from 413 s on, 889 lines, until the reboot; next `ok` at 2269 s | the log kept growing; the guest kernel logged the blocked task and `I/O error, dev vdb` | `nfs-server=` empty during the hold, nothing else moved; the node's kernel logged `not responding` at 183 s, `OK` at 312 s and `lost 1 locks` at 415 s | [#1245](https://github.com/c5c3/cobaltcore/issues/1245) |
+
+A killed libvirt pod goes unnoticed by the servers on its node: QEMU keeps
+running, the console log keeps growing, and the console answers through the
+new pod within seconds. A killed `nova-compute` pod is back long before Nova
+misses its heartbeat, and the share it mounted stays mounted. A killed
+`ovn-controller` pod leaves the datapath in place: the guest lost no ping
+across the tunnel, and only the `OVNChassis` condition showed the restart.
+When the NFS server pod is rescheduled, an attached volume stalls for about
+two minutes and then fails every request until the Nova server it is attached
+to is hard-rebooted, while every API reports the volume `in-use` and healthy:
+the restarted `nfsd` logged `Unable to initialize client recovery tracking! (-22)`
+and refused the reclaim of QEMU's lock. A longer outage stalls the guest's disk
+for as long as the server is away, with hung-task warnings in the guest, and
+then fails the same way once the server is back. After F5, `lab-vol-after`
+was `available` within seconds and was deleted, so the backend served new
+volumes while the attached one failed. At the session's end `last_probe disk`
+printed `ok 82`, the volume file held `probe-82`, Step 10 read
+`lab-volume-marker` and backed the volume up, and the deletes, proving step 6
+and the namespace check left only the six platform namespaces.
 
 ### Lab ControlPlane
 
@@ -4138,6 +4227,7 @@ The fake driver of the kind suites reaches none of it:
 | Live-migration CPU check | with `cpuMode: host-passthrough`, and with `host-model`, every live migration ends in `NoValidHost`: Nova's pre-check on the destination fails with `Unacceptable CPU info: CPU doesn't have compatibility`, although `virsh hypervisor-cpu-compare` there accepts the guest CPU | `cpuMode: custom` with `Skylake-Server-IBRS`, the host-model of both workers |
 | Console log after a libvirt restart | with libvirt's default `stdio_handler = "logd"`, `openstack console log show` stopped at the restart: QEMU's log went through `virtlogd`, which ran in the old pod. The guest and its network kept running. With `file` the log grows across a restart | `stdio_handler = "file"` in `qemu.conf` ([#1174](https://github.com/c5c3/cobaltcore/issues/1174)) |
 | CPU model change under a server | on 2026-10-01 a server booted with `host-passthrough` kept that CPU through a hard reboot after the pool moved to `custom`; the run recorded no time for the reboot. The cpuMode block above ran on 2026-10-02 on the first node. A, after the boot: the pod's file says `cpu_mode = host-passthrough`, the domain `mode='host-passthrough'`. B, before the reboot: a pod started 10 seconds after the patch, its file says `cpu_mode = custom` and `cpu_models = Skylake-Server-IBRS`, the domain is still `host-passthrough`. B, after the reboot: the same pod, and the live and the `--inactive` `<cpu>` say `mode='custom'` with the model `Skylake-Server-IBRS`. C, first reboot: the pod of B with its `custom` file, `DaemonSetReady` `False`, the domain `mode='custom'` while the CR says `host-passthrough`. C, second reboot: a new pod, its file says `cpu_mode = host-passthrough` and no `cpu_models`, the domain `mode='host-passthrough'`. A first pass of the same run sent C's second reboot 3 seconds after the new pods started, before `nova-compute` took requests: it cleared the reboot's task state at start-up, the reboot action ended in `Error`, `--wait` reported success and the domain stayed `custom`. `wait_compute` comes from that pass | [Changing the libvirt settings of a pool with servers](../nova/novacompute-crd.md#changing-the-libvirt-settings-of-a-pool-with-servers) |
+| NFS server restart under an attached volume | on 2026-10-04 a PodChaos `pod-kill` of the NFS server (F4) and its scale-down for 300 seconds (F5) restarted `nfsd`, which logged `Unable to initialize client recovery tracking! (-22)`. The compute node logged `lost 1 locks`, and the guest got `I/O error, dev vdb` on every request to the attached volume until a hard reboot, while Nova, Cinder and the CRs reported nothing (see [Lab fault runs](#lab-fault-runs)) | none yet: [#1245](https://github.com/c5c3/cobaltcore/issues/1245) |
 
 ### Node port check
 
