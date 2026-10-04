@@ -3599,6 +3599,178 @@ jobs:
         if: always()
         run: hack/ci-delete-kind-cluster.sh
 
+  # Nova's libvirt driver against a real libvirtd on kind. Brings up the
+  # single-node cluster of hack/kind-config.yaml, deploys the nova-operator
+  # and its five siblings, and runs tests/e2e-nova-libvirt/: libvirtd from
+  # ghcr.io/c5c3/libvirt:latest in a DaemonSet on the node, a NovaCompute pool
+  # with virtType: qemu beside it, and a server booted from the stack's zero
+  # image under QEMU's TCG emulation, which needs no /dev/kvm. The suite
+  # asserts that libvirt runs the domain from the qcow2 disk nova-compute
+  # built, and that deleting the server removes both. The guest boot, KVM and
+  # live migration stay with the lab run of docs/quick-start-metal-stack.md.
+  #
+  # continue-on-error: true because the pool's chassis gate needs the
+  # openvswitch kernel module on the runner host, which puts the suite under
+  # the non-blocking entry rule of `### Kernel-module-dependent suites` in
+  # docs/reference/ci-cd/ci-workflow.md. A later change flips it to blocking
+  # once its pass history on main justifies the flip.
+  #
+  # The job runs alone on its runner: hack/kind-config.yaml binds host ports
+  # 443 and 8428 on 127.0.0.1, so a second cluster created from it on the
+  # same host fails to bind them.
+  e2e-nova-libvirt:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork != true &&
+      needs.changes.outputs.e2e-nova-libvirt == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: self-hosted
+    timeout-minutes: 90
+    continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
+      # out of this workflow.
+      - name: Resolve OVN version
+        run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
+      # The 2025.2 stack of tests/e2e/nova/compute-node-pool, whose fixtures the
+      # suite applies, and the tempest image its Jobs run the openstack client
+      # from. No libvirt image: it is not in the E2E image map, and the kind
+      # node pulls the public ghcr.io/c5c3/libvirt:latest itself.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/placement-operator:dev
+            ${{ env.IMAGE_PREFIX }}/glance-operator:dev
+            ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
+            ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
+            ${{ env.IMAGE_PREFIX }}/nova-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/placement:2025.2
+            ${{ env.IMAGE_PREFIX }}/glance:2025.2
+            ${{ env.IMAGE_PREFIX }}/neutron:2025.2
+            ${{ env.IMAGE_PREFIX }}/nova:2025.2
+            ${{ env.IMAGE_PREFIX }}/nova-compute:2025.2
+            ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
+            ${{ env.IMAGE_PREFIX }}/tempest:2025.2
+      # One call, so the python-base layers the service images share are saved
+      # and imported once rather than once per image.
+      - name: Load images into kind
+        run: |
+          kind load docker-image \
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev \
+            ${{ env.IMAGE_PREFIX }}/placement-operator:dev \
+            ${{ env.IMAGE_PREFIX }}/glance-operator:dev \
+            ${{ env.IMAGE_PREFIX }}/ovn-operator:dev \
+            ${{ env.IMAGE_PREFIX }}/neutron-operator:dev \
+            ${{ env.IMAGE_PREFIX }}/nova-operator:dev \
+            ${{ env.IMAGE_PREFIX }}/keystone:2025.2 \
+            ${{ env.IMAGE_PREFIX }}/placement:2025.2 \
+            ${{ env.IMAGE_PREFIX }}/glance:2025.2 \
+            ${{ env.IMAGE_PREFIX }}/neutron:2025.2 \
+            ${{ env.IMAGE_PREFIX }}/nova:2025.2 \
+            ${{ env.IMAGE_PREFIX }}/nova-compute:2025.2 \
+            ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} \
+            ${{ env.IMAGE_PREFIX }}/tempest:2025.2 \
+            --name "${{ env.KIND_CLUSTER }}"
+      # The pool's chassis gate needs an OVNChassis on the node, which needs
+      # the openvswitch module on the host, and every Nova process dials the
+      # message bus.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_OVN_KERNEL_MODULES: "true"
+          WITH_MESSAGING: "true"
+      # The operators of the nova leg of e2e-operator, in its order: the
+      # ovn-operator before the neutron-operator, whose reconcilers watch the
+      # OVN kinds, and both before the nova-operator.
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy placement-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: placement
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
+          NAMESPACE: placement-system
+      - name: Deploy glance-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: glance
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
+          NAMESPACE: glance-system
+      - name: Deploy ovn-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ovn
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
+          NAMESPACE: ovn-system
+      - name: Deploy neutron-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: neutron
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
+          NAMESPACE: neutron-system
+      - name: Deploy nova-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: nova
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/nova-operator
+          NAMESPACE: nova-system
+      - name: Run the libvirt suite
+        run: |
+          mkdir -p _output/reports
+          make e2e-nova-libvirt
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: nova
+      # The five sibling operators run in Namespaces of their own, which the
+      # dump above never looks at. OPERATOR_ONLY keeps each pass to the
+      # operator's own sections, as on the nova leg of e2e-operator.
+      - name: Dump diagnostic info (nova siblings)
+        if: always()
+        run: |
+          for op in keystone placement glance ovn neutron; do
+            OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
+          done
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-nova-libvirt-junit-report
+          path: _output/reports/
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
+
   # Tempest API integration tests.
   # Deploys services into a kind cluster and runs the OpenStack Tempest test
   # suite against them.  One leg per service: keystone, glance, barbican,
@@ -4295,7 +4467,7 @@ jobs:
   # nightly cleanup-images workflow has a safety-net job that catches
   # tags that survive a cancelled run before this one fires.
   cleanup-e2e-tags:
-    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, tempest]
+    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, e2e-nova-libvirt, tempest]
     if: |
       always() &&
       needs.build-e2e-images.result == 'success'
