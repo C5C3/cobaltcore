@@ -59,8 +59,13 @@ WORKDIR /src
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 RUN go mod download
 
+# The index is refreshed first: 'git apply --index' compares each file's
+# stat data with the index and never its content, and a checkout layer that
+# CI restores from the build cache has new inodes and change times. Without
+# the refresh such a build fails every patch with "does not match index".
 COPY patches/ /patches/
-RUN for p in /patches/*.patch; do \
+RUN git update-index -q --refresh && \
+    for p in /patches/*.patch; do \
         git apply --index "${p}" || { echo "patch does not apply: ${p}" >&2; exit 1; }; \
     done
 
