@@ -456,6 +456,20 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/deploy/lab/metal-stack/hypervisor/libvirt-daemonset\\.yaml$/",
+        "/deploy/lab/metal-stack/probe/nfs-module-load\\.yaml$/",
+        "/deploy/lab/metal-stack/nfs/kustomization\\.yaml$/",
+        "/deploy/lab/metal-stack/nfs/client-modules-daemonset\\.yaml$/"
+      ],
+      "matchStrings": [
+        "image: (?<depName>ghcr\\.io/c5c3/libvirt):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "deb"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/tests/unit/renovate/.*_test\\.sh$/"
       ],
       "matchStrings": [
@@ -946,6 +960,42 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "metal-stack node probe image"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
+        "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
+        "deploy/lab/metal-stack/nfs/kustomization.yaml",
+        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml"
+      ],
+      "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
+      "allowedVersions": "/^[0-9]+(\\.[0-9]+)+-[0-9]+ubuntu[0-9]+(\\.[0-9]+)*-r[0-9]+$/"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
+        "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
+        "deploy/lab/metal-stack/nfs/kustomization.yaml",
+        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml"
+      ],
+      "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
+        "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
+        "deploy/lab/metal-stack/nfs/kustomization.yaml",
+        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml"
+      ],
+      "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": false,
+      "groupName": "metal-stack lab libvirt image"
     },
     {
       "matchDatasources": ["docker", "go"],

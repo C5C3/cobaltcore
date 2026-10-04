@@ -83,6 +83,12 @@ value_matches_shape() {
     if [[ "$value" =~ [[:space:]] ]]; then return 1; fi
     return 0
     ;;
+  deb)
+    # A Debian version starts with a digit and holds only the characters
+    # dpkg allows: an upstream part, an optional epoch and a revision.
+    if [[ "$value" =~ ^[0-9][0-9A-Za-z.+~:-]*$ ]]; then return 0; fi
+    return 1
+    ;;
   regex:*)
     # Regex versioning parses the values its declared pattern matches,
     # so the shape is the pattern itself. bash ERE cannot parse the
@@ -122,6 +128,9 @@ test_shape_table_self_check() {
     "pep440|>=1.0|1"
     "docker|3.20|0"
     "docker||1"
+    "deb|10.0.0-2ubuntu8.19-r1|0"
+    "deb|latest|1"
+    "deb||1"
     "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$|v26.03.2|0"
     "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$|26.03.2|1"
     "loose|1.0.0|2"
