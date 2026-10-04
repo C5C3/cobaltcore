@@ -41,7 +41,7 @@ spec:
       # depend on (VERIFIED against 0.43.0, see the header note). A wider
       # range (e.g. `<1.0.0`) would let Flux auto-pull a breaking minor and
       # silently render the server Service under a different name.
-      version: ">=0.43.0 <0.44.0"
+      version: ">=0.43.0 <0.49.0"
       sourceRef:
         kind: HelmRepository
         name: victoria-metrics
