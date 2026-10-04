@@ -92,6 +92,7 @@ func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context, children c
 // database via the mounted keystone configuration.
 func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) *batchv1.CronJob {
 	image := keystone.Spec.Image.Reference()
+	pullPolicy := keystone.Spec.Image.EffectivePullPolicy()
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 
@@ -128,6 +129,7 @@ func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName, domai
 							Containers: []corev1.Container{{
 								Name:            "trust-flush",
 								Image:           image,
+								ImagePullPolicy: pullPolicy,
 								Command:         cmd,
 								SecurityContext: deployment.RestrictedSecurityContext(),
 								// Override [database].connection via oslo.config env-var so the

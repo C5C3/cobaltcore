@@ -81,6 +81,7 @@ func keystoneJobSetParams(keystone *keystonev1alpha1.Keystone, configMapName, do
 		InstanceName:    keystone.Name,
 		Namespace:       keystone.Namespace,
 		Image:           keystone.Spec.Image.Reference(),
+		ImagePullPolicy: keystone.Spec.Image.EffectivePullPolicy(),
 		ConfigMapName:   configMapName,
 		ConfigMountPath: "/etc/keystone/keystone.conf.d/",
 		// Override [database].connection via oslo.config env-var so every db_sync
@@ -110,7 +111,8 @@ func keystoneJobSetParams(keystone *keystonev1alpha1.Keystone, configMapName, do
 // The image parameter is the fully-qualified reference the Job runs: the regular
 // db_sync / schema-check jobs use the CR's Image.Reference() (which honors a
 // pinned digest), while the upgrade phases pass a specific "repo:tag" so they
-// can pin the old/new release image independently of spec.image.
+// can pin the old/new release image independently of spec.image. Every Job
+// carries the pull policy of spec.image, whichever image it runs.
 func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, image, nameSuffix string, command []string) *batchv1.Job {
 	return database.BuildJob(keystoneJobSetParams(keystone, configMapName, domainsSecretName), image, nameSuffix, command, 4)
 }
@@ -124,7 +126,8 @@ func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsS
 // spec.Image.Tag; all three phases run the NEW release image (spec.image.tag)
 // per the OpenStack rolling-upgrade procedure, because the N+1 migration tree
 // owns the schema deltas for the upgrade. Upgrades only run in tag mode, so the
-// "repo:tag" reference is always well-formed here.
+// "repo:tag" reference is always well-formed here. The Job takes the pull
+// policy of spec.image, because it runs another tag of the same repository.
 func buildUpgradeJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, imageTag, phase, flag string) *batchv1.Job {
 	image := keystone.Spec.Image.Repository + ":" + imageTag
 	return buildDBJob(keystone, configMapName, domainsSecretName, image, fmt.Sprintf("db-%s", phase),

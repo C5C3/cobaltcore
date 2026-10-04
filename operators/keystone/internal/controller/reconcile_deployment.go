@@ -295,10 +295,11 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName,
 		Autoscaling:    keystone.Spec.Autoscaling,
 		DefaultMemory:  commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), processes, threads),
 		Container: deployment.ContainerParams{
-			Name:    "keystone",
-			Image:   keystone.Spec.Image.Reference(),
-			Command: uwsgiCommand(keystone.Spec.UWSGI, federationActive),
-			Env:     []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
+			Name:            "keystone",
+			Image:           keystone.Spec.Image.Reference(),
+			ImagePullPolicy: keystone.Spec.Image.EffectivePullPolicy(),
+			Command:         uwsgiCommand(keystone.Spec.UWSGI, federationActive),
+			Env:             []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
 			Ports: []corev1.ContainerPort{{
 				Name:          "keystone",
 				ContainerPort: 5000,
@@ -461,6 +462,7 @@ func buildFederationProxyContainer(fed *federationProjection, resources corev1.R
 	return corev1.Container{
 		Name:            "federation-proxy",
 		Image:           fed.ProxyImage.Reference(),
+		ImagePullPolicy: fed.ProxyImage.EffectivePullPolicy(),
 		SecurityContext: deployment.RestrictedSecurityContext(),
 		Resources:       resources,
 		Command:         []string{"apache2", "-DFOREGROUND", "-f", "/etc/keystone-federation-proxy/httpd-base.conf"},

@@ -62,6 +62,7 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 	secretName := fmt.Sprintf("%s-%s-keys", keystone.Name, p.keyKind)
 	otherSecretName := fmt.Sprintf("%s-%s-keys", keystone.Name, p.otherKeyKind)
 	image := keystone.Spec.Image.Reference()
+	pullPolicy := keystone.Spec.Image.EffectivePullPolicy()
 
 	keyDir := "/etc/keystone/" + p.keyKind + "-keys"
 	otherKeyDir := "/etc/keystone/" + p.otherKeyKind + "-keys"
@@ -93,8 +94,9 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 		// for any default-mode (0o644) workaround.
 		SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(deployment.OpenStackUID)},
 		InitContainers: []corev1.Container{{
-			Name:  "copy-keys",
-			Image: image,
+			Name:            "copy-keys",
+			Image:           image,
+			ImagePullPolicy: pullPolicy,
 			// `install -m 0400` materialises each key in the writable emptyDir
 			// at owner-read-only mode. A plain `cp` would inherit the kubelet
 			// emptyDir mode and re-introduce the world-readable directory for the
@@ -109,6 +111,7 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 		Containers: []corev1.Container{{
 			Name:            p.keyKind + "-rotate",
 			Image:           image,
+			ImagePullPolicy: pullPolicy,
 			Command:         []string{"/scripts/" + p.keyKind + "_rotate.sh"},
 			SecurityContext: deployment.RestrictedSecurityContext(),
 			Env: []corev1.EnvVar{

@@ -251,9 +251,10 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName, domai
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{{
-						Name:    "bootstrap",
-						Image:   keystone.Spec.Image.Reference(),
-						Command: []string{"/bin/sh", "-eu", "-c", bootstrapScript},
+						Name:            "bootstrap",
+						Image:           keystone.Spec.Image.Reference(),
+						ImagePullPolicy: keystone.Spec.Image.EffectivePullPolicy(),
+						Command:         []string{"/bin/sh", "-eu", "-c", bootstrapScript},
 						Env: []corev1.EnvVar{
 							{
 								Name: "BOOTSTRAP_PASSWORD",

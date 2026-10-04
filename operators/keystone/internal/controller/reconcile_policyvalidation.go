@@ -181,8 +181,9 @@ func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{{
-						Name:  "validator",
-						Image: keystone.Spec.Image.Reference(),
+						Name:            "validator",
+						Image:           keystone.Spec.Image.Reference(),
+						ImagePullPolicy: keystone.Spec.Image.EffectivePullPolicy(),
 						Command: []string{
 							"oslopolicy-validator",
 							"--namespace", "keystone",

@@ -2745,3 +2745,91 @@ func TestBuildPodDisruptionBudget_FollowsTheHPAMinimum(t *testing.T) {
 	g.Expect(pdb.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
 	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
 }
+
+// TestKeystoneWorkloads_ImagePullPolicy pins the pull policy of every
+// container and init container of every workload the operator renders from
+// spec.image (and the federation sidecar from spec.federation.proxyImage): a
+// tag without pullPolicy resolves to Always, a digest to IfNotPresent, and an
+// explicit pullPolicy wins over both.
+func TestKeystoneWorkloads_ImagePullPolicy(t *testing.T) {
+	const cm, domains = "keystone-config-abc123", ""
+	podSpecs := func(ks *keystonev1alpha1.Keystone, fed *federationProjection) map[string]corev1.PodSpec {
+		ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{Schedule: "0 * * * *"}
+		ks.Spec.PasswordRotation = &keystonev1alpha1.PasswordRotationSpec{Schedule: "0 0 1 * *"}
+		cronPod := func(cj *batchv1.CronJob) corev1.PodSpec { return cj.Spec.JobTemplate.Spec.Template.Spec }
+		return map[string]corev1.PodSpec{
+			"api":                     buildKeystoneDeployment(ks, cm, "", domains, fed).Spec.Template.Spec,
+			"db-sync":                 buildDBSyncJob(ks, cm, domains).Spec.Template.Spec,
+			"schema-check":            buildSchemaCheckJob(ks, cm, domains).Spec.Template.Spec,
+			"db-expand":               buildExpandJob(ks, cm, domains, "2026.1").Spec.Template.Spec,
+			"db-migrate":              buildMigrateJob(ks, cm, domains, "2026.1").Spec.Template.Spec,
+			"db-contract":             buildContractJob(ks, cm, domains, "2026.1").Spec.Template.Spec,
+			"bootstrap":               buildBootstrapJob(ks, cm, domains, "keystone-fernet-keys", "hash").Spec.Template.Spec,
+			"policy-validation":       buildPolicyValidationJob(ks, cm, domains).Spec.Template.Spec,
+			"fernet-rotate":           cronPod(fernetRotationCronJob(ks, cm, "keystone-scripts", domains)),
+			"credential-rotate":       cronPod(credentialRotationCronJob(ks, cm, "keystone-scripts", domains)),
+			"trust-flush":             cronPod(trustFlushCronJob(ks, cm, domains)),
+			"admin-password-rotation": cronPod(adminPasswordRotationCronJob(ks, "keystone-scripts")),
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*commonv1.ImageSpec)
+		want   corev1.PullPolicy
+	}{
+		{name: "tag without pullPolicy", mutate: func(*commonv1.ImageSpec) {}, want: corev1.PullAlways},
+		{
+			name:   "digest without pullPolicy",
+			mutate: func(i *commonv1.ImageSpec) { i.Tag, i.Digest = "", "sha256:"+strings.Repeat("a", 64) },
+			want:   corev1.PullIfNotPresent,
+		},
+		{name: "explicit pullPolicy Never", mutate: func(i *commonv1.ImageSpec) { i.PullPolicy = corev1.PullNever }, want: corev1.PullNever},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			tc.mutate(&ks.Spec.Image)
+			fed := pinFederationProjection()
+			tc.mutate(&fed.ProxyImage)
+
+			specs := podSpecs(ks, fed)
+			g.Expect(specs).To(HaveLen(12))
+			for name, spec := range specs {
+				containers := append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...)
+				g.Expect(containers).NotTo(BeEmpty(), name)
+				for _, c := range containers {
+					g.Expect(c.ImagePullPolicy).To(Equal(tc.want), "%s/%s", name, c.Name)
+				}
+			}
+			g.Expect(specs["api"].Containers).To(HaveLen(2), "keystone and federation-proxy")
+			g.Expect(specs["fernet-rotate"].InitContainers).To(HaveLen(1), "copy-keys")
+			g.Expect(specs["credential-rotate"].InitContainers).To(HaveLen(1), "copy-keys")
+		})
+	}
+}
+
+// TestBuildKeystoneDeployment_FederationProxyPullPolicy pins that the two
+// containers of one API pod resolve their policies from their own image
+// references: spec.image names IfNotPresent, while the proxy image from
+// spec.federation.proxyImage names a latest tag and no policy, so it resolves
+// to Always.
+func TestBuildKeystoneDeployment_FederationProxyPullPolicy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+	ks.Spec.Image.PullPolicy = corev1.PullIfNotPresent
+	ks.Spec.Federation = &keystonev1alpha1.FederationSpec{
+		ProxyImage: &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-federation-proxy", Tag: "latest"},
+	}
+	fed := pinFederationProjection()
+	fed.ProxyImage = *federationProxyImage(ks)
+
+	containers := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "", fed).Spec.Template.Spec.Containers
+	keystoneContainer := findContainerByName(containers, "keystone")
+	proxyContainer := findContainerByName(containers, "federation-proxy")
+	g.Expect(keystoneContainer).NotTo(BeNil())
+	g.Expect(proxyContainer).NotTo(BeNil())
+	g.Expect(keystoneContainer.ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
+	g.Expect(proxyContainer.Image).To(Equal("ghcr.io/c5c3/keystone-federation-proxy:latest"))
+	g.Expect(proxyContainer.ImagePullPolicy).To(Equal(corev1.PullAlways))
+}
