@@ -123,8 +123,9 @@ func buildSchedulerDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 		// Each nova-scheduler worker is one single-threaded process.
 		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), effectiveWorkers(nova.Spec.Scheduler.Workers), 1),
 		Container: deployment.ContainerParams{
-			Name:  componentScheduler,
-			Image: nova.Spec.Image.Reference(),
+			Name:            componentScheduler,
+			Image:           nova.Spec.Image.Reference(),
+			ImagePullPolicy: nova.Spec.Image.EffectivePullPolicy(),
 			Command: []string{
 				"nova-scheduler",
 				"--config-dir", novaConfigDir,

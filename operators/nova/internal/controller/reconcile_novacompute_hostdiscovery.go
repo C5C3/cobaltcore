@@ -69,7 +69,8 @@ func hostDiscoveryJobName(novaName string) string {
 // projections, the nova-manage environment, FSGroup and the Job pod settings.
 // Its container runs image, the API Deployment's: that Deployment rolls to
 // spec.image only once the Nova has migrated its schemas, so the code, the
-// config and the schemas match during an upgrade too.
+// config and the schemas match during an upgrade too. Its pull policy is
+// spec.image's: the live image is another tag of the same repository.
 // A failed run is not retried inside the Job: the pool replaces a finished Job
 // after hostDiscoveryRetryInterval while a host stays unmapped.
 func hostDiscoveryJob(nova *novav1alpha1.Nova, configMapName, image string) *batchv1.Job {
@@ -83,11 +84,12 @@ func hostDiscoveryJob(nova *novav1alpha1.Nova, configMapName, image string) *bat
 	mounts = append(mounts, tlsMounts...)
 
 	discovery := job.BuildMigrationJob(job.MigrationJobParams{
-		Name:          hostDiscoveryJobName(nova.Name),
-		Namespace:     nova.Namespace,
-		Labels:        componentLabels(nova, componentHostDiscovery),
-		Image:         image,
-		ContainerName: componentHostDiscovery,
+		Name:            hostDiscoveryJobName(nova.Name),
+		Namespace:       nova.Namespace,
+		Labels:          componentLabels(nova, componentHostDiscovery),
+		Image:           image,
+		ImagePullPolicy: nova.Spec.Image.EffectivePullPolicy(),
+		ContainerName:   componentHostDiscovery,
 		Command: []string{
 			"nova-manage", "--config-dir", novaConfigDir, "cell_v2", "discover_hosts", "--verbose",
 		},

@@ -252,6 +252,7 @@ func buildNovaComputeDaemonSet(cr *novav1alpha1.NovaCompute, image commonv1.Imag
 	secretName, configMapName, configHash string, affinity *corev1.Affinity,
 ) *appsv1.DaemonSet {
 	ref := image.Reference()
+	pullPolicy := image.EffectivePullPolicy()
 	var resources corev1.ResourceRequirements
 	if cr.Spec.Resources != nil {
 		resources = *cr.Spec.Resources.DeepCopy()
@@ -262,6 +263,7 @@ func buildNovaComputeDaemonSet(cr *novav1alpha1.NovaCompute, image commonv1.Imag
 	initContainers := []corev1.Container{{
 		Name:            "create-instances-dir",
 		Image:           ref,
+		ImagePullPolicy: pullPolicy,
 		Command:         createInstancesDirCommand(novaInstancesPath),
 		SecurityContext: createInstancesDirSecurityContext(),
 		Resources:       resources,
@@ -274,6 +276,7 @@ func buildNovaComputeDaemonSet(cr *novav1alpha1.NovaCompute, image commonv1.Imag
 	}, {
 		Name:            "wait-for-chassis",
 		Image:           ref,
+		ImagePullPolicy: pullPolicy,
 		Command:         []string{"python3", "-c", waitForChassisScript},
 		Env:             []corev1.EnvVar{{Name: "OVSDB_SOCKET", Value: ovsDBSocket}},
 		SecurityContext: deployment.RestrictedSecurityContext(),
@@ -284,8 +287,9 @@ func buildNovaComputeDaemonSet(cr *novav1alpha1.NovaCompute, image commonv1.Imag
 	}}
 
 	containers := []corev1.Container{{
-		Name:  novaComputeComponent,
-		Image: ref,
+		Name:            novaComputeComponent,
+		Image:           ref,
+		ImagePullPolicy: pullPolicy,
 		Command: []string{
 			"nova-compute",
 			"--config-file", path.Join(computeConfigMountPath, computeConfigFragmentKey),
