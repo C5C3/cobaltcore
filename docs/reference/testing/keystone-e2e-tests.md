@@ -98,6 +98,7 @@ Deployment rollout, bootstrap Job).
 | [middleware-config](#middleware-config) | `keystone-middleware` | WSGI middleware pipeline customization in api-paste.ini |
 | [brownfield-database](#brownfield-database) | `keystone-brownfield` | Explicit database host (no MariaDB CRs created) |
 | [image-upgrade](#image-upgrade) | `keystone-upgrade` | Rolling image update without losing Ready status |
+| [image-pull-policy](#image-pull-policy) | `keystone-ipp` | Without `spec.image.pullPolicy` every container of the Deployment and the db-sync Job carries the operator default `IfNotPresent`; `pullPolicy: Never` reaches every container of the Deployment and the CronJobs, re-runs db-sync and keeps the bootstrap Job |
 | [release-upgrade](#release-upgrade) | `keystone-release-upgrade` | Cross-release upgrade from 2025.2 to 2026.1 via expand-migrate-contract, API accessibility before/after |
 | [concurrent-cr-conflicts](#concurrent-cr-conflicts) | `keystone-concurrent-a`, `keystone-concurrent-b` | Concurrent CR reconciliation with shared secrets, sub-resource isolation, deletion without cross-CR impact |
 | [config-pruning](#config-pruning) | `keystone-pruning` | Immutable ConfigMap pruning — stale ConfigMaps removed after multiple config changes, retain+1 cap, Ready=True preserved |
@@ -353,6 +354,31 @@ container image updates and Ready=True is maintained after the rollout completes
 | 4 | Assert image updated and Ready maintained | `script` (120s) + `assert` (5m) | Script polls up to 120s to verify Deployment image contains `2025.2-upgraded`; assert verifies Ready=True, availableReplicas > 0, and updatedReplicas == replicas (rollout complete) |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-patch-image.yaml`
+
+---
+
+### image-pull-policy
+
+**File:** `tests/e2e/keystone/image-pull-policy/chainsaw-test.yaml`
+
+**Purpose:** Validates the resolution of the image pull policy at render time.
+A CR whose `spec.image` names a tag and no `pullPolicy` takes the operator
+default, which `hack/ci-deploy-operator.sh` sets to `IfNotPresent`; an operator
+that ignored `--default-image-pull-policy` would render `Always` for the tag, so
+the suite fails by design against an operator installed without the flag. An
+explicit `pullPolicy` then wins on every rendered container, re-runs the Job
+gated by its pod template hash and leaves the key-gated bootstrap Job alone.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR without pullPolicy | `apply` | `00-keystone-cr.yaml`: Keystone CR `keystone-ipp`, tag `2025.2`, one replica |
+| 2 | Assert Ready and the operator default | `assert` + `script` | Ready=True (AllReady); every container of Deployment `keystone-ipp` and of Job `keystone-ipp-db-sync` carries `IfNotPresent`; the UIDs of the db-sync and bootstrap Jobs go into ConfigMap `keystone-ipp-job-uids` |
+| 3 | Patch: pullPolicy Never | `patch` | `01-patch-pull-policy-never.yaml`: `spec.image.pullPolicy: Never` |
+| 4 | Assert Never, the re-run and Ready | `assert` + `script` | Every container and init container of the Deployment, the db-sync Job and the `fernet-rotate` and `credential-rotate` CronJobs carries `Never`; Ready=True at `observedGeneration: 2`; a script checks every CronJob of the instance (trust-flush included), a new db-sync UID and an unchanged bootstrap UID |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-pull-policy-never.yaml`
 
 ---
 
@@ -1005,6 +1031,10 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              Rolling image upgrade
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial image tag
 │   └── 01-patch-image.yaml             Patch spec.image.tag
+├── image-pull-policy/
+│   ├── chainsaw-test.yaml              spec.image.pullPolicy and the operator default
+│   ├── 00-keystone-cr.yaml             Keystone CR without pullPolicy
+│   └── 01-patch-pull-policy-never.yaml Patch to set spec.image.pullPolicy Never
 ├── invalid-cr/
 │   ├── chainsaw-test.yaml                                  CRD webhook + CEL validation
 │   ├── _generate.py                                        Canonical scaffold + generator for invalid-cr fixtures

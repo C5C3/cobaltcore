@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to set spec.image.pullPolicy to Never. CI loads the keystone image
+# into kind, so the pods still start.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-ipp
+  namespace: openstack
+spec:
+  image:
+    pullPolicy: Never
