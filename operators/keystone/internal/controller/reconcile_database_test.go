@@ -782,6 +782,20 @@ func TestBuildUpgradeJobs(t *testing.T) {
 			g.Expect(container.Image).NotTo(ContainSubstring(ks.Spec.Image.Tag))
 		})
 
+		// The phase runs another tag of the same repository and carries the
+		// pull policy of spec.image, not the rule for its own tag.
+		t.Run(tc.name+"/ImagePullPolicy", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			ks.Spec.Image.PullPolicy = corev1.PullNever
+			job := tc.buildFunc(ks, "keystone-config-abc123", "", "2024.1")
+
+			container := findContainerByName(job.Spec.Template.Spec.Containers, tc.containerName)
+			g.Expect(container).NotTo(BeNil())
+			g.Expect(container.Image).To(Equal(ks.Spec.Image.Repository + ":2024.1"))
+			g.Expect(container.ImagePullPolicy).To(Equal(corev1.PullNever))
+		})
+
 		t.Run(tc.name+"/Command", func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			ks := brownfieldKeystone()

@@ -76,6 +76,7 @@ spec:
               key: connection
               name: test-keystone-db-connection
         image: ghcr.io/c5c3/keystone:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -227,6 +228,7 @@ spec:
               key: connection
               name: test-keystone-db-connection
         image: ghcr.io/c5c3/keystone:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -376,6 +378,7 @@ spec:
               key: connection
               name: test-keystone-db-connection
         image: ghcr.io/c5c3/keystone:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -553,6 +556,7 @@ spec:
               key: connection
               name: test-keystone-db-connection
         image: ghcr.io/c5c3/keystone:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -629,6 +633,7 @@ spec:
         - -f
         - /etc/keystone-federation-proxy/httpd-base.conf
         image: ghcr.io/c5c3/keystone-federation-proxy:2025.2
+        imagePullPolicy: Always
         livenessProbe:
           initialDelaySeconds: 15
           periodSeconds: 20
@@ -792,6 +797,7 @@ spec:
               key: connection
               name: test-keystone-db-connection
         image: ghcr.io/c5c3/keystone:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
