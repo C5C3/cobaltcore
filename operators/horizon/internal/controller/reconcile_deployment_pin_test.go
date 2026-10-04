@@ -76,6 +76,7 @@ spec:
               key: secret-key
               name: horizon-secret-key
         image: ghcr.io/c5c3/horizon:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -211,6 +212,7 @@ spec:
               key: secret-key
               name: horizon-secret-key
         image: ghcr.io/c5c3/horizon:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
