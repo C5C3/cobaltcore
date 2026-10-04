@@ -1366,6 +1366,59 @@ name.
 | `repository` | `string` | Yes | Container image repository (e.g., `c5c3/keystone`). Must be non-empty (`MinLength=1`) and match a permissive OCI reference `Pattern` (`^[a-z0-9]+([._:/-][a-z0-9]+)*$`) that accepts registry-host and `host:port` forms. |
 | `tag` | `string` | No (exactly one of `tag`/`digest`) | Image tag (e.g., `2025.1`). When present, must match the OCI tag grammar `Pattern` (`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`). |
 | `digest` | `string` | No (exactly one of `tag`/`digest`) | Immutable content digest (e.g., `sha256:<64 hex>`). Must match `Pattern` (`^sha256:[a-f0-9]{64}$`). Pinning by digest disables release tracking/upgrades. |
+| `pullPolicy` | `corev1.PullPolicy` | No | `imagePullPolicy` of every container that runs this image. `Enum=Always;IfNotPresent;Never`, schema-only: a CRD older than the operator prunes the field before a webhook sees it, so no webhook twin exists. Empty resolves in the order below, and no webhook writes a default. |
+
+#### Pull policy resolution
+
+The operator resolves the pull policy of each container when it renders the
+workload, and the first match wins:
+
+1. `pullPolicy` on the image reference the container's image came from.
+2. The operator's process-wide default, the flag `--default-image-pull-policy`
+   (Helm value [`controller.defaultImagePullPolicy`](../backend/helm-values-schema.md#controller)),
+   unset by default.
+3. `IfNotPresent` for a digest, `Always` for a tag, `latest` included.
+
+Because the policy resolves at render time, a stored CR does not freeze the
+default of the operator release that admitted it. An image the operator
+resolves itself, such as an unset NovaCompute or OVN image or the OVN
+backup-shifter image, names no `pullPolicy` and takes levels 2 and 3. A
+container that runs another tag of the same repository, an upgrade phase Job
+or Nova's host discovery Job, takes the policy of `spec.image`.
+
+`Always` acts when a pod starts: kubelet asks the registry for the tag's
+manifest and starts the build it names. A running pod keeps its build until it
+restarts. While the registry is unreachable, a pod that starts with `Always`
+waits in `ImagePullBackOff` although the node holds the image, every CronJob
+run included. An installation whose nodes preload images under the published
+tag, or cannot always reach the registry, sets
+`controller.defaultImagePullPolicy: IfNotPresent`, as CI does.
+
+#### Upgrade behavior
+
+The first reconcile of an operator release that sets the pull policy changes
+every rendered pod template, because each container gains an explicit
+`imagePullPolicy`:
+
+- Every Deployment, StatefulSet and DaemonSet that runs a tag other than
+  `latest` rolls once, from `IfNotPresent`, the value the API server had
+  defaulted, to `Always`. A NovaCompute pool with `updateStrategy.type:
+  OnDelete` picks the policy up when its pods are deleted. A container that
+  runs a digest or `latest` causes no rollout, since the explicit value equals
+  the defaulted one.
+- Every Job gated by its pod template hash is deleted and re-run once, the path
+  a changed image takes: the `db-sync` Job of every database-backed service,
+  Keystone's `schema-check` and policy validation Jobs, and an upgrade phase or
+  Cinder volume-service removal Job that exists at that moment. This happens
+  whatever the resolved policy, because the hash covers the template the
+  operator renders. Jobs gated by an explicit key, Keystone's bootstrap Job and
+  OVN's maintenance Jobs, keep their template until their key changes.
+- From then on every pod start that runs a tag asks the registry for its
+  manifest.
+
+Changing `pullPolicy` on a CR later has the same effect on that CR's workloads
+and Jobs; changing the operator default has it on every CR that names no
+`pullPolicy`.
 
 ### DatabaseSpec
 

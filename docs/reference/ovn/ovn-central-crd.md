@@ -26,7 +26,7 @@ and Age.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | no | operator-resolved `ghcr.io/c5c3/ovn:26.03.2` | The image that runs `ovsdb-server`, northd, and the relay. All three ship in the one OVN image, so one reference covers them. The operator resolves it at reconcile time, so an unset field keeps tracking its tested version across upgrades (`image.go`) |
+| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | no | operator-resolved `ghcr.io/c5c3/ovn:26.03.2` | The image that runs `ovsdb-server`, northd, and the relay. All three ship in the one OVN image, so one reference covers them. The operator resolves it at reconcile time, so an unset field keeps tracking its tested version across upgrades (`image.go`). An unset image names no `pullPolicy` of its own, so its containers take the operator default (`--default-image-pull-policy`) or the rule: `Always` for the tag (see [pull policy resolution](../keystone/keystone-crd.md#pull-policy-resolution)) |
 | `northbound` | [`OVNDatabaseSpec`](#ovndatabasespec) | no | `{}` | The Northbound database, the one the CMS writes the logical network model into |
 | `southbound` | [`OVNDatabaseSpec`](#ovndatabasespec) | no | `{}` | The Southbound database, the one northd writes translated flows into and every chassis reads from. It is the busier of the two, which is why it can be fronted by a relay |
 | `northd` | [`OVNNorthdSpec`](#ovnnorthdspec) | no | `{}` | The `ovn-northd` daemon that compiles the Northbound model into Southbound flows |
@@ -212,7 +212,7 @@ that outlives the CR.
 | `endpoint` | `string` (Pattern `^https://`) | yes | — | The S3 service URL. HTTPS only: the upload carries the access key beside a full snapshot of both databases, and SigV4 authenticates a request without encrypting it |
 | `region` | `string` | no | `""` | The S3 region. Optional because most S3-compatible implementations ignore it |
 | `credentialsSecretRef` | [`commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | yes | — | The Secret holding the access key under the keys `access-key-id` and `secret-access-key`. It lives in the `OVNCentral`'s own namespace |
-| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | no | operator-resolved `ghcr.io/c5c3/backup-shifter:latest` | The image the upload step runs. See the warning in [Backup](#backup) |
+| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | no | operator-resolved `ghcr.io/c5c3/backup-shifter:latest` | The image the upload step runs. An unset image names no `pullPolicy` of its own and takes the operator default or `Always`. See the warning in [Backup](#backup) |
 
 ## Defaulting and validation
 
@@ -476,10 +476,12 @@ would OOM-kill the run that outgrew it.
 
 ::: warning
 `spec.backup.s3.image` defaults to `ghcr.io/c5c3/backup-shifter:latest`
-(`image.go`). The tag is mutable and kubelet defaults `imagePullPolicy` to
-`Always` for `:latest`, so every firing runs whatever the last merge pushed,
-with the S3 credentials in its environment and both database snapshots on its
-volume. Pin the field to a digest to opt out.
+(`image.go`). The tag is mutable and the operator sets `imagePullPolicy: Always`
+for it, so every firing runs whatever the last merge pushed, with the S3
+credentials in its environment and both database snapshots on its volume. Pin
+the field to a digest to opt out. An operator default of `IfNotPresent` or
+`Never` (`--default-image-pull-policy`) applies to this image too, and a node
+then keeps the build it pulled first.
 :::
 
 Restoring a snapshot is a manual procedure: see
