@@ -283,17 +283,14 @@ class Registry:
         """Digests referenced by this manifest, empty for a plain manifest.
 
         A digest that no longer resolves yields an empty list plus a warning --
-        a ghost version cannot be keeping anything alive.
+        a ghost version cannot be keeping anything alive. Any other failed read
+        raises: a kept index read as childless would put the per-platform
+        manifests it still points at into the delete set.
         """
         if digest in self._cache:
             return self._cache[digest]
         url = f"{REGISTRY_ROOT}/v2/{self.repo}/manifests/{digest}"
-        try:
-            status, _, body = request(url, token=self.token, accept=MANIFEST_ACCEPT)
-        except urllib.error.HTTPError as exc:
-            warn(f"manifest {digest} unreadable ({exc.code}); treating it as childless")
-            self._cache[digest] = []
-            return []
+        status, _, body = request(url, token=self.token, accept=MANIFEST_ACCEPT)
         if status == 404:
             warn(f"manifest {digest} not found in the registry; treating it as childless")
             self._cache[digest] = []

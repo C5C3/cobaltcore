@@ -397,6 +397,59 @@ EOF
     "$(echo "$output" | jq -c '[.delete[].digest]')" "$LIBVIRT_BARE_VERSION"
 }
 
+# --- Test 13: an unreadable kept manifest stops the sweep ---
+# The API path again: request() lists a kept index and an untagged
+# per-platform manifest, and answers the read of the index's manifest with a
+# 401. Without the index's child list the sweep cannot tell which untagged
+# versions the index still needs, so it has to delete nothing.
+run_against_unreadable_manifest() {
+  python3 - "$SCRIPT_UNDER_TEST" <<'PYEOF'
+import importlib.util
+import json
+import sys
+import urllib.error
+
+spec = importlib.util.spec_from_file_location("ghcr_prune", sys.argv[1])
+prune = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(prune)
+
+versions = [
+    {"id": 1, "name": "sha256:" + "a" * 64, "created_at": "2026-01-01T00:00:00Z",
+     "metadata": {"container": {"tags": ["latest"]}}},
+    {"id": 2, "name": "sha256:" + "b" * 64, "created_at": "2026-01-01T00:00:00Z",
+     "metadata": {"container": {"tags": []}}},
+]
+
+
+def request(url, token=None, method="GET", accept=None):
+    if method == "DELETE":
+        print(f"DELETE {url}")
+        return 204, {}, b""
+    if "/manifests/" in url:
+        raise urllib.error.HTTPError(url, 401, "Unauthorized", {}, None)
+    return 200, {}, json.dumps(versions).encode()
+
+
+prune.request = request
+prune.Registry._registry_token = lambda self, github_token: "registry-token"
+try:
+    sys.exit(prune.main(["--org", "demo-org", "--package", "demo", "--token", "t"]))
+except urllib.error.HTTPError as exc:
+    print(f"aborted on {exc.code}")
+    sys.exit(1)
+PYEOF
+}
+
+test_unreadable_kept_manifest_stops_the_sweep() {
+  echo "Test: a kept index whose manifest read fails with a 401 stops the sweep before any deletion"
+  local exit_code=0 output
+
+  output=$(run_against_unreadable_manifest 2>&1) || exit_code=$?
+  assert_eq "the sweep exits 1" "1" "$exit_code"
+  assert_contains "on the registry's 401" "$output" "aborted on 401"
+  assert_not_contains "and deletes no version" "$output" "DELETE"
+}
+
 # --- Run all tests ---
 echo "=== ghcr-prune-stale-versions.py tests ==="
 echo ""
@@ -423,6 +476,8 @@ echo ""
 test_composite_only_hvo_build_is_deleted
 echo ""
 test_libvirt_keeper_tag_keeps_the_pinned_build
+echo ""
+test_unreadable_kept_manifest_stops_the_sweep
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
