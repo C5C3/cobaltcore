@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Loads the kernel modules of NetworkChaos on every node of the metal-stack
+# lab (#1221): ip_set, ip_set_hash_ip, ip_set_hash_net and xt_set for the ipset
+# rules chaos-daemon writes, sch_netem and sch_tbf for its tc qdiscs. On kind,
+# hack/deploy-infra.sh loads them on the host; on the lab it runs on a
+# workstation, so a pod loads them on each node. The survey of #1220 found all
+# six module files on both workers, and sch_netem and sch_tbf not loaded.
+#
+# A DaemonSet of its own, because chaos-daemon cannot carry an init container
+# from this repository: the chart renders it (D3 of #1219). The loader
+# tolerates every taint, like nfs-client-modules. chaos-daemon has no
+# tolerations and skips a tainted node, which then holds the modules unused.
+#
+# A reboot unloads the modules, so the pod has to start again then: the
+# container hold only keeps the pod running, without a privilege. bash is its
+# PID 1 and ignores a SIGTERM it has no trap for, so the trap ends it. The
+# modules stay loaded when the pod is deleted, also after
+# `EXTERNAL_CLUSTER=true make teardown-infra`, until the node reboots.
+#
+# The default RollingUpdate strategy stays, because `kubectl rollout status`,
+# the deploy script's gate on this DaemonSet, does not support OnDelete. The
+# image is host-prepare's (../hypervisor/libvirt-daemonset.yaml), pinned like
+# it by its keeper tag and digest; hack/ci-tag-libvirt-keeper.sh mints that
+# tag once and never moves it. hold reuses the image, so the overlay adds no
+# image; tests/unit/deploy/metal_stack_chaos_mesh_test.sh keeps the three
+# equal. Renovate moves both lines in the pull request that moves the
+# DaemonSet's.
+#
+# The load prints one line per pod, one of
+#
+#   chaos-mesh-modules: ip_set, ip_set_hash_ip, ip_set_hash_net, xt_set, sch_netem and sch_tbf are loaded
+#   chaos-mesh-modules: cannot load <module> from /lib/modules/<kernel>
+#
+# Read them with:
+#
+#   kubectl logs -n chaos-mesh -l app.kubernetes.io/name=chaos-mesh-modules -c load --prefix --tail=-1
+#
+# With a label selector, kubectl logs prints only the last 10 lines of each
+# pod unless --tail says otherwise.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: chaos-mesh-modules
+  namespace: chaos-mesh
+  labels:
+    app.kubernetes.io/name: chaos-mesh-modules
+    app.kubernetes.io/part-of: lab-chaos-mesh
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chaos-mesh-modules
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chaos-mesh-modules
+        app.kubernetes.io/part-of: lab-chaos-mesh
+    spec:
+      # Neither container calls the Kubernetes API.
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 5
+      # As nfs-client-modules: every node, tainted or not.
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: load
+          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r1@sha256:3e45a6a1b091287acb73c982020a177e5c47b9442b263443c249e1525ae9624c
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              for m in ip_set ip_set_hash_ip ip_set_hash_net xt_set sch_netem sch_tbf; do
+                if ! modprobe "$m"; then
+                  echo "chaos-mesh-modules: cannot load $m from /lib/modules/$(uname -r)"
+                  exit 1
+                fi
+              done
+              echo "chaos-mesh-modules: ip_set, ip_set_hash_ip, ip_set_hash_net, xt_set, sch_netem and sch_tbf are loaded"
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+      containers:
+        - name: hold
+          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r1@sha256:3e45a6a1b091287acb73c982020a177e5c47b9442b263443c249e1525ae9624c
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              memory: 32Mi
+      volumes:
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
