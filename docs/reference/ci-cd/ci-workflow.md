@@ -840,8 +840,12 @@ turns the `e2e-operators` output into `e2e-operator-legs`: one leg per
 operator, except `nova`, which becomes two legs with `shard: "1"` and
 `shard: "2"`. The publish jobs keep reading `e2e-operators`, so they still see
 `nova` once. The `imagePullPolicy: Never` Helm value ensures the
-kind-loaded image is used instead of attempting a registry pull. Timeout: 68
-minutes, 150 for each `nova` shard.
+kind-loaded image is used instead of attempting a registry pull. The service
+images the operator renders are loaded into kind under their published tag, so
+`hack/ci-deploy-operator.sh` also sets the operator's default image pull
+policy to `IfNotPresent` (`DEFAULT_IMAGE_PULL_POLICY`); without it a tag would
+resolve to `Always` and kubelet would pull the published image over the pull
+request's build. Timeout: 68 minutes, 150 for each `nova` shard.
 
 **The two OVN legs.** `ovn` ships no per-release service image. Its Pods all
 run `ghcr.io/c5c3/ovn:<pin>`, where `<pin>` is what
@@ -1858,10 +1862,17 @@ deploying the operator via Helm with the specified container image.
 | `OPERATOR` | Yes | - | Operator name (e.g. `keystone`) |
 | `IMAGE_REPO` | Yes | - | Full image repository (e.g. `ghcr.io/c5c3/keystone-operator`) |
 | `IMAGE_TAG` | No | `dev` | Image tag |
+| `DEFAULT_IMAGE_PULL_POLICY` | No | `IfNotPresent` | The operator's default image pull policy (`Always`, `IfNotPresent` or `Never`), passed as `--set controller.defaultImagePullPolicy=<value>`. Any other value exits 1 with an `::error::` line before anything is applied. |
 
 The script runs `kubectl apply --server-side --force-conflicts -f <chart>/crds/`, waits for
 CRD establishment, then runs `helm install` with `image.pullPolicy=Never` (suitable for
-kind-loaded images). Server-side apply keeps the CRD out of the 262,144-byte
+kind-loaded images) and `controller.defaultImagePullPolicy=IfNotPresent`, so the
+workloads run the service images CI loaded into kind under the published tag.
+The script passes `controller.defaultImagePullPolicy` only when the chart's
+`values.schema.json` names it: a released chart installed through `CHART_DIR`
+that predates the value rejects the unknown key, and its operator sets no pull
+policy anyway. The banner line `Image pull policy` shows the value, or
+`<chart has no such value>`. Server-side apply keeps the CRD out of the 262,144-byte
 `last-applied-configuration` annotation that client-side apply writes, which the Nova and
 Cinder CRDs exceed.
 
