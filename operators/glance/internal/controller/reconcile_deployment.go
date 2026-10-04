@@ -365,9 +365,10 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 		Autoscaling:    glance.Spec.Autoscaling,
 		DefaultMemory:  glanceAPIMemory(glance),
 		Container: deployment.ContainerParams{
-			Name:    "glance-api",
-			Image:   glance.Spec.Image.Reference(),
-			Command: glanceLaunchCommand(glance),
+			Name:            "glance-api",
+			Image:           glance.Spec.Image.Reference(),
+			ImagePullPolicy: glance.Spec.Image.EffectivePullPolicy(),
+			Command:         glanceLaunchCommand(glance),
 			Env: []corev1.EnvVar{
 				database.ConnectionEnvVar(glance.Name),
 				keystoneauth.PasswordEnvVar(glance.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(glance)),
@@ -625,6 +626,7 @@ func cacheMaintenanceContainer(glance *glancev1alpha1.Glance, imageCache *glance
 	return corev1.Container{
 		Name:            "cache-maintenance",
 		Image:           glance.Spec.Image.Reference(),
+		ImagePullPolicy: glance.Spec.Image.EffectivePullPolicy(),
 		Command:         []string{"/bin/sh", "-eu", "-c", script},
 		SecurityContext: deployment.RestrictedSecurityContext(),
 		Resources:       commonv1.WithSidecarResourceDefaults(imageCache.MaintenanceResources),
