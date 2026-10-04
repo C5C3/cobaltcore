@@ -660,6 +660,14 @@ for less than 30 seconds after the `ovn-controller` kill.
 [Lab fault runs](./reference/infrastructure/infrastructure-manifests.md#lab-fault-runs)
 lists the timings.
 
+Every pod that runs an image by tag pulls the tag when it starts. The operators
+set `imagePullPolicy: Always` on every container that runs a tag, and the hvo
+and kna releases set it on their managers, so a node does not keep starting a
+build it cached under a tag that `main` has pushed again since. A running pod
+keeps its build until it restarts. The libvirt DaemonSet stays on its digest
+with `IfNotPresent`. While ghcr.io cannot be reached, a pod that starts waits
+in `ImagePullBackOff` although the node holds the image.
+
 ## Proven by
 
 The page as of commit `e6a34f1b`, before Cinder was added, ran in page order

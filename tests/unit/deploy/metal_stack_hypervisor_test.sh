@@ -34,7 +34,8 @@
 #      values set no argument list.
 #   9. The kna release runs the image ghcr.io/c5c3/kvm-node-agent without a
 #      tag, sets the libvirt URI, the node label field path, DAC_OVERRIDE
-#      alone without a runAsUser or runAsGroup, and NAMESPACE.
+#      alone without a runAsUser or runAsGroup, NAMESPACE, and the pull
+#      policy Always on the manager.
 #  10. Both chart sources are pinned by digest.
 #  11. Each chart tag names the commit its image's resolver prints: the hvo
 #      tag hack/ci-resolve-hvo-commit.sh's, the kna tag
@@ -557,7 +558,7 @@ test_hvo_release() {
 test_kna_release() {
   echo "Test: the kvm-node-agent release"
 
-  render "$HYPERVISOR_DIR" 10 || return
+  render "$HYPERVISOR_DIR" 11 || return
 
   local env='.spec.values.controllerManager.manager.env'
   assert_eq "the release lives in hypervisor-system" "hypervisor-system" \
@@ -587,6 +588,12 @@ test_kna_release() {
     "$(val HelmRelease kvm-node-agent '.spec.postRenderers[0].kustomize.patches[0] |
       .target.kind + " " + (.patch | from_yaml | .spec.template.spec.containers[] | select(.name == "manager") |
       .env[] | select(.name == "NAMESPACE") | .value)')"
+  # The chart has no value for the pull policy, and build-images.yaml moves
+  # the tag sha-<kna-commit> to every main build.
+  assert_eq "the post-renderer pulls the manager's image on every pod start" "DaemonSet Always" \
+    "$(val HelmRelease kvm-node-agent '.spec.postRenderers[0].kustomize.patches[0] |
+      .target.kind + " " + (.patch | from_yaml | .spec.template.spec.containers[] | select(.name == "manager") |
+      .imagePullPolicy)')"
 }
 
 # --- Test 10: the chart sources ---

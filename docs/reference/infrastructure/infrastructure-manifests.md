@@ -4224,6 +4224,7 @@ root on its node's libvirtd (see
 | kna | `controllerManager.manager.env.nodeLabelFieldPath` | `spec.nodeName` | The chart renders it into the field reference of `NODE_LABEL` and defines no value |
 | kna | `controllerManager.manager.containerSecurityContext` | every capability dropped but `DAC_OVERRIDE`, no `runAsUser` or `runAsGroup` | The image runs as `0:0`: upstream's uid 42438 has no passwd entry on the host, and the host's dbus-daemon closes the connection of a uid it cannot resolve. Starting a unit over the system bus needs root too. The chart's init container hands the PKI directories to 42438, and root needs `DAC_OVERRIDE` to write there |
 | kna | post-renderer | `NAMESPACE=hypervisor-system` | kna falls back to `monsoon3` without it, and the chart sets none |
+| kna | post-renderer | `imagePullPolicy: Always` on the manager | The chart has no value for the pull policy, so a node would keep the image it cached under `sha-<commit>`. `build-images.yaml` moves that tag to every `main` build |
 
 `Hypervisor.spec.createCertManagerCertificate` stays at its default `false`, so
 each node's certificate is hvo's alone.
