@@ -28,12 +28,13 @@ The lab assumes a cluster of this shape:
 | A Gardener shoot on metal-stack with two Ready workers that carry the same `topology.kubernetes.io/zone` label | `kubectl get nodes -L topology.kubernetes.io/zone` |
 | `/dev/kvm` on both workers and the same CPU model; `deploy/lab/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe, `== kvm device` and `== cpu` |
 | The module files `vhost_net`, `openvswitch` and `geneve` for the running kernel | probe, `== module files for <kernel>` |
-| For the NFS stack of block storage ([#1193](https://github.com/c5c3/cobaltcore/issues/1193)), which this page does not deploy yet (`WITH_NFS=true` deploys it): the module files `nfsd`, `nfs` and `nfsv4` for the running kernel | probe, `== module files for <kernel>` |
+| For the NFS stack that holds Cinder's volumes and backups: the module files `nfsd`, `nfs` and `nfsv4` for the running kernel | probe, `== module files for <kernel>` |
 | cgroup v2 | probe, `== cgroup` |
 | `/var/lib` on a volume with room for the instance disks (192 GiB on the surveyed node) | probe, `== disks` |
 | No `libvirtd`, `qemu-system-x86_64` or `ovs-vswitchd` on the host | probe, `== host os / binaries` |
 | A pod-network MTU of 1460 or more, the value of `global_physnet_mtu` | probe, `== nics`, the `cali*` lines |
 | A default StorageClass, which every volume of the stack binds to, and no DaemonSet `kube-system/node-local-dns` | Step 1 of `EXTERNAL_CLUSTER=true make deploy-infra` exits 1 otherwise |
+| Room in that class for a 100Gi volume, the claim `nfs-server-exports` of the NFS server | the `nfs-server` rollout wait of the deploy in Step 3, which exits 1 otherwise |
 | Egress on TCP 443 to `ghcr.io`, the Helm repositories and the cirros download | the shoot's firewall |
 | TCP 16514 and 49152 to 49215 open between the workers | `hack/lab-node-ports.sh` |
 
@@ -95,7 +96,7 @@ up as `absent`, `none` or `NOT FOUND` in the output and not as a failed Job.
 ### Step 3: Deploy the stack {#cp-deploy}
 
 ```bash
-EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true make deploy-infra
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra
 ```
 
 The script deploys onto the cluster the current kubeconfig context points at
@@ -106,6 +107,12 @@ the ControlPlane operator stack. It returns once the ten operator releases are
 Ready and the cluster admits the manifests of Step 4. When it completes, it
 prints the port-forward command on its `Access:` line. [`make deploy-infra`](./reference/infrastructure/e2e-deployment.md#make-deploy-infra)
 describes every step and variable.
+
+`WITH_NFS=true` deploys the
+[Lab NFS stack](./reference/infrastructure/infrastructure-manifests.md#lab-nfs-stack):
+an NFS server with the two shares that hold Cinder's volumes and backups, the
+`csi-driver-nfs` mounter, and pods that load the NFS kernel modules on the
+nodes.
 
 ### Step 4: Apply the OVN central and the ControlPlane {#cp-apply}
 
