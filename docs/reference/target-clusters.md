@@ -742,7 +742,8 @@ A placed `NovaCompute` comes down before the `Nova` it joins and before the
 `OVNChassis` on its nodes. Its teardown drains every node it holds through the
 Nova API, so the Nova has to still answer, and its pods wait on the chassis's
 `/run/openvswitch` socket. The drain holds the deletion until Nova reports each
-host empty (see [The drain](./nova/novacompute-crd.md#the-drain)).
+host empty (see [The drain](./nova/novacompute-crd.md#the-drain) and
+[Drain a Compute Node](../guides/nova/drain-a-compute-node.md)).
 
 The four CRs of a placed network service come down in one order, because each of
 the first three reads something a later one owns. Delete the

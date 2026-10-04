@@ -1668,7 +1668,12 @@ controller `go test` run and the `grep` for its `--- PASS:` line, and that run
 itself once neither test is left; for 0004 the `TestServiceClientInterface` run
 and its `grep`. With the last patch gone, the
 `COPY patches/` and `git apply` steps go too, because both fail without a
-patch.
+patch. A pin move also checks what
+[Connect a Compute Cluster](../../guides/nova/connect-a-compute-cluster.md),
+[Drain a Compute Node](../../guides/nova/drain-a-compute-node.md) and the
+table [Namespaces on a compute cluster](../target-clusters.md#namespaces-on-a-compute-cluster)
+say about hvo against the new commit, and updates the commit the two guides
+name.
 
 **Image contract check:** `tests/container-images/verify_hvo.sh` runs four
 tests against a built image. `manager --version` names `sha-<pin>` and ends

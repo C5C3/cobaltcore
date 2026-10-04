@@ -339,7 +339,7 @@ stays out of the aggregate. For the pipeline see
 | `NodesReady` | False | `NodesForbidden` | The Node list answered 403, which is the nova chart installed with `rbac.namespaceScoped=true` and a pool on the local cluster |
 | `NodesReady` | False | `NodeListError` | Listing or reading Nodes failed otherwise |
 | `ConfigReady` | True | `ConfigRendered` | `compute-pool.conf` is rendered into its ConfigMap; the message names it |
-| `ConfigReady` | False | `WaitingForComputeConfig` | The contract Secret is not in the CR's namespace on the pool's cluster. The ControlPlane mirrors it for a ControlPlane-managed Nova; otherwise copy it ([Connect a compute cluster](../../guides/nova/connect-a-compute-cluster.md)) |
+| `ConfigReady` | False | `WaitingForComputeConfig` | The contract Secret is not in the CR's namespace on the pool's cluster. The ControlPlane mirrors it for a ControlPlane-managed Nova; otherwise copy it ([Connect a compute cluster](../../guides/nova/connect-a-compute-cluster.md#standalone-nova-without-a-controlplane)) |
 | `ConfigReady` | False | `ComputeConfigIncomplete` | `nova-compute.conf`, `transport_url` or `password` is missing or empty; the message names them |
 | `ConfigReady` | False | `ConfigError` | Reading the Secret, or writing or pruning the ConfigMaps, failed |
 | `DaemonSetReady` | True | `DaemonSetReady` | Every node the DaemonSet selects runs a ready pod, or the pool holds no node and the DaemonSet was removed |
@@ -645,8 +645,11 @@ openstack server migrate --live-migration <server>
 
 ### The drain
 
-Leaving the pool is the drain. It starts when a node stops matching the
-selector, when its Node is deleted, or for every node when the CR is deleted:
+Leaving the pool is the drain, and
+[Drain a Compute Node](../../guides/nova/drain-a-compute-node.md) walks it on
+the devstack and on a compute cluster under openstack-hypervisor-operator. The
+drain starts when a node stops matching the selector, when its Node is
+deleted, or for every node when the CR is deleted:
 
 1. The node goes `Draining`. The pool disables its compute service once, with
    the reason `c5c3.io: leaving NovaCompute <namespace>/<name>`, and keeps its
