@@ -2981,9 +2981,9 @@ in chart 2.8.4), which Helm never deletes.
 - The deploy script itself runs no `modprobe` and writes no file on a node.
 
 `make e2e-chaos` is not run against the lab (D6 of #1219): the suites under
-`tests/e2e-chaos/` are written for the kind stack. The lab's own faults, an
-NFS outage and killed hypervisor pods, follow in
-[#1222](https://github.com/c5c3/cobaltcore/issues/1222).
+`tests/e2e-chaos/` are written for the kind stack. The lab's own faults, two
+NFS outages and killed hypervisor pods, are under
+[Lab fault runs](#lab-fault-runs).
 
 #### Proving run
 
@@ -3136,6 +3136,394 @@ What a run shows:
 | 6 | the teardown exits 0, logs `Deleting the Chaos Mesh experiments...` and ends with `Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0`; then `0`, `NotFound` and `0` |
 
 No lab run of this stack is recorded yet.
+
+#### Lab fault runs
+
+The block below runs five faults that kind cannot show, each under the running
+server `lab-0` of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md)
+([#1222](https://github.com/c5c3/cobaltcore/issues/1222)). F1 to F3 are a
+PodChaos `pod-kill` of the libvirt pod, of the `nova-compute` pod and of the
+`ovn-controller` pod on `lab-0`'s node. F4 is a `pod-kill` of the NFS server
+pod while `lab-0` has a Cinder volume attached, and stands for a reschedule of
+that pod. F5 scales the NFS server to 0 for 300 seconds and back, and stands
+for a node replacement. Every fault is a pod fault: the three hypervisor pods
+run in the host's network namespace (see NetworkChaos and `hostNetwork`
+above), and D2 of [#1219](https://github.com/c5c3/cobaltcore/issues/1219)
+rules out a network fault on them. A PodChaos kills with its default
+`gracePeriod: 0`. The graceful delete in
+[Checks outside the quick start](#checks-outside-the-quick-start) gives
+libvirt's start script its `TERM` handler and `ovn-controller` its preStop
+`exit --restart`; a kill cuts both short. The faults run on the node of
+`lab-0`, and `lab-1` on another node is the peer of the guest's network probe.
+
+The block starts on a lab where
+[Part 1](../../quick-start-metal-stack.md#cp-deploy) ran with
+`WITH_CHAOS_MESH=true` added to the deploy command of its Step 3, as above,
+and Part 2 ran through
+[Step 7](../../quick-start-metal-stack.md#hv-volume), so `lab-vol` is attached
+to `lab-0`. It runs in bash, in the shell of Part 2, Step 7, which holds
+`volume` and the `OS_*` variables, with the port-forward of Part 1, Step 6
+open in a second terminal.
+
+Two probes in `lab-0` show what the guest sees. Open `lab-0`'s console as in
+[Part 2, Step 6](../../quick-start-metal-stack.md#hv-console), log in, and type
+these two lines, with `<lab-1>` replaced by the address Step 6 printed for
+`lab-1`:
+
+```sh
+sudo sh -c 'while :; do if ping -c 1 -W 1 <lab-1> >/dev/null 2>&1; then r=ok; else r=lost; fi; echo "lab-probe net $(date -u +%T) $r"; sleep 2; done >/dev/ttyS0 2>&1 &'
+sudo sh -c 'i=0; while :; do i=$((i+1)); if echo "probe-$i" | dd of=/dev/vdb bs=512 seek=8 2>/dev/null && sync; then r=ok; else r=error; fi; echo "lab-probe disk $(date -u +%T) $r $i"; sleep 2; done >/dev/ttyS0 2>&1 &'
+```
+
+Each loop writes one line to the serial console about every two seconds, and
+Nova keeps that console as the server's console log, so
+`openstack console log show` reads the lines from outside. The network loop
+pings `lab-1` through the Geneve tunnel to the other node. The disk loop
+writes its counter at byte 4096 of the volume, so the marker of Step 7 at
+byte 0 stays, and syncs it. A loop that blocks in `sync` writes no line, and
+the gap in the log is the stall the guest saw. Leave the console with
+`Ctrl+]`. Before F1, `openstack console log show --lines 20 lab-0` shows both
+kinds of line with `ok`.
+
+The block defines the helpers and reads the baseline, then runs F1 to F5 and a
+Cinder check, one section each. Paste it a section at a time, and read the
+output of each before the next. The baseline shows `server=ACTIVE`, a
+`domain=running_` reason, `compute=up`, `agents=` with one or more `True` and
+nothing else, `volume=in-use`, `cinder-volume=up`, every kind with `:True` and
+`hypervisor=True`, and `baseline.pids` holds two PIDs. Otherwise the lab is
+not at the state the faults are measured against, and no fault runs. In each
+fault section, the `kubectl get podchaos` line prints the node the API kept
+and the pod Chaos Mesh selected: `${host}` and the pod saved in
+`<f>.before`, and for F4 no node. Otherwise the selector did not hold, and the
+session ends. It ends as well when a PodChaos does not reach `AllInjected`
+within 60 seconds; `kubectl describe` then prints the experiment's state.
+
+```bash
+# bash; KUBECONFIG and the OS_* variables of Part 1, Step 7 set, the port-forward
+# of Part 1, Step 6 running, lab-vol attached to lab-0, both guest probes running
+faults="$(mktemp -d)"
+host=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:host -f value)
+domain=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:instance_name -f value)
+echo "lab-0 runs as ${domain} on ${host}"
+
+# the libvirt pod of lab-0's node
+node_libvirt_pod() {
+  kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
+    --field-selector "spec.nodeName=${host}" -o name
+}
+# the host PIDs of lab-0's QEMU and of libvirtd (the libvirt pod shares the host's
+# PID namespace); [t] keeps pgrep from matching the sh that runs it
+pids() {
+  kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- \
+    sh -c "echo qemu=\$(pgrep -f 'gues[t]=${domain},') libvirtd=\$(pgrep -x libvirtd)"
+}
+# one line: what the APIs, the operators and libvirt report for lab-0 and its node
+flat() { tr -s ' \n\r' '_'; }
+state() {
+  echo "server=$(openstack server show lab-0 -c status -f value 2>&1 | flat)" \
+    "domain=$(timeout 10 kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- virsh domstate --reason "${domain}" 2>&1 | flat)" \
+    "compute=$(openstack compute service list --service nova-compute --host "${host}" -c State -f value 2>&1 | flat)" \
+    "agents=$(openstack network agent list --host "${host}" -c Alive -f value 2>&1 | flat)" \
+    "volume=$(openstack volume show lab-vol -c status -f value 2>&1 | flat)" \
+    "cinder-volume=$(openstack volume service list --service cinder-volume -c State -f value 2>&1 | flat)" \
+    "ready=$(kubectl get novacompute,ovnchassis,neutronmetadataagent,cinder,cinderbackend -n openstack -o jsonpath='{range .items[*]}{.kind}:{.status.conditions[?(@.type=="Ready")].status},{end}' 2>&1 | flat)" \
+    "hypervisor=$(kubectl get hypervisor "${host}" -o jsonpath='{.status.conditions[?(@.type=="LibVirtConnection")].status}' 2>&1 | flat)" \
+    "nfs-server=$(kubectl get pod -n openstack -l app.kubernetes.io/name=nfs-server -o jsonpath='{range .items[*]}{.spec.nodeName}/{.status.phase}/{.status.containerStatuses[0].ready},{end}' 2>&1 | flat)"
+}
+# appends "<UTC time> <state>" to $1 whenever the state changes; runs until killed
+watch_state() {
+  local previous="" current
+  while :; do
+    current=$(state)
+    if [ "${current}" != "${previous}" ]; then
+      echo "$(date -u +%T) ${current}" >>"$1"
+      previous=${current}
+    fi
+    sleep 5
+  done
+}
+# the newest line of the guest probe $1 (net or disk); the serial console ends lines in \r\n
+last_probe() {
+  openstack console log show --lines 120 lab-0 2>/dev/null | tr -d '\r' | grep "lab-probe $1 " | tail -n 1
+}
+# true when both probes wrote a new "ok" line in the next 20 seconds
+probes_ok() {
+  local net disk
+  net=$(last_probe net) disk=$(last_probe disk)
+  sleep 20
+  [ "$(last_probe net)" != "${net}" ] && last_probe net | grep -q ' ok$' &&
+    [ "$(last_probe disk)" != "${disk}" ] && last_probe disk | grep -q ' ok [0-9]*$'
+}
+# waits up to 300 s for pods of selector $1 without the UID(s) $2, on lab-0's node
+# when $3 is "node", then up to 600 s for every pod of $1 to be Ready
+wait_replaced() {
+  local end=$((SECONDS + 300)) uids
+  while [ "${SECONDS}" -lt "${end}" ]; do
+    if [ "$3" = node ]; then
+      uids=$(kubectl get pod -n openstack -l "$1" --field-selector "spec.nodeName=${host}" -o jsonpath='{.items[*].metadata.uid}')
+    else
+      uids=$(kubectl get pod -n openstack -l "$1" -o jsonpath='{.items[*].metadata.uid}')
+    fi
+    if [ -n "${uids}" ] && ! echo " ${uids} " | grep -q " $2 "; then
+      kubectl wait pod -n openstack -l "$1" --for=condition=Ready --timeout=600s && return 0
+      break
+    fi
+    sleep 2
+  done
+  echo "GATE FAILED: no Ready replacement for $1"; return 1
+}
+# the gate before the next fault: within $1 seconds lab-0 is ACTIVE, nova-compute
+# on its node is up, every network agent of its node is alive, and both probes write "ok"
+recovered() {
+  local end=$((SECONDS + $1))
+  while [ "${SECONDS}" -lt "${end}" ]; do
+    if [ "$(openstack server show lab-0 -c status -f value)" = ACTIVE ] &&
+      [ "$(openstack compute service list --service nova-compute --host "${host}" -c State -f value)" = up ] &&
+      ! openstack network agent list --host "${host}" -c Alive -f value | grep -qv True &&
+      probes_ok; then
+      echo "recovered at $(date -u +%T)"; return 0
+    fi
+    sleep 5
+  done
+  echo "GATE FAILED: lab-0, nova-compute, the agents of ${host} or the guest probes did not recover in $1 s"; return 1
+}
+state | tee "$faults/baseline.state"
+pids | tee "$faults/baseline.pids"
+
+# F1: the libvirt pod of lab-0's node
+sel=app.kubernetes.io/name=libvirt
+pids >"$faults/libvirt.before"
+before=$(kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o jsonpath='{.items[*].metadata.uid}')
+kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o name >>"$faults/libvirt.before"
+watch_state "$faults/libvirt.log" & watcher=$!
+echo "applied at $(date -u +%T)" | tee -a "$faults/libvirt.log"
+kubectl apply -f - <<EOF
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-libvirt-kill
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [openstack]
+    nodes: [${host}]
+    labelSelectors:
+      app.kubernetes.io/name: libvirt
+EOF
+kubectl wait podchaos/lab-libvirt-kill -n openstack --for=condition=AllInjected --timeout=60s ||
+  kubectl describe podchaos lab-libvirt-kill -n openstack
+kubectl get podchaos lab-libvirt-kill -n openstack -o jsonpath='{.spec.selector.nodes}{" "}{.status.experiment.containerRecords[*].id}{"\n"}'
+wait_replaced "${sel}" "${before}" node
+recovered 600
+kill "${watcher}"
+pids >"$faults/libvirt.after"
+state >"$faults/libvirt.state"
+openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/libvirt.console"
+kubectl logs -n openstack "$(node_libvirt_pod)" -c libvirtd | head -n 20 >"$faults/libvirt.pod-log"
+# typed on its own: press Enter, note whether a prompt answers, leave with Ctrl+]
+kubectl exec -it -n openstack "$(node_libvirt_pod)" -c libvirtd -- virsh console "${domain}"
+kubectl delete podchaos lab-libvirt-kill -n openstack --wait --timeout=60s
+
+# F2: the nova-compute pod of lab-0's node, and the share it mounted
+sel=app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=lab,app.kubernetes.io/component=nova-compute
+pids >"$faults/nova-compute.before"
+before=$(kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o jsonpath='{.items[*].metadata.uid}')
+kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o name >>"$faults/nova-compute.before"
+kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- grep ' /var/lib/nova/mnt/' /proc/mounts >"$faults/nova-compute.mount.before"
+watch_state "$faults/nova-compute.log" & watcher=$!
+echo "applied at $(date -u +%T)" | tee -a "$faults/nova-compute.log"
+kubectl apply -f - <<EOF
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-nova-compute-kill
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [openstack]
+    nodes: [${host}]
+    labelSelectors:
+      app.kubernetes.io/name: novacompute
+      app.kubernetes.io/instance: lab
+      app.kubernetes.io/component: nova-compute
+EOF
+kubectl wait podchaos/lab-nova-compute-kill -n openstack --for=condition=AllInjected --timeout=60s ||
+  kubectl describe podchaos lab-nova-compute-kill -n openstack
+kubectl get podchaos lab-nova-compute-kill -n openstack -o jsonpath='{.spec.selector.nodes}{" "}{.status.experiment.containerRecords[*].id}{"\n"}'
+wait_replaced "${sel}" "${before}" node
+recovered 600
+kill "${watcher}"
+pids >"$faults/nova-compute.after"
+state >"$faults/nova-compute.state"
+openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/nova-compute.console"
+kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- grep ' /var/lib/nova/mnt/' /proc/mounts >"$faults/nova-compute.mount.after"
+kubectl logs -n openstack "$(kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o name)" -c nova-compute |
+  grep -E 'ERROR|Traceback' | head -n 40 >"$faults/nova-compute.errors"
+kubectl delete podchaos lab-nova-compute-kill -n openstack --wait --timeout=60s
+
+# F3: the ovn-controller pod of lab-0's node
+sel=app.kubernetes.io/name=ovnchassis,app.kubernetes.io/instance=lab-chassis,app.kubernetes.io/component=ovn-controller
+pids >"$faults/ovn-controller.before"
+before=$(kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o jsonpath='{.items[*].metadata.uid}')
+kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o name >>"$faults/ovn-controller.before"
+openstack network agent list --host "${host}" -c 'Agent Type' -c Alive -f value >"$faults/ovn-controller.agents.before"
+watch_state "$faults/ovn-controller.log" & watcher=$!
+echo "applied at $(date -u +%T)" | tee -a "$faults/ovn-controller.log"
+kubectl apply -f - <<EOF
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-ovn-controller-kill
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [openstack]
+    nodes: [${host}]
+    labelSelectors:
+      app.kubernetes.io/name: ovnchassis
+      app.kubernetes.io/instance: lab-chassis
+      app.kubernetes.io/component: ovn-controller
+EOF
+kubectl wait podchaos/lab-ovn-controller-kill -n openstack --for=condition=AllInjected --timeout=60s ||
+  kubectl describe podchaos lab-ovn-controller-kill -n openstack
+kubectl get podchaos lab-ovn-controller-kill -n openstack -o jsonpath='{.spec.selector.nodes}{" "}{.status.experiment.containerRecords[*].id}{"\n"}'
+wait_replaced "${sel}" "${before}" node
+recovered 600
+kill "${watcher}"
+pids >"$faults/ovn-controller.after"
+state >"$faults/ovn-controller.state"
+openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/ovn-controller.console"
+openstack network agent list --host "${host}" -c 'Agent Type' -c Alive -f value >"$faults/ovn-controller.agents.after"
+kubectl logs -n openstack "$(kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o name)" -c ovn-controller |
+  head -n 40 >"$faults/ovn-controller.pod-log"
+kubectl delete podchaos lab-ovn-controller-kill -n openstack --wait --timeout=60s
+
+# Before F4: the mount nova-compute holds, with its options, and the NFS server's pod
+kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- grep ' /var/lib/nova/mnt/' /proc/mounts >"$faults/nfs.mount"
+kubectl get pod -n openstack -l app.kubernetes.io/name=nfs-server -o wide >"$faults/nfs.before"
+
+# F4: the NFS server pod, wherever it runs (a reschedule)
+sel=app.kubernetes.io/name=nfs-server
+pids >"$faults/nfs-server-kill.before"
+before=$(kubectl get pod -n openstack -l "${sel}" -o jsonpath='{.items[*].metadata.uid}')
+kubectl get pod -n openstack -l "${sel}" -o name >>"$faults/nfs-server-kill.before"
+watch_state "$faults/nfs-server-kill.log" & watcher=$!
+echo "applied at $(date -u +%T)" | tee -a "$faults/nfs-server-kill.log"
+kubectl apply -f - <<EOF
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-nfs-server-kill
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [openstack]
+    labelSelectors:
+      app.kubernetes.io/name: nfs-server
+EOF
+kubectl wait podchaos/lab-nfs-server-kill -n openstack --for=condition=AllInjected --timeout=60s ||
+  kubectl describe podchaos lab-nfs-server-kill -n openstack
+kubectl get podchaos lab-nfs-server-kill -n openstack -o jsonpath='{.spec.selector.nodes}{" "}{.status.experiment.containerRecords[*].id}{"\n"}'
+wait_replaced "${sel}" "${before}" any
+recovered 900
+kill "${watcher}"
+pids >"$faults/nfs-server-kill.after"
+state >"$faults/nfs-server-kill.state"
+openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/nfs-server-kill.console"
+kubectl get pod -n openstack -l "${sel}" -o wide | tee "$faults/nfs-server-kill.pod"
+kubectl get events -n openstack --sort-by=.lastTimestamp | grep -E 'nfs-server|AttachVolume|Multi-Attach' >"$faults/nfs-server-kill.events"
+kubectl logs -n openstack deployment/nfs-server -c nfs-server | head -n 40 >"$faults/nfs-server-kill.pod-log"
+kubectl delete podchaos lab-nfs-server-kill -n openstack --wait --timeout=60s
+
+# F5: the NFS server scaled to 0 for 300 seconds (a node replacement)
+pids >"$faults/nfs-server-scale.before"
+watch_state "$faults/nfs-server-scale.log" & watcher=$!
+echo "scaled to 0 at $(date -u +%T)" | tee -a "$faults/nfs-server-scale.log"
+kubectl scale deployment/nfs-server -n openstack --replicas=0
+timeout 120 bash -c 'until [ -z "$(kubectl get pod -n openstack -l app.kubernetes.io/name=nfs-server -o name)" ]; do sleep 2; done'
+sleep 300
+echo "scaled to 1 at $(date -u +%T)" | tee -a "$faults/nfs-server-scale.log"
+kubectl scale deployment/nfs-server -n openstack --replicas=1
+kubectl rollout status deployment/nfs-server -n openstack --timeout=600s
+echo "rolled out at $(date -u +%T)" | tee -a "$faults/nfs-server-scale.log"
+recovered 900
+kill "${watcher}"
+pids >"$faults/nfs-server-scale.after"
+state >"$faults/nfs-server-scale.state"
+openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/nfs-server-scale.console"
+kubectl get events -n openstack --sort-by=.lastTimestamp | grep -E 'nfs-server|AttachVolume|Multi-Attach' >"$faults/nfs-server-scale.events"
+
+# After F5: a new volume on the backend whose server came back, deleted whatever its status
+openstack volume create --size 1 lab-vol-after
+timeout 300 bash -c 'until [ "$(openstack volume show lab-vol-after -c status -f value)" = available ]; do sleep 5; done'
+openstack volume show lab-vol-after -c status -f value
+openstack volume delete lab-vol-after
+timeout 120 bash -c 'until ! openstack volume show lab-vol-after >/dev/null 2>&1; do sleep 5; done'
+```
+
+Every wait has a bound. A replacement pod with a new UID gets 300 seconds, and
+its Ready 600. The gate `recovered` gets 600 seconds after F1 to F3 and 900
+after F4 and F5, because a fresh `nfsd` starts in its NFSv4 grace period of up
+to 90 seconds and the client retries on its own back-off (see
+`tests/e2e-chaos/cinder-nfs-outage/chainsaw-test.yaml`). F5 holds the
+scale-down for 300 seconds, gives the server's pod 120 seconds to go and 600
+to roll out, and the new volume gets 300. When a helper prints
+`GATE FAILED`:
+
+1. Run `openstack token issue -f value -c id >/dev/null`. When it cannot
+   connect to `keystone.127-0-0-1.nip.io:8443`, the port-forward has ended:
+   start it as in
+   [Part 1, Step 6](../../quick-start-metal-stack.md#cp-access) and repeat the
+   wait.
+2. Otherwise repeat the wait once, with the same bound.
+3. When it fails again, run `openstack server reboot --hard --wait lab-0`,
+   start both guest probes again and run `recovered 600`.
+4. When that holds, go on with the next fault. Otherwise the remaining faults
+   do not run, and the session goes to its end.
+
+A fault shows a defect when a gate fails, when the `qemu=` PID differs between
+`<f>.before` and `<f>.after` (the guest restarted), or when a field of
+`<f>.state` differs from `baseline.state`. `domain=` is compared by its
+`running_` prefix, `agents=` by holding only `True`, `nfs-server=` by its
+phase and ready flag, as its node may change, and every other field as text.
+An F1 console that does not answer, a `lab-vol-after` that ends in `error` or
+not `available` in time, and a failed check at the session's end are defects
+as well. Each gets its own issue. A status that does not move during a fault
+is a finding, and so is a guest stall that ends by itself within the bound.
+
+At the session's end, stop the disk probe with `sudo pkill -f 'lab-probe disk'`
+on `lab-0`'s console and read its last line at once, because the network
+probe pushes it out of the 120 lines `last_probe` reads within minutes. Then
+run [Part 2, Step 10](../../quick-start-metal-stack.md#hv-backup) and read the
+counter the disk probe wrote last from the volume file:
+
+```bash
+# after sudo pkill -f 'lab-probe disk' on lab-0's console
+last_probe disk
+# after Part 2, Step 10
+kubectl exec -n openstack deployment/controlplane-cinder-volume-nfs1 -- sh -c "f=\$(ls /var/lib/cinder/mnt/*/volume-${volume}); dd if=\"\$f\" bs=512 skip=8 count=1 2>/dev/null | head -c 16; echo"
+```
+
+It prints `probe-<n>`. `<n>` is the counter of the last `ok` disk line or the
+one after it, because `pkill` can stop a write whose `sync` had not returned.
+Step 10's `head -c 17` still prints `lab-volume-marker`. Then run the
+[Teardown](../../quick-start-metal-stack.md#teardown) block without its last
+line, and step 6 of the [Proving run](#proving-run) in its place, which runs
+`EXTERNAL_CLUSTER=true make teardown-infra` with a fault active. Stop the
+port-forward, delete `gateway-ca.pem`, and check that
+`kubectl get namespaces -o name` lists the platform's namespaces alone:
+`default`, `firewall`, `kube-node-lease`, `kube-public`, `kube-system` and
+`metallb-system`.
+
+No lab run of this block is recorded yet.
 
 ### Lab ControlPlane
 
