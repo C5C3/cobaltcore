@@ -2596,8 +2596,11 @@ own, so run the test on a node where nothing else loads NFS modules. A module
 it cannot remove stays loaded until the node reboots and is named on the last
 line, `still loaded: ...`; otherwise the last line is `module list as before`. The container mirrors the init
 container `host-prepare` of the [lab hypervisors](#lab-hypervisors), which
-loads `vhost_net` the same way: `ghcr.io/c5c3/libvirt:latest`, privileged, as
-root, with the node's `/lib/modules` mounted read-only as its one volume.
+loads `vhost_net` the same way: the DaemonSet's pinned
+`ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`, pulled `IfNotPresent`,
+privileged, as root, with the node's `/lib/modules` mounted read-only as its
+one volume. Renovate moves the reference in the pull request that moves the
+DaemonSet's.
 
 The probe's `kustomization.yaml` leaves the file out of `resources`, so
 `kubectl apply -k deploy/lab/metal-stack/probe` stays read-only. The load test
@@ -2723,7 +2726,7 @@ the kustomization: the deploy script applies the NetworkPolicy of
 | Export claim | `nfs-server-exports`, 100Gi, `ReadWriteOnce` (D3), with no storage class. The patch removes the kind pin `standard`, so the claim binds to the cluster's default class like the volumes of the [Lab overlay](#lab-overlay). D3 named `premium`, which is the default class of `forge`. One volume holds both exports, so 100Gi bounds every Cinder volume and backup of the lab together. The kind claim asks for 5Gi on `standard` |
 | Server and shares | as on kind: `itsthenetwork/nfs-server-alpine:12` by digest, the Service on 2049, and the shares `nfs-server.openstack.svc.cluster.local:/volumes` and `:/backups`. The image is amd64 only, and so are both workers |
 | Mounter | as on kind: the `csi-driver-nfs` HelmRelease in `kube-system`, chart `4.13.4` with its three values. The chart's `kubeletDir`, `/var/lib/kubelet`, is the lab's kubelet root |
-| `nfsd` | the init container `load-nfsd` of the server pod, before `prepare-exports` (D1, D2). It runs `ghcr.io/c5c3/libvirt:latest`, the image of `host-prepare` in [Lab hypervisors](#lab-hypervisors), privileged, as root, with a read-only root filesystem and the node's `/lib/modules` mounted read-only. In the server's own pod the load precedes the server on every start, also after a node reboot |
+| `nfsd` | the init container `load-nfsd` of the server pod, before `prepare-exports` (D1, D2). It runs `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`, the pinned image of `host-prepare` in [Lab hypervisors](#lab-hypervisors), pulled `IfNotPresent`, privileged, as root, with a read-only root filesystem and the node's `/lib/modules` mounted read-only. Renovate moves the reference in the pull request that moves the DaemonSet's. In the server's own pod the load precedes the server on every start, also after a node reboot |
 | `nfs` and `nfsv4` | the DaemonSet `nfs-client-modules` in `openstack`, on every node, tolerating every taint as `csi-nfs-node` does. A privileged init container `load` on the same image loads both, and an unprivileged container `hold` keeps the pod running, so the load repeats after a reboot. `csi-nfs-node` and `nova-compute` mount the shares through the node's kernel, and the chart and the nova-operator render them, so neither can carry an init container from this repository |
 | Client policy | the NetworkPolicy `nfs-server-clients` in `openstack`, from the template `client-policy.yaml`. It selects the server's pods and admits one `ipBlock`, the cluster's node network, to TCP 2049. `csi-nfs-node` and `nova-compute` are host-network pods, so the node network names every client. The template carries the placeholder `NODE_NETWORK`; the deploy script replaces it with `data.nodeNetwork` of the ConfigMap `kube-system/shoot-info`, which Gardener writes into every shoot, `10.128.44.0/22` on `forge` |
 | Namespaces | `openstack` for the server and `nfs-client-modules`, `kube-system` for the chart, `flux-system` for the HelmRepository |
@@ -2915,15 +2918,22 @@ on its own before the [node port check](#node-port-check).
 | `hypervisor/hvo-release.yaml` | `HelmRelease/openstack-hypervisor-operator` in `openstack` |
 | `hypervisor/kna-release.yaml` | `HelmRelease/kvm-node-agent` in `hypervisor-system` |
 
-The libvirt DaemonSet runs `ghcr.io/c5c3/libvirt:latest` (see
+The libvirt DaemonSet runs `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` (see
 [libvirt](../ci-cd/container-images.md#libvirt)) on the nodes labelled
 `openstack.c5c3.io/nova-compute-pool=lab`, the pool's own label, privileged
-as uid 0 in the host's network, PID and IPC namespaces. `latest` is the only
-tag of that image that names no commit of this repository, and
-`imagePullPolicy: Always` pulls it on every start. The update strategy is
-`OnDelete` and the pod has no liveness probe: a rollout, or a restart on a
-slow answer, would interrupt running migrations. The readiness probe runs
-`virsh -c qemu:///system version`.
+as uid 0 in the host's network, PID and IPC namespaces. `<tag>` is the keeper
+tag `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1`, which
+`hack/ci-tag-libvirt-keeper.sh` mints once on `main` and never moves (see
+[Release-independent images](../ci-cd/build-images-workflow.md#release-independent-images)).
+`imagePullPolicy: IfNotPresent` pulls the digest once per node. Renovate
+proposes each new keeper tag as one pull request, never automerged, that moves
+all six lines naming the image: the two containers here, the load test of the
+[Node probe](#node-probe), `load-nfsd` and both containers of
+`nfs-client-modules` in the [Lab NFS stack](#lab-nfs-stack). The update
+strategy is `OnDelete` and the pod has no liveness probe: a rollout, or a
+restart on a slow answer, would interrupt running migrations. A merged bump
+therefore reaches a node when its libvirt pod is deleted. The readiness probe
+runs `virsh -c qemu:///system version`.
 
 | Host path | Why the pod mounts it |
 | --- | --- |
@@ -3112,8 +3122,9 @@ log keeps growing, and show that a live migration dials libvirt over TLS:
 # lab-a on nodes[0]
 nodes=($(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'))
 
-# the images
-docker manifest inspect ghcr.io/c5c3/libvirt:latest >/dev/null
+# the images; the libvirt keeper tag still names the digest the DaemonSet pins
+libvirt_image="$(yq '.spec.template.spec.containers[0].image' deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml)"
+[ "$(docker buildx imagetools inspect "${libvirt_image%@*}" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "${libvirt_image#*@}" ]
 docker manifest inspect "ghcr.io/c5c3/openstack-hypervisor-operator:sha-$(hack/ci-resolve-hvo-commit.sh)" >/dev/null
 docker manifest inspect "ghcr.io/c5c3/kvm-node-agent:sha-$(hack/ci-resolve-kna-commit.sh)" >/dev/null
 
