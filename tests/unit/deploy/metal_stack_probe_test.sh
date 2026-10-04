@@ -33,9 +33,13 @@
 #      modules are the NFS ones, sunrpc and the four Chaos Mesh ones alone,
 #      nfs4 is registered, a regular file at containerd's socket path prints
 #      present, not a socket, a bound socket at k3s's prints socket, and of
-#      three address keys in config.toml only the [grpc] one prints. Each
-#      stand-in brings its own /proc/modules and /proc/filesystems. A script
-#      that fails the command or redirection check of 4 is not run.
+#      four address keys in config.toml only the [grpc] address prints, not
+#      its tcp_address. An indented [grpc] table prints its address without
+#      a trailing comment, a quoted address keeps a `#` inside its quotes, and
+#      a [grpc] table without an address prints not set, and not the address
+#      of an indented table after it. Each stand-in brings its own
+#      /proc/modules and /proc/filesystems. A script that fails the command
+#      or redirection check of 4 is not run.
 #   6. nfs-module-load.yaml, which 2 and 3 keep out of the render, is read and
 #      never run: one batch/v1 Job nfs-module-load in default with
 #      backoffLimit 0, ttlSecondsAfterFinished 3600, restartPolicy Never, no
@@ -352,7 +356,7 @@ run_probe_on() {
 test_script_reports_the_host_root_and_completes() {
   echo "Test: the probe script exits 0 on an empty host root and reports a populated one"
 
-  local checks=31
+  local checks=34
   render_probe "$checks" || return
 
   local script
@@ -395,10 +399,11 @@ test_script_reports_the_host_root_and_completes() {
   : >"$tmp/node/run/containerd/containerd.sock"
   python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' \
     "$tmp/node/run/k3s/containerd/containerd.sock"
-  # Three tables carry an address; the probe prints the [grpc] one.
+  # Four address keys, as containerd config default writes them; the probe
+  # prints the one of [grpc] and not its tcp_address.
   printf '%s\n' 'version = 2' '[debug]' '  address = "/run/containerd/debug.sock"' \
-    '[grpc]' '  address = "/run/containerd/containerd.sock"' '[ttrpc]' '  address = ""' \
-    >"$tmp/node/etc/containerd/config.toml"
+    '[grpc]' '  address = "/run/containerd/containerd.sock"' '  tcp_address = ""' \
+    '[ttrpc]' '  address = ""' >"$tmp/node/etc/containerd/config.toml"
   : >"$tmp/empty-proc/modules"
   : >"$tmp/empty-proc/filesystems"
   # The probe lists nfsd, nfs_acl, sunrpc, ip_set_hash_net, xt_set, sch_netem
@@ -461,6 +466,36 @@ test_script_reports_the_host_root_and_completes() {
       'run/k3s/containerd/containerd.sock: socket' \
       'config.toml [grpc] address: "/run/containerd/containerd.sock"')" \
     "$(section "$node" '== containerd socket')"
+
+  # Three other valid config.toml forms, in a host root that has nothing else.
+  # The first has an indented [grpc] header, no spaces around `=`, a trailing
+  # comment and an indented table with an address of its own after it; the
+  # second has a `#` inside the quoted address; the third has a [grpc] table
+  # without an address.
+  local toml
+  mkdir -p "$tmp/toml/etc/containerd"
+  printf '%s\n' 'version = 2' '  [grpc]' '    address="/run/containerd/containerd.sock" # default' \
+    '  [metrics]' '    address = "127.0.0.1:1338"' >"$tmp/toml/etc/containerd/config.toml"
+  toml="$(run_probe_on "$script" "$tmp/toml" "$tmp/empty-proc")"
+  assert_eq "an indented [grpc] table prints its address without the comment, not the next table's" \
+    "$(printf '%s\n' 'run/containerd/containerd.sock: absent' \
+      'run/k3s/containerd/containerd.sock: absent' \
+      'config.toml [grpc] address: "/run/containerd/containerd.sock"')" \
+    "$(section "$toml" '== containerd socket')"
+  printf '%s\n' 'version = 2' '[grpc]' '  address = "/run/a#b.sock" # c' \
+    >"$tmp/toml/etc/containerd/config.toml"
+  toml="$(run_probe_on "$script" "$tmp/toml" "$tmp/empty-proc")"
+  assert_eq "a quoted address keeps the # inside its quotes and drops the trailing comment" \
+    "$(printf '%s\n' 'run/containerd/containerd.sock: absent' \
+      'run/k3s/containerd/containerd.sock: absent' 'config.toml [grpc] address: "/run/a#b.sock"')" \
+    "$(section "$toml" '== containerd socket')"
+  printf '%s\n' 'version = 2' '[grpc]' '  tcp_address = ""' \
+    '  [metrics]' '  address = "127.0.0.1:1338"' >"$tmp/toml/etc/containerd/config.toml"
+  toml="$(run_probe_on "$script" "$tmp/toml" "$tmp/empty-proc")"
+  assert_eq "a [grpc] table without an address prints not set, not the address of the indented table after it" \
+    "$(printf '%s\n' 'run/containerd/containerd.sock: absent' \
+      'run/k3s/containerd/containerd.sock: absent' 'config.toml [grpc] address: not set')" \
+    "$(section "$toml" '== containerd socket')"
 
   rm -rf "$tmp"
 }
