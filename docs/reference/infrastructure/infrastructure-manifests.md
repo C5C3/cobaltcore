@@ -614,12 +614,11 @@ with different bytes would upgrade the release on its own — no Git change, no 
 Pinning `spec.ref.digest` on the OCIRepository is what makes every change to what runs
 here a reviewed commit.
 
-Renovate keeps that pin from becoming a freeze. Its native Flux manager does not cover
-this repository — the default file pattern matches only `gotk-components.yaml`, which the
-flux-operator setup never produces — so the pin is tracked by an explicit
-`customManagers` entry in `renovate.json` that rewrites the tag and the digest in the same
-pull request. The entry never automerges: every bump of this operator is a human
-decision.
+Renovate keeps that pin from becoming a freeze. Its native Flux manager reads
+`deploy/flux-system/`, but a packageRule switches it off for
+`sources/openbao-operator.yaml`: the pin is tracked by an explicit `customManagers` entry
+in `renovate.json` that rewrites the tag and the digest in the same pull request. The
+entry never automerges: every bump of this operator is a human decision.
 
 ### OpenBao
 
@@ -1744,9 +1743,12 @@ The [garage-operator](#garage-operator) is the worked example of an **OCI-type
 third-party** operator following this recipe: step 1 adds an OCI HelmRepository
 (`sources/garage-operator.yaml`, `spec.type: oci`, the registry namespace as `url`); the
 release (`releases/garage-operator.yaml`) references it by `sourceRef.name` and carries
-the chart name in `chart.spec.chart`. The OCI variant changes nothing else in the recipe
-— Renovate's native Flux handling resolves the HelmRelease version range with no custom
-rule, exactly as for the HTTPS sources.
+the chart name in `chart.spec.chart`. The OCI variant changes nothing else in the recipe.
+Renovate's native Flux manager reads the range of an OCI chart through the docker
+datasource, and a generic packageRule sets `versioning: helm` for every such range that
+starts with `>=`, so a new OCI chart needs no rule of its own as long as its range is
+spelled `>=X <Y` (see
+[Flux HelmRelease chart versions](../../contributing/dependency-management.md#flux-helmrelease-chart-versions)).
 
 **An operator with no chart** takes the Git-sourced variant of the recipe, which
 [K-ORC](#k-orc-openstack-resource-controller) and the
@@ -1754,10 +1756,12 @@ rule, exactly as for the HTTPS sources.
 `GitRepository` scoped to the installer path with `spec.ignore`, and step 2 adds a
 Flux `Kustomization` over that path instead of a HelmRelease, with the image
 pinned through `spec.images` (`newTag` plus `digest`) because a kustomize base
-carries no values file. Renovate's native Flux handling does not reach either
-half, so each needs a customManager anchored on the literal YAML shape, a
+carries no values file. Renovate's native Flux manager is switched off for both
+files, since a customManager moves a tag together with its commit or digest in one
+match. Each half needs a customManager anchored on the literal YAML shape, a
 packageRule sharing one `groupName` so the pair moves in one PR, and one test per
-manager under `tests/unit/renovate/`. Two more places have to learn the name: the
+manager under `tests/unit/renovate/`, and both files join the `matchFileNames` of
+the flux rule with `enabled: false` in `renovate.json`. Two more places have to learn the name: the
 `FLUX_KUSTOMIZATIONS` array in `hack/deploy-mgmt-cluster.sh`, which applies and
 waits for such a Kustomization after the HelmReleases, and the Phase 3b wait in
 `hack/deploy-infra.sh`, since a Kustomization is invisible to
@@ -2298,7 +2302,7 @@ its one accepted co-tenant.
 | --- | --- |
 | Target namespaces | `kube-system` for the chart, `openstack` for the server (both pre-existing; no inline Namespace) |
 | Chart | `csi-driver-nfs` |
-| Chart version | `4.13.4`, an exact pin tracked by a Renovate `customManager` (majors disabled, no automerge). Unlike the chaos-mesh, metrics-server and dizzy overlays this one carries no `>=x <y` range: a range would let Flux adopt a new chart on its next reconcile with no repo diff, and this release installs a privileged `hostNetwork` DaemonSet whose relied-on chart defaults it does not override |
+| Chart version | `4.13.4`, an exact pin tracked by Renovate's flux manager (majors disabled, no automerge). Unlike the chaos-mesh, metrics-server and dizzy overlays this one carries no `>=x <y` range: a range would let Flux adopt a new chart on its next reconcile with no repo diff, and this release installs a privileged `hostNetwork` DaemonSet whose relied-on chart defaults it does not override |
 | Source | `csi-driver-nfs` HelmRepository (`https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts`). That is the only place upstream publishes the chart; every index entry carries an absolute tarball URL back under `master/charts/`, so pinning the repository URL to a tag would freeze the index without making the downloaded chart more immutable. The version pin therefore controls which version Flux installs, not which bytes: Flux `spec.verify` is OCI-only and nothing records a checksum, so a rewrite of the pinned tarball upstream is adopted on the next reconcile. Accepted for the kind overlay and for the lab, which takes the release unchanged; a content pin means mirroring the chart into a registry this project controls and referencing it by digest |
 | Server image | `docker.io/itsthenetwork/nfs-server-alpine:12`, digest-pinned, tracked by a Renovate `customManager` |
 | Dependencies | none |
