@@ -342,8 +342,10 @@ test_dropped_csidriver_is_forced_back() {
   # manifest, whose CSIDriver is the PRE-Ephemeral one, and the forced upgrade
   # is rejected on the immutable field all over again. Without a mode assertion
   # the run logs a green line over a driver that cannot serve an inline volume.
+  # The read-back is the last modes read of the script; Step 1 and the probe
+  # before the apply read them earlier.
   local modes_line
-  modes_line="$(grep -n "jsonpath={.spec.volumeLifecycleModes}" "$DEPLOY_INFRA_SH" | sed -n 2p | cut -d: -f1)"
+  modes_line="$(grep -n "jsonpath={.spec.volumeLifecycleModes}" "$DEPLOY_INFRA_SH" | tail -1 | cut -d: -f1)"
   assert_not_empty "the recreated CSIDriver's modes are read back" "$modes_line"
   assert_gte "the mode read-back follows the existence gate" \
     "${modes_line:-0}" "$((${wait_line:-0} + 1))"

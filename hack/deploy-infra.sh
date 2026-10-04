@@ -339,9 +339,10 @@ INFRA_ONLY="${INFRA_ONLY:-false}"
 # WITH_NFS=true is accepted only for an overlay with an nfs/ kustomization;
 # the cluster is checked for a default StorageClass, no node-local-dns, a
 # Ready node and, under WITH_NFS=true, a foreign NFS CSIDriver and the node
-# network before anything is applied (check_external_cluster), and the
-# Gateway is reached with `kubectl port-forward` on 8443. Defaults to false; any
-# value other than `true` keeps the kind mode.
+# network, otherwise for the NFS CSIDriver the Cinder backends of the overlay's
+# ControlPlane mount, before anything is applied (check_external_cluster), and
+# the Gateway is reached with `kubectl port-forward` on 8443. Defaults to false;
+# any value other than `true` keeps the kind mode.
 EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 
 # The overlay root the external-cluster mode applies: its base/ in Step 3 and its
@@ -349,17 +350,19 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # deploy/kind/infrastructure. A relative path resolves against REPO_ROOT. The
 # default is the metal-stack lab overlay; a later lab adds a sibling directory
 # and sets this. An overlay may also carry a controlplane/ kustomization, which
-# this script never applies: preflight renders it to check that its one
-# ControlPlane is openstack/CONTROLPLANE_NAME, and the WITH_CONTROLPLANE=true
-# completion hint names it. An overlay may carry an nfs/ kustomization too,
-# which Step 3 applies under WITH_NFS=true in place of deploy/kind/nfs. It has
-# to render the Deployment nfs-server and the DaemonSet nfs-client-modules in
-# openstack and the HelmRelease csi-driver-nfs in kube-system, the three names
-# this script waits for. Beside it nfs/ may ship client-policy.yaml, a
-# NetworkPolicy template outside the kustomization: Step 3 applies it before
-# nfs/, with the node network Step 1 read from Gardener's ConfigMap
-# kube-system/shoot-info in place of its placeholder NODE_NETWORK. Read only
-# under EXTERNAL_CLUSTER=true.
+# this script never applies and the WITH_CONTROLPLANE=true completion hint
+# names. Preflight renders it to check that its one ControlPlane is
+# openstack/CONTROLPLANE_NAME and, unless WITH_NFS=true, puts no Cinder backend
+# on the in-cluster NFS server nfs-server.openstack; without WITH_NFS=true
+# Step 1 also checks the cluster for the NFS CSI driver the other NFS backends
+# mount. An overlay may carry an nfs/ kustomization too, which Step 3 applies
+# under WITH_NFS=true in place of deploy/kind/nfs. It has to render the
+# Deployment nfs-server and the DaemonSet nfs-client-modules in openstack and
+# the HelmRelease csi-driver-nfs in kube-system, the three names this script
+# waits for. Beside it nfs/ may ship client-policy.yaml, a NetworkPolicy
+# template outside the kustomization: Step 3 applies it before nfs/, with the
+# node network Step 1 read from Gardener's ConfigMap kube-system/shoot-info in
+# place of its placeholder NODE_NETWORK. Read only under EXTERNAL_CLUSTER=true.
 EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
 
 # Derived from the two knobs above, not overridable. OVERLAY_ROOT is the
@@ -1440,8 +1443,10 @@ preflight_checks() {
 # the two kustomizations Steps 3 and 5 apply, then WITH_NFS=true for an overlay
 # without the nfs/ kustomization Step 3 applies in place of deploy/kind/nfs, then
 # an overlay whose by-hand controlplane/ does not render exactly one
-# ControlPlane, openstack/CONTROLPLANE_NAME, then a kubeconfig context whose API
-# server does not answer, cheapest first and each before anything is applied.
+# ControlPlane, openstack/CONTROLPLANE_NAME, or, without WITH_NFS=true, one with
+# a Cinder backend on the in-cluster NFS server, then a kubeconfig context whose
+# API server does not answer, cheapest first and each before anything is
+# applied.
 # The refusals are checked in the order below so the message names the flag the
 # caller set: WITH_VPA=true has already folded into WITH_METRICS_SERVER=true at
 # the top of the script. The flags are read by indirect expansion (${!flag})
@@ -1504,6 +1509,26 @@ preflight_external_cluster() {
     if [[ "${overlay_cp}" != "openstack/${CONTROLPLANE_NAME}" ]]; then
       log "ERROR: ${OVERLAY_ROOT}/controlplane renders ControlPlane '${overlay_cp}', but Step 7 seeds openstack/${CONTROLPLANE_NAME}; keep the CR in the openstack namespace and set CONTROLPLANE_NAME to its name."
       exit 1
+    fi
+    # A Cinder backend on the in-cluster NFS server, the Service nfs-server in
+    # openstack, mounts a server only WITH_NFS=true deploys. Without it the
+    # backend's pod never starts and the ControlPlane never becomes Ready, which
+    # the reader would see only in the wait after the apply. The names are the
+    # ones that resolve from csi-nfs-node in kube-system, which mounts the share,
+    # in any case and the full name with the root's trailing dot as well; a
+    # backend on any other server, a filer, needs no WITH_NFS=true, and Step 1
+    # checks that the cluster can mount it (check_external_cluster).
+    if [[ "${WITH_NFS}" != "true" ]]; then
+      local nfs_backends
+      if ! nfs_backends="$(kubectl kustomize "${OVERLAY_ROOT}/controlplane" |
+        yq -N -r 'select(.kind == "ControlPlane") | .spec.services.cinder | (.backends // []) + [.backupBackend] | map(select(.nfs.server // "" | test("(?i)^nfs-server[.]openstack([.]svc([.]cluster[.]local[.]?)?)?$")) | .name) | join(" ")')"; then
+        log "ERROR: cannot render ${OVERLAY_ROOT}/controlplane (the error is above)."
+        exit 1
+      fi
+      if [[ -n "${nfs_backends}" ]]; then
+        log "ERROR: ${OVERLAY_ROOT}/controlplane puts the Cinder backends ${nfs_backends} on the in-cluster NFS server nfs-server.openstack, which only WITH_NFS=true deploys; rerun with WITH_NFS=true."
+        exit 1
+      fi
     fi
   fi
 
@@ -1663,9 +1688,16 @@ check_relocated_infrastructure() {
 #      name, which the teardown then uninstalls.
 #   5. Under WITH_NFS=true, when the overlay ships nfs/client-policy.yaml: a
 #      node network that holds every node (resolve_nfs_node_network).
+#   6. Otherwise, when preflight read the overlay's by-hand controlplane/ and
+#      its ControlPlane puts a Cinder backend on NFS, a filer since preflight
+#      refused the in-cluster server: a CSIDriver nfs.csi.k8s.io that lists the
+#      Ephemeral lifecycle mode. The cinder pods mount every export as an
+#      inline volume of that driver, which the kubelet mounts only for that
+#      mode, and without WITH_NFS=true nothing installs it; the pods would hang
+#      in ContainerCreating and the ControlPlane would never become Ready.
 #
-# The class, the node names and the node network are logged, so the transcript
-# records what the cluster had.
+# The class, the node names, the node network and the NFS driver's modes are
+# logged, so the transcript records what the cluster had.
 # ---------------------------------------------------------------------------
 check_external_cluster() {
   local out rc
@@ -1741,6 +1773,34 @@ check_external_cluster() {
 
     if [[ -f "${OVERLAY_ROOT}/nfs/client-policy.yaml" ]]; then
       resolve_nfs_node_network "${nodes_json}"
+    fi
+  elif [[ "${WITH_CONTROLPLANE}" == "true" && "${WITH_CONTROLPLANE_CR}" != "true" &&
+    -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then
+    local nfs_backends
+    if ! nfs_backends="$(kubectl kustomize "${OVERLAY_ROOT}/controlplane" |
+      yq -N -r 'select(.kind == "ControlPlane") | .spec.services.cinder | (.backends // []) + [.backupBackend] | map(select(.nfs != null) | .name) | join(" ")')"; then
+      log "ERROR: cannot render ${OVERLAY_ROOT}/controlplane (the error is above)."
+      exit 1
+    fi
+    if [[ -n "${nfs_backends}" ]]; then
+      # An absent CSIDriver prints nothing under --ignore-not-found, and stderr
+      # stays out of the capture, as in the read of check 4.
+      rc=0
+      out="$(kubectl get csidriver nfs.csi.k8s.io --ignore-not-found \
+        -o 'jsonpath={.spec.volumeLifecycleModes}')" || rc=$?
+      if [[ ${rc} -ne 0 ]]; then
+        log "ERROR: cannot read CSIDriver/nfs.csi.k8s.io (kubectl's error is above)."
+        exit 1
+      fi
+      if [[ "${out}" != *Ephemeral* ]]; then
+        log "ERROR: ${OVERLAY_ROOT}/controlplane puts the Cinder backends ${nfs_backends} on NFS,"
+        log "       which the cinder pods mount as inline nfs.csi.k8s.io volumes, but the cluster"
+        log "       has no CSIDriver/nfs.csi.k8s.io with the Ephemeral lifecycle mode"
+        log "       (volumeLifecycleModes: '${out}'). Install that driver with the mode, or,"
+        log "       on a cluster without one, rerun with WITH_NFS=true, which installs it."
+        exit 1
+      fi
+      log "NFS CSI driver      : nfs.csi.k8s.io ${out}"
     fi
   fi
 }

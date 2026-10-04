@@ -14,7 +14,11 @@
 #      without its two kustomizations, a
 #      CONTROLPLANE_NAME the overlay's rendered by-hand ControlPlane does not
 #      carry (and nothing else with that name), a controlplane/ that does not
-#      render and a context whose API server does not answer; the kind mode
+#      render, the lab overlay's ControlPlane, whose Cinder backends sit on
+#      the in-cluster NFS server, without WITH_NFS=true (passing it with the
+#      flag, and backends on a filer without it; refusing the server's full
+#      name with a trailing dot and in mixed case as well), and a context
+#      whose API server does not answer; the kind mode
 #      still needs docker and kind, EXTERNAL_CLUSTER=yes included.
 #   3. check_external_cluster refuses a cluster without a default StorageClass,
 #      one with a node-local-dns DaemonSet, one without a Ready node, and one it
@@ -28,8 +32,14 @@
 #      ConfigMap kube-system/shoot-info and logs it, and refuses an absent or
 #      unreadable ConfigMap, a value that is no IPv4 CIDR, and a node whose
 #      InternalIP lies outside the network or is missing; without that file
-#      or without WITH_NFS=true it reads no ConfigMap. apply_nfs_client_policy
-#      applies the template with the network in place of NODE_NETWORK.
+#      or without WITH_NFS=true it reads no ConfigMap. Without WITH_NFS=true
+#      it refuses, for the lab ControlPlane with its backends on a filer, an
+#      absent CSIDriver nfs.csi.k8s.io, one without the Ephemeral lifecycle
+#      mode, one it cannot read and a controlplane/ that does not render, and
+#      passes one with that mode, logging its modes; under WITH_NFS=true or
+#      WITH_CONTROLPLANE_CR=true, or for a ControlPlane without Cinder, it
+#      reads no modes. apply_nfs_client_policy applies the template with the
+#      network in place of NODE_NETWORK.
 #   4. resolve_api_server_egress renders one egress rule per address on the
 #      port EndpointSlice default/kubernetes publishes, /128 for IPv6, and
 #      aborts on a slice without a port, without an address, or unreadable.
@@ -85,6 +95,8 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 #   KUBECTL_CSIDRIVER_OWNER the namespace/name labels `get csidriver` prints
 #                           (default: no CSIDriver, which prints nothing under
 #                           --ignore-not-found)
+#   KUBECTL_CSIDRIVER_MODES the volumeLifecycleModes a `get csidriver` that asks
+#                           for them prints (default: no CSIDriver)
 #   KUBECTL_CSIDRIVER_ERROR non-empty: that read fails with this message
 #   KUBECTL_CSIDRIVER_NOISE non-empty: that read first writes an aggregated-API
 #                           error to stderr, as kubectl does while the
@@ -144,8 +156,13 @@ case "${1:-}" in
           echo 'E1003 10:00:00.000000    4242 memcache.go:287] couldn'"'"'t get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request' >&2
         fi
         if [ -n "${KUBECTL_CSIDRIVER_ERROR:-}" ]; then echo "${KUBECTL_CSIDRIVER_ERROR}" >&2; exit 1; fi
-        # The namespace/name labels the jsonpath read prints.
-        if [ -n "${KUBECTL_CSIDRIVER_OWNER:-}" ]; then printf '%s' "${KUBECTL_CSIDRIVER_OWNER}"; exit 0; fi
+        # The lifecycle modes or the namespace/name labels, whichever the
+        # jsonpath read asks for.
+        case "$*" in
+          *volumeLifecycleModes*) value="${KUBECTL_CSIDRIVER_MODES:-}" ;;
+          *) value="${KUBECTL_CSIDRIVER_OWNER:-}" ;;
+        esac
+        if [ -n "${value}" ]; then printf '%s' "${value}"; exit 0; fi
         [[ "$*" != *--ignore-not-found* ]] || exit 0
         echo 'Error from server (NotFound): csidrivers.storage.k8s.io "nfs.csi.k8s.io" not found' >&2
         exit 1
@@ -437,9 +454,66 @@ YAML
     assert_nonzero_exit "an overlay whose controlplane/ does not render is refused" "$rc"
     assert_contains "the refusal names the directory" "$output" "cannot render $tmp/lab/controlplane"
     unset KUBECTL_KUSTOMIZE
+
+    # The lab overlay's ControlPlane puts Cinder's volume and backup backends on
+    # the NFS server only WITH_NFS=true deploys: refused without the flag, before
+    # the cluster is contacted, and passed with it. The stub renders the
+    # overlay's two manifests as its kustomization lists them.
+    {
+      cat "$PROJECT_ROOT/deploy/lab/metal-stack/controlplane/controlplane-lab.yaml"
+      echo "---"
+      cat "$PROJECT_ROOT/deploy/lab/metal-stack/controlplane/ovncentral.yaml"
+    } >"$tmp/metal-stack-render.yaml"
+    export KUBECTL_LOG="$tmp/kubectl.log"
+    : >"$KUBECTL_LOG"
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      KUBECTL_KUSTOMIZE="$tmp/metal-stack-render.yaml")"
+    rc=$?
+    assert_nonzero_exit "the lab overlay is refused without WITH_NFS=true" "$rc"
+    assert_contains "the refusal names both NFS backends and the flag" "$output" \
+      "controlplane puts the Cinder backends nfs1 nfsbk on the in-cluster NFS server nfs-server.openstack, which only WITH_NFS=true deploys; rerun with WITH_NFS=true."
+    assert_not_contains "and comes before the cluster is contacted" "$(cat "$KUBECTL_LOG")" "kubectl version"
+    unset KUBECTL_LOG
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      WITH_NFS=true KUBECTL_KUSTOMIZE="$tmp/metal-stack-render.yaml")"
+    rc=$?
+    assert_eq "the lab overlay passes with WITH_NFS=true" "0" "$rc"
+    # A backend on an NFS server the overlay does not deploy, a filer, needs no
+    # WITH_NFS=true; WITH_NFS=true would even be refused for an overlay without
+    # nfs/. The backup backend names the in-cluster server by its shorter
+    # namespace form, which still resolves to it.
+    sed -e '/^      backends:$/,/^      backupBackend:$/s/nfs-server[.]openstack[.]svc[.]cluster[.]local/filer.example.com/' \
+      -e 's/nfs-server[.]openstack[.]svc[.]cluster[.]local/nfs-server.openstack/' \
+      "$tmp/metal-stack-render.yaml" >"$tmp/filer-render.yaml"
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      KUBECTL_KUSTOMIZE="$tmp/filer-render.yaml")"
+    rc=$?
+    assert_nonzero_exit "a backup backend on nfs-server.openstack is refused without WITH_NFS=true" "$rc"
+    assert_contains "the refusal names only that backend" "$output" \
+      "controlplane puts the Cinder backends nfsbk on the in-cluster NFS server"
+    sed 's/nfs-server[.]openstack$/filer.example.com/' "$tmp/filer-render.yaml" >"$tmp/filer-only-render.yaml"
+    output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+      KUBECTL_KUSTOMIZE="$tmp/filer-only-render.yaml")"
+    rc=$?
+    assert_eq "Cinder on a filer passes without WITH_NFS=true" "0" "$rc"
+    # The CRD admits any case and the full name with the root's trailing dot,
+    # and both resolve to the in-cluster server from csi-nfs-node as well.
+    local server
+    for server in nfs-server.openstack.svc.cluster.local. NFS-Server.openstack; do
+      sed "s/nfs-server[.]openstack[.]svc[.]cluster[.]local\$/${server}/" \
+        "$tmp/metal-stack-render.yaml" >"$tmp/spelled-render.yaml"
+      assert_contains "the render puts the backends on ${server}" \
+        "$(cat "$tmp/spelled-render.yaml")" "server: ${server}"
+      output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
+        KUBECTL_KUSTOMIZE="$tmp/spelled-render.yaml")"
+      rc=$?
+      assert_nonzero_exit "backends on ${server} are refused without WITH_NFS=true" "$rc"
+      assert_contains "the refusal names both" "$output" \
+        "controlplane puts the Cinder backends nfs1 nfsbk on the in-cluster NFS server"
+    done
   else
-    echo "  SKIP: yq not installed (16 checks skipped)"
-    SKIP=$((SKIP + 16))
+    echo "  SKIP: yq not installed (29 checks skipped)"
+    SKIP=$((SKIP + 29))
   fi
 
   output="$(run_preflight "$tmp/kubectl-jq" EXTERNAL_CLUSTER=true KUBECTL_VERSION_RC=1)"
@@ -782,6 +856,71 @@ test_check_external_cluster() {
   rc=$?
   assert_eq "without WITH_NFS=true the lab overlay needs no node network" "0" "$rc"
   assert_not_contains "and reads no ConfigMap either" "$(cat "$KUBECTL_LOG")" "$shoot_info_read"
+
+  # Without WITH_NFS=true nothing installs nfs.csi.k8s.io, through which the
+  # cinder pods of the overlay's by-hand ControlPlane mount every export as an
+  # inline volume: the cluster has to bring that CSIDriver, with the Ephemeral
+  # lifecycle mode. The stub renders the lab ControlPlane with both backends on
+  # a filer, which preflight lets through.
+  if command -v yq >/dev/null 2>&1; then
+    local cp_lab="$PROJECT_ROOT/deploy/lab/metal-stack/controlplane/controlplane-lab.yaml"
+    local modes_read='kubectl get csidriver nfs.csi.k8s.io --ignore-not-found -o jsonpath={.spec.volumeLifecycleModes}'
+    sed 's/nfs-server[.]openstack[.]svc[.]cluster[.]local$/filer.example.com/' "$cp_lab" >"$tmp/filer-render.yaml"
+    assert_not_contains "the render puts no backend on the in-cluster server" \
+      "$(cat "$tmp/filer-render.yaml")" "server: nfs-server"
+    local filer_cluster=(EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true KUBECTL_KUSTOMIZE="$tmp/filer-render.yaml"
+      KUBECTL_STORAGECLASSES="$tmp/sc-default.json" KUBECTL_NODES="$tmp/nodes-ready.json")
+
+    output="$(run_fn "$tmp/bin" check_external_cluster "${filer_cluster[@]}")"
+    rc=$?
+    assert_nonzero_exit "refuses Cinder on a filer without a CSIDriver nfs.csi.k8s.io" "$rc"
+    assert_contains "names the NFS backends" "$output" \
+      "controlplane puts the Cinder backends nfs1 nfsbk on NFS,"
+    assert_contains "and the driver and mode it needs" "$output" \
+      "has no CSIDriver/nfs.csi.k8s.io with the Ephemeral lifecycle mode"
+    assert_contains "and how to get one" "$output" "rerun with WITH_NFS=true, which installs it."
+
+    output="$(run_fn "$tmp/bin" check_external_cluster "${filer_cluster[@]}" \
+      KUBECTL_CSIDRIVER_MODES='["Persistent"]')"
+    rc=$?
+    assert_nonzero_exit "refuses a CSIDriver without the Ephemeral mode" "$rc"
+    assert_contains "quoting its modes" "$output" "(volumeLifecycleModes: '[\"Persistent\"]')"
+
+    output="$(run_fn "$tmp/bin" check_external_cluster "${filer_cluster[@]}" \
+      KUBECTL_CSIDRIVER_MODES='["Persistent","Ephemeral"]')"
+    rc=$?
+    assert_eq "passes a CSIDriver with the Ephemeral mode" "0" "$rc"
+    assert_contains "and logs its modes" "$output" \
+      'NFS CSI driver      : nfs.csi.k8s.io ["Persistent","Ephemeral"]'
+
+    output="$(run_fn "$tmp/bin" check_external_cluster "${filer_cluster[@]}" \
+      KUBECTL_CSIDRIVER_ERROR="Error from server (Forbidden): csidrivers.storage.k8s.io \"nfs.csi.k8s.io\" is forbidden")"
+    rc=$?
+    assert_nonzero_exit "refuses when the CSIDriver read fails" "$rc"
+    assert_contains "and says it cannot read it" "$output" "ERROR: cannot read CSIDriver/nfs.csi.k8s.io"
+
+    output="$(run_fn "$tmp/bin" check_external_cluster "${filer_cluster[@]}" KUBECTL_KUSTOMIZE_RC=1)"
+    rc=$?
+    assert_nonzero_exit "refuses a controlplane/ that does not render" "$rc"
+    assert_contains "naming the directory" "$output" \
+      "cannot render $PROJECT_ROOT/deploy/lab/metal-stack/controlplane"
+
+    # No driver to look for: WITH_NFS=true installs it, WITH_CONTROLPLANE_CR=true
+    # applies the bundled CR in place of the overlay's, and a ControlPlane
+    # without Cinder mounts nothing.
+    yq 'del(.spec.services.cinder)' "$cp_lab" >"$tmp/no-cinder-render.yaml"
+    local no_read
+    for no_read in WITH_NFS=true WITH_CONTROLPLANE_CR=true KUBECTL_KUSTOMIZE="$tmp/no-cinder-render.yaml"; do
+      : >"$KUBECTL_LOG"
+      output="$(run_fn "$tmp/bin" check_external_cluster "${filer_cluster[@]}" "$no_read")"
+      rc=$?
+      assert_eq "${no_read##*/} passes without a CSIDriver" "0" "$rc"
+      assert_not_contains "and reads no lifecycle modes" "$(cat "$KUBECTL_LOG")" "$modes_read"
+    done
+  else
+    echo "  SKIP: yq not installed (19 checks skipped)"
+    SKIP=$((SKIP + 19))
+  fi
 
   # apply_nfs_client_policy: the template with the network in place of its
   # placeholder, and nothing else changed.
