@@ -1889,6 +1889,7 @@ is pinned by a Chainsaw step.
 | `vertical-autoscaling-min-above-max-rejected` | `35-vertical-autoscaling-min-above-max.yaml` | `minAllowed` at most `maxAllowed` (webhook) | Error containing "spec.deployment.verticalAutoscaling.minAllowed[cpu]" and "must not exceed maxAllowed" |
 | `vertical-autoscaling-update-mode-rejected` | `36-vertical-autoscaling-update-mode.yaml` | `updateMode` Enum | Error containing "spec.deployment.verticalAutoscaling.updateMode" and "Unsupported value" |
 | `vertical-autoscaling-min-replicas-zero-rejected` | `37-vertical-autoscaling-min-replicas-zero.yaml` | `minReplicas` Minimum=1 | Error containing "spec.deployment.verticalAutoscaling.minReplicas" and "should be greater than or equal to 1" |
+| `image-pull-policy-unsupported-rejected` | `38-image-pull-policy-unsupported.yaml` | ImageSpec.PullPolicy Enum (schema-only) | Error containing "spec.image.pullPolicy" and "Unsupported value" |
 
 Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
 so each is applied as an UPDATE of the base CR and is rejected by the

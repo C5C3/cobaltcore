@@ -485,3 +485,13 @@ spec:
             ($error != null): true
             (contains($error, 'spec.deployment.verticalAutoscaling.minReplicas')): true
             (contains($error, 'should be greater than or equal to 1')): true
+  # spec.image.pullPolicy outside the corev1.PullPolicy values must be rejected
+  # by the Enum marker (schema-only, no webhook twin).
+  - try:
+    - apply:
+        file: 38-image-pull-policy-unsupported.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.image.pullPolicy')): true
+            (contains($error, 'Unsupported value')): true

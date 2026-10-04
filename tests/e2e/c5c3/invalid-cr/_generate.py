@@ -76,7 +76,7 @@ metadata:
   name: {name}
 spec:
   openStackRelease: "2025.2"
-{region}{region_description}{global_extra_config}{infrastructure}  services:
+{image_pull_policy}{region}{region_description}{global_extra_config}{infrastructure}  services:
     keystone:
 {keystone}{horizon}{glance}{placement}{barbican}{neutron}{cinder}{nova}{sizing}  korc:
     adminCredential:
@@ -255,6 +255,8 @@ class Fixture:
     nova: str = ""
     # The spec.sizing block (indent 2, trailing newline) or "".
     sizing: str = ""
+    # The spec.imagePullPolicy line (indent 2, trailing newline) or "".
+    image_pull_policy: str = ""
     # The spec.region line (indent 2, trailing newline) or "".
     region: str = ""
     # The spec.regionDescription line (indent 2, trailing newline) or "".
@@ -267,6 +269,7 @@ class Fixture:
     def render(self) -> str:
         body = SCAFFOLD.format(
             name=self.name,
+            image_pull_policy=self.image_pull_policy,
             region=self.region,
             region_description=self.region_description,
             global_extra_config=self.global_extra_config,
@@ -2865,6 +2868,16 @@ FIXTURES: tuple[Fixture, ...] = (
             "          updateMode: Auto\n"
             "          minReplicas: 0\n"
         ),
+    ),
+    Fixture(
+        filename="137-image-pull-policy-unsupported.yaml",
+        comment=(
+            "spec.imagePullPolicy outside Always, IfNotPresent and Never violates the Enum\n"
+            "marker. The rule is schema-only: a CRD older than the operator prunes the\n"
+            "field before a webhook sees it, so no webhook twin exists."
+        ),
+        name="cp-image-pull-policy-unsupported",
+        image_pull_policy="  imagePullPolicy: Sometimes\n",
     ),
 )
 
