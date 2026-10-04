@@ -45,13 +45,15 @@ TEARDOWN_TIMEOUT="${TEARDOWN_TIMEOUT:-600}"
 # The API groups whose CRDs the stack registers: the CobaltCore operators
 # (operators/*/config/crd/bases: c5c3.io and <svc>.openstack.c5c3.io), the
 # HelmReleases and Flux Kustomizations of deploy/flux-system, the two bundles
-# hack/deploy-infra.sh installs itself (Gateway API, Envoy Gateway), and the
+# hack/deploy-infra.sh installs itself (Gateway API, Envoy Gateway), the
 # kvm.cloud.sap CRDs the charts of the lab hypervisors install
-# (deploy/lab/metal-stack/hypervisor; Helm leaves them behind). The groups
+# (deploy/lab/metal-stack/hypervisor; Helm leaves them behind), and the
+# chaos-mesh.org CRDs the opt-in Chaos Mesh release installs from its chart's
+# crds/, which Helm never deletes either. The groups
 # of the platform (autoscaling.k8s.io, cert.gardener.cloud, dns.gardener.cloud,
 # crd.projectcalico.org, metallb.io, snapshot.storage.k8s.io) are absent on
 # purpose and must stay absent.
-STACK_CRD_GROUPS='cert-manager\.io|external-secrets\.io|k8s\.mariadb\.com|openbao\.org|garage\.rajsingh\.info|rabbitmq\.com|gateway\.networking\.k8s\.io|gateway\.envoyproxy\.io|monitoring\.coreos\.com|c5c3\.io|openstack\.k-orc\.cloud|(source|kustomize|helm|notification|image)\.toolkit\.fluxcd\.io|fluxcd\.controlplane\.io|kvm\.cloud\.sap'
+STACK_CRD_GROUPS='cert-manager\.io|external-secrets\.io|k8s\.mariadb\.com|openbao\.org|garage\.rajsingh\.info|rabbitmq\.com|gateway\.networking\.k8s\.io|gateway\.envoyproxy\.io|monitoring\.coreos\.com|c5c3\.io|openstack\.k-orc\.cloud|(source|kustomize|helm|notification|image)\.toolkit\.fluxcd\.io|fluxcd\.controlplane\.io|kvm\.cloud\.sap|chaos-mesh\.org'
 
 # The kinds of the cluster-scoped objects the stack's charts leave behind. Helm
 # does not track a hook object as part of its release, so no uninstall removes
@@ -192,13 +194,14 @@ resume_installed_flux_objects() {
 # ---------------------------------------------------------------------------
 # stack_namespaces — The namespaces the stack creates, one per line: every
 # Namespace of deploy/flux-system/namespaces.yaml, the two the kind base files
-# declare (envoy-gateway-system, headlamp-system), and flux-system. No other
-# namespace is ever deleted. Fails when yq cannot read the file.
+# declare (envoy-gateway-system, headlamp-system), chaos-mesh, which the opt-in
+# Chaos Mesh overlay declares, and flux-system. No other namespace is ever
+# deleted. Fails when yq cannot read the file.
 # ---------------------------------------------------------------------------
 stack_namespaces() {
   yq -N -r 'select(.kind == "Namespace") | .metadata.name' \
     "${REPO_ROOT}/deploy/flux-system/namespaces.yaml" || return 1
-  printf '%s\n' envoy-gateway-system headlamp-system flux-system
+  printf '%s\n' envoy-gateway-system headlamp-system chaos-mesh flux-system
 }
 
 # ---------------------------------------------------------------------------
@@ -391,6 +394,76 @@ delete_where_crd_exists() {
 }
 
 # ---------------------------------------------------------------------------
+# teardown_chaos_mesh — The first step of teardown_external_cluster, before
+# step 0: release every Chaos Mesh fault and remove the overlay's chaos-mesh/,
+# which hack/deploy-infra.sh applies under WITH_CHAOS_MESH=true. It runs while
+# chaos-controller-manager, chaos-daemon and the helm-controller still run. A
+# no-op unless ${OVERLAY_ROOT}/chaos-mesh/kustomization.yaml exists.
+#   1. the scope of the cluster's chaos-mesh.org CRDs. A read that fails exits
+#      1 before anything is deleted; without such a CRD, 2 and 3 are skipped;
+#   2. the schedules and workflows, first, because they create experiments;
+#   3. the experiments, every other namespaced kind of the group, then its
+#      cluster-scoped kinds. An experiment keeps its finalizer until
+#      chaos-controller-manager has released its fault. The per-pod records
+#      podnetworkchaos, podiochaos and podhttpchaos are left out: the
+#      controller writes them while it releases a fault, they carry no
+#      finalizer, and step 8 removes them with their CRDs. 2 and 3 run in a
+#      subshell, so a delete that runs out adds the hint before the exit: a
+#      finalizer removed by hand would leave the fault injected;
+#   4. the overlay without its Namespace: the HelmRepository, the HelmRelease
+#      (its finalizer has the helm-controller uninstall the chart) and the
+#      DaemonSet chaos-mesh-modules. The Namespace holds Helm's release
+#      Secret, which the uninstall needs, so step 7 deletes it with the other
+#      stack namespaces. A render that fails exits 1 before the delete.
+# The modules chaos-mesh-modules loaded stay on the nodes until they reboot.
+# ---------------------------------------------------------------------------
+teardown_chaos_mesh() {
+  if [[ ! -f "${OVERLAY_ROOT}/chaos-mesh/kustomization.yaml" ]]; then
+    return 0
+  fi
+
+  # 1. "<plural>.chaos-mesh.org <scope>", one CRD of the group per line.
+  local crds
+  if ! crds="$(kubectl get crd -o custom-columns=NAME:.metadata.name,SCOPE:.spec.scope --no-headers)"; then
+    log "ERROR: cannot read the scope of the cluster's CRDs (kubectl's error is above)."
+    exit 1
+  fi
+  crds="$(awk '$1 ~ /\.chaos-mesh\.org$/ { print $1, $2 }' <<<"${crds}")"
+
+  local creators experiments cluster_scoped
+  creators="$(awk '$1 ~ /^(schedules|workflows)\./ { print $1 }' <<<"${crds}" | paste -sd, -)"
+  experiments="$(awk '$2 == "Namespaced" && $1 !~ /^(schedules|workflows|podnetworkchaos|podiochaos|podhttpchaos)\./ { print $1 }' \
+    <<<"${crds}" | paste -sd, -)"
+  cluster_scoped="$(awk '$2 != "Namespaced" { print $1 }' <<<"${crds}" | paste -sd, -)"
+
+  # 2. and 3., in a subshell, so a timeout can add the hint before the exit.
+  if ! (
+    if [[ -n "${creators}" ]]; then
+      delete_and_wait "the Chaos Mesh schedules and workflows" "${creators}" --all -A
+    fi
+    if [[ -n "${experiments}" ]]; then
+      delete_and_wait "the Chaos Mesh experiments" "${experiments}" --all -A
+    fi
+    if [[ -n "${cluster_scoped}" ]]; then
+      delete_and_wait "the cluster-scoped Chaos Mesh objects" "${cluster_scoped}" --all
+    fi
+  ); then
+    log "A Chaos Mesh experiment keeps its finalizer until chaos-controller-manager has released its fault. Read 'kubectl logs -n chaos-mesh deployment/chaos-controller-manager' before rerunning; do not remove the finalizer by hand, the fault would stay injected."
+    exit 1
+  fi
+
+  # 4. The overlay, its Namespace aside.
+  local render
+  if ! render="$(kubectl kustomize "${OVERLAY_ROOT}/chaos-mesh")"; then
+    log "ERROR: cannot render ${OVERLAY_ROOT}/chaos-mesh (kustomize's error is above)."
+    exit 1
+  fi
+  printf '%s\n' "${render}" |
+    yq 'select(.kind != "Namespace")' |
+    delete_and_wait "the Chaos Mesh overlay (HelmRelease, HelmRepository and module loader)" -f -
+}
+
+# ---------------------------------------------------------------------------
 # teardown_hypervisors — Step 0 of teardown_external_cluster: remove the lab
 # hypervisors (deploy/lab/metal-stack/hypervisor and hypervisor-fixtures,
 # applied by hand) while the ControlPlane, the operators, K-ORC,
@@ -554,7 +627,10 @@ teardown_nfs() {
 # teardown_external_cluster — Remove the stack from the current context's cluster.
 #
 # The order makes every finalizer run while the controller that clears it still
-# exists:
+# exists. First, when the overlay has chaos-mesh/, Chaos Mesh goes
+# (teardown_chaos_mesh): its schedules and workflows, then its experiments,
+# while chaos-controller-manager still releases their faults, then the overlay
+# without its Namespace, so the helm-controller uninstalls the chart. Then:
 #   0. the lab hypervisors, when the overlay has them (teardown_hypervisors),
 #      while everything they need still runs;
 #   1. every ControlPlane in openstack, while the c5c3-operator runs, so it
@@ -588,12 +664,13 @@ teardown_nfs() {
 #      chart is uninstalled;
 #   5. the FluxInstance, so the flux-operator uninstalls the toolkit;
 #   6. the flux-system namespace and the flux-operator's cluster-scoped RBAC;
-#   7. the stack namespaces (stack_namespaces), by name, then the objects of
-#      STACK_CHART_OBJECT_KINDS whose helm.toolkit.fluxcd.io/namespace label
-#      names one of them: Helm hook objects, which no uninstall removes, then
-#      the two Leases cert-manager's leader election leaves in kube-system,
-#      once no cert-manager pod is left to renew them;
-#   8. the CRDs of STACK_CRD_GROUPS.
+#   7. the stack namespaces (stack_namespaces), by name, chaos-mesh among
+#      them, then the objects of STACK_CHART_OBJECT_KINDS whose
+#      helm.toolkit.fluxcd.io/namespace label names one of them: Helm hook
+#      objects, which no uninstall removes, then the two Leases
+#      cert-manager's leader election leaves in kube-system, once no
+#      cert-manager pod is left to renew them;
+#   8. the CRDs of STACK_CRD_GROUPS, chaos-mesh.org among them.
 # It ends with the count of stack CRDs, stack namespaces and cluster-scoped
 # chart objects still present, which must all be zero. Every delete ignores
 # absence, so a second run finds nothing and exits 0; a wait that runs out
@@ -638,6 +715,10 @@ teardown_external_cluster() {
   log "Kubeconfig context  : $(kubectl config current-context 2>/dev/null || echo '<none>')"
   log "Overlay             : ${OVERLAY_ROOT}"
   log "Wait per step       : ${TEARDOWN_TIMEOUT}s (override via TEARDOWN_TIMEOUT)"
+
+  # Chaos Mesh, before step 0: every fault is released while its controller
+  # runs.
+  teardown_chaos_mesh
 
   # 0. The lab hypervisors.
   teardown_hypervisors

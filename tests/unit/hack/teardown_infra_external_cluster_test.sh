@@ -9,28 +9,30 @@
 #      through, and the default teardown still deletes the kind cluster without
 #      calling kubectl.
 #   2. The external teardown never calls kind or docker, deletes in the order
-#      that lets every finalizer run while its controller exists (the
-#      OVNCentrals directly after the ControlPlanes, the proving OpenBao
-#      instance on DeletePVCs before the infrastructure overlay, a wait for
-#      the stack CRs in openstack that are still being reaped before the
-#      operators go, which reads every namespaced stack kind in one call, no
-#      cluster-scoped or platform kind, and passes the Gateway and the objects
-#      nothing reaps), passes --ignore-not-found to every delete, resumes only
-#      the suspended Flux objects that installed something, splits the base
-#      render into the Gateway pass and the rest, deletes exactly the stack
-#      CRDs of a mixed list, names no namespace outside the stack's, and
-#      reads, logs and deletes the cluster-scoped objects whose
-#      helm.toolkit.fluxcd.io/namespace label names a stack namespace after
-#      the stack namespaces are gone and before the CRDs, reads them again in
-#      the final count, and deletes the two cert-manager leader election
-#      Leases in kube-system after those objects and before the CRDs. At the
-#      end of step 2 it reads the HelmRelease kube-system/csi-driver-nfs, then
-#      the pods of every namespace and the PersistentVolumes once (no pod
-#      mounts an inline nfs.csi.k8s.io volume, no PersistentVolume of that
-#      driver is Bound), then deletes the
-#      overlay's nfs/, the NetworkPolicy of its nfs/client-policy.yaml and
-#      the CSIDriver of the csi-driver-nfs release by its labels, before the
-#      first operator is resumed.
+#      that lets every finalizer run while its controller exists (Chaos Mesh
+#      before step 0: one CRD scope read, the schedules and workflows, the
+#      experiments without the per-pod records, the cluster-scoped kinds, then
+#      the overlay render without its Namespace; the OVNCentrals directly after
+#      the ControlPlanes, the proving OpenBao instance on DeletePVCs before the
+#      infrastructure overlay, a wait for the stack CRs in openstack that are
+#      still being reaped before the operators go, which reads every namespaced
+#      stack kind in one call, no cluster-scoped or platform kind, and passes
+#      the Gateway and the objects nothing reaps), passes --ignore-not-found to
+#      every delete, resumes only the suspended Flux objects that installed
+#      something, splits the base render into the Gateway pass and the rest,
+#      deletes exactly the stack CRDs of a mixed list, chaos-mesh.org included,
+#      names no namespace outside the stack's, chaos-mesh included, and reads,
+#      logs and deletes the cluster-scoped objects whose
+#      helm.toolkit.fluxcd.io/namespace label names a stack namespace after the
+#      stack namespaces are gone and before the CRDs, reads them again in the
+#      final count, and deletes the two cert-manager leader election Leases in
+#      kube-system after those objects and before the CRDs. At the end of step
+#      2 it reads the HelmRelease kube-system/csi-driver-nfs, then the pods of
+#      every namespace and the PersistentVolumes once (no pod mounts an inline
+#      nfs.csi.k8s.io volume, no PersistentVolume of that driver is Bound),
+#      then deletes the overlay's nfs/, the NetworkPolicy of its
+#      nfs/client-policy.yaml and the CSIDriver of the csi-driver-nfs release
+#      by its labels, before the first operator is resumed.
 #   3. It exits 1 before any delete when the API server does not answer, yq
 #      is missing or yq is not mikefarah/yq v4.40.1 or newer, exits 1 when a
 #      wait runs out (naming the object, the OVNCentral delete included, after
@@ -68,6 +70,15 @@
 #      1 when the domain cannot be read or stays enabled, or the nodes cannot
 #      be listed, still deletes the fixtures once their domain is gone, and
 #      deletes none of its guarded kinds on a second run.
+#   5. Chaos Mesh goes before step 0. A delete of the experiments that runs
+#      out exits 1 with kubectl's named object and the finalizer hint, and
+#      deletes nothing after it; a CRD scope read that fails exits 1 before
+#      any delete, a chaos-mesh/ that does not render exits 1 before its
+#      delete and step 0, and an overlay delete that runs out exits 1 before
+#      step 0 and the FluxInstance delete. A cluster without chaos-mesh.org
+#      CRDs gets no experiment delete but the overlay delete, an overlay
+#      without chaos-mesh/ no read and no delete, and a second run exits 0
+#      without "No resources found".
 #
 # main() runs against a recording kubectl stub on a private PATH prefix and the
 # real yq; the external-cluster checks are SKIP without yq.
@@ -97,7 +108,17 @@ gateways.gateway.networking.k8s.io
 gatewayclasses.gateway.networking.k8s.io
 hypervisors.kvm.cloud.sap
 evictions.kvm.cloud.sap
-migrations.kvm.cloud.sap"
+migrations.kvm.cloud.sap
+networkchaos.chaos-mesh.org
+podchaos.chaos-mesh.org
+podhttpchaos.chaos-mesh.org
+podiochaos.chaos-mesh.org
+podnetworkchaos.chaos-mesh.org
+remoteclusters.chaos-mesh.org
+schedules.chaos-mesh.org
+statuschecks.chaos-mesh.org
+workflownodes.chaos-mesh.org
+workflows.chaos-mesh.org"
 # The arguments of step 0's label removal.
 HYPERVISOR_LABELS_REMOVED="openstack.c5c3.io/chassis- openstack.c5c3.io/nova-compute-pool- \
 nova.openstack.cloud.sap/virt-driver- cobaltcore.cloud.sap/node-hypervisor-lifecycle-"
@@ -138,8 +159,24 @@ ippools.crd.projectcalico.org"
 #   KUBECTL_CRD_LEFT       a stack CRD the final report still finds
 #   KUBECTL_NS_LEFT        a namespace the final report still finds
 #   KUBECTL_NS_RC          non-empty: the final namespace read fails
-#   KUBECTL_RENDER_RC      non-empty: `kustomize` fails
-#   BASE_RENDER            file answering `kustomize` (default: base-render.yaml)
+#   KUBECTL_RENDER_RC      non-empty: `kustomize` of any directory but
+#                          chaos-mesh/ fails
+#   BASE_RENDER            file answering that `kustomize` (default:
+#                          base-render.yaml)
+#   KUBECTL_CHAOS_RENDER_RC
+#                          non-empty: `kustomize` of chaos-mesh/ fails; it
+#                          answers chaos-render.yaml otherwise
+#   KUBECTL_CHAOS_CRD_SCOPE_RC
+#                          non-empty: the two-column CRD scope read of the
+#                          Chaos Mesh step fails
+#   KUBECTL_CHAOS_DELETE_RC
+#                          exit code of the delete of the Chaos Mesh
+#                          experiments alone, which then times out on a
+#                          NetworkChaos (default 0)
+#   KUBECTL_CHAOS_OVERLAY_DELETE_RC
+#                          non-empty: the `delete -f -` of the chaos-mesh/
+#                          render times out on the HelmRelease chaos-mesh
+#   KUBECTL_CHAOS_ABSENT   non-empty: no CRD read answers a chaos-mesh.org CRD
 #   KUBECTL_ABSENT_CRDS    space-separated step 0 CRDs that `get crd <name>`
 #                          reports absent (the six step 0 kinds are present
 #                          otherwise, and absent on a second run)
@@ -216,6 +253,16 @@ gatewayclasses.gateway.networking.k8s.io     Cluster      GatewayClass
 hypervisors.kvm.cloud.sap                    Cluster      Hypervisor
 evictions.kvm.cloud.sap                      Cluster      Eviction
 migrations.kvm.cloud.sap                     Namespaced   Migration
+networkchaos.chaos-mesh.org                  Namespaced   NetworkChaos
+podchaos.chaos-mesh.org                      Namespaced   PodChaos
+podhttpchaos.chaos-mesh.org                  Namespaced   PodHttpChaos
+podiochaos.chaos-mesh.org                    Namespaced   PodIOChaos
+podnetworkchaos.chaos-mesh.org               Namespaced   PodNetworkChaos
+remoteclusters.chaos-mesh.org                Cluster      RemoteCluster
+schedules.chaos-mesh.org                     Namespaced   Schedule
+statuschecks.chaos-mesh.org                  Namespaced   StatusCheck
+workflownodes.chaos-mesh.org                 Namespaced   WorkflowNode
+workflows.chaos-mesh.org                     Namespaced   Workflow
 verticalpodautoscalers.autoscaling.k8s.io    Namespaced   VerticalPodAutoscaler
 certificates.cert.gardener.cloud             Namespaced   Certificate
 ippools.crd.projectcalico.org                Cluster      IPPool
@@ -272,6 +319,31 @@ JSON
    "status":{"inventory":{"entries":[{"id":"_rabbitmq-system__Namespace","v":"v1"}]}}}
 ]}
 JSON
+  # What `kubectl kustomize` renders for the overlay's chaos-mesh/.
+  cat >"$dir/chaos-render.yaml" <<'YAML'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chaos-mesh
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: chaos-mesh
+  namespace: flux-system
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: chaos-mesh
+  namespace: chaos-mesh
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: chaos-mesh-modules
+  namespace: chaos-mesh
+YAML
   cat >"$dir/base-render.yaml" <<'YAML'
 apiVersion: v1
 kind: Namespace
@@ -312,12 +384,24 @@ YAML
 #!/bin/bash
 dir="$(dirname "$0")"
 args="$*"
+# The CRD reads leave out the chaos-mesh.org group under KUBECTL_CHAOS_ABSENT.
+crd_filter() {
+  if [ -n "${KUBECTL_CHAOS_ABSENT:-}" ]; then
+    grep -v 'chaos-mesh\.org' || true
+  else
+    cat
+  fi
+}
 case "$args" in
   "delete -f -"*)
     kinds="$(grep '^kind:' | sed 's/^kind: //' | sort | tr '\n' ' ')"
     echo "kubectl ${args} [kinds: ${kinds% }]" >>"$CALL_LOG"
     if [ -z "$kinds" ]; then
       echo "error: no objects passed to delete" >&2
+      exit 1
+    fi
+    if [ -n "${KUBECTL_CHAOS_OVERLAY_DELETE_RC:-}" ] && [ "${kinds% }" = "DaemonSet HelmRelease HelmRepository" ]; then
+      echo "error: timed out waiting for the condition on helmreleases/chaos-mesh" >&2
       exit 1
     fi
     ;;
@@ -412,7 +496,18 @@ case "$args" in
     if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
       cat "$dir/crd-columns-after.txt"
     else
-      cat "$dir/crd-columns.txt"
+      crd_filter <"$dir/crd-columns.txt"
+    fi
+    ;;
+  "get crd -o custom-columns=NAME:.metadata.name,SCOPE:.spec.scope --no-headers")
+    if [ -n "${KUBECTL_CHAOS_CRD_SCOPE_RC:-}" ]; then
+      echo 'Error from server (Forbidden): customresourcedefinitions.apiextensions.k8s.io is forbidden: User "lab" cannot list resource "customresourcedefinitions"' >&2
+      exit 1
+    fi
+    if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
+      awk '{ print $1, $2 }' "$dir/crd-columns-after.txt"
+    else
+      crd_filter <"$dir/crd-columns.txt" | awk '{ print $1, $2 }'
     fi
     ;;
   "get pods -A -o json")
@@ -494,7 +589,7 @@ case "$args" in
         echo "customresourcedefinition.apiextensions.k8s.io/${KUBECTL_CRD_LEFT}"
       fi
     else
-      cat "$dir/crds.txt"
+      crd_filter <"$dir/crds.txt"
     fi
     ;;
   "get helmrelease -A -o json")
@@ -549,6 +644,13 @@ case "$args" in
       [[ "$args" == *--ignore-not-found* ]] || echo 'No resources found' >&2
     fi
     ;;
+  "kustomize "*"/chaos-mesh")
+    if [ -n "${KUBECTL_CHAOS_RENDER_RC:-}" ]; then
+      echo 'error: accumulating resources: accumulation err='"'"'accumulating resources from '"'"'../../../kind/chaos-mesh'"'"': must build at directory' >&2
+      exit 1
+    fi
+    cat "$dir/chaos-render.yaml"
+    ;;
   "kustomize "*)
     if [ -n "${KUBECTL_RENDER_RC:-}" ]; then
       echo 'error: accumulating resources: must build at directory: not a valid directory' >&2
@@ -580,6 +682,13 @@ case "$args" in
         if [ "${KUBECTL_NOVACOMPUTE_DELETE_RC:-0}" != "0" ]; then
           echo "error: timed out waiting for the condition on novacomputes/lab" >&2
           exit "${KUBECTL_NOVACOMPUTE_DELETE_RC}"
+        fi
+        ;;
+      "delete networkchaos.chaos-mesh.org,"*)
+        if [ "${KUBECTL_CHAOS_DELETE_RC:-0}" != "0" ]; then
+          echo "networkchaos.chaos-mesh.org \"lab-keystone-delay\" deleted" >&2
+          echo "error: timed out waiting for the condition on networkchaos/lab-keystone-delay" >&2
+          exit "${KUBECTL_CHAOS_DELETE_RC}"
         fi
         ;;
     esac
@@ -664,11 +773,12 @@ have_yq() {
 }
 
 # stack_namespace_names — the Namespaces of deploy/flux-system/namespaces.yaml,
-# space-separated, then the two the kind base declares.
+# space-separated, then the two the kind base declares and the one of the
+# Chaos Mesh overlay.
 stack_namespace_names() {
   yq -N -r 'select(.kind == "Namespace") | .metadata.name' \
     "$PROJECT_ROOT/deploy/flux-system/namespaces.yaml" | tr '\n' ' '
-  printf '%s' 'envoy-gateway-system headlamp-system'
+  printf '%s' 'envoy-gateway-system headlamp-system chaos-mesh'
 }
 
 # ---------------------------------------------------------------------------
@@ -716,8 +826,8 @@ test_external_teardown_order() {
   echo "Test: the external teardown removes the stack in finalizer order"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (30 checks skipped)"
-    SKIP=$((SKIP + 30))
+    echo "  SKIP: yq not installed (34 checks skipped)"
+    SKIP=$((SKIP + 34))
     return
   fi
 
@@ -741,6 +851,11 @@ test_external_teardown_order() {
 
   local expected
   expected="$(printf '%s\n' \
+    'kubectl delete schedules.chaos-mesh.org,workflows.chaos-mesh.org --all -A' \
+    'kubectl delete networkchaos.chaos-mesh.org,podchaos.chaos-mesh.org,statuschecks.chaos-mesh.org,workflownodes.chaos-mesh.org --all -A' \
+    'kubectl delete remoteclusters.chaos-mesh.org --all' \
+    'kubectl kustomize deploy/lab/metal-stack/chaos-mesh' \
+    'kubectl delete -f - [kinds: DaemonSet HelmRelease HelmRepository]' \
     'kubectl delete novacomputes.nova.openstack.c5c3.io --all -n openstack' \
     'kubectl delete neutronmetadataagents.neutron.openstack.c5c3.io --all -n openstack' \
     'kubectl delete ovnchassis.ovn.openstack.c5c3.io --all -n openstack' \
@@ -778,8 +893,25 @@ test_external_teardown_order() {
     'kubectl delete lease cert-manager-cainjector-leader-election cert-manager-controller -n kube-system')"
   local actual
   actual="$(mutations "$CALL_LOG" | grep -v 'customresourcedefinition')"
-  assert_eq "the deletes run in finalizer order, the lab hypervisors first (patches only for installed, suspended objects)" \
+  assert_eq "the deletes run in finalizer order, Chaos Mesh and the lab hypervisors first (patches only for installed, suspended objects)" \
     "$expected" "$actual"
+
+  # Chaos Mesh goes first: its CRD scope read, then its deletes, all before the
+  # first call of step 0, which reads the NovaCompute CRD. The per-pod records
+  # are left to the CRD delete of step 8.
+  local scope_read scope_line chaos_first_line chaos_overlay_line step0_line
+  scope_read='kubectl get crd -o custom-columns=NAME:.metadata.name,SCOPE:.spec.scope --no-headers'
+  scope_line="$(grep -nxF "$scope_read" "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  chaos_first_line="$(grep -n '^kubectl delete schedules\.chaos-mesh\.org,' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  chaos_overlay_line="$(grep -nF '[kinds: DaemonSet HelmRelease HelmRepository]' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  step0_line="$(grep -n '^kubectl get crd novacomputes\.nova\.openstack\.c5c3\.io' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  assert_eq "the Chaos Mesh CRD scope is read once" "1" "$(grep -cxF "$scope_read" "$CALL_LOG")"
+  assert_eq "and before the schedules and workflows are deleted" "true" \
+    "$([[ -n "$scope_line" && -n "$chaos_first_line" && "$scope_line" -lt "$chaos_first_line" ]] && echo true || echo false)"
+  assert_eq "the Chaos Mesh overlay is deleted before the first call of step 0" "true" \
+    "$([[ -n "$chaos_overlay_line" && -n "$step0_line" && "$chaos_overlay_line" -lt "$step0_line" ]] && echo true || echo false)"
+  assert_eq "no Chaos Mesh delete names podnetworkchaos, podiochaos or podhttpchaos" "" \
+    "$(grep -E '^kubectl delete [a-z]+\.chaos-mesh\.org' "$CALL_LOG" | grep -E 'pod(network|io|http)chaos' || true)"
 
   # The fixtures' domain: disabled, then waited for, then deleted with them.
   local patch_line domain_wait_line fixtures_line
@@ -810,7 +942,7 @@ test_external_teardown_order() {
     cut -d' ' -f3 | tr ',' '\n' | sort)"
   assert_eq "the one read names every namespaced stack kind and nothing else" \
     "$(grep -vx -e 'gatewayclasses.gateway.networking.k8s.io' -e 'hypervisors.kvm.cloud.sap' \
-      -e 'evictions.kvm.cloud.sap' <<<"$STACK_CRDS" | sort)" "$read_kinds"
+      -e 'evictions.kvm.cloud.sap' -e 'remoteclusters.chaos-mesh.org' <<<"$STACK_CRDS" | sort)" "$read_kinds"
 
   # The NFS stack goes after that wait, once no pod mounts a share through its
   # node plugin, which the HelmRelease csi-driver-nfs installed. Neither pod of
@@ -1398,7 +1530,126 @@ test_hypervisor_step_zero() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 7: yq is required
+# Test 7: Chaos Mesh, before step 0
+# ---------------------------------------------------------------------------
+test_chaos_mesh_step() {
+  echo "Test: the Chaos Mesh step releases the faults first and stops on what it cannot read, delete or render"
+
+  if ! have_yq; then
+    echo "  SKIP: yq not installed (35 checks skipped)"
+    SKIP=$((SKIP + 35))
+    return
+  fi
+
+  local tmp output rc calls scope_read overlay_delete hint
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  export CALL_LOG="$tmp/calls.log"
+  scope_read='kubectl get crd -o custom-columns=NAME:.metadata.name,SCOPE:.spec.scope --no-headers'
+  overlay_delete='[kinds: DaemonSet HelmRelease HelmRepository]'
+  hint="A Chaos Mesh experiment keeps its finalizer until chaos-controller-manager has released its fault. Read 'kubectl logs -n chaos-mesh deployment/chaos-controller-manager' before rerunning; do not remove the finalizer by hand, the fault would stay injected."
+
+  # An experiment whose fault is not released in time: kubectl's error names
+  # it, the hint follows, and nothing after it is deleted.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CHAOS_DELETE_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an experiment delete that runs out exits 1" "1" "$rc"
+  assert_contains "the error names the experiment step" "$output" \
+    "deleting the Chaos Mesh experiments failed or did not finish within 600s"
+  assert_contains "and the object kubectl still waits for" "$output" \
+    "error: timed out waiting for the condition on networkchaos/lab-keystone-delay"
+  assert_eq "the last line is the finalizer hint" "$hint" \
+    "$(tail -n 1 <<<"$output" | sed 's/^\[[^]]*\] //')"
+  assert_contains "the schedules and workflows went first" "$calls" \
+    "kubectl delete schedules.chaos-mesh.org,workflows.chaos-mesh.org --all -A --ignore-not-found"
+  assert_not_contains "no cluster-scoped Chaos Mesh object is deleted after it" "$calls" "delete remoteclusters"
+  assert_not_contains "the overlay is not rendered" "$calls" "kustomize"
+  assert_not_contains "nor deleted" "$calls" "delete -f -"
+  assert_not_contains "step 0 deletes nothing" "$calls" "delete novacomputes"
+  assert_not_contains "nor does step 1" "$calls" "delete controlplane"
+
+  # The scope read fails: exit 1 before any delete.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CHAOS_CRD_SCOPE_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a CRD scope read that fails exits 1" "1" "$rc"
+  assert_contains "says the scope cannot be read" "$output" \
+    "ERROR: cannot read the scope of the cluster's CRDs (kubectl's error is above)."
+  assert_contains "below kubectl's error" "$output" "customresourcedefinitions.apiextensions.k8s.io is forbidden"
+  assert_not_contains "before any delete" "$calls" "kubectl delete"
+
+  # chaos-mesh/ does not render: exit 1 before its delete and before step 0.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CHAOS_RENDER_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a chaos-mesh/ that does not render exits 1" "1" "$rc"
+  assert_contains "says which overlay cannot be rendered" "$output" \
+    "ERROR: cannot render $PROJECT_ROOT/deploy/lab/metal-stack/chaos-mesh (kustomize's error is above)."
+  assert_not_contains "no overlay delete follows" "$calls" "delete -f -"
+  assert_not_contains "and no step 0 delete" "$calls" "delete novacomputes"
+
+  # The helm-controller's uninstall outlives the overlay delete: exit 1 before
+  # step 0, and before Flux, which clears the HelmRelease finalizer, goes.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CHAOS_OVERLAY_DELETE_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an overlay delete that runs out exits 1" "1" "$rc"
+  assert_contains "names the overlay step" "$output" \
+    "deleting the Chaos Mesh overlay (HelmRelease, HelmRepository and module loader) failed or did not finish within 600s"
+  assert_contains "and the HelmRelease kubectl still waits for" "$output" \
+    "error: timed out waiting for the condition on helmreleases/chaos-mesh"
+  assert_not_contains "step 0 deletes nothing" "$calls" "delete novacomputes"
+  assert_not_contains "and Flux stays" "$calls" "delete fluxinstance"
+
+  # A cluster without any chaos-mesh.org CRD: no experiment delete, and the
+  # overlay delete passes on what is there.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CHAOS_ABSENT=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a cluster without Chaos Mesh CRDs tears down" "0" "$rc"
+  assert_eq "without an experiment delete" "" \
+    "$(grep -E '^kubectl delete [a-z]+\.chaos-mesh\.org' <<<"$calls" || true)"
+  assert_contains "with the overlay delete" "$calls" "$overlay_delete"
+  assert_contains "and nothing left" "$output" \
+    "Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0"
+
+  # An overlay without chaos-mesh/: the step reads and deletes nothing.
+  mkdir -p "$tmp/no-chaos/base" "$tmp/no-chaos/infrastructure"
+  : >"$tmp/no-chaos/base/kustomization.yaml"
+  : >"$tmp/no-chaos/infrastructure/kustomization.yaml"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-chaos")"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an overlay without chaos-mesh/ tears down" "0" "$rc"
+  assert_eq "without the CRD scope read of the Chaos Mesh step" "0" "$(grep -cxF "$scope_read" <<<"$calls")"
+  assert_eq "without an experiment delete or a chaos-mesh/ render" "" \
+    "$(grep -E -e '^kubectl delete [a-z]+\.chaos-mesh\.org' -e '^kubectl kustomize .*/chaos-mesh$' <<<"$calls" || true)"
+  assert_eq "and the ControlPlane delete is still the first mutation" \
+    "kubectl delete controlplane --all -n openstack" "$(mutations "$CALL_LOG" | head -n 1)"
+
+  # A second run: the Chaos Mesh CRDs are gone, and so is the HelmRelease kind.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_SECOND_RUN=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a second run exits 0" "0" "$rc"
+  assert_eq "it deletes no experiment" "" \
+    "$(grep -E '^kubectl delete [a-z]+\.chaos-mesh\.org' <<<"$calls" || true)"
+  assert_contains "its overlay delete, whose HelmRelease kind has no mapping, passes" "$calls" "$overlay_delete"
+  assert_not_contains "and it prints no 'No resources found'" "$output" "No resources found"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
+# Test 8: yq is required
 # ---------------------------------------------------------------------------
 test_requires_yq() {
   echo "Test: the external teardown requires yq"
@@ -1424,7 +1675,7 @@ test_requires_yq() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: yq must be mikefarah/yq v4.40.1 or newer
+# Test 9: yq must be mikefarah/yq v4.40.1 or newer
 # ---------------------------------------------------------------------------
 test_requires_mikefarah_yq() {
   echo "Test: the external teardown requires mikefarah/yq v4.40.1 or newer"
@@ -1471,6 +1722,7 @@ test_external_teardown_order
 test_script_names_no_platform_namespace
 test_external_teardown_failures
 test_hypervisor_step_zero
+test_chaos_mesh_step
 test_requires_yq
 test_requires_mikefarah_yq
 
