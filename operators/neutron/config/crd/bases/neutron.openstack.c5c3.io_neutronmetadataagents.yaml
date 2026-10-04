@@ -110,6 +110,18 @@ spec:
                       re-pushed behind a stable name, at the cost of disabling release tracking.
                     pattern: ^sha256:[a-f0-9]{64}$
                     type: string
+                  pullPolicy:
+                    description: |-
+                      PullPolicy sets imagePullPolicy on every container that runs this image.
+                      Empty leaves the choice to the operator default and then to the rule:
+                      IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+                      is schema-only and has no webhook twin: a CRD older than the operator
+                      prunes the field before any webhook sees it, so a twin could never answer.
+                    enum:
+                    - Always
+                    - IfNotPresent
+                    - Never
+                    type: string
                   repository:
                     description: |-
                       Repository is the OCI image repository, optionally including the registry
