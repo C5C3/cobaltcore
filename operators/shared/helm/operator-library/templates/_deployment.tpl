@@ -85,6 +85,9 @@ spec:
             {{- with .maxConcurrentReconciles }}
             - --max-concurrent-reconciles={{ . }}
             {{- end }}
+            {{- with .defaultImagePullPolicy }}
+            - --default-image-pull-policy={{ . }}
+            {{- end }}
             {{- end }}
             {{- with include "operator-library.chart.args" . }}
             {{- . | trim | nindent 12 }}

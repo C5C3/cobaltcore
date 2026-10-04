@@ -95,6 +95,38 @@ tests:
       - failedTemplate:
           errorPattern: "/image/pullPolicy.*must be one of"
 
+  - it: should reject invalid controller.defaultImagePullPolicy enum value
+    set:
+      controller:
+        defaultImagePullPolicy: Sometimes
+    asserts:
+      - failedTemplate:
+          errorPattern: "/controller/defaultImagePullPolicy.*value must be one of 'Always', 'IfNotPresent', 'Never'"
+
+  - it: should accept controller.defaultImagePullPolicy Always
+    set:
+      controller:
+        defaultImagePullPolicy: Always
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept controller.defaultImagePullPolicy IfNotPresent
+    set:
+      controller:
+        defaultImagePullPolicy: IfNotPresent
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept controller.defaultImagePullPolicy Never
+    set:
+      controller:
+        defaultImagePullPolicy: Never
+    asserts:
+      - isKind:
+          of: Deployment
+
   # ---------------------------------------------------------------------------
   # Minimum/maximum constraints
   # ---------------------------------------------------------------------------
