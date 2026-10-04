@@ -1543,9 +1543,12 @@ metal-stack lab (see
   the fetch as the optional `github_token` secret, as for [ovn](#ovn)
 - Downloads the Go modules in a layer of their own before the patches, so CI's
   layer cache keeps them when only a patch or a later step changes
-- Applies every `*.patch` under `patches/` with `git apply --index`. A patch
-  that does not apply fails the build with
-  `patch does not apply: /patches/<file>`
+- Refreshes the git index, then applies every `*.patch` under `patches/` with
+  `git apply --index`. A patch that does not apply fails the build with
+  `patch does not apply: /patches/<file>`. The refresh is for a checkout layer
+  that CI restores from the build cache: its files have new inodes and change
+  times, and `git apply --index` would reject each one with
+  `does not match index`
 - Fails when Go code outside the tests still names gophercloud's
   `servers.LiveMigrateOpts`, whose `BlockMigration` cannot carry `"auto"`.
   The grep matches the bare type name, so a literal, a `var`, `new()`, a
@@ -1708,9 +1711,11 @@ Helm chart of the same commit (see
   `https://github.com/cobaltcore-dev/kvm-node-agent.git` by its SHA, with the
   optional `github_token` secret, as for
   [openstack-hypervisor-operator](#openstack-hypervisor-operator)
-- Downloads the Go modules in a layer of their own, then applies every
-  `*.patch` under `patches/` with `git apply --index`. A patch that does not
-  apply fails the build with `patch does not apply: /patches/<file>`
+- Downloads the Go modules in a layer of their own, then refreshes the git
+  index and applies every `*.patch` under `patches/` with `git apply --index`,
+  as for [openstack-hypervisor-operator](#openstack-hypervisor-operator). A
+  patch that does not apply fails the build with
+  `patch does not apply: /patches/<file>`
 - Compiles the test binary of `internal/certificates` once, with `-trimpath`
   as in the build below, so that the build reuses the packages compiled for
   the test, and runs the two tests patch 0001 brings from it:
