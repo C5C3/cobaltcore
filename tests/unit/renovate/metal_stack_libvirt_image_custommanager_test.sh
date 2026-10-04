@@ -7,18 +7,18 @@
 # ghcr.io/c5c3/libvirt pins of the metal-stack lab, plus the paired
 # packageRules:
 #   - the docker-datasource matchStrings regex captures the depName, the whole
-#     keeper tag (currentValue) and the whole digest (currentDigest) of all six
-#     image: lines across the four manifests (2, 1, 1, 2), and the versioning
-#     is deb, which compares the -r<N> suffix and the Ubuntu revision
-#     numerically;
+#     keeper tag (currentValue) and the whole digest (currentDigest) of all
+#     eight image: lines across the five manifests (2, 1, 1, 2, 2), and the
+#     versioning is deb, which compares the -r<N> suffix and the Ubuntu
+#     revision numerically;
 #   - allowedVersions accepts the keeper shape <libvirt-package-version>-r<N>
 #     that hack/ci-tag-libvirt-keeper.sh mints and rejects latest, a commit
 #     SHA and a bare package version, which deb would also parse;
 #   - majors are disabled, and minor, patch and digest bumps are grouped and
 #     never automerged, without a minimumReleaseAge: this repository's own
 #     main builds the image, and the bump is the review the pin exists for;
-#   - the manager and all three rules name all four manifests, so one group
-#     moves all six lines.
+#   - the manager and all three rules name all five manifests, so one group
+#     moves all eight lines.
 #
 # This is the regression test the check-renovate-coverage skill requires for
 # every customManager; that skill's audit does not scan deploy/lab/, so this
@@ -49,7 +49,8 @@ LIBVIRT_PACKAGE="ghcr.io/c5c3/libvirt"
 MANIFESTS="deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml 2
 deploy/lab/metal-stack/probe/nfs-module-load.yaml 1
 deploy/lab/metal-stack/nfs/kustomization.yaml 1
-deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml 2"
+deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml 2
+deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml 2"
 
 # libvirt_manager — the docker-datasource customManagers entry that targets
 # the libvirt DaemonSet, compact JSON, or nothing.
@@ -68,13 +69,13 @@ libvirt_rule() {
     | select($1)" "$RENOVATE_FILE" | head -1
 }
 
-# --- Test 1: the manager captures the whole pin of all six lines ---
+# --- Test 1: the manager captures the whole pin of all eight lines ---
 test_custom_manager_captures_every_pin() {
-  echo "Test: customManagers regex captures depName, tag and digest of all six libvirt image lines"
+  echo "Test: customManagers regex captures depName, tag and digest of all eight libvirt image lines"
 
   if ! command -v jq >/dev/null 2>&1 || ! command -v perl >/dev/null 2>&1; then
-    echo "  SKIP: jq or perl not installed (7 checks skipped)"
-    SKIP=$((SKIP + 7))
+    echo "  SKIP: jq or perl not installed (8 checks skipped)"
+    SKIP=$((SKIP + 8))
     return
   fi
 
@@ -82,7 +83,7 @@ test_custom_manager_captures_every_pin() {
   entry="$(libvirt_manager)"
   if [ -z "$entry" ]; then
     echo "  FAIL: no docker-datasource customManagers entry for the libvirt DaemonSet"
-    FAIL=$((FAIL + 7))
+    FAIL=$((FAIL + 8))
     return
   fi
 
@@ -120,12 +121,12 @@ test_custom_manager_captures_every_pin() {
     fi
   done <<<"$MANIFESTS"
 
-  # The six lines name one reference, so one group bump moves them together.
+  # The eight lines name one reference, so one group bump moves them together.
   local all_lines
   all_lines="$(while read -r path count; do
     grep -hE '^[[:space:]]*image: ghcr\.io/c5c3/libvirt' "$PROJECT_ROOT/$path" || true
   done <<<"$MANIFESTS" | sed -E 's/^[[:space:]]*//' | sort -u)"
-  assert_eq "the six lines name one reference" "1" "$(grep -c . <<<"$all_lines")"
+  assert_eq "the eight lines name one reference" "1" "$(grep -c . <<<"$all_lines")"
 }
 
 # --- Test 2: allowedVersions admits the keeper shape alone ---
@@ -210,11 +211,11 @@ test_update_rules() {
 
 # --- Test 4: every file in the manager and in every rule ---
 test_every_file_is_covered() {
-  echo "Test: the manager and all three packageRules name all four manifests"
+  echo "Test: the manager and all three packageRules name all five manifests"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (16 checks skipped)"
-    SKIP=$((SKIP + 16))
+    echo "  SKIP: jq not installed (20 checks skipped)"
+    SKIP=$((SKIP + 20))
     return
   fi
 

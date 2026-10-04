@@ -425,7 +425,8 @@
         "/deploy/lab/metal-stack/hypervisor/libvirt-daemonset\\.yaml$/",
         "/deploy/lab/metal-stack/probe/nfs-module-load\\.yaml$/",
         "/deploy/lab/metal-stack/nfs/kustomization\\.yaml$/",
-        "/deploy/lab/metal-stack/nfs/client-modules-daemonset\\.yaml$/"
+        "/deploy/lab/metal-stack/nfs/client-modules-daemonset\\.yaml$/",
+        "/deploy/lab/metal-stack/chaos-mesh/modules-daemonset\\.yaml$/"
       ],
       "matchStrings": [
         "image: (?<depName>ghcr\\.io/c5c3/libvirt):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
@@ -901,7 +902,8 @@
         "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
         "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
         "deploy/lab/metal-stack/nfs/kustomization.yaml",
-        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml"
+        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
+        "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
       ],
       "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
       "allowedVersions": "/^[0-9]+(\\.[0-9]+)+-[0-9]+ubuntu[0-9]+(\\.[0-9]+)*-r[0-9]+$/"
@@ -912,7 +914,8 @@
         "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
         "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
         "deploy/lab/metal-stack/nfs/kustomization.yaml",
-        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml"
+        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
+        "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
       ],
       "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
       "matchUpdateTypes": ["major"],
@@ -924,7 +927,8 @@
         "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
         "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
         "deploy/lab/metal-stack/nfs/kustomization.yaml",
-        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml"
+        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
+        "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
       ],
       "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
