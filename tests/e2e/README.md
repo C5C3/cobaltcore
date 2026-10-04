@@ -94,6 +94,11 @@ edit the numbered fixtures by hand; change the generator and re-run it.
   suite lives **outside** `tests/e2e/` on purpose: it manages the
   operator release itself and must run against a cluster without a
   pre-deployed operator, so `make e2e` must not sweep it up.
+- `tests/e2e-nova-libvirt/` — the suite that boots a server through
+  Nova's libvirt driver lives **outside** `tests/e2e/` on purpose: it
+  needs libvirtd on an amd64 node and runs in the non-blocking
+  `e2e-nova-libvirt` job, so neither `make e2e` nor the blocking nova
+  leg of `e2e-operator` may sweep it up.
 - `tests/tempest/` — Tempest API test configuration per service and
   release.
 
