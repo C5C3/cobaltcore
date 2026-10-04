@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw configuration for the Nova libvirt suite.
+#
+# The suite lives outside tests/e2e/ because it needs a libvirtd on an amd64
+# node and enters CI as a non-blocking job of its own (e2e-nova-libvirt). The
+# blocking nova leg of e2e-operator sweeps every directory under
+# tests/e2e/nova/, and `make e2e` sweeps tests/e2e/, so a suite there would run
+# in both.
+#
+# Key differences from the happy-path config at tests/e2e/chainsaw-config.yaml:
+#   - Assert timeout: 300s (5m) vs 120s. The suite raises it to 10m in its own
+#     Test, for the full Nova stack it brings up.
+#   - Cleanup timeout: 120s (2m) vs 3m. The step cleanups that wait on a
+#     finalizer set their own script timeouts.
+#   - Parallelism: 1 vs 4: libvirtd, the chassis and nova-compute run with
+#     hostNetwork and own /run/libvirt, /run/openvswitch and /var/lib/nova on
+#     the one kind node.
+#
+# apiVersion v1alpha2 Configuration is the correct pairing with v1alpha1 Test
+# manifests, matching the sibling configs.
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: cloud-operator-e2e-nova-libvirt
+spec:
+  # ── Timeouts ────────────────────────────────────────────────────────────
+  timeouts:
+    apply: 30s
+    assert: 300s
+    cleanup: 120s
+    delete: 30s
+    error: 30s
+    exec: 30s
+
+  # ── Cleanup ─────────────────────────────────────────────────────────────
+  cleanup:
+    skipDelete: false
+
+  # ── Execution ───────────────────────────────────────────────────────────
+  execution:
+    failFast: true
+    parallel: 1
+
+  # ── Report ──────────────────────────────────────────────────────────────
+  report:
+    format: JUNIT-TEST
+    name: chainsaw-nova-libvirt-report
+    path: _output/reports
