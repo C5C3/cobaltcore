@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The node pool under test. It selects the node step 1 labels with
+# openstack.c5c3.io/nova-compute-pool=libvirt, the label the libvirt-e2e
+# DaemonSet of 00-libvirt.yaml selects too.
+#
+# There is no spec.extraConfig: the driver is the pool's default,
+# libvirt.LibvirtDriver on qemu:///system, and virtType: qemu runs the guest
+# under QEMU's TCG emulation, which needs no /dev/kvm on the runner. The
+# server carries no NIC, so nova-compute plugs no VIF and waits for no
+# network-vif-plugged event.
+#
+# The resources are the ones pool-a of ../../e2e/nova/compute-node-pool runs on.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: pool-libvirt
+  namespace: openstack
+spec:
+  novaRef:
+    name: nova-pool
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: libvirt
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 768Mi
+  libvirt:
+    virtType: qemu
