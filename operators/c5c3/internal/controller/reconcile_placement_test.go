@@ -300,6 +300,8 @@ func TestReconcilePlacement_NotManagedWhenUnset(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := placementControlPlane()
 	cp.Spec.Services.Placement = nil
+	// A set spec.imagePullPolicy has nothing to project without the service.
+	cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
 	r := newPlacementTestReconciler(t, cp)
 
 	res, err := r.reconcilePlacement(context.Background(), cp)
@@ -1600,4 +1602,81 @@ func TestReconcilePlacement_SizingProjectsAndClears(t *testing.T) {
 	g.Expect(pl.Spec.APIServer).To(BeNil())
 	g.Expect(pl.Spec.Autoscaling).To(BeNil())
 	g.Expect(pl.Spec.Jobs).To(BeNil())
+}
+
+// TestReconcilePlacement_ProjectsImagePullPolicy pins the projection of
+// spec.imagePullPolicy into the Placement child's spec.image: it reaches an image
+// that names no pullPolicy, a pullPolicy on the services.placement.image override
+// wins, an empty field leaves the child's field empty, and clearing the field
+// clears the existing child's on the next reconcile.
+func TestReconcilePlacement_ProjectsImagePullPolicy(t *testing.T) {
+	t.Run("spec.imagePullPolicy reaches the child", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		r := newPlacementTestReconciler(t, cp)
+
+		_, err := r.reconcilePlacement(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedPlacement(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+	})
+
+	t.Run("the override's pullPolicy wins", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		cp.Spec.Services.Placement.Image = &commonv1.ImageSpec{
+			Repository: "registry.example.com/mirror/placement",
+			Tag:        "custom",
+			PullPolicy: corev1.PullNever,
+		}
+		r := newPlacementTestReconciler(t, cp)
+
+		_, err := r.reconcilePlacement(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedPlacement(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullNever))
+	})
+
+	t.Run("an override without pullPolicy takes spec.imagePullPolicy", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		cp.Spec.Services.Placement.Image = &commonv1.ImageSpec{
+			Repository: "registry.example.com/mirror/placement",
+			Tag:        "custom",
+		}
+		r := newPlacementTestReconciler(t, cp)
+
+		_, err := r.reconcilePlacement(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		image := getProjectedPlacement(t, r.Client, cp).Spec.Image
+		g.Expect(image.Repository).To(Equal("registry.example.com/mirror/placement"))
+		g.Expect(image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+	})
+
+	t.Run("an empty field leaves the child's empty", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		r := newPlacementTestReconciler(t, cp)
+
+		_, err := r.reconcilePlacement(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedPlacement(t, r.Client, cp).Spec.Image.PullPolicy).To(BeEmpty())
+	})
+
+	t.Run("clearing the field clears the child's", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		r := newPlacementTestReconciler(t, cp)
+
+		_, err := r.reconcilePlacement(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedPlacement(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+
+		cp.Spec.ImagePullPolicy = ""
+		_, err = r.reconcilePlacement(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedPlacement(t, r.Client, cp).Spec.Image.PullPolicy).To(BeEmpty())
+	})
 }

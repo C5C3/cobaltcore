@@ -152,6 +152,8 @@ func TestReconcileKeystone_NotManagedWhenServiceUnset(t *testing.T) {
 	s := keystoneTestScheme(t)
 	cp := keystoneControlPlane()
 	cp.Spec.Services.Keystone = nil
+	// A set spec.imagePullPolicy has nothing to project without the service.
+	cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
@@ -1256,4 +1258,89 @@ func TestReconcileKeystone_SizingProjectsComponents(t *testing.T) {
 	g.Expect(k.Spec.Jobs.PriorityClassName).To(Equal(ptr.To("batch")))
 	g.Expect(k.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("15m"))
 	g.Expect(k.Spec.Federation.ProxyResources.Requests.Cpu().String()).To(Equal("20m"))
+}
+
+// TestReconcileKeystone_ProjectsImagePullPolicy pins the projection of
+// spec.imagePullPolicy into the Keystone child's spec.image and
+// spec.federation.proxyImage: it reaches both images when neither names a
+// pullPolicy, a pullPolicy on an override wins for that image, an empty field
+// leaves both empty, and clearing the field clears both on the next reconcile.
+func TestReconcileKeystone_ProjectsImagePullPolicy(t *testing.T) {
+	reconcile := func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) (*ControlPlaneReconciler, *keystonev1alpha1.Keystone) {
+		t.Helper()
+		s := keystoneTestScheme(t)
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+		if _, err := r.reconcileKeystone(context.Background(), cp); err != nil {
+			t.Fatalf("reconcileKeystone: %v", err)
+		}
+		return r, getProjectedKeystone(t, c, cp)
+	}
+
+	t.Run("spec.imagePullPolicy reaches both images", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := keystoneControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+
+		_, k := reconcile(t, cp)
+		g.Expect(k.Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+		g.Expect(k.Spec.Federation.ProxyImage.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+	})
+
+	t.Run("an override's pullPolicy wins for its image", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := keystoneControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{
+			Repository: "registry.internal/keystone", Tag: "custom-tag", PullPolicy: corev1.PullNever,
+		}
+		cp.Spec.Services.Keystone.FederationProxyImage = &commonv1.ImageSpec{
+			Repository: "ghcr.io/c5c3/keystone-federation-proxy", Tag: "dev",
+		}
+
+		_, k := reconcile(t, cp)
+		g.Expect(k.Spec.Image.PullPolicy).To(Equal(corev1.PullNever))
+		g.Expect(k.Spec.Federation.ProxyImage.Tag).To(Equal("dev"))
+		g.Expect(k.Spec.Federation.ProxyImage.PullPolicy).To(Equal(corev1.PullIfNotPresent),
+			"a proxy override without pullPolicy takes spec.imagePullPolicy")
+	})
+
+	t.Run("an override without pullPolicy takes spec.imagePullPolicy", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := keystoneControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{Repository: "registry.internal/keystone", Tag: "custom-tag"}
+		cp.Spec.Services.Keystone.FederationProxyImage = &commonv1.ImageSpec{
+			Repository: "ghcr.io/c5c3/keystone-federation-proxy", Tag: "dev", PullPolicy: corev1.PullNever,
+		}
+
+		_, k := reconcile(t, cp)
+		g.Expect(k.Spec.Image.Repository).To(Equal("registry.internal/keystone"))
+		g.Expect(k.Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+		g.Expect(k.Spec.Federation.ProxyImage.PullPolicy).To(Equal(corev1.PullNever),
+			"a proxy override's pullPolicy wins for the proxy image")
+	})
+
+	t.Run("an empty field leaves both empty", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		_, k := reconcile(t, keystoneControlPlane())
+		g.Expect(k.Spec.Image.PullPolicy).To(BeEmpty())
+		g.Expect(k.Spec.Federation.ProxyImage.PullPolicy).To(BeEmpty())
+	})
+
+	t.Run("clearing the field clears both on the existing child", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := keystoneControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		r, k := reconcile(t, cp)
+		g.Expect(k.Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+
+		cp.Spec.ImagePullPolicy = ""
+		_, err := r.reconcileKeystone(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		k = getProjectedKeystone(t, r.Client, cp)
+		g.Expect(k.Spec.Image.PullPolicy).To(BeEmpty())
+		g.Expect(k.Spec.Federation.ProxyImage.PullPolicy).To(BeEmpty())
+	})
 }

@@ -218,6 +218,8 @@ func TestReconcileHorizon_NotManagedWhenUnset(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := horizonControlPlane()
 	cp.Spec.Services.Horizon = nil
+	// A set spec.imagePullPolicy has nothing to project without the service.
+	cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
 	r := newHorizonTestReconciler(t, cp)
 
 	res, err := r.reconcileHorizon(context.Background(), cp)
@@ -1195,4 +1197,115 @@ func TestReconcileHorizon_SizingProjectsAndClears(t *testing.T) {
 	h = getProjectedHorizon(t, r.Client, cp)
 	expectUnsized(g, h.Spec.Deployment, commonv1.DefaultReplicas)
 	g.Expect(h.Spec.Autoscaling).To(BeNil())
+}
+
+// TestReconcileHorizon_ProjectsImagePullPolicy pins the projection of
+// spec.imagePullPolicy into the Horizon child's spec.image: it reaches an image
+// that names no pullPolicy, a pullPolicy on the services.horizon.image override
+// wins, an empty field leaves the child's field empty, and clearing the field
+// clears the existing child's on the next reconcile.
+func TestReconcileHorizon_ProjectsImagePullPolicy(t *testing.T) {
+	t.Run("spec.imagePullPolicy reaches the child", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := horizonControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		r := newHorizonTestReconciler(t, cp)
+
+		_, err := r.reconcileHorizon(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+	})
+
+	t.Run("the override's pullPolicy wins", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := horizonControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		cp.Spec.Services.Horizon.Image = &commonv1.ImageSpec{
+			Repository: "registry.example.com/mirror/horizon",
+			Tag:        "custom",
+			PullPolicy: corev1.PullNever,
+		}
+		r := newHorizonTestReconciler(t, cp)
+
+		_, err := r.reconcileHorizon(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullNever))
+	})
+
+	t.Run("an override without pullPolicy takes spec.imagePullPolicy", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := horizonControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		cp.Spec.Services.Horizon.Image = &commonv1.ImageSpec{
+			Repository: "registry.example.com/mirror/horizon",
+			Tag:        "custom",
+		}
+		r := newHorizonTestReconciler(t, cp)
+
+		_, err := r.reconcileHorizon(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		image := getProjectedHorizon(t, r.Client, cp).Spec.Image
+		g.Expect(image.Repository).To(Equal("registry.example.com/mirror/horizon"))
+		g.Expect(image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+	})
+
+	t.Run("an empty field leaves the child's empty", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := horizonControlPlane()
+		r := newHorizonTestReconciler(t, cp)
+
+		_, err := r.reconcileHorizon(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.Image.PullPolicy).To(BeEmpty())
+	})
+
+	t.Run("clearing the field clears the child's", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := horizonControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		r := newHorizonTestReconciler(t, cp)
+
+		_, err := r.reconcileHorizon(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+
+		cp.Spec.ImagePullPolicy = ""
+		_, err = r.reconcileHorizon(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.Image.PullPolicy).To(BeEmpty())
+	})
+}
+
+// TestReconcileImagePullPolicy_OverridePerService pins the precedence across
+// two services of one ControlPlane: the pullPolicy on services.keystone.image
+// wins for Keystone, while Horizon, which has no override, takes
+// spec.imagePullPolicy.
+func TestReconcileImagePullPolicy_OverridePerService(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeInfrastructureReady,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: 1,
+		Reason:             "InfrastructureReady",
+		Message:            "ready",
+	})
+	cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+	cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{
+		Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2", PullPolicy: corev1.PullNever,
+	}
+	r := newHorizonTestReconciler(t, cp)
+
+	// Horizon first: the Keystone pass resets KeystoneReady while its fresh
+	// child is not ready yet, and Horizon waits on that condition.
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	_, err = r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := &keystonev1alpha1.Keystone{}
+	key := types.NamespacedName{Name: keystoneName(cp), Namespace: childNamespace(cp)}
+	g.Expect(r.Get(context.Background(), key, k)).To(Succeed())
+	g.Expect(k.Spec.Image.PullPolicy).To(Equal(corev1.PullNever))
+	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
 }

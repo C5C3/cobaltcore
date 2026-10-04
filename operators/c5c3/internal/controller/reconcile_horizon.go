@@ -151,6 +151,7 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 	if override := cp.Spec.Services.Horizon.Image; override != nil {
 		image = *override
 	}
+	image = withControlPlanePullPolicy(cp, image)
 
 	// Resolve the SECRET_KEY reference. spec.services.horizon.secretKeyRef
 	// overrides the default-identity shim Secret when set.

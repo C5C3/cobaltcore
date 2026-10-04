@@ -192,6 +192,7 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 	if override := cp.Spec.Services.Keystone.Image; override != nil {
 		image = *override
 	}
+	image = withControlPlanePullPolicy(cp, image)
 
 	// Place the child in the namespace assigned to the Keystone service (the
 	// ControlPlane's own unless services.keystone.namespace says otherwise). A
@@ -390,12 +391,15 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 // onto the Keystone child: the explicit services.keystone.federationProxyImage
 // override when set, else the release-independent
 // ghcr.io/c5c3/keystone-federation-proxy:latest default (see
-// defaultFederationProxyRepository).
+// defaultFederationProxyRepository). Either takes spec.imagePullPolicy when it
+// names no pullPolicy of its own.
 func federationProxyImage(cp *c5c3v1alpha1.ControlPlane) *commonv1.ImageSpec {
+	image := commonv1.ImageSpec{Repository: defaultFederationProxyRepository, Tag: "latest"}
 	if ks := cp.Spec.Services.Keystone; ks != nil && ks.FederationProxyImage != nil {
-		return ks.FederationProxyImage.DeepCopy()
+		image = *ks.FederationProxyImage
 	}
-	return &commonv1.ImageSpec{Repository: defaultFederationProxyRepository, Tag: "latest"}
+	image = withControlPlanePullPolicy(cp, image)
+	return &image
 }
 
 // trustedDashboards returns the WebSSO origins the Keystone child must trust,
