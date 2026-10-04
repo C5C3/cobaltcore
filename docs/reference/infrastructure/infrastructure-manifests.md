@@ -2813,6 +2813,9 @@ backup on it go too.
   `/var/lib/kubelet/plugins/csi-nfsplugin` and
   `/var/lib/kubelet/plugins_registry` and mounts the shares below
   `/var/lib/kubelet/pods`; these go with the pods.
+- While a server on a node has a volume attached, `nova-compute` holds the
+  share `/volumes` mounted below `/var/lib/nova/mnt/<md5>` in the host's mount
+  namespace, and unmounts it with the node's last detach.
 - The deploy script itself runs no `modprobe` and writes no file on a node.
 
 No lab run of this stack is recorded yet.
@@ -2925,7 +2928,7 @@ slow answer, would interrupt running migrations. The readiness probe runs
 | Host path | Why the pod mounts it |
 | --- | --- |
 | `/run/libvirt` | libvirtd's sockets, which `nova-compute` and kna open |
-| `/var/lib/libvirt`, `/var/lib/nova` | The domains' state and the instance disks; `/var/lib/nova` with `Bidirectional` propagation, like the `NovaCompute` pod |
+| `/var/lib/libvirt`, `/var/lib/nova` | The domains' state and the instance disks; `/var/lib/nova` with `Bidirectional` propagation, like the `NovaCompute` pod. The NFS share `nova-compute` mounts below `/var/lib/nova/mnt` for a Cinder volume appears in the libvirt pod through this propagation |
 | `/etc/pki/CA`, `/etc/pki/libvirt`, `/etc/pki/qemu` | The TLS files kna writes, read-only |
 | `/dev`, `/sys/fs/cgroup`, `/lib/modules` | `/dev/kvm` and the guests' devices, their cgroups, and the module tree for `vhost_net`, read-only |
 | `/run/systemd`, `/run/dbus` | The host's systemd (its private socket and `/run/systemd/system`) and its D-Bus socket, the latter read-only |
@@ -3012,6 +3015,30 @@ that node. A hard reboot before the pod delete starts the domain under the old
 pod's `virtlogd` again, and its console log stops once more at the delete. The
 status XML of a switched domain, `/run/libvirt/qemu/<instance_name>.xml`,
 carries no `<chardevStdioLogd/>`.
+
+`qemu.conf` sets `dynamic_ownership = 0` as well. libvirt adds its DAC driver
+whenever QEMU runs privileged, also under `security_driver = "none"`
+(`qemuSecurityInit` in `src/qemu/qemu_driver.c`). With dynamic ownership on,
+that driver hands every disk of a domain to QEMU's user, `0:0` here
+(`virSecurityDACSetImageLabelInternal` in `src/security/security_dac.c`). Both
+were read at libvirt v9.0.0; the image installs the libvirt of Ubuntu noble.
+Cinder's NFS backends keep each volume file `42424:42424` with mode `660`
+(`nas_secure_file_permissions = true`, see
+[Rendered backend section](../cinder/cinder-backend-crd.md#rendered-backend-section)),
+and the Cinder pods read it as uid 42424. After one attach the file would
+belong to root, and a backup of the volume would fail with
+`Permission denied`. With the setting off, QEMU as root opens every file it
+needs without a `chown`: the instance disks `nova-compute` creates as root, the
+console log libvirtd opens for it, `/dev/kvm` and the TLS keys. The owner
+change is read from libvirt's source, and no lab run has shown it yet.
+libvirtd reads `qemu.conf` when it starts, and the DaemonSet updates
+`OnDelete`, so on a running lab delete the libvirt pod of each node and wait
+until it is `Ready` before the first volume attach. An attach through a pod
+that predates the setting hands the volume file to `0:0` on the share, and no
+later detach or pod restart gives it back. Once every libvirt pod has been
+replaced, repair such a file in the NFS server pod with
+`kubectl exec -n openstack deploy/nfs-server -c nfs-server -- chown 42424:42424 /exports/volumes/volume-<id>`.
+A lab deployed after a teardown has the setting from the start.
 
 The DaemonSet, the three compute CRs and hvo run in `openstack`. hvo sits there
 because its release reads the ControlPlane's auth Secret through `valuesFrom`,
