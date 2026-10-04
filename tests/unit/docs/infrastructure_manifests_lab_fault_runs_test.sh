@@ -20,6 +20,9 @@
 #   7. the subsection names no `allowHostNetworkTesting`
 #   8. each label comes from its source: the libvirt DaemonSet, the NFS server
 #      manifest and the constants of the nova and ovn operators
+#   9. the `#### Proving run` subsection holds the record of its lab run, a line
+#      that starts with `The run of 20YY-MM-DD`, and not the sentence that no
+#      run is recorded
 #
 # Subsections run from their heading to the next heading of any level, fenced
 # code included. INFRA_MANIFESTS_DOC overrides the page.
@@ -179,6 +182,18 @@ test_label_sources() {
     "$PROJECT_ROOT/operators/ovn/internal/controller/reconcile_controller.go" 'componentOVNController = "ovn-controller"'
 }
 
+# --- Test 9: the Proving run records its lab run ---
+test_proving_run_record() {
+  echo "Test: the Proving run holds the record of its lab run"
+  local proving
+  proving="$(subsection '#### Proving run')"
+  assert_not_empty "the Proving run has a body" "$proving"
+  assert_not_contains "the Proving run does not say that no run is recorded" "$proving" \
+    'No lab run of this stack is recorded yet.'
+  assert_not_empty "a line of the Proving run starts with 'The run of 20YY-MM-DD'" \
+    "$(grep -E '^The run of 20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$proving" || true)"
+}
+
 test_position
 test_podchaos_only
 test_experiment_lines
@@ -187,6 +202,7 @@ test_experiments_deleted
 test_scale_order
 test_no_host_network_testing
 test_label_sources
+test_proving_run_record
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
