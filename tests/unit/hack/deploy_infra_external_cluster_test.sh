@@ -7,11 +7,12 @@
 #   1. EXTERNAL_CLUSTER and EXTERNAL_OVERLAY default and pass through verbatim,
 #      and the derived OVERLAY_ROOT and PUBLIC_PORT follow the mode.
 #   2. preflight_checks in external mode needs only kubectl and jq, still needs
-#      yq under WITH_CONTROLPLANE=true, refuses each of the six kind-bound
+#      yq under WITH_CONTROLPLANE=true, refuses each of the five kind-bound
 #      opt-ins by name, accepts WITH_NFS=true only for an overlay with an
-#      nfs/ kustomization (refusing an nfs/ without one, and only after the
-#      base/ check, before the cluster is contacted), refuses an overlay
-#      without its two kustomizations, a
+#      nfs/ kustomization and WITH_CHAOS_MESH=true only for one with a
+#      chaos-mesh/ kustomization (refusing a directory without one, and only
+#      after the base/ check, before the cluster is contacted), refuses an
+#      overlay without its two kustomizations, a
 #      CONTROLPLANE_NAME the overlay's rendered by-hand ControlPlane does not
 #      carry (and nothing else with that name), a controlplane/ that does not
 #      render, the lab overlay's ControlPlane, whose Cinder backends sit on
@@ -49,13 +50,15 @@
 #      check_external_cluster, Steps 3 and 5 apply the overlay root, Step 3
 #      applies the client policy before its nfs/, behind an EXTERNAL_CLUSTER
 #      and file gate, and waits for the nfs-client-modules rollout behind an
-#      EXTERNAL_CLUSTER gate, the host NFS module load, the nofile cap and the
-#      Keystone preload sit behind an EXTERNAL_CLUSTER gate, the CR
-#      rewrite and the by-hand CR hint key on PUBLIC_PORT, the external
-#      by-hand hint names the overlay's controlplane/ kustomization behind an
-#      EXTERNAL_CLUSTER and file gate and its CR by CONTROLPLANE_NAME while the
-#      kind hint keeps the bundled CR, and the external banners name the
-#      port-forward on PUBLIC_PORT and the teardown.
+#      EXTERNAL_CLUSTER gate, Step 3 applies the overlay root's chaos-mesh/ and
+#      waits for the chaos-mesh-modules rollout behind an EXTERNAL_CLUSTER
+#      gate, the host NFS and Chaos Mesh module loads, the nofile cap and the
+#      Keystone preload sit behind an EXTERNAL_CLUSTER gate, the CR rewrite and
+#      the by-hand CR hint key on PUBLIC_PORT, the external by-hand hint names
+#      the overlay's controlplane/ kustomization behind an EXTERNAL_CLUSTER and
+#      file gate and its CR by CONTROLPLANE_NAME while the kind hint keeps the
+#      bundled CR, and the external banners name the port-forward on
+#      PUBLIC_PORT and the teardown.
 #
 # The script is sourced (its BASH_SOURCE guard keeps main() from running) and
 # driven against a kubectl stub scripted through environment variables.
@@ -548,7 +551,7 @@ test_refused_flags() {
 
   # WITH_VPA=true folds into WITH_METRICS_SERVER=true at the top of the script,
   # so it has to be checked first to be named at all.
-  for flag in WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE WITH_CHAOS_MESH \
+  for flag in WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE \
     WITH_OVN_KERNEL_MODULES WITH_DIZZY; do
     : >"$KUBECTL_LOG"
     output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true "${flag}=true")"
@@ -624,6 +627,71 @@ test_nfs_overlay_preflight() {
   assert_contains "for its missing base/ and infrastructure/" "$output" \
     "EXTERNAL_OVERLAY='$tmp/empty' has no base/ and infrastructure/ kustomization"
   assert_not_contains "and not for its nfs/" "$output" "WITH_NFS=true needs"
+  unset KUBECTL_LOG
+}
+
+# ---------------------------------------------------------------------------
+# Test 3c: WITH_CHAOS_MESH=true needs the overlay's chaos-mesh/ kustomization
+# ---------------------------------------------------------------------------
+test_chaos_mesh_overlay_preflight() {
+  echo "Test: preflight_checks under EXTERNAL_CLUSTER=true accepts WITH_CHAOS_MESH=true only with a chaos-mesh/ kustomization"
+
+  local tmp output rc
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stub_path "$tmp/bin" kubectl jq
+  export KUBECTL_LOG="$tmp/kubectl.log"
+
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true)"
+  rc=$?
+  assert_eq "WITH_CHAOS_MESH=true passes with the default overlay, which has chaos-mesh/" "0" "$rc"
+  assert_contains "and reaches the end of preflight" "$output" "Pre-flight checks passed."
+
+  # An overlay with the two kustomizations Steps 3 and 5 apply and no
+  # chaos-mesh/.
+  mkdir -p "$tmp/no-chaos/base" "$tmp/no-chaos/infrastructure"
+  : >"$tmp/no-chaos/base/kustomization.yaml"
+  : >"$tmp/no-chaos/infrastructure/kustomization.yaml"
+  local refusal="EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true needs $tmp/no-chaos/chaos-mesh/kustomization.yaml, which does not exist"
+
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true EXTERNAL_OVERLAY="$tmp/no-chaos")"
+  rc=$?
+  assert_eq "WITH_CHAOS_MESH=true is refused for an overlay without chaos-mesh/" "1" "$rc"
+  assert_contains "the refusal names the missing kustomization" "$output" "$refusal"
+  assert_contains "and says the kind overlay makes every namespace selectable" "$output" \
+    "deploy/kind/chaos-mesh is not applied to an external cluster: it lets an experiment select a pod in every namespace"
+  assert_eq "and comes before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
+
+  # The check tests the file, not the directory.
+  mkdir -p "$tmp/no-chaos/chaos-mesh"
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true EXTERNAL_OVERLAY="$tmp/no-chaos")"
+  rc=$?
+  assert_eq "a chaos-mesh/ directory without a kustomization is refused too" "1" "$rc"
+  assert_contains "with the same message" "$output" "$refusal"
+  assert_eq "before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
+
+  # Only the value true turns Chaos Mesh on.
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-chaos")"
+  rc=$?
+  assert_eq "the overlay without a chaos-mesh/ kustomization passes without WITH_CHAOS_MESH" "0" "$rc"
+  assert_not_contains "without the refusal" "$output" "WITH_CHAOS_MESH=true needs"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=yes EXTERNAL_OVERLAY="$tmp/no-chaos")"
+  rc=$?
+  assert_eq "and with WITH_CHAOS_MESH=yes" "0" "$rc"
+  assert_not_contains "WITH_CHAOS_MESH=yes is not refused" "$output" "WITH_CHAOS_MESH=true needs"
+
+  # The overlay check comes first: an overlay with neither base/ nor
+  # chaos-mesh/ is reported for its base/.
+  mkdir -p "$tmp/empty"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true EXTERNAL_OVERLAY="$tmp/empty")"
+  rc=$?
+  assert_nonzero_exit "an overlay with neither base/ nor chaos-mesh/ is refused" "$rc"
+  assert_contains "for its missing base/ and infrastructure/" "$output" \
+    "EXTERNAL_OVERLAY='$tmp/empty' has no base/ and infrastructure/ kustomization"
+  assert_not_contains "and not for its chaos-mesh/" "$output" "WITH_CHAOS_MESH=true needs"
   unset KUBECTL_LOG
 }
 
@@ -1065,6 +1133,32 @@ test_main_gates() {
     "ERROR: DaemonSet openstack/nfs-client-modules did not roll out, so not every node has the nfs and nfsv4 modules. Read 'kubectl logs -n openstack -l app.kubernetes.io/name=nfs-client-modules -c load --prefix --tail=-1'."
   assert_contains "and exits 1" "$ds_failure" "exit 1"
 
+  # WITH_CHAOS_MESH=true: the overlay's chaos-mesh/ in place of
+  # deploy/kind/chaos-mesh, no modprobe on this machine in external mode, and
+  # a rollout gate on the modules of every node.
+  local chaos_apply='kubectl apply -k "${OVERLAY_ROOT}/chaos-mesh"'
+  assert_file_contains_fixed "Step 3 applies the overlay root's chaos-mesh/" \
+    "$DEPLOY_INFRA_SH" "$chaos_apply"
+  assert_file_not_contains "Step 3 no longer hardcodes the kind Chaos Mesh overlay" \
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/chaos-mesh"'
+  assert_eq "the host Chaos Mesh module load is the else branch of the EXTERNAL_CLUSTER gate, the skip log its then branch" \
+    "$(printf '%s\n' \
+      'if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then' \
+      'log "Skipping the host-side chaos-mesh kernel modules (EXTERNAL_CLUSTER=true; DaemonSet chaos-mesh-modules of ${OVERLAY_ROOT}/chaos-mesh loads them on the nodes)."' \
+      'else' \
+      'load_chaos_mesh_kernel_modules')" \
+    "$(grep -B3 -E '^[[:space:]]+load_chaos_mesh_kernel_modules$' "$DEPLOY_INFRA_SH" | sed 's/^[[:space:]]*//')"
+  local chaos_wait='kubectl rollout status daemonset/chaos-mesh-modules -n chaos-mesh --timeout="${POD_TIMEOUT}s"'
+  assert_before "the chaos-mesh-modules rollout wait follows the overlay's chaos-mesh/ apply" \
+    "$(line_of "$chaos_apply")" "$(line_of "$chaos_wait")"
+  assert_contains "the chaos-mesh-modules wait sits behind an EXTERNAL_CLUSTER gate" \
+    "$(grep -B1 -F "$chaos_wait" "$DEPLOY_INFRA_SH")" 'if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then'
+  local chaos_failure
+  chaos_failure="$(grep -A3 -F "$chaos_wait" "$DEPLOY_INFRA_SH")"
+  assert_contains "a failed chaos-mesh-modules rollout names the DaemonSet and the log command" "$chaos_failure" \
+    "ERROR: DaemonSet chaos-mesh/chaos-mesh-modules did not roll out, so not every node has the NetworkChaos kernel modules. Read 'kubectl logs -n chaos-mesh -l app.kubernetes.io/name=chaos-mesh-modules -c load --prefix --tail=-1'."
+  assert_contains "and exits 1" "$chaos_failure" "exit 1"
+
   assert_contains "the Keystone preload sits behind an EXTERNAL_CLUSTER gate" \
     "$(grep -B3 -F 'docker pull "ghcr.io/c5c3/keystone:' "$DEPLOY_INFRA_SH")" \
     'if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then'
@@ -1125,6 +1219,7 @@ test_knobs_and_derived_variables
 test_external_preflight
 test_refused_flags
 test_nfs_overlay_preflight
+test_chaos_mesh_overlay_preflight
 test_kind_preflight_unchanged
 test_check_external_cluster
 test_resolve_api_server_egress
