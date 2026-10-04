@@ -340,6 +340,7 @@ func cinderJobSetParams(cinder *cinderv1alpha1.Cinder, configMapName string) dat
 		InstanceName:      cinder.Name,
 		Namespace:         cinder.Namespace,
 		Image:             cinder.Spec.Image.Reference(),
+		ImagePullPolicy:   cinder.Spec.Image.EffectivePullPolicy(),
 		ConfigMapName:     configMapName,
 		ConfigMountPath:   cinderConfigDir,
 		Env:               cinderWorkloadEnv(cinder),

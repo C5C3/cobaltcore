@@ -81,6 +81,7 @@ spec:
         - name: CINDER_AMQP_PORT
           value: "5672"
         image: ghcr.io/c5c3/cinder:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -240,6 +241,7 @@ spec:
               key: password
               name: cinder-service-user
         image: ghcr.io/c5c3/cinder:2026.1
+        imagePullPolicy: Always
         name: service-remove
         resources:
           limits:

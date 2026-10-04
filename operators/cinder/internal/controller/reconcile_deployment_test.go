@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -21,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
@@ -569,4 +571,53 @@ func TestBuildPodDisruptionBudget_FollowsTheHPAMinimum(t *testing.T) {
 	pdb = buildPodDisruptionBudget(cinder)
 	g.Expect(pdb.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
 	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+}
+
+// TestCinderWorkloads_ImagePullPolicy pins the pull policy of every container and init
+// container of every workload the operator renders from spec.image:
+// a tag without pullPolicy resolves to Always, a digest to IfNotPresent,
+// and an explicit pullPolicy wins over both.
+func TestCinderWorkloads_ImagePullPolicy(t *testing.T) {
+	podSpecs := func(o *cinderv1alpha1.Cinder) map[string]corev1.PodSpec {
+		return map[string]corev1.PodSpec{
+			"api":            buildCinderDeployment(o, workloadArtifacts(), workloadDigests{}).Spec.Template.Spec,
+			"scheduler":      buildSchedulerDeployment(o, workloadArtifacts(), workloadDigests{}, testEgressPort).Spec.Template.Spec,
+			"volume":         buildVolumeDeployment(o, testBackendProjection("nfs"), workloadArtifacts(), workloadDigests{}, testEgressPort).Spec.Template.Spec,
+			"service-remove": buildServiceRemoveJob(o, "nfs", workloadArtifacts()).Spec.Template.Spec,
+			"backup":         buildBackupDeployment(o, testBackupProjection(), nil, workloadArtifacts(), workloadDigests{}, testEgressPort).Spec.Template.Spec,
+			"db-purge":       dbPurgeCronJob(o, workloadArtifacts()).Spec.JobTemplate.Spec.Template.Spec,
+			"db-sync":        database.SyncJob(cinderJobSetParams(o, testConfigMapName)).Spec.Template.Spec,
+			"db-expand":      database.BuildJob(cinderJobSetParams(o, testConfigMapName), o.Spec.Image.Repository+":2026.2", "db-expand", nil, 4).Spec.Template.Spec,
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*commonv1.ImageSpec)
+		want   corev1.PullPolicy
+	}{
+		{name: "tag without pullPolicy", mutate: func(*commonv1.ImageSpec) {}, want: corev1.PullAlways},
+		{
+			name:   "digest without pullPolicy",
+			mutate: func(i *commonv1.ImageSpec) { i.Tag, i.Digest = "", "sha256:"+strings.Repeat("a", 64) },
+			want:   corev1.PullIfNotPresent,
+		},
+		{name: "explicit pullPolicy Never", mutate: func(i *commonv1.ImageSpec) { i.PullPolicy = corev1.PullNever }, want: corev1.PullNever},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			o := workloadCinder()
+			tc.mutate(&o.Spec.Image)
+
+			specs := podSpecs(o)
+			g.Expect(specs).To(HaveLen(8))
+			for name, spec := range specs {
+				containers := append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...)
+				g.Expect(containers).NotTo(BeEmpty(), name)
+				for _, c := range containers {
+					g.Expect(c.ImagePullPolicy).To(Equal(tc.want), "%s/%s", name, c.Name)
+				}
+			}
+		})
+	}
 }
