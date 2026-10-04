@@ -13,7 +13,7 @@
 #   3. The hypervisor render is the thirteen objects of the two operators,
 #      the libvirt DaemonSet, the migration port reservation, the CA, the
 #      compute CRs and the chart sources, and the namespace carries the
-#      Gardener opt-out label.
+#      Gardener opt-out label and the chaos-mesh.org/inject annotation.
 #   4. The libvirt DaemonSet runs in the host's namespaces, OnDelete, with the
 #      image pinned by its keeper tag and digest and pulled IfNotPresent, the
 #      hostPaths and the mount propagation libvirtd and nova-compute share,
@@ -46,13 +46,14 @@
 #      leaves no failed scope behind when a stop runs out.
 #  14. Each chart's tag and digest resolve to the same upstream artifact
 #      (one SKIP per chart when ghcr.io cannot be reached).
-#  15. The migration port reservation renders on its own as the namespace and
-#      one DaemonSet in the host's network and PID namespaces, with a
-#      privileged init container, an unprivileged second container and the
-#      node probe's image in both. Its range is the migration range of the
-#      node port check, and its script, run against a directory, adds the
-#      range to the reserved ports, keeps what is there, names the sockets
-#      that hold a port of the range, and fails without the sysctl file.
+#  15. The migration port reservation renders on its own as the namespace,
+#      annotated chaos-mesh.org/inject: enabled, and one DaemonSet in the
+#      host's network and PID namespaces, with a privileged init container,
+#      an unprivileged second container and the node probe's image in both.
+#      Its range is the migration range of the node port check, and its
+#      script, run against a directory, adds the range to the reserved
+#      ports, keeps what is there, names the sockets that hold a port of the
+#      range, and fails without the sysctl file.
 #
 # Checks 2 to 5, 7 to 10, 12, 13 and 15 are counted as SKIP when kustomize or
 # yq is not on PATH. A failing kustomize build counts them as FAIL and prints the
@@ -226,7 +227,7 @@ test_fixtures_render() {
 test_hypervisor_render_objects() {
   echo "Test: kustomize build deploy/lab/metal-stack/hypervisor"
 
-  render "$HYPERVISOR_DIR" 3 || return
+  render "$HYPERVISOR_DIR" 4 || return
 
   assert_eq "the render is the thirteen objects of the lab hypervisors" \
     "$(printf '%s\n' \
@@ -251,6 +252,8 @@ test_hypervisor_render_objects() {
       yq -N -r 'select(. != null and .kind != "Namespace") | .metadata.namespace' - | sort -u)"
   assert_eq "hypervisor-system opts out of Gardener's apiserver-proxy injection" "disable" \
     "$(val Namespace hypervisor-system '.metadata.labels["apiserver-proxy.networking.gardener.cloud/inject"]')"
+  assert_eq "hypervisor-system is selectable for Chaos Mesh, like every namespace of the lab" "enabled" \
+    "$(val Namespace hypervisor-system '.metadata.annotations["chaos-mesh.org/inject"]')"
 }
 
 # --- Test 4: the libvirt DaemonSet ---
@@ -1049,12 +1052,14 @@ tcp_line() {
 test_migration_port_reservation() {
   echo "Test: the migration port reservation"
 
-  render "$MIGRATION_PORTS_DIR" 26 || return
+  render "$MIGRATION_PORTS_DIR" 27 || return
 
   assert_eq "the render is the namespace and the reservation" \
     "$(printf '%s\n' DaemonSet/migration-port-reservation Namespace/hypervisor-system)" \
     "$(printf '%s\n' "$RENDERED" |
       yq -N -r 'select(. != null) | .kind + "/" + .metadata.name' - | sort)"
+  assert_eq "its namespace is selectable for Chaos Mesh" "enabled" \
+    "$(val Namespace hypervisor-system '.metadata.annotations["chaos-mesh.org/inject"]')"
 
   local pod='.spec.template.spec'
   assert_eq "the DaemonSet lives in hypervisor-system" "hypervisor-system" \

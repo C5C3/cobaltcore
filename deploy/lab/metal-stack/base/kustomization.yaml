@@ -20,7 +20,7 @@
 #     the suspended K-ORC Kustomization;
 #   - the 25m CPU request of the Flux controllers.
 #
-# Two things are lab-specific. The first is the OpenBao data volume's storage
+# Three things are lab-specific. The first is the OpenBao data volume's storage
 # class. The kind base pins `standard`, and the lab has a Lightbits `standard`
 # class too, so the pin would bind the volume to a class chosen by
 # coincidence. The patch removes the class (a null value deletes the key), and
@@ -61,6 +61,16 @@
 # stays one thing on the lab. The kind base creates all of them, so the patch
 # below needs no name.
 #
+# The third is the annotation chaos-mesh.org/inject: enabled on the same
+# namespaces, the scope of Chaos Mesh on the lab (D2 of #1219). The release
+# of ../chaos-mesh sets controllerManager.enableFilterNamespace: true, and its
+# controller then selects a pod only in a namespace that carries the
+# annotation. Without Chaos Mesh the annotation does nothing. The namespaces
+# the lab does not declare carry none: chaos-mesh itself, flux-system, which
+# the flux-operator install creates, and the platform's (kube-system,
+# firewall, metallb-system, default), whose pods connect the shoot to its
+# control plane. ../migration-ports annotates hypervisor-system the same way.
+#
 # The kind base sits outside this directory. A directory reference is allowed
 # under kustomize's default LoadRestrictionsRootOnly check (the kind base
 # itself references ../../flux-system), so `kubectl apply -k` works without
@@ -74,8 +84,8 @@ resources:
   - ../../../kind/base
 
 patches:
-  # Every Namespace of the render. kustomize replaces the patch's name with
-  # each target's own.
+  # Every Namespace of the render: the Gardener label and the Chaos Mesh
+  # annotation. kustomize replaces the patch's name with each target's own.
   - target:
       version: v1
       kind: Namespace
@@ -86,6 +96,8 @@ patches:
         name: every-namespace
         labels:
           apiserver-proxy.networking.gardener.cloud/inject: disable
+        annotations:
+          chaos-mesh.org/inject: enabled
 
   - target:
       group: helm.toolkit.fluxcd.io

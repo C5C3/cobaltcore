@@ -13,7 +13,9 @@
 #      twelve-listener openstack-gw Gateway and the nine suspended
 #      service-operator releases, no metrics-server or vertical-pod-autoscaler
 #      release (the platform runs both), and the Gardener apiserver-proxy
-#      opt-out label on every rendered Namespace.
+#      opt-out label and the chaos-mesh.org/inject: enabled annotation on
+#      every rendered Namespace, none of which is a platform namespace,
+#      flux-system or chaos-mesh.
 #   3. The infrastructure render carries MariaDB and both Garage volumes at
 #      one replica with no storage class, the NodePort EnvoyProxy on 31443,
 #      the paused proving OpenBaoCluster without egress fields
@@ -22,7 +24,8 @@
 #      line sets storageClass or storageClassName, so every volume binds to
 #      the cluster's default class.
 #   5. The kind infrastructure overlay still renders MariaDB on `standard`,
-#      so the lab overlay changed nothing under deploy/kind/.
+#      and the kind base annotates no Namespace for Chaos Mesh, so the lab
+#      overlay changed nothing under deploy/kind/.
 #
 # Checks 2 to 5 are counted as SKIP when kustomize or yq is not on PATH; a
 # failing kustomize build counts them as FAIL and prints the build's error. An
@@ -48,6 +51,7 @@ LAB_DIR="$PROJECT_ROOT/deploy/lab/metal-stack"
 BASE_DIR="$LAB_DIR/base"
 INFRA_DIR="$LAB_DIR/infrastructure"
 KIND_INFRA_DIR="$PROJECT_ROOT/deploy/kind/infrastructure"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
 
 SERVICE_OPERATORS="keystone horizon glance placement barbican ovn neutron cinder nova"
 
@@ -79,7 +83,7 @@ test_files_have_spdx_and_one_resource() {
 test_base_render() {
   echo "Test: kustomize build deploy/lab/metal-stack/base"
 
-  render "$BASE_DIR" 21 || return
+  render "$BASE_DIR" 23 || return
 
   assert_eq "HelmRelease openbao names no storage class" "false" \
     "$(val HelmRelease openbao '.spec.values.server.dataStorage | has("storageClass")')"
@@ -115,6 +119,20 @@ test_base_render() {
   assert_eq "the base renders namespaces" "true" "$([[ "$namespaces" -gt 0 ]] && echo true || echo false)"
   assert_eq "every rendered Namespace opts out of Gardener's KUBERNETES_SERVICE_HOST injection ($namespaces)" \
     "$namespaces" "$labelled"
+  # The scope of the lab's Chaos Mesh, whose release filters by namespace
+  # (deploy/lab/metal-stack/chaos-mesh): every namespace the lab declares.
+  local annotated
+  annotated="$(printf '%s\n' "$RENDERED" |
+    yq -N -r 'select(.kind == "Namespace" and .metadata.annotations["chaos-mesh.org/inject"] == "enabled") | .metadata.name' - |
+    grep -c .)"
+  assert_eq "every rendered Namespace is selectable for Chaos Mesh ($namespaces)" \
+    "$namespaces" "$annotated"
+  # The scope stops at the lab's own namespaces: the platform's, flux-system
+  # and chaos-mesh must never be rendered here, or the patch annotates them.
+  assert_eq "no platform, Flux or Chaos Mesh namespace is in the Chaos Mesh scope" "" \
+    "$(printf '%s\n' "$RENDERED" |
+      yq -N -r 'select(.kind == "Namespace" and .metadata.annotations["chaos-mesh.org/inject"] == "enabled") | .metadata.name' - |
+      grep -xE 'kube-system|kube-public|kube-node-lease|default|firewall|metallb-system|flux-system|chaos-mesh' || true)"
   assert_no_class "base"
 }
 
@@ -170,10 +188,15 @@ assert_no_class() {
 test_kind_overlay_unchanged() {
   echo "Test: kustomize build deploy/kind/infrastructure still renders MariaDB on standard"
 
-  render "$KIND_INFRA_DIR" 1 || return
+  if render "$KIND_INFRA_DIR" 1; then
+    assert_eq "the kind MariaDB stays on the standard class" "standard" \
+      "$(val MariaDB openstack-db '.spec.storage.storageClassName')"
+  fi
 
-  assert_eq "the kind MariaDB stays on the standard class" "standard" \
-    "$(val MariaDB openstack-db '.spec.storage.storageClassName')"
+  # kind keeps the Chaos Mesh namespace filter off, so it needs no annotation.
+  render "$KIND_BASE_DIR" 1 || return
+  assert_eq "no Namespace of the kind base carries chaos-mesh.org/inject" "0" \
+    "$(grep -c 'chaos-mesh.org/inject' <<<"$RENDERED")"
 }
 
 # --- Run ---
