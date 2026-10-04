@@ -11,11 +11,11 @@ SPDX-License-Identifier: Apache-2.0
 
 This guide builds the metal-stack devstack of the
 [guide conventions](./contributing/guide-conventions.md#one-devstack-per-guide)
-on a Gardener shoot with two workers. Part 1 deploys the infrastructure stack and
-the full ControlPlane, reached through a port-forward. Part 2 turns both
-workers into KVM hypervisors of that ControlPlane and boots a server on each.
-One server gets a Cinder volume and keeps it through a live migration and the
-eviction of its node, and the volume is backed up after the detach. The
+on a Gardener shoot with two or more workers. Part 1 deploys the infrastructure
+stack and the full ControlPlane, reached through a port-forward. Part 2 turns
+every worker into a KVM hypervisor of that ControlPlane and boots a server on
+each. One server gets a Cinder volume and keeps it through a live migration and
+the eviction of its node, and the volume is backed up after the detach. The
 teardown leaves the cluster as bare as it was. The ControlPlane CR is the one
 of the [Quick Start (ControlPlane)](./quick-start-controlplane.md) with its
 block-storage block and three lab settings; read Steps 3 and 4 there for its
@@ -27,8 +27,8 @@ The lab assumes a cluster of this shape:
 
 | The lab assumes | Where it shows |
 | --- | --- |
-| A Gardener shoot on metal-stack with two Ready workers that carry the same `topology.kubernetes.io/zone` label | `kubectl get nodes -L topology.kubernetes.io/zone` |
-| `/dev/kvm` on both workers and the same CPU model; `deploy/lab/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe, `== kvm device` and `== cpu` |
+| A Gardener shoot on metal-stack with two or more Ready workers that carry the same `topology.kubernetes.io/zone` label | `kubectl get nodes -L topology.kubernetes.io/zone` |
+| `/dev/kvm` on every worker and the same CPU model; `deploy/lab/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe, `== kvm device` and `== cpu` |
 | The module files `vhost_net`, `openvswitch` and `geneve` for the running kernel | probe, `== module files for <kernel>` |
 | For the NFS stack that holds Cinder's volumes and backups: the module files `nfsd`, `nfs` and `nfsv4` for the running kernel | probe, `== module files for <kernel>` |
 | cgroup v2 | probe, `== cgroup` |
@@ -66,7 +66,7 @@ export KUBECONFIG="$PWD/kubeconfig"
 kubectl get nodes
 ```
 
-Both workers report `Ready`. Every command on this page runs from this
+Every worker reports `Ready`. Every command on this page runs from this
 directory with `KUBECONFIG` set this way.
 
 ### Step 2: Probe the nodes {#cp-probe}
@@ -247,7 +247,7 @@ with the `python-barbicanclient` plugin, and
 
 ## Part 2: The hypervisors {#hypervisors}
 
-Part 2 turns both workers into KVM hypervisors and boots a server on each. It
+Part 2 turns every worker into a KVM hypervisor and boots a server on each. It
 attaches a Cinder volume to one of them, live-migrates that server and evicts
 its node with the volume attached, then detaches the volume and backs it up.
 It needs three things, whatever brought them up: a `Ready` ControlPlane
@@ -355,7 +355,7 @@ openstack hypervisor list
 openstack aggregate list
 ```
 
-`novacompute/lab` turns `Ready` only once Nova has mapped both hosts into the
+`novacompute/lab` turns `Ready` only once Nova has mapped every host into the
 cell, so the servers of Step 5 can be scheduled at once.
 
 Each `Hypervisor` shows `True` in the `LIBVIRTD`, `LIBVIRT` and `TLS` columns.
@@ -365,34 +365,40 @@ the next step name.
 
 ### Step 5: Boot a server on each node {#hv-boot}
 
-Create a network without a router and boot one server on each node:
+Create a network without a router and boot one server on each node. The loop
+counts the nodes from 0, as a slice does, and boots `lab-<n>` on the node
+`${nodes[@]:<n>:1}` names: `lab-0` on the first node, `lab-1` on the second.
+Steps 6 to 10 use these two:
 
 ```bash
 openstack network create lab-net
 openstack subnet create lab-subnet --network lab-net --subnet-range 192.168.77.0/24
 openstack network show lab-net -c mtu -f value
-openstack server create lab-a --image cirros-kvm --flavor 1 --network lab-net \
-  --availability-zone "${zone}:${nodes[@]:0:1}" --wait
-openstack server create lab-b --image cirros-kvm --flavor 1 --network lab-net \
-  --availability-zone "${zone}:${nodes[@]:1:1}" --wait
+i=0
+for node in "${nodes[@]}"; do
+  openstack server create "lab-${i}" --image cirros-kvm --flavor 1 \
+    --network lab-net --availability-zone "${zone}:${node}" --wait
+  i=$((i + 1))
+done
 for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
   kubectl exec -n openstack "${pod}" -c libvirtd -- virsh list
 done
 ```
 
-The network's MTU prints `1402`. Both servers reach `ACTIVE`, each on the node
-its availability zone names, and each libvirt pod lists one running domain.
+The network's MTU prints `1402`. Every server reaches `ACTIVE`, each on the
+node its availability zone names, and each libvirt pod lists one running
+domain.
 
 ### Step 6: Check metadata and the tunnel from the console {#hv-console}
 
 A server on a network without a router is reached through its console. Print
-`lab-b`'s address, then open the console of `lab-a` in the libvirt pod of its
+`lab-1`'s address, then open the console of `lab-0` in the libvirt pod of its
 node:
 
 ```bash
-openstack server show lab-b -c addresses -f value
-host=$(openstack server show lab-a -c OS-EXT-SRV-ATTR:host -f value)
-domain=$(openstack server show lab-a -c OS-EXT-SRV-ATTR:instance_name -f value)
+openstack server show lab-1 -c addresses -f value
+host=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:host -f value)
+domain=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:instance_name -f value)
 libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
   --field-selector "spec.nodeName=${host}" -o name)
 kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${domain}"
@@ -401,42 +407,42 @@ kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${d
 Press Enter for the login prompt and log in as `cirros` with the password
 `gocubsgo`. In a browser, the noVNC console of
 [Expose the Console Proxy](./guides/nova/expose-the-console-proxy.md) reaches
-the same server. On the console, with `<lab-b>` replaced by the address the
+the same server. On the console, with `<lab-1>` replaced by the address the
 first command printed:
 
 ```sh
 curl http://169.254.169.254/latest/meta-data/instance-id
-ping -c 3 <lab-b>
-ping -c 3 -s 1374 -M do <lab-b>
-ping -c 1 -s 1375 -M do <lab-b>
+ping -c 3 <lab-1>
+ping -c 3 -s 1374 -M do <lab-1>
+ping -c 1 -s 1375 -M do <lab-1>
 ```
 
 The metadata call prints an instance ID, which proves the metadata agent on
-`lab-a`'s node answers. The plain ping and the 1374-byte ping pass through the
-Geneve tunnel between the nodes: 1374 bytes of payload and 28 bytes of ICMP and
-IPv4 headers fill the network's MTU of 1402. The 1375-byte ping fails, because
-the packet does not fit and `-M do` forbids fragmenting it. Leave the console
-with `Ctrl+]`.
+`lab-0`'s node answers. The plain ping and the 1374-byte ping pass through the
+Geneve tunnel between the first two nodes: 1374 bytes of payload and 28 bytes
+of ICMP and IPv4 headers fill the network's MTU of 1402. The 1375-byte ping
+fails, because the packet does not fit and `-M do` forbids fragmenting it.
+Leave the console with `Ctrl+]`.
 
 ### Step 7: Attach a volume {#hv-volume}
 
 Create a 1 GiB volume, which the scheduler places on the backend `nfs1`, and
-attach it to `lab-a`. Both volume commands return before the volume reaches
+attach it to `lab-0`. Both volume commands return before the volume reaches
 the status the next command needs, so a bounded wait for that status follows
-each; a wait that runs out exits 124. `lab-a` is still on the node of Step 6,
+each; a wait that runs out exits 124. `lab-0` is still on the node of Step 6,
 so the step uses `libvirt_pod` and `domain` from there:
 
 ```bash
 openstack volume create --size 1 lab-vol
 timeout 120 bash -c 'until [ "$(openstack volume show lab-vol -c status -f value)" = available ]; do sleep 2; done'
-openstack server add volume lab-a lab-vol
+openstack server add volume lab-0 lab-vol
 timeout 120 bash -c 'until [ "$(openstack volume show lab-vol -c status -f value)" = in-use ]; do sleep 2; done'
 volume=$(openstack volume show lab-vol -c id -f value)
 kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
   sh -c "grep ' /var/lib/nova/mnt/' /proc/mounts; stat -c '%u:%g %a %n' /var/lib/nova/mnt/*/volume-${volume}"
 ```
 
-The last command runs in the libvirt pod of `lab-a`'s node and prints two
+The last command runs in the libvirt pod of `lab-0`'s node and prints two
 lines: the `nfs4` mount of `nfs-server.openstack.svc.cluster.local:/volumes`
 below `/var/lib/nova/mnt/<md5>`, and
 `42424:42424 660 /var/lib/nova/mnt/<md5>/volume-<id>`. `nova-compute` mounted
@@ -446,7 +452,7 @@ Cinder's owner and mode, so libvirt changed no owner on the attach (see
 `dynamic_ownership` in
 [Lab hypervisors](./reference/infrastructure/infrastructure-manifests.md#lab-hypervisors)).
 
-Open the console of `lab-a` as in Step 6:
+Open the console of `lab-0` as in Step 6:
 
 ```bash
 kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${domain}"
@@ -473,22 +479,22 @@ volume. Leave the console with `Ctrl+]`.
 ### Step 8: Live-migrate a server {#hv-migrate}
 
 ```bash
-openstack server migrate --live-migration --wait lab-a
-openstack server show lab-a -c OS-EXT-SRV-ATTR:host -f value
-openstack server migration list --server lab-a
+openstack server migrate --live-migration --wait lab-0
+openstack server show lab-0 -c OS-EXT-SRV-ATTR:host -f value
+openstack server migration list --server lab-0
 ```
 
-`lab-a` now runs on another node, which the second command prints, and the
+`lab-0` now runs on another node, which the second command prints, and the
 migration list shows the migration `completed`. libvirt carried it over TLS
 between the nodes, with the CPU model that `cpuModels` names in
-`deploy/lab/metal-stack/hypervisor/compute.yaml`, which both nodes provide.
+`deploy/lab/metal-stack/hypervisor/compute.yaml`, which every node provides.
 
 The volume moved with the server. Read the mount and the volume file on the
 destination node, with `volume` from Step 7 and `domain` from Step 6, and open
 the console there:
 
 ```bash
-host=$(openstack server show lab-a -c OS-EXT-SRV-ATTR:host -f value)
+host=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:host -f value)
 libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
   --field-selector "spec.nodeName=${host}" -o name)
 kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
@@ -511,9 +517,9 @@ mount. Leave the console with `Ctrl+]`.
 
 ### Step 9: Evict a node {#hv-evict}
 
-The step evicts the node that holds `lab-a`, which `host` names since Step 8.
+The step evicts the node that holds `lab-0`, which `host` names since Step 8.
 Manual maintenance makes the hypervisor operator create an `Eviction` that
-live-migrates every server off the node, `lab-a` with its volume:
+live-migrates every server off the node, `lab-0` with its volume:
 
 ```bash
 kubectl patch hypervisor "${host}" --type merge \
@@ -534,17 +540,17 @@ wait alone exits 1 with `Error from server (NotFound)` while it is missing.
 The server list of the evicted node is empty. The second patch clears
 `maintenance`, which deletes the `Eviction`; sent before the wait succeeded,
 it would leave the servers not yet moved on the node. After it, the node's
-compute service is `enabled` and `up` again. The volume moved with `lab-a` and
+compute service is `enabled` and `up` again. The volume moved with `lab-0` and
 is still `in-use`.
 
 ### Step 10: Detach the volume and back it up {#hv-backup}
 
-Detach the volume from `lab-a`, check that no node keeps the share mounted and
+Detach the volume from `lab-0`, check that no node keeps the share mounted and
 that Cinder still reads the volume file, with `volume` from Step 7, then back
 the volume up:
 
 ```bash
-openstack server remove volume lab-a lab-vol
+openstack server remove volume lab-0 lab-vol
 timeout 120 bash -c 'until [ "$(openstack volume show lab-vol -c status -f value)" = available ]; do sleep 2; done'
 for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
   kubectl exec -n openstack "${pod}" -c libvirtd -- sh -c "grep -c ' /var/lib/nova/mnt/' /proc/mounts || true"
@@ -571,12 +577,12 @@ nothing has run on backends the operator renders with
 
 Delete the backup, the servers, the volume and the network, then the stack.
 The volume goes after the servers: a run that stopped before
-[Part 2, Step 10](#hv-backup) left it attached to `lab-a`, deleting the server
+[Part 2, Step 10](#hv-backup) left it attached to `lab-0`, deleting the server
 detaches it, and Cinder deletes no attached volume:
 
 ```bash
 openstack volume backup delete lab-bk
-openstack server delete --wait lab-a lab-b
+openstack server delete --wait $(openstack server list --name '^lab-[0-9]+$' -f value -c ID)
 openstack volume delete lab-vol
 openstack subnet delete lab-subnet
 openstack network delete lab-net
@@ -606,7 +612,7 @@ have no router, so a server is reached through its console.
 
 A server lives on its worker's local disk, under `/var/lib/nova`. A worker that
 Gardener replaces, after a machine update or a failed health check, takes its
-servers with it unless [Part 2, Step 9](#hv-evict) moved them to the other
+servers with it unless [Part 2, Step 9](#hv-evict) moved them to another
 worker first. With one worker left, no node can receive them.
 
 Every Cinder volume and backup of the lab lives on one NFS server pod with one
@@ -629,10 +635,11 @@ Part 1, Step 7, Part 2, Steps 7 and 10, the volume checks of Steps 8 and 9, and
 the deletes of the backup and the volume in the Teardown. The node selection
 of Part 2 changed after the run: a command that needs one node takes it from
 `nodes` by slice, and Step 9 evicts the node `host` names. On 2026-10-04, on
-`forge`, the opening block of Part 2 read the same zone in bash and in zsh, and
-the two `--availability-zone` values of Step 5 expanded in both shells to the
-ones the earlier block gives in bash. Steps 5 and 9 have not run with the
-change. The port-forward of
+`forge`, the opening block of Part 2 read the same zone in bash and in zsh.
+Step 5 changed after that: it boots `lab-<n>` on every node, where the run
+booted `lab-a` and `lab-b` on two, and the Teardown deletes every `lab-<n>`.
+Steps 5 and 9 and the server delete of the Teardown have not run with the
+changes, and no run had more than two workers. The port-forward of
 Part 1, Step 6 ran in a second terminal until the teardown had finished and
 was then stopped. The console commands of Part 2, Step 6 were typed by a
 script. The teardown waited 93 seconds for the stack's objects in `openstack`

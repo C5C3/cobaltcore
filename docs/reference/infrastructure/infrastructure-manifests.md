@@ -3130,15 +3130,15 @@ Cinder volume attached and the volume's backup.
 
 #### Checks outside the quick start
 
-These checks need a lab on which Part 2 of the quick start has booted `lab-a`
-and `lab-b`. They confirm that the images the manifests name are published,
+These checks need a lab on which Part 2 of the quick start has booted a server
+on every node. They confirm that the images the manifests name are published,
 read the value the manifests copy from the ControlPlane,
 show that a server survives a restart of its libvirt pod and that its console
 log keeps growing, and show that a live migration dials libvirt over TLS:
 
 ```bash
-# lab-a and lab-b run (Part 2, Step 5 of docs/quick-start-metal-stack.md),
-# lab-a on the first node, ${nodes[@]:0:1}
+# a server runs on every node (Part 2, Step 5 of docs/quick-start-metal-stack.md),
+# lab-0 on the first node, ${nodes[@]:0:1}
 nodes=($(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'))
 
 # the images; the libvirt keeper tag still names the digest the DaemonSet pins
@@ -3154,23 +3154,23 @@ kubectl get nova controlplane-nova -n openstack -o jsonpath='{.spec.keystoneEndp
 kubectl delete pod -n openstack -l app.kubernetes.io/name=libvirt \
   --field-selector "spec.nodeName=${nodes[@]:0:1}"
 kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=10m
-openstack --insecure server show lab-a -c status -f value
+openstack --insecure server show lab-0 -c status -f value
 libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
   --field-selector "spec.nodeName=${nodes[@]:0:1}" -o name)
-console_log="/var/lib/nova/instances/$(openstack --insecure server show lab-a -c id -f value)/console.log"
+console_log="/var/lib/nova/instances/$(openstack --insecure server show lab-0 -c id -f value)/console.log"
 kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- stat -c %s "${console_log}"
 kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
-  virsh reset "$(openstack --insecure server show lab-a -c OS-EXT-SRV-ATTR:instance_name -f value)"
+  virsh reset "$(openstack --insecure server show lab-0 -c OS-EXT-SRV-ATTR:instance_name -f value)"
 sleep 30
 kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- stat -c %s "${console_log}"
-openstack --insecure console log show lab-a | tail -n 3
+openstack --insecure console log show lab-0 | tail -n 3
 
 # the source libvirtd logs its migration steps
 kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
   bash -c 'virt-admin daemon-log-filters 1:qemu.qemu_migration && virt-admin daemon-log-outputs 1:stderr'
 ```
 
-The restart check prints the size of `lab-a`'s console log before and after a
+The restart check prints the size of `lab-0`'s console log before and after a
 reset of the guest, and the second number is larger.
 
 Then run the live migration of
@@ -3221,7 +3221,7 @@ element at each point:
 
 ```bash
 # after Part 2, Steps 1 to 5 of docs/quick-start-metal-stack.md, without
-# lab-a and lab-b; nodes and zone come from the opening block of Part 2
+# the servers of Step 5; nodes and zone come from the opening block of Part 2
 
 compute_selector=app.kubernetes.io/instance=lab,app.kubernetes.io/component=nova-compute
 # prints the name of the nova-compute pod on the first node

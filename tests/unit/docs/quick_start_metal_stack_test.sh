@@ -46,6 +46,9 @@
 #      section of infrastructure-manifests.md that builds on Part 2, indexes
 #      a shell array by number or names a node as `nodes[<n>]`: bash counts
 #      an array index from 0 and zsh from 1
+#  15. Part 2, Step 5 boots a server on every node: its one server create
+#      runs in a loop over `nodes` and names the loop's node as the host of
+#      the availability zone
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -348,8 +351,8 @@ test_one_runbook() {
   for command in \
     'kubectl apply -k deploy/lab/metal-stack/controlplane' \
     'kubectl apply -k deploy/lab/metal-stack/hypervisor-fixtures' \
-    'server create lab-a' \
-    'server add volume lab-a lab-vol'; do
+    'server create "lab-${i}"' \
+    'server add volume lab-0 lab-vol'; do
     count="$(grep -cF -- "$command" "$QUICK_START_DOC" || true)"
     assert_eq "'$command' occurs on one line of the page" "1" "$count"
     count="$(grep -cF -- "$command" "$INFRA_MANIFESTS" || true)"
@@ -416,14 +419,14 @@ test_blocks_pass_on_first_run() {
   # volume only with --force.
   assert_once_in_order "the volume create, the attach, the detach and the backup create" "$page" \
     'openstack volume create --size 1 lab-vol' \
-    'openstack server add volume lab-a lab-vol' \
-    'openstack server remove volume lab-a lab-vol' \
+    'openstack server add volume lab-0 lab-vol' \
+    'openstack server remove volume lab-0 lab-vol' \
     'openstack volume backup create --name lab-bk lab-vol'
   local pair command status next
   for pair in \
     'openstack volume create --size 1 lab-vol|available' \
-    'openstack server add volume lab-a lab-vol|in-use' \
-    'openstack server remove volume lab-a lab-vol|available' \
+    'openstack server add volume lab-0 lab-vol|in-use' \
+    'openstack server remove volume lab-0 lab-vol|available' \
     'openstack volume backup create --name lab-bk lab-vol|available'; do
     command="${pair%|*}"
     status="${pair##*|}"
@@ -476,7 +479,7 @@ test_teardown_order() {
   assert_not_empty "the Teardown section holds a bash block" "$block"
   assert_once_in_order "the backup, server and volume deletes and the stack teardown" "$block" \
     'volume backup delete lab-bk' \
-    'server delete --wait lab-a lab-b' \
+    "server delete --wait \$(openstack server list --name '^lab-[0-9]+\$'" \
     'volume delete lab-vol' \
     'make teardown-infra'
 }
@@ -515,6 +518,21 @@ test_no_array_index() {
   assert_no_array_index "the Checks outside the quick start" "$checks"
 }
 
+# --- Test 15: Step 5 boots a server on every node ---
+# A server create per node taken by slice leaves every node past the ones it
+# names without a server, so Step 5 creates the servers in a loop over nodes.
+test_step_5_boots_every_node() {
+  echo "Test: Part 2, Step 5 boots a server on every node"
+  local step
+  step="$(section '^## Part 2: ' |
+    awk '/^### Step 5:/ { inside = 1; next } inside && /^### / { exit } inside { print }')"
+  assert_not_empty "Part 2 holds Step 5" "$step"
+  assert_once_in_order "the loop over nodes, the server create and its availability zone" "$step" \
+    'for node in "${nodes[@]}"; do' \
+    'openstack server create "lab-${i}"' \
+    '--availability-zone "${zone}:${node}"'
+}
+
 test_frontmatter
 test_sidebar
 test_sections
@@ -529,6 +547,7 @@ test_no_hand_steps
 test_prerequisites_name_no_pinned_value
 test_teardown_order
 test_no_array_index
+test_step_5_boots_every_node
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
