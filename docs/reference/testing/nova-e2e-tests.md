@@ -142,6 +142,52 @@ and `pod-security-restricted`. Shard 1 runs every other suite, so a new suite
 runs there until the `Run E2E tests` step in `.github/workflows/ci.yaml` names
 it for shard 2. See [CI Workflow](../ci-cd/ci-workflow.md#e2e-operator).
 
+### The libvirt leg
+
+Every suite under `tests/e2e/nova/` that runs a nova-compute runs it on the
+fake driver. One suite runs it on Nova's libvirt driver: `tests/e2e-nova-libvirt/server-boot/`, under a suite
+root of its own with its own Chainsaw configuration. It lives outside
+`tests/e2e/nova/` because the nova leg sweeps every directory there and is
+blocking, while this suite runs in the non-blocking `e2e-nova-libvirt` job.
+
+The suite brings up the stack of `compute-node-pool` from that suite's own
+fixtures `00` to `11`, which it applies by path, and runs the boot and delete
+Jobs `15` and `16` the same way. Its three files of its own are
+`00-libvirt.yaml`, `01-novacompute-libvirt.yaml` and `chainsaw-test.yaml`.
+libvirtd runs in the DaemonSet `libvirt-e2e` from `ghcr.io/c5c3/libvirt:latest`,
+privileged, in the node's network namespace, with the node's `/run/libvirt`
+and `/var/lib/nova` shared with the pool's pod. The pool `pool-libvirt` sets
+`virtType: qemu` and no `spec.extraConfig`, so nova-compute runs
+`libvirt.LibvirtDriver` under QEMU's TCG emulation, which needs no `/dev/kvm`.
+
+The server `s1` boots from the 1 MiB zero image the stack seeds and carries no
+NIC. With no operating system on the disk the guest never gets past its
+firmware, but the domain runs, and the suite checks three things once Nova
+reports `ACTIVE`:
+
+- `virsh list --state-running --uuid` in the libvirt pod prints exactly one
+  UUID, so libvirtd started the domain nova-compute defined;
+- the domain XML opens with `<domain type='qemu'`, so the pool's `virt_type`
+  reached the driver, and names `/var/lib/nova/instances/<uuid>/disk` as the
+  source of a qcow2 disk, so the domain runs from the file the next check
+  inspects;
+- `qemu-img info --force-share` on the instance disk reports a qcow2 file with
+  a backing file under `/var/lib/nova/instances/_base/`, so nova-compute
+  fetched the image from Glance and built the disk with its own tooling.
+
+Deleting the server leaves `virsh list --all --uuid` empty and removes the
+instance directory.
+
+A local run needs one amd64 node, the stack's infrastructure
+(`WITH_OVN_KERNEL_MODULES=true WITH_MESSAGING=true make deploy-infra`) and the
+six operators the nova leg deploys. `make e2e-nova-libvirt` checks the three
+preconditions and names the one that is missing. The guest operating system,
+KVM, networking and live migration are not part of this suite: the lab run of
+the Quick Start (metal-stack) proves them, in
+[Check metadata and the tunnel from the console](../../quick-start-metal-stack.md#hv-console)
+and [Live-migrate a server](../../quick-start-metal-stack.md#hv-migrate). See
+[CI Workflow](../ci-cd/ci-workflow.md#e2e-nova-libvirt).
+
 ## Prerequisites
 
 | Prerequisite | Details |
@@ -1088,6 +1134,13 @@ tests/e2e/nova/
 tests/e2e/nova-operator/
 └── metrics/
     └── chainsaw-test.yaml             nova-operator chart ServiceMonitor
+
+tests/e2e-nova-libvirt/
+├── chainsaw-config.yaml               Chainsaw configuration of the libvirt suite root
+└── server-boot/
+    ├── chainsaw-test.yaml             A server on the libvirt driver under TCG, and its delete
+    ├── 00-libvirt.yaml                ConfigMap and DaemonSet libvirt-e2e
+    └── 01-novacompute-libvirt.yaml    NovaCompute pool-libvirt with virtType: qemu
 ```
 
 ## Related Resources
@@ -1096,5 +1149,6 @@ tests/e2e/nova-operator/
 - [Nova Reconciler Architecture](../nova/nova-reconciler.md): sub-reconciler contracts and unit tests
 - [Chaos E2E Test Suites](./chaos-e2e-tests.md): the three Nova outage suites on the chaos `nova` leg
 - [CI Workflow](../ci-cd/ci-workflow.md): the `e2e-operator` matrix leg that runs these suites
+- [CI Workflow](../ci-cd/ci-workflow.md#e2e-nova-libvirt): the `e2e-nova-libvirt` job that runs the libvirt suite
 - [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md): infrastructure stack deployment and `WITH_MESSAGING`
 - `tests/e2e/chainsaw-config.yaml`: shared Chainsaw configuration

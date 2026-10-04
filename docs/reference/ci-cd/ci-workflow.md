@@ -226,8 +226,10 @@ E2E Jobs (pull requests only, depend on build-e2e-images):
                      if: needs.changes.outputs.e2e-autoscaling == 'true'
   e2e-ovn-overlay > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-ovn-overlay == 'true'
+  e2e-nova-libvirt > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+                     if: needs.changes.outputs.e2e-nova-libvirt == 'true'
   tempest ────────> needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
-  cleanup-e2e-tags > needs: [build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, tempest]
+  cleanup-e2e-tags > needs: [build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, e2e-nova-libvirt, tempest]
 
 Publish Jobs (push events only — main and v* tags; publish-only-on-merge):
   build-and-push (matrix: operator × platform) ──> needs: [changes], if: push && has-e2e-operators == 'true'
@@ -1159,6 +1161,56 @@ finishes.
 code change and any E2E test-definition change also force the job on, through
 `go_changed` and `any_e2e_tests` in `ci-resolve-changes.sh`.
 
+### e2e-nova-libvirt
+
+Runs the `tests/e2e-nova-libvirt/server-boot/` Chainsaw suite, which boots a
+server through Nova's libvirt driver on the one node of a
+`hack/kind-config.yaml` cluster. The suite brings up the 2025.2 stack of
+`tests/e2e/nova/compute-node-pool/` from that suite's own fixtures, starts
+libvirtd in the DaemonSet `libvirt-e2e` and applies a `NovaCompute` pool with
+`virtType: qemu`. The server boots from the stack's 1 MiB zero image under
+QEMU's TCG emulation, which needs no `/dev/kvm` on the runner. The suite
+asserts that the pool is `Ready` with its node `Active` and the compute service
+up, that the rendered `compute-pool.conf` names `libvirt.LibvirtDriver` and
+`virt_type = qemu`, and that the server goes `ACTIVE` with exactly one running
+domain of type `qemu`. The domain's disk is a qcow2 overlay on a base file
+under `/var/lib/nova/instances/_base/`. Deleting the server removes the domain
+and the instance directory. The guest has no operating system and no NIC: the
+guest boot, KVM, networking and live migration are proven by the lab run of
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md).
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs only when `e2e-nova-libvirt == 'true'`, the upstream
+`build-e2e-images` job succeeded, and no dependency failed or was cancelled.
+
+The job runs on `self-hosted` with `continue-on-error: true` under the
+kernel-module rule above: the pool's chassis gate needs an `OVNChassis` on the
+node, and that needs `openvswitch` on the runner host. It runs alone on its
+runner, since `hack/kind-config.yaml` binds host ports 443 and 8428, and its
+wall is 90 minutes. The cluster comes from `config: hack/kind-config.yaml`, and
+`setup-e2e-infra` receives `WITH_OVN_KERNEL_MODULES: "true"` and
+`WITH_MESSAGING: "true"`. `hack/ci-deploy-operator.sh` then installs the
+keystone, placement, glance, ovn, neutron and nova operators in that order,
+each into `<op>-system`, and the suite runs through `make e2e-nova-libvirt`,
+the target a developer calls locally.
+
+The job loads 14 images: the six operators at `:dev`, `keystone`, `placement`,
+`glance`, `neutron`, `nova` and `nova-compute` at `2025.2`, the OVN daemon image
+at the tag `hack/ci-resolve-ovn-version.sh` reads, and `tempest:2025.2`, whose
+`openstack` client the suite's Jobs run. It loads no libvirt image: the image
+is not in the E2E image map, and the kind node pulls the public
+`ghcr.io/c5c3/libvirt:latest` that `main` published. Diagnostics run with
+`OPERATOR: nova` and then once per sibling with `OPERATOR_ONLY=1`, and
+`_output/reports/` is uploaded as the `e2e-nova-libvirt-junit-report` artifact
+(14-day retention). `cleanup-e2e-tags` lists the job in its `needs`.
+
+**Path filter:** `tests/e2e-nova-libvirt/**`,
+`tests/e2e/nova/compute-node-pool/**` and `tests/e2e/cinder/broker-vhost.sh`
+(the `tests_nova_libvirt` class), `operators/nova/**` (`nova`), and
+`images/nova/**`, `images/nova-compute/**` and `patches/nova/**`
+(`image_nova`). A shared Go change does not schedule the job, and `ci:full`
+forces it on.
+
 ### e2e-prometheus
 
 End-to-end kube-prometheus-stack tests using kind cluster, Flux-managed
@@ -1581,7 +1633,7 @@ per-platform manifests untagged via `push-by-digest` and needs those digests
 intact for `merge-operator-images` (GH-312).
 
 **Dependencies:** `needs: [changes, build-e2e-images, e2e-operator,
-e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, tempest]`
+e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, e2e-nova-libvirt, tempest]`
 **Permissions:** `contents: read`, `packages: write`
 
 The job is `continue-on-error`: pruning is housekeeping, and a package whose only
