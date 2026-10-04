@@ -59,6 +59,12 @@ const (
 // tracking/upgrades, which key on the tag; the managed ControlPlane path always
 // projects a tag, so it is unaffected.
 //
+// The pull policy of a container that runs the image resolves at render time
+// (EffectivePullPolicy): PullPolicy when set, else the operator's process-wide
+// default (--default-image-pull-policy) when set, else IfNotPresent for a
+// digest and Always for a tag. No webhook writes PullPolicy, so a stored CR
+// does not freeze the default of the operator release that admitted it.
+//
 // +kubebuilder:validation:XValidation:rule="has(self.tag) != has(self.digest)",message="exactly one of image.tag or image.digest must be set"
 type ImageSpec struct {
 	// Repository is the OCI image repository, optionally including the registry
@@ -84,6 +90,14 @@ type ImageSpec struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
 	Digest string `json:"digest,omitempty"`
+	// PullPolicy sets imagePullPolicy on every container that runs this image.
+	// Empty leaves the choice to the operator default and then to the rule:
+	// IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+	// is schema-only and has no webhook twin: a CRD older than the operator
+	// prunes the field before any webhook sees it, so a twin could never answer.
+	// +optional
+	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never
+	PullPolicy corev1.PullPolicy `json:"pullPolicy,omitempty"`
 }
 
 // Reference returns the fully-qualified image reference the workloads consume:
@@ -93,6 +107,35 @@ func (i ImageSpec) Reference() string {
 		return i.Repository + "@" + i.Digest
 	}
 	return i.Repository + ":" + i.Tag
+}
+
+// defaultPullPolicy is the process-wide policy EffectivePullPolicy returns for
+// a reference that names none. Empty selects the digest/tag rule.
+var defaultPullPolicy corev1.PullPolicy
+
+// SetDefaultPullPolicy sets the process-wide policy EffectivePullPolicy
+// returns for a reference that names none. Empty restores the rule. The
+// operator calls it once, from the flag --default-image-pull-policy, before
+// any controller starts, and never afterwards; the variable has no lock.
+func SetDefaultPullPolicy(p corev1.PullPolicy) {
+	defaultPullPolicy = p
+}
+
+// EffectivePullPolicy resolves the policy of a container that runs this image:
+// PullPolicy when set, else the process-wide default when set, else
+// IfNotPresent for a digest, which cannot point at another build, and Always
+// for a tag, which a registry push can move.
+func (i ImageSpec) EffectivePullPolicy() corev1.PullPolicy {
+	switch {
+	case i.PullPolicy != "":
+		return i.PullPolicy
+	case defaultPullPolicy != "":
+		return defaultPullPolicy
+	case i.Digest != "":
+		return corev1.PullIfNotPresent
+	default:
+		return corev1.PullAlways
+	}
 }
 
 // DatabaseSpec supports managed (ClusterRef) and brownfield (explicit) modes.

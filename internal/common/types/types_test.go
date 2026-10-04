@@ -47,6 +47,71 @@ func TestImageSpec_Reference(t *testing.T) {
 	}
 }
 
+// TestImageSpec_EffectivePullPolicy backs the three-level resolution: an
+// explicit PullPolicy wins, then the process-wide default, then IfNotPresent
+// for a digest and Always for a tag. It writes the process default, so it
+// must not run in parallel with any other test of this package and restores
+// the rule with t.Cleanup.
+func TestImageSpec_EffectivePullPolicy(t *testing.T) {
+	const digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	t.Cleanup(func() { SetDefaultPullPolicy("") })
+
+	cases := []struct {
+		name        string
+		processWide corev1.PullPolicy
+		spec        ImageSpec
+		want        corev1.PullPolicy
+	}{
+		{name: "tag", spec: ImageSpec{Repository: "r", Tag: "2025.2"}, want: corev1.PullAlways},
+		{name: "latest tag", spec: ImageSpec{Repository: "r", Tag: "latest"}, want: corev1.PullAlways},
+		{name: "digest", spec: ImageSpec{Repository: "r", Digest: digest}, want: corev1.PullIfNotPresent},
+		{name: "zero value", spec: ImageSpec{}, want: corev1.PullAlways},
+		{
+			name:        "explicit policy wins over process default",
+			processWide: corev1.PullAlways,
+			spec:        ImageSpec{Repository: "r", Tag: "2025.2", PullPolicy: corev1.PullNever},
+			want:        corev1.PullNever,
+		},
+		{
+			name:        "process default covers a tag",
+			processWide: corev1.PullIfNotPresent,
+			spec:        ImageSpec{Repository: "r", Tag: "2025.2"},
+			want:        corev1.PullIfNotPresent,
+		},
+		{
+			name:        "process default overrides the digest rule",
+			processWide: corev1.PullAlways,
+			spec:        ImageSpec{Repository: "r", Digest: digest},
+			want:        corev1.PullAlways,
+		},
+		{
+			name:        "process default covers the zero value",
+			processWide: corev1.PullNever,
+			spec:        ImageSpec{},
+			want:        corev1.PullNever,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			SetDefaultPullPolicy(tc.processWide)
+			if got := tc.spec.EffectivePullPolicy(); got != tc.want {
+				t.Errorf("EffectivePullPolicy() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("empty process default restores the rule", func(t *testing.T) {
+		SetDefaultPullPolicy(corev1.PullNever)
+		SetDefaultPullPolicy("")
+		if got := (ImageSpec{Repository: "r", Tag: "2025.2"}).EffectivePullPolicy(); got != corev1.PullAlways {
+			t.Errorf("tag after reset: EffectivePullPolicy() = %q, want Always", got)
+		}
+		if got := (ImageSpec{Repository: "r", Digest: digest}).EffectivePullPolicy(); got != corev1.PullIfNotPresent {
+			t.Errorf("digest after reset: EffectivePullPolicy() = %q, want IfNotPresent", got)
+		}
+	})
+}
+
 // TestDatabaseTLSSpec_DeepCopy backs: DeepCopy of a populated
 // DatabaseTLSSpec returns an independent, equal value, and DeepCopy of a nil
 // *DatabaseTLSSpec returns nil.
