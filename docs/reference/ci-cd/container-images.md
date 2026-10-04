@@ -1485,15 +1485,18 @@ not start. Before it starts libvirtd, the consumer runs
 node. On a hostPath mount of the host's `/dev` the same command would change
 the host's device.
 
-**Tags:** CI publishes `ghcr.io/c5c3/libvirt` as `latest` and `<sha>` (see the
-[tag table](./build-images-workflow.md#release-independent-images)). Every run
-of `build-images.yaml` that is not a pull request rebuilds the image and moves
-`latest` to the new manifest: a push that touches any image, a change under
-`images/libvirt/` included, and the dispatch a base image refresh starts.
-[Retention](./build-images-workflow.md#retention) keeps only the manifest that
-carries `latest`. The previous one, left with its `<sha>` tag alone, is deleted
-once it is older than 24 hours, so a consumer that pins a digest has to follow
-`latest`.
+**Tags:** CI publishes `ghcr.io/c5c3/libvirt` as `latest` and `<sha>`, and on
+`main` as `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1` (see
+the [tag table](./build-images-workflow.md#release-independent-images)). Every
+run of `build-images.yaml` that is not a pull request rebuilds the image and
+moves `latest` to the new manifest: a push that touches any image, a change
+under `images/libvirt/` included, and the dispatch a base image refresh starts.
+The keeper tag is minted once per value and never moved, so it stays on the
+first build that had it, and
+[Retention](./build-images-workflow.md#retention) keeps every manifest that
+carries one. A manifest left with its `<sha>` tag alone is deleted once it is
+older than 24 hours. A consumer therefore pins the keeper tag by digest, as the
+lab does with `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`.
 
 ```bash
 docker build -t c5c3/libvirt:latest images/libvirt/
