@@ -265,7 +265,7 @@ spec:
               for s in run/containerd/containerd.sock run/k3s/containerd/containerd.sock; do
                 if [ -S "/host/$s" ]; then echo "$s: socket"; elif [ -e "/host/$s" ]; then echo "$s: present, not a socket"; else echo "$s: absent"; fi
               done
-              addr="$(awk '/^\[grpc\]/ { g = 1; next } /^\[/ { g = 0 } g && /^[[:space:]]*address[[:space:]]*=/ { print $NF }' /host/etc/containerd/config.toml 2>/dev/null)"
+              addr="$(awk '/^[[:space:]]*\[/ { g = ($0 ~ /^[[:space:]]*\[[[:space:]]*grpc[[:space:]]*\]/); next } g && /^[[:space:]]*address[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); if (match($0, /^("[^"]*"|\047[^\047]*\047)/)) print substr($0, 1, RLENGTH); else { sub(/[[:space:]]*(#.*)?$/, ""); print } }' /host/etc/containerd/config.toml 2>/dev/null)"
               echo "config.toml [grpc] address: ${addr:-not set}"
               echo "== nics"
               for n in /host/sys/class/net/*/; do
