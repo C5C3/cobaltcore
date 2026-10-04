@@ -256,11 +256,14 @@ It needs three things, whatever brought them up: a `Ready` ControlPlane
 on local port 8443, and the `OS_*` variables of an admin login exported,
 `OS_CACERT` with the Gateway's certificates among them. Run
 it from the root of the clone with `KUBECONFIG` pointing at the cluster. The
-commands read the node names and their availability zone from the cluster:
+commands read the names of all nodes into the array `nodes`, and their
+availability zone. A command that needs one node takes it by slice,
+`${nodes[@]:0:1}` for the first and `${nodes[@]:1:1}` for the second. bash and
+zsh count a slice from 0, while zsh counts an array index from 1:
 
 ```bash
 nodes=($(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'))
-zone=$(kubectl get node "${nodes[0]}" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
+zone=$(kubectl get node "${nodes[@]:0:1}" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
 ```
 
 ### Step 1: Check the node network and label the nodes {#hv-nodes}
@@ -369,9 +372,9 @@ openstack network create lab-net
 openstack subnet create lab-subnet --network lab-net --subnet-range 192.168.77.0/24
 openstack network show lab-net -c mtu -f value
 openstack server create lab-a --image cirros-kvm --flavor 1 --network lab-net \
-  --availability-zone "${zone}:${nodes[0]}" --wait
+  --availability-zone "${zone}:${nodes[@]:0:1}" --wait
 openstack server create lab-b --image cirros-kvm --flavor 1 --network lab-net \
-  --availability-zone "${zone}:${nodes[1]}" --wait
+  --availability-zone "${zone}:${nodes[@]:1:1}" --wait
 for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
   kubectl exec -n openstack "${pod}" -c libvirtd -- virsh list
 done
@@ -475,9 +478,9 @@ openstack server show lab-a -c OS-EXT-SRV-ATTR:host -f value
 openstack server migration list --server lab-a
 ```
 
-`lab-a` now runs on `nodes[1]`, beside `lab-b`, and the migration list shows the
-migration `completed`. libvirt carried it over TLS between the nodes, with the
-CPU model that `cpuModels` names in
+`lab-a` now runs on another node, which the second command prints, and the
+migration list shows the migration `completed`. libvirt carried it over TLS
+between the nodes, with the CPU model that `cpuModels` names in
 `deploy/lab/metal-stack/hypervisor/compute.yaml`, which both nodes provide.
 
 The volume moved with the server. Read the mount and the volume file on the
@@ -493,9 +496,10 @@ kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
 kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${domain}"
 ```
 
-The libvirt pod of `nodes[1]` prints the mount and `42424:42424 660` for the
-volume file: `nova-compute` on the destination mounted the share for the
-migration, and libvirt changed no owner there either. On the console:
+The libvirt pod of the destination node prints the mount and
+`42424:42424 660` for the volume file: `nova-compute` on the destination
+mounted the share for the migration, and libvirt changed no owner there
+either. On the console:
 
 ```sh
 echo 3 | sudo tee /proc/sys/vm/drop_caches
@@ -507,19 +511,18 @@ mount. Leave the console with `Ctrl+]`.
 
 ### Step 9: Evict a node {#hv-evict}
 
-The step evicts whichever node holds the servers; after Step 8 both sit on
-`nodes[1]`. Manual maintenance makes the hypervisor operator create an
-`Eviction` that live-migrates every server off the node, `lab-a` with its
-volume:
+The step evicts the node that holds `lab-a`, which `host` names since Step 8.
+Manual maintenance makes the hypervisor operator create an `Eviction` that
+live-migrates every server off the node, `lab-a` with its volume:
 
 ```bash
-kubectl patch hypervisor "${nodes[1]}" --type merge \
+kubectl patch hypervisor "${host}" --type merge \
   -p '{"spec":{"maintenance":"manual","maintenanceReason":"lab eviction check"}}'
-kubectl wait --for=create "eviction/${nodes[1]}" --timeout=5m
-kubectl wait "eviction/${nodes[1]}" --timeout=20m \
+kubectl wait --for=create "eviction/${host}" --timeout=5m
+kubectl wait "eviction/${host}" --timeout=20m \
   --for=jsonpath='{.status.conditions[?(@.type=="Evicting")].reason}'=Succeeded
-openstack server list --all-projects --host "${nodes[1]}"
-kubectl patch hypervisor "${nodes[1]}" --type merge \
+openstack server list --all-projects --host "${host}"
+kubectl patch hypervisor "${host}" --type merge \
   -p '{"spec":{"maintenance":"","maintenanceReason":""}}'
 openstack compute service list --service nova-compute
 openstack volume show lab-vol -c status -f value
@@ -623,7 +626,13 @@ two workers and Kubernetes v1.35.6, from a bare cluster to a bare cluster, and
 each block exited 0 on its first attempt. The Cinder additions have not run on
 the lab yet: the deploy with `WITH_NFS=true`, the volume service list of
 Part 1, Step 7, Part 2, Steps 7 and 10, the volume checks of Steps 8 and 9, and
-the deletes of the backup and the volume in the Teardown. The port-forward of
+the deletes of the backup and the volume in the Teardown. The node selection
+of Part 2 changed after the run: a command that needs one node takes it from
+`nodes` by slice, and Step 9 evicts the node `host` names. On 2026-10-04, on
+`forge`, the opening block of Part 2 read the same zone in bash and in zsh, and
+the two `--availability-zone` values of Step 5 expanded in both shells to the
+ones the earlier block gives in bash. Steps 5 and 9 have not run with the
+change. The port-forward of
 Part 1, Step 6 ran in a second terminal until the teardown had finished and
 was then stopped. The console commands of Part 2, Step 6 were typed by a
 script. The teardown waited 93 seconds for the stack's objects in `openstack`
