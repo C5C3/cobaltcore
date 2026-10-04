@@ -3134,7 +3134,7 @@ log keeps growing, and show that a live migration dials libvirt over TLS:
 
 ```bash
 # lab-a and lab-b run (Part 2, Step 5 of docs/quick-start-metal-stack.md),
-# lab-a on nodes[0]
+# lab-a on the first node, ${nodes[@]:0:1}
 nodes=($(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'))
 
 # the images; the libvirt keeper tag still names the digest the DaemonSet pins
@@ -3148,11 +3148,11 @@ kubectl get nova controlplane-nova -n openstack -o jsonpath='{.spec.keystoneEndp
 
 # a libvirt restart under a running server, whose console log keeps growing
 kubectl delete pod -n openstack -l app.kubernetes.io/name=libvirt \
-  --field-selector "spec.nodeName=${nodes[0]}"
+  --field-selector "spec.nodeName=${nodes[@]:0:1}"
 kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=10m
 openstack --insecure server show lab-a -c status -f value
 libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
-  --field-selector "spec.nodeName=${nodes[0]}" -o name)
+  --field-selector "spec.nodeName=${nodes[@]:0:1}" -o name)
 console_log="/var/lib/nova/instances/$(openstack --insecure server show lab-a -c id -f value)/console.log"
 kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- stat -c %s "${console_log}"
 kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
@@ -3220,20 +3220,20 @@ element at each point:
 # lab-a and lab-b; nodes and zone come from the opening block of Part 2
 
 compute_selector=app.kubernetes.io/instance=lab,app.kubernetes.io/component=nova-compute
-# prints the name of the nova-compute pod on nodes[0]
+# prints the name of the nova-compute pod on the first node
 compute_pod() {
   kubectl get pod -n openstack -l "${compute_selector}" \
-    --field-selector "spec.nodeName=${nodes[0]}" -o name
+    --field-selector "spec.nodeName=${nodes[@]:0:1}" -o name
 }
 # waits until the operator has rendered the current spec; kubectl wait skips a
 # condition whose observedGeneration is older than metadata.generation
 wait_seen() {
   kubectl wait novacompute/lab -n openstack --for=condition=ConfigReady --timeout=5m
 }
-# waits until the nova-compute pod on nodes[0] mounts the ConfigMap of the
-# current spec and its process has reported to Nova; until then a hard reboot
-# keeps the old CPU or is lost. Updated At carries nova-conductor's clock and
-# startedAt the node's, so it waits for Updated At to change twice while one
+# waits until the nova-compute pod on the first node mounts the ConfigMap of
+# the current spec and its process has reported to Nova; until then a hard
+# reboot keeps the old CPU or is lost. Updated At carries nova-conductor's clock
+# and startedAt the node's, so it waits for Updated At to change twice while one
 # container runs
 wait_compute() {
   local i gen cfg pod have start updated seen base changes
@@ -3247,7 +3247,7 @@ wait_compute() {
     start=$(kubectl get -n openstack "${pod}" \
       -o jsonpath='{.status.containerStatuses[?(@.name=="nova-compute")].state.running.startedAt}')
     updated=$(openstack --insecure compute service list --service nova-compute \
-      --host "${nodes[0]}" -c 'Updated At' -f value)
+      --host "${nodes[@]:0:1}" -c 'Updated At' -f value)
     if [[ "${cfg}" != "True ${gen} "* || "${cfg##* }" != "${have}" || -z "${start}" \
       || -z "${updated}" ]]; then
       seen=
@@ -3271,7 +3271,8 @@ wait_pool() {
     kubectl rollout status daemonset/lab-nova-compute -n openstack --timeout=15m &&
     kubectl wait novacompute/lab -n openstack --for=condition=DaemonSetReady --timeout=15m
 }
-# prints the start time and the cpu keys of the nova-compute pod on nodes[0]
+# prints the start time and the cpu keys of the nova-compute pod on the first
+# node
 pool_state() {
   local pod
   pod=$(compute_pod)
@@ -3283,7 +3284,7 @@ pool_state() {
 domain_cpu() {
   local pod name
   pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
-    --field-selector "spec.nodeName=${nodes[0]}" -o name)
+    --field-selector "spec.nodeName=${nodes[@]:0:1}" -o name)
   name=$(openstack --insecure server show cpu-a -c OS-EXT-SRV-ATTR:instance_name -f value)
   kubectl exec -n openstack "${pod}" -c libvirtd -- sh -c \
     "virsh dumpxml ${name} | sed -n '/<cpu /,/<\/cpu>/p'; echo --inactive; virsh dumpxml --inactive ${name} | sed -n '/<cpu /,/<\/cpu>/p'"
@@ -3294,7 +3295,7 @@ kubectl patch novacompute lab -n openstack --type merge \
   -p '{"spec":{"libvirt":{"cpuMode":"host-passthrough","cpuModels":null}}}'
 wait_pool; pool_state
 wait_compute && openstack --insecure server create cpu-a --image cirros-kvm --flavor 1 \
-  --network lab-net --availability-zone "${zone}:${nodes[0]}" --wait
+  --network lab-net --availability-zone "${zone}:${nodes[@]:0:1}" --wait
 domain_cpu
 
 # B. the cpuMode change with the rollout awaited
@@ -3425,7 +3426,7 @@ The fake driver of the kind suites reaches none of it:
 | --- | --- | --- |
 | Live-migration CPU check | with `cpuMode: host-passthrough`, and with `host-model`, every live migration ends in `NoValidHost`: Nova's pre-check on the destination fails with `Unacceptable CPU info: CPU doesn't have compatibility`, although `virsh hypervisor-cpu-compare` there accepts the guest CPU | `cpuMode: custom` with `Skylake-Server-IBRS`, the host-model of both workers |
 | Console log after a libvirt restart | with libvirt's default `stdio_handler = "logd"`, `openstack console log show` stopped at the restart: QEMU's log went through `virtlogd`, which ran in the old pod. The guest and its network kept running. With `file` the log grows across a restart | `stdio_handler = "file"` in `qemu.conf` ([#1174](https://github.com/c5c3/cobaltcore/issues/1174)) |
-| CPU model change under a server | on 2026-10-01 a server booted with `host-passthrough` kept that CPU through a hard reboot after the pool moved to `custom`; the run recorded no time for the reboot. The cpuMode block above ran on 2026-10-02 on `nodes[0]`. A, after the boot: the pod's file says `cpu_mode = host-passthrough`, the domain `mode='host-passthrough'`. B, before the reboot: a pod started 10 seconds after the patch, its file says `cpu_mode = custom` and `cpu_models = Skylake-Server-IBRS`, the domain is still `host-passthrough`. B, after the reboot: the same pod, and the live and the `--inactive` `<cpu>` say `mode='custom'` with the model `Skylake-Server-IBRS`. C, first reboot: the pod of B with its `custom` file, `DaemonSetReady` `False`, the domain `mode='custom'` while the CR says `host-passthrough`. C, second reboot: a new pod, its file says `cpu_mode = host-passthrough` and no `cpu_models`, the domain `mode='host-passthrough'`. A first pass of the same run sent C's second reboot 3 seconds after the new pods started, before `nova-compute` took requests: it cleared the reboot's task state at start-up, the reboot action ended in `Error`, `--wait` reported success and the domain stayed `custom`. `wait_compute` comes from that pass | [Changing the libvirt settings of a pool with servers](../nova/novacompute-crd.md#changing-the-libvirt-settings-of-a-pool-with-servers) |
+| CPU model change under a server | on 2026-10-01 a server booted with `host-passthrough` kept that CPU through a hard reboot after the pool moved to `custom`; the run recorded no time for the reboot. The cpuMode block above ran on 2026-10-02 on the first node. A, after the boot: the pod's file says `cpu_mode = host-passthrough`, the domain `mode='host-passthrough'`. B, before the reboot: a pod started 10 seconds after the patch, its file says `cpu_mode = custom` and `cpu_models = Skylake-Server-IBRS`, the domain is still `host-passthrough`. B, after the reboot: the same pod, and the live and the `--inactive` `<cpu>` say `mode='custom'` with the model `Skylake-Server-IBRS`. C, first reboot: the pod of B with its `custom` file, `DaemonSetReady` `False`, the domain `mode='custom'` while the CR says `host-passthrough`. C, second reboot: a new pod, its file says `cpu_mode = host-passthrough` and no `cpu_models`, the domain `mode='host-passthrough'`. A first pass of the same run sent C's second reboot 3 seconds after the new pods started, before `nova-compute` took requests: it cleared the reboot's task state at start-up, the reboot action ended in `Error`, `--wait` reported success and the domain stayed `custom`. `wait_compute` comes from that pass | [Changing the libvirt settings of a pool with servers](../nova/novacompute-crd.md#changing-the-libvirt-settings-of-a-pool-with-servers) |
 
 ### Node port check
 
