@@ -14,11 +14,17 @@
 # registered by the primary keystone-operator deployment that hack/ci-deploy-
 # operator.sh installs as part of the CI E2E bootstrap (same rationale as
 # tests/e2e/keystone/namespace-scoped-rbac/).
+#
+# controller.defaultImagePullPolicy=IfNotPresent matches the primary
+# deployment: should this release win the leader election, the workloads keep
+# running the service images CI loaded into kind under the published tag.
 image:
   repository: ghcr.io/c5c3/keystone-operator
   tag: dev
   pullPolicy: Never
 replicas: 1
+controller:
+  defaultImagePullPolicy: IfNotPresent
 webhook:
   enabled: false
 networkPolicy:

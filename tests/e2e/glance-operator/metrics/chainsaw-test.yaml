@@ -54,6 +54,7 @@ spec:
             --set image.repository=ghcr.io/c5c3/glance-operator \
             --set image.tag=dev \
             --set image.pullPolicy=Never \
+            --set controller.defaultImagePullPolicy=IfNotPresent \
             --set replicas=1 \
             --set webhook.enabled=false \
             --set monitoring.serviceMonitor.enabled=true \
