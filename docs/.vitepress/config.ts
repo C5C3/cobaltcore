@@ -150,6 +150,7 @@ export default defineConfig({
               { text: 'Run a Fake Compute for Testing', link: '/guides/nova/run-a-fake-compute-for-testing' },
               { text: 'Expose the Console Proxy', link: '/guides/nova/expose-the-console-proxy' },
               { text: 'Connect a Compute Cluster', link: '/guides/nova/connect-a-compute-cluster' },
+              { text: 'Drain a Compute Node', link: '/guides/nova/drain-a-compute-node' },
               { text: 'Migrate Nova DB to Dynamic Credentials', link: '/guides/nova/migrate-nova-db-to-dynamic-credentials' },
               { text: 'Enable Nova Operator Metrics', link: '/guides/nova/enable-nova-operator-metrics' },
               { text: 'Enable Nova Operator NetworkPolicy', link: '/guides/nova/enable-nova-operator-networkpolicy' },
