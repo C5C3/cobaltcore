@@ -42,8 +42,10 @@
 #  13. the bash block of the Teardown deletes the backup, the servers and the
 #      volume once each and in this order, and runs `make teardown-infra`
 #      after them
-#  14. no line of the page indexes a shell array by number or names a node
-#      as `nodes[<n>]`: bash counts an array index from 0 and zsh from 1
+#  14. no line of the page, nor of the "Checks outside the quick start"
+#      section of infrastructure-manifests.md that builds on Part 2, indexes
+#      a shell array by number or names a node as `nodes[<n>]`: bash counts
+#      an array index from 0 and zsh from 1
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -494,9 +496,23 @@ assert_no_array_index() {
   assert_eq "no line of $label names a node as nodes[<n>]" "" "$lines"
 }
 
+# checks_section prints the "Checks outside the quick start" section of
+# infrastructure-manifests.md, fenced code included, up to the next heading.
+checks_section() {
+  awk '
+    /^[[:space:]]*(```|~~~)/ { fenced = !fenced }
+    !fenced && /^#+ / { if (inside) exit; if ($0 == "#### Checks outside the quick start") { inside = 1; next } }
+    inside { print }
+  ' "$INFRA_MANIFESTS"
+}
+
 test_no_array_index() {
   echo "Test: no shell array indexed by number"
+  local checks
   assert_no_array_index "the page" "$(cat "$QUICK_START_DOC")"
+  checks="$(checks_section)"
+  assert_not_empty "infrastructure-manifests.md holds the Checks outside the quick start" "$checks"
+  assert_no_array_index "the Checks outside the quick start" "$checks"
 }
 
 test_frontmatter
