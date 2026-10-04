@@ -2510,7 +2510,7 @@ The node probe is the prerequisite check of the lab. The
 reader run it first, against any metal-stack cluster, before anything else is
 deployed. It
 is one Job, `node-probe`, that prints the node facts the lab depends on under
-eleven fixed headers. It exits 0 whatever it finds: a node that lacks something
+twelve fixed headers. It exits 0 whatever it finds: a node that lacks something
 prints `absent`, `none` or `NOT FOUND`, and the Job still completes, so
 `kubectl wait --for=condition=complete` returns.
 
@@ -2555,14 +2555,15 @@ never completes and has to be deleted by hand; the Job keeps each run bounded.
 | --- | --- |
 | `== kvm device` | Whether the node has `/dev/kvm`. With `== cpu` it decides `virtType: kvm` |
 | `== cpu` | CPU model, count and topology, the virtualization extension, and how many CPUs carry the `vmx` or `svm` flag |
-| `== loaded modules` | Which KVM, vhost, Open vSwitch, Geneve, VXLAN, bridge, NBD, multipath, NVMe/TCP and NFS modules are loaded: the NFS server (`nfsd`), the NFS client (`nfs`, `nfsv4`) and `sunrpc` |
-| `== module files for <kernel>` | Whether the running kernel ships `kvm`, `vhost_net`, `openvswitch`, `geneve` and the other module files, so the OVN chassis and the libvirt DaemonSet can load what they need. The five NFS files, `nfsd`, `nfs`, `nfsv4`, `lockd` and `sunrpc`, decide whether the NFS server and clients of [#1193](https://github.com/c5c3/cobaltcore/issues/1193) can use the node's kernel. A module compiled into the kernel prints `builtin` |
+| `== loaded modules` | Which KVM, vhost, Open vSwitch, Geneve, VXLAN, bridge, NBD, multipath, NVMe/TCP and NFS modules are loaded: the NFS server (`nfsd`), the NFS client (`nfs`, `nfsv4`) and `sunrpc`. It also lists the modules Chaos Mesh NetworkChaos uses: `ip_set` with every `ip_set_*` type module, which shows the ipset types `calico-node` has loaded, `xt_set`, `sch_netem` and `sch_tbf` |
+| `== module files for <kernel>` | Whether the running kernel ships `kvm`, `vhost_net`, `openvswitch`, `geneve` and the other module files, so the OVN chassis and the libvirt DaemonSet can load what they need. The five NFS files, `nfsd`, `nfs`, `nfsv4`, `lockd` and `sunrpc`, decide whether the NFS server and clients of [#1193](https://github.com/c5c3/cobaltcore/issues/1193) can use the node's kernel. The six Chaos Mesh files, `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf`, decide D3 of [#1219](https://github.com/c5c3/cobaltcore/issues/1219): whether a pod can load the modules NetworkChaos needs, and which ones it has to load. A module compiled into the kernel prints `builtin` |
 | `== filesystems` | Whether the kernel has registered `nfs4`, the filesystem type of an NFSv4 mount, and `nfsd`, the NFS server's control filesystem. Each prints `registered` or `not registered`, whether the code is a loaded module or compiled into the kernel. The `nfs` module registers `nfs4`, not `nfsv4`: only the `nfsv4` module file, or the load test's `nfsv4:` line, shows that the NFSv4 client code is there |
 | `== nested / iommu` | The `nested` parameter of `kvm_intel` or `kvm_amd`, and the number of IOMMU groups |
 | `== memory` | `MemTotal` and the hugepage reservations |
 | `== disks` | The block devices, where `/var/lib` lives and how much it holds |
 | `== cgroup` | The cgroup filesystem type, `cgroup2fs` on cgroup v2 |
 | `== host os / binaries` | The host OS, and that no `libvirtd`, `qemu-system-x86_64`, `ovs-vswitchd` or `rpc.nfsd` is installed on the host |
+| `== containerd socket` | Where the containerd socket the Chaos Mesh daemon mounts lives. Two lines test containerd's default path, `run/containerd/containerd.sock`, and the k3s one, `run/k3s/containerd/containerd.sock`, under the host's `/run`; each prints `socket`, `present, not a socket` or `absent`. The third line prints the `address` of the `[grpc]` table in the host's `/etc/containerd/config.toml`, quotes included. `not set` means the file or the key is missing, and containerd then listens on its default, `/run/containerd/containerd.sock` |
 | `== nics` | Every host interface with its MTU and state: the uplinks, and the host end of each pod's veth (`cali*`), which carries the pod network's MTU. Neutron's `global_physnet_mtu` must not exceed the MTU of the network the Geneve tunnels run on (see [Lab ControlPlane](#lab-controlplane)) |
 
 The values a lab-ready node shows come from the 2026-09-29 survey in
