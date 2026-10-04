@@ -43,17 +43,18 @@ reaches it through the Nova and Neutron APIs and the OVN southbound database.
 
 ## Open questions
 
-Whether the implemented management/target-cluster mechanics
-([Target Clusters](../reference/target-clusters.md)) extend to a hypervisor
-cluster is unexamined. The [Nova](../reference/nova/index.md) and
-[Neutron](../reference/neutron/index.md) control planes this cluster presumes
-are onboarded, and the [OVN operator](../reference/ovn/index.md) already
-projects `ovs` and `ovn-controller` onto labelled nodes. `NovaCompute` pools
-run `nova-compute` on labelled nodes of the control-plane cluster. What
-[#1013](https://github.com/C5C3/cobaltcore/issues/1013) still tracks is the
-attachment of a separate compute cluster to that control plane. What such a
-cluster reads from the control plane, and what it has to provide in return, is
-written down in [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md).
+A hypervisor cluster is a registered target cluster
+([Target Clusters](../reference/target-clusters.md)). `nova-compute` runs there
+as a `NovaCompute` pool, beside openstack-hypervisor-operator and
+kvm-node-agent, which CobaltCore adopts from cobaltcore-dev as they are. The
+[Nova](../reference/nova/index.md) and [Neutron](../reference/neutron/index.md)
+control planes this cluster presumes are onboarded, and the
+[OVN operator](../reference/ovn/index.md) projects `ovs` and `ovn-controller`
+onto labelled nodes. What such a cluster reads from the control plane, and what
+it has to provide in return, is written down in
+[Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md). The
+dedicated bare-metal cluster of the original document, provisioned by IronCore
+and managed by Gardener, stays a sketch.
 
 ## Source
 
