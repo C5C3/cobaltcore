@@ -31,6 +31,7 @@ The lab assumes a cluster of this shape:
 | `/dev/kvm` on both workers and the same CPU model; `deploy/lab/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe, `== kvm device` and `== cpu` |
 | The module files `vhost_net`, `openvswitch` and `geneve` for the running kernel | probe, `== module files for <kernel>` |
 | For the NFS stack that holds Cinder's volumes and backups: the module files `nfsd`, `nfs` and `nfsv4` for the running kernel | probe, `== module files for <kernel>` |
+| Only with the optional `WITH_CHAOS_MESH=true`: the module files `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` for the running kernel | probe, `== module files for <kernel>` |
 | cgroup v2 | probe, `== cgroup` |
 | `/var/lib` on a volume with room for the instance disks (192 GiB on the surveyed node) | probe, `== disks` |
 | No `libvirtd`, `qemu-system-x86_64` or `ovs-vswitchd` on the host | probe, `== host os / binaries` |
@@ -103,7 +104,7 @@ EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra
 
 The script deploys onto the cluster the current kubeconfig context points at
 and never switches the context. It refuses the kind-only opt-ins
-(`WITH_VPA`, `WITH_CHAOS_MESH` and the other flags that need a kind node), checks the
+(`WITH_VPA` and the other flags that need a kind node), checks the
 cluster before it applies anything, and installs the shared infrastructure and
 the ControlPlane operator stack. It returns once the ten operator releases are
 Ready and the cluster admits the manifests of Step 4. When it completes, it
@@ -116,6 +117,12 @@ an NFS server with the two shares that hold Cinder's volumes and backups, the
 `csi-driver-nfs` mounter, and pods that load the NFS kernel modules on the
 nodes. Without it the script exits 1 before it applies anything, because the
 ControlPlane of Step 4 puts Cinder's backends on that server.
+
+`WITH_CHAOS_MESH=true` is optional, and this page does not need it. Added to
+the deploy command, it deploys Chaos Mesh for fault injection, limited to the
+namespaces the lab declares, with pods that load its kernel modules on the
+nodes; see
+[Lab Chaos Mesh](./reference/infrastructure/infrastructure-manifests.md#lab-chaos-mesh).
 
 ### Step 4: Apply the OVN central and the ControlPlane {#cp-apply}
 
@@ -594,7 +601,9 @@ and the claim `nfs-server-exports` with it. Where the default class has the
 reclaim policy `Delete`, the claim's volume goes too, with every volume file
 and backup on it. The node state under `/var/lib/nova`, `/var/lib/libvirt` and
 `/etc/pki` stays on the nodes, and the NFS kernel modules stay loaded until a
-node reboots. Stop the port-forward of Part 1 once the teardown has finished,
+node reboots. A Chaos Mesh deployed with `WITH_CHAOS_MESH=true` goes before
+the hypervisors: its experiments are released while its controller still runs,
+and its kernel modules stay loaded until a node reboots as well. Stop the port-forward of Part 1 once the teardown has finished,
 and delete `gateway-ca.pem`.
 
 ## Caveats

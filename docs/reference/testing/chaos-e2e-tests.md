@@ -93,7 +93,9 @@ flow leaves the `chaos-mesh` namespace absent. Run
 `WITH_CHAOS_MESH=true make deploy-infra` before `make e2e-chaos`, or `make e2e-chaos`
 will fail its preflight check (`chaos-mesh is not installed`). See the
 [Enabling Chaos Mesh tip in Quick Start (Extended)](../../quick-start-extended.md#step-3-deploy-the-infrastructure-stack)
-for the rationale.
+for the rationale. The suites run against the kind stack only; Chaos Mesh on
+the metal-stack lab is described in
+[Lab Chaos Mesh](../infrastructure/infrastructure-manifests.md#lab-chaos-mesh).
 :::
 
 | Prerequisite | Details |

@@ -85,7 +85,31 @@ succeeds silently if no cluster exists. The kind teardown always exits 0.
 removes the stack that `EXTERNAL_CLUSTER=true make deploy-infra` put on it. It
 needs `kubectl` and [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer,
 checks both before the first delete, and deletes in an order that lets every
-finalizer run while its controller still exists:
+finalizer run while its controller still exists.
+
+When the overlay has a `chaos-mesh/` kustomization (see
+[Lab Chaos Mesh](infrastructure-manifests.md#lab-chaos-mesh)), Chaos Mesh goes
+first, while `chaos-controller-manager`, `chaos-daemon` and the
+helm-controller still run. The teardown reads the scope of the
+`chaos-mesh.org` CRDs and deletes the schedules and workflows, which create
+experiments, then every other namespaced kind of the group, then its
+cluster-scoped kinds. The per-pod records `podnetworkchaos`, `podiochaos` and
+`podhttpchaos` are left out: the controller writes them while it releases a
+fault, they carry no finalizer, and step 8 removes them with their CRDs. An
+experiment keeps its finalizer until the controller has released its fault,
+so a delete that runs out exits 1 with kubectl's error and
+`A Chaos Mesh experiment keeps its finalizer until chaos-controller-manager has released its fault. ...`,
+which names the controller's log and warns that a finalizer removed by hand
+leaves the fault injected. Then it deletes the render of `<overlay>/chaos-mesh`
+without its Namespace: the HelmRepository, the HelmRelease, whose finalizer
+has the helm-controller uninstall the chart, and the DaemonSet
+`chaos-mesh-modules`. The Namespace holds Helm's release Secret, so step 7
+deletes it. A CRD read that fails exits 1 with
+`ERROR: cannot read the scope of the cluster's CRDs (kubectl's error is above).`
+before any delete, and a render that fails exits 1 with
+`ERROR: cannot render <overlay>/chaos-mesh (kustomize's error is above).`
+before the overlay delete. The NetworkChaos modules the loader put on the
+nodes stay until a node reboots. Then:
 
 0. The lab hypervisors, when the overlay has a `hypervisor/` kustomization
    (see [Lab hypervisors](infrastructure-manifests.md#lab-hypervisors)), while
@@ -194,8 +218,8 @@ finalizer run while its controller still exists:
 5. The FluxInstance, so the flux-operator uninstalls the toolkit.
 6. The `flux-system` namespace and the flux-operator's ClusterRoles and
    ClusterRoleBinding.
-7. The namespaces of `deploy/flux-system/namespaces.yaml`, `envoy-gateway-system`
-   and `headlamp-system`. Then every ClusterRole, ClusterRoleBinding,
+7. The namespaces of `deploy/flux-system/namespaces.yaml`, `envoy-gateway-system`,
+   `headlamp-system` and `chaos-mesh`. Then every ClusterRole, ClusterRoleBinding,
    MutatingWebhookConfiguration and ValidatingWebhookConfiguration whose label
    `helm.toolkit.fluxcd.io/namespace` names one of these namespaces or
    `flux-system`. The helm-controller sets that label, the namespace of the
@@ -217,9 +241,10 @@ finalizer run while its controller still exists:
    writes its Lease again.
 8. The CRDs of the stack's API groups (the cert-manager, External Secrets,
    MariaDB, Memcached, OpenBao, Garage, RabbitMQ, Gateway API, Envoy Gateway,
-   Prometheus Operator, CobaltCore, K-ORC, Flux and flux-operator groups, and
+   Prometheus Operator, CobaltCore, K-ORC, Flux and flux-operator groups,
    `kvm.cloud.sap`, whose CRDs the lab hypervisors' charts install and Helm
-   leaves behind).
+   leaves behind, and `chaos-mesh.org`, whose CRDs the Chaos Mesh chart
+   installs from its `crds/` and Helm never deletes).
 
 In `kube-system` it deletes only the `maint-<node>` objects of step 0, the
 `csi-driver-nfs` HelmRelease of step 2 with its chart, and the two
@@ -318,6 +343,10 @@ Step 2 ── Install flux-operator + apply FluxInstance
      │
 Step 3 ── Apply base kustomize overlay (deploy/kind/base/)
      │         Namespaces, HelmRepositories, HelmReleases
+     │         WITH_CHAOS_MESH=true: the overlay root's chaos-mesh/
+     │         (deploy/kind/chaos-mesh/ on kind); under
+     │         EXTERNAL_CLUSTER=true, wait for the rollout of the
+     │         DaemonSet chaos-mesh-modules
      │
 Step 4 ── Wait for HelmReleases Ready
      │         cert-manager, openbao, mariadb-operator,
@@ -490,6 +519,12 @@ deploy/lab/metal-stack/
 │   └── kustomization.yaml          References ../../../kind/base/
 │                                    Patches OpenBao HelmRelease → removes the storage class,
 │                                    every Namespace → Gardener apiserver-proxy opt-out label
+│                                    and chaos-mesh.org/inject annotation
+├── chaos-mesh/                     Chaos Mesh (#1221), applied under WITH_CHAOS_MESH=true
+│   ├── kustomization.yaml          References ../../../kind/chaos-mesh/
+│   │                                Patches the Namespace → Gardener opt-out label,
+│   │                                HelmRelease → enableFilterNamespace: true
+│   └── modules-daemonset.yaml      DaemonSet chaos-mesh-modules on every node
 ├── controlplane/                   The quick start's OVNCentral and ControlPlane CR (#1141), applied by hand
 │   ├── kustomization.yaml          Lists the two manifests below
 │   ├── ovncentral.yaml             OVNCentral controlplane-ovn, as on the quick-start page
@@ -511,7 +546,7 @@ deploy/lab/metal-stack/
 │                                    Patches MariaDB CR, GarageCluster → removes the storage class
 ├── migration-ports/                The reservation of QEMU's migration ports (#1189), applied by hand
 │   ├── kustomization.yaml          Lists the two manifests below
-│   ├── namespace.yaml              Namespace hypervisor-system
+│   ├── namespace.yaml              Namespace hypervisor-system, labelled and annotated like base/
 │   └── reservation-daemonset.yaml  DaemonSet migration-port-reservation on every node
 ├── nfs/                            The NFS server and csi-driver-nfs (#1196), applied under WITH_NFS=true
 │   ├── kustomization.yaml          References ../../../kind/nfs/
@@ -527,11 +562,14 @@ deploy/lab/metal-stack/
 ```
 
 `EXTERNAL_CLUSTER=true` applies `base/` in Step 3 and `infrastructure/` in
-Step 5 in place of the kind overlays, and under `WITH_NFS=true` it applies
-`nfs/` in Step 3 in place of `deploy/kind/nfs`. Each takes its kind overlay as
-its base, so the lab inherits every patch above. It removes the storage class,
-labels the Namespaces with Gardener's apiserver-proxy opt-out and loads the
-NFS kernel modules in pods, and changes nothing else. The script never applies
+Step 5 in place of the kind overlays, under `WITH_NFS=true` it applies
+`nfs/` in Step 3 in place of `deploy/kind/nfs`, and under
+`WITH_CHAOS_MESH=true` `chaos-mesh/` in place of `deploy/kind/chaos-mesh`.
+Each takes its kind overlay as its base, so the lab inherits every patch
+above. It removes the storage class, labels the Namespaces with Gardener's
+apiserver-proxy opt-out and annotates them for Chaos Mesh, turns on Chaos
+Mesh's namespace filter, and loads the NFS and NetworkChaos kernel modules in
+pods, and changes nothing else. The script never applies
 `controlplane/`; the completion hint of
 `WITH_CONTROLPLANE=true` names it. Nor does it apply `hypervisor/` or
 `hypervisor-fixtures/`, which follow the ControlPlane by hand. Every volume of
@@ -544,6 +582,9 @@ binds to the cluster's default class, which Step 1 checks exists.
 | MariaDB storage class | `standard` | the cluster's default class |
 | Garage storage class (metadata and data) | `standard` | the cluster's default class |
 | Namespace label `apiserver-proxy.networking.gardener.cloud/inject` | absent | `disable` |
+| Namespace annotation `chaos-mesh.org/inject` | absent | `enabled` |
+| Chaos Mesh namespace filter (`controllerManager.enableFilterNamespace`) | off | on |
+| NetworkChaos kernel modules | `modprobe` on the host by the deploy script | the DaemonSet `chaos-mesh-modules` |
 | NFS export claim (`nfs-server-exports`) | `standard`, 5Gi | the cluster's default class, 100Gi |
 | NFS kernel modules | `modprobe` on the host by the deploy script | `load-nfsd` in the server pod and the DaemonSet `nfs-client-modules` |
 | Clients admitted to the NFS server's port 2049 | every pod and node | the node network, by the NetworkPolicy `nfs-server-clients` |
@@ -572,12 +613,13 @@ The deployment script supports configurable timeouts via environment variables:
 | `CONTROLPLANE_OPERATORS` | `flux` | How the ControlPlane operator stack is provided (only when `WITH_CONTROLPLANE=true`). `flux` deploys the published c5c3-operator chart + K-ORC Flux source, un-suspends the keystone-, horizon-, glance-, placement-, barbican-, ovn-, neutron-, cinder- and nova-operator releases, and pins the self-built operators' `:latest` images to their current digests via `hack/refresh-operator-image-digests.sh` (per-operator image-digest ConfigMaps consumed via `valuesFrom`; re-run with `make refresh-operator-digests` after a merge). On this path the run fails when the `k-orc` Kustomization is not Ready within `HELMRELEASE_TIMEOUT`, because the c5c3-operator cannot start without the K-ORC CRDs; the error prints the state of the `k-orc` GitRepository and Kustomization. The run then waits for the ten operator HelmReleases (the nine service operators and `c5c3-operator`) to be Ready within `HELMRELEASE_TIMEOUT` and for one primary CRD per operator to be registered within `POD_TIMEOUT`, and fails when either is not; after that it waits up to `WEBHOOK_TIMEOUT` for the API server to admit a server-side dry-run of the ControlPlane manifests. The two waits, and the probe before the by-hand hint, are skipped under `INFRA_ONLY=true`, and preflight refuses `INFRA_ONLY=true` together with `WITH_CONTROLPLANE_CR=true`, because such a cluster runs no operator to admit the bundled CR. `external` suspends the Flux stack and expects the operators to be deployed out of band (as the `e2e-controlplane` CI job does with local dev images + `hack/ci-deploy-korc.sh`) |
 | `CONTROLPLANE_NAME` | `controlplane` | Name of the ControlPlane CR under `WITH_CONTROLPLANE=true`; the per-CR OpenBao admin-password bootstrap path derives from it, so it must match the applied CR (the `e2e-controlplane` job sets `controlplane-keystone`) |
 | `WITH_OVN_KERNEL_MODULES` | `false` | When `true`, `modprobe` `openvswitch` and `geneve` on the host before the cluster is created, so the OVN chassis suites find the datapath and tunnel modules in the kernel the kind nodes share. Linux only, and it needs root or passwordless sudo: without either the script logs a warning and continues |
+| `WITH_CHAOS_MESH` | `false` | When `true`, deploy Chaos Mesh in Step 3 and append `chaos-mesh` to the Phase 3 HelmRelease wait. In kind mode it first runs `modprobe` for `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` on the host before the cluster is created and applies `deploy/kind/chaos-mesh`. The module load is Linux only and needs root or passwordless sudo: without either the script logs a warning and continues. Under `EXTERNAL_CLUSTER=true` it loads nothing on the host and applies `<overlay>/chaos-mesh` instead, whose DaemonSet `chaos-mesh-modules` loads the modules on the nodes, and waits up to `POD_TIMEOUT` seconds for that DaemonSet's rollout; a failed wait stops the run with `ERROR: DaemonSet chaos-mesh/chaos-mesh-modules did not roll out, ...` and the command that reads the loader's log. The overlays are described in [Infrastructure Manifests](infrastructure-manifests.md#chaos-mesh-kind-only-opt-in) and [Lab Chaos Mesh](infrastructure-manifests.md#lab-chaos-mesh) |
 | `WITH_NFS` | `false` | When `true`, deploy the NFS server in `openstack` and the `csi-driver-nfs` mounter in `kube-system` in Step 3, wait for the `nfs-server` rollout, and append `csi-driver-nfs` to the Phase 3 HelmRelease wait. In kind mode it first runs `modprobe` for `nfsd`, `nfs` and `nfsv4` on the host before the cluster is created and applies the `deploy/kind/nfs` overlay; a rollout failure stops the run with an error naming the `nfsd` module. The module load is Linux only and needs root or passwordless sudo: without either the script logs a warning and continues. Under `EXTERNAL_CLUSTER=true` it loads nothing on the host and applies `<overlay>/nfs` instead, whose init container `load-nfsd` and DaemonSet `nfs-client-modules` load the modules on the nodes; it also waits for that DaemonSet's rollout, and either failed wait stops the run with an error naming the log to read. When the overlay ships `nfs/client-policy.yaml`, it applies that NetworkPolicy before `<overlay>/nfs`, with the node network of Step 1 in place of the placeholder `NODE_NETWORK`. The overlays are described in [Infrastructure Manifests](infrastructure-manifests.md#nfs-storage-stack-opt-in) and [Lab NFS stack](infrastructure-manifests.md#lab-nfs-stack) |
 | `WITH_MESSAGING` | `false` | When `true`, apply the `deploy/kind/messaging` overlay after Step 5 and wait for `rabbitmqcluster/shared-rabbitmq` in `openstack` to report `AllReplicasReady`. A timeout stops the run and prints the `kubectl describe` output for the broker plus the events of its server pod. The overlay is described in [Infrastructure Manifests](infrastructure-manifests.md#message-bus-kind-only-opt-in). The `e2e-controlplane` job is the broker's second consumer after the cinder `e2e-operator` leg: the full-ControlPlane suite takes a vhost of its own through `tests/e2e/cinder/broker-vhost.sh` and hands the ControlPlane the transport URL of that vhost brownfield |
 | `WITH_REGISTRY_CACHE` | `false` | Local-dev only. When `true`, bring up one distribution-registry (`registry:2`) pull-through proxy per upstream registry (`docker.io`, `ghcr.io`, `registry.k8s.io`, `quay.io`, plus the vanity fronts `oci.external-secrets.io` and `docker-registry3.mariadb.com`) on the `kind` Docker network and wire every node's containerd at them via a `certs.d/<host>/hosts.toml` mirror, so unmodified image refs are served from a persistent local cache that survives `kind delete`. The proxy streams and caches inline (fast even on a cold pull). The containerd mirror patch is injected only into the deploy-time kind config, never the checked-in `hack/kind-config.yaml`, so CI is unaffected. Requires `yq`. See the [Extended Quick Start](../../quick-start-extended.md) |
 | `PURGE_REGISTRY_CACHE` | `false` | Consumed by `make teardown-infra`. When `true`, also remove the registry pull-through cache containers and their volumes (identified by the `cobaltcore.registry-cache=true` label). The default leaves them running so the warm cache is reused on the next deploy |
-| `EXTERNAL_CLUSTER` | `false` | When `true`, deploy onto the cluster the current kubeconfig context points at (the script never switches contexts) with the `EXTERNAL_OVERLAY` overlays in Steps 3 and 5. Docker and kind are not required. Preflight refuses the six kind-bound opt-ins `WITH_VPA`, `WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE`, `WITH_CHAOS_MESH`, `WITH_OVN_KERNEL_MODULES` and `WITH_DIZZY`, accepts `WITH_NFS=true` only when `<overlay>/nfs/kustomization.yaml` exists, requires the context's API server to answer, and logs the context and the server URL. Step 1 creates no cluster; it checks for a default StorageClass, for the absence of a `node-local-dns` DaemonSet in `kube-system` and for a Ready node, and logs the class and the node names. Under `WITH_NFS=true` it also refuses a `CSIDriver/nfs.csi.k8s.io` whose `helm.toolkit.fluxcd.io` labels do not name the HelmRelease `kube-system/csi-driver-nfs`: the cluster then runs its own NFS CSI driver, which Step 3 would replace and the HelmRelease would adopt. For an overlay with `nfs/client-policy.yaml` it then reads the node network from `data.nodeNetwork` of the ConfigMap `kube-system/shoot-info`, logs it, and refuses a cluster where that value is missing or no IPv4 CIDR, or where a node has no IPv4 `InternalIP` inside it. Without `WITH_NFS=true`, when the ControlPlane of the overlay's `controlplane/` (see `EXTERNAL_OVERLAY`) has a Cinder backend on NFS, it refuses a cluster whose `CSIDriver/nfs.csi.k8s.io` is missing or does not list the `Ephemeral` lifecycle mode, and logs the driver's modes: the Cinder pods mount every export as an inline volume of that driver, and only `WITH_NFS=true` installs it. The nofile cap and the Keystone image preload are skipped. The Gateway is reached through `kubectl port-forward` on local port 8443, which the completion banner prints, and the bundled ControlPlane CR's `publicEndpoint` gets `:8443`. Also consumed by `make teardown-infra`. Any other value keeps the kind mode |
-| `EXTERNAL_OVERLAY` | `deploy/lab/metal-stack` | Overlay root of `EXTERNAL_CLUSTER=true`: its `base/` and `infrastructure/` replace `deploy/kind/base` and `deploy/kind/infrastructure`. Relative to the repository root unless absolute. Preflight fails when either kustomization is missing. An overlay may also carry a `controlplane/` kustomization, which `make deploy-infra` names in its `WITH_CONTROLPLANE=true` completion hint and never applies; while it exists and `WITH_CONTROLPLANE_CR` is not `true`, preflight renders it and refuses a failing render, a render with no ControlPlane or more than one, a ControlPlane other than `openstack/<CONTROLPLANE_NAME>`, the only one Step 7 seeds, and, unless `WITH_NFS=true`, a ControlPlane with a Cinder backend on the in-cluster NFS server `nfs-server.openstack`, which only `WITH_NFS=true` deploys. The server counts under `nfs-server.openstack`, `nfs-server.openstack.svc` and `nfs-server.openstack.svc.cluster.local`, in any case and the last with a trailing dot too. A backend on any other NFS server passes preflight, and Step 1 checks the cluster for the CSI driver it mounts through (see `EXTERNAL_CLUSTER`). A `hypervisor/` kustomization, with `hypervisor-fixtures/` beside it, is applied by hand as well; `make teardown-infra` removes both in its step 0. An optional `nfs/` kustomization is what Step 3 applies under `WITH_NFS=true` in place of `deploy/kind/nfs`; it has to render the Deployment `nfs-server` and the DaemonSet `nfs-client-modules` in `openstack` and the HelmRelease `csi-driver-nfs` in `kube-system`, the three objects the script waits for, and `make teardown-infra` removes it at the end of its step 2. `nfs/` may also ship `client-policy.yaml`, a NetworkPolicy template outside the kustomization whose placeholder `NODE_NETWORK` the script replaces with the node network of a Gardener shoot; an overlay for a cluster without the ConfigMap `kube-system/shoot-info` ships none. Read by `make deploy-infra` and `make teardown-infra` |
+| `EXTERNAL_CLUSTER` | `false` | When `true`, deploy onto the cluster the current kubeconfig context points at (the script never switches contexts) with the `EXTERNAL_OVERLAY` overlays in Steps 3 and 5. Docker and kind are not required. Preflight refuses the five kind-bound opt-ins `WITH_VPA`, `WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE`, `WITH_OVN_KERNEL_MODULES` and `WITH_DIZZY`, accepts `WITH_NFS=true` only when `<overlay>/nfs/kustomization.yaml` exists and `WITH_CHAOS_MESH=true` only when `<overlay>/chaos-mesh/kustomization.yaml` exists, requires the context's API server to answer, and logs the context and the server URL. Step 1 creates no cluster; it checks for a default StorageClass, for the absence of a `node-local-dns` DaemonSet in `kube-system` and for a Ready node, and logs the class and the node names. Under `WITH_NFS=true` it also refuses a `CSIDriver/nfs.csi.k8s.io` whose `helm.toolkit.fluxcd.io` labels do not name the HelmRelease `kube-system/csi-driver-nfs`: the cluster then runs its own NFS CSI driver, which Step 3 would replace and the HelmRelease would adopt. For an overlay with `nfs/client-policy.yaml` it then reads the node network from `data.nodeNetwork` of the ConfigMap `kube-system/shoot-info`, logs it, and refuses a cluster where that value is missing or no IPv4 CIDR, or where a node has no IPv4 `InternalIP` inside it. Without `WITH_NFS=true`, when the ControlPlane of the overlay's `controlplane/` (see `EXTERNAL_OVERLAY`) has a Cinder backend on NFS, it refuses a cluster whose `CSIDriver/nfs.csi.k8s.io` is missing or does not list the `Ephemeral` lifecycle mode, and logs the driver's modes: the Cinder pods mount every export as an inline volume of that driver, and only `WITH_NFS=true` installs it. The nofile cap and the Keystone image preload are skipped. The Gateway is reached through `kubectl port-forward` on local port 8443, which the completion banner prints, and the bundled ControlPlane CR's `publicEndpoint` gets `:8443`. Also consumed by `make teardown-infra`. Any other value keeps the kind mode |
+| `EXTERNAL_OVERLAY` | `deploy/lab/metal-stack` | Overlay root of `EXTERNAL_CLUSTER=true`: its `base/` and `infrastructure/` replace `deploy/kind/base` and `deploy/kind/infrastructure`. Relative to the repository root unless absolute. Preflight fails when either kustomization is missing. An overlay may also carry a `controlplane/` kustomization, which `make deploy-infra` names in its `WITH_CONTROLPLANE=true` completion hint and never applies; while it exists and `WITH_CONTROLPLANE_CR` is not `true`, preflight renders it and refuses a failing render, a render with no ControlPlane or more than one, a ControlPlane other than `openstack/<CONTROLPLANE_NAME>`, the only one Step 7 seeds, and, unless `WITH_NFS=true`, a ControlPlane with a Cinder backend on the in-cluster NFS server `nfs-server.openstack`, which only `WITH_NFS=true` deploys. The server counts under `nfs-server.openstack`, `nfs-server.openstack.svc` and `nfs-server.openstack.svc.cluster.local`, in any case and the last with a trailing dot too. A backend on any other NFS server passes preflight, and Step 1 checks the cluster for the CSI driver it mounts through (see `EXTERNAL_CLUSTER`). A `hypervisor/` kustomization, with `hypervisor-fixtures/` beside it, is applied by hand as well; `make teardown-infra` removes both in its step 0. An optional `nfs/` kustomization is what Step 3 applies under `WITH_NFS=true` in place of `deploy/kind/nfs`; it has to render the Deployment `nfs-server` and the DaemonSet `nfs-client-modules` in `openstack` and the HelmRelease `csi-driver-nfs` in `kube-system`, the three objects the script waits for, and `make teardown-infra` removes it at the end of its step 2. `nfs/` may also ship `client-policy.yaml`, a NetworkPolicy template outside the kustomization whose placeholder `NODE_NETWORK` the script replaces with the node network of a Gardener shoot; an overlay for a cluster without the ConfigMap `kube-system/shoot-info` ships none. An optional `chaos-mesh/` kustomization is what Step 3 applies under `WITH_CHAOS_MESH=true` in place of `deploy/kind/chaos-mesh`; it has to render the DaemonSet `chaos-mesh-modules` and the HelmRelease `chaos-mesh` in `chaos-mesh`, the two objects the script waits for, and `make teardown-infra` removes it before its step 0. Read by `make deploy-infra` and `make teardown-infra` |
 | `TEARDOWN_TIMEOUT` | `600` | Consumed by `make teardown-infra` under `EXTERNAL_CLUSTER=true`: seconds each delete waits for its objects to be gone before the teardown exits 1 |
 
 **Example: override HelmRelease timeout:**
