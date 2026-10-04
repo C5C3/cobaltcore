@@ -1437,7 +1437,9 @@ The libvirt daemon and QEMU for hypervisor nodes whose host image has neither:
 a single stage on `ubuntu:noble` with every package taken from the Ubuntu
 archive, so the image has no version pin of its own and follows the `noble`
 package set. The hypervisor package of issue #1142 runs it privileged as a
-DaemonSet beside `nova-compute`.
+DaemonSet beside `nova-compute`. The `libvirt-e2e` DaemonSet of the
+`e2e-nova-libvirt` CI job is its second consumer: it runs the image on a kind
+node, where QEMU emulates the guest without KVM.
 
 | Package | Why it is installed |
 | --- | --- |
