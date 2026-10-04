@@ -627,28 +627,47 @@ worker first. With one worker left, no node can receive them.
 Every Cinder volume and backup of the lab lives on one NFS server pod with one
 `ReadWriteOnce` volume of 100Gi, which bounds all of them together. A backup
 sits on the same volume as its source: it restores a deleted or overwritten
-volume, and the loss of the export takes both. While the server pod is away,
-after a node replacement or a reschedule, an attached volume does not answer;
-no lab run has tested that.
+volume, and the loss of the export takes both. Nova mounts the share `hard`
+with NFS 4.2, so while the server pod is away, a guest's requests to an
+attached volume wait, and they do not resume when it is back. In the
+[lab fault runs](./reference/infrastructure/infrastructure-manifests.md#lab-fault-runs),
+a reschedule of the pod stalled the guest's disk for 107 seconds, and a
+scale-down to 0 for 300 seconds, which stood for a node replacement, for 414
+seconds. Each time the restarted NFS server had no record of its clients, the
+node lost the lock QEMU held on the volume file, and from then on every
+request to the volume failed with an I/O error until the Nova server it was
+attached to was hard-rebooted with `openstack server reboot --hard`
+([#1245](https://github.com/c5c3/cobaltcore/issues/1245)). The guest's network
+kept working. Meanwhile Nova reported the server `ACTIVE`, Cinder the volume
+`in-use` and `cinder-volume` `up`, and every CR stayed `Ready`, so only the
+guest shows the failure.
 [Lab NFS stack](./reference/infrastructure/infrastructure-manifests.md#lab-nfs-stack)
 describes the posture of the export.
+
+A killed libvirt, `nova-compute` or `ovn-controller` pod leaves the servers on
+its node running. In the same runs each was killed under a running server and
+replaced within 9 seconds. QEMU kept running, the guest lost no ping and no
+disk write, the console log kept growing, and after the libvirt kill the
+console answered through the new pod. Only the `OVNChassis` was not `Ready`
+for less than 30 seconds after the `ovn-controller` kill.
+[Lab fault runs](./reference/infrastructure/infrastructure-manifests.md#lab-fault-runs)
+lists the timings.
 
 ## Proven by
 
 The page as of commit `e6a34f1b`, before Cinder was added, ran in page order
 on 2026-10-03, every `bash` block but the `git clone`, on shoot `forge` with
 two workers and Kubernetes v1.35.6, from a bare cluster to a bare cluster, and
-each block exited 0 on its first attempt. The Cinder additions have not run on
-the lab yet: the deploy with `WITH_NFS=true`, the volume service list of
-Part 1, Step 7, Part 2, Steps 7 and 10, the volume checks of Steps 8 and 9, and
-the deletes of the backup and the volume in the Teardown. The node selection
+each block exited 0 on its first attempt. Of the Cinder additions, the volume
+checks of Part 2, Steps 8 and 9 have not run on the lab yet; the run of
+2026-10-04 below ran the others. The node selection
 of Part 2 changed after the run: a command that needs one node takes it from
 `nodes` by slice, and Step 9 evicts the node `host` names. On 2026-10-04, on
 `forge`, the opening block of Part 2 read the same zone in bash and in zsh.
 Step 5 changed after that: it boots `lab-<n>` on every node, where the run
 booted `lab-a` and `lab-b` on two, and the Teardown deletes every `lab-<n>`.
-Steps 5 and 9 and the server delete of the Teardown have not run with the
-changes, and no run had more than two workers. The port-forward of
+Step 9 has not run with the changes; the run of 2026-10-04 below ran Step 5
+and the server delete of the Teardown on three workers. The port-forward of
 Part 1, Step 6 ran in a second terminal until the teardown had finished and
 was then stopped. The console commands of Part 2, Step 6 were typed by a
 script. The teardown waited 93 seconds for the stack's objects in `openstack`
@@ -663,6 +682,22 @@ No chainsaw suite runs against the lab, because CI has no metal-stack cluster.
 The findings of the lab runs so far, upstream and in this repository, are
 listed under
 [Lab hypervisors](./reference/infrastructure/infrastructure-manifests.md#lab-hypervisors).
+
+On 2026-10-04 the page as of commit `647736c1` ran on shoot `newforge`, three
+Xeon D-2141I workers on Kubernetes v1.35.6, from a bare cluster to a bare
+cluster, in the session of the
+[lab fault runs](./reference/infrastructure/infrastructure-manifests.md#lab-fault-runs).
+Part 1 ran with `WITH_CHAOS_MESH=true` added to the command of Step 3. Part 2
+ran Steps 1 to 7 and 10 and the Teardown, whose last line gave way to the
+teardown of the Chaos Mesh
+[Proving run](./reference/infrastructure/infrastructure-manifests.md#proving-run);
+Steps 8 and 9 did not run. Every block exited 0 on its first attempt, and none
+was repeated. Step 5 booted `lab-0`, `lab-1` and `lab-2`, one on each worker,
+and the Teardown's server delete removed all three. The fault runs between
+Steps 7 and 10 hard-rebooted `lab-0` twice, and Step 10 still read
+`lab-volume-marker` and backed the volume up. A script typed the console
+commands, and the port-forward ran in a second terminal without a restart.
+Nothing was done by hand on the workers.
 
 ## Related references
 

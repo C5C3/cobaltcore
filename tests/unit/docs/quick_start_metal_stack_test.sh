@@ -51,6 +51,9 @@
 #  15. Part 2, Step 5 boots a server on every node: its one server create
 #      runs in a loop over `nodes` and names the loop's node as the host of
 #      the availability zone
+#  16. the Caveats link the lab fault runs of
+#      docs/reference/infrastructure/infrastructure-manifests.md#lab-fault-runs
+#      and do not say that no lab run has tested the NFS outage
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -544,6 +547,21 @@ test_step_5_boots_every_node() {
     '--availability-zone "${zone}:${node}"'
 }
 
+# --- Test 16: the caveats rest on the lab fault runs ---
+# The NFS outage and the hypervisor pod kills ran on the lab, so the Caveats
+# link their record and do not call the outage untested. The section is
+# joined into one line, so a sentence wrapped differently still counts.
+test_caveats_name_the_fault_runs() {
+  echo "Test: the Caveats link the lab fault runs"
+  local body
+  body="$(section '^## Caveats$')"
+  assert_not_empty "the page holds the Caveats" "$body"
+  assert_contains "the Caveats link infrastructure-manifests.md#lab-fault-runs" "$body" \
+    'infrastructure-manifests.md#lab-fault-runs'
+  assert_not_contains "the Caveats do not say 'no lab run has tested that'" \
+    "$(tr -s '\n ' ' ' <<<"$body")" 'no lab run has tested that'
+}
+
 test_frontmatter
 test_sidebar
 test_sections
@@ -559,6 +577,7 @@ test_prerequisites_name_no_pinned_value
 test_teardown_order
 test_no_array_index
 test_step_5_boots_every_node
+test_caveats_name_the_fault_runs
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
