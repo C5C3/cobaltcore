@@ -490,6 +490,7 @@ STUB
 
   local tool
   for tool in kind docker; do
+    # shellcheck disable=SC2016 # $* and $CALL_LOG expand when the stub runs
     printf '#!/bin/bash\necho "%s $*" >>"$CALL_LOG"\nexit 0\n' "$tool" >"$dir/$tool"
     chmod +x "$dir/$tool"
   done
@@ -555,6 +556,7 @@ stack_namespace_names() {
 # ---------------------------------------------------------------------------
 # Test 1: the knobs
 # ---------------------------------------------------------------------------
+# shellcheck disable=SC2016 # resolve expands the expression after it sources the script
 test_knobs() {
   echo "Test: EXTERNAL_CLUSTER, EXTERNAL_OVERLAY and TEARDOWN_TIMEOUT"
 
@@ -742,9 +744,11 @@ test_script_names_no_platform_namespace() {
   assert_eq "the script deletes namespaces by name on two lines" "2" "$(grep -c . <<<"$deletes")"
   # The one list it deletes is read from stack_namespaces; the run in Test 3
   # checks what that list holds.
+  # shellcheck disable=SC2016 # the script's literal text, not expanded here
   named="$(sed -E 's/.* (namespace|ns) //' <<<"$deletes" | tr ' ' '\n' |
     grep -vxF -e flux-system -e '"${namespaces_to_delete[@]}"' || true)"
   assert_eq "every namespace delete in the script names flux-system or the stack_namespaces list" "" "$named"
+  # shellcheck disable=SC2016 # the script's literal text, not expanded here
   assert_file_contains_fixed "the deleted list is read from stack_namespaces" \
     "$TEARDOWN_SH" 'namespace_list="$(stack_namespaces)"'
   local ns
