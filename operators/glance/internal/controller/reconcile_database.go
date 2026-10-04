@@ -299,6 +299,7 @@ func glanceJobSetParams(glance *glancev1alpha1.Glance, configMapName string) dat
 		InstanceName:    glance.Name,
 		Namespace:       glance.Namespace,
 		Image:           glance.Spec.Image.Reference(),
+		ImagePullPolicy: glance.Spec.Image.EffectivePullPolicy(),
 		ConfigMapName:   configMapName,
 		ConfigMountPath: glanceConfigDir,
 		// Override [database].connection via the oslo.config env-var so db-sync
