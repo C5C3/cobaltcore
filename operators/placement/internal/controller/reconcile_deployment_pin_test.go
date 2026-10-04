@@ -81,6 +81,7 @@ spec:
               key: password
               name: placement-service-user
         image: ghcr.io/c5c3/placement:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -218,6 +219,7 @@ spec:
               key: password
               name: placement-service-user
         image: ghcr.io/c5c3/placement:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -356,6 +358,7 @@ spec:
               key: password
               name: placement-service-user
         image: ghcr.io/c5c3/placement:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -516,6 +519,7 @@ spec:
               key: password
               name: placement-service-user
         image: ghcr.io/c5c3/placement:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:

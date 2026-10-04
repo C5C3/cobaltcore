@@ -239,9 +239,10 @@ func buildPlacementDeployment(placement *placementv1alpha1.Placement, configMapN
 		Autoscaling:    placement.Spec.Autoscaling,
 		DefaultMemory:  placementAPIMemory(placement),
 		Container: deployment.ContainerParams{
-			Name:    "placement-api",
-			Image:   placement.Spec.Image.Reference(),
-			Command: placementUWSGICommand(placement.Spec.APIServer),
+			Name:            "placement-api",
+			Image:           placement.Spec.Image.Reference(),
+			ImagePullPolicy: placement.Spec.Image.EffectivePullPolicy(),
+			Command:         placementUWSGICommand(placement.Spec.APIServer),
 			Env: []corev1.EnvVar{
 				// The WSGI entry's init_application() resolves its config as
 				// $OS_PLACEMENT_CONFIG_DIR/placement.conf, so this is what points
