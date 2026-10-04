@@ -108,8 +108,11 @@ Secret-reading `Role` here without treating it as a security review.
 
 The `chaos-mesh` namespace is **not** part of the production base. It is created
 inline by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` when
-`WITH_CHAOS_MESH=true make deploy-infra` is used. See
-[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in) below.
+`WITH_CHAOS_MESH=true make deploy-infra` is used, and by the lab overlay
+`deploy/lab/metal-stack/chaos-mesh/`, which takes that overlay as its base, under
+`EXTERNAL_CLUSTER=true`. See
+[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in) and
+[Lab Chaos Mesh](#lab-chaos-mesh) below.
 
 **Note:** The `install.createNamespace: true` setting on HelmReleases instructs FluxCD's
 helm-controller to create namespaces when installing charts. However, this does not help
@@ -1945,7 +1948,10 @@ WITH_CHAOS_MESH=true make deploy-infra
 ```
 
 This is the prerequisite for `make e2e-chaos`. See
-[Chaos E2E Tests](../testing/chaos-e2e-tests.md) for the full workflow.
+[Chaos E2E Tests](../testing/chaos-e2e-tests.md) for the full workflow. The
+metal-stack lab deploys Chaos Mesh from its own overlay on top of this one,
+with a namespace filter and a pod that loads the kernel modules; see
+[Lab Chaos Mesh](#lab-chaos-mesh).
 
 ### kube-prometheus-stack (kind-only opt-in)
 
@@ -2495,9 +2501,10 @@ metal-stack cluster, planned in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138).
 `deploy/flux-system/kustomization.yaml` does not reference the tree.
 `hack/deploy-infra.sh` applies its `base/` and `infrastructure/` under
-`EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), and its `nfs/` as
-well when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)); the
-probe is applied by hand, and so is `controlplane/`, once the deploy has
+`EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), its `nfs/` as
+well when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)), and
+its `chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see
+[Lab Chaos Mesh](#lab-chaos-mesh)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
 finished (see [Lab ControlPlane](#lab-controlplane)), and after it
 `hypervisor-fixtures/` and `hypervisor/` (see
 [Lab hypervisors](#lab-hypervisors)). The
@@ -2580,13 +2587,13 @@ and lists the host's interfaces instead.
 
 On the lab, the probe found the six Chaos Mesh module files on both workers
 on 2026-10-04, each with a path under `/lib/modules/6.1.0-49-amd64`. So D3
-of #1219 stands:
-[#1221](https://github.com/c5c3/cobaltcore/issues/1221) is to load `ip_set`,
-`ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf`.
+of #1219 stands: the DaemonSet `chaos-mesh-modules` of the
+[Lab Chaos Mesh](#lab-chaos-mesh) loads `ip_set`, `ip_set_hash_ip`,
+`ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` on every node.
 Loaded at the time of the run were `xt_set`, `ip_set_hash_ip`,
 `ip_set_hash_net` and `ip_set`. This does not shorten the list: a reboot or a
 replaced node starts without them. Both workers printed
-`run/containerd/containerd.sock: socket`, so #1221 can mount
+`run/containerd/containerd.sock: socket`, so the lab's `chaos-daemon` mounts
 `/run/containerd/containerd.sock`, the kind overlay's value. The
 [comment on #1219](https://github.com/c5c3/cobaltcore/issues/1219#issuecomment-5981396257)
 holds the output of both workers.
@@ -2687,6 +2694,12 @@ apiserver-proxy, the same path as on kind. It is set on every namespace rather
 than on the ones known to break, so the stack's network posture is one thing on
 the lab.
 
+The same patch annotates every namespace it renders with
+`chaos-mesh.org/inject: enabled`, the scope of the
+[Lab Chaos Mesh](#lab-chaos-mesh). Its release selects pods only in a
+namespace that carries the annotation; without Chaos Mesh the annotation does
+nothing.
+
 ```bash
 EXTERNAL_CLUSTER=true make deploy-infra
 kubectl -n envoy-gateway-system port-forward \
@@ -2696,7 +2709,8 @@ EXTERNAL_CLUSTER=true make teardown-infra
 ```
 
 The deploy runs against the current kubeconfig context and never switches it.
-It refuses the kind-only opt-ins (`WITH_NFS` aside, which applies `nfs/`),
+It refuses the kind-only opt-ins (`WITH_NFS` and `WITH_CHAOS_MESH` aside, which
+apply `nfs/` and `chaos-mesh/`),
 checks the cluster for a default StorageClass, for the absence of a
 `node-local-dns` DaemonSet (the instance's NetworkPolicy would need
 `spec.network.dnsEndpointIPs` for a host-networked resolver) and for a Ready
@@ -2711,6 +2725,7 @@ platform's namespaces and CRDs alone. Both are described in
 | Access | `kubectl port-forward` to the Envoy Service on local port 8443; the `*.127-0-0-1.nip.io` hostnames are unchanged |
 | Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry |
 | Gardener | `apiserver-proxy.networking.gardener.cloud/inject: disable` on every namespace of the base render |
+| Chaos Mesh scope | `chaos-mesh.org/inject: enabled` on every namespace of the base render |
 | Dependencies | a default StorageClass and no `node-local-dns` on the cluster |
 
 ### Lab NFS stack
@@ -2842,6 +2857,286 @@ backup on it go too.
 
 No lab run of this stack is recorded yet.
 
+### Lab Chaos Mesh
+
+**Files:** `deploy/lab/metal-stack/chaos-mesh/kustomization.yaml`,
+`deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml`
+
+The fault injection of
+[#1219](https://github.com/c5c3/cobaltcore/issues/1219) for the metal-stack
+lab ([#1221](https://github.com/c5c3/cobaltcore/issues/1221)): the
+[Chaos Mesh](#chaos-mesh-kind-only-opt-in) of the kind overlay, scoped to the
+namespaces the lab declares. `hack/deploy-infra.sh` applies the directory in
+Step 3 when `WITH_CHAOS_MESH=true` is set beside `EXTERNAL_CLUSTER=true`, in
+place of `deploy/kind/chaos-mesh`. The flag composes onto the deploy command
+of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md), which
+does not need it:
+
+```bash
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CHAOS_MESH=true make deploy-infra
+```
+
+The kustomization takes `deploy/kind/chaos-mesh` as its base and adds the
+DaemonSet `chaos-mesh-modules`. Its render holds four objects: the Namespace
+`chaos-mesh`, the HelmRepository, the HelmRelease and the DaemonSet. The first
+three rows below are its differences from kind; the namespace filter and the
+loader follow the decisions D2 and D3 of #1219.
+
+| Property | Value |
+| --- | --- |
+| Namespace label | `apiserver-proxy.networking.gardener.cloud/inject: disable` on `chaos-mesh`, the lab's rule for every namespace it declares (see [Lab overlay](#lab-overlay)), beside the privileged PodSecurity level of the kind overlay |
+| Namespace filter | `controllerManager.enableFilterNamespace: true`: the controller selects a pod only when its Namespace carries the annotation `chaos-mesh.org/inject: enabled`. On kind the filter is off |
+| NetworkChaos modules | the DaemonSet `chaos-mesh-modules` in `chaos-mesh`, on every node, tolerating every taint. A privileged init container `load` on the image of `host-prepare` in [Lab hypervisors](#lab-hypervisors) loads `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` from the node's `/lib/modules`, and an unprivileged container `hold` keeps the pod running, so the load repeats after a reboot. The chart renders `chaos-daemon`, so it cannot carry an init container from this repository (D3) |
+| Inherited from kind | the HelmRepository; the HelmRelease in `chaos-mesh` with the chart range `>=2.6.0 <3.0.0` and its dependency on `cert-manager`; `chaosDaemon.runtime: containerd` with the socket `/run/containerd/containerd.sock`, which the [Node probe](#node-probe) found on both workers; no dashboard; the reduced requests |
+| Namespaces | `chaos-mesh` for the release and the loader, `flux-system` for the HelmRepository |
+| Pinned by | `tests/unit/deploy/metal_stack_chaos_mesh_test.sh` |
+
+In this mode the deploy script's preflight accepts `WITH_CHAOS_MESH=true` only
+for an overlay with `chaos-mesh/kustomization.yaml` and refuses any other
+before it contacts the cluster. The script loads no module on the machine it
+runs on; it logs
+`Skipping the host-side chaos-mesh kernel modules (EXTERNAL_CLUSTER=true; ...)`
+instead. Step 3 applies `<overlay>/chaos-mesh` and waits up to `POD_TIMEOUT`
+seconds for the `chaos-mesh-modules` DaemonSet. A failed wait exits 1 and
+names the log to read. Phase 3 waits for the `chaos-mesh` HelmRelease, as on
+kind. The loader logs one line per pod:
+
+```bash
+kubectl logs -n chaos-mesh -l app.kubernetes.io/name=chaos-mesh-modules -c load --prefix --tail=-1
+```
+
+A pod prints
+`chaos-mesh-modules: ip_set, ip_set_hash_ip, ip_set_hash_net, xt_set, sch_netem and sch_tbf are loaded`.
+When `modprobe` fails, it prints
+`chaos-mesh-modules: cannot load <module> from /lib/modules/<kernel>` and
+exits 1, and its pod stays in `Init`.
+
+**Scope.** The [Lab overlay](#lab-overlay) annotates every Namespace of its
+base render with `chaos-mesh.org/inject: enabled`, and
+`deploy/lab/metal-stack/migration-ports/namespace.yaml` annotates
+`hypervisor-system`, which Part 2 of the quick start applies, whether Chaos
+Mesh is deployed or not (D2 of #1219). Three groups carry no annotation, so no
+experiment selects their pods:
+
+- `chaos-mesh` itself;
+- `flux-system`, which the flux-operator install creates and no lab manifest
+  declares;
+- the platform's namespaces `kube-system`, `firewall`, `metallb-system` and
+  `default`. An experiment that hit `calico-node`, `vpn-shoot` or
+  `apiserver-proxy` would cut the shoot off from its control plane in the
+  seed.
+
+A selector that names only such namespaces matches nothing, and the
+experiment fails with `no pod is selected`. To take a lab namespace out of the
+scope, remove its annotation; the next deploy sets it again:
+
+```bash
+kubectl annotate namespace <name> chaos-mesh.org/inject-
+```
+
+**NetworkChaos and `hostNetwork`.** No NetworkChaos selects a pod that runs in
+the host's network namespace. On the lab these are libvirt, `nova-compute`,
+the pods of the `OVNChassis` and of the metadata agent, and
+`migration-port-reservation`. A delay or a loss there would act on the
+network of the node, and the shoot is shared. The chart's
+`controllerManager.allowHostNetworkTesting` defaults to `false`, and the
+controller then refuses such an experiment with the event
+``It's dangerous to inject network chaos on a pod(<ns>/<name>) with `hostNetwork` ``.
+The overlay sets neither that value nor `clusterScoped`, and its test fails
+when the render names either.
+
+**Posture.** `chaos-daemon` runs privileged with `hostPID` and the containerd
+socket on every untainted node. Whoever may create a `chaos-mesh.org` object
+in an annotated namespace therefore acts as root on every node, which the lab
+accepts as one tenant's cluster. The namespace filter bounds the pods an
+experiment selects; RBAC on the `chaos-mesh.org` kinds bounds who may write
+one. The chart's webhooks match `chaos-mesh.org` resources only, none matches
+pods.
+
+**Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes Chaos Mesh
+first, before its step 0, while `chaos-controller-manager`, `chaos-daemon`
+and the helm-controller still run (see
+[E2E Deployment](e2e-deployment.md#make-teardown-infra)). It deletes the
+schedules and workflows, which create experiments, then every experiment, so
+the controller releases each fault before it clears the experiment's
+finalizer. The per-pod records `podnetworkchaos`, `podiochaos` and
+`podhttpchaos` carry no finalizer and go with their CRDs. An experiment that
+keeps its finalizer past `TEARDOWN_TIMEOUT` stops the teardown with exit 1
+and a hint to read `kubectl logs -n chaos-mesh deployment/chaos-controller-manager`.
+Do not remove the finalizer by hand: the fault would stay injected. Then the
+teardown deletes the overlay without its Namespace, so the helm-controller
+uninstalls the chart while Helm's release Secret is still there. Its step 7
+deletes the namespace `chaos-mesh` and the chart's cluster-scoped leftovers,
+its step 8 the `chaos-mesh.org` CRDs the chart installs from its `crds/` (23
+in chart 2.8.4), which Helm never deletes.
+
+**What the pods change on a node.**
+
+- `chaos-mesh-modules` loads `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`,
+  `xt_set`, `sch_netem`, `sch_tbf` and their dependencies on every node.
+  Nothing unloads them; they stay until the node reboots, also after a
+  teardown. `calico-node` uses the ipset family as well.
+- `chaos-daemon` mounts `/run/containerd`, `/sys` and `/lib/modules` from the
+  node and goes with the release.
+- The deploy script itself runs no `modprobe` and writes no file on a node.
+
+`make e2e-chaos` is not run against the lab (D6 of #1219): the suites under
+`tests/e2e-chaos/` are written for the kind stack. The lab's own faults, an
+NFS outage and killed hypervisor pods, follow in
+[#1222](https://github.com/c5c3/cobaltcore/issues/1222).
+
+#### Proving run
+
+The run starts from a bare `forge`, deploys with the command above, and runs
+Part 1 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md)
+through Step 6, with the port-forward open. Then, from the root of the clone:
+
+```bash
+# 1. State: the chart version, chaos-daemon on both workers, one loader line
+#    per node
+kubectl get helmrelease chaos-mesh -n chaos-mesh -o jsonpath='{.status.history[0].chartVersion}'; echo
+kubectl rollout status daemonset/chaos-daemon -n chaos-mesh --timeout=120s
+kubectl logs -n chaos-mesh -l app.kubernetes.io/name=chaos-mesh-modules -c load --prefix --tail=-1
+
+# 2. Baseline: five requests through the port-forward
+for i in 1 2 3 4 5; do
+  curl -sk -o /dev/null -w '%{time_total}\n' https://keystone.127-0-0-1.nip.io:8443/v3
+done
+
+# The two experiments on the Keystone API pods, kept for steps 4 and 6
+run="$(mktemp -d)"
+cat >"$run/kill.yaml" <<'EOF'
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-keystone-kill
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [openstack]
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/component: api
+EOF
+cat >"$run/delay.yaml" <<'EOF'
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: lab-keystone-delay
+  namespace: openstack
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces: [openstack]
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/component: api
+  delay:
+    latency: 300ms
+  # The fault ends by itself when the run is abandoned.
+  duration: 10m
+EOF
+
+# 3. PodChaos: a Keystone API pod is killed and replaced
+export sel='app.kubernetes.io/name=keystone,app.kubernetes.io/component=api'
+export before="$(kubectl get pods -n openstack -l "$sel" -o jsonpath='{.items[*].metadata.uid}')"
+kubectl apply -f "$run/kill.yaml"
+kubectl wait podchaos/lab-keystone-kill -n openstack --for=condition=AllInjected --timeout=60s
+timeout 300 bash -c 'until [ "$(kubectl get pods -n openstack -l "$sel" -o jsonpath={.items[*].metadata.uid})" != "$before" ]; do sleep 2; done'
+kubectl wait pod -n openstack -l "$sel" --for=condition=Ready --timeout=300s
+kubectl delete podchaos lab-keystone-kill -n openstack --wait --timeout=60s
+
+# 4. NetworkChaos: 300 ms on every Keystone API pod, then released
+kubectl apply -f "$run/delay.yaml"
+kubectl wait networkchaos/lab-keystone-delay -n openstack --for=condition=AllInjected --timeout=60s
+for i in 1 2 3 4 5; do
+  curl -sk -o /dev/null -w '%{time_total}\n' https://keystone.127-0-0-1.nip.io:8443/v3
+done
+kubectl delete networkchaos lab-keystone-delay -n openstack --wait --timeout=120s
+for i in 1 2 3 4 5; do
+  curl -sk -o /dev/null -w '%{time_total}\n' https://keystone.127-0-0-1.nip.io:8443/v3
+done
+
+# 5. Scope: a pod in a namespace without the annotation is not selected
+K="$(yq -r '.spec.template.spec.containers[0].image' deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml)"
+kubectl create namespace chaos-scope-probe
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: scope-probe
+  namespace: chaos-scope-probe
+  labels:
+    app: scope-probe
+spec:
+  automountServiceAccountToken: false
+  containers:
+    - name: hold
+      image: ${K}
+      command: ["/bin/bash", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 1m, memory: 8Mi}
+        limits: {memory: 32Mi}
+EOF
+kubectl wait pod/scope-probe -n chaos-scope-probe --for=condition=Ready --timeout=120s
+kubectl get pod scope-probe -n chaos-scope-probe -o jsonpath='{.metadata.uid}{"\n"}'
+kubectl apply -f - <<'EOF'
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-scope-probe
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [chaos-scope-probe]
+    labelSelectors:
+      app: scope-probe
+EOF
+sleep 60
+kubectl get pod scope-probe -n chaos-scope-probe \
+  -o jsonpath='{.metadata.uid} restarts={.status.containerStatuses[0].restartCount}{"\n"}'
+kubectl get podchaos lab-scope-probe -n openstack \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'
+kubectl get events -n openstack --field-selector involvedObject.name=lab-scope-probe
+kubectl delete podchaos lab-scope-probe -n openstack --wait --timeout=60s
+kubectl delete namespace chaos-scope-probe --wait --timeout=120s
+
+# 6. A fault left active, then the teardown and what it leaves
+kubectl apply -f "$run/delay.yaml"
+kubectl wait networkchaos/lab-keystone-delay -n openstack --for=condition=AllInjected --timeout=60s
+EXTERNAL_CLUSTER=true make teardown-infra
+kubectl get crd -o name | grep -c 'chaos-mesh\.org'
+kubectl get namespace chaos-mesh
+kubectl get clusterrole,clusterrolebinding,mutatingwebhookconfiguration,validatingwebhookconfiguration -o name | grep -c chaos-mesh
+rm -r "$run"
+```
+
+What a run shows:
+
+| Step | Expected |
+| --- | --- |
+| 1 | the resolved chart version; `chaos-daemon` rolled out on both workers; one `are loaded` line per node |
+| 2 | five times below 0.3 s |
+| 3 | `AllInjected`, a Keystone API pod with a new UID that becomes Ready, and the PodChaos deleted within 60 seconds |
+| 4 | `AllInjected` and five times 0.3 s or more; the delete returns within 120 seconds, then five times below 0.3 s |
+| 5 | the pod's UID unchanged and `restarts=0`; the PodChaos reports that no pod is selected |
+| 6 | the teardown exits 0, logs `Deleting the Chaos Mesh experiments...` and ends with `Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0`; then `0`, `NotFound` and `0` |
+
+No lab run of this stack is recorded yet.
+
 ### Lab ControlPlane
 
 **Files:** `deploy/lab/metal-stack/controlplane/kustomization.yaml`,
@@ -2946,9 +3241,11 @@ tag `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1`, which
 [Release-independent images](../ci-cd/build-images-workflow.md#release-independent-images)).
 `imagePullPolicy: IfNotPresent` pulls the digest once per node. Renovate
 proposes each new keeper tag as one pull request, never automerged, that moves
-all six lines naming the image: the two containers here, the load test of the
-[Node probe](#node-probe), `load-nfsd` and both containers of
-`nfs-client-modules` in the [Lab NFS stack](#lab-nfs-stack). The update
+all eight lines naming the image: the two containers here, the load test of
+the [Node probe](#node-probe), `load-nfsd` and both containers of
+`nfs-client-modules` in the [Lab NFS stack](#lab-nfs-stack), and both
+containers of `chaos-mesh-modules` in the [Lab Chaos Mesh](#lab-chaos-mesh).
+The update
 strategy is `OnDelete` and the pod has no liveness probe: a rollout, or a
 restart on a slow answer, would interrupt running migrations. A merged bump
 therefore reaches a node when its libvirt pod is deleted. The readiness probe
