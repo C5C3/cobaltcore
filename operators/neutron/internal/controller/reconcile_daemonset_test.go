@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -448,4 +449,47 @@ func TestBuildAgentDaemonSet_RendersResourceDefaults(t *testing.T) {
 	g.Expect(ds.Spec.Template.Spec.InitContainers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("2Gi")))
 	g.Expect(ds.Spec.Template.Spec.Containers).To(HaveLen(1))
 	g.Expect(ds.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("2Gi")))
+}
+
+// TestNeutronMetadataAgentDaemonSet_ImagePullPolicy pins the pull policy of every container and init
+// container of every workload the operator renders from spec.image:
+// a tag without pullPolicy resolves to Always, a digest to IfNotPresent,
+// and an explicit pullPolicy wins over both.
+func TestNeutronMetadataAgentDaemonSet_ImagePullPolicy(t *testing.T) {
+	podSpecs := func(o *neutronv1alpha1.NeutronMetadataAgent) map[string]corev1.PodSpec {
+		return map[string]corev1.PodSpec{
+			"metadata-agent": buildAgentDaemonSet(o, pinAgentChassis(), "agent-config", "", "").Spec.Template.Spec,
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*commonv1.ImageSpec)
+		want   corev1.PullPolicy
+	}{
+		{name: "tag without pullPolicy", mutate: func(*commonv1.ImageSpec) {}, want: corev1.PullAlways},
+		{
+			name:   "digest without pullPolicy",
+			mutate: func(i *commonv1.ImageSpec) { i.Tag, i.Digest = "", "sha256:"+strings.Repeat("a", 64) },
+			want:   corev1.PullIfNotPresent,
+		},
+		{name: "explicit pullPolicy Never", mutate: func(i *commonv1.ImageSpec) { i.PullPolicy = corev1.PullNever }, want: corev1.PullNever},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			o := validAgent()
+			tc.mutate(&o.Spec.Image)
+
+			specs := podSpecs(o)
+			g.Expect(specs).To(HaveLen(1))
+			for name, spec := range specs {
+				containers := append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...)
+				g.Expect(containers).NotTo(BeEmpty(), name)
+				for _, c := range containers {
+					g.Expect(c.ImagePullPolicy).To(Equal(tc.want), "%s/%s", name, c.Name)
+				}
+			}
+			g.Expect(specs["metadata-agent"].InitContainers).To(HaveLen(1), "wait-for-chassis")
+		})
+	}
 }

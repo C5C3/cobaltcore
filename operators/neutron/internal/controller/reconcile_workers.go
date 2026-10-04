@@ -171,11 +171,12 @@ func buildWorkerDeployment(neutron *neutronv1alpha1.Neutron, component string, c
 		// Each worker Deployment runs one single-threaded process.
 		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, 1),
 		Container: deployment.ContainerParams{
-			Name:         component,
-			Image:        neutron.Spec.Image.Reference(),
-			Command:      command,
-			Env:          neutronWorkloadEnv(neutron),
-			VolumeMounts: mounts,
+			Name:            component,
+			Image:           neutron.Spec.Image.Reference(),
+			ImagePullPolicy: neutron.Spec.Image.EffectivePullPolicy(),
+			Command:         command,
+			Env:             neutronWorkloadEnv(neutron),
+			VolumeMounts:    mounts,
 		},
 		Volumes: volumes,
 	})

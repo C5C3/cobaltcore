@@ -94,6 +94,7 @@ spec:
               key: password
               name: neutron-service-user
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -258,6 +259,7 @@ spec:
               key: password
               name: neutron-service-user
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -427,6 +429,7 @@ spec:
               key: password
               name: neutron-service-user
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -592,6 +595,7 @@ spec:
               key: password
               name: neutron-service-user
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -775,6 +779,7 @@ spec:
               key: password
               name: neutron-service-user
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
