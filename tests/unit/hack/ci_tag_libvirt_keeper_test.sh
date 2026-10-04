@@ -17,7 +17,9 @@
 #     before anything runs;
 #   - a failing create and a read-back that names another digest fail;
 #   - a read-back that answers "not found" is retried after RETRY_DELAY, and
-#     the delay triples per read.
+#     the delay triples per read;
+#   - the keep pattern of hack/ghcr-prune-stale-versions.py and Renovate's
+#     allowedVersions are the script's version shape plus -r<N>.
 #
 # Follows the project-native bash test pattern (tests/lib/assertions.sh),
 # mirroring tests/unit/hack/ci_build_service_image_test.sh.
@@ -406,6 +408,36 @@ test_readback_not_found_is_retried() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 13: the prune and Renovate accept exactly the tags the script mints
+# ---------------------------------------------------------------------------
+# A tag the script mints but the prune does not keep loses the digest the lab
+# pins once latest moves on; a tag Renovate does not allow is never proposed.
+test_keeper_shape_lockstep() {
+  echo "Test: the prune keep pattern and Renovate's allowedVersions are the script's shape plus -r<N>"
+
+  local shape want prune renovate
+  shape="$(sed -n "s/^version_shape='\(.*\)'$/\1/p" "$KEEPER_SH")"
+  want="${shape%\$}-r[0-9]+\$"
+  prune="$(python3 - "$PROJECT_ROOT/hack/ghcr-prune-stale-versions.py" <<'PYEOF'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("ghcr_prune", sys.argv[1])
+prune = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(prune)
+print("\n".join(p for p in prune.DEFAULT_KEEP_PATTERNS if "ubuntu" in p))
+PYEOF
+  )"
+  renovate="$(jq -r '.packageRules[]
+    | select((.matchPackageNames // []) | index("ghcr.io/c5c3/libvirt"))
+    | .allowedVersions // empty' "$PROJECT_ROOT/renovate.json" | sed 's|^/||; s|/$||')"
+
+  assert_not_empty "the script defines version_shape" "$shape"
+  assert_eq "the prune keep pattern is the script's shape plus -r<N>" "$want" "$prune"
+  assert_eq "Renovate's allowedVersions is the script's shape plus -r<N>" "$want" "$renovate"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_absent_tag_is_minted
@@ -420,6 +452,7 @@ test_missing_or_malformed_inputs_fail
 test_failing_create_fails
 test_wrong_readback_fails
 test_readback_not_found_is_retried
+test_keeper_shape_lockstep
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

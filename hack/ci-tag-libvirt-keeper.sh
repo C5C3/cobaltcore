@@ -100,11 +100,12 @@ if ! version="$(docker run --rm --platform linux/amd64 "${IMAGE}@${DIGEST}" \
   fail "cannot read the libvirt-daemon-system version from ${IMAGE}@${DIGEST}"
 fi
 
-# The keeper shape <version>-r<N> has two more copies, each pinned by its own
-# test: the fifth entry of DEFAULT_KEEP_PATTERNS in
-# hack/ghcr-prune-stale-versions.py and allowedVersions of the lab libvirt
-# image in renovate.json. An epoch (1:10.0.0-...) or a suffix (+esm1) fits
-# neither, so such a version stops here.
+# The keeper shape <version>-r<N> has two more copies, which
+# tests/unit/hack/ci_tag_libvirt_keeper_test.sh keeps equal to this one: the
+# libvirt entry of DEFAULT_KEEP_PATTERNS in hack/ghcr-prune-stale-versions.py
+# and allowedVersions of the lab libvirt image in renovate.json. An epoch
+# (1:10.0.0-...) or a suffix (+esm1) fits neither, so such a version stops
+# here.
 version_shape='^[0-9]+(\.[0-9]+)+-[0-9]+ubuntu[0-9]+(\.[0-9]+)*$'
 if [[ ! "${version}" =~ ${version_shape} ]]; then
   fail "libvirt-daemon-system version '${version}' is not <upstream>-<n>ubuntu<m>; the keep pattern in hack/ghcr-prune-stale-versions.py and allowedVersions in renovate.json assume that shape"
