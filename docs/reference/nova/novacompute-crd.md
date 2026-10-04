@@ -675,13 +675,20 @@ re-enables it by hand. A node deleted while it still holds instances stays
 
 The CR carries the finalizer `nova.openstack.c5c3.io/compute-drain` until every
 node is released and the aggregates are cleaned up, so an unreachable Nova API
-holds a deletion. The escape is removing the finalizer by hand, which leaves the
-compute services and the marked aggregates in Nova:
+holds a deletion. The escape is removing that finalizer, and only that one, by
+hand, which leaves the compute services and the marked aggregates in Nova:
 
 ```bash
-kubectl patch novacompute <name> -n <namespace> --type=merge \
-  -p '{"metadata":{"finalizers":null}}'
+i="$(kubectl get novacompute <name> -n <namespace> -o json \
+  | jq '.metadata.finalizers | index("nova.openstack.c5c3.io/compute-drain")')"
+kubectl patch novacompute <name> -n <namespace> --type=json -p "[
+  {\"op\":\"test\",\"path\":\"/metadata/finalizers/$i\",\"value\":\"nova.openstack.c5c3.io/compute-drain\"},
+  {\"op\":\"remove\",\"path\":\"/metadata/finalizers/$i\"}]"
 ```
+
+A placed pool also carries `openstack.c5c3.io/remote-children`, which stays:
+with it the operator still deletes the pool's children on the target cluster
+and reaps the mirrors below before it releases the CR.
 
 When the Nova is gone, or the target cluster was abandoned, the teardown skips
 the Nova side. The last pool of a Nova on a cluster also deletes two Secrets in
