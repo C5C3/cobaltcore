@@ -278,9 +278,10 @@ func buildBarbicanDeployment(
 		Autoscaling:    barbican.Spec.Autoscaling,
 		DefaultMemory:  barbicanAPIMemory(barbican),
 		Container: deployment.ContainerParams{
-			Name:    "barbican-api",
-			Image:   barbican.Spec.Image.Reference(),
-			Command: barbicanUWSGICommand(barbican.Spec.APIServer),
+			Name:            "barbican-api",
+			Image:           barbican.Spec.Image.Reference(),
+			ImagePullPolicy: barbican.Spec.Image.EffectivePullPolicy(),
+			Command:         barbicanUWSGICommand(barbican.Spec.APIServer),
 			Env: []corev1.EnvVar{
 				database.ConnectionEnvVar(barbican.Name),
 				keystoneauth.PasswordEnvVar(barbican.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(barbican)),
