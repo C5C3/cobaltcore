@@ -346,7 +346,7 @@ LINES
   done <<'LINES'
 user = "root"
 group = "root"
-dynamic_ownership = 1
+dynamic_ownership = 0
 security_driver = "none"
 default_tls_x509_cert_dir = "/etc/pki/qemu"
 default_tls_x509_verify = 1

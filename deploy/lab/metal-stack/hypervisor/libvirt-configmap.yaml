@@ -36,6 +36,14 @@
 # stdio_handler to file, so libvirtd opens QEMU's log files itself and no
 # virtlogd runs, because a virtlogd in the pod dies with the pod and takes
 # the console log of every running domain with it (#1174).
+# qemu.conf sets dynamic_ownership to 0. libvirt adds its DAC driver whenever
+# QEMU runs privileged, also under security_driver = "none" (qemuSecurityInit
+# in src/qemu/qemu_driver.c), and with dynamic ownership on, an attach changes
+# the owner of a Cinder volume file to QEMU's user, 0:0
+# (virSecurityDACSetImageLabelInternal in src/security/security_dac.c, both
+# read at libvirt v9.0.0). Cinder's NFS backends keep their files
+# 42424:42424 with mode 660, so Cinder could no longer read a volume once it
+# had been attached. QEMU as root opens every file it needs without a chown.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -196,7 +204,7 @@ data:
   qemu.conf: |
     user = "root"
     group = "root"
-    dynamic_ownership = 1
+    dynamic_ownership = 0
     security_driver = "none"
     default_tls_x509_cert_dir = "/etc/pki/qemu"
     default_tls_x509_verify = 1
