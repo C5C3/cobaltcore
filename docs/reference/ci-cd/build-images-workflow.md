@@ -38,6 +38,7 @@ security pipeline. See [Reusable Components](#reusable-components) for details.
 | Build OVN image script | `hack/ci-build-ovn-image.sh` |
 | Resolve hvo commit script | `hack/ci-resolve-hvo-commit.sh` |
 | Resolve kna commit script | `hack/ci-resolve-kna-commit.sh` |
+| Mint libvirt keeper tag script | `hack/ci-tag-libvirt-keeper.sh` |
 
 Both workflow files use the `.yaml` extension and quote the trigger key as `"on"` to
 prevent YAML boolean interpretation. They start with the standard SPDX license
@@ -60,7 +61,7 @@ The two path lists differ. The push list is the broad one it has always been:
 action republishes the images. The pull-request list names the inputs this workflow
 actually reads: the images and their build contexts, `releases/**`, `patches/**`,
 `scripts/**`, `overrides/**`, the option catalogs it verifies, and the nine
-composite actions and twelve `hack/` scripts its jobs call, directly or through
+composite actions and thirteen `hack/` scripts its jobs call, directly or through
 `build-push-image`, `setup-docker-registry` and `merge-manifest-and-attest`. Four
 negative patterns exclude `tests/container-images/verify_build_images_workflow.sh`,
 `verify_deviation_comments.sh`, `verify_release_config.sh` and
@@ -495,6 +496,20 @@ amd64 image locally for the inline Grype scan and the
 `libvirtd` and queries the QEMU driver), and a PR-skipped merge job assembling
 the multi-arch manifest with the `:latest` + `:<sha>` tags, followed by the
 supply-chain pipeline. The arm64 leg builds on a push only.
+
+On `main`, the step `Mint the libvirt keeper tag` of the merge job runs
+`hack/ci-tag-libvirt-keeper.sh` on the merged index and gives it the third tag,
+`<libvirt-package-version>-r<N>` (see
+[Release-independent images](#release-independent-images)). The script counts
+commits, so on `main` the merge job checks out the full history
+(`fetch-depth: 0`). The count reads commits and trees only, so the checkout
+leaves the blobs outside `HEAD` on the server (`filter: blob:none`). Its
+log ends in one of two ways: `<image>:<tag> already names <digest>; not moved`
+when an earlier build holds the tag, or `tag=<tag>` and `minted=true` once the
+new index carries the tag and a read-back returned its digest. Both lines are
+also the step's outputs `tag` and `minted`. An existence check that fails with
+anything but `not found` fails the step before it tags anything: moving an
+existing tag would take the keeper off a digest the lab pins.
 
 Condition: `needs.changes.outputs.build-libvirt == 'true'`. On a pull request the
 build job runs when `images/libvirt/**` or
@@ -1092,6 +1107,7 @@ to tag with:
 | `keystone-federation-proxy` | `latest`, `<sha>` | all |
 | `backup-shifter` | `latest`, `<sha>` | all |
 | `libvirt` | `latest`, `<sha>` | all |
+| `libvirt` | `<libvirt-package-version>-r<N>` | `main` only |
 | `ovn` | `<ovn-version>-<sha>` | all |
 | `ovn` | `<ovn-version>`, `latest` | `main` only |
 | `openstack-hypervisor-operator` | `sha-<hvo-commit>-<sha>` | all |
@@ -1108,6 +1124,24 @@ for the three `main`-only tags of `openstack-hypervisor-operator` and
 commits the Dockerfiles pin. `sha-<hvo-commit>` and `sha-<kna-commit>` are the
 tags the upstream chart of that commit renders from its `appVersion`.
 
+`libvirt:<libvirt-package-version>-r<N>`, such as `libvirt:10.0.0-2ubuntu8.19-r1`,
+names what a build contains. `<libvirt-package-version>` is the version of the
+`libvirt-daemon-system` package in the image's `linux/amd64` variant, read with
+`dpkg-query -W -f='${Version}' libvirt-daemon-system`. `<N>` is
+`git rev-list --count HEAD -- images/libvirt`, the number of commits on `main`
+that touched the image's directory. The tag is minted once and never moved. The
+first `main` build with a new value gets it; every later build with the same
+value finds it in the registry, keeps `latest` and `<sha>` only, and is pruned
+once superseded. A new tag appears when Ubuntu publishes a new libvirt package,
+or when a commit touches `images/libvirt/` (a Dockerfile edit, or Renovate's bump
+of the `ubuntu:noble` digest). A QEMU-only or OVMF-only package update mints no
+tag and reaches a keeper tag with the next one. A package version with an epoch
+or a suffix, such as `10.0.0-2ubuntu8.19+esm1`, fails the step, because the
+prune's keep pattern and Renovate's `allowedVersions` assume
+`<upstream>-<n>ubuntu<m>`. The lab manifests under `deploy/lab/metal-stack/` pin
+this tag by digest (see
+[Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)).
+
 ## Retention
 
 The nightly `cleanup-images.yaml` workflow decides retention from each package
@@ -1121,6 +1155,7 @@ survives while it carries a **keeper** tag:
 | Release | `keystone:2025.2` | Names an OpenStack release |
 | Semver prerelease | `keystone-operator:1.2.0-rc1` | Tagged operator build |
 | Pinned upstream commit | `openstack-hypervisor-operator:upstream-<commit>`, `kvm-node-agent:upstream-<commit>` | A chart of that commit names the image |
+| Libvirt keeper | `libvirt:10.0.0-2ubuntu8.19-r1` | The lab manifests pin that build by digest |
 
 Everything else is a build artifact with a successor and is deleted once it is
 older than 24 hours: composite tags, SHA tags in all four shapes
