@@ -37,13 +37,13 @@
 #      hostPID, no hostNetwork, no ServiceAccount token, no init container,
 #      and one privileged container with a read-only root filesystem and a
 #      memory limit, on the image of host-prepare in
-#      deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml, with
-#      /lib/modules as its one volume, mounted under the volume's name
-#      read-only at /lib/modules. Its /bin/bash -c script removes what it
-#      loaded with rmmod and never with modprobe -r, ends with exit 0, names
-#      none of nsenter, chroot, insmod, mount, umount, sysctl, apt-get, apt,
-#      tee, dd, mknod and rm, and redirects nothing but stderr (2>/dev/null,
-#      2>&1).
+#      deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml pulled
+#      IfNotPresent, with /lib/modules as its one volume, mounted under the
+#      volume's name read-only at /lib/modules. Its /bin/bash -c script
+#      removes what it loaded with rmmod and never with modprobe -r, ends with
+#      exit 0, names none of nsenter, chroot, insmod, mount, umount, sysctl,
+#      apt-get, apt, tee, dd, mknod and rm, and redirects nothing but stderr
+#      (2>/dev/null, 2>&1).
 #   7. Run against a stand-in node (its /proc/modules, /sys/module and
 #      /proc/filesystems) with stub modprobe and rmmod first on PATH, the load
 #      script exits 0 and prints its four headers, nfsd and nfsv4 as loaded,
@@ -466,7 +466,7 @@ without_stderr_redirects() {
 test_load_test_job_is_separate_and_bounded() {
   echo "Test: nfs-module-load.yaml is one bounded Job on host-prepare's image with /lib/modules read-only"
 
-  load_test_ready 29 || return
+  load_test_ready 30 || return
 
   local pod='.spec.template.spec'
   local container="$pod | .containers[0]"
@@ -511,6 +511,8 @@ test_load_test_job_is_separate_and_bounded() {
     echo "  FAIL: the image '$image' does not equal the image '$ref_image' of host-prepare in $LIBVIRT_DAEMONSET"
     FAIL=$((FAIL + 1))
   fi
+  assert_eq "the container pulls the pinned image IfNotPresent" "IfNotPresent" \
+    "$(rendered_value "$container | .imagePullPolicy" <"$LOAD_MANIFEST")"
 
   assert_eq "the container is privileged" "true" \
     "$(rendered_value "$container | .securityContext.privileged // false" <"$LOAD_MANIFEST")"

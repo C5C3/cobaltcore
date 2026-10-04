@@ -15,8 +15,9 @@
 #      compute CRs and the chart sources, and the namespace carries the
 #      Gardener opt-out label.
 #   4. The libvirt DaemonSet runs in the host's namespaces, OnDelete, with the
-#      image, the hostPaths and the mount propagation libvirtd and
-#      nova-compute share, and without a liveness probe.
+#      image pinned by its keeper tag and digest and pulled IfNotPresent, the
+#      hostPaths and the mount propagation libvirtd and nova-compute share,
+#      and without a liveness probe.
 #   5. libvirtd.conf and qemu.conf carry every key and value the lab needs.
 #   6. libvirtd.sh starts libvirtd in a host scope, writes both host units and
 #      starts no virtlogd, and the scripts carry their log messages.
@@ -277,11 +278,24 @@ test_libvirt_daemonset() {
   assert_eq "the pod carries the part-of label" "lab-hypervisor" \
     "$(val DaemonSet libvirt '.spec.template.metadata.labels["app.kubernetes.io/part-of"]')"
 
-  assert_eq "both containers run ghcr.io/c5c3/libvirt:latest" \
-    "$(printf '%s\n' host-prepare=ghcr.io/c5c3/libvirt:latest libvirtd=ghcr.io/c5c3/libvirt:latest)" \
-    "$(containers '.name + "=" + .image')"
-  assert_eq "both containers pull Always" \
-    "$(printf '%s\n' host-prepare=Always libvirtd=Always)" \
+  # The keeper tag <libvirt-package-version>-r<N> of
+  # hack/ci-tag-libvirt-keeper.sh, pinned by digest, on both containers. The
+  # version shape is the script's version_shape without its anchors.
+  local images shape pinned
+  shape="$(sed -n "s/^version_shape='^\(.*\)\$'$/\1/p" "$PROJECT_ROOT/hack/ci-tag-libvirt-keeper.sh")"
+  pinned="^ghcr\\.io/c5c3/libvirt:${shape}-r[0-9]+@sha256:[0-9a-f]{64}\$"
+  images="$(containers '.image')"
+  if [[ -n "$shape" && "$(sed -n 1p <<<"$images")" =~ $pinned && "$(grep -c . <<<"$images")" -eq 2 &&
+    "$(sort -u <<<"$images" | grep -c .)" -eq 1 ]]; then
+    echo "  PASS: both containers run one ghcr.io/c5c3/libvirt:<keeper tag>@sha256:<digest>"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: the containers do not run one image matching '$pinned':"
+    sed 's/^/    /' <<<"$images"
+    FAIL=$((FAIL + 1))
+  fi
+  assert_eq "both containers pull IfNotPresent" \
+    "$(printf '%s\n' host-prepare=IfNotPresent libvirtd=IfNotPresent)" \
     "$(containers '.name + "=" + .imagePullPolicy')"
   assert_eq "both containers are privileged" \
     "$(printf '%s\n' host-prepare=true libvirtd=true)" \

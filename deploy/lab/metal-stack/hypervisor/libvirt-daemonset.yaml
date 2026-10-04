@@ -22,9 +22,16 @@
 # liveness probe either: a restart on a slow answer would interrupt them. The
 # readiness probe asks libvirtd for its version over the local socket.
 #
-# The image tag is latest because it is the only tag of ghcr.io/c5c3/libvirt
-# that does not name a commit of this repository; Always pulls it on every
-# start. The resources bound this pod's cgroup, which keeps bash and the
+# The image is pinned by its keeper tag and digest,
+# <libvirt-package-version>-r<N>@sha256:<digest>. hack/ci-tag-libvirt-keeper.sh
+# mints the tag once on main and never moves it, and the nightly prune keeps
+# every version that carries one. Renovate proposes a new tag as one pull
+# request that moves all six lines naming the image: the two containers here,
+# the NFS module load test (../probe/nfs-module-load.yaml), load-nfsd
+# (../nfs/kustomization.yaml) and the two containers of nfs-client-modules
+# (../nfs/client-modules-daemonset.yaml). IfNotPresent pulls the digest once
+# per node; with OnDelete, a merged bump reaches a node when its pod is
+# deleted. The resources bound this pod's cgroup, which keeps bash and the
 # probes. libvirtd and QEMU run in the host scope, outside it.
 apiVersion: apps/v1
 kind: DaemonSet
@@ -56,8 +63,8 @@ spec:
       terminationGracePeriodSeconds: 30
       initContainers:
         - name: host-prepare
-          image: ghcr.io/c5c3/libvirt:latest
-          imagePullPolicy: Always
+          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r1@sha256:3e45a6a1b091287acb73c982020a177e5c47b9442b263443c249e1525ae9624c
+          imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/etc/libvirt-lab/host-prepare.sh"]
           securityContext:
             privileged: true
@@ -79,8 +86,8 @@ spec:
               readOnly: true
       containers:
         - name: libvirtd
-          image: ghcr.io/c5c3/libvirt:latest
-          imagePullPolicy: Always
+          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r1@sha256:3e45a6a1b091287acb73c982020a177e5c47b9442b263443c249e1525ae9624c
+          imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/etc/libvirt-lab/libvirtd.sh"]
           securityContext:
             privileged: true

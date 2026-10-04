@@ -23,9 +23,11 @@
 #     script loads it on the host, which under EXTERNAL_CLUSTER=true is a
 #     workstation. In the server's own pod the order holds on every start,
 #     also after a node reboot. It mirrors host-prepare of
-#     ../hypervisor/libvirt-daemonset.yaml: ghcr.io/c5c3/libvirt:latest,
-#     privileged, root, the node's /lib/modules mounted read-only. A failing
-#     modprobe ends it with exit 1 and
+#     ../hypervisor/libvirt-daemonset.yaml: the same ghcr.io/c5c3/libvirt
+#     reference, pinned by its keeper tag and digest, privileged, root, the
+#     node's /lib/modules mounted read-only. The keeper tag is never moved,
+#     and Renovate moves the reference here in the pull request that moves
+#     the DaemonSet's. A failing modprobe ends it with exit 1 and
 #     `load-nfsd: cannot load nfsd from /lib/modules/<kernel>`; the server
 #     never starts, and the deploy's rollout gate fails.
 #   - The DaemonSet nfs-client-modules (client-modules-daemonset.yaml) loads
@@ -118,8 +120,8 @@ patches:
         path: /spec/template/spec/initContainers/0
         value:
           name: load-nfsd
-          image: ghcr.io/c5c3/libvirt:latest
-          imagePullPolicy: Always
+          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r1@sha256:3e45a6a1b091287acb73c982020a177e5c47b9442b263443c249e1525ae9624c
+          imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-c"]
           args:
             - |

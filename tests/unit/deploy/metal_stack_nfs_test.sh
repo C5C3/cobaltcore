@@ -12,14 +12,16 @@
 #   3. The export claim asks for 100Gi, ReadWriteOnce, and names no storage
 #      class; no line of the render sets one.
 #   4. The server loads nfsd in load-nfsd before prepare-exports, on the image
-#      of host-prepare (deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml),
-#      privileged, with a read-only root and the node's /lib/modules mounted
-#      read-only; its own container keeps the kind image and SHARED_DIRECTORY.
+#      of host-prepare (deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml)
+#      pulled IfNotPresent, privileged, with a read-only root and the node's
+#      /lib/modules mounted read-only; its own container keeps the kind image
+#      and SHARED_DIRECTORY.
 #   5. The mounter is the kind release: its chart version, inline volumes on.
 #   6. nfs-client-modules mounts no token, shares no host namespace, rolls
 #      out with RollingUpdate, tolerates every taint, loads in a privileged
 #      init container and holds the pod in an unprivileged container, both on
-#      host-prepare's image, with /lib/modules mounted read-only.
+#      host-prepare's image pulled IfNotPresent, with /lib/modules mounted
+#      read-only.
 #   7. The two load scripts, run with a stub modprobe first on PATH, report
 #      success and exit 0, or name the module that failed and exit 1 without
 #      loading the next one.
@@ -150,12 +152,14 @@ test_claim_is_100gi_without_a_class() {
 test_server_loads_nfsd_before_the_exports() {
   echo "Test: the server loads nfsd in load-nfsd, before prepare-exports, on host-prepare's image"
 
-  render "$NFS_DIR" 12 || return
+  render "$NFS_DIR" 13 || return
 
   assert_eq "the init containers are load-nfsd, then prepare-exports" "load-nfsd prepare-exports" \
     "$(val Deployment nfs-server "$SERVER_POD.initContainers | map(.name) | join(\" \")")"
   assert_same_nonempty "load-nfsd runs on the image of host-prepare in libvirt-daemonset.yaml" \
     "$(val Deployment nfs-server "$LOAD_NFSD | .image")" "$(host_prepare_image)"
+  assert_eq "load-nfsd pulls the pinned image IfNotPresent" "IfNotPresent" \
+    "$(val Deployment nfs-server "$LOAD_NFSD | .imagePullPolicy")"
   assert_eq "load-nfsd is privileged" "true" \
     "$(val Deployment nfs-server "$LOAD_NFSD | .securityContext.privileged // false")"
   assert_eq "load-nfsd has a read-only root filesystem" "true" \
@@ -200,7 +204,7 @@ test_mounter_is_the_kind_release() {
 test_client_modules_daemonset() {
   echo "Test: DaemonSet nfs-client-modules loads in a privileged init container and holds without a privilege"
 
-  render "$NFS_DIR" 20 || return
+  render "$NFS_DIR" 22 || return
 
   local image
   image="$(host_prepare_image)"
@@ -223,6 +227,8 @@ test_client_modules_daemonset() {
     "$(val DaemonSet nfs-client-modules "$DS_POD.initContainers | map(.name) | join(\" \")")"
   assert_same_nonempty "load runs on the image of host-prepare" \
     "$(val DaemonSet nfs-client-modules "$DS_LOAD | .image")" "$image"
+  assert_eq "load pulls the pinned image IfNotPresent" "IfNotPresent" \
+    "$(val DaemonSet nfs-client-modules "$DS_LOAD | .imagePullPolicy")"
   assert_eq "load is privileged" "true" \
     "$(val DaemonSet nfs-client-modules "$DS_LOAD | .securityContext.privileged // false")"
   assert_eq "load has a read-only root filesystem" "true" \
@@ -236,6 +242,8 @@ test_client_modules_daemonset() {
     "$(val DaemonSet nfs-client-modules "$DS_POD.containers | map(.name) | join(\" \")")"
   assert_same_nonempty "hold runs on the image of host-prepare" \
     "$(val DaemonSet nfs-client-modules "$DS_HOLD | .image")" "$image"
+  assert_eq "hold pulls the pinned image IfNotPresent" "IfNotPresent" \
+    "$(val DaemonSet nfs-client-modules "$DS_HOLD | .imagePullPolicy")"
   assert_eq "hold is not privileged" "false" \
     "$(val DaemonSet nfs-client-modules "$DS_HOLD | .securityContext.privileged // false")"
   assert_eq "hold runs as non-root" "true" \

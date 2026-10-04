@@ -24,10 +24,11 @@
 #
 # The default RollingUpdate strategy stays, because `kubectl rollout status`,
 # the deploy script's gate on this DaemonSet, does not support OnDelete. The
-# image is host-prepare's (../hypervisor/libvirt-daemonset.yaml), unpinned like
-# it until #1216 gives that image a tag a digest pin can hold on to, and hold
-# reuses it, so the overlay adds no image;
-# tests/unit/deploy/metal_stack_nfs_test.sh keeps the three equal.
+# image is host-prepare's (../hypervisor/libvirt-daemonset.yaml), pinned like
+# it by its keeper tag and digest; hack/ci-tag-libvirt-keeper.sh mints that
+# tag once and never moves it. hold reuses the image, so the overlay adds no
+# image; tests/unit/deploy/metal_stack_nfs_test.sh keeps the three equal.
+# Renovate moves both lines in the pull request that moves the DaemonSet's.
 #
 # The load prints one line per pod, `nfs-client-modules: nfs and nfsv4 are
 # loaded` or `nfs-client-modules: cannot load <module> from
@@ -63,8 +64,8 @@ spec:
         - operator: Exists
       initContainers:
         - name: load
-          image: ghcr.io/c5c3/libvirt:latest
-          imagePullPolicy: Always
+          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r1@sha256:3e45a6a1b091287acb73c982020a177e5c47b9442b263443c249e1525ae9624c
+          imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-c"]
           args:
             - |
@@ -91,8 +92,8 @@ spec:
               readOnly: true
       containers:
         - name: hold
-          image: ghcr.io/c5c3/libvirt:latest
-          imagePullPolicy: Always
+          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r1@sha256:3e45a6a1b091287acb73c982020a177e5c47b9442b263443c249e1525ae9624c
+          imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
           securityContext:
             runAsNonRoot: true
