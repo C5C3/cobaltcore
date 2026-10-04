@@ -409,10 +409,11 @@ func neutronJobSetParams(neutron *neutronv1alpha1.Neutron, configMapName string)
 	}
 
 	return database.JobSetParams{
-		InstanceName:  neutron.Name,
-		Namespace:     neutron.Namespace,
-		Image:         neutron.Spec.Image.Reference(),
-		ConfigMapName: configMapName,
+		InstanceName:    neutron.Name,
+		Namespace:       neutron.Namespace,
+		Image:           neutron.Spec.Image.Reference(),
+		ImagePullPolicy: neutron.Spec.Image.EffectivePullPolicy(),
+		ConfigMapName:   configMapName,
 		// The ConfigMap is mounted as a whole directory, at the same mount point the
 		// API pods use, so the Job and the pods read the identical files.
 		ConfigMountPath: neutronConfigMountPath,

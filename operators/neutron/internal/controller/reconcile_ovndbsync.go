@@ -283,6 +283,7 @@ func buildOVNDBSyncCronJob(neutron *neutronv1alpha1.Neutron, configMapName strin
 							Containers: []corev1.Container{{
 								Name:            componentOVNDBSync,
 								Image:           neutron.Spec.Image.Reference(),
+								ImagePullPolicy: neutron.Spec.Image.EffectivePullPolicy(),
 								Command:         neutronCommand("neutron-ovn-db-sync-util", "--ovn-neutron_sync_mode", sync.SyncMode),
 								SecurityContext: deployment.RestrictedSecurityContext(),
 								Env:             neutronWorkloadEnv(neutron),

@@ -203,6 +203,7 @@ func buildAgentDaemonSet(cr *neutronv1alpha1.NeutronMetadataAgent, chassis resol
 	configMapName, transportDigest, sharedSecretDigest string,
 ) *appsv1.DaemonSet {
 	image := cr.Spec.Image.Reference()
+	pullPolicy := cr.Spec.Image.EffectivePullPolicy()
 	resources := effectiveAgentResources(cr)
 
 	podAnnotations := map[string]string{}
@@ -219,6 +220,7 @@ func buildAgentDaemonSet(cr *neutronv1alpha1.NeutronMetadataAgent, chassis resol
 	initContainers := []corev1.Container{{
 		Name:            "wait-for-chassis",
 		Image:           image,
+		ImagePullPolicy: pullPolicy,
 		Command:         []string{"/bin/sh", "-c", waitForChassisScript},
 		Env:             []corev1.EnvVar{{Name: sbConnectionEnvVarName, Value: chassis.sbAddress}},
 		SecurityContext: deployment.RestrictedSecurityContext(),
@@ -230,8 +232,9 @@ func buildAgentDaemonSet(cr *neutronv1alpha1.NeutronMetadataAgent, chassis resol
 	}}
 
 	containers := []corev1.Container{{
-		Name:  metadataAgentComponent,
-		Image: image,
+		Name:            metadataAgentComponent,
+		Image:           image,
+		ImagePullPolicy: pullPolicy,
 		// The agent creates network namespaces, moves interfaces into them and
 		// starts a haproxy per network through privsep. That needs the full
 		// capability set and uid 0, which the Restricted profile denies and a

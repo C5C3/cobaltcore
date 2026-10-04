@@ -118,6 +118,7 @@ spec:
         - --config-file
         - /etc/neutron/neutron_ovn_metadata_agent.ini
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         name: metadata-agent
         readinessProbe:
           exec:
@@ -190,6 +191,7 @@ spec:
         - name: OVN_SB_CONNECTION
           value: ssl:10.96.0.21:6642
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         name: wait-for-chassis
         resources:
           limits:
@@ -298,6 +300,7 @@ spec:
               key: shared_secret
               name: nova-metadata-secret
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         name: metadata-agent
         readinessProbe:
           exec:
@@ -370,6 +373,7 @@ spec:
         - name: OVN_SB_CONNECTION
           value: ssl:10.96.0.21:6642
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         name: wait-for-chassis
         resources:
           limits:
@@ -464,6 +468,7 @@ spec:
         - --config-file
         - /etc/neutron/neutron_ovn_metadata_agent.ini
         image: registry.example.com/neutron@sha256:2222222222222222222222222222222222222222222222222222222222222222
+        imagePullPolicy: IfNotPresent
         name: metadata-agent
         readinessProbe:
           exec:
@@ -537,6 +542,7 @@ spec:
         - name: OVN_SB_CONNECTION
           value: ssl:10.96.0.21:6642
         image: registry.example.com/neutron@sha256:2222222222222222222222222222222222222222222222222222222222222222
+        imagePullPolicy: IfNotPresent
         name: wait-for-chassis
         resources:
           limits:
