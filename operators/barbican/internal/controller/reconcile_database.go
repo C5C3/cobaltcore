@@ -351,6 +351,7 @@ func barbicanJobSetParams(barbican *barbicanv1alpha1.Barbican, configSecretName 
 		InstanceName:     barbican.Name,
 		Namespace:        barbican.Namespace,
 		Image:            barbican.Spec.Image.Reference(),
+		ImagePullPolicy:  barbican.Spec.Image.EffectivePullPolicy(),
 		ConfigSecretName: configSecretName,
 		// The Secret is mounted as a whole directory, at the same mount point the
 		// API pods use, so oslo.config resolves the same barbican.conf in both.
