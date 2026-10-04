@@ -403,6 +403,7 @@ func dbArchiveCronJob(nova *novav1alpha1.Nova, art configArtifacts) *batchv1.Cro
 							Containers: []corev1.Container{{
 								Name:            componentDBArchive,
 								Image:           nova.Spec.Image.Reference(),
+								ImagePullPolicy: nova.Spec.Image.EffectivePullPolicy(),
 								Command:         []string{"/bin/sh", "-eu", "-c", dbArchiveScript},
 								SecurityContext: deployment.RestrictedSecurityContext(),
 								Env:             env,

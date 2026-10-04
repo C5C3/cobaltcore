@@ -393,3 +393,47 @@ func TestCreateInstancesDirCommand(t *testing.T) {
 		g.Expect(stderr).To(ContainSubstring("File exists"))
 	})
 }
+
+// TestBuildNovaComputeDaemonSet_ImagePullPolicy pins the pull policy of the
+// two init containers and nova-compute: all three run the image argument and
+// carry its policy, Always for a tag without pullPolicy, IfNotPresent for a
+// digest, and an explicit pullPolicy over both.
+func TestBuildNovaComputeDaemonSet_ImagePullPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*commonv1.ImageSpec)
+		want   corev1.PullPolicy
+	}{
+		{name: "tag without pullPolicy", mutate: func(*commonv1.ImageSpec) {}, want: corev1.PullAlways},
+		{
+			name:   "digest without pullPolicy",
+			mutate: func(i *commonv1.ImageSpec) { i.Tag, i.Digest = "", "sha256:"+strings.Repeat("a", 64) },
+			want:   corev1.PullIfNotPresent,
+		},
+		{name: "explicit pullPolicy Never", mutate: func(i *commonv1.ImageSpec) { i.PullPolicy = corev1.PullNever }, want: corev1.PullNever},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			image := pinNovaComputeImage()
+			tc.mutate(&image)
+
+			pod := buildNovaComputeDaemonSet(validNovaCompute(), image, testContract, pinNovaComputeConfigMap,
+				pinNovaComputeHash, nil).Spec.Template.Spec
+			g.Expect(novaComputePullPolicies(pod)).To(Equal(map[string]corev1.PullPolicy{
+				"create-instances-dir": tc.want,
+				"wait-for-chassis":     tc.want,
+				novaComputeComponent:   tc.want,
+			}))
+		})
+	}
+}
+
+// novaComputePullPolicies maps every init container and container of a
+// NovaCompute pod to its pull policy.
+func novaComputePullPolicies(pod corev1.PodSpec) map[string]corev1.PullPolicy {
+	policies := map[string]corev1.PullPolicy{}
+	for _, c := range append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...) {
+		policies[c.Name] = c.ImagePullPolicy
+	}
+	return policies
+}

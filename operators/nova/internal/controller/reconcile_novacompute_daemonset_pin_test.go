@@ -174,6 +174,7 @@ spec:
               key: password
               name: nova-compute-config
         image: ghcr.io/c5c3/nova-compute:2025.2
+        imagePullPolicy: Always
         name: nova-compute
         resources: {}
         securityContext:
@@ -224,6 +225,7 @@ spec:
         - "0755"
         - /var/lib/nova/instances
         image: ghcr.io/c5c3/nova-compute:2025.2
+        imagePullPolicy: Always
         name: create-instances-dir
         resources: {}
         securityContext:
@@ -287,6 +289,7 @@ spec:
         - name: OVSDB_SOCKET
           value: /run/openvswitch/db.sock
         image: ghcr.io/c5c3/nova-compute:2025.2
+        imagePullPolicy: Always
         name: wait-for-chassis
         resources: {}
         securityContext:
@@ -454,6 +457,7 @@ spec:
               key: password
               name: nova-compute-config
         image: ghcr.io/c5c3/nova-compute:2025.2
+        imagePullPolicy: Always
         name: nova-compute
         resources:
           limits:
@@ -509,6 +513,7 @@ spec:
         - "0755"
         - /var/lib/nova/instances
         image: ghcr.io/c5c3/nova-compute:2025.2
+        imagePullPolicy: Always
         name: create-instances-dir
         resources:
           limits:
@@ -577,6 +582,7 @@ spec:
         - name: OVSDB_SOCKET
           value: /run/openvswitch/db.sock
         image: ghcr.io/c5c3/nova-compute:2025.2
+        imagePullPolicy: Always
         name: wait-for-chassis
         resources:
           limits:
@@ -762,6 +768,7 @@ spec:
               key: password
               name: nova-compute-config
         image: ghcr.io/c5c3/nova-compute:2025.2
+        imagePullPolicy: Always
         name: nova-compute
         resources: {}
         securityContext:
@@ -812,6 +819,7 @@ spec:
         - "0755"
         - /var/lib/nova/instances
         image: ghcr.io/c5c3/nova-compute:2025.2
+        imagePullPolicy: Always
         name: create-instances-dir
         resources: {}
         securityContext:
@@ -875,6 +883,7 @@ spec:
         - name: OVSDB_SOCKET
           value: /run/openvswitch/db.sock
         image: ghcr.io/c5c3/nova-compute:2025.2
+        imagePullPolicy: Always
         name: wait-for-chassis
         resources: {}
         securityContext:

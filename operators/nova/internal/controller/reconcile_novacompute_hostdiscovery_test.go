@@ -131,6 +131,20 @@ func TestHostDiscoveryJobName(t *testing.T) {
 }
 
 func TestHostDiscoveryJob(t *testing.T) {
+	// The Job runs the live API image, another tag of spec.image's repository,
+	// and takes its pull policy from spec.image.
+	t.Run("the pull policy of spec.image", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nova := validNova()
+		nova.Spec.Image.PullPolicy = corev1.PullNever
+		discovery := hostDiscoveryJob(nova, testNovaConfigMap, "ghcr.io/c5c3/nova:running")
+
+		container := discovery.Spec.Template.Spec.Containers[0]
+		g.Expect(container.Image).To(Equal("ghcr.io/c5c3/nova:running"))
+		g.Expect(container.ImagePullPolicy).To(Equal(nova.Spec.Image.EffectivePullPolicy()))
+		g.Expect(container.ImagePullPolicy).To(Equal(corev1.PullNever))
+	})
+
 	t.Run("one run of the plain discovery with the API's config", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		nova := validNova()
@@ -150,6 +164,7 @@ func TestHostDiscoveryJob(t *testing.T) {
 		container := pod.Containers[0]
 		g.Expect(container.Name).To(Equal("discover-hosts"))
 		g.Expect(container.Image).To(Equal("ghcr.io/c5c3/nova:running"))
+		g.Expect(container.ImagePullPolicy).To(Equal(nova.Spec.Image.EffectivePullPolicy()))
 		g.Expect(container.Command).To(Equal([]string{
 			"nova-manage", "--config-dir", "/etc/nova/nova.conf.d", "cell_v2", "discover_hosts", "--verbose",
 		}))

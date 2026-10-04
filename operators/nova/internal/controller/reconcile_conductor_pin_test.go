@@ -102,6 +102,7 @@ spec:
         - name: NOVA_AMQP_PORT
           value: "5672"
         image: ghcr.io/c5c3/nova:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -275,6 +276,7 @@ spec:
         - name: NOVA_AMQP_PORT
           value: "5672"
         image: ghcr.io/c5c3/nova:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
