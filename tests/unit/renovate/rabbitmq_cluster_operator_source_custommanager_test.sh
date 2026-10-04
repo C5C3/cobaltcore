@@ -14,9 +14,9 @@
 # the human-readable version and as Renovate's lookup handle.
 #
 # The second half is what keeps the pin from becoming a freeze: Renovate's native
-# flux manager does not cover this repo (its default file pattern matches only
-# gotk-components.yaml), so without an explicit customManager the operator would
-# sit on the pinned commit forever with no update signal. The manager must
+# flux manager is switched off for this file by a packageRule, because the
+# customManager moves the pair in one match, so without that customManager the
+# operator would sit on the pinned commit forever with no update signal. It must
 # capture the tag and the commit in ONE matchString so Renovate rewrites both in
 # the same reviewed PR; capturing the tag alone would leave the commit behind and
 # Flux would keep checking out the old tree.

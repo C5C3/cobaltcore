@@ -176,8 +176,9 @@ test_all_nfs_server_pins_covered() {
     deploy/kind tests/e2e | sort)"
   assert_not_empty "at least one nfs-server image pin exists" "$pinned"
 
-  # Two customManagers target deploy/kind/nfs (this image pin and the
-  # csi-driver-nfs chart version); select the docker one like Test 1 does.
+  # The nfs-server image pin is the only customManager on deploy/kind/nfs; the
+  # csi-driver-nfs chart version belongs to the native flux manager. The
+  # datasource filter keeps this lookup on the image if another manager joins.
   local entry patterns f
   entry="$(jq -c '.customManagers[]
     | select(.datasourceTemplate == "docker")

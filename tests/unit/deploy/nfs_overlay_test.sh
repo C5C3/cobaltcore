@@ -225,7 +225,7 @@ test_helm_release_contract() {
   # The chart version is an exact pin, not a range: a range would let Flux
   # adopt a new chart with no repo diff, and this one installs a privileged
   # hostNetwork DaemonSet whose relied-on defaults are not overridden below.
-  # Renovate bumps the pin (see the csi-driver-nfs chart customManager).
+  # Renovate bumps the pin (see the csi-driver-nfs chart flux manager rules).
   local version
   version="$(render_value "$rendered" "$release | .spec.chart.spec.version")"
   if grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' <<<"$version"; then

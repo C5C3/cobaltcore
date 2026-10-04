@@ -59,13 +59,16 @@
 # declaration order from the Gateway's `spec.listeners` array.
 #
 # Version pin: `spec.chart.spec.version` uses a SemVer range locked to
-# the 1.x track, mirroring `cert-manager.yaml`. Renovate extracts the
-# lower bound and auto-PRs minor/patch bumps with a 3-day cooldown and
-# majors disabled (see `renovate.json` customManager for
-# `deploy/kind/base/envoy-gateway.yaml`). The ENVOY_GATEWAY_VERSION CRD
-# pin in hack/deploy-infra.sh tracks the same upstream release through
-# the same Renovate group, so one bump moves the control plane and its
-# CRDs in lockstep.
+# the 1.x track, mirroring `cert-manager.yaml`. Renovate's flux manager
+# tracks the range with rangeStrategy bump (see the flux packageRules in
+# `renovate.json`): a minor/patch release rewrites the lower bound and
+# automerges after a 3-day cooldown, and a major opens a reviewed PR.
+# The ENVOY_GATEWAY_VERSION CRD pin in hack/deploy-infra.sh tracks the
+# same upstream release through the same envoy-gateway group, so one
+# PR moves the control plane and its CRDs on a minor/patch; a major PR
+# needs ENVOY_GATEWAY_VERSION moved by hand on the same branch.
+# tests/unit/renovate/envoy_gateway_manager_test.sh fails while the pin
+# lies outside this range.
 #
 # DECISION: CRD ownership
 # The gateway-helm chart bundles its own copy of the Gateway API CRDs

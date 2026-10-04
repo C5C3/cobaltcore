@@ -15,12 +15,12 @@
 # no reviewer. Only an OCIRepository ref.digest closes it.
 #
 # The second half is what keeps the pin from becoming a freeze: Renovate's
-# native flux manager does not cover this repo (its default file pattern matches
-# only gotk-components.yaml), so without an explicit customManager the operator
-# would sit on 0.4.2 forever with no update signal. The manager must capture the
-# tag and the digest in ONE matchString so Renovate rewrites both in the same
-# reviewed PR; capturing the tag alone would leave the digest behind and Flux
-# would keep pulling the old artifact.
+# native flux manager is switched off for this file by a packageRule, because
+# the customManager moves the pair in one match, so without that customManager
+# the operator would sit on 0.4.2 forever with no update signal. It must
+# capture the tag and the digest in ONE matchString so Renovate rewrites both
+# in the same reviewed PR; capturing the tag alone would leave the digest
+# behind and Flux would keep pulling the old artifact.
 #
 # A hand-edit can still split the pair, and no file-local assertion can see it:
 # the tag and the digest only disagree relative to the registry. The last test
