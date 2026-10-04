@@ -698,8 +698,9 @@ ControlPlane's mirror: the compute contract `<nova>-compute-config`, and
 `<nova>-hypervisor-operator-auth`, the credentials the ControlPlane copies there
 for openstack-hypervisor-operator. Each deleted Secret gets a
 `ComputeConfigMirrorReaped` event of its own, and an absent one is skipped. A
-pool being deleted that still holds a node counts as one left: its draining pod
-mounts the contract.
+pool being deleted that still drains a node counts as one left: its draining pod
+mounts the contract. One whose drain finalizer was removed, or whose Nova is
+gone, drains nothing and does not count.
 
 ## Example
 

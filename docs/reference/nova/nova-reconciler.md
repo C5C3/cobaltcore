@@ -532,11 +532,13 @@ empties the aggregates the host sat in after its Aggregates step ran. Once the
 pool holds no node, only the `NovaRef` and `Aggregates` steps run, so a pass
 from a stale copy of the CR cannot recreate what the sweep removed. When the
 Nova is gone, or the target cluster was abandoned, that part is skipped. Then
-the remote children (the DaemonSet, the ConfigMaps and the opt-in
-VerticalPodAutoscaler) are swept, the
-ControlPlane's contract mirror and the hypervisor operator's auth mirror are
-reaped when no other pool of the Nova on the cluster is live or still holds a
-node, and the finalizers are released.
+the ControlPlane's contract mirror and the hypervisor operator's auth mirror are
+reaped when no other pool of the Nova on the cluster is live or still drains a
+node, the remote children (the DaemonSet, the ConfigMaps and the opt-in
+VerticalPodAutoscaler) are swept, and the finalizers are released. A pool
+drains only while it carries the drain finalizer and the Nova exists. The reap
+comes first, so a pool whose drain finalizer was removed by hand still holds
+`openstack.c5c3.io/remote-children` while it runs, and a failed reap is retried.
 
 ### Watches
 

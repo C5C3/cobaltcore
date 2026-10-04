@@ -455,12 +455,47 @@ func TestReapComputeClusterMirrors(t *testing.T) {
 		draining.DeletionTimestamp = ptr.To(metav1.Now())
 		draining.Finalizers = []string{novaComputeDrainFinalizer}
 		draining.Status.Nodes = []novav1alpha1.NovaComputeNodeStatus{entry("node-b", novav1alpha1.NovaComputeNodeDraining)}
-		r := newNovaComputeTestReconciler(nil, cr, draining, mirrorSecret(true))
+		r := newNovaComputeTestReconciler(nil, readyNovaForCompute(), cr, draining, mirrorSecret(true))
 
 		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
 
 		g.Expect(r.Get(ctx, contractKey, &corev1.Secret{})).To(Succeed(),
 			"its draining pod mounts the Secret, and its teardown reads it")
+	})
+
+	// An unreachable Nova API holds every deleting pool of the Nova, so the
+	// escape is typically applied to all of them. Two escaped pools that each
+	// counted the other as one left would both leave the mirrors behind.
+	t.Run("a deleting pool whose drain finalizer was removed does not keep it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := deletingPool(commonmulticluster.RemoteChildrenFinalizer)
+		cr.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "compute-a"}
+		escaped := rivalPool("pool-b", 0, testPoolLabel, "b")
+		escaped.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "compute-a"}
+		escaped.DeletionTimestamp = ptr.To(metav1.Now())
+		escaped.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer}
+		escaped.Status.Nodes = []novav1alpha1.NovaComputeNodeStatus{entry("node-b", novav1alpha1.NovaComputeNodeDraining)}
+		r := newNovaComputeTestReconciler(nil, readyNovaForCompute(), cr, escaped, mirrorSecret(true), hvoAuthSecret(true))
+
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
+
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, contractKey, &corev1.Secret{}))).To(BeTrue())
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, authKey, &corev1.Secret{}))).To(BeTrue())
+	})
+
+	t.Run("a deleting pool that still holds a node does not keep it once the Nova is gone", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := deletingPool(novaComputeDrainFinalizer)
+		orphaned := rivalPool("pool-b", 0, testPoolLabel, "b")
+		orphaned.DeletionTimestamp = ptr.To(metav1.Now())
+		orphaned.Finalizers = []string{novaComputeDrainFinalizer}
+		orphaned.Status.Nodes = []novav1alpha1.NovaComputeNodeStatus{entry("node-b", novav1alpha1.NovaComputeNodeDraining)}
+		r := newNovaComputeTestReconciler(nil, cr, orphaned, mirrorSecret(true))
+
+		g.Expect(r.reapComputeClusterMirrors(ctx, r.Client, cr)).To(Succeed())
+
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, contractKey, &corev1.Secret{}))).To(BeTrue(),
+			"without the Nova its teardown drains nothing and goes to its own reap")
 	})
 
 	t.Run("a missing Secret is success", func(t *testing.T) {
@@ -480,6 +515,40 @@ func TestReapComputeClusterMirrors(t *testing.T) {
 
 		g.Expect(apierrors.IsNotFound(r.Get(ctx, contractKey, &corev1.Secret{}))).To(BeTrue())
 		g.Expect(controllerutil.ContainsFinalizer(cr, novaComputeDrainFinalizer)).To(BeTrue(), "the in-memory fixture is untouched")
+	})
+
+	// The escape removes the drain finalizer by hand, which leaves
+	// remote-children as the placed pool's last one. Releasing it deletes the
+	// CR, so the reap must succeed while it still holds: nothing retries a reap
+	// whose CR is gone.
+	t.Run("the escape keeps remote-children until the reap succeeds", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := deletingPool(commonmulticluster.RemoteChildrenFinalizer)
+		cr.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "compute-a"}
+		r := newNovaComputeTestReconciler(computeapitest.New(), cr)
+		injected := errors.New("injected delete failure")
+		failDelete := true
+		target := novaFakeClientBuilder(mirrorSecret(true), hvoAuthSecret(true)).WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if failDelete && obj.GetName() == testContract {
+					return injected
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+		r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{Client: target})
+
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: testPoolKey})
+
+		g.Expect(err).To(MatchError(injected))
+		g.Expect(getPool(t, r).Finalizers).To(ConsistOf(commonmulticluster.RemoteChildrenFinalizer))
+
+		failDelete = false
+		reconcilePool(t, r)
+
+		g.Expect(apierrors.IsNotFound(target.Get(ctx, contractKey, &corev1.Secret{}))).To(BeTrue())
+		g.Expect(apierrors.IsNotFound(target.Get(ctx, authKey, &corev1.Secret{}))).To(BeTrue())
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, testPoolKey, &novav1alpha1.NovaCompute{}))).To(BeTrue())
 	})
 }
 

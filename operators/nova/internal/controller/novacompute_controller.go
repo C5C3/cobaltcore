@@ -355,9 +355,11 @@ func (r *NovaComputeReconciler) pipelineSteps(children client.Client, cr *novav1
 // drain finalizer by hand is the escape.
 //
 // Once that is done, or at once when the Nova is gone or the target cluster
-// was abandoned, the remote children are swept, the compute-contract and
-// hypervisor-operator auth mirrors are reaped when no other pool on the
-// cluster needs them, and the drain finalizer is released.
+// was abandoned, the compute-contract and hypervisor-operator auth mirrors are
+// reaped when no other pool on the cluster needs them, the remote children are
+// swept, and the drain finalizer is released. The reap runs first: after the
+// escape, remote-children is the CR's last finalizer, and a reap that failed
+// after the sweep released it would have no CR left to retry from.
 func (r *NovaComputeReconciler) reconcileDelete(ctx context.Context, cr *novav1alpha1.NovaCompute) (ctrl.Result, error) {
 	children, wait := commonmulticluster.ResolveChildrenClientForDeletion(
 		ctx, r.Resolver, r.Client, cr.Spec.TargetClusterRef, *cr.DeletionTimestamp)
@@ -394,14 +396,14 @@ func (r *NovaComputeReconciler) reconcileDelete(ctx context.Context, cr *novav1a
 		}
 	}
 
-	if err := commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
-		cr, cr.Spec.TargetClusterRef, children, NovaComputeRemoteChildKinds); err != nil {
-		return ctrl.Result{}, err
-	}
 	if children != nil {
 		if err := r.reapComputeClusterMirrors(ctx, children, cr); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+	if err := commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+		cr, cr.Spec.TargetClusterRef, children, NovaComputeRemoteChildKinds); err != nil {
+		return ctrl.Result{}, err
 	}
 	if controllerutil.RemoveFinalizer(cr, novaComputeDrainFinalizer) {
 		if err := r.Update(ctx, cr); err != nil {
@@ -445,10 +447,13 @@ func (r *NovaComputeReconciler) novaExists(ctx context.Context, cr *novav1alpha1
 // this pool's namespace, once no other pool of the same Nova on the same
 // cluster needs them: the compute contract, and the hypervisor operator's auth
 // Secret when the ControlPlane provisions that account. A pool being deleted
-// still needs the contract while it holds a node: the pod draining that node
+// still needs the contract while it drains a node: the pod draining that node
 // mounts the Secret, and the pool's own teardown cannot get past its
-// PoolConfig step without it. The ControlPlane mirrors for pools that are not
-// being deleted only, so a mirror reaped too early is not put back.
+// PoolConfig step without it. It drains only while it holds the drain
+// finalizer and the Nova exists. Without either, its teardown goes straight to
+// its own reap and it does not count: two such pools counting each other would
+// both leave the mirrors behind. The ControlPlane mirrors for pools that are
+// not being deleted only, so a mirror reaped too early is not put back.
 //
 // Both Secrets carry the Nova's name and nothing else to identify them
 // ("<nova>-compute-config", "<nova>-hypervisor-operator-auth"), so the reap
@@ -458,14 +463,20 @@ func (r *NovaComputeReconciler) novaExists(ctx context.Context, cr *novav1alpha1
 func (r *NovaComputeReconciler) reapComputeClusterMirrors(ctx context.Context, children client.Client,
 	cr *novav1alpha1.NovaCompute,
 ) error {
+	novaExists, err := r.novaExists(ctx, cr)
+	if err != nil {
+		return err
+	}
 	siblings, err := novaComputesOfNova(ctx, r.Client, cr.Namespace, cr.Spec.NovaRef.Name)
 	if err != nil {
 		return err
 	}
 	for i := range siblings {
 		sibling := &siblings[i]
+		draining := novaExists && controllerutil.ContainsFinalizer(sibling, novaComputeDrainFinalizer) &&
+			len(sibling.Status.Nodes) > 0
 		if sibling.Name != cr.Name && sameTargetCluster(sibling, cr) &&
-			(sibling.DeletionTimestamp.IsZero() || len(sibling.Status.Nodes) > 0) {
+			(sibling.DeletionTimestamp.IsZero() || draining) {
 			return nil
 		}
 	}
