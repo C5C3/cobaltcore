@@ -338,27 +338,10 @@ bidirectional `/run/netns` mount, which is why the kind is projected into the
 namespace of the `OVNChassis` it attaches to: one entry covers both node-level
 workloads, and the `Neutron` API needs none.
 
-On a compute cluster that namespace also receives the Secret the agent signs
-instance requests with. For an agent that names
-`{controlplane.Name}-nova-metadata-agent-secret`, the ControlPlane writes that
-Secret there with the single key `shared_secret` and the label
-`neutron.openstack.c5c3.io/metadata-shared-secret-mirror: "true"`, and the
-teardown of the last agent there that names it deletes it (see
-[On a compute cluster](./neutron/neutron-metadata-agent-crd.md#on-a-compute-cluster)).
-The c5c3 operator's credentials for that cluster therefore have to write
-Secrets in the namespace. A registration scoped by `namespaces` with
-namespace-scoped RBAC has to cover it; a refused write reports
-`NovaMetadataAgentSecretError` on the ControlPlane's `NovaReady`. The CA bundle the agent verifies the metadata
-Gateway with is not delivered; place it in the namespace yourself.
-
-A `NovaCompute`'s namespace needs it too. Its `nova-compute` DaemonSet runs
-privileged as root on the host network, with a bidirectional `/var/lib/nova`
-mount and the node's libvirt and Open vSwitch sockets (see the
-[node contract](./nova/novacompute-crd.md#node-contract)). On a compute cluster
-openstack-hypervisor-operator runs beside it: list the namespace in its
-`--agent-namespaces` as well, because that is where it looks for the agent pods
-it waits on before it deletes an offboarded node's compute service, and give no
-pod of the pool an indefinite toleration of `kvm.cloud.sap/offboarding`.
+A compute cluster holds all three node-level workloads, the chassis, the
+metadata agent and a `NovaCompute` pool, and
+[Namespaces on a compute cluster](#namespaces-on-a-compute-cluster) lists what
+its namespaces receive and need.
 
 A placed `Cinder` mounts every backend export and the backup share as an inline
 CSI volume in the pod spec, so the target cluster needs an NFS CSI mounter of
@@ -591,6 +574,41 @@ OVNCentral, `CentralReady` on an OVNChassis, `ChassisReady` on a
 NeutronMetadataAgent, and `NovaReady` on a NovaCompute. Nothing is created on the target: the reconciler writes
 nothing it could not first read. Neither retrying nor waiting changes a cache's
 scope, so the condition holds until the registration or the CR moves.
+
+### Namespaces on a compute cluster
+
+A compute cluster runs `nova-compute` on its hypervisor nodes, beside the OVN
+chassis, the metadata agent, openstack-hypervisor-operator (hvo) and
+kvm-node-agent. The pool's `nova-compute` DaemonSet runs privileged as root on
+the host network, with a bidirectional `/var/lib/nova` mount and the node's
+libvirt and Open vSwitch sockets (see the
+[node contract](./nova/novacompute-crd.md#node-contract)), so its namespace
+needs the same `privilegedNamespaces` entry as the chassis.
+[Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md) walks
+the attachment.
+
+| Namespace | What runs there | What the operators write there | What it needs |
+| --- | --- | --- | --- |
+| The Nova namespace: `services.nova.namespace.name`, else the ControlPlane's. `novaRef` is namespace-local, so every pool of the Nova runs there | The `NovaCompute` pods | The c5c3 operator writes the compute contract `<nova>-compute-config` and hvo's credentials `<cp>-nova-hypervisor-operator-auth`, both labelled `nova.openstack.c5c3.io/compute-config-mirror: "true"` | An entry in `values.namespaces` and in the registration's `namespaces`; an entry in `privilegedNamespaces`; an entry in hvo's `--agent-namespaces` (chart value `controllerManager.manager.env.agentNamespaces`, comma-separated, default `monsoon3`); no pod of the pool that tolerates `kvm.cloud.sap/offboarding:NoExecute` indefinitely |
+| The OVN central namespace: `services.neutron.ovn.centralRef.namespace`, else the ControlPlane's | The `OVNChassis` and `NeutronMetadataAgent` pods | The c5c3 operator writes `<cp>-nova-metadata-agent-secret` for the agents that name it, with the single key `shared_secret` and the label `neutron.openstack.c5c3.io/metadata-shared-secret-mirror: "true"` (see [On a compute cluster](./neutron/neutron-metadata-agent-crd.md#on-a-compute-cluster)). While the central runs on another cluster, the ovn-operator writes the chassis's copy of the central's client identity, `<chassis>-ovn-client` | Entries in `values.namespaces` and `privilegedNamespaces`, and the CA bundle the agent verifies the metadata Gateway with, which is not delivered and which the owner places. An entry in `--agent-namespaces` too, so hvo waits for the metadata agent |
+| hvo's `--certificate-namespace` | The `libvirt-<node>` Certificates and their `tls-libvirt-<node>` Secrets | Nothing | No entry in `values.namespaces`: the access chart grants Secret reads in every entry, and reading one of these Secrets opens every libvirtd of the migration domain (see [Live migration](./nova/novacompute-crd.md#live-migration)) |
+
+Both of the first two rows default to the ControlPlane's namespace, so one
+namespace usually holds all three node-level workloads. hvo then waits for the
+chassis and agent pods at offboarding too, and the offboarding taint evicts
+them unless the `OVNChassis` tolerates it. The agent takes its chassis's
+tolerations.
+
+The c5c3 operator writes these Secrets with the registration's credentials. A
+registration scoped by `namespaces` whose Role cannot write Secrets in one of
+the namespaces reports the refused write on the ControlPlane's `NovaReady`:
+`NovaComputeConfigError` for the contract mirror, `HypervisorOperatorError` for
+the auth copy, and `NovaMetadataAgentSecretError` for the metadata copy.
+
+The last pool of the Nova on the cluster deletes the two Secrets of the Nova
+namespace, the teardown of the last agent that names the metadata copy deletes
+that one, and the namespaces themselves stay, annotated
+`helm.sh/resource-policy: keep`.
 
 ## Prerequisites on the management cluster
 
