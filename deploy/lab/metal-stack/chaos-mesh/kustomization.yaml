@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for the metal-stack lab: Chaos Mesh, the fault injection
+# of #1219 (#1221). hack/deploy-infra.sh applies it in Step 3 under
+# EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true, in place of
+# deploy/kind/chaos-mesh:
+#
+#   EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true make deploy-infra
+#
+# It takes the kind Chaos Mesh overlay as its base and differs from it in
+# three places:
+#   - The Namespace chaos-mesh carries the label
+#     apiserver-proxy.networking.gardener.cloud/inject: disable, the lab's
+#     rule for every namespace it declares (../base/kustomization.yaml).
+#   - controllerManager.enableFilterNamespace is true. The controller then
+#     selects a pod only when its Namespace carries the annotation
+#     chaos-mesh.org/inject: enabled; on kind the filter is off and every
+#     namespace is selectable.
+#   - The DaemonSet chaos-mesh-modules (modules-daemonset.yaml) loads the six
+#     NetworkChaos modules on every node. On kind the deploy script loads them
+#     on the host, which under EXTERNAL_CLUSTER=true is a workstation.
+#
+# What stays as on kind: the HelmRepository, the HelmRelease in chaos-mesh
+# with the chart range >=2.6.0 <3.0.0, the containerd runtime and its socket
+# /run/containerd/containerd.sock (the path the survey of #1220 found on both
+# workers), no dashboard, and the reduced requests. The Namespace keeps its
+# privileged PodSecurity level for chaos-daemon.
+#
+# The scope (D2 of #1219): ../base annotates every Namespace it renders and
+# ../migration-ports annotates hypervisor-system, so an experiment may select
+# a pod of any namespace the lab declares. chaos-mesh itself, flux-system,
+# which the flux-operator install creates, and the platform's namespaces
+# (kube-system, firewall, metallb-system, default) carry no annotation. A
+# selector that names only them matches nothing, and the experiment fails
+# with `no pod is selected`, so no experiment reaches calico-node, vpn-shoot
+# or apiserver-proxy, which connect the shoot to its control plane in the
+# seed.
+#
+# NetworkChaos never selects a hostNetwork pod. On the lab these are libvirt,
+# nova-compute, the OVNChassis and metadata-agent pods and
+# migration-port-reservation; a fault there would act on the network
+# namespace of the node. The chart's controllerManager.allowHostNetworkTesting
+# defaults to false, and the controller then refuses such an experiment with
+# the event "It's dangerous to inject network chaos on a pod(<ns>/<name>)
+# with `hostNetwork`". This overlay sets neither that value nor clusterScoped;
+# tests/unit/deploy/metal_stack_chaos_mesh_test.sh fails when the render names
+# either.
+#
+# POSTURE: chaos-daemon runs privileged with hostPID and the containerd
+# socket on every untainted node, so whoever may create a chaos-mesh.org
+# object in an annotated namespace acts as root on every node. The lab is one
+# tenant's cluster.
+#
+# What the pods leave on a node: chaos-mesh-modules loads ip_set,
+# ip_set_hash_ip, ip_set_hash_net, xt_set, sch_netem and sch_tbf and their
+# dependencies. Nothing unloads them; they stay until the node reboots, also
+# after a teardown. chaos-daemon mounts /run/containerd, /sys and /lib/modules
+# from the node and goes with the release.
+#
+# The teardown, `EXTERNAL_CLUSTER=true make teardown-infra`, deletes the
+# schedules and workflows, then the experiments, while chaos-controller-manager
+# still runs and releases each fault, then this overlay without its Namespace,
+# so the helm-controller uninstalls the chart. Its step 7 deletes the
+# namespace chaos-mesh and the chart's cluster-scoped leftovers, its step 8
+# the chaos-mesh.org CRDs.
+#
+# The kind overlay sits outside this directory. A directory reference is
+# allowed under kustomize's default LoadRestrictionsRootOnly check, so
+# `kubectl apply -k` works without `--load-restrictor`.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../kind/chaos-mesh
+  - modules-daemonset.yaml
+
+patches:
+  - target:
+      version: v1
+      kind: Namespace
+      name: chaos-mesh
+    patch: |
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: chaos-mesh
+        labels:
+          apiserver-proxy.networking.gardener.cloud/inject: disable
+
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: chaos-mesh
+      namespace: chaos-mesh
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: chaos-mesh
+        namespace: chaos-mesh
+      spec:
+        values:
+          controllerManager:
+            enableFilterNamespace: true

@@ -50,6 +50,8 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/kustomize_render.sh
 source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
+# shellcheck source=tests/lib/module_loader.sh
+source "$PROJECT_ROOT/tests/lib/module_loader.sh"
 
 NFS_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/nfs"
 KIND_NFS_DIR="$PROJECT_ROOT/deploy/kind/nfs"
@@ -66,24 +68,6 @@ LOAD_NFSD="$SERVER_POD.initContainers[] | select(.name == \"load-nfsd\")"
 DS_POD='.spec.template.spec'
 DS_LOAD="$DS_POD.initContainers[] | select(.name == \"load\")"
 DS_HOLD="$DS_POD.containers[] | select(.name == \"hold\")"
-
-# host_prepare_image — the image of host-prepare in libvirt-daemonset.yaml.
-host_prepare_image() {
-  yq -N -r 'select(. != null) | .spec.template.spec.initContainers[] | select(.name == "host-prepare") | .image' \
-    "$LIBVIRT_DAEMONSET" | head -n 1
-}
-
-# assert_same_nonempty <description> <value> <reference value>
-# An empty string on either side fails: two empty images are not one image.
-assert_same_nonempty() {
-  if [[ -n "$2" && -n "$3" && "$2" == "$3" ]]; then
-    echo "  PASS: $1"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: $1 (got '$2', want '$3')"
-    FAIL=$((FAIL + 1))
-  fi
-}
 
 # --- Test 1: the files ---
 test_files_have_spdx_and_two_resources() {
@@ -259,35 +243,6 @@ test_client_modules_daemonset() {
     "$(val DaemonSet nfs-client-modules "$DS_POD.volumes[0] | .name + \" \" + .hostPath.path")"
 }
 
-# write_stubs <dir>
-# A modprobe that appends its arguments to $MODPROBE_LOG and fails, as modprobe
-# does, for a module named in $MODPROBE_FAIL, and a uname that reports
-# STUB_KERNEL.
-write_stubs() {
-  mkdir -p "$1"
-  cat >"$1/modprobe" <<'EOF'
-#!/bin/sh
-echo "$*" >>"$MODPROBE_LOG"
-case " ${MODPROBE_FAIL:-} " in
-  *" $1 "*)
-    echo "modprobe: FATAL: Module $1 not found in directory /lib/modules/stub" >&2
-    exit 1
-    ;;
-esac
-exit 0
-EOF
-  printf '#!/bin/sh\necho %s\n' "$STUB_KERNEL" >"$1/uname"
-  chmod +x "$1/modprobe" "$1/uname"
-}
-
-# run_script <script> <stub dir> <log> [failing modules]
-# Runs <script> with bash -c, the stubs first on PATH. Prints its stdout;
-# returns its exit status.
-run_script() {
-  : >"$3"
-  MODPROBE_LOG="$3" MODPROBE_FAIL="${4:-}" PATH="$2:$PATH" bash -c "$1" 2>/dev/null
-}
-
 # --- Test 7: the two load scripts ---
 test_load_scripts_report_and_fail_loudly() {
   echo "Test: the load scripts report what they loaded and fail on the first module modprobe cannot load"
@@ -304,7 +259,7 @@ test_load_scripts_report_and_fail_loudly() {
   # The stubs replace modprobe and uname. A script that calls modprobe by
   # path, or kmod, insmod or rmmod, would reach this machine's kernel past
   # them.
-  if grep -qE '/modprobe([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(kmod|insmod|rmmod)([^[:alnum:]_]|$)' <<<"$load"$'\n'"$load_nfsd"; then
+  if unsafe_load_script "$load"$'\n'"$load_nfsd"; then
     echo "  FAIL: a load script calls modprobe by path, or kmod, insmod or rmmod; not running it on this host (15 checks)"
     FAIL=$((FAIL + 15))
     return
