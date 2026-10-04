@@ -13,10 +13,11 @@ This guide builds the metal-stack devstack of the
 [guide conventions](./contributing/guide-conventions.md#one-devstack-per-guide)
 on a Gardener shoot with two workers. Part 1 deploys the infrastructure stack and
 the full ControlPlane, reached through a port-forward. Part 2 turns both
-workers into KVM hypervisors of that ControlPlane, boots a server on each,
-live-migrates one and evicts a node. The teardown leaves the cluster as bare
-as it was. The ControlPlane CR is the one of the
-[Quick Start (ControlPlane)](./quick-start-controlplane.md) with its
+workers into KVM hypervisors of that ControlPlane and boots a server on each.
+One server gets a Cinder volume and keeps it through a live migration and the
+eviction of its node, and the volume is backed up after the detach. The
+teardown leaves the cluster as bare as it was. The ControlPlane CR is the one
+of the [Quick Start (ControlPlane)](./quick-start-controlplane.md) with its
 block-storage block and three lab settings; read Steps 3 and 4 there for its
 anatomy.
 
@@ -246,10 +247,12 @@ with the `python-barbicanclient` plugin, and
 
 ## Part 2: The hypervisors {#hypervisors}
 
-Part 2 turns both workers into KVM hypervisors, boots a server on each,
-live-migrates one and evicts a node. It needs three things, whatever brought
-them up: a `Ready` ControlPlane `controlplane` in `openstack` with
-`spec.services.nova.hypervisorOperator`, a running port-forward to the Gateway
+Part 2 turns both workers into KVM hypervisors and boots a server on each. It
+attaches a Cinder volume to one of them, live-migrates that server and evicts
+its node with the volume attached, then detaches the volume and backs it up.
+It needs three things, whatever brought them up: a `Ready` ControlPlane
+`controlplane` in `openstack` with `spec.services.nova.hypervisorOperator` and
+`spec.services.cinder`, a running port-forward to the Gateway
 on local port 8443, and the `OS_*` variables of an admin login exported,
 `OS_CACERT` with the Gateway's certificates among them. Run
 it from the root of the clone with `KUBECONFIG` pointing at the cluster. The
@@ -412,7 +415,59 @@ IPv4 headers fill the network's MTU of 1402. The 1375-byte ping fails, because
 the packet does not fit and `-M do` forbids fragmenting it. Leave the console
 with `Ctrl+]`.
 
-### Step 7: Live-migrate a server {#hv-migrate}
+### Step 7: Attach a volume {#hv-volume}
+
+Create a 1 GiB volume, which the scheduler places on the backend `nfs1`, and
+attach it to `lab-a`. Both volume commands return before the volume reaches
+the status the next command needs, so a bounded wait for that status follows
+each; a wait that runs out exits 124. `lab-a` is still on the node of Step 6,
+so the step uses `libvirt_pod` and `domain` from there:
+
+```bash
+openstack volume create --size 1 lab-vol
+timeout 120 bash -c 'until [ "$(openstack volume show lab-vol -c status -f value)" = available ]; do sleep 2; done'
+openstack server add volume lab-a lab-vol
+timeout 120 bash -c 'until [ "$(openstack volume show lab-vol -c status -f value)" = in-use ]; do sleep 2; done'
+volume=$(openstack volume show lab-vol -c id -f value)
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
+  sh -c "grep ' /var/lib/nova/mnt/' /proc/mounts; stat -c '%u:%g %a %n' /var/lib/nova/mnt/*/volume-${volume}"
+```
+
+The last command runs in the libvirt pod of `lab-a`'s node and prints two
+lines: the `nfs4` mount of `nfs-server.openstack.svc.cluster.local:/volumes`
+below `/var/lib/nova/mnt/<md5>`, and
+`42424:42424 660 /var/lib/nova/mnt/<md5>/volume-<id>`. `nova-compute` mounted
+the share in its own pod, and the `Bidirectional` mount propagation of both
+pods carried the mount through the host into the libvirt pod. The file keeps
+Cinder's owner and mode, so libvirt changed no owner on the attach (see
+`dynamic_ownership` in
+[Lab hypervisors](./reference/infrastructure/infrastructure-manifests.md#lab-hypervisors)).
+
+Open the console of `lab-a` as in Step 6:
+
+```bash
+kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${domain}"
+```
+
+On the console, find the volume, write a marker to it and read the marker
+back:
+
+```sh
+grep vdb /proc/partitions
+echo lab-volume-marker | sudo dd of=/dev/vdb
+sync
+echo 3 | sudo tee /proc/sys/vm/drop_caches
+sudo head -c 17 /dev/vdb
+```
+
+`/proc/partitions` lists `vdb` with 1048576 blocks: flavor `1` has one 1 GiB
+root disk and neither an ephemeral nor a swap disk, so the volume is the second
+virtio disk. The last command prints `lab-volume-marker`: `head -c 17` reads
+the 17 bytes of the marker and stops before the newline `echo` appended. The
+page cache was dropped before it, so the guest read the marker back from the
+volume. Leave the console with `Ctrl+]`.
+
+### Step 8: Live-migrate a server {#hv-migrate}
 
 ```bash
 openstack server migrate --live-migration --wait lab-a
@@ -425,11 +480,37 @@ migration `completed`. libvirt carried it over TLS between the nodes, with the
 CPU model that `cpuModels` names in
 `deploy/lab/metal-stack/hypervisor/compute.yaml`, which both nodes provide.
 
-### Step 8: Evict a node {#hv-evict}
+The volume moved with the server. Read the mount and the volume file on the
+destination node, with `volume` from Step 7 and `domain` from Step 6, and open
+the console there:
 
-The step evicts whichever node holds the servers; after Step 7 both sit on
+```bash
+host=$(openstack server show lab-a -c OS-EXT-SRV-ATTR:host -f value)
+libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
+  --field-selector "spec.nodeName=${host}" -o name)
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
+  sh -c "grep ' /var/lib/nova/mnt/' /proc/mounts; stat -c '%u:%g %a %n' /var/lib/nova/mnt/*/volume-${volume}"
+kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${domain}"
+```
+
+The libvirt pod of `nodes[1]` prints the mount and `42424:42424 660` for the
+volume file: `nova-compute` on the destination mounted the share for the
+migration, and libvirt changed no owner there either. On the console:
+
+```sh
+echo 3 | sudo tee /proc/sys/vm/drop_caches
+sudo head -c 17 /dev/vdb
+```
+
+The guest prints `lab-volume-marker` again, read through the destination's
+mount. Leave the console with `Ctrl+]`.
+
+### Step 9: Evict a node {#hv-evict}
+
+The step evicts whichever node holds the servers; after Step 8 both sit on
 `nodes[1]`. Manual maintenance makes the hypervisor operator create an
-`Eviction` that live-migrates every server off the node:
+`Eviction` that live-migrates every server off the node, `lab-a` with its
+volume:
 
 ```bash
 kubectl patch hypervisor "${nodes[1]}" --type merge \
@@ -441,6 +522,7 @@ openstack server list --all-projects --host "${nodes[1]}"
 kubectl patch hypervisor "${nodes[1]}" --type merge \
   -p '{"spec":{"maintenance":"","maintenanceReason":""}}'
 openstack compute service list --service nova-compute
+openstack volume show lab-vol -c status -f value
 ```
 
 The operator disables the node's compute service in Nova before it creates
@@ -449,14 +531,50 @@ wait alone exits 1 with `Error from server (NotFound)` while it is missing.
 The server list of the evicted node is empty. The second patch clears
 `maintenance`, which deletes the `Eviction`; sent before the wait succeeded,
 it would leave the servers not yet moved on the node. After it, the node's
-compute service is `enabled` and `up` again.
+compute service is `enabled` and `up` again. The volume moved with `lab-a` and
+is still `in-use`.
+
+### Step 10: Detach the volume and back it up {#hv-backup}
+
+Detach the volume from `lab-a`, check that no node keeps the share mounted and
+that Cinder still reads the volume file, with `volume` from Step 7, then back
+the volume up:
+
+```bash
+openstack server remove volume lab-a lab-vol
+timeout 120 bash -c 'until [ "$(openstack volume show lab-vol -c status -f value)" = available ]; do sleep 2; done'
+for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
+  kubectl exec -n openstack "${pod}" -c libvirtd -- sh -c "grep -c ' /var/lib/nova/mnt/' /proc/mounts || true"
+done
+kubectl exec -n openstack deployment/controlplane-cinder-volume-nfs1 -- \
+  sh -c "stat -c '%u:%g %a' /var/lib/cinder/mnt/*/volume-${volume}; head -c 17 /var/lib/cinder/mnt/*/volume-${volume}"
+openstack volume backup create --name lab-bk lab-vol
+timeout 300 bash -c 'until [ "$(openstack volume backup show lab-bk -c status -f value)" = available ]; do sleep 2; done'
+openstack volume backup show lab-bk -c status -f value
+```
+
+The loop prints `0` for each node: Nova unmounted the share with the node's
+last detach. The `cinder-volume` pod prints `42424:42424 660` and
+`lab-volume-marker`: the guest's write reached the volume file, and Cinder
+still reads the file after the attach, the migration and the eviction. The
+last line prints `available`.
+
+The backup follows the detach. A backup of an attached volume needs `--force`
+and runs through a temporary clone and a snapshot that Nova assists, a path
+nothing has run on backends the operator renders with
+`nfs_snapshot_support = false`.
 
 ## Teardown
 
-Delete the servers and the network, then the stack:
+Delete the backup, the servers, the volume and the network, then the stack.
+The volume goes after the servers: a run that stopped before
+[Part 2, Step 10](#hv-backup) left it attached to `lab-a`, deleting the server
+detaches it, and Cinder deletes no attached volume:
 
 ```bash
+openstack volume backup delete lab-bk
 openstack server delete --wait lab-a lab-b
+openstack volume delete lab-vol
 openstack subnet delete lab-subnet
 openstack network delete lab-net
 EXTERNAL_CLUSTER=true make teardown-infra
@@ -468,9 +586,13 @@ ControlPlane and the operators still run, and then the rest of the stack (see
 A `NovaCompute` pool keeps its finalizer while Nova counts a server on its
 nodes, so the teardown exits 1 with
 `Delete the servers on the lab hypervisors first (openstack server list --all-projects).`
-while a server is left. The node state under `/var/lib/nova`,
-`/var/lib/libvirt` and `/etc/pki` stays on the nodes. Stop the port-forward of
-Part 1 once the teardown has finished, and delete `gateway-ca.pem`.
+while a server is left. The NFS stack goes at the end of the teardown's step 2,
+and the claim `nfs-server-exports` with it. Where the default class has the
+reclaim policy `Delete`, the claim's volume goes too, with every volume file
+and backup on it. The node state under `/var/lib/nova`, `/var/lib/libvirt` and
+`/etc/pki` stays on the nodes, and the NFS kernel modules stay loaded until a
+node reboots. Stop the port-forward of Part 1 once the teardown has finished,
+and delete `gateway-ca.pem`.
 
 ## Caveats
 
@@ -481,19 +603,32 @@ have no router, so a server is reached through its console.
 
 A server lives on its worker's local disk, under `/var/lib/nova`. A worker that
 Gardener replaces, after a machine update or a failed health check, takes its
-servers with it unless [Part 2, Step 8](#hv-evict) moved them to the other
+servers with it unless [Part 2, Step 9](#hv-evict) moved them to the other
 worker first. With one worker left, no node can receive them.
+
+Every Cinder volume and backup of the lab lives on one NFS server pod with one
+`ReadWriteOnce` volume of 100Gi, which bounds all of them together. A backup
+sits on the same volume as its source: it restores a deleted or overwritten
+volume, and the loss of the export takes both. While the server pod is away,
+after a node replacement or a reschedule, an attached volume does not answer;
+no lab run has tested that.
+[Lab NFS stack](./reference/infrastructure/infrastructure-manifests.md#lab-nfs-stack)
+describes the posture of the export.
 
 ## Proven by
 
-Every `bash` block of this page but the `git clone` ran in page order on
-2026-10-03, from commit `e6a34f1b`, on shoot `forge` with two workers and
-Kubernetes v1.35.6, from a bare cluster to a bare cluster, and each block
-exited 0 on its first attempt. The port-forward of Part 1, Step 6 ran in a
-second terminal until the teardown had finished and was then stopped. The
-console commands of Part 2, Step 6 were typed by a script. The teardown waited
-93 seconds for the stack's objects in `openstack` to be finalized and then
-finished. Two things were done on the workers before the run. `calico-node` on
+The page as of commit `e6a34f1b`, before Cinder was added, ran in page order
+on 2026-10-03, every `bash` block but the `git clone`, on shoot `forge` with
+two workers and Kubernetes v1.35.6, from a bare cluster to a bare cluster, and
+each block exited 0 on its first attempt. The Cinder additions have not run on
+the lab yet: the deploy with `WITH_NFS=true`, the volume service list of
+Part 1, Step 7, Part 2, Steps 7 and 10, the volume checks of Steps 8 and 9, and
+the deletes of the backup and the volume in the Teardown. The port-forward of
+Part 1, Step 6 ran in a second terminal until the teardown had finished and
+was then stopped. The console commands of Part 2, Step 6 were typed by a
+script. The teardown waited 93 seconds for the stack's objects in `openstack`
+to be finalized and then finished. Two things were done on the workers before
+the run. `calico-node` on
 `shoot--df33f0b4c1--forge-group-0-666b6-qmhrg` was restarted, because it held
 port 49152 from before the reservation of Part 2, Step 1. The Open vSwitch
 database an earlier lab stack had left on both workers was removed, because

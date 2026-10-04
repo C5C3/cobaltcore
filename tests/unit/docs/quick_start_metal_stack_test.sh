@@ -8,7 +8,7 @@
 #      key, and the SPDX comment is present
 #   2. docs/.vitepress/config.ts lists the page after the ControlPlane quick
 #      start, in the Getting Started group
-#   3. the six `## ` sections occur once each and in order, and the fifteen
+#   3. the six `## ` sections occur once each and in order, and the seventeen
 #      `### Step` headings carry their explicit anchors
 #   4. every directory the page applies holds a kustomization.yaml, every
 #      deploy/, hack/ or tests/ file it names exists and each such script is
@@ -19,7 +19,7 @@
 #      the guide scaffold prints that command as the bring-up and refuses a
 #      second `--opt-in WITH_NFS=true`
 #   6. Part 2 links no anchor of Part 1 and defines `nodes` and `zone` itself
-#   7. three commands of the run sequence occur once on the page and not in
+#   7. four commands of the run sequence occur once on the page and not in
 #      docs/reference/infrastructure/infrastructure-manifests.md, which links
 #      the page
 #   8. Proven by names the date of a lab run and no chainsaw suite
@@ -29,13 +29,19 @@
 #      Part 1, Step 5 follows a create wait, the Hypervisor loop of Part 2,
 #      Step 3 follows the waits for the operator's release and its CRD, and
 #      the node port check of Part 2, Step 1 follows the reservation of the
-#      migration ports and its rollout
+#      migration ports and its rollout, and the volume create, the attach, the
+#      detach and the backup create of Part 2 occur once each and in this
+#      order, each followed on the next line by a `timeout` wait for the
+#      status it reaches
 #  11. no line of the page holds a hand step the operators took over: the
 #      highAvailability patch, the custom trait (its annotation and its
 #      create) and the host discovery, nor any other file under tests/
 #  12. the Prerequisites name no value only one shoot has: no class
 #      `premium`, no address of the 10.248. service network, and no row whose
 #      failure shows only later (`nothing checks it`, `already allocated`)
+#  13. the bash block of the Teardown deletes the backup, the servers and the
+#      volume once each and in this order, and runs `make teardown-infra`
+#      after them
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -81,6 +87,32 @@ section() {
     !fenced && /^## / { if (inside) exit; if ($0 ~ start) { inside = 1; next } }
     inside { print }
   ' "$QUICK_START_DOC"
+}
+
+# assert_once_in_order <label> <text> <fixed string>...
+# Asserts that each fixed string occurs on exactly one line of <text>, and
+# records one PASS or FAIL named <label> for their order: each string on a
+# later line than the one before it.
+assert_once_in_order() {
+  local label="$1" text="$2" string count line previous=0 ordered=1
+  shift 2
+  for string in "$@"; do
+    count="$(grep -cF -- "$string" <<<"$text" || true)"
+    assert_eq "'$string' occurs on one line" "1" "$count"
+    line="$(grep -nF -- "$string" <<<"$text" | head -n 1 | cut -d: -f1)"
+    if [[ -z "$line" ]] || ((line <= previous)); then
+      ordered=0
+    else
+      previous="$line"
+    fi
+  done
+  if [[ "$ordered" -eq 1 ]]; then
+    echo "  PASS: $label are in this order"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $label are missing or out of order"
+    FAIL=$((FAIL + 1))
+  fi
 }
 
 # anchors prints the anchors of the Markdown page $1, outside fenced code: a
@@ -172,9 +204,9 @@ test_sections() {
     FAIL=$((FAIL + 1))
   fi
 
-  echo "Test: the fifteen step headings carry their anchors"
+  echo "Test: the seventeen step headings carry their anchors"
   local want got
-  want="1:cp-clone 2:cp-probe 3:cp-deploy 4:cp-apply 5:cp-tenant 6:cp-access 7:cp-verify 1:hv-nodes 2:hv-fixtures 3:hv-apply 4:hv-onboarding 5:hv-boot 6:hv-console 7:hv-migrate 8:hv-evict"
+  want="1:cp-clone 2:cp-probe 3:cp-deploy 4:cp-apply 5:cp-tenant 6:cp-access 7:cp-verify 1:hv-nodes 2:hv-fixtures 3:hv-apply 4:hv-onboarding 5:hv-boot 6:hv-console 7:hv-volume 8:hv-migrate 9:hv-evict 10:hv-backup"
   got="$(headings '###' | cut -d: -f2- | grep '^### Step ' |
     sed -E 's/^### Step ([0-9]+):.*\{#([a-z-]+)\}[[:space:]]*$/\1:\2/' | tr '\n' ' ' | sed 's/ $//' || true)"
   assert_eq "step numbers and anchors" "$want" "$got"
@@ -312,7 +344,8 @@ test_one_runbook() {
   for command in \
     'kubectl apply -k deploy/lab/metal-stack/controlplane' \
     'kubectl apply -k deploy/lab/metal-stack/hypervisor-fixtures' \
-    'server create lab-a'; do
+    'server create lab-a' \
+    'server add volume lab-a lab-vol'; do
     count="$(grep -cF -- "$command" "$QUICK_START_DOC" || true)"
     assert_eq "'$command' occurs on one line of the page" "1" "$count"
     count="$(grep -cF -- "$command" "$INFRA_MANIFESTS" || true)"
@@ -357,27 +390,12 @@ test_blocks_pass_on_first_run() {
     "$(if [[ -n "$line" ]]; then sed -n "$((line + 1))p" "$QUICK_START_DOC"; fi)" \
     'kubectl wait mariadb/openstack-db -n openstack --for=condition=Ready'
 
-  local wait previous=0 ordered=1
-  for wait in \
+  local page
+  page="$(cat "$QUICK_START_DOC")"
+  assert_once_in_order "the release wait, the CRD wait and the Hypervisor wait" "$page" \
     'kubectl wait helmrelease/openstack-hypervisor-operator -n openstack --for=condition=Ready' \
     'kubectl wait crd/hypervisors.kvm.cloud.sap --for=condition=Established' \
-    'kubectl wait --for=create "hypervisor/${node}"'; do
-    count="$(grep -cF -- "$wait" "$QUICK_START_DOC" || true)"
-    assert_eq "'$wait' occurs on one line" "1" "$count"
-    line="$(grep -nF -- "$wait" "$QUICK_START_DOC" | head -n 1 | cut -d: -f1)"
-    if [[ -z "$line" ]] || ((line <= previous)); then
-      ordered=0
-    else
-      previous="$line"
-    fi
-  done
-  if [[ "$ordered" -eq 1 ]]; then
-    echo "  PASS: the release wait, the CRD wait and the Hypervisor wait are in this order"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: the release wait, the CRD wait and the Hypervisor wait are missing or out of order"
-    FAIL=$((FAIL + 1))
-  fi
+    'kubectl wait --for=create "hypervisor/${node}"'
 
   count="$(grep -cF -- 'kubectl apply -k deploy/lab/metal-stack/migration-ports' "$QUICK_START_DOC" || true)"
   assert_eq "the apply of the migration port reservation occurs on one line" "1" "$count"
@@ -387,6 +405,29 @@ test_blocks_pass_on_first_run() {
     'kubectl rollout status daemonset/migration-port-reservation -n hypervisor-system'
   assert_eq "the node port check is the line after that" "hack/lab-node-ports.sh" \
     "$(if [[ -n "$line" ]]; then sed -n "$((line + 2))p" "$QUICK_START_DOC"; fi)"
+
+  # A volume or backup command returns before its object reaches the status
+  # the next command needs, so a bounded wait for that status follows it. The
+  # backup create comes after the detach, because Cinder backs up an in-use
+  # volume only with --force.
+  assert_once_in_order "the volume create, the attach, the detach and the backup create" "$page" \
+    'openstack volume create --size 1 lab-vol' \
+    'openstack server add volume lab-a lab-vol' \
+    'openstack server remove volume lab-a lab-vol' \
+    'openstack volume backup create --name lab-bk lab-vol'
+  local pair command status next
+  for pair in \
+    'openstack volume create --size 1 lab-vol|available' \
+    'openstack server add volume lab-a lab-vol|in-use' \
+    'openstack server remove volume lab-a lab-vol|available' \
+    'openstack volume backup create --name lab-bk lab-vol|available'; do
+    command="${pair%|*}"
+    status="${pair##*|}"
+    line="$(grep -nF -- "$command" "$QUICK_START_DOC" | head -n 1 | cut -d: -f1)"
+    next="$(if [[ -n "$line" ]]; then sed -n "$((line + 1))p" "$QUICK_START_DOC"; fi)"
+    assert_starts_with "the line after '$command' is a timeout wait" "$next" "timeout "
+    assert_contains "the wait after '$command' waits for '$status'" "$next" "$status"
+  done
 }
 
 # --- Test 11: no hand steps ---
@@ -417,6 +458,25 @@ test_prerequisites_name_no_pinned_value() {
   done
 }
 
+# --- Test 13: the teardown deletes the OpenStack objects before the stack ---
+# The page deletes what it created while the APIs still answer: the backup
+# first, then the servers before the volume, because deleting a server
+# detaches the volume a run that stopped before Part 2, Step 10 left attached,
+# and Cinder refuses to delete an attached volume. All of them go before the
+# stack, whose NovaCompute pool keeps its finalizer while a server is left.
+test_teardown_order() {
+  echo "Test: the Teardown block deletes the backup, the servers and the volume before the stack"
+  local block
+  block="$(section '^## Teardown$' |
+    awk '/^```bash[[:space:]]*$/ { inside = 1; next } inside && /^```/ { exit } inside { print }')"
+  assert_not_empty "the Teardown section holds a bash block" "$block"
+  assert_once_in_order "the backup, server and volume deletes and the stack teardown" "$block" \
+    'volume backup delete lab-bk' \
+    'server delete --wait lab-a lab-b' \
+    'volume delete lab-vol' \
+    'make teardown-infra'
+}
+
 test_frontmatter
 test_sidebar
 test_sections
@@ -429,6 +489,7 @@ test_step_4_has_no_retry_instruction
 test_blocks_pass_on_first_run
 test_no_hand_steps
 test_prerequisites_name_no_pinned_value
+test_teardown_order
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
