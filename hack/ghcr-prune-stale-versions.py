@@ -9,8 +9,9 @@ Retention is decided per package version from its *whole tag set*, not from a
 "keep the newest N" counter:
 
   keep    the version carries at least one keeper tag -- `latest`, a bare
-          version / release tag such as `32.0.0`, `2026.1`, `1.2.0-rc1`, or
-          `upstream-<sha40>`, a pinned upstream commit
+          version / release tag such as `32.0.0`, `2026.1`, `1.2.0-rc1`,
+          `upstream-<sha40>`, a pinned upstream commit, or the libvirt keeper
+          `<libvirt-package-version>-r<N>` such as `10.0.0-2ubuntu8.19-r1`
   delete  every other version older than --min-age-hours, including untagged
           ones: `<sha7>`, `<sha40>`, `sha-<sha40>`, `<release>-<sha40>`,
           `e2e-<run_id>-*`, `dev`, and composite tags
@@ -78,6 +79,11 @@ DEFAULT_KEEP_PATTERNS = (
     # names (openstack-hypervisor-operator and kvm-node-agent: the chart renders
     # sha-<sha40>, which sits on the same manifest)
     r"^upstream-[0-9a-f]{40}$",
+    # 10.0.0-2ubuntu8.19-r1 -- the libvirt image's <libvirt-package-version>-r<N>,
+    # minted once by hack/ci-tag-libvirt-keeper.sh; the lab manifests under
+    # deploy/lab/metal-stack/ pin that build by digest. The shape is copied in
+    # that script's version check and in allowedVersions in renovate.json.
+    r"^[0-9]+(\.[0-9]+)+-[0-9]+ubuntu[0-9]+(\.[0-9]+)*-r[0-9]+$",
 )
 
 # Commit-SHA tag shapes across the four publishing paths in this repo:
