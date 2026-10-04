@@ -67,6 +67,18 @@ func TestBuildMigrationJob_BaseSpec(t *testing.T) {
 	g.Expect(spec.Volumes[0].ConfigMap.Name).To(gomega.Equal("keystone-config"))
 }
 
+// The pull policy passes through verbatim, and an empty value renders none.
+func TestBuildMigrationJob_ImagePullPolicyVerbatim(t *testing.T) {
+	g := gomega.NewWithT(t)
+	j := BuildMigrationJob(migrationParams())
+	g.Expect(j.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(gomega.BeEmpty())
+
+	p := migrationParams()
+	p.ImagePullPolicy = corev1.PullNever
+	j = BuildMigrationJob(p)
+	g.Expect(j.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(gomega.Equal(corev1.PullNever))
+}
+
 // A service whose whole configuration document is credential-bearing renders it
 // into a Secret, so the config volume has to source from one. The Secret wins
 // over a ConfigMap name left in the params: a Job mounting an empty or wrong

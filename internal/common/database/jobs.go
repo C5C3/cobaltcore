@@ -37,6 +37,10 @@ type JobSetParams struct {
 	// (SyncJob/SchemaCheckJob). BuildJob callers (the upgrade phases) pass an
 	// explicit image so they can pin the old/new release independently.
 	Image string
+	// ImagePullPolicy is the imagePullPolicy of every Job the set builds,
+	// upgrade phases included: a phase runs another tag of the same repository,
+	// which resolves to the same policy as the image Image came from.
+	ImagePullPolicy corev1.PullPolicy
 	// ConfigMapName is the rendered config ConfigMap, mounted read-only at
 	// ConfigMountPath.
 	ConfigMapName string
@@ -74,13 +78,15 @@ type JobSetParams struct {
 // image is the fully-qualified reference the Job runs: the steady-state Jobs use
 // p.Image (which honors a pinned digest), while the upgrade phases pass a
 // specific "repo:tag" so they can pin the old/new release image independently of
-// p.Image. nameSuffix is both the Job-name suffix ("<InstanceName>-<suffix>")
+// p.Image. Every Job carries p.ImagePullPolicy, whichever image it runs.
+// nameSuffix is both the Job-name suffix ("<InstanceName>-<suffix>")
 // and the single container's name.
 func BuildJob(p JobSetParams, image, nameSuffix string, command []string, backoffLimit int32) *batchv1.Job {
 	return job.BuildMigrationJob(job.MigrationJobParams{
 		Name:              p.InstanceName + "-" + nameSuffix,
 		Namespace:         p.Namespace,
 		Image:             image,
+		ImagePullPolicy:   p.ImagePullPolicy,
 		ContainerName:     nameSuffix,
 		Command:           command,
 		ConfigMapName:     p.ConfigMapName,

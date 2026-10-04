@@ -27,6 +27,7 @@ func keystoneJobSet() JobSetParams {
 		InstanceName:    "keystone",
 		Namespace:       "openstack",
 		Image:           "registry.example.com/keystone@sha256:abc",
+		ImagePullPolicy: corev1.PullIfNotPresent,
 		ConfigMapName:   "keystone-config-abc123",
 		ConfigMountPath: "/etc/keystone/keystone.conf.d/",
 		Env: []corev1.EnvVar{{
@@ -69,6 +70,7 @@ func TestSyncJob(t *testing.T) {
 	c := spec.Containers[0]
 	g.Expect(c.Name).To(Equal("db-sync"))
 	g.Expect(c.Image).To(Equal(p.Image))
+	g.Expect(c.ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
 	g.Expect(c.Command).To(Equal(p.SyncCommand))
 	g.Expect(c.Env).To(Equal(p.Env))
 	// The restricted security context is applied to every migration Job.
@@ -96,6 +98,7 @@ func TestSchemaCheckJob(t *testing.T) {
 	g.Expect(j.Name).To(Equal("keystone-schema-check"))
 	g.Expect(j.Spec.Template.Spec.Containers[0].Name).To(Equal("schema-check"))
 	g.Expect(j.Spec.Template.Spec.Containers[0].Command).To(Equal(p.SchemaCheckCommand))
+	g.Expect(j.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(Equal(p.ImagePullPolicy))
 	// The read-only check uses a lower backoff limit than db-sync.
 	g.Expect(*j.Spec.BackoffLimit).To(Equal(schemaCheckJobBackoffLimit))
 	// TTLSecondsAfterFinished is deliberately unset (#415).
@@ -114,8 +117,16 @@ func TestBuildJob_upgradePhasePinsImageAndSuffix(t *testing.T) {
 	c := j.Spec.Template.Spec.Containers[0]
 	g.Expect(c.Name).To(Equal("db-expand"))
 	g.Expect(c.Image).To(Equal("registry.example.com/keystone:2025.1"))
+	// The phase runs another tag of the same repository and keeps the policy
+	// of p.Image, not the rule for its own tag.
+	g.Expect(c.ImagePullPolicy).To(Equal(p.ImagePullPolicy))
 	g.Expect(c.Command).To(Equal([]string{"keystone-manage", "db_sync", "--expand"}))
 	g.Expect(*j.Spec.BackoffLimit).To(Equal(int32(4)))
+
+	// An empty policy renders none on the phase Job either.
+	p.ImagePullPolicy = ""
+	j = BuildJob(p, "registry.example.com/keystone:2025.1", "db-expand", nil, 4)
+	g.Expect(j.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(BeEmpty())
 }
 
 // TestSyncJob_ConfigSecretMountedInsteadOfConfigMap covers the Secret-config

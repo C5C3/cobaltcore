@@ -25,6 +25,9 @@ type MigrationJobParams struct {
 	Labels map[string]string
 	// Image is the container image the migration runs.
 	Image string
+	// ImagePullPolicy is the container's imagePullPolicy, rendered verbatim;
+	// empty leaves the API server default.
+	ImagePullPolicy corev1.PullPolicy
 	// ContainerName names the single container (usually the phase suffix).
 	ContainerName string
 	// Command is the container command (for example keystone-manage db_sync).
@@ -91,6 +94,7 @@ func BuildMigrationJob(p MigrationJobParams) *batchv1.Job {
 					Containers: []corev1.Container{{
 						Name:            p.ContainerName,
 						Image:           p.Image,
+						ImagePullPolicy: p.ImagePullPolicy,
 						Command:         p.Command,
 						SecurityContext: p.SecurityContext,
 						Env:             p.Env,

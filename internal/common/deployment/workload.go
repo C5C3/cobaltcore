@@ -65,9 +65,10 @@ type WorkloadParams struct {
 // invariants documented on BuildWorkload (resources, security context, preStop
 // hook).
 type ContainerParams struct {
-	Name    string
-	Image   string
-	Command []string
+	Name            string
+	Image           string
+	ImagePullPolicy corev1.PullPolicy
+	Command         []string
 
 	Env []corev1.EnvVar
 
@@ -95,8 +96,8 @@ type ContainerParams struct {
 //     RestrictedSecurityContext, and the preStop sleep hook from
 //     PreStopSleepCommand.
 //
-// Everything else — image, command, env, ports, probes, volumes, and mounts —
-// comes from p and is rendered verbatim, nilness included, so a service that
+// Everything else — image, image pull policy, command, env, ports, probes,
+// volumes, and mounts — comes from p and is rendered verbatim, nilness included, so a service that
 // has no startup probe or no volumes renders none.
 //
 // p.Deployment must be non-nil; every caller passes &cr.Spec.Deployment. The
@@ -132,6 +133,7 @@ func BuildWorkload(p WorkloadParams) *appsv1.Deployment {
 					Containers: []corev1.Container{{
 						Name:            p.Container.Name,
 						Image:           p.Container.Image,
+						ImagePullPolicy: p.Container.ImagePullPolicy,
 						Resources:       commonv1.WithResourceDefaults(p.Deployment.Resources, p.DefaultMemory),
 						SecurityContext: RestrictedSecurityContext(),
 						Command:         p.Container.Command,

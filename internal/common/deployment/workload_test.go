@@ -74,6 +74,23 @@ func TestBuildWorkload_NilContainerFieldsStayNil(t *testing.T) {
 	g.Expect(container.StartupProbe).To(gomega.Equal(p.Container.StartupProbe))
 }
 
+// The pull policy passes through verbatim: the caller resolves it from the
+// image reference, and an empty value renders no policy, leaving the API server
+// default.
+func TestBuildWorkload_ImagePullPolicyVerbatim(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	deploy := BuildWorkload(workloadParams())
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(gomega.BeEmpty())
+
+	for _, policy := range []corev1.PullPolicy{corev1.PullAlways, corev1.PullIfNotPresent, corev1.PullNever} {
+		p := workloadParams()
+		p.Container.ImagePullPolicy = policy
+		deploy = BuildWorkload(p)
+		g.Expect(deploy.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(gomega.Equal(policy))
+	}
+}
+
 // While an HPA owns the replica count the Deployment must leave .spec.replicas
 // unmanaged, otherwise operator and HPA fight over the field.
 func TestBuildWorkload_ReplicasFollowAutoscaling(t *testing.T) {
