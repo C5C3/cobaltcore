@@ -219,7 +219,12 @@ CONTROLLER = {
             "description": "Maximum number of CRs that reconcile concurrently (controller-runtime MaxConcurrentReconciles), rendered as --max-concurrent-reconciles. Applied by controllers that opt in; the c5c3 operator accepts the flag but does not yet consume it.",
             "default": 2,
             "minimum": 1,
-        }
+        },
+        "defaultImagePullPolicy": {
+            "type": "string",
+            "description": "imagePullPolicy of every rendered container whose image reference names no pullPolicy, rendered as --default-image-pull-policy. Unset applies the rule: IfNotPresent for a digest, Always for a tag. The c5c3 operator accepts the flag but renders no container.",
+            "enum": ["Always", "IfNotPresent", "Never"],
+        },
     },
 }
 
