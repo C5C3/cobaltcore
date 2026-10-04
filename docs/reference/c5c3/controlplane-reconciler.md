@@ -1481,7 +1481,8 @@ the ControlPlane provisioned:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/keystone` with the tag derived
   from `spec.openStackRelease`; `spec.services.keystone.image` overrides the
-  whole image reference when set.
+  whole image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database / Cache:** `keystone.Spec.Database` and `keystone.Spec.Cache` are
   DeepCopies of the **effective** instances — the service's
   [dedicated](./controlplane-crd.md#dedicatedbackingservices) database/cache when
@@ -1507,7 +1508,8 @@ the ControlPlane provisioned:
   `spec.federation.proxyResources`. Every field is assigned on every pass.
 - **Federation:** `spec.federation.proxyImage` is the
   `spec.services.keystone.federationProxyImage` override when set, else
-  `ghcr.io/c5c3/keystone-federation-proxy:latest`;
+  `ghcr.io/c5c3/keystone-federation-proxy:latest`, either with
+  `spec.imagePullPolicy` when it names no `pullPolicy` of its own;
   `spec.federation.trustedDashboards` is the ControlPlane's own dashboard origin
   (`cp.Spec.Services.Horizon.DerivedPublicEndpoint() + "/auth/websso/"`), or `nil` when no dashboard is
   externally reachable. Both are assigned unconditionally, so clearing the
@@ -1574,7 +1576,8 @@ services:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/horizon` with the tag derived
   from `spec.openStackRelease`; `spec.services.horizon.image` overrides the whole
-  image reference when set.
+  image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Cache:** a DeepCopy of the **effective** cache (`effectiveHorizonCache`) —
   the dashboard's [dedicated](./controlplane-crd.md#dedicatedbackingservices)
   cache when it opted into one, the shared `spec.infrastructure.cache` otherwise
@@ -1818,7 +1821,8 @@ reusing the ControlPlane's own specs so Glance points at the same backing servic
 
 - **Image:** repository defaults to `ghcr.io/c5c3/glance` with the tag derived
   from `spec.openStackRelease`; `spec.services.glance.image` overrides the whole
-  image reference when set.
+  image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database:** a DeepCopy of the **effective** database (`effectiveGlanceDatabase`
   — Glance's [dedicated](./controlplane-crd.md#dedicatedbackingservices) database
   when it opted into one, the shared `spec.infrastructure.database` otherwise) with
@@ -1937,7 +1941,8 @@ points at the same backing services:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/placement` with the tag derived
   from `spec.openStackRelease`; `spec.services.placement.image` overrides the
-  whole image reference when set.
+  whole image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database:** a DeepCopy of the **effective** database
   (`effectivePlacementDatabase`: Placement's
   [dedicated](./controlplane-crd.md#dedicatedbackingservices) database when it
@@ -2056,7 +2061,8 @@ Horizon, Glance, and Placement siblings:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/barbican` with the tag derived
   from `spec.openStackRelease`; `spec.services.barbican.image` overrides the
-  whole image reference when set.
+  whole image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database:** a DeepCopy of the **effective** database
   (`effectiveBarbicanDatabase`: Barbican's
   [dedicated](./controlplane-crd.md#barbicandedicatedbackingservicesspec)
@@ -2385,7 +2391,8 @@ the same backing services:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/neutron` with the tag derived
   from `spec.openStackRelease`; `spec.services.neutron.image` overrides the whole
-  image reference when set.
+  image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database:** a DeepCopy of the **effective** database
   (`effectiveNeutronDatabase`: Neutron's
   [dedicated](./controlplane-crd.md#neutrondedicatedbackingservicesspec) database
@@ -2528,7 +2535,8 @@ services:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/cinder` with the tag derived
   from `spec.openStackRelease`; `spec.services.cinder.image` overrides the whole
-  image reference when set.
+  image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database:** a DeepCopy of the **effective** database (`effectiveCinderDatabase`:
   Cinder's [dedicated](./controlplane-crd.md#cinderdedicatedbackingservicesspec)
   database when it opted into one, the shared `spec.infrastructure.database`
@@ -2710,7 +2718,8 @@ services:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/nova` with the tag derived from
   `spec.openStackRelease`; `spec.services.nova.image` overrides the whole image
-  reference when set.
+  reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Two databases:** both blocks are a DeepCopy of the **effective** database
   (`effectiveNovaDatabase`: Nova's
   [dedicated](./controlplane-crd.md#novadedicatedbackingservicesspec) database
