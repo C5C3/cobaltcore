@@ -310,6 +310,8 @@ func TestReconcileGlance_NotManagedWhenUnset(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := glanceControlPlane()
 	cp.Spec.Services.Glance = nil
+	// A set spec.imagePullPolicy has nothing to project without the service.
+	cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
 	r := newGlanceTestReconciler(t, cp)
 
 	res, err := r.reconcileGlance(context.Background(), cp)
@@ -2388,4 +2390,81 @@ func TestReconcileGlance_SizingProjectsByLaunchMode(t *testing.T) {
 			g.Expect(gl.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("15m"))
 		})
 	}
+}
+
+// TestReconcileGlance_ProjectsImagePullPolicy pins the projection of
+// spec.imagePullPolicy into the Glance child's spec.image: it reaches an image
+// that names no pullPolicy, a pullPolicy on the services.glance.image override
+// wins, an empty field leaves the child's field empty, and clearing the field
+// clears the existing child's on the next reconcile.
+func TestReconcileGlance_ProjectsImagePullPolicy(t *testing.T) {
+	t.Run("spec.imagePullPolicy reaches the child", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		r := newGlanceTestReconciler(t, cp)
+
+		_, err := r.reconcileGlance(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+	})
+
+	t.Run("the override's pullPolicy wins", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		cp.Spec.Services.Glance.Image = &commonv1.ImageSpec{
+			Repository: "registry.example.com/mirror/glance",
+			Tag:        "custom",
+			PullPolicy: corev1.PullNever,
+		}
+		r := newGlanceTestReconciler(t, cp)
+
+		_, err := r.reconcileGlance(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullNever))
+	})
+
+	t.Run("an override without pullPolicy takes spec.imagePullPolicy", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		cp.Spec.Services.Glance.Image = &commonv1.ImageSpec{
+			Repository: "registry.example.com/mirror/glance",
+			Tag:        "custom",
+		}
+		r := newGlanceTestReconciler(t, cp)
+
+		_, err := r.reconcileGlance(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		image := getProjectedGlance(t, r.Client, cp).Spec.Image
+		g.Expect(image.Repository).To(Equal("registry.example.com/mirror/glance"))
+		g.Expect(image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+	})
+
+	t.Run("an empty field leaves the child's empty", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		r := newGlanceTestReconciler(t, cp)
+
+		_, err := r.reconcileGlance(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Image.PullPolicy).To(BeEmpty())
+	})
+
+	t.Run("clearing the field clears the child's", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		r := newGlanceTestReconciler(t, cp)
+
+		_, err := r.reconcileGlance(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+
+		cp.Spec.ImagePullPolicy = ""
+		_, err = r.reconcileGlance(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Image.PullPolicy).To(BeEmpty())
+	})
 }

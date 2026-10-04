@@ -514,6 +514,7 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 	if override := cp.Spec.Services.Nova.Image; override != nil {
 		image = *override
 	}
+	image = withControlPlanePullPolicy(cp, image)
 
 	// Place the child in the namespace assigned to the compute service (the
 	// ControlPlane's own unless services.nova.namespace says otherwise). A child

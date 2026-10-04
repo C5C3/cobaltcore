@@ -112,6 +112,23 @@ spec:
                 - message: policy rule value must not be empty
                   rule: '!has(self.rules) || self.rules.all(k, size(self.rules[k])
                     > 0)'
+              imagePullPolicy:
+                description: |-
+                  ImagePullPolicy is projected into spec.image.pullPolicy of every service
+                  CR the ControlPlane creates and into Keystone's
+                  spec.federation.proxyImage.pullPolicy. A pullPolicy on a
+                  services.<service>.image or services.keystone.federationProxyImage
+                  override wins for that image. Empty leaves the child's field absent, so
+                  the child's operator resolves it: its --default-image-pull-policy, else
+                  IfNotPresent for a digest and Always for a tag. In External Keystone mode
+                  the field has no effect on Keystone, which has no child. A child CRD older
+                  than the c5c3-operator prunes the projected field without an error. The
+                  Enum is schema-only, for the reason ImageSpec.PullPolicy gives.
+                enum:
+                - Always
+                - IfNotPresent
+                - Never
+                type: string
               infrastructure:
                 description: |-
                   Infrastructure declares the shared backing services (database, cache)

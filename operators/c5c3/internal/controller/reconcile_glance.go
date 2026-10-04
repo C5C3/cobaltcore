@@ -230,6 +230,7 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	if override := cp.Spec.Services.Glance.Image; override != nil {
 		image = *override
 	}
+	image = withControlPlanePullPolicy(cp, image)
 
 	// Place the child in the namespace assigned to the Glance service (the
 	// ControlPlane's own unless services.glance.namespace says otherwise). A child

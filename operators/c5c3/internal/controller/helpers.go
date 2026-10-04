@@ -217,6 +217,18 @@ func effectiveNovaCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
 	return nil
 }
 
+// withControlPlanePullPolicy returns image with PullPolicy set to
+// spec.imagePullPolicy when image names none, so a pullPolicy on a
+// services.<service>.image override wins for that service. An empty
+// spec.imagePullPolicy leaves the field empty, and the child's operator
+// resolves the policy itself.
+func withControlPlanePullPolicy(cp *c5c3v1alpha1.ControlPlane, image commonv1.ImageSpec) commonv1.ImageSpec {
+	if image.PullPolicy == "" {
+		image.PullPolicy = cp.Spec.ImagePullPolicy
+	}
+	return image
+}
+
 // targetClusterRefForNamespace resolves the target cluster the namespace named
 // namespace lives on: nil — the local cluster the operator runs on — for the
 // ControlPlane's own namespace, and otherwise the ref of a service that declares

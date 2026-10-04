@@ -202,6 +202,7 @@ func (r *ControlPlaneReconciler) reconcilePlacement(ctx context.Context, cp *c5c
 	if override := cp.Spec.Services.Placement.Image; override != nil {
 		image = *override
 	}
+	image = withControlPlanePullPolicy(cp, image)
 
 	// Place the child in the namespace assigned to the Placement service (the
 	// ControlPlane's own unless services.placement.namespace says otherwise). A

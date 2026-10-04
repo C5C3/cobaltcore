@@ -403,6 +403,7 @@ func (r *ControlPlaneReconciler) reconcileCinder(ctx context.Context, cp *c5c3v1
 	if override := cp.Spec.Services.Cinder.Image; override != nil {
 		image = *override
 	}
+	image = withControlPlanePullPolicy(cp, image)
 
 	// Place the child in the namespace assigned to the block-storage service (the
 	// ControlPlane's own unless services.cinder.namespace says otherwise). A child
