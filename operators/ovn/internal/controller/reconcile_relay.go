@@ -315,8 +315,9 @@ func buildRelayDeployment(cr *ovnv1alpha1.OVNCentral) *appsv1.Deployment {
 		// The relay is one single-threaded ovsdb-server process.
 		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, 1),
 		Container: deployment.ContainerParams{
-			Name:  "relay",
-			Image: effectiveImage(cr.Spec.Image).Reference(),
+			Name:            "relay",
+			Image:           effectiveImage(cr.Spec.Image).Reference(),
+			ImagePullPolicy: effectiveImage(cr.Spec.Image).EffectivePullPolicy(),
 			// The relay listens on the connection row the Southbound database
 			// already carries (pssl:6642:0.0.0.0), which it reads through the
 			// remote it is pointed at, so no listener option is passed here.

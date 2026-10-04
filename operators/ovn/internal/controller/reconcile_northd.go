@@ -156,8 +156,9 @@ func buildNorthdDeployment(cr *ovnv1alpha1.OVNCentral) *appsv1.Deployment {
 		// ovn-northd is one process that runs northd.Threads threads.
 		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, northd.Threads),
 		Container: deployment.ContainerParams{
-			Name:  componentNorthd,
-			Image: effectiveImage(cr.Spec.Image).Reference(),
+			Name:            componentNorthd,
+			Image:           effectiveImage(cr.Spec.Image).Reference(),
+			ImagePullPolicy: effectiveImage(cr.Spec.Image).EffectivePullPolicy(),
 			Command: []string{
 				"ovn-northd",
 				"--ovnnb-db=" + cr.Status.Northbound.InternalDbAddress,

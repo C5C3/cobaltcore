@@ -549,9 +549,10 @@ func raftPodDisruptionBudget(cr *ovnv1alpha1.OVNCentral, db raftDB) *policyv1.Po
 // ovsdbContainer builds the one container of a database pod.
 func ovsdbContainer(cr *ovnv1alpha1.OVNCentral, db raftDB) corev1.Container {
 	return corev1.Container{
-		Name:    "ovsdb",
-		Image:   effectiveImage(cr.Spec.Image).Reference(),
-		Command: []string{"/bin/bash", "-c", "exec " + path.Join(centralScriptDir, runScriptKey(db))},
+		Name:            "ovsdb",
+		Image:           effectiveImage(cr.Spec.Image).Reference(),
+		ImagePullPolicy: effectiveImage(cr.Spec.Image).EffectivePullPolicy(),
+		Command:         []string{"/bin/bash", "-c", "exec " + path.Join(centralScriptDir, runScriptKey(db))},
 		// The request floor (a 70m CPU and a 256Mi memory request for each
 		// resource the block does not name, and never a limit) differs from
 		// chassisResources on purpose. A member without requests runs

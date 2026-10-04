@@ -29,11 +29,12 @@ const (
 	// only ":latest" and ":<commit sha>" — neither of which the operator can name
 	// ahead of the merge that produces it.
 	//
-	// The tag is mutable and kubelet defaults imagePullPolicy to Always for
-	// ":latest", so every CronJob firing runs whatever main last pushed, with the
-	// S3 credentials in its environment and both database snapshots on its
-	// volume. Pin spec.backup.s3.image to a digest to opt out of that until the
-	// default here is one.
+	// The tag is mutable and the operator sets imagePullPolicy Always for a tag
+	// unless the image's pullPolicy or the operator default
+	// (--default-image-pull-policy) names another, so every CronJob firing runs
+	// whatever main last pushed, with the S3 credentials in its environment and
+	// both database snapshots on its volume. Pin spec.backup.s3.image to a
+	// digest to opt out of that until the default here is one.
 	defaultBackupShifterTag = "latest"
 )
 

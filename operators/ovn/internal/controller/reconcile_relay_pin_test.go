@@ -87,6 +87,7 @@ spec:
         - --ovn-sb-relay-db-ssl-ca-cert=/etc/ovn/tls/ca.crt
         - run_sb_relay_ovsdb
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -207,6 +208,7 @@ spec:
         - --ovn-sb-relay-db-ssl-ca-cert=/etc/ovn/tls/ca.crt
         - run_sb_relay_ovsdb
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
+        imagePullPolicy: IfNotPresent
         lifecycle:
           preStop:
             exec:

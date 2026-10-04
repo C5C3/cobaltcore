@@ -91,6 +91,7 @@ spec:
         - name: OVN_REMOTE_PROBE_INTERVAL_MS
           value: "60000"
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         name: maintenance
         resources:
           limits:
@@ -176,6 +177,7 @@ spec:
         - name: CHASSIS
           value: 11111111-2222-3333-4444-555555555555
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         name: maintenance
         resources:
           limits:
@@ -253,6 +255,7 @@ spec:
         - name: CHASSIS
           value: 11111111-2222-3333-4444-555555555555
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         name: maintenance
         resources:
           limits:
