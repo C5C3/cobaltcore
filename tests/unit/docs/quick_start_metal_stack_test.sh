@@ -16,8 +16,10 @@
 #      resolves on the target page
 #   5. the page holds the deploy and teardown commands, the guide
 #      conventions list it as a devstack with the same deploy command, and
-#      the guide scaffold prints that command as the bring-up and refuses a
-#      second `--opt-in WITH_NFS=true`
+#      the guide scaffold prints that command as the bring-up, refuses a
+#      second `--opt-in WITH_NFS=true` and a kind-only `--opt-in
+#      WITH_DIZZY=true`, and accepts `--opt-in WITH_CHAOS_MESH=true`, which
+#      the lab overlay carries
 #   6. Part 2 links no anchor of Part 1 and defines `nodes` and `zone` itself
 #   7. four commands of the run sequence occur once on the page and not in
 #      docs/reference/infrastructure/infrastructure-manifests.md, which links
@@ -312,6 +314,15 @@ test_devstack() {
   assert_eq "the guide scaffold refuses a second WITH_NFS=true" "2" "$rc"
   assert_contains "the refusal says the bring-up sets it" "$out" \
     "WITH_NFS=true is already part of the metal-stack bring-up"
+  out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_CHAOS_MESH=true 2>&1)"
+  rc=$?
+  assert_eq "the guide scaffold accepts WITH_CHAOS_MESH=true, which the lab overlay carries" "0" "$rc"
+  assert_not_empty "and adds it to the bring-up" \
+    "$(grep -xF -- 'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CHAOS_MESH=true make deploy-infra' <<<"$out" || true)"
+  out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_DIZZY=true 2>&1)"
+  rc=$?
+  assert_eq "the guide scaffold still refuses the kind-only WITH_DIZZY=true" "2" "$rc"
+  assert_contains "the refusal names the flag" "$out" "WITH_DIZZY=true is kind-only"
 }
 
 # --- Test 6: Part 2 stands on its own ---

@@ -114,13 +114,14 @@ esac
 
 # The metal-stack bring-up sets WITH_NFS=true itself, and
 # preflight_external_cluster in hack/deploy-infra.sh refuses the kind-only
-# opt-ins under EXTERNAL_CLUSTER=true.
+# opt-ins under EXTERNAL_CLUSTER=true. WITH_CHAOS_MESH=true is accepted: the
+# lab overlay carries chaos-mesh/.
 if [[ "${DEVSTACK}" == "quick-start-metal-stack" ]]; then
   if [[ " ${OPT_INS} " == *" WITH_NFS=true "* ]]; then
     echo "error: WITH_NFS=true is already part of the metal-stack bring-up" >&2
     exit 2
   fi
-  for flag in WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE WITH_CHAOS_MESH \
+  for flag in WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE \
     WITH_OVN_KERNEL_MODULES WITH_DIZZY; do
     if [[ " ${OPT_INS} " == *" ${flag}=true "* ]]; then
       echo "error: ${flag}=true is kind-only; hack/deploy-infra.sh refuses it under EXTERNAL_CLUSTER=true" >&2
