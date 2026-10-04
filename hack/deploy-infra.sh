@@ -123,9 +123,12 @@ NODE_NOFILE_LIMIT="${NODE_NOFILE_LIMIT-1048576}"
 # it — delete the old stack once the new one serves.
 ALLOW_PRE_RELOCATION="${ALLOW_PRE_RELOCATION:-false}"
 
-# Gates the opt-in chaos-mesh kind overlay (deploy/kind/chaos-mesh) and the
-# host-side kernel-module load. Defaults to false so the kind Quick Start
-# stays minimal; set WITH_CHAOS_MESH=true to enable chaos-engineering tests
+# Gates the opt-in Chaos Mesh overlay, the chaos-mesh/ of OVERLAY_ROOT: in kind
+# mode deploy/kind/chaos-mesh and the host-side kernel-module load, under
+# EXTERNAL_CLUSTER=true the overlay's chaos-mesh/, whose DaemonSet
+# chaos-mesh-modules loads the modules on the nodes. Defaults to false so the
+# kind Quick Start stays minimal; set WITH_CHAOS_MESH=true to enable
+# chaos-engineering tests
 WITH_CHAOS_MESH="${WITH_CHAOS_MESH:-false}"
 
 # Gates the host-side load of the kernel modules the OVN chassis suites need
@@ -333,16 +336,17 @@ INFRA_ONLY="${INFRA_ONLY:-false}"
 # Selects the external-cluster mode: deploy onto whatever cluster the current
 # kubeconfig context points at (KUBECONFIG or ~/.kube/config, as kubectl
 # resolves it) instead of a kind cluster this script creates. The script never
-# switches contexts. Docker and kind are not needed; the six kind-bound opt-ins
-# (WITH_VPA, WITH_METRICS_SERVER, WITH_REGISTRY_CACHE, WITH_CHAOS_MESH,
-# WITH_OVN_KERNEL_MODULES, WITH_DIZZY) are refused in preflight_checks, and
-# WITH_NFS=true is accepted only for an overlay with an nfs/ kustomization;
-# the cluster is checked for a default StorageClass, no node-local-dns, a
-# Ready node and, under WITH_NFS=true, a foreign NFS CSIDriver and the node
-# network, otherwise for the NFS CSIDriver the Cinder backends of the overlay's
-# ControlPlane mount, before anything is applied (check_external_cluster), and
-# the Gateway is reached with `kubectl port-forward` on 8443. Defaults to false;
-# any value other than `true` keeps the kind mode.
+# switches contexts. Docker and kind are not needed; the five kind-bound opt-ins
+# (WITH_VPA, WITH_METRICS_SERVER, WITH_REGISTRY_CACHE, WITH_OVN_KERNEL_MODULES,
+# WITH_DIZZY) are refused in preflight_checks, WITH_NFS=true is accepted only
+# for an overlay with an nfs/ kustomization and WITH_CHAOS_MESH=true only for
+# one with a chaos-mesh/ kustomization; the cluster is checked for a default
+# StorageClass, no node-local-dns, a Ready node and, under WITH_NFS=true, a
+# foreign NFS CSIDriver and the node network, otherwise for the NFS CSIDriver
+# the Cinder backends of the overlay's ControlPlane mount, before anything is
+# applied (check_external_cluster), and the Gateway is reached with `kubectl
+# port-forward` on 8443. Defaults to false; any value other than `true` keeps
+# the kind mode.
 EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 
 # The overlay root the external-cluster mode applies: its base/ in Step 3 and its
@@ -362,7 +366,11 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # waits for. Beside it nfs/ may ship client-policy.yaml, a NetworkPolicy
 # template outside the kustomization: Step 3 applies it before nfs/, with the
 # node network Step 1 read from Gardener's ConfigMap kube-system/shoot-info in
-# place of its placeholder NODE_NETWORK. Read only under EXTERNAL_CLUSTER=true.
+# place of its placeholder NODE_NETWORK. An overlay may carry a chaos-mesh/
+# kustomization as well, which Step 3 applies under WITH_CHAOS_MESH=true in
+# place of deploy/kind/chaos-mesh. It has to render the DaemonSet
+# chaos-mesh-modules and the HelmRelease chaos-mesh in chaos-mesh, the two
+# names this script waits for. Read only under EXTERNAL_CLUSTER=true.
 EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
 
 # Derived from the two knobs above, not overridable. OVERLAY_ROOT is the
@@ -1441,18 +1449,20 @@ preflight_checks() {
 #
 # Refuses every kind-bound opt-in that is set, then an EXTERNAL_OVERLAY without
 # the two kustomizations Steps 3 and 5 apply, then WITH_NFS=true for an overlay
-# without the nfs/ kustomization Step 3 applies in place of deploy/kind/nfs, then
-# an overlay whose by-hand controlplane/ does not render exactly one
-# ControlPlane, openstack/CONTROLPLANE_NAME, or, without WITH_NFS=true, one with
-# a Cinder backend on the in-cluster NFS server, then a kubeconfig context whose
-# API server does not answer, cheapest first and each before anything is
-# applied.
+# without the nfs/ kustomization Step 3 applies in place of deploy/kind/nfs,
+# then WITH_CHAOS_MESH=true for one without the chaos-mesh/ kustomization Step 3
+# applies in place of deploy/kind/chaos-mesh, then an overlay whose by-hand
+# controlplane/ does not render exactly one ControlPlane,
+# openstack/CONTROLPLANE_NAME, or, without WITH_NFS=true, one with a Cinder
+# backend on the in-cluster NFS server, then a kubeconfig context whose API
+# server does not answer, cheapest first and each before anything is applied.
 # The refusals are checked in the order below so the message names the flag the
 # caller set: WITH_VPA=true has already folded into WITH_METRICS_SERVER=true at
 # the top of the script. The flags are read by indirect expansion (${!flag})
 # rather than as literal `"${WITH_X}" == "true"` tests, because each
 # tests/unit/hack/deploy_infra_<flag>_flag_test.sh counts those literals and a
-# second gate here would change the count.
+# second gate here would change the count. The overlay checks of WITH_NFS and
+# WITH_CHAOS_MESH below are literal gates, and those two tests count them.
 #
 # Logs the context and the API server URL, so the transcript records which
 # cluster the run went to.
@@ -1463,7 +1473,6 @@ preflight_external_cluster() {
     "WITH_VPA|the platform runs Gardener's VPA" \
     "WITH_METRICS_SERVER|the platform serves v1beta1.metrics.k8s.io" \
     "WITH_REGISTRY_CACHE|the pull-through cache needs the kind Docker network" \
-    "WITH_CHAOS_MESH|it loads kernel modules on the host and tunes the kind nodes" \
     "WITH_OVN_KERNEL_MODULES|it loads kernel modules on the host" \
     "WITH_DIZZY|it reads the kind node's published ports with docker port"; do
     flag="${entry%%|*}"
@@ -1484,6 +1493,14 @@ preflight_external_cluster() {
   # tested, so an nfs/ directory without a kustomization is refused as well.
   if [[ "${WITH_NFS}" == "true" && ! -f "${OVERLAY_ROOT}/nfs/kustomization.yaml" ]]; then
     log "ERROR: EXTERNAL_CLUSTER=true WITH_NFS=true needs ${OVERLAY_ROOT}/nfs/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/nfs is not applied to an external cluster: its server needs kernel modules that this mode does not load on the host."
+    exit 1
+  fi
+
+  # The kind Chaos Mesh overlay selects pods in every namespace and needs the
+  # NetworkChaos modules this mode does not load on the host, so
+  # WITH_CHAOS_MESH=true takes the overlay's own chaos-mesh/, tested by file.
+  if [[ "${WITH_CHAOS_MESH}" == "true" && ! -f "${OVERLAY_ROOT}/chaos-mesh/kustomization.yaml" ]]; then
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true needs ${OVERLAY_ROOT}/chaos-mesh/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/chaos-mesh is not applied to an external cluster: it lets an experiment select a pod in every namespace and relies on kernel modules that this mode does not load on the host."
     exit 1
   fi
 
@@ -1973,10 +1990,14 @@ load_host_kernel_modules() {
 # ---------------------------------------------------------------------------
 # load_chaos_mesh_kernel_modules — Ensure NetworkChaos prerequisites on the host.
 #
-# chaos-mesh's NetworkChaos uses ipset/iptables/tc inside the target pod's
-# network namespace via nsenter. The underlying kernel modules must be loaded
-# on the host kernel (Kind nodes share it), otherwise chaos-daemon fails with
-# "unable to flush ip sets for pod …" and AllInjected stays False.
+# The kind mode's module load. chaos-mesh's NetworkChaos uses ipset/iptables/tc
+# inside the target pod's network namespace via nsenter. The underlying kernel
+# modules must be loaded on the host kernel (Kind nodes share it), otherwise
+# chaos-daemon fails with "unable to flush ip sets for pod …" and AllInjected
+# stays False. Under EXTERNAL_CLUSTER=true main() does not call it: the
+# DaemonSet chaos-mesh-modules of the overlay's chaos-mesh/ loads the same
+# list on the nodes (deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml);
+# change both together.
 #
 # Best-effort: skipped on non-Linux, and on Linux we warn but don't abort if
 # modprobe is unavailable or fails — PodChaos-only flows still work.
@@ -2922,9 +2943,15 @@ main() {
   # Load chaos-mesh kernel modules on the host before creating the cluster.
   # Kind nodes share the host kernel; NetworkChaos needs ipset/tc modules.
   # Gated on WITH_CHAOS_MESH so the default Quick Start does not require
-  # passwordless sudo or modprobe access.
+  # passwordless sudo or modprobe access. In external mode this machine is not
+  # a node of the cluster; the DaemonSet of the overlay's chaos-mesh/ loads
+  # the modules on the nodes instead.
   if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
-    load_chaos_mesh_kernel_modules
+    if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+      log "Skipping the host-side chaos-mesh kernel modules (EXTERNAL_CLUSTER=true; DaemonSet chaos-mesh-modules of ${OVERLAY_ROOT}/chaos-mesh loads them on the nodes)."
+    else
+      load_chaos_mesh_kernel_modules
+    fi
   else
     log "Skipping chaos-mesh kernel modules (WITH_CHAOS_MESH=false)."
   fi
@@ -3052,14 +3079,27 @@ main() {
 
   # Opt-in chaos-mesh overlay. Layered on top of the base so the
   # default Quick Start stays minimal; enable with WITH_CHAOS_MESH=true.
-  # The overlay is self-contained (no `../../` parent-dir references), so
-  # kubectl's embedded kustomize renders it under the default
+  # The kind mode applies deploy/kind/chaos-mesh, which is self-contained (no
+  # `../../` parent-dir references); the external mode applies the overlay's
+  # chaos-mesh/, which references deploy/kind/chaos-mesh as a directory.
+  # kubectl's embedded kustomize renders both under the default
   # LoadRestrictionsRootOnly security check — no `--load-restrictor` flag
   # required (kubectl's embedded kustomize does not expose one,
   # kubernetes/kubectl#948).
+  #
+  # In external mode the DaemonSet chaos-mesh-modules loads the NetworkChaos
+  # modules on every node; a node that cannot load one keeps its pod in Init,
+  # and the rollout wait fails the run before Phase 3 waits for the release.
   if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/chaos-mesh"
-    log "Chaos Mesh kind overlay applied (WITH_CHAOS_MESH=true)."
+    kubectl apply -k "${OVERLAY_ROOT}/chaos-mesh"
+    log "Chaos Mesh overlay ${OVERLAY_ROOT}/chaos-mesh applied (WITH_CHAOS_MESH=true)."
+    if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+      if ! kubectl rollout status daemonset/chaos-mesh-modules -n chaos-mesh --timeout="${POD_TIMEOUT}s"; then
+        log "ERROR: DaemonSet chaos-mesh/chaos-mesh-modules did not roll out, so not every node has the NetworkChaos kernel modules. Read 'kubectl logs -n chaos-mesh -l app.kubernetes.io/name=chaos-mesh-modules -c load --prefix --tail=-1'."
+        exit 1
+      fi
+      log "Chaos Mesh kernel modules loaded on every node."
+    fi
   fi
 
   # Opt-in kube-prometheus-stack overlay. Layered on top of
