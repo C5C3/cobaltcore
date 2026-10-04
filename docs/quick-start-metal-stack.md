@@ -92,7 +92,7 @@ done
 Compare each node's output with the [Prerequisites](#prerequisites) table and
 with the expected output in the header of
 `deploy/lab/metal-stack/probe/node-probe.yaml`, which a lab-ready node printed
-on 2026-10-03. The probe completes whatever it finds, so a missing piece shows
+on 2026-10-04. The probe completes whatever it finds, so a missing piece shows
 up as `absent`, `none` or `NOT FOUND` in the output and not as a failed Job.
 
 ### Step 3: Deploy the stack {#cp-deploy}
