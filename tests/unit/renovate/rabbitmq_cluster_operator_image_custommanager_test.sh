@@ -237,8 +237,11 @@ test_both_rabbitmq_rules_share_one_group() {
     return
   fi
 
+  # custom.regex only: the flux rule that lists both files switches the native
+  # manager off and carries no group.
   local groups
   groups="$(jq -r --arg src "$SOURCE_PATH" --arg rel "$RELEASE_PATH" '[.packageRules[]
+    | select(((.matchManagers // []) | index("custom.regex")) != null)
     | select(
         (((.matchFileNames // []) | index($src)) != null)
         or (((.matchFileNames // []) | index($rel)) != null)
