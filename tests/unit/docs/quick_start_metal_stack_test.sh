@@ -14,8 +14,10 @@
 #      deploy/, hack/ or tests/ file it names exists and each such script is
 #      executable, both code imports resolve, and every #anchor it links
 #      resolves on the target page
-#   5. the page holds the deploy and teardown commands, and the guide
-#      conventions list it as a devstack with the same deploy command
+#   5. the page holds the deploy and teardown commands, the guide
+#      conventions list it as a devstack with the same deploy command, and
+#      the guide scaffold prints that command as the bring-up and refuses a
+#      second `--opt-in WITH_NFS=true`
 #   6. Part 2 links no anchor of Part 1 and defines `nodes` and `zone` itself
 #   7. three commands of the run sequence occur once on the page and not in
 #      docs/reference/infrastructure/infrastructure-manifests.md, which links
@@ -55,6 +57,7 @@ QUICK_START_DOC="${QUICK_START_DOC:-$PROJECT_ROOT/docs/quick-start-metal-stack.m
 VITEPRESS_CONFIG="$PROJECT_ROOT/docs/.vitepress/config.ts"
 GUIDE_CONVENTIONS="$PROJECT_ROOT/docs/contributing/guide-conventions.md"
 INFRA_MANIFESTS="$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md"
+GUIDE_SCAFFOLD="$PROJECT_ROOT/.claude/skills/prepare-new-guide/scripts/scaffold-guide.sh"
 
 if [[ ! -f "$QUICK_START_DOC" ]]; then
   echo "FAIL: $QUICK_START_DOC does not exist"
@@ -255,13 +258,24 @@ test_references_resolve() {
 # --- Test 5: bring-up, teardown and the devstack row ---
 test_devstack() {
   echo "Test: the page names its bring-up and teardown, and the conventions list it"
-  local deploy='EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true make deploy-infra'
+  local deploy='EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra'
   assert_file_contains_fixed "the page holds the deploy command" "$QUICK_START_DOC" "$deploy"
   assert_file_contains_fixed "the page holds the teardown command" "$QUICK_START_DOC" \
     'EXTERNAL_CLUSTER=true make teardown-infra'
   local row
   row="$(grep -F '../quick-start-metal-stack.md' "$GUIDE_CONVENTIONS" | grep '^|' | grep -F "$deploy" || true)"
   assert_not_empty "guide-conventions.md has a devstack row with the page and its deploy command" "$row"
+
+  # The scaffold prints the skeleton to stdout and writes no file.
+  local out rc
+  out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack 2>&1)"
+  assert_not_empty "the guide scaffold prints the deploy command as the bring-up" \
+    "$(grep -xF -- "$deploy" <<<"$out" || true)"
+  out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_NFS=true 2>&1)"
+  rc=$?
+  assert_eq "the guide scaffold refuses a second WITH_NFS=true" "2" "$rc"
+  assert_contains "the refusal says the bring-up sets it" "$out" \
+    "WITH_NFS=true is already part of the metal-stack bring-up"
 }
 
 # --- Test 6: Part 2 stands on its own ---

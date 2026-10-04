@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The quick start's OVNCentral and ControlPlane for the metal-stack lab, applied
-# by hand once `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true make deploy-infra`
+# by hand once
+# `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra`
 # has finished:
 #
 #   kubectl apply -k deploy/lab/metal-stack/controlplane

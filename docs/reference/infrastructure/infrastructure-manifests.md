@@ -2864,7 +2864,7 @@ network endpoints of the catalog, which are the in-cluster Service URLs.
 | Property | Value |
 | --- | --- |
 | Namespace | `openstack` |
-| Applied | by hand, after `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true make deploy-infra` |
+| Applied | by hand, after `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra` |
 | Storage | through the cluster's default class; neither CR names a `storageClassName` |
 | Metadata gateway | none; the metadata API stays in-cluster at `controlplane-nova-metadata.openstack.svc:8775` |
 | Block storage | none; `CinderReady` reports `True` with reason `CinderNotManaged` |
