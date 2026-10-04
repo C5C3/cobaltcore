@@ -26,10 +26,11 @@
 # <libvirt-package-version>-r<N>@sha256:<digest>. hack/ci-tag-libvirt-keeper.sh
 # mints the tag once on main and never moves it, and the nightly prune keeps
 # every version that carries one. Renovate proposes a new tag as one pull
-# request that moves all six lines naming the image: the two containers here,
-# the NFS module load test (../probe/nfs-module-load.yaml), load-nfsd
-# (../nfs/kustomization.yaml) and the two containers of nfs-client-modules
-# (../nfs/client-modules-daemonset.yaml). IfNotPresent pulls the digest once
+# request that moves all eight lines naming the image: the two containers
+# here, the NFS module load test (../probe/nfs-module-load.yaml), load-nfsd
+# (../nfs/kustomization.yaml), the two containers of nfs-client-modules
+# (../nfs/client-modules-daemonset.yaml) and the two of chaos-mesh-modules
+# (../chaos-mesh/modules-daemonset.yaml). IfNotPresent pulls the digest once
 # per node; with OnDelete, a merged bump reaches a node when its pod is
 # deleted. The resources bound this pod's cgroup, which keeps bash and the
 # probes. libvirtd and QEMU run in the host scope, outside it.
