@@ -277,6 +277,7 @@ func dbPurgeCronJob(cinder *cinderv1alpha1.Cinder, art configArtifacts) *batchv1
 							Containers: []corev1.Container{{
 								Name:            "db-purge",
 								Image:           cinder.Spec.Image.Reference(),
+								ImagePullPolicy: cinder.Spec.Image.EffectivePullPolicy(),
 								Command:         []string{"cinder-manage", "--config-dir", cinderConfigDir, "db", "purge", age},
 								SecurityContext: deployment.RestrictedSecurityContext(),
 								// The same environment every Cinder process runs with, so the

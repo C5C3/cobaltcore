@@ -150,8 +150,9 @@ func buildSchedulerDeployment(cinder *cinderv1alpha1.Cinder, art configArtifacts
 		// cinder-scheduler runs one single-threaded process.
 		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, 1),
 		Container: deployment.ContainerParams{
-			Name:  componentScheduler,
-			Image: cinder.Spec.Image.Reference(),
+			Name:            componentScheduler,
+			Image:           cinder.Spec.Image.Reference(),
+			ImagePullPolicy: cinder.Spec.Image.EffectivePullPolicy(),
 			Command: []string{
 				"cinder-scheduler",
 				"--config-dir", cinderConfigDir,
