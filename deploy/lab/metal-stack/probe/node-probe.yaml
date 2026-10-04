@@ -5,7 +5,7 @@
 # Read-only node probe for metal-stack clusters, the survey of #1138 (work
 # package 0) as a reusable Job. It is the prerequisite check of the CobaltCore
 # lab: run it against a metal-stack cluster before anything of the lab is
-# deployed. It prints the node facts the lab depends on under eleven fixed
+# deployed. It prints the node facts the lab depends on under twelve fixed
 # headers and exits 0 whatever it finds, so a node that lacks something
 # prints `absent`, `none` or `NOT FOUND` and the Job still completes.
 #
@@ -31,6 +31,12 @@
 #     container's own mounts, which show the host kernel's values. The NIC
 #     list is read from /host/sys/class/net, the host's sysfs, so it names the
 #     host's interfaces and not the pod's own eth0.
+#   - The containerd socket is looked up under /host/run and never under
+#     /host/var/run: on Debian /var/run is an absolute symlink to /run, which
+#     inside the pod resolves to the container's own /run. The socket is only
+#     tested for, never opened, and the one value read from the host's
+#     /etc/containerd/config.toml is the address of its [grpc] table. The
+#     unit test fails when the script names /host/var/run.
 #
 # NAMESPACE default: the probe runs before deploy/flux-system/namespaces.yaml
 # has created `openstack` or `shared-services`, and the metal-stack shoot
@@ -194,10 +200,10 @@ spec:
               lscpu 2>/dev/null | grep -E '^(Model name|CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)|Virtualization|NUMA node\(s\)):' || echo absent
               echo "cpus with vmx|svm: $(grep -cE '^flags[[:space:]]*:.* (vmx|svm)( |$)' /proc/cpuinfo 2>/dev/null)"
               echo "== loaded modules"
-              cut -d ' ' -f1 /proc/modules 2>/dev/null | grep -E '^(kvm|vhost|openvswitch|geneve|vxlan|nbd|tun|bridge|br_netfilter|dm_multipath|nvme_tcp|nfs|sunrpc)' || echo none
+              cut -d ' ' -f1 /proc/modules 2>/dev/null | grep -E '^(kvm|vhost|openvswitch|geneve|vxlan|nbd|tun|bridge|br_netfilter|dm_multipath|nvme_tcp|nfs|sunrpc|ip_set|xt_set|sch_netem|sch_tbf)' || echo none
               KVER="$(uname -r)"
               echo "== module files for $KVER"
-              for m in kvm kvm-intel kvm-amd vhost_net openvswitch geneve nbd tun bridge br_netfilter dm-multipath nfsd nfs nfsv4 lockd sunrpc; do
+              for m in kvm kvm-intel kvm-amd vhost_net openvswitch geneve nbd tun bridge br_netfilter dm-multipath nfsd nfs nfsv4 lockd sunrpc ip_set ip_set_hash_ip ip_set_hash_net xt_set sch_netem sch_tbf; do
                 f="$(find "/host/lib/modules/$KVER" -name "$m.ko*" -print -quit 2>/dev/null)"
                 if [ -z "$f" ] && grep -qE "/$m\.ko\$" "/host/lib/modules/$KVER/modules.builtin" 2>/dev/null; then
                   f="builtin"
@@ -229,6 +235,12 @@ spec:
               for b in usr/sbin/libvirtd usr/bin/qemu-system-x86_64 usr/sbin/ovs-vswitchd usr/sbin/rpc.nfsd; do
                 if [ -e "/host/$b" ]; then echo "$b: present"; else echo "$b: absent"; fi
               done
+              echo "== containerd socket"
+              for s in run/containerd/containerd.sock run/k3s/containerd/containerd.sock; do
+                if [ -S "/host/$s" ]; then echo "$s: socket"; elif [ -e "/host/$s" ]; then echo "$s: present, not a socket"; else echo "$s: absent"; fi
+              done
+              addr="$(awk '/^\[grpc\]/ { g = 1; next } /^\[/ { g = 0 } g && /^[[:space:]]*address[[:space:]]*=/ { print $NF }' /host/etc/containerd/config.toml 2>/dev/null)"
+              echo "config.toml [grpc] address: ${addr:-not set}"
               echo "== nics"
               for n in /host/sys/class/net/*/; do
                 [ -e "$n" ] || { echo absent; break; }

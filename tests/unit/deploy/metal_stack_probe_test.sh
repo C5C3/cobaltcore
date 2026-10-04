@@ -20,17 +20,22 @@
 #   4. The container's script reads the NIC list from the host's sysfs and
 #      the registered filesystems from /proc/filesystems, ends with exit 0,
 #      names none of nsenter, chroot, modprobe, insmod, rmmod, mount, umount,
-#      sysctl, apt-get, apt, tee, dd, mknod and rm, and redirects nothing but
-#      stderr to /dev/null.
+#      sysctl, apt-get, apt, tee, dd, mknod and rm, redirects nothing but
+#      stderr to /dev/null, and never names /host/var/run.
 #   5. Run against an empty stand-in for the host root, the script exits 0 and
-#      prints the eleven headers in order with its absent and NOT FOUND
-#      fallbacks, NOT FOUND for each of the five NFS module files, and nfs4
-#      and nfsd as not registered; against a populated one it reports a
-#      module file, a module built into the kernel, the NFS server binary and
-#      a NIC, nfs stays NOT FOUND beside an nfsd.ko, the loaded modules are
-#      the NFS ones and sunrpc alone, and nfs4 is registered. Each stand-in
-#      brings its own /proc/modules and /proc/filesystems. A script that
-#      fails the command or redirection check of 4 is not run.
+#      prints the twelve headers in order with its absent and NOT FOUND
+#      fallbacks, NOT FOUND for each of the five NFS module files and the six
+#      Chaos Mesh module files, nfs4 and nfsd as not registered, and both
+#      containerd socket paths as absent with no [grpc] address set; against
+#      a populated one it reports a module file, a module built into the
+#      kernel, the NFS server binary and a NIC, nfs stays NOT FOUND beside an
+#      nfsd.ko and ip_set_hash_ip beside an ip_set_hash_ipport.ko, the loaded
+#      modules are the NFS ones, sunrpc and the two Chaos Mesh ones alone,
+#      nfs4 is registered, a regular file at the containerd socket path
+#      prints present, not a socket, and of three address keys in
+#      config.toml only the [grpc] one prints. Each stand-in brings its own
+#      /proc/modules and /proc/filesystems. A script that fails the command
+#      or redirection check of 4 is not run.
 #   6. nfs-module-load.yaml, which 2 and 3 keep out of the render, is read and
 #      never run: one batch/v1 Job nfs-module-load in default with
 #      backoffLimit 0, ttlSecondsAfterFinished 3600, restartPolicy Never, no
@@ -102,6 +107,7 @@ EXPECTED_HEADERS="$(printf '%s\n' \
   '== disks' \
   '== cgroup' \
   '== host os / binaries' \
+  '== containerd socket' \
   '== nics')"
 
 EXPECTED_LOAD_HEADERS="$(printf '%s\n' \
@@ -301,7 +307,7 @@ without_stderr_discard() {
 test_script_ends_with_exit_0_and_writes_nothing() {
   echo "Test: the probe script ends with exit 0 and writes nothing"
 
-  render_probe 8 || return
+  render_probe 9 || return
 
   local container='select(.kind == "Job") | .spec.template.spec.containers[0]'
   local script
@@ -325,6 +331,8 @@ test_script_ends_with_exit_0_and_writes_nothing() {
     "$script" "/host/lib/modules/"
   assert_contains "the script reads the registered filesystems" \
     "$script" "/proc/filesystems"
+  assert_not_contains "the script never looks for the socket under /host/var/run" \
+    "$script" "/host/var/run"
 }
 
 # The lines of a script's output under the header $2, up to the next header.
@@ -344,7 +352,7 @@ run_probe_on() {
 test_script_reports_the_host_root_and_completes() {
   echo "Test: the probe script exits 0 on an empty host root and reports a populated one"
 
-  render_probe 20 || return
+  render_probe 31 || return
 
   local script
   script="$(rendered_script)"
@@ -353,37 +361,48 @@ test_script_reports_the_host_root_and_completes() {
   # every other path the script touches is this machine's own, outside the
   # pod's read-only mounts.
   if [[ -n "$(forbidden_commands "$script")" || "$(without_stderr_discard "$script")" == *">"* ]]; then
-    echo "  FAIL: the script fails the forbidden-command or redirection check; not running it on this host (20 checks)"
-    FAIL=$((FAIL + 20))
+    echo "  FAIL: the script fails the forbidden-command or redirection check; not running it on this host (31 checks)"
+    FAIL=$((FAIL + 31))
     return
   fi
 
   # Two stand-ins for the host root the pod mounts at /host: an empty one, and
-  # one with two module files, two built-in modules, the NFS server binary and
-  # a NIC. Each comes with a /proc/modules and a /proc/filesystems: empty ones,
-  # and ones with the NFS server, its helpers and two other modules loaded and
-  # nfs4 registered.
+  # one with four module files, three built-in modules, the NFS server binary,
+  # a NIC, a regular file where the containerd socket belongs and a containerd
+  # config.toml. Each comes with a /proc/modules and a /proc/filesystems:
+  # empty ones, and ones with the NFS server, its helpers, two Chaos Mesh
+  # modules and two other modules loaded and nfs4 registered.
   local tmp kver
   tmp="$(mktemp -d)"
   kver="$(uname -r)"
   mkdir -p "$tmp/empty" "$tmp/node/lib/modules/$kver/kernel/arch/x86/kvm" \
     "$tmp/node/lib/modules/$kver/kernel/fs/nfsd" \
+    "$tmp/node/lib/modules/$kver/kernel/net/netfilter/ipset" \
     "$tmp/node/usr/sbin" "$tmp/node/sys/class/net/lan0" \
+    "$tmp/node/run/containerd" "$tmp/node/etc/containerd" \
     "$tmp/empty-proc" "$tmp/node-proc"
   : >"$tmp/node/lib/modules/$kver/kernel/arch/x86/kvm/kvm.ko"
   : >"$tmp/node/lib/modules/$kver/kernel/fs/nfsd/nfsd.ko"
+  : >"$tmp/node/lib/modules/$kver/kernel/net/netfilter/xt_set.ko"
+  : >"$tmp/node/lib/modules/$kver/kernel/net/netfilter/ipset/ip_set_hash_ipport.ko"
   printf '%s\n' "kernel/drivers/net/tun.ko" "kernel/net/sunrpc/sunrpc.ko" \
-    >"$tmp/node/lib/modules/$kver/modules.builtin"
+    "kernel/net/sched/sch_netem.ko" >"$tmp/node/lib/modules/$kver/modules.builtin"
   : >"$tmp/node/usr/sbin/rpc.nfsd"
   echo 9000 >"$tmp/node/sys/class/net/lan0/mtu"
   echo up >"$tmp/node/sys/class/net/lan0/operstate"
+  : >"$tmp/node/run/containerd/containerd.sock"
+  # Three tables carry an address; the probe prints the [grpc] one.
+  printf '%s\n' 'version = 2' '[debug]' '  address = "/run/containerd/debug.sock"' \
+    '[grpc]' '  address = "/run/containerd/containerd.sock"' '[ttrpc]' '  address = ""' \
+    >"$tmp/node/etc/containerd/config.toml"
   : >"$tmp/empty-proc/modules"
   : >"$tmp/empty-proc/filesystems"
-  # The probe lists nfsd, nfs_acl and sunrpc, not ip_tunnel, which has `tun`
-  # inside its name, nor ext4.
+  # The probe lists nfsd, nfs_acl, sunrpc, ip_set_hash_net and sch_netem, not
+  # ip_tunnel, which has `tun` inside its name, nor ext4.
   printf '%s\n' 'nfsd 811008 13 - Live 0x0' 'nfs_acl 16384 1 nfsd, Live 0x0' \
     'ip_tunnel 32768 0 - Live 0x0' 'sunrpc 704512 2 nfsd,nfs_acl, Live 0x0' \
-    'ext4 1003520 1 - Live 0x0' >"$tmp/node-proc/modules"
+    'ext4 1003520 1 - Live 0x0' 'ip_set_hash_net 53248 1 - Live 0x0' \
+    'sch_netem 20480 0 - Live 0x0' >"$tmp/node-proc/modules"
   printf 'nodev\tsysfs\n\text4\nnodev\tnfs\nnodev\tnfs4\n' >"$tmp/node-proc/filesystems"
 
   local empty node rc=0
@@ -392,7 +411,7 @@ test_script_reports_the_host_root_and_completes() {
 
   assert_eq "the script exits 0 on a host root that lacks everything" "0" "$rc"
   # The kernel version after `== module files for` is not part of the header.
-  assert_eq "the script prints the eleven headers in order" "$EXPECTED_HEADERS" \
+  assert_eq "the script prints the twelve headers in order" "$EXPECTED_HEADERS" \
     "$(printf '%s\n' "$empty" | grep -E '^== ' | sed -E 's/^(== module files for) .*/\1/')"
   assert_contains "a missing module file prints NOT FOUND" "$empty" "kvm: NOT FOUND"
   assert_contains "a missing binary prints absent" "$empty" "usr/sbin/libvirtd: absent"
@@ -404,6 +423,13 @@ test_script_reports_the_host_root_and_completes() {
   assert_eq "a kernel without NFS filesystems prints not registered for nfs4 and nfsd" \
     "$(printf '%s\n' 'nfs4: not registered' 'nfsd: not registered')" \
     "$(section "$empty" '== filesystems')"
+  for m in ip_set ip_set_hash_ip ip_set_hash_net xt_set sch_netem sch_tbf; do
+    assert_contains "a missing $m module file prints NOT FOUND" "$empty" "$m: NOT FOUND"
+  done
+  assert_eq "a host root without run/ and config.toml prints both sockets absent and no address" \
+    "$(printf '%s\n' 'run/containerd/containerd.sock: absent' \
+      'run/k3s/containerd/containerd.sock: absent' 'config.toml [grpc] address: not set')" \
+    "$(section "$empty" '== containerd socket')"
 
   assert_contains "a module file prints its path" \
     "$node" "kvm: $tmp/node/lib/modules/$kver/kernel/arch/x86/kvm/kvm.ko"
@@ -414,12 +440,22 @@ test_script_reports_the_host_root_and_completes() {
     "$node" "nfsd: $tmp/node/lib/modules/$kver/kernel/fs/nfsd/nfsd.ko"
   assert_contains "a built-in sunrpc prints builtin" "$node" "sunrpc: builtin"
   assert_contains "nfs does not match nfsd.ko and prints NOT FOUND" "$node" "nfs: NOT FOUND"
-  assert_eq "the loaded-modules section lists the NFS modules and sunrpc only" \
-    "$(printf '%s\n' nfsd nfs_acl sunrpc)" \
+  assert_eq "the loaded-modules section lists nfsd, nfs_acl, sunrpc, ip_set_hash_net and sch_netem only" \
+    "$(printf '%s\n' nfsd nfs_acl sunrpc ip_set_hash_net sch_netem)" \
     "$(section "$node" '== loaded modules')"
   assert_eq "a registered nfs4 prints registered, beside an nfsd that is not" \
     "$(printf '%s\n' 'nfs4: registered' 'nfsd: not registered')" \
     "$(section "$node" '== filesystems')"
+  assert_contains "the xt_set module file prints its path" \
+    "$node" "xt_set: $tmp/node/lib/modules/$kver/kernel/net/netfilter/xt_set.ko"
+  assert_contains "a built-in sch_netem prints builtin" "$node" "sch_netem: builtin"
+  assert_contains "ip_set_hash_ip does not match ip_set_hash_ipport.ko and prints NOT FOUND" \
+    "$node" "ip_set_hash_ip: NOT FOUND"
+  assert_eq "a regular file at the socket path prints present, not a socket, and only the [grpc] address prints" \
+    "$(printf '%s\n' 'run/containerd/containerd.sock: present, not a socket' \
+      'run/k3s/containerd/containerd.sock: absent' \
+      'config.toml [grpc] address: "/run/containerd/containerd.sock"')" \
+    "$(section "$node" '== containerd socket')"
 
   rm -rf "$tmp"
 }
