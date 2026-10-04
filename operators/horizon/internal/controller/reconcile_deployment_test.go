@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -22,6 +23,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
@@ -377,4 +379,46 @@ func TestBuildPodDisruptionBudget_FollowsTheHPAMinimum(t *testing.T) {
 	pdb = buildPodDisruptionBudget(horizon)
 	g.Expect(pdb.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
 	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+}
+
+// TestHorizonWorkloads_ImagePullPolicy pins the pull policy of every container
+// and init container of every workload the operator renders from spec.image:
+// a tag without pullPolicy resolves to Always, a digest to IfNotPresent,
+// and an explicit pullPolicy wins over both.
+func TestHorizonWorkloads_ImagePullPolicy(t *testing.T) {
+	podSpecs := func(o *horizonv1alpha1.Horizon) map[string]corev1.PodSpec {
+		return map[string]corev1.PodSpec{
+			"api": buildHorizonDeployment(o, "cm", "").Spec.Template.Spec,
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*commonv1.ImageSpec)
+		want   corev1.PullPolicy
+	}{
+		{name: "tag without pullPolicy", mutate: func(*commonv1.ImageSpec) {}, want: corev1.PullAlways},
+		{
+			name:   "digest without pullPolicy",
+			mutate: func(i *commonv1.ImageSpec) { i.Tag, i.Digest = "", "sha256:"+strings.Repeat("a", 64) },
+			want:   corev1.PullIfNotPresent,
+		},
+		{name: "explicit pullPolicy Never", mutate: func(i *commonv1.ImageSpec) { i.PullPolicy = corev1.PullNever }, want: corev1.PullNever},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			o := testHorizon()
+			tc.mutate(&o.Spec.Image)
+
+			specs := podSpecs(o)
+			g.Expect(specs).To(HaveLen(1))
+			for name, spec := range specs {
+				containers := append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...)
+				g.Expect(containers).NotTo(BeEmpty(), name)
+				for _, c := range containers {
+					g.Expect(c.ImagePullPolicy).To(Equal(tc.want), "%s/%s", name, c.Name)
+				}
+			}
+		})
+	}
 }
