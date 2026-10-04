@@ -328,10 +328,11 @@ func placementJobSetParams(placement *placementv1alpha1.Placement, configMapName
 		extraMounts = append(extraMounts, tlsMount)
 	}
 	return database.JobSetParams{
-		InstanceName:  placement.Name,
-		Namespace:     placement.Namespace,
-		Image:         placement.Spec.Image.Reference(),
-		ConfigMapName: configMapName,
+		InstanceName:    placement.Name,
+		Namespace:       placement.Namespace,
+		Image:           placement.Spec.Image.Reference(),
+		ImagePullPolicy: placement.Spec.Image.EffectivePullPolicy(),
+		ConfigMapName:   configMapName,
 		// The ConfigMap is mounted as a whole directory, at the same mount point
 		// the API pods use, so the mount and the --config-file paths in
 		// placementDBSyncScript are derived from the same constant and cannot
