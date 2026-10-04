@@ -3069,7 +3069,8 @@ annotation, which a lab deployed from an older version of the quick start
 carries.
 
 [Part 2](../../quick-start-metal-stack.md#hypervisors) of the Quick Start
-(metal-stack) runs the sequence, from the node network to an Eviction.
+(metal-stack) runs the sequence, from the node network to an Eviction with a
+Cinder volume attached and the volume's backup.
 
 #### Checks outside the quick start
 
@@ -3116,7 +3117,7 @@ The restart check prints the size of `lab-a`'s console log before and after a
 reset of the guest, and the second number is larger.
 
 Then run the live migration of
-[Part 2, Step 7](../../quick-start-metal-stack.md#hv-migrate) and read the
+[Part 2, Step 8](../../quick-start-metal-stack.md#hv-migrate) and read the
 URIs the source libvirtd dialed, in the same shell:
 
 ```bash
