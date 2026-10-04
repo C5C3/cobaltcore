@@ -413,6 +413,22 @@ probe; the service state Nova reports is the health signal.
 | hostPath `/etc/multipath.conf` | same | `FileOrCreate` |
 | emptyDir | `/tmp` | |
 
+A Cinder NFS volume needs more of the node than the pod brings. The kernel
+modules `nfs` and `nfsv4` have to be loaded, because os-brick mounts the share
+from inside the pod through the node's kernel. The mount has to reach wherever
+libvirtd runs: a libvirtd on the host sees it through the `Bidirectional`
+propagation above, and a libvirtd in a pod needs the same propagation on its
+own `/var/lib/nova` mount. libvirt also has to leave the volume file's owner
+alone (`dynamic_ownership = 0` in `qemu.conf`): Cinder's NFS backends keep
+their files `42424:42424` with mode `660` (see
+[Rendered backend section](../cinder/cinder-backend-crd.md#rendered-backend-section)),
+and a file handed to QEMU's user shuts Cinder out of the volume. On the
+metal-stack lab the
+[Lab NFS stack](../infrastructure/infrastructure-manifests.md#lab-nfs-stack)
+loads the modules, and the
+[Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)
+carry the propagation and the setting.
+
 The `wait-for-chassis` init container runs the image's `python3` under the
 restricted profile and waits until the node's OVN chassis has written
 `external_ids:system-id` into the local Open vSwitch database. It speaks the
