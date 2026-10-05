@@ -2398,10 +2398,16 @@ export carries, and `Root fs for export /exports is /exports`, which the
 every recorded client has reclaimed or the 90 seconds are over,
 `NFS Server Now NOT IN GRACE`.
 
-The server container requests 128Mi and is limited to 1Gi. Ganesha does the
-I/O in its own process: in a local run it idled at 26 MiB and peaked at 397 MiB
-resident under a 3 GiB write and four parallel 1 GiB writers, and a 256Mi limit
-got it OOM-killed.
+The server container requests 640Mi and is limited to 1Gi. Ganesha does the
+I/O in its own process. On the metal-stack lab it idled at 49 MiB, and its
+working set peaked at 547 MiB while four guests rewrote a volume of 2 GiB each
+for 300 seconds; the request is that peak plus 15 %, rounded up to a multiple
+of 64Mi ([Lab NFS stack](#lab-nfs-stack) has the readings). Under writes the
+container's usage stays at the limit, because the page cache of the files
+Ganesha writes is charged to it. The kernel reclaims that cache at the limit,
+and no reading shows an OOM kill. In a local run before the lab reading,
+Ganesha peaked at 397 MiB resident under a 3 GiB write and four parallel 1 GiB
+writers, and a 256Mi limit got it OOM-killed.
 
 **Value overrides:**
 
@@ -2948,6 +2954,30 @@ Part 1, Step 7 and Part 2, Steps 7 and 10; its two outages under
 [Lab fault runs](#lab-fault-runs) left an attached volume failing until the
 Nova server it was attached to was hard-rebooted
 ([#1245](https://github.com/c5c3/cobaltcore/issues/1245)).
+
+A session on 2026-10-05 read the memory of the `nfs-server` container under
+load, on shoot `newforge` from commit `d1f114f7`, where the container requested
+128Mi. The working set is `memory.current` less `inactive_file`, the figure the
+kubelet reports and evicts by. It was read from the kubelet every 10 seconds
+and from the container's cgroup every 30:
+
+| Load | Length | Largest working set | Largest anonymous memory |
+| --- | --- | --- | --- |
+| None | 300 s | 49 MiB | 39 MiB |
+| Four guests write 1 GiB each to an attached volume | 43 s | 276 MiB | 229 MiB |
+| Four volumes of 2 GiB are backed up at once while two guests write 1 GiB each | 135 s | 346 MiB | 286 MiB |
+| Four guests rewrite an attached volume of 2 GiB each for 300 seconds, 113 passes in all | 356 s | 547 MiB | 460 MiB |
+
+The request follows from the last row: 1.15 × 547 is 629, which rounds up to
+`640Mi`. The 15 % is the margin a VPA recommender adds to a memory peak, and
+the shoot's recommender gave the container a memory target of `641Mi` over the
+same session. The limit stays at 1Gi. From the first write on, the container's
+usage stood at the limit with page cache, and `memory.events` counted 36,926
+`max` events and no `oom_kill` by the end. Without the page cache the usage
+peaked at 545 MiB, and 1.25 times that is 681 MiB. The lab's volume was fast
+enough for each guest to write its first 1 GiB in about 5 seconds, so the
+300-second row is the one the request rests on. The files of the session are
+in the [comment on #1260](https://github.com/C5C3/cobaltcore/issues/1260#issuecomment-6001688841).
 
 ### Lab Chaos Mesh
 

@@ -256,7 +256,7 @@ the same per-resource rule with their own figures:
 | The OVN backup and Neutron `ovn-db-sync` pods | `spec.jobs.resources` of those CRs | `70m` | `256Mi` request, no limit (the working set grows with the logical model) |
 | The `federation-proxy` sidecar | [`spec.federation.proxyResources`](#federationspec) | `25m` | `256Mi` request and limit |
 | The Glance `cache-maintenance` sidecar | `spec.imageCache.maintenanceResources` | `25m` | `256Mi` request and limit |
-| The Neutron metadata agent and its `wait-for-chassis` init container | [`spec.resources` of the `NeutronMetadataAgent`](../neutron/neutron-metadata-agent-crd.md#memory-sizing) | `70m` | `2Gi` request and limit, sized for 32 networks on the node |
+| The Neutron metadata agent and its `wait-for-chassis` init container | [`spec.resources` of the `NeutronMetadataAgent`](../neutron/neutron-metadata-agent-crd.md#memory-sizing) | `230m`, sized for a minute of 31 servers booting on the node | `2Gi` request and limit, sized for 32 networks on the node |
 
 The Job memory does not follow the service formula and stays pinned at
 `368Mi`. The sizing measurement's VPA recommender samples once a minute and

@@ -68,10 +68,12 @@ above one, so `memoryPerExtraThread` stays `32Mi`. The OVN Raft memory floor
 of `256Mi` stays, because the Raft working set grows with the logical port
 count, which a CI data set does not represent. The Glance `cache-maintenance`
 sidecar runs only in the Glance `e2e-operator` leg, which the label does not
-switch on, so the shared sidecar figure only rises. The memory of the Neutron
-metadata agent is not taken from this run: none of its legs makes the agent
-provision a network, so its rows show an idle agent. Its figure has a
-measurement of its own (see [Metadata agent memory](#metadata-agent-memory)).
+switch on, so the shared sidecar figure only rises. Neither the memory nor the
+CPU request of the Neutron metadata agent is taken from this run: none of its
+legs makes the agent provision a network, so its rows show an idle agent. Each
+figure has a measurement of its own (see
+[Metadata agent memory](#metadata-agent-memory) and
+[Metadata agent CPU](#metadata-agent-cpu)).
 The operators' manager pods, the OVN chassis and NovaCompute DaemonSets and the
 platform stack keep their own figures. The chassis, NovaCompute and metadata
 agent readings under real servers come from the
@@ -680,6 +682,86 @@ agent ran with.
 multiple of 64. The factor gives each further proxy the headroom `F` gives the
 first 32.
 
+## Metadata agent CPU
+
+The CPU request of the `NeutronMetadataAgent` containers is `metadataAgentCPU`
+in `operators/neutron/internal/controller/reconcile_daemonset.go`, `230m`. It
+comes from a session on the metal-stack lab and from no CI job: no CI leg
+boots a server through the agent, so its CI rows read an idle agent, 11 to
+23 m. The [lab measurement](#lab-measurement) read a target of `126m` against
+the `70m` the container requested then
+([#1259](https://github.com/C5C3/cobaltcore/issues/1259)), on one pass of the
+quick start with one server per node. The session below loaded one node on
+purpose.
+
+### What the session measured
+
+The agent idles and works in bursts. When the first port of a network is bound
+on its node, it creates the network's namespace and starts the network's
+haproxy, and the booting server then asks it for metadata. The session read
+the container's cumulative CPU time from the kubelet
+(`usageCoreNanoSeconds` of `/api/v1/nodes/<node>/proxy/stats/summary`) every
+10 seconds, which runs nothing in the measured container. A reading is the CPU
+time between two samples at least 60 seconds apart, in millicores, and the
+readings of a phase do not overlap.
+
+| Phase | Load on the node | Length | Readings (m) | CPU time |
+| --- | --- | --- | --- | --- |
+| A0 | The agent runs, no server | 300 s | 1.0 to 1.2 | 0.3 s |
+| A1 | One server boots on one new network | 379 s | 150, then 1.0 to 1.1 | 11.4 s |
+| A2 | 31 servers boot at once, each on a new network of its own | 296 s | 198, 63, 1.3, 1.1 | 16.4 s |
+| A3 | The 32 servers run on their 32 networks | 600 s | 1.1 to 1.4 | 0.7 s |
+| A4 | The 32 servers are hard-rebooted within 29 seconds | 282 s | 357, 1.5, 1.3, 1.2 | 23.8 s |
+
+Every server ran the `cirros-kvm` image on flavor `1` and was placed on the
+node with `--availability-zone`. In A2 the agent logged
+`Provisioning metadata for network` 31 times, the console log of each of the 31
+servers showed the metadata fetch of cirros-init, and the container ran 32
+haproxy processes at the end of the phase. In A4 it logged 34 provisionings.
+The largest reading over 10 seconds was `342m` in A1, `222m` in A2 and `770m`
+in A4. The agents of the two other nodes, with one server each, read at most
+`5m` from A2 to A4.
+
+### From the reading to the request
+
+`C` is 1.15 times the 90th percentile of the readings of A2, A3 and A4,
+rounded up to a multiple of `10m`, and at least `130m`. Those phases hold 16
+readings, whose 90th percentile is the second largest, `198m`: 1.15 × 198 is
+228, so `C` is `230m`. The percentile and the 15 % are what a VPA recommender
+applies to a container's CPU samples, and the `130m` is the `126m` of the
+earlier lab run, rounded up.
+
+The request covers the minute in which 31 servers booted on the node, and the
+single boot of A1. It does not cover the minute of A4. The agent has no CPU
+limit, so a burst above the request is not throttled: on a node whose CPUs
+are all busy the agent gets the share its request buys, and the burst takes
+longer.
+
+The shoot's own recommender watched the DaemonSet's three pods for 56 minutes,
+from before A0 until the load had ended, and gave a CPU target of `11m`, the
+lowest value it gives. The bursts fill few of its one-minute samples, so its
+90th percentile is the idle agent. A burst weighs more in a shorter watch: the
+earlier run's lasted 22 minutes.
+
+### Recorded session
+
+The session of 2026-10-05 ran on shoot `newforge` from commit `d1f114f7`, on
+Kubernetes v1.35.6, with three workers of 16 CPUs each and the agent image
+`ghcr.io/c5c3/neutron:2025.2`. It ran Part 1, Steps 2 to 7 and Part 2, Steps 1
+to 5 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md),
+loaded the node `7znw9`, and tore the stack down again. Three things were done
+by hand. `make deploy-infra` left the `glance-operator` release and the `k-orc`
+Kustomization suspended, and both were resumed with `kubectl patch`. The
+c5c3-operator pod, which had exited when the Glance CRD arrived late, was
+deleted once out of its restart backoff. The first attempt at A4 passed 32
+names to `openstack server reboot`, which takes one, and issued no reboot; the
+53 seconds it lasted are in no reading.
+
+With 32 networks bound on the node, the container's working set peaked at
+730 MiB, against the `2Gi` of [Metadata agent memory](#metadata-agent-memory);
+it was 551 MiB before the first server. The files of the session are in the
+[comment on #1259](https://github.com/C5C3/cobaltcore/issues/1259#issuecomment-6001688551).
+
 ## Lab measurement
 
 Every row above comes from pods that never ran a virtual machine. In the three
@@ -900,7 +982,7 @@ read:
 | --- | --- | --- |
 | `lab-nova-compute` | none: no request, no limit | `buildNovaComputeDaemonSet` copies `spec.resources` alone, `operators/nova/internal/controller/reconcile_novacompute_daemonset.go` |
 | `lab-chassis-ovn-controller`, `lab-chassis-ovs` | none | `chassisResources`, `operators/ovn/internal/controller/reconcile_ovs.go` |
-| `lab-metadata-agent-metadata-agent` | CPU request `70m`, memory `2Gi` as request and limit | `metadataAgentMemory` and `effectiveAgentResources`, `operators/neutron/internal/controller/reconcile_daemonset.go` |
+| `lab-metadata-agent-metadata-agent` | CPU request `230m`, memory `2Gi` as request and limit; the CPU request was `70m` at the recorded run | `metadataAgentCPU`, `metadataAgentMemory` and `effectiveAgentResources`, `operators/neutron/internal/controller/reconcile_daemonset.go` |
 | `libvirt`, container `libvirtd` | CPU request `100m`, memory request `256Mi`, limit `512Mi`, for bash and the probes | the `libvirtd` container's `resources`, `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml` |
 
 Every other row is judged on memory alone: `over_request` lists the rows
@@ -959,7 +1041,8 @@ under KVM stand without a default; on the fake driver CI read up to `93m` and
 `175Mi`. The two chassis DaemonSets render no request either, and their three
 containers read 11 to 23 m and 11 to 23 MiB, at or below what CI read. The
 metadata agent's CPU request of `70m` is contradicted by its target of `126m`
-([#1259](https://github.com/C5C3/cobaltcore/issues/1259)). Its memory of
+([#1259](https://github.com/C5C3/cobaltcore/issues/1259)), and
+[Metadata agent CPU](#metadata-agent-cpu) has raised it to `230m` since. Its memory of
 `2Gi` is confirmed: the target was `641Mi`, which is 557 MiB without the 15 %
 margin, beside the 550 MiB of the lab reading that `L` rests on (see
 [From the readings to the figure](#from-the-readings-to-the-figure)). The
@@ -1007,7 +1090,11 @@ openstack nfs-server nfs-server memory target 75Mi above request 64Mi
 
 The `nfs-server` row contradicts the `64Mi` request of
 `deploy/kind/nfs/nfs-server.yaml`
-([#1260](https://github.com/C5C3/cobaltcore/issues/1260)). The two `hold` rows
+([#1260](https://github.com/C5C3/cobaltcore/issues/1260)). That server was the
+kernel's `nfsd`. NFS-Ganesha replaced it on the day of the run, and its request
+of `640Mi` comes from a reading of its own (see
+[Lab NFS stack](../infrastructure/infrastructure-manifests.md#lab-nfs-stack)).
+The two `hold` rows
 read `11Mi`, the lowest value the recommender gives (see the floor rule): their
 containers used less than 10 MB, and `kubectl top` read `0Mi` for each of them
 at 15:56:10Z. They contradict neither `4Mi` nor `8Mi`, and no issue is filed
