@@ -103,12 +103,12 @@ EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra
 ```
 
 The script deploys onto the cluster the current kubeconfig context points at
-and never switches the context. It refuses the kind-only opt-ins
-(`WITH_VPA` and the other flags that need a kind node), checks the
-cluster before it applies anything, and installs the shared infrastructure and
-the ControlPlane operator stack. It returns once the ten operator releases are
-Ready and the cluster admits the manifests of Step 4. When it completes, it
-prints the port-forward command on its `Access:` line. [`make deploy-infra`](./reference/infrastructure/e2e-deployment.md#make-deploy-infra)
+and never switches the context. It refuses the opt-ins this cluster does not
+take, checks the cluster before it applies anything, and installs the shared
+infrastructure and the ControlPlane operator stack. It returns once the ten
+operator releases are Ready and the cluster admits the manifests of Step 4.
+When it completes, it prints the port-forward command on its `Access:` line.
+[`make deploy-infra`](./reference/infrastructure/e2e-deployment.md#make-deploy-infra)
 describes every step and variable.
 
 `WITH_NFS=true` deploys the
@@ -123,6 +123,13 @@ the deploy command, it deploys Chaos Mesh for fault injection, limited to the
 namespaces the lab declares, with pods that load its kernel modules on the
 nodes; see
 [Lab Chaos Mesh](./reference/infrastructure/infrastructure-manifests.md#lab-chaos-mesh).
+
+The shoot brings a VerticalPodAutoscaler and a metrics-server of its own, so
+the script refuses `WITH_VPA=true` and `WITH_METRICS_SERVER=true` and installs
+neither. A workload opts into the platform's VPA with its
+`verticalAutoscaling` block, and an API into an HPA with its `autoscaling`
+block, both under `spec.sizing` of the ControlPlane; see
+[Lab autoscaling](./reference/infrastructure/infrastructure-manifests.md#lab-autoscaling).
 
 ### Step 4: Apply the OVN central and the ControlPlane {#cp-apply}
 
