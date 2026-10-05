@@ -424,7 +424,6 @@
       "managerFilePatterns": [
         "/deploy/lab/metal-stack/hypervisor/libvirt-daemonset\\.yaml$/",
         "/deploy/lab/metal-stack/probe/nfs-module-load\\.yaml$/",
-        "/deploy/lab/metal-stack/nfs/kustomization\\.yaml$/",
         "/deploy/lab/metal-stack/nfs/client-modules-daemonset\\.yaml$/",
         "/deploy/lab/metal-stack/chaos-mesh/modules-daemonset\\.yaml$/"
       ],
@@ -901,7 +900,6 @@
       "matchFileNames": [
         "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
         "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
-        "deploy/lab/metal-stack/nfs/kustomization.yaml",
         "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
         "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
       ],
@@ -913,7 +911,6 @@
       "matchFileNames": [
         "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
         "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
-        "deploy/lab/metal-stack/nfs/kustomization.yaml",
         "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
         "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
       ],
@@ -926,7 +923,6 @@
       "matchFileNames": [
         "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
         "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
-        "deploy/lab/metal-stack/nfs/kustomization.yaml",
         "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
         "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
       ],

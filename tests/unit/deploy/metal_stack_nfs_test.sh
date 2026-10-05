@@ -11,20 +11,18 @@
 #      DaemonSet nfs-client-modules, and no Namespace.
 #   3. The export claim asks for 100Gi, ReadWriteOnce, and names no storage
 #      class; no line of the render sets one.
-#   4. The server loads nfsd in load-nfsd before prepare-exports, on the image
-#      of host-prepare (deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml)
-#      pulled IfNotPresent, privileged, with a read-only root and the node's
-#      /lib/modules mounted read-only; its own container keeps the kind image
-#      and the two subPath mounts of the claim.
+#   4. The server pod is the kind one: one init container, prepare-exports,
+#      one volume, the claim exports, no hostPath, and on both containers the
+#      image and the mounts of deploy/kind/nfs/nfs-server.yaml.
 #   5. The mounter is the kind release: its chart version, inline volumes on.
 #   6. nfs-client-modules mounts no token, shares no host namespace, rolls
 #      out with RollingUpdate, tolerates every taint, loads in a privileged
 #      init container and holds the pod in an unprivileged container, both on
 #      host-prepare's image pulled IfNotPresent, with /lib/modules mounted
 #      read-only.
-#   7. The two load scripts, run with a stub modprobe first on PATH, report
-#      success and exit 0, or name the module that failed and exit 1 without
-#      loading the next one.
+#   7. The load script of nfs-client-modules, run with a stub modprobe first
+#      on PATH, reports success and exits 0, or names the module that failed
+#      and exits 1 without loading the next one.
 #   8. deploy/kind/nfs still renders five documents, its claim on `standard`
 #      with 5Gi, and one init container.
 #   9. client-policy.yaml, the template hack/deploy-infra.sh applies outside
@@ -64,7 +62,6 @@ RENDERED=""
 
 # The pod spec of the server and of the DaemonSet, as yq paths.
 SERVER_POD='.spec.template.spec'
-LOAD_NFSD="$SERVER_POD.initContainers[] | select(.name == \"load-nfsd\")"
 DS_POD='.spec.template.spec'
 DS_LOAD="$DS_POD.initContainers[] | select(.name == \"load\")"
 DS_HOLD="$DS_POD.containers[] | select(.name == \"hold\")"
@@ -133,39 +130,31 @@ test_claim_is_100gi_without_a_class() {
 }
 
 # --- Test 4: the server ---
-test_server_loads_nfsd_before_the_exports() {
-  echo "Test: the server loads nfsd in load-nfsd, before prepare-exports, on host-prepare's image"
+test_server_pod_is_the_kind_one() {
+  echo "Test: the server pod is the kind one, with prepare-exports alone and no hostPath"
 
-  render "$NFS_DIR" 13 || return
+  render "$NFS_DIR" 7 || return
 
-  assert_eq "the init containers are load-nfsd, then prepare-exports" "load-nfsd prepare-exports" \
-    "$(val Deployment nfs-server "$SERVER_POD.initContainers | map(.name) | join(\" \")")"
-  assert_same_nonempty "load-nfsd runs on the image of host-prepare in libvirt-daemonset.yaml" \
-    "$(val Deployment nfs-server "$LOAD_NFSD | .image")" "$(host_prepare_image)"
-  assert_eq "load-nfsd pulls the pinned image IfNotPresent" "IfNotPresent" \
-    "$(val Deployment nfs-server "$LOAD_NFSD | .imagePullPolicy")"
-  assert_eq "load-nfsd is privileged" "true" \
-    "$(val Deployment nfs-server "$LOAD_NFSD | .securityContext.privileged // false")"
-  assert_eq "load-nfsd has a read-only root filesystem" "true" \
-    "$(val Deployment nfs-server "$LOAD_NFSD | .securityContext.readOnlyRootFilesystem // false")"
-  assert_eq "load-nfsd has one volume mount" "1" \
-    "$(val Deployment nfs-server "$LOAD_NFSD | .volumeMounts // [] | length")"
-  assert_eq "the mount is the volume lib-modules" "lib-modules" \
-    "$(val Deployment nfs-server "$LOAD_NFSD | .volumeMounts[0].name")"
-  assert_eq "the mount is at /lib/modules" "/lib/modules" \
-    "$(val Deployment nfs-server "$LOAD_NFSD | .volumeMounts[0].mountPath")"
-  assert_eq "the mount is read-only" "true" \
-    "$(val Deployment nfs-server "$LOAD_NFSD | .volumeMounts[0].readOnly // false")"
-  assert_eq "the volumes are exports, then lib-modules" "exports lib-modules" \
-    "$(val Deployment nfs-server "$SERVER_POD.volumes | map(.name) | join(\" \")")"
-  assert_eq "lib-modules is the node's /lib/modules" "/lib/modules" \
-    "$(val Deployment nfs-server "$SERVER_POD.volumes[] | select(.name == \"lib-modules\") | .hostPath.path")"
-
-  local kind_image
-  kind_image="$(yq -N -r 'select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "nfs-server") | .image' \
+  # A container's image and its mounts as name:mountPath:subPath, in order.
+  local shape='.image + " " + (.volumeMounts | map(.name + ":" + .mountPath + ":" + (.subPath // "")) | join(" "))'
+  local kind_server kind_init
+  kind_server="$(yq -N -r "select(.kind == \"Deployment\") | $SERVER_POD.containers[] | select(.name == \"nfs-server\") | $shape" \
     "$KIND_NFS_DIR/nfs-server.yaml")"
-  assert_same_nonempty "the server container keeps the image of deploy/kind/nfs/nfs-server.yaml" \
-    "$(val Deployment nfs-server "$SERVER_POD.containers[] | select(.name == \"nfs-server\") | .image")" "$kind_image"
+  kind_init="$(yq -N -r "select(.kind == \"Deployment\") | $SERVER_POD.initContainers[] | select(.name == \"prepare-exports\") | $shape" \
+    "$KIND_NFS_DIR/nfs-server.yaml")"
+
+  assert_eq "the one init container is prepare-exports" "prepare-exports" \
+    "$(val Deployment nfs-server "$SERVER_POD.initContainers | map(.name) | join(\" \")")"
+  assert_eq "the one volume is the claim exports" "exports" \
+    "$(val Deployment nfs-server "$SERVER_POD.volumes | map(.name) | join(\" \")")"
+  assert_eq "no volume is a hostPath" "0" \
+    "$(val Deployment nfs-server "[$SERVER_POD.volumes[] | select(has(\"hostPath\"))] | length")"
+  assert_eq "the one container is nfs-server" "nfs-server" \
+    "$(val Deployment nfs-server "$SERVER_POD.containers | map(.name) | join(\" \")")"
+  assert_same_nonempty "the server container keeps the image and mounts of deploy/kind/nfs/nfs-server.yaml" \
+    "$(val Deployment nfs-server "$SERVER_POD.containers[] | select(.name == \"nfs-server\") | $shape")" "$kind_server"
+  assert_same_nonempty "prepare-exports keeps the image and mount of deploy/kind/nfs/nfs-server.yaml" \
+    "$(val Deployment nfs-server "$SERVER_POD.initContainers[] | select(.name == \"prepare-exports\") | $shape")" "$kind_init"
   assert_eq "the server mounts exports/ at /exports and ganesha/ at /var/lib/nfs/ganesha" \
     "exports:/exports:exports exports:/var/lib/nfs/ganesha:ganesha" \
     "$(val Deployment nfs-server "$SERVER_POD.containers[] | select(.name == \"nfs-server\") | .volumeMounts | map(.name + \":\" + .mountPath + \":\" + (.subPath // \"\")) | join(\" \")")"
@@ -244,25 +233,23 @@ test_client_modules_daemonset() {
     "$(val DaemonSet nfs-client-modules "$DS_POD.volumes[0] | .name + \" \" + .hostPath.path")"
 }
 
-# --- Test 7: the two load scripts ---
-test_load_scripts_report_and_fail_loudly() {
-  echo "Test: the load scripts report what they loaded and fail on the first module modprobe cannot load"
+# --- Test 7: the load script ---
+test_load_script_reports_and_fails_loudly() {
+  echo "Test: the load script reports what it loaded and fails on the first module modprobe cannot load"
 
-  render "$NFS_DIR" 15 || return
+  render "$NFS_DIR" 9 || return
 
-  # val keeps the first line of a value, so the scripts are read whole.
-  local load load_nfsd
+  # val keeps the first line of a value, so the script is read whole.
+  local load
   load="$(printf '%s\n' "$RENDERED" |
     yq -N -r "select(.kind == \"DaemonSet\" and .metadata.name == \"nfs-client-modules\") | $DS_LOAD | .args[0] // \"\"" -)"
-  load_nfsd="$(printf '%s\n' "$RENDERED" |
-    yq -N -r "select(.kind == \"Deployment\" and .metadata.name == \"nfs-server\") | $LOAD_NFSD | .args[0] // \"\"" -)"
 
   # The stubs replace modprobe and uname. A script that calls modprobe by
   # path, or kmod, insmod or rmmod, would reach this machine's kernel past
   # them.
-  if unsafe_load_script "$load"$'\n'"$load_nfsd"; then
-    echo "  FAIL: a load script calls modprobe by path, or kmod, insmod or rmmod; not running it on this host (15 checks)"
-    FAIL=$((FAIL + 15))
+  if unsafe_load_script "$load"; then
+    echo "  FAIL: the load script calls modprobe by path, or kmod, insmod or rmmod; not running it on this host (9 checks)"
+    FAIL=$((FAIL + 9))
     return
   fi
 
@@ -290,19 +277,6 @@ test_load_scripts_report_and_fail_loudly() {
   assert_eq "load asked for nfs, then nfsv4" "$(printf '%s\n' nfs nfsv4)" "$(cat "$tmp/calls")"
   assert_eq "load names nfsv4 and reports no success" \
     "nfs-client-modules: cannot load nfsv4 from /lib/modules/${STUB_KERNEL}" "$out"
-
-  rc=0
-  out="$(run_script "$load_nfsd" "$tmp/bin" "$tmp/calls")" || rc=$?
-  assert_eq "load-nfsd exits 0 when modprobe loads nfsd" "0" "$rc"
-  assert_eq "load-nfsd asks modprobe for nfsd alone" "nfsd" "$(cat "$tmp/calls")"
-  assert_eq "load-nfsd reports nfsd" "load-nfsd: nfsd is loaded" "$out"
-
-  rc=0
-  out="$(run_script "$load_nfsd" "$tmp/bin" "$tmp/calls" nfsd)" || rc=$?
-  assert_eq "load-nfsd exits 1 when modprobe cannot load nfsd" "1" "$rc"
-  assert_eq "load-nfsd asked for nfsd once" "nfsd" "$(cat "$tmp/calls")"
-  assert_eq "load-nfsd names nfsd and the kernel's module directory" \
-    "load-nfsd: cannot load nfsd from /lib/modules/${STUB_KERNEL}" "$out"
 
   rm -rf "$tmp"
 }
@@ -362,10 +336,10 @@ test_client_policy_template() {
 test_files_have_spdx_and_two_resources
 test_render_holds_the_six_objects
 test_claim_is_100gi_without_a_class
-test_server_loads_nfsd_before_the_exports
+test_server_pod_is_the_kind_one
 test_mounter_is_the_kind_release
 test_client_modules_daemonset
-test_load_scripts_report_and_fail_loudly
+test_load_script_reports_and_fails_loudly
 test_kind_overlay_unchanged
 test_client_policy_template
 
