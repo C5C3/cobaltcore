@@ -18,8 +18,10 @@
 #      conventions list it as a devstack with the same deploy command, and
 #      the guide scaffold prints that command as the bring-up, refuses a
 #      second `--opt-in WITH_NFS=true` and a kind-only `--opt-in
-#      WITH_DIZZY=true`, and accepts `--opt-in WITH_CHAOS_MESH=true`, which
-#      the lab overlay carries
+#      WITH_REGISTRY_CACHE=true`, and accepts `--opt-in WITH_CHAOS_MESH=true`
+#      and `--opt-in WITH_DIZZY=true`, which the lab overlay carries; of the
+#      WITH_* flags hack/deploy-infra.sh declares, it refuses exactly those
+#      its preflight_external_cluster refuses
 #   6. Part 2 links no anchor of Part 1 and defines `nodes` and `zone` itself
 #   7. four commands of the run sequence occur once on the page and not in
 #      docs/reference/infrastructure/infrastructure-manifests.md, which links
@@ -79,6 +81,7 @@ VITEPRESS_CONFIG="$PROJECT_ROOT/docs/.vitepress/config.ts"
 GUIDE_CONVENTIONS="$PROJECT_ROOT/docs/contributing/guide-conventions.md"
 INFRA_MANIFESTS="$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md"
 GUIDE_SCAFFOLD="$PROJECT_ROOT/.claude/skills/prepare-new-guide/scripts/scaffold-guide.sh"
+DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
 
 if [[ ! -f "$QUICK_START_DOC" ]]; then
   echo "FAIL: $QUICK_START_DOC does not exist"
@@ -330,8 +333,31 @@ test_devstack() {
     "$(grep -xF -- 'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CHAOS_MESH=true make deploy-infra' <<<"$out" || true)"
   out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_DIZZY=true 2>&1)"
   rc=$?
-  assert_eq "the guide scaffold still refuses the kind-only WITH_DIZZY=true" "2" "$rc"
-  assert_contains "the refusal names the flag" "$out" "WITH_DIZZY=true is kind-only"
+  assert_eq "the guide scaffold accepts WITH_DIZZY=true, which the lab overlay carries" "0" "$rc"
+  assert_not_empty "and adds it to the bring-up" \
+    "$(grep -xF -- 'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_DIZZY=true make deploy-infra' <<<"$out" || true)"
+  out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_REGISTRY_CACHE=true 2>&1)"
+  rc=$?
+  assert_eq "the guide scaffold still refuses the kind-only WITH_REGISTRY_CACHE=true" "2" "$rc"
+  assert_contains "the refusal names the flag" "$out" "WITH_REGISTRY_CACHE=true is kind-only"
+
+  # The scaffold keeps its own copy of the refused opt-ins. Every WITH_* flag
+  # hack/deploy-infra.sh declares goes through it: refused if and only if
+  # preflight_external_cluster refuses it. WITH_NFS is part of the bring-up and
+  # WITH_CONTROLPLANE the devstack, so neither is an opt-in of the page.
+  local refused flag expected
+  refused="$(awk '/^preflight_external_cluster\(\)/,/; do$/' "$DEPLOY_INFRA_SH" |
+    grep -oE '"WITH_[A-Z0-9_]+\|' | tr -d '"|' | paste -sd' ' -)"
+  assert_not_empty "preflight_external_cluster refuses kind-only opt-ins" "$refused"
+  for flag in $(grep -oE '^WITH_[A-Z0-9_]+=' "$DEPLOY_INFRA_SH" | tr -d = | LC_ALL=C sort -u); do
+    case "$flag" in WITH_NFS | WITH_CONTROLPLANE) continue ;; esac
+    expected=0
+    if [[ " $refused " == *" $flag "* ]]; then expected=2; fi
+    bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in "${flag}=true" >/dev/null 2>&1
+    rc=$?
+    assert_eq "the guide scaffold exits ${expected} for ${flag}=true, as hack/deploy-infra.sh refuses it or not" \
+      "$expected" "$rc"
+  done
 }
 
 # --- Test 6: Part 2 stands on its own ---
