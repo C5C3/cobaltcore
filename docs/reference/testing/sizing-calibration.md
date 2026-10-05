@@ -708,10 +708,11 @@ was for the metadata agent.
 | Report | `job=` names a CI job; input of the derivation | `job=lab`; `hack/derive-sizing-figures.py` refuses it, and no constant is derived from it |
 
 The Gardener figures come from `computeRecommenderArgs` in
-`pkg/component/autoscaling/vpa/recommender.go`. Its margin of 15 %, its CPU
-target at the 90th percentile and its one-minute interval are defaults a
-shoot spec can override, and neither the seed's Gardener version nor the
-shoot spec can be read from the shoot. They are what to expect; the record
+`pkg/component/autoscaling/vpa/recommender.go`. The margin of 15 %, the CPU
+target at the 90th percentile and the one-minute interval it passes are
+defaults a shoot spec can override (`pkg/apis/core/v1beta1/types_shoot.go`),
+and neither the seed's Gardener version nor the shoot spec can be read from
+the shoot. They are what to expect; the record
 states what the run showed.
 
 ### Running the lab measurement
@@ -783,8 +784,8 @@ anything creates a database. The watch starts before Step 4 applies the
 ControlPlane, as CI starts it before its suites, so each workload gets its
 VPA within 60 seconds of its creation. `nohup` and `&` keep it running after
 the command that started it. `openstack` holds the ControlPlane's services
-and the four compute workloads, `hypervisor-system` kvm-node-agent and the
-migration port reservation, which run only on a hypervisor too.
+and the five compute DaemonSets, `hypervisor-system` kvm-node-agent and the
+migration port reservation, two more workloads that run only on a hypervisor.
 
 The last four helpers read `recommendations.tsv` by column, below its comment
 line and its header (see [the column table](#running-a-measurement)): 3
@@ -897,10 +898,10 @@ read:
 
 | Workload | Default | Source |
 | --- | --- | --- |
-| `lab-nova-compute` | none: no request, no limit | `operators/nova/internal/controller/reconcile_novacompute_daemonset.go:256-259` |
-| `lab-chassis-ovn-controller`, `lab-chassis-ovs` | none | `chassisResources`, `operators/ovn/internal/controller/reconcile_ovs.go:356-366` |
-| `lab-metadata-agent-metadata-agent` | CPU request `70m`, memory `2Gi` as request and limit | `metadataAgentMemory` and `effectiveAgentResources`, `operators/neutron/internal/controller/reconcile_daemonset.go:414-424` |
-| `libvirt`, container `libvirtd` | CPU request `100m`, memory request `256Mi`, limit `512Mi`, for bash and the probes | `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml:105-110` |
+| `lab-nova-compute` | none: no request, no limit | `buildNovaComputeDaemonSet` copies `spec.resources` alone, `operators/nova/internal/controller/reconcile_novacompute_daemonset.go` |
+| `lab-chassis-ovn-controller`, `lab-chassis-ovs` | none | `chassisResources`, `operators/ovn/internal/controller/reconcile_ovs.go` |
+| `lab-metadata-agent-metadata-agent` | CPU request `70m`, memory `2Gi` as request and limit | `metadataAgentMemory` and `effectiveAgentResources`, `operators/neutron/internal/controller/reconcile_daemonset.go` |
+| `libvirt`, container `libvirtd` | CPU request `100m`, memory request `256Mi`, limit `512Mi`, for bash and the probes | the `libvirtd` container's `resources`, `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml` |
 
 Every other row is judged on memory alone: `over_request` lists the rows
 whose memory target exceeds the request. For a service row this contradicts
