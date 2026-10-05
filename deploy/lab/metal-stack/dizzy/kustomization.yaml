@@ -1,0 +1,107 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for the metal-stack lab: the dizzy metrics stack,
+# VictoriaMetrics and Grafana, that a dizzy load or chaos soak exports into
+# (#1225). hack/deploy-infra.sh applies it in Step 3 under
+# EXTERNAL_CLUSTER=true WITH_DIZZY=true, in place of deploy/kind/dizzy:
+#
+#   EXTERNAL_CLUSTER=true WITH_DIZZY=true make deploy-infra
+#
+# It takes the kind dizzy overlay as its base and differs from it in two
+# places:
+#   - The Namespace dizzy carries the label
+#     apiserver-proxy.networking.gardener.cloud/inject: disable, the lab's
+#     rule for every namespace it declares (../base/kustomization.yaml). It
+#     carries no chaos-mesh.org/inject annotation: the stack measures a soak
+#     under faults, so, like the namespace chaos-mesh, it is not a target.
+#   - VictoriaMetrics keeps its metrics on a 10Gi volume behind a ClusterIP
+#     Service. On kind it keeps them in an emptyDir and publishes port 8428 on
+#     NodePort 30428, which only hack/kind-config.yaml maps to a host port;
+#     nothing reaches a NodePort of the lab from outside. The patch deletes
+#     the kind nodePort (a null value deletes the key).
+#
+# What stays as on kind: both HelmRepositories and both chart ranges, the two
+# opentelemetry.* arguments and retentionPeriod 30d of VictoriaMetrics, the
+# Grafana release (anonymous Viewer, the provisioned datasource and
+# dashboards, no volume, since a redeploy restores everything it holds), the
+# HTTPRoute dizzy-grafana on the listener https-dizzy, and the dashboard
+# ConfigMap. Its dashboards come from deploy/kind/dizzy/dashboards/, which
+# hack/dizzy.sh stage-dashboards fills before Step 3 applies this directory;
+# without them the render fails, as on kind.
+#
+# Storage (D7 of #1219): the chart renders the StatefulSet
+# dizzy-victoria-metrics-server with one volume claim template, server-volume,
+# so the claim is server-volume-dizzy-victoria-metrics-server-0. It names no
+# storageClassName and binds to the cluster's default class; the deploy's
+# Step 1 checks that one exists. A restarted pod keeps the metrics of a soak.
+# 10Gi holds the 30 days of retention many times over: a soak exports five
+# metric families every 15 seconds.
+#
+# Access, through two port-forwards from the workstation: the Gateway's on
+# local port 8443, which serves Grafana at https://dizzy.127-0-0-1.nip.io:8443
+# beside Keystone, and
+#
+#   kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428
+#
+# which takes dizzy's OTLP export. Then `EXTERNAL_CLUSTER=true make
+# dizzy-keystone` runs a soak through both. The Service is headless; the
+# Grafana datasource and the port-forward both reach the pod through it.
+#
+# The teardown, `EXTERNAL_CLUSTER=true make teardown-infra`, deletes the two
+# HelmReleases in its step 3, so the helm-controller uninstalls both charts,
+# then the two HelmRepositories, then the claim, which Helm leaves behind.
+# Where the default class has the reclaim policy Delete, the volume and the
+# metrics on it go with the claim. Its step 7 deletes the namespace dizzy with
+# the HTTPRoute and the ConfigMap.
+#
+# POSTURE: Grafana answers anonymous Viewers, and VictoriaMetrics accepts
+# writes and reads without authentication. Both sit on ClusterIP Services that
+# every pod of the cluster reaches and nothing outside it. The lab is one
+# tenant's cluster.
+#
+# The kind overlay sits outside this directory. A directory reference is
+# allowed under kustomize's default LoadRestrictionsRootOnly check, so
+# `kubectl apply -k` works without `--load-restrictor`.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../kind/dizzy
+
+patches:
+  - target:
+      version: v1
+      kind: Namespace
+      name: dizzy
+    patch: |
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: dizzy
+        labels:
+          apiserver-proxy.networking.gardener.cloud/inject: disable
+
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: dizzy-victoria-metrics
+      namespace: dizzy
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: dizzy-victoria-metrics
+        namespace: dizzy
+      spec:
+        values:
+          server:
+            persistentVolume:
+              enabled: true
+              size: 10Gi
+            service:
+              type: ClusterIP
+              nodePort: null
