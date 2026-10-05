@@ -238,7 +238,7 @@ assertion windows.
 | [neutron-broker-outage](#neutron-broker-outage) | — | `neutron-broker-chaos` | Message-bus partition (no-regression) | `Ready=True/AllReady` maintained, `POST /v2.0/networks` answers 201 throughout, `rabbitmqctl list_connections` empty before, during and after |
 | [cinder-operator-pod-kill](#cinder-operator-pod-kill) | — | `cinder-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted, `PodChaos mode: one` replaces one operator pod, a workload pod restart fails the suite, a replica patch afterwards reaches the API Deployment |
 | [cinder-broker-outage](#cinder-broker-outage) | — | `cinder-broker-chaos` | Message-bus partition (degrade and recover) | `SchedulerReady=False/WaitingForScheduler` and `VolumeServicesReady=False/WaitingForVolumeServices` within 180 s, `/healthcheck` 200 and API `restartCount` 0 throughout, `POST /v3/volumes` unanswered within 20 s (`BLOCKED-OK`), the blocked create settling to `available` after the partition (`RECOVERED-OK`) |
-| [cinder-nfs-outage](#cinder-nfs-outage) | — | `cinder-nfs-chaos` | Storage outage (fail-closed create) | `Ready=True/AllReady` maintained, a create ending in `error` within 240 s (`FAILCLOSED-OK`), a post-recovery create reaching `available` within 240 s (`RECOVERED-OK`) |
+| [cinder-nfs-outage](#cinder-nfs-outage) | — | `cinder-nfs-chaos` | Storage outage (fail-closed create) | `Ready=True/AllReady` maintained, a create ending in `error` within 240 s (`FAILCLOSED-OK`), a lock held through the outage writing again within 180 s of the server's return (`LOCK-KEPT-OK`), a post-recovery create reaching `available` within 240 s (`RECOVERED-OK`) |
 | [nova-broker-outage](#nova-broker-outage) | — | `nova-broker-chaos` | Message-bus partition (degrade and recover) | `SchedulerReady=False/WaitingForScheduler`, `ConductorReady=False/WaitingForConductor` and `Ready=False/NotAllReady` within 180 s, the API container ready at `restartCount` 0 throughout, a server create unanswered within 45 s while `GET /` answers 200 (`BLOCKED-OK`), the two conditions True again within 120 s of the lift and the stalled create reaching ACTIVE (`RECOVERED-OK`) |
 | [nova-mariadb-outage](#nova-mariadb-outage) | — | `nova-db-chaos` | Database partition (fail-closed read) | `DeploymentReady`, `NovaAPIReady`, `SchedulerReady` and `ConductorReady` all `True` maintained, a Keystone token still obtainable, `GET /v2.1/servers` answering 5xx or timing out and never 4xx (`FAILCLOSED-OK`), the same list answering an empty array before and after (`LIST-OK`) |
 | [nova-placement-outage](#nova-placement-outage) | — | `nova-placement-chaos` | Scheduling outage (fail-closed build) | `SchedulerReady=True/SchedulerReady`, `NovaAPIReady=True/APIHealthy` and `Ready=True/AllReady` maintained, `GET /`, a server list and a 202 on create all answered under the fault, the build reaching ERROR within 300 s with a fault that reports an unplaced build (`FAILCLOSED-OK`), a fresh create reaching ACTIVE after the lift (`RECOVERED-OK`) |
@@ -1072,23 +1072,24 @@ and `--log-label=app.kubernetes.io/instance=cinder-broker-chaos`, dumps the
 fails closed while everything above it keeps serving: a create ends in `error`
 because the kernel client gives up on the soft mount and the volume service gets
 EIO, `/healthcheck` still answers 200, and the `cinder-volume` container is
-neither replaced nor restarted. After the server is back, a fresh create reaches
-`available` with its file on the share and every volume the suite asked for
-deletes.
+neither replaced nor restarted. After the server is back, a process that held a
+POSIX lock on a file of the share through the whole outage writes through it
+again, a fresh create reaches `available` with its file on the share, and every
+volume the suite asked for deletes.
 
 **Steps:**
 
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` + `assert` (5m) | `../../e2e/cinder/broker-vhost.sh create cinder-nfs-chaos cinder-nfs-chaos-messaging openstack`, then `00-cinder-cr.yaml` (`cinder-nfs-chaos`) and `01-cinderbackend-cr.yaml` (`nfs-chaos-nfs1`). Every sub-condition and `Ready=True/AllReady` are asserted, with `status.volumeServices` carrying the host identity step 4 looks the heartbeat row up by |
-| 2 | Baseline | `script` (8m) | A probe pod creates a volume through to `available` within 120 s, and its file is stat'ed on the share |
+| 2 | Baseline | `script` (8m) + `script` (3m) | A probe pod creates a volume through to `available` within 120 s, and its file is stat'ed on the share. Then the lock holder `cinder-nfs-chaos-probe-lock` of `02-lock-holder-pod.yaml` starts and has to write its third `ok` line within 120 s (`LOCK-HELD-OK`). The step cleanup, which runs at the end of the test, deletes the holder and removes its file `/exports/volumes/chaos-lock-holder.img` from the export |
 | 3 | Take the export away | `script` (4m) | Stashes the `cinder-volume` pod UID and restart count as an annotation on its own Deployment, scales `deploy/nfs-server` to 0, and waits until the Service has no endpoint address and no pod left (`OUTAGE-OK`). The step cleanup scales the server back to 1 |
 | 4 | Under the outage | `script` (9m) + `assert` + `script` (2m) | A probe gets 200 from `/healthcheck`, then a create is accepted and has to reach `error` within 240 s (`FAILCLOSED-OK`); the registry row is printed as `HEARTBEAT-STATE`, which the step reports without gating on it. The CR still reports `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady`, and the recorded pod identity is compared against the live one |
-| 5 | Bring the export back and let the deployment recover | `script` (5m) + `script` (9m) + `script` (6m) | The server is scaled back to 1 and rolled out; a fresh create reaches `available` within `SETTLE_SECONDS = 240` with its file on the share (`RECOVERED-OK`); a third probe deletes the three volumes the suite is responsible for and waits for each to answer 404 (`CLEANUP-OK`) |
+| 5 | Bring the export back and let the deployment recover | `script` (5m) + `script` (5m) + `script` (9m) + `script` (6m) | The server is scaled back to 1 and rolled out; the lock holder's log has to grow by three `ok` lines within 180 s, with no `error` line and the pod `Running`, and the holder is deleted (`LOCK-KEPT-OK`); a fresh create reaches `available` within `SETTLE_SECONDS = 240` with its file on the share (`RECOVERED-OK`); a third probe deletes the three volumes the suite is responsible for and waits for each to answer 404 (`CLEANUP-OK`) |
 | 6 | Tear the deployment down | `script` (8m) | Deletes the Cinder CR and waits out its pods, then deletes the `CinderBackend` |
 
-**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`. The suite writes no
-chaos-mesh CR.
+**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`,
+`02-lock-holder-pod.yaml`. The suite writes no chaos-mesh CR.
 
 **Catch blocks:** a shared anchor calls
 `../diagnostics.sh chaos cinder-nfs-chaos` with `--cr-kind=cinder`,
@@ -1107,10 +1108,21 @@ logs from `cinder-system`.
   a single mount packet. Removing the endpoint the client dials works instead,
   which is what `deletion-stuck-finalizer` does to the mariadb-operator on this
   same leg.
-- Recovery takes longer than the fault. A fresh nfsd comes up in its NFSv4 grace
-  period, up to 90 s in which it serves reclaims alone, and the client retries
-  through it without telling the application. The post-recovery create therefore
-  gets 240 s where the baseline gets 120 s.
+- Recovery takes longer than the fault. The restarted server comes up in its
+  NFSv4 grace period, up to 90 s in which it serves reclaims alone, and the client
+  retries through it without telling the application. The post-recovery create
+  therefore gets 240 s where the baseline gets 120 s.
+- The lock holder checks that the restarted server lets its clients reclaim. It
+  is a bare Pod that takes a POSIX lock on a file of the share, as QEMU does on
+  an attached volume, and writes and fsyncs through the locked descriptor every
+  2 seconds, one log line per write. The mount is `hard`, as Nova's is, so a
+  write blocks while the server is away. A server that restarts without its
+  NFSv4 client records refuses the reclaim, the client marks the lock lost, and
+  every later write fails with EIO: the check fails with
+  `FAIL: the lock holder lost its lock:` and the first `error errno=5` line.
+  Neither a create nor a CR shows that failure. The check reads the cluster
+  through `kubectl` alone, and
+  `tests/unit/ci/cinder_nfs_outage_lock_check_test.sh` runs it against a stub.
 - The pod identity is recorded as a UID and a restart count together. A restart
   count read on its own falls back to 0 on a replaced pod, which is the value a
   pod that never restarted reports.

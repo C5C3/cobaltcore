@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Lock holder for the NFS-outage chaos test. Step 2 applies it, step 5 reads
+# its log after the server is back, and the step 2 cleanup deletes it and its
+# file.
+#
+# The process takes a POSIX lock on a file of the share and writes and fsyncs
+# through the locked descriptor every 2 seconds, one log line per write:
+# `probe <UTC time> ok <n>`, or `probe <UTC time> error errno=<n> <text> <n>`.
+# QEMU holds its disk image the same way. An NFSv4 server that restarts without
+# its client records refuses the reclaim of that lock, the kernel client marks
+# it lost (`NFS: ... lost 1 locks`), and every later write through the
+# descriptor fails with EIO. A server that kept its records lets the client
+# reclaim the lock in its grace period, and the writes go on.
+#
+# The mount is `hard`, as Nova's is: a write blocks while the server is away
+# and resumes when it is back. A soft mount would fail the write during the
+# outage itself, and the error line would say nothing about the restart.
+#
+# A bare Pod with restartPolicy Never, because a controller would restart the
+# holder and hide a lost lock behind a new process with a new lock. The name
+# carries the prefix the suite's catch block dumps the logs of.
+#
+# The volume is an inline `csi` volume of csi-driver-nfs, the shape the
+# cinder-operator renders for a backend share (inlineNFSVolume in
+# operators/cinder/internal/controller/reconcile_volumeservices.go). The pod
+# runs as 42424, the owner of the export, and sets no fsGroup, so the kubelet
+# changes nothing on the share.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cinder-nfs-chaos-probe-lock
+  namespace: openstack
+spec:
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 5
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: holder
+      # The image the suite's probes run; its python sits in a venv, at the
+      # path tests/container-images/verify_cinder.sh pins.
+      image: ghcr.io/c5c3/cinder:2025.2
+      command: ["/var/lib/openstack/bin/python", "-u", "-c"]
+      args:
+        - |
+          import fcntl, os, sys, time
+          fd = os.open("/mnt/share/chaos-lock-holder.img", os.O_RDWR | os.O_CREAT, 0o660)
+          try:
+              fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+          except OSError as exc:
+              print("holder: cannot lock: errno=%d %s" % (exc.errno, exc.strerror), flush=True)
+              sys.exit(1)
+          print("holder: lock held", flush=True)
+          i = 0
+          while True:
+              i += 1
+              try:
+                  os.pwrite(fd, b"probe-%d\n" % i, 4096)
+                  os.fsync(fd)
+                  result = "ok"
+              except OSError as exc:
+                  result = "error errno=%d %s" % (exc.errno, exc.strerror)
+              print("probe %s %s %d" % (time.strftime("%H:%M:%S", time.gmtime()), result, i), flush=True)
+              time.sleep(2)
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
+      volumeMounts:
+        - name: share
+          mountPath: /mnt/share
+  volumes:
+    - name: share
+      csi:
+        driver: nfs.csi.k8s.io
+        volumeAttributes:
+          server: nfs-server.openstack.svc.cluster.local
+          share: /volumes
+          mountOptions: nfsvers=4.2,hard
