@@ -19,6 +19,12 @@ cluster, which then deploys workloads into the control-plane, hypervisor, and
 storage clusters via kubeconfig Secrets and syncs credentials everywhere
 through ESO.
 
+In the
+[multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture)
+this cluster is the one labelled CobaltCore Operation and Monitoring.
+
+![Five Kubernetes clusters on Garden Linux nodes: CobaltCore Operation and Monitoring, OpenStack Control Plane, Ceph Storage, OpenStack Compute, and OpenStack Network. Gardener manages the clusters, IronCore provisions the bare-metal nodes and manages them out of band. API users call the OpenStack API on the control plane; end users reach the VMs through the network cluster.](../diagrams/cobaltcore-architecture.svg)
+
 ## Sketched components
 
 - **Flux Operator + FluxCD** as the GitOps hub for all clusters, deploying

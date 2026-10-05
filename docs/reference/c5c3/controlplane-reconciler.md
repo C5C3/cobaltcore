@@ -35,6 +35,12 @@ install a single finalizer to sequence K-ORC teardown ahead of
 Keystone/infrastructure teardown on deletion — see
 [Owner-ref / GC model](#owner-ref-gc-model).
 
+The figure places the operator among what it creates and what it relies on: the
+`ControlPlane` CR, the infrastructure CRs, service CRs and K-ORC resources it
+projects, and the service operators that turn those CRs into workloads.
+
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../../diagrams/cobaltcore-management-cluster.svg)
+
 ## Controller Registration
 
 The c5c3 operator registers **two** reconcilers and an optional webhook with the
