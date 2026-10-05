@@ -264,8 +264,8 @@ test_name_sources() {
     "$(starting_with "$AUTOSCALING" 'sel=')" "app.kubernetes.io/name=${app},"
   assert_eq "the block sets dep=controlplane-placement once" "1" \
     "$(count_items "$AUTOSCALING" 'dep=controlplane-placement')"
-  assert_eq "the Placement operator names its container placement-api" 'Name:    "placement-api",' \
-    "$(grep -A1 -F 'Container: deployment.ContainerParams{' "$deployment" | tail -n 1 | sed 's/^[[:space:]]*//')"
+  assert_eq "the Placement operator names its container placement-api" 'Name: "placement-api",' \
+    "$(grep -A1 -F 'Container: deployment.ContainerParams{' "$deployment" | tail -n 1 | sed 's/^[[:space:]]*//; s/:[[:space:]]*/: /')"
   assert_file_contains_fixed "BuildVPA renders RequestsOnly" \
     "$vpa_flow" 'ContainerControlledValuesRequestsOnly'
   assert_file_contains "BuildVPA renders the default container policy" \
