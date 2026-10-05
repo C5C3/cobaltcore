@@ -10,8 +10,9 @@
 #      yq under WITH_CONTROLPLANE=true, refuses each of the four kind-bound
 #      opt-ins by name, accepts WITH_NFS=true only for an overlay with an
 #      nfs/ kustomization, WITH_CHAOS_MESH=true only for one with a
-#      chaos-mesh/ kustomization and WITH_DIZZY=true only for one with a
-#      dizzy/ kustomization (refusing a directory without one, and only
+#      chaos-mesh/ kustomization, WITH_DIZZY=true only for one with a
+#      dizzy/ kustomization and WITH_PROMETHEUS=true only for one with a
+#      prometheus/ kustomization (refusing a directory without one, and only
 #      after the base/ check, before the cluster is contacted), refuses an
 #      overlay without its two kustomizations, a
 #      CONTROLPLANE_NAME the overlay's rendered by-hand ControlPlane does not
@@ -55,7 +56,9 @@
 #      waits for the chaos-mesh-modules rollout behind an EXTERNAL_CLUSTER
 #      gate, Step 3 applies the overlay root's dizzy/ after staging the
 #      dashboards and probes the kind node's 30428 mapping behind an
-#      EXTERNAL_CLUSTER gate, the host NFS and Chaos Mesh module loads, the
+#      EXTERNAL_CLUSTER gate, Step 3 applies the overlay root's prometheus/
+#      after staging the Keystone dashboard and logs the directory it
+#      applied, the host NFS and Chaos Mesh module loads, the
 #      nofile cap and the Keystone preload sit behind an EXTERNAL_CLUSTER
 #      gate, the CR rewrite and
 #      the by-hand CR hint key on PUBLIC_PORT, the external by-hand hint names
@@ -583,7 +586,8 @@ test_refused_flags() {
   done
   unset KUBECTL_LOG
 
-  # The opt-ins that are plain manifests stay allowed.
+  # The opt-ins that are plain manifests stay allowed; the default overlay
+  # carries the prometheus/ that WITH_PROMETHEUS=true needs.
   output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true WITH_MESSAGING=true INFRA_ONLY=true)"
   rc=$?
   assert_eq "WITH_PROMETHEUS, WITH_MESSAGING and INFRA_ONLY stay allowed" "0" "$rc"
@@ -776,6 +780,71 @@ test_dizzy_overlay_preflight() {
   assert_contains "for its missing base/ and infrastructure/" "$output" \
     "EXTERNAL_OVERLAY='$tmp/empty' has no base/ and infrastructure/ kustomization"
   assert_not_contains "and not for its dizzy/" "$output" "WITH_DIZZY=true needs"
+  unset KUBECTL_LOG
+}
+
+# ---------------------------------------------------------------------------
+# Test 3e: WITH_PROMETHEUS=true needs the overlay's prometheus/ kustomization
+# ---------------------------------------------------------------------------
+test_prometheus_overlay_preflight() {
+  echo "Test: preflight_checks under EXTERNAL_CLUSTER=true accepts WITH_PROMETHEUS=true only with a prometheus/ kustomization"
+
+  local tmp output rc
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stub_path "$tmp/bin" kubectl jq
+  export KUBECTL_LOG="$tmp/kubectl.log"
+
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true)"
+  rc=$?
+  assert_eq "WITH_PROMETHEUS=true passes with the default overlay, which has prometheus/" "0" "$rc"
+  assert_contains "and reaches the end of preflight" "$output" "Pre-flight checks passed."
+
+  # An overlay with the two kustomizations Steps 3 and 5 apply and no
+  # prometheus/.
+  mkdir -p "$tmp/no-prometheus/base" "$tmp/no-prometheus/infrastructure"
+  : >"$tmp/no-prometheus/base/kustomization.yaml"
+  : >"$tmp/no-prometheus/infrastructure/kustomization.yaml"
+  local refusal="EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true needs $tmp/no-prometheus/prometheus/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='$tmp/no-prometheus')"
+
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true EXTERNAL_OVERLAY="$tmp/no-prometheus")"
+  rc=$?
+  assert_eq "WITH_PROMETHEUS=true is refused for an overlay without prometheus/" "1" "$rc"
+  assert_contains "the refusal names the missing kustomization" "$output" "ERROR: $refusal"
+  assert_contains "and says why the kind overlay does not fit" "$output" \
+    "deploy/kind/prometheus is not applied to an external cluster: it applies the Namespace monitoring without the label and the annotation the overlay's base set, and keeps the metrics in an emptyDir."
+  assert_eq "and comes before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
+
+  # The check tests the file, not the directory.
+  mkdir -p "$tmp/no-prometheus/prometheus"
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true EXTERNAL_OVERLAY="$tmp/no-prometheus")"
+  rc=$?
+  assert_eq "a prometheus/ directory without a kustomization is refused too" "1" "$rc"
+  assert_contains "with the same message" "$output" "$refusal"
+  assert_eq "before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
+
+  # Only the value true turns the stack on.
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-prometheus")"
+  rc=$?
+  assert_eq "the overlay without a prometheus/ kustomization passes without WITH_PROMETHEUS" "0" "$rc"
+  assert_not_contains "without the refusal" "$output" "WITH_PROMETHEUS=true needs"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_PROMETHEUS=yes EXTERNAL_OVERLAY="$tmp/no-prometheus")"
+  rc=$?
+  assert_eq "and with WITH_PROMETHEUS=yes" "0" "$rc"
+  assert_not_contains "WITH_PROMETHEUS=yes is not refused" "$output" "WITH_PROMETHEUS=true needs"
+
+  # The overlay check comes first: an overlay with neither base/ nor
+  # prometheus/ is reported for its base/.
+  mkdir -p "$tmp/empty"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true EXTERNAL_OVERLAY="$tmp/empty")"
+  rc=$?
+  assert_nonzero_exit "an overlay with neither base/ nor prometheus/ is refused" "$rc"
+  assert_contains "for its missing base/ and infrastructure/" "$output" \
+    "EXTERNAL_OVERLAY='$tmp/empty' has no base/ and infrastructure/ kustomization"
+  assert_not_contains "and not for its prometheus/" "$output" "WITH_PROMETHEUS=true needs"
   unset KUBECTL_LOG
 }
 
@@ -1265,6 +1334,18 @@ test_main_gates() {
   assert_before "the gate opens before the port-mapping warning" "$probe_gate" "$probe_warning"
   assert_before "and closes after it" "$probe_warning" "$probe_gate_end"
 
+  # WITH_PROMETHEUS=true: the overlay root's prometheus/, deploy/kind/prometheus
+  # in kind mode, after the Keystone dashboard is staged where both read it.
+  local prometheus_apply='kubectl apply -k "${OVERLAY_ROOT}/prometheus"'
+  assert_file_contains_fixed "Step 3 applies the overlay root's prometheus/" \
+    "$DEPLOY_INFRA_SH" "$prometheus_apply"
+  assert_file_not_contains "Step 3 no longer hardcodes the kind Prometheus overlay" \
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/prometheus"'
+  assert_file_contains_fixed "the apply logs the directory it applied" \
+    "$DEPLOY_INFRA_SH" 'log "Prometheus overlay ${OVERLAY_ROOT}/prometheus applied (WITH_PROMETHEUS=true)."'
+  assert_before "the Keystone dashboard is staged into deploy/kind/prometheus/ before the apply" \
+    "$(line_of '"${REPO_ROOT}/deploy/kind/prometheus/keystone-operator.json"')" "$(line_of "$prometheus_apply")"
+
   assert_contains "the Keystone preload sits behind an EXTERNAL_CLUSTER gate" \
     "$(grep -B3 -F 'docker pull "ghcr.io/c5c3/keystone:' "$DEPLOY_INFRA_SH")" \
     'if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then'
@@ -1351,6 +1432,7 @@ test_refused_flags
 test_nfs_overlay_preflight
 test_chaos_mesh_overlay_preflight
 test_dizzy_overlay_preflight
+test_prometheus_overlay_preflight
 test_kind_preflight_unchanged
 test_check_external_cluster
 test_resolve_api_server_egress

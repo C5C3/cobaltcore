@@ -16,8 +16,11 @@
 # the bottom of deploy-infra.sh keeps main() from auto-running) to assert the
 # runtime default of WITH_PROMETHEUS for each env scenario, and grep the
 # script source to lock in the four gate locations:
-#   1. kustomize apply (deploy/kind/prometheus)
-#   2. dashboard JSON copy (operators/keystone/dashboards → overlay root)
+#   1. the EXTERNAL_CLUSTER=true preflight check for the overlay's
+#      prometheus/kustomization.yaml
+#   2. Step 3: dashboard JSON copy (operators/keystone/dashboards →
+#      deploy/kind/prometheus) and kustomize apply of the prometheus/ of
+#      OVERLAY_ROOT (deploy/kind/prometheus in kind mode)
 #   3. Phase 3 helm-release wait list append (kube-prometheus-stack)
 #   4. enable_operator_servicemonitor call sites (keystone + horizon)
 # The configuration-banner line is asserted via grep so the user-visible
@@ -107,12 +110,13 @@ test_non_true_value_does_not_trigger_install() {
 
   # Every gate must compare with the exact string "true" so "yes" takes the
   # skip branch at every gate. There are four runtime gates:
+  #   - the EXTERNAL_CLUSTER=true preflight overlay check
   #   - dashboard copy + kustomize apply (Step 3)
   #   - helm_releases append (Phase 3)
   #   - enable_operator_servicemonitor calls, keystone + horizon (post Phase 3)
   local gate_count
   gate_count="$(grep -cE '"\$\{WITH_PROMETHEUS\}" == "true"' "$DEPLOY_INFRA_SH" || true)"
-  assert_eq "deploy-infra.sh has exactly 3 strict WITH_PROMETHEUS==true gates" "3" "$gate_count"
+  assert_eq "deploy-infra.sh has exactly 4 strict WITH_PROMETHEUS==true gates" "4" "$gate_count"
 }
 
 # ---------------------------------------------------------------------------
@@ -137,22 +141,25 @@ test_banner_includes_prometheus_line() {
 
 # ---------------------------------------------------------------------------
 # Test 6: prometheus overlay apply is conditional
-# The kustomize apply for deploy/kind/prometheus must live inside the
-# WITH_PROMETHEUS gate so the default Quick Start does not install it.
+# The kustomize apply of the prometheus/ of OVERLAY_ROOT (deploy/kind/prometheus
+# in kind mode) must live inside the WITH_PROMETHEUS gate so the default Quick
+# Start does not install it.
 # ---------------------------------------------------------------------------
 test_prometheus_kustomize_is_gated() {
   echo "Test: prometheus kustomize apply is gated by WITH_PROMETHEUS"
 
-  # The apply line itself exists.
-  assert_file_contains \
-    "deploy-infra.sh references the deploy/kind/prometheus overlay" \
-    "$DEPLOY_INFRA_SH" \
-    'deploy/kind/prometheus'
+  # There is exactly one apply of the Prometheus overlay, and it reads the
+  # overlay root, which is deploy/kind in kind mode.
+  local apply_hits
+  apply_hits="$(grep -cF 'kubectl apply -k "${OVERLAY_ROOT}/prometheus"' "$DEPLOY_INFRA_SH" || true)"
+  assert_eq "deploy-infra.sh applies the Prometheus overlay exactly once" "1" "$apply_hits"
+  assert_file_not_contains "deploy-infra.sh no longer hardcodes the kind Prometheus overlay" \
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/prometheus"'
 
   # The line must be preceded by a WITH_PROMETHEUS gate. Use awk to confirm
   # the most recent if-line above the apply tests WITH_PROMETHEUS.
   local apply_line gate_line
-  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/prometheus"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -nF 'kubectl apply -k "${OVERLAY_ROOT}/prometheus"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   gate_line="$(grep -n '"${WITH_PROMETHEUS}" == "true"' "$DEPLOY_INFRA_SH" | awk -F: -v target="${apply_line:-0}" '$1 < target { last = $1 } END { print last }')"
 
   assert_not_empty "kustomize apply line for prometheus is found" "$apply_line"
@@ -171,7 +178,7 @@ test_dashboard_copy_precedes_apply() {
 
   local copy_line apply_line gate_line
   copy_line="$(grep -n 'cp -f "\${REPO_ROOT}/operators/keystone/dashboards/keystone-operator.json"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
-  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/prometheus"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -nF 'kubectl apply -k "${OVERLAY_ROOT}/prometheus"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
 
   assert_not_empty "dashboard copy line is found" "$copy_line"
   assert_not_empty "kustomize apply line for prometheus is found" "$apply_line"
@@ -280,7 +287,7 @@ test_production_caller_matches_self_contained_overlay() {
 
   # (a) The apply line is the bare kubectl form — no pipe, no flag.
   local raw
-  raw="$(grep -E 'kubectl apply -k "\$\{REPO_ROOT\}/deploy/kind/prometheus"' "$DEPLOY_INFRA_SH" | head -1)"
+  raw="$(grep -F 'kubectl apply -k "${OVERLAY_ROOT}/prometheus"' "$DEPLOY_INFRA_SH" | head -1)"
   assert_not_empty "deploy-infra.sh has the prometheus kubectl apply line" "$raw"
 
   if grep -q -- '--load-restrictor' <<<"$raw"; then

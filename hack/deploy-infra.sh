@@ -138,10 +138,13 @@ WITH_CHAOS_MESH="${WITH_CHAOS_MESH:-false}"
 # sudo; set WITH_OVN_KERNEL_MODULES=true on a host that runs those suites.
 WITH_OVN_KERNEL_MODULES="${WITH_OVN_KERNEL_MODULES:-false}"
 
-# Gates the opt-in kube-prometheus-stack kind overlay (deploy/kind/prometheus)
-# which installs Prometheus + Grafana for visualising keystone-operator
-# metrics. Defaults to false so the kind Quick Start stays minimal; set
-# WITH_PROMETHEUS=true to install the monitoring stack.
+# Gates the opt-in kube-prometheus-stack overlay, the prometheus/ of
+# OVERLAY_ROOT, which installs Prometheus + Grafana for visualising the
+# operators' metrics: in kind mode deploy/kind/prometheus, under
+# EXTERNAL_CLUSTER=true the overlay's prometheus/, which keeps the metrics on a
+# volume and leaves the Namespace monitoring to the base. Defaults to false so
+# the kind Quick Start stays minimal; set WITH_PROMETHEUS=true to install the
+# monitoring stack.
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 
 # Gates the opt-in metrics-server kind overlay (deploy/kind/metrics-server)
@@ -343,7 +346,8 @@ INFRA_ONLY="${INFRA_ONLY:-false}"
 # (WITH_VPA, WITH_METRICS_SERVER, WITH_REGISTRY_CACHE, WITH_OVN_KERNEL_MODULES)
 # are refused in preflight_checks, WITH_NFS=true is accepted only for an overlay
 # with an nfs/ kustomization, WITH_CHAOS_MESH=true only for one with a
-# chaos-mesh/ kustomization and WITH_DIZZY=true only for one with a dizzy/
+# chaos-mesh/ kustomization, WITH_DIZZY=true only for one with a dizzy/
+# kustomization and WITH_PROMETHEUS=true only for one with a prometheus/
 # kustomization; the cluster is checked for a default
 # StorageClass, no node-local-dns, a Ready node and, under WITH_NFS=true, a
 # foreign NFS CSIDriver and the node network, otherwise for the NFS CSIDriver
@@ -379,6 +383,11 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # has to render the HelmReleases dizzy-victoria-metrics and dizzy-grafana in
 # dizzy, the two names this script waits for and make teardown-infra deletes,
 # and it takes its dashboards from deploy/kind/dizzy/dashboards/, which Step 3
+# stages. An overlay may carry a prometheus/ kustomization as well, which Step 3
+# applies under WITH_PROMETHEUS=true in place of deploy/kind/prometheus. It has
+# to render the HelmRelease kube-prometheus-stack in monitoring, the name this
+# script waits for and make teardown-infra deletes, and it takes the Keystone
+# dashboard from deploy/kind/prometheus/keystone-operator.json, which Step 3
 # stages. Read only under EXTERNAL_CLUSTER=true.
 EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
 
@@ -1462,7 +1471,8 @@ preflight_checks() {
 # then WITH_CHAOS_MESH=true for one without the chaos-mesh/ kustomization Step 3
 # applies in place of deploy/kind/chaos-mesh, then WITH_DIZZY=true for one
 # without the dizzy/ kustomization Step 3 applies in place of deploy/kind/dizzy,
-# then an overlay whose by-hand
+# then WITH_PROMETHEUS=true for one without the prometheus/ kustomization Step 3
+# applies in place of deploy/kind/prometheus, then an overlay whose by-hand
 # controlplane/ does not render exactly one ControlPlane,
 # openstack/CONTROLPLANE_NAME, or, without WITH_NFS=true, one with a Cinder
 # backend on the in-cluster NFS server, then a kubeconfig context whose API
@@ -1473,8 +1483,8 @@ preflight_checks() {
 # rather than as literal `"${WITH_X}" == "true"` tests, because each
 # tests/unit/hack/deploy_infra_<flag>_flag_test.sh counts those literals and a
 # second gate here would change the count. The overlay checks of WITH_NFS,
-# WITH_CHAOS_MESH and WITH_DIZZY below are literal gates, and those three tests
-# count them.
+# WITH_CHAOS_MESH, WITH_DIZZY and WITH_PROMETHEUS below are literal gates, and
+# those four tests count them.
 #
 # Logs the context and the API server URL, so the transcript records which
 # cluster the run went to.
@@ -1521,6 +1531,14 @@ preflight_external_cluster() {
   # WITH_DIZZY=true takes the overlay's own dizzy/, tested by file.
   if [[ "${WITH_DIZZY}" == "true" && ! -f "${OVERLAY_ROOT}/dizzy/kustomization.yaml" ]]; then
     log "ERROR: EXTERNAL_CLUSTER=true WITH_DIZZY=true needs ${OVERLAY_ROOT}/dizzy/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/dizzy is not applied to an external cluster: it publishes VictoriaMetrics on NodePort 30428, which only a kind node maps to a host port, and keeps the metrics in an emptyDir."
+    exit 1
+  fi
+
+  # The kind Prometheus overlay applies the Namespace monitoring without what
+  # the overlay's base/ sets on it and keeps the metrics in an emptyDir, so
+  # WITH_PROMETHEUS=true takes the overlay's own prometheus/, tested by file.
+  if [[ "${WITH_PROMETHEUS}" == "true" && ! -f "${OVERLAY_ROOT}/prometheus/kustomization.yaml" ]]; then
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true needs ${OVERLAY_ROOT}/prometheus/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/prometheus is not applied to an external cluster: it applies the Namespace monitoring without the label and the annotation the overlay's base set, and keeps the metrics in an emptyDir."
     exit 1
   fi
 
@@ -1708,10 +1726,11 @@ check_relocated_infrastructure() {
 # cluster is not one that passed.
 #
 #   1. A default StorageClass. The lab overlay's OpenBao, MariaDB and Garage
-#      volumes, its NFS export claim under WITH_NFS=true, the proving
-#      OpenBaoCluster (storage.size 1Gi) and every volume the ControlPlane
-#      provisions name no class and bind to it; without one the claims stay
-#      Pending and the first wait on them times out.
+#      volumes, its NFS export claim under WITH_NFS=true, its Prometheus claim
+#      under WITH_PROMETHEUS=true, the proving OpenBaoCluster (storage.size
+#      1Gi) and every volume the ControlPlane provisions name no class and
+#      bind to it; without one the claims stay Pending and the first wait on
+#      them times out.
 #   2. No DaemonSet node-local-dns in kube-system. The openbao-operator's
 #      NetworkPolicy allows DNS to the pods of spec.network.dnsNamespace; a
 #      host-networked resolver needs spec.network.dnsEndpointIPs, which nothing
@@ -3124,14 +3143,17 @@ main() {
 
   # Opt-in kube-prometheus-stack overlay. Layered on top of
   # the base so the default Quick Start stays minimal; enable with
-  # WITH_PROMETHEUS=true. The overlay is self-contained (no `../../` parent-dir
-  # references), so kubectl's embedded kustomize renders it under the default
+  # WITH_PROMETHEUS=true. The kind mode applies deploy/kind/prometheus, which is
+  # self-contained (no `../../` parent-dir references); the external mode
+  # applies the overlay's prometheus/, which references deploy/kind/prometheus
+  # as a directory. kubectl's embedded kustomize renders both under the default
   # LoadRestrictionsRootOnly security check — same contract as the chaos-mesh
   # overlay (no `--load-restrictor` flag required, kubernetes/kubectl#948).
   #
   # The dashboard JSON copy step stages the Grafana
-  # dashboard from operators/keystone/dashboards/ into the overlay root so
-  # configMapGenerator can reference it without a parent-dir traversal. The
+  # dashboard from operators/keystone/dashboards/ into deploy/kind/prometheus/
+  # so configMapGenerator can reference it without a parent-dir traversal; the
+  # lab overlay reads the same file through its resource. The
   # single source of truth lives at operators/keystone/dashboards/; the
   # destination is git-ignored as a build artifact, and the copy is idempotent
   # so `git status` after `make deploy-infra` shows no unexpected modifications.
@@ -3140,8 +3162,8 @@ main() {
   if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
     cp -f "${REPO_ROOT}/operators/keystone/dashboards/keystone-operator.json" "${REPO_ROOT}/deploy/kind/prometheus/keystone-operator.json"
     log "Dashboard JSON copied into deploy/kind/prometheus/ for kustomize configMapGenerator (WITH_PROMETHEUS=true)."
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/prometheus"
-    log "Prometheus kind overlay applied (WITH_PROMETHEUS=true)."
+    kubectl apply -k "${OVERLAY_ROOT}/prometheus"
+    log "Prometheus overlay ${OVERLAY_ROOT}/prometheus applied (WITH_PROMETHEUS=true)."
   fi
 
   # Opt-in metrics-server overlay. Layered on top of the base so the default
