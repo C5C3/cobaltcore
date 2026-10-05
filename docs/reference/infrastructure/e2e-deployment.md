@@ -12,43 +12,23 @@ ExternalSecrets) into a local kind cluster and validate it with Chainsaw E2E tes
 
 ## Architecture Overview
 
-```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Developer / CI Runner                                                  │
-│                                                                         │
-│  make install-test-deps   ──▶  Installs chainsaw, flux, kind, kubectl   │
-│  make deploy-infra        ──▶  8-step deployment into kind cluster      │
-│  make e2e                 ──▶  Chainsaw E2E tests against the cluster   │
-│  make teardown-infra      ──▶  Deletes the kind cluster                 │
-│                                                                         │
-└──────────────────────────────┬──────────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Kind Cluster (cobaltcore)                                               │
-│                                                                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                   │
-│  │ cert-manager │  │   OpenBao    │  │     ESO      │                   │
-│  │  (Deployment)│  │ (StatefulSet)│  │ (Deployment) │                   │
-│  └──────────────┘  └──────────────┘  └──────────────┘                   │
-│  ┌──────────────┐  ┌──────────────┐                                     │
-│  │   MariaDB    │  │  Memcached   │                                     │
-│  │  Operator    │  │  Operator    │                                     │
-│  │ (Deployment) │  │ (Deployment) │                                     │
-│  └──────┬───────┘  └──────┬───────┘                                     │
-│         │                 │                                             │
-│  ┌──────▼───────┐  ┌──────▼───────┐  ┌──────────────────────┐           │
-│  │  MariaDB CR  │  │ Memcached CR │  │ ClusterIssuer        │           │
-│  │ (openstack-  │  │ (openstack-  │  │ (selfsigned-cluster- │           │
-│  │  db)         │  │  memcached)  │  │  issuer)             │           │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘           │
-│                                                                         │
-│  ┌───────────────────────────────────────────────────────────┐          │
-│  │ ExternalSecrets: keystone-admin, keystone-db,             │          │
-│  │                  mariadb-root-password                    │          │
-│  └───────────────────────────────────────────────────────────┘          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+Four make targets drive the deployment:
+
+| Target | What it does |
+| --- | --- |
+| `make install-test-deps` | Installs chainsaw, flux, kind and kubectl |
+| `make deploy-infra` | Runs the 8-step deployment into the kind cluster |
+| `make e2e` | Runs the Chainsaw E2E tests against the cluster |
+| `make teardown-infra` | Deletes the kind cluster |
+
+A plain `make deploy-infra` on kind brings up three groups of the figure:
+GitOps, Secrets & PKI, and Infrastructure. The releases of all service
+operators are suspended on kind (`deploy/kind/base/kustomization.yaml`).
+`WITH_CONTROLPLANE=true` un-suspends them and deploys the c5c3-operator and
+K-ORC, and the OpenStack services appear once a service CR or a `ControlPlane`
+is applied.
+
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../../diagrams/cobaltcore-management-cluster.svg)
 
 ## Prerequisites
 
