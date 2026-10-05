@@ -2507,7 +2507,9 @@ its `chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see
 [Lab Chaos Mesh](#lab-chaos-mesh)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
 finished (see [Lab ControlPlane](#lab-controlplane)), and after it
 `hypervisor-fixtures/` and `hypervisor/` (see
-[Lab hypervisors](#lab-hypervisors)). The
+[Lab hypervisors](#lab-hypervisors)). The ControlPlane's opt-in
+autoscaling blocks use the VPA and the metrics-server of the platform (see
+[Lab autoscaling](#lab-autoscaling)). The
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md) is the
 walkthrough that runs them in order, from a bare cluster to a migrated server
 and back.
@@ -2723,7 +2725,7 @@ platform's namespaces and CRDs alone. Both are described in
 | --- | --- |
 | Storage class | the cluster's default class; no manifest names one |
 | Access | `kubectl port-forward` to the Envoy Service on local port 8443; the `*.127-0-0-1.nip.io` hostnames are unchanged |
-| Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry |
+| Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry; the opt-in `autoscaling` and `verticalAutoscaling` blocks use the platform's metrics-server and VPA (see [Lab autoscaling](#lab-autoscaling)) |
 | Gardener | `apiserver-proxy.networking.gardener.cloud/inject: disable` on every namespace of the base render |
 | Chaos Mesh scope | `chaos-mesh.org/inject: enabled` on every namespace of the base render |
 | Dependencies | a default StorageClass and no `node-local-dns` on the cluster |
@@ -3695,6 +3697,335 @@ network endpoints of the catalog, which are the in-cluster Service URLs.
 | Block storage | Cinder with the volume backend `nfs1` and the backup backend `nfsbk` on the shares `/volumes` and `/backups` of the [Lab NFS stack](#lab-nfs-stack); `CinderReady` reports `True` with reason `CinderReady` |
 | Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, which deletes the ControlPlane and then the `OVNCentral` in its first step |
 | Pinned by | `tests/unit/deploy/metal_stack_controlplane_test.sh` |
+
+### Lab autoscaling
+
+The Gardener shoot under the lab runs a VerticalPodAutoscaler of its own, with
+the recommender, the updater and the admission controller, and a
+metrics-server, and the operators' opt-in blocks use both
+([#1223](https://github.com/c5c3/cobaltcore/issues/1223)). These commands read
+what the platform provides; the comment above each gives what it printed on
+shoot `newforge` on 2026-10-05:
+
+```bash
+# the API server's version: v1.35.6; an in-place resize needs 1.33 or newer
+kubectl version -o json | jq -r .serverVersion.gitVersion
+# the update modes the VPA CRD admits: ["Off","Initial","Recreate","InPlaceOrRecreate","Auto"], no InPlace
+kubectl get crd verticalpodautoscalers.autoscaling.k8s.io -o json |
+  jq -c '.spec.versions[] | select(.name=="v1") | .schema.openAPIV3Schema.properties.spec.properties.updatePolicy.properties.updateMode.enum'
+# the platform's own VPAs: six in kube-system, each in mode InPlaceOrRecreate
+kubectl get vpa -A
+# the resource metrics API: True under AVAILABLE, served by kube-system/metrics-server
+kubectl get apiservice v1beta1.metrics.k8s.io
+# the subresource an in-place resize writes: pods/resize
+kubectl get --raw /api/v1 | jq -r '.resources[].name' | grep -x pods/resize
+```
+
+On kind, `WITH_VPA=true` installs the VPA CRDs with a recommender and
+`WITH_METRICS_SERVER=true` a metrics-server. On the shoot either would put a
+second copy beside the platform's, so `make deploy-infra` refuses both under
+`EXTERNAL_CLUSTER=true`, installs nothing, and names in its message the field
+that uses what the platform runs. The operators find the platform's
+VerticalPodAutoscaler CRD at startup, and a workload opts in on the
+ControlPlane:
+
+- `spec.sizing.<component>.<workload>.verticalAutoscaling` renders a VPA for
+  that workload (see
+  [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec)),
+  which the platform's updater and admission controller act on.
+- `spec.sizing.<component>.api.autoscaling` renders an HPA for that API (see
+  [AutoscalingSpec](../keystone/keystone-crd.md#autoscalingspec)), which reads
+  the pods' CPU from the platform's metrics-server.
+
+The [Lab ControlPlane](#lab-controlplane) sets neither block. The block below
+patches the live ControlPlane, records what the platform did, and removes the
+patch again. It starts on a lab where Part 1 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md#control-plane)
+ran through [Step 7](../../quick-start-metal-stack.md#cp-verify), and runs in
+bash, in the shell of that step in the root of the clone, with the
+port-forward of Part 1, Step 6 open in a second terminal. Part 2 is not needed.
+
+The VPA cases run on the Placement API, `deployment/controlplane-placement`
+with its one container `placement-api`. The Minimal profile gives it one
+replica and a CPU request of `15m`, and an outage of Placement stops no
+reconcile of another operator, where an outage of Keystone would. Each case
+sets a `minAllowed.cpu` of its own, above the request the pod has. The
+recommender raises its target to `minAllowed`, so the pod is outside the
+recommendation at once, and the CPU request a pod ends up with names the case
+that set it. Each case also sets `maxAllowed.cpu: 200m`, the bound
+[VPA Resource Mapping](../keystone/keystone-crd.md#vpa-resource-mapping) asks
+for whenever a mode lets the VPA change pods. A JSON merge patch merges
+objects, so every block names `minReplicas`, `null` where the case has none.
+
+| Case | Mode, applied through | `minReplicas` | `minAllowed.cpu` | Upstream's documented behaviour |
+| --- | --- | --- | --- | --- |
+| V1 | `Off`, the ControlPlane | unset | `50m` | the pod is unchanged, and its successor after a hand delete requests `15m` |
+| V2 | `Initial`, the ControlPlane | unset | `60m` | the running pod is unchanged, and its successor requests `60m` |
+| V3 | `Recreate`, the ControlPlane | unset | `70m` | no eviction: the updater's default floor is two replicas |
+| V4 | `Recreate`, the ControlPlane | 1 | `80m` | the pod is evicted, and its successor has a new UID and requests `80m` |
+| V5 | `InPlaceOrRecreate`, a VPA applied by hand | unset | `90m` | no resize: the floor of two replicas holds for an in-place resize too |
+| V6 | `InPlaceOrRecreate`, the same VPA, patched | 1 | `100m` | the same UID and restart count, and `100m` as the spec's and the running request |
+
+V5 and V6 apply the VPA by hand. The lab installs the operators from the
+charts published from `main` (`deploy/flux-system/releases/c5c3-operator.yaml`),
+and a release older than the mode refuses it in a ControlPlane block, so the
+two cases do not depend on the release the lab runs. The VPA
+`lab-placement-inplace` is the one `BuildVPA` renders for the mode, under a
+name of its own and without the CR's labels, so the operator's prune leaves it
+alone. On operators that offer the mode, a ControlPlane block with
+`updateMode: InPlaceOrRecreate` renders the same VPA under the name
+`controlplane-placement`.
+
+`watch_state` writes a line to `vpa.log` every five seconds: the time, each
+Placement API pod that is not terminating (name, UID, restart count, the CPU
+request in its spec and the one the kubelet reports as running, and the memory
+request), the Deployment's ready replicas, the VPA's target for
+`placement-api`, and the reason of the Placement CR's `VPAReady`. Every wait
+is bounded. A target gets 600 seconds, a hold lasts 300 (five passes of an
+updater at upstream's default interval of one minute), `VPAReady` gets 120,
+and the ControlPlane's `Ready` 600. When `await_target` prints `GATE FAILED`,
+save `kubectl describe vpa "$vpa" -n openstack` and skip the case; when V1's
+gate fails, skip V2 to V6 as well. When `kubectl patch` or `kubectl apply` is
+refused, keep the API server's message and skip the case. When the
+ControlPlane is not `Ready` 600 seconds after a case, remove the block or the
+hand VPA and go on with the HPA part. A skipped case is recorded as not run,
+with its reason.
+
+The HPA part runs on the Keystone API, `deployment/controlplane-keystone`, the
+API the [e2e-autoscaling suite](../testing/controlplane-e2e-tests.md#e2e-autoscaling)
+scales on kind. H1 sets the suite's `autoscaling` block without its
+`processes` and `threads`, and waits until the HPA reads a CPU utilization
+from the platform's metrics-server. H2 waits for one desired and one ready
+replica, because Keystone can scale out on its bring-up CPU, and applies the
+suite's load Job `autoscaling-keystone-loadgen`. It posts tokens from four
+threads for 900 seconds with the application credential of the Secret
+`k-orc-clouds-yaml`, whose `auth_url` is Keystone's in-cluster Service. H3
+waits for three ready replicas and H4 for the Job's end. H5 waits for the
+scale-in to one replica, and before each poll deletes the Succeeded pods of
+Keystone's CronJobs: they carry the labels the Deployment selects on, and the
+HPA counts a pod without metrics at the full target. H6 removes the Job and
+the block.
+
+Paste the block a section at a time, and read the output of each before the
+next.
+
+```bash
+auto="$(mktemp -d)"; echo "outputs in $auto"
+ns=openstack
+dep=controlplane-placement
+sel='app.kubernetes.io/name=placement,app.kubernetes.io/instance=controlplane-placement,pod-template-hash'
+flat() { tr '\n' ' ' | sed 's/ *$//'; }
+millis() { jq -Rr 'if endswith("m") then (rtrimstr("m") | tonumber) else (tonumber * 1000 | floor) end'; }
+pod() { # name uid restarts cpu(spec) cpu(running) memory(spec) of each Placement API pod that is not terminating
+  kubectl get pod -n "$ns" -l "$sel" -o json 2>&1 | jq -r '.items[] | select(.metadata.deletionTimestamp == null)
+    | [.metadata.name, .metadata.uid, (.status.containerStatuses[0].restartCount // "-"),
+       (.spec.containers[0].resources.requests.cpu // "-"),
+       (.status.containerStatuses[0].resources.requests.cpu // "-"),
+       (.spec.containers[0].resources.requests.memory // "-")] | join(" ")' 2>&1 | flat
+}
+target() { # <vpa>: its capped CPU target for placement-api, nothing while there is none
+  kubectl get vpa "$1" -n "$ns" -o json 2>/dev/null |
+    jq -r '(.status.recommendation.containerRecommendations // [])[] | select(.containerName == "placement-api") | .target.cpu // empty'
+}
+state() { # the API omits readyReplicas at 0
+  local ready
+  ready="$(kubectl get deployment "$dep" -n "$ns" -o jsonpath='{.status.readyReplicas}' 2>&1 | flat)"
+  printf '%s pod=[%s] ready=%s target=%s vpaready=%s\n' "$(date -u +%T)" "$(pod)" "${ready:-0}" "$(target "$vpa")" \
+    "$(kubectl get placement "$dep" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}' 2>&1 | flat)"
+}
+watch_state() { while :; do state >>"$1"; sleep 5; done; }
+vpa_block() { # <case> <verticalAutoscaling as JSON, or null>
+  echo "$1 applied at $(date -u +%FT%TZ)" | tee -a "$auto/$1.log"
+  kubectl patch controlplane controlplane -n "$ns" --type merge \
+    -p "{\"spec\":{\"sizing\":{\"placement\":{\"api\":{\"verticalAutoscaling\":$2}}}}}"
+}
+await_target() { # <case> <floor in millicores>
+  local t i secs=600
+  for i in $(seq $((secs / 5))); do
+    t="$(target "$vpa")"
+    if [[ -n "$t" && "$(millis <<<"$t")" -ge "$2" ]]; then
+      echo "$1 target $t at $(date -u +%FT%TZ)" | tee -a "$auto/$1.log"; return 0
+    fi
+    sleep 5
+  done
+  echo "GATE FAILED: $1 no target of ${2}m within ${secs} s" | tee -a "$auto/$1.log"; return 1
+}
+hold() { # <case> <seconds>
+  local before after
+  before="$(pod)"; sleep "$2"; after="$(pod)"
+  echo "$1 before: $before" | tee -a "$auto/$1.log"
+  echo "$1 after:  $after" | tee -a "$auto/$1.log"
+  kubectl get vpa "$vpa" -n "$ns" -o yaml >"$auto/$1.vpa.yaml" 2>&1
+  kubectl get pod -n "$ns" -l "$sel" -o yaml >"$auto/$1.pod.yaml" 2>&1
+  kubectl get events -n "$ns" --sort-by=.lastTimestamp 2>&1 | grep -iE 'vpa|evict|resiz|placement' | tail -n 40 >"$auto/$1.events" || true
+}
+recreate() { # <case>: delete the pod by hand and read its successor
+  kubectl delete pod -n "$ns" -l "$sel" --wait --timeout=120s
+  kubectl wait pod -n "$ns" -l "$sel" --for=condition=Ready --timeout=300s
+  echo "$1 recreated: $(pod)" | tee -a "$auto/$1.log"
+}
+
+# Baseline: one pod that requests 15m, and the timeline of every case
+pod | tee "$auto/baseline"
+vpa=controlplane-placement; watch_state "$auto/vpa.log" & watcher=$!
+
+# V1: Off
+vpa_block V1 '{"updateMode":"Off","minReplicas":null,"minAllowed":{"cpu":"50m"},"maxAllowed":{"cpu":"200m"}}'
+kubectl wait placement/controlplane-placement -n openstack --for=jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}'=VPAReady --timeout=120s
+await_target V1 50
+hold V1 300
+recreate V1
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# V2: Initial
+vpa_block V2 '{"updateMode":"Initial","minReplicas":null,"minAllowed":{"cpu":"60m"},"maxAllowed":{"cpu":"200m"}}'
+kubectl wait placement/controlplane-placement -n openstack --for=jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}'=VPAReady --timeout=120s
+await_target V2 60
+hold V2 300
+recreate V2
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# V3: Recreate at the updater's own replica floor
+vpa_block V3 '{"updateMode":"Recreate","minReplicas":null,"minAllowed":{"cpu":"70m"},"maxAllowed":{"cpu":"200m"}}'
+kubectl wait placement/controlplane-placement -n openstack --for=jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}'=VPAReady --timeout=120s
+await_target V3 70
+hold V3 300
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# V4: Recreate with minReplicas 1
+vpa_block V4 '{"updateMode":"Recreate","minReplicas":1,"minAllowed":{"cpu":"80m"},"maxAllowed":{"cpu":"200m"}}'
+kubectl wait placement/controlplane-placement -n openstack --for=jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}'=VPAReady --timeout=120s
+await_target V4 80
+hold V4 300
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# V5: the block goes, and InPlaceOrRecreate comes as a VPA applied by hand
+vpa_block V5 null
+kubectl wait --for=delete vpa/controlplane-placement -n openstack --timeout=120s
+kubectl wait placement/controlplane-placement -n openstack --for=jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}'=VPANotRequired --timeout=120s
+kill "$watcher"; vpa=lab-placement-inplace; watch_state "$auto/vpa.log" & watcher=$!
+echo "V5 lab-placement-inplace applied at $(date -u +%FT%TZ)" | tee -a "$auto/V5.log"
+kubectl apply -f - <<'EOF'
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: lab-placement-inplace
+  namespace: openstack
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: controlplane-placement
+  updatePolicy:
+    updateMode: InPlaceOrRecreate
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        controlledResources: [cpu, memory]
+        minAllowed:
+          cpu: 90m
+        maxAllowed:
+          cpu: 200m
+EOF
+await_target V5 90
+hold V5 300
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# V6: InPlaceOrRecreate with minReplicas 1
+echo "V6 applied at $(date -u +%FT%TZ)" | tee -a "$auto/V6.log"
+kubectl patch vpa lab-placement-inplace -n openstack --type merge -p '{"spec":{"updatePolicy":{"minReplicas":1},"resourcePolicy":{"containerPolicies":[{"containerName":"*","controlledValues":"RequestsOnly","controlledResources":["cpu","memory"],"minAllowed":{"cpu":"100m"},"maxAllowed":{"cpu":"200m"}}]}}}'
+await_target V6 100
+hold V6 300
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# The VPA part's end: without a VPA, the next pod requests 15m again
+kubectl delete vpa lab-placement-inplace -n openstack --wait --timeout=60s
+kill "$watcher"
+recreate end
+pod
+
+# The HPA part, on the Keystone API
+ks=controlplane-keystone
+hpa_line() {
+  kubectl get hpa -n "$ns" -l "app.kubernetes.io/instance=$ks" -o json 2>&1 |
+    jq -r '.items[0] | "hpa=\(.metadata.name) target=\(.spec.scaleTargetRef.name) desired=\(.status.desiredReplicas) current=\(.status.currentReplicas) cpu=\(.status.currentMetrics[0].resource.current.averageUtilization)"' 2>&1 | flat
+}
+hpa_state() { printf '%s %s ready=%s\n' "$(date -u +%T)" "$(hpa_line)" "$(kubectl get deployment "$ks" -n "$ns" -o jsonpath='{.status.readyReplicas}' 2>&1 | flat)"; }
+drop_job_pods() { # the HPA counts a pod without metrics at the full target (tests/e2e-autoscaling/keystone-hpa.sh)
+  kubectl delete pods -n "$ns" --ignore-not-found --field-selector=status.phase==Succeeded \
+    -l "app.kubernetes.io/name=keystone,app.kubernetes.io/instance=$ks,job-name" >/dev/null
+}
+await_hpa() { # <label> <seconds> <extended regex the hpa_state line must match> [command to run before each poll]
+  local i
+  for i in $(seq $(($2 / 10))); do
+    if [[ -n "${4:-}" ]]; then "$4"; fi
+    if hpa_state | tee -a "$auto/hpa.log" | grep -Eq "$3"; then echo "$1 at $(date -u +%FT%TZ)" | tee -a "$auto/hpa.log"; return 0; fi
+    sleep 10
+  done
+  echo "GATE FAILED: $1 not within $2 s" | tee -a "$auto/hpa.log"; return 1
+}
+
+# H1: an HPA on the Keystone API, reading the platform's metrics-server
+echo "H1 applied at $(date -u +%FT%TZ)" | tee -a "$auto/hpa.log"
+kubectl patch controlplane controlplane -n "$ns" --type merge \
+  -p '{"spec":{"sizing":{"keystone":{"api":{"autoscaling":{"minReplicas":1,"maxReplicas":3,"targetCPUUtilization":150,"behavior":{"scaleDown":{"stabilizationWindowSeconds":15,"policies":[{"type":"Percent","value":100,"periodSeconds":15}]}}}}}}}}'
+await_hpa metric 300 'cpu=[0-9]+ '
+kubectl top pods -n openstack -l "app.kubernetes.io/instance=$ks"
+
+# H2: one replica, then the token load
+await_hpa idle 300 'desired=1 .* ready=1$'
+kubectl apply -f tests/e2e-autoscaling/02-keystone-loadgen-job.yaml
+echo "loadgen applied at $(date -u +%FT%TZ)" | tee -a "$auto/hpa.log"
+
+# H3: the scale-out to three ready replicas
+await_hpa scale-out 600 'desired=3 .* ready=3$'
+
+# H4: the Job's end and its RESULT line
+for i in $(seq 130); do
+  done_count="$(kubectl get job autoscaling-keystone-loadgen -n openstack -o jsonpath='{.status.succeeded}{.status.failed}' 2>&1)"
+  if [[ "$done_count" =~ ^[0-9]+$ ]]; then break; fi
+  hpa_state >>"$auto/hpa.log"
+  sleep 10
+done
+echo "loadgen ended at $(date -u +%FT%TZ): ${done_count}" | tee -a "$auto/hpa.log"
+kubectl logs job/autoscaling-keystone-loadgen -n openstack --tail=60 >"$auto/loadgen.log" 2>&1
+grep RESULT "$auto/loadgen.log"
+
+# H5: the scale-in to one replica
+await_hpa scale-in 600 'desired=1 .* ready=1$' drop_job_pods
+
+# H6: the Job and the block go, and one ready replica stays
+hpa="$(kubectl get hpa -n "$ns" -l "app.kubernetes.io/instance=$ks" -o jsonpath='{.items[0].metadata.name}')"; echo "hpa ${hpa}"
+kubectl delete job autoscaling-keystone-loadgen -n openstack
+kubectl patch controlplane controlplane -n "$ns" --type merge -p '{"spec":{"sizing":{"keystone":{"api":{"autoscaling":null}}}}}'
+kubectl wait --for=delete "hpa/${hpa}" -n openstack --timeout=120s
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+hpa_state | tee -a "$auto/hpa.log"
+```
+
+The last line prints `ready=1` and no HPA. Then run the last line of the
+quick start's [Teardown](../../quick-start-metal-stack.md#teardown),
+`EXTERNAL_CLUSTER=true make teardown-infra`; its other lines delete objects of
+Part 2, which this run does not create. Stop the port-forward, delete
+`gateway-ca.pem`, and check that `kubectl get namespaces -o name` lists the
+platform's namespaces alone (`default`, `firewall`, `kube-node-lease`,
+`kube-public`, `kube-system` and `metallb-system`) and that
+`kubectl get vpa -A` lists no VPA outside `kube-system`.
+
+A result that differs from the last column of the case table is a finding:
+the platform's updater runs in the seed, whose flags cannot be read from the
+shoot, so the record states what it did. Each of these is a defect and gets
+its own issue: more than one new pod UID within one hold; a successor in V2 or
+V4, or a resized pod in V6, whose CPU request is below the case's floor; a
+`vpaready=` other than `VPAReady` while a block is set, or other than
+`VPANotRequired` after it is removed; a Placement or ControlPlane CR that does
+not return to `Ready`; a pod that requests other than `15m` after the VPA
+part's end; `GATE FAILED: metric`; an HPA or Deployment left after H6;
+anything the teardown leaves; and a hand action neither the block nor the
+quick start names. A failed load Job with a scale-out that held is a finding.
+
+No lab run of the block is recorded yet.
 
 ### Lab hypervisors
 
