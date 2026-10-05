@@ -17,6 +17,7 @@ the page embeds. A change to a diagram updates both files in the same commit.
 | --- | --- | --- |
 | `cobaltcore-overview` | What CobaltCore does, as a layer stack from bare metal to the OpenStack clouds, and why it matters | [Overview](../index.md) |
 | `cobaltcore-management-cluster` | The implemented management cluster, from one `ControlPlane` CR to the running OpenStack services, with optional target clusters | [Implemented topology](../architecture/index.md#implemented-topology) |
+| `cobaltcore-stack` | The stack layer by layer, with the project behind each layer (IronCore, Garden Linux, Gardener, CobaltCore, OpenStack) | [The multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture) |
 | `cobaltcore-architecture` | The five clusters (Operation and Monitoring, OpenStack Control Plane, Ceph Storage, OpenStack Compute, OpenStack Network) on Garden Linux, managed by Gardener, on bare metal managed by IronCore | [The multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture) |
 | `cobaltcore-control-planes` | One Operation and Monitoring cluster that creates and manages several OpenStack control planes | [Several control planes](../architecture/index.md#several-control-planes) |
 | `cobaltcore-attached-clusters` | One control plane with several storage, compute, and network clusters attached | [Attached clusters](../architecture/index.md#attached-clusters) |
