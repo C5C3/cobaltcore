@@ -11,7 +11,8 @@ render-time defaults, and a ControlPlane on the Minimal
 service pods and backing services. This page describes how those figures are
 measured with a VerticalPodAutoscaler (VPA) recommender in CI, how a script
 derives them from the measurement, and which run the figures in the code come
-from.
+from. The [lab measurement](#lab-measurement) reads the same recommendations
+on the metal-stack lab under servers on KVM hypervisors and derives no figure.
 
 ## What is measured
 
@@ -72,7 +73,9 @@ metadata agent is not taken from this run: none of its legs makes the agent
 provision a network, so its rows show an idle agent. Its figure has a
 measurement of its own (see [Metadata agent memory](#metadata-agent-memory)).
 The operators' manager pods, the OVN chassis and NovaCompute DaemonSets and the
-platform stack keep their own figures.
+platform stack keep their own figures. The chassis, NovaCompute and metadata
+agent readings under real servers come from the
+[lab measurement](#lab-measurement), which sets them against those figures.
 
 ## Running a measurement
 
@@ -676,3 +679,234 @@ agent ran with.
 `n` above 32, needs about `F + (n − 32) × S × 1.25` MiB, rounded up to a
 multiple of 64. The factor gives each further proxy the headroom `F` gives the
 first 32.
+
+## Lab measurement
+
+Every row above comes from pods that never ran a virtual machine. In the three
+jobs compute is Nova's fake driver: no chassis carries a server's traffic, and
+no libvirt runs. The lab measurement runs `hack/ci-vpa-recommendations.sh` by
+hand on the [metal-stack lab](../infrastructure/infrastructure-manifests.md#metal-stack-lab)
+while Part 2 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md#hypervisors)
+boots, migrates and evicts servers on KVM hypervisors. It measures the
+namespaces `openstack` and `hypervisor-system` with the recommender the
+Gardener shoot runs, and sets the readings of the compute workloads against
+their defaults. It derives no figure: `hack/derive-sizing-figures.py` accepts
+the three CI jobs only, and a reading that contradicts a default becomes an
+issue of its own, as [#1173](https://github.com/C5C3/cobaltcore/issues/1173)
+was for the metadata agent.
+
+### What differs from CI
+
+| Topic | CI on kind | The lab |
+| --- | --- | --- |
+| Recommender | `deploy/kind/vpa`: VPA 1.8.0, floors of 1 millicore and 1 MB per pod | The shoot's. Its image and flags run in the seed and cannot be read; `report` writes `recommender=-`. Gardener's source at `gardener/gardener@92a252c0` passes floors of 10 millicores and 10 MB |
+| Sampling | `--memory-saver=false`: every pod from its start | The same source passes `--memory-saver=true`: a pod is sampled once a VPA selects it, at most 60 seconds after the workload appeared |
+| Updater and admission controller | not installed | Both run. A VPA in mode `Off` changes no pod; the run checks it |
+| MariaDB scale subresource | removed by `WITH_VPA=true make deploy-infra` | removed by `hack/ci-vpa-recommendations.sh prepare` |
+| Compute | Nova's fake driver | KVM on every worker, with one server each |
+| Load | the e2e suites and Tempest | Part 2 of the Quick Start (metal-stack), once |
+| Report | `job=` names a CI job; input of the derivation | `job=lab`; `hack/derive-sizing-figures.py` refuses it, and no constant is derived from it |
+
+The Gardener figures come from `computeRecommenderArgs` in
+`pkg/component/autoscaling/vpa/recommender.go`. Its margin of 15 %, its CPU
+target at the 90th percentile and its one-minute interval are defaults a
+shoot spec can override, and neither the seed's Gardener version nor the
+shoot spec can be read from the shoot. They are what to expect; the record
+states what the run showed.
+
+### Running the lab measurement
+
+The measurement runs beside one pass of the Quick Start (metal-stack). It
+starts on a bare shoot, in bash in the root of the clone, with `KUBECONFIG`
+set as in [Part 1, Step 1](../../quick-start-metal-stack.md#cp-clone). Run
+the whole session in one bash shell: the third block uses the helpers, `out`
+and the watch of the first. Each block names the quick start step it follows,
+and the quick start's own commands run there unchanged.
+
+After [Part 1, Step 3](../../quick-start-metal-stack.md#cp-deploy) and before
+[Step 4](../../quick-start-metal-stack.md#cp-apply), define the helpers,
+remove the MariaDB scale subresource and start the watch:
+
+```bash
+out=_output/sizing-lab; mkdir -p "$out"
+flat() { tr '\n' ' ' | sed 's/ *$//'; }
+pod_state() { # <namespace>...: namespace, pod, UID, restarts, the admission controller's vpaUpdates annotation, requests
+  local ns
+  for ns in "$@"; do
+    kubectl get pods -n "$ns" -o json | jq -r --arg ns "$ns" '.items[] | select(.metadata.deletionTimestamp == null)
+      | [$ns, .metadata.name, .metadata.uid, ([.status.containerStatuses[]?.restartCount] | add // 0),
+         (.metadata.annotations.vpaUpdates // "-"),
+         ([.spec.containers[] | "\(.name)=\(.resources.requests.cpu // "-")/\(.resources.requests.memory // "-")"] | join(","))] | @tsv'
+  done | sort
+}
+no_recommendation() { # <namespace>...: the measurement's VPAs without a recommendation, with their conditions
+  local ns
+  for ns in "$@"; do
+    kubectl get vpa -n "$ns" -l app.kubernetes.io/managed-by=ci-vpa-recommendations -o json |
+      jq -r --arg ns "$ns" '.items[] | select((.status.recommendation.containerRecommendations // []) | length == 0)
+        | [$ns, .metadata.name, ([.status.conditions[]? | "\(.type)=\(.status)"] | join(","))] | @tsv'
+  done
+}
+libvirtd_scope() { # per libvirt pod: node, then memory.current, memory.peak (bytes) and the CPU time of libvirtd's host scope
+  local pod
+  for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
+    printf '%s %s\n' "$(kubectl get -n openstack "$pod" -o jsonpath='{.spec.nodeName}' 2>&1 | flat)" \
+      "$(kubectl exec -n openstack "$pod" -c libvirtd -- sh -c 'cd /sys/fs/cgroup/system.slice/cobaltcore-libvirtd.scope && cat memory.current memory.peak && grep usage_usec cpu.stat' 2>&1 | flat)"
+  done
+}
+floors() { # <recommendations.tsv>: per workload its CPU bound, memory bound, containers and name
+  awk -F'\t' 'NR > 2 { k = $1 "/" $2 "/" $3; n[k]++
+      if (!(k in c) || $12 + 0 < c[k]) c[k] = $12 + 0
+      if (!(k in m) || $13 + 0 < m[k]) m[k] = $13 + 0 }
+    END { for (k in n) print n[k] * (c[k] + 1), n[k] * m[k], n[k], k }' "$1" | sort -n
+}
+floor_bounds() { # <recommendations.tsv>: the smallest bound of each resource
+  floors "$1" | awk 'NR == 1 || $1 < c { c = $1 } NR == 1 || $2 < m { m = $2 }
+    END { if (NR) print "floor bounds: cpu below " c "m, memory at most " m "Mi" }'
+}
+verdicts() { # <recommendations.tsv>: the rows of the compute workloads with a verdict per resource
+  awk -F'\t' '
+    function verdict(target, request) { return request == "-" ? "no default" : (target + 0 <= request + 0 ? "confirmed" : "contradicted") }
+    NR > 2 && $3 ~ /^(lab-nova-compute|lab-chassis-ovn-controller|lab-chassis-ovs|lab-metadata-agent-metadata-agent|libvirt)$/ {
+      printf "%s %s cpu %sm request %s: %s; memory %sMi request %s: %s\n", $3, $9, $12, $16, verdict($12, $16), $13, $17, verdict($13, $17) }' "$1"
+}
+over_request() { # <recommendations.tsv>: every row whose memory target exceeds its memory request
+  awk -F'\t' 'NR > 2 && $17 != "-" && $13 + 0 > $17 + 0 { print $1, $3, $9, "memory target " $13 "Mi above request " $17 "Mi" }' "$1"
+}
+
+hack/ci-vpa-recommendations.sh prepare 2>&1 | tee "$out/prepare.log"
+nohup hack/ci-vpa-recommendations.sh watch "$out" openstack hypervisor-system >"$out/watch.log" 2>&1 &
+```
+
+`prepare` runs once the deploy has installed the MariaDB CRD, before
+anything creates a database. The watch starts before Step 4 applies the
+ControlPlane, as CI starts it before its suites, so each workload gets its
+VPA within 60 seconds of its creation. `nohup` and `&` keep it running after
+the command that started it. `openstack` holds the ControlPlane's services
+and the four compute workloads, `hypervisor-system` kvm-node-agent and the
+migration port reservation, which run only on a hypervisor too.
+
+The last four helpers read `recommendations.tsv` by column, below its comment
+line and its header (see [the column table](#running-a-measurement)): 3
+`workload`, 9 `container`, 12 `cpu_target_m`, 13 `memory_target_mi`, 16
+`cpu_request_m` and 17 `memory_request_mi`. `verdicts` picks the five
+DaemonSets that the CRs in `deploy/lab/metal-stack/hypervisor/compute.yaml`
+and the lab's libvirt manifest render:
+
+| Workload | Rendered from |
+| --- | --- |
+| `lab-nova-compute` | the `NovaCompute` `lab`, through `novaComputeDaemonSetName` in `operators/nova/internal/controller/reconcile_novacompute_daemonset.go` |
+| `lab-chassis-ovn-controller`, `lab-chassis-ovs` | the `OVNChassis` `lab-chassis`, through `chassisControllerName` and `chassisOVSName` in `operators/ovn/internal/controller/` |
+| `lab-metadata-agent-metadata-agent` | the `NeutronMetadataAgent` `lab-metadata-agent`, through `agentDaemonSetName` in `operators/neutron/internal/controller/reconcile_daemonset.go` |
+| `libvirt` | `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml` |
+
+A VPA reads a pod's cgroup. On the lab, libvirtd runs in the host scope
+`cobaltcore-libvirtd.scope` (the `systemd-run` line of
+`deploy/lab/metal-stack/hypervisor/libvirt-configmap.yaml`) and QEMU in
+libvirt's own `/machine` cgroups, both outside the libvirt pod's cgroup, so
+the `libvirt` row covers bash and the probes. `libvirtd_scope` reads what no
+VPA gives: `memory.current`, `memory.peak` and the CPU time of libvirtd's
+scope, through the container's mount of the host's `/sys/fs/cgroup`.
+
+After the checks of [Part 1, Step 7](../../quick-start-metal-stack.md#cp-verify),
+record every pod:
+
+```bash
+pod_state openstack hypervisor-system >"$out/pods.before"
+```
+
+Then run Part 2. After
+[Part 2, Step 10](../../quick-start-metal-stack.md#hv-backup), while the
+servers still run, end the measurement:
+
+```bash
+sleep 300
+libvirtd_scope | tee "$out/libvirtd-scope.log"
+kill "$(cat "$out/watch.pid")"
+hack/ci-vpa-recommendations.sh prepare 2>&1 | tee -a "$out/prepare.log"
+hack/ci-vpa-recommendations.sh snapshot "$out" openstack hypervisor-system
+GITHUB_SHA="$(git rev-parse HEAD)" GITHUB_JOB=lab \
+  MEASURE_LEG="$(kubectl get configmap shoot-info -n kube-system -o jsonpath='{.data.shootName}')" \
+  hack/ci-vpa-recommendations.sh report "$out" >/dev/null
+pod_state openstack hypervisor-system >"$out/pods.after"
+{ diff "$out/pods.before" "$out/pods.after" | grep '^<' || true; } | tee "$out/pods.changed"
+awk -F'\t' '$5 != "-"' "$out/pods.after" | tee "$out/pods.rewritten"
+no_recommendation openstack hypervisor-system | tee "$out/no-recommendation.log"
+floors "$out/recommendations.tsv" | tee "$out/floors.log"
+floor_bounds "$out/recommendations.tsv" | tee -a "$out/floors.log"
+verdicts "$out/recommendations.tsv" | tee "$out/verdicts.log"
+over_request "$out/recommendations.tsv" | tee "$out/over-request.log"
+kubectl delete vpa -n openstack -l app.kubernetes.io/managed-by=ci-vpa-recommendations --wait --timeout=120s
+kubectl delete vpa -n hypervisor-system -l app.kubernetes.io/managed-by=ci-vpa-recommendations --wait --timeout=120s
+kubectl get vpa -A -l app.kubernetes.io/managed-by=ci-vpa-recommendations
+```
+
+The `sleep` gives the recommender five more samples with every server
+running. The watch is stopped, and one last snapshot follows it.
+`MEASURE_LEG` carries the shoot's name into the comment line of
+`recommendations.tsv`, which then reads
+`run=- attempt=- sha=<commit> job=lab leg=<shoot> recommender=-`.
+
+- A line of `prepare.log` that starts with `ci-vpa-recommendations:` is a
+  failed `prepare`, whose exit code the pipe into `tee` hides. The second
+  `prepare` line reads `MariaDB CRD serves no scale subresource` unless a
+  chart upgrade of `mariadb-operator-crds` restored the subresource during the
+  run.
+- `pods.changed` lists the lines of `pods.before` that are gone or differ, in
+  UID, restart count or requests.
+- `pods.rewritten` lists the pods the admission controller rewrote. A VPA in
+  mode `Off` rewrites none.
+- `no-recommendation.log` lists the measurement's VPAs that hold no
+  recommendation at the end, with their conditions.
+- `floors.log`, `verdicts.log` and `over-request.log` are what the rules of
+  [Reading the lab report](#reading-the-lab-report) read.
+- The last command prints `No resources found`.
+
+The subresource stays removed until the next chart upgrade of
+`mariadb-operator-crds` or until `make teardown-infra` deletes the CRD:
+`k8s.mariadb.com` is among the `STACK_CRD_GROUPS` of `hack/teardown-infra.sh`.
+The run's files stay in `_output/sizing-lab`. Git ignores `_output/`, and the
+teardown does not touch it.
+
+### Reading the lab report
+
+The floor rule. The recommender raises a container's recommendation to its
+pod's floor divided by the pod's containers. On either recommender, a
+container with usage samples reads at least `11m` and `11Mi`: the lowest
+histogram bucket (10 millicores, 10 MB) plus the 15 % margin. A floor
+therefore shows only where its share exceeds that. For a workload with `n`
+containers, the floor lies below `n × (smallest CPU target + 1)` millicores
+and does not exceed `n × smallest memory target` MiB. The `+ 1` covers the
+recommender's rounding to whole millicores, and the report rounds memory up.
+`floors` prints these bounds per workload and `floor_bounds` the smallest of
+each. When it prints a CPU bound of at most `12m` and a memory bound of at
+most `11Mi`, no lab row is a floor share, and a lab row compares with the CI
+row of the same container at any value. Otherwise, with `B` the bound
+`floor_bounds` printed for the resource, a row of a workload with `n`
+containers whose target is at most `B / n` is marked "at the floor" in the
+record and gets no verdict for that resource.
+
+The verdict rule. Per container of the five compute workloads and per
+resource, `verdicts` prints `no default` when the workload renders no
+request, `confirmed` when the target is at most the request, and
+`contradicted` when it is above. The target is what the recommender would set
+as the request: the 90th percentile of CPU and the peak of memory, each plus
+15 %. The upper bound is not used, because after hours instead of days of
+samples it is a multiple of the target. These are the defaults the verdicts
+read:
+
+| Workload | Default | Source |
+| --- | --- | --- |
+| `lab-nova-compute` | none: no request, no limit | `operators/nova/internal/controller/reconcile_novacompute_daemonset.go:256-259` |
+| `lab-chassis-ovn-controller`, `lab-chassis-ovs` | none | `chassisResources`, `operators/ovn/internal/controller/reconcile_ovs.go:356-366` |
+| `lab-metadata-agent-metadata-agent` | CPU request `70m`, memory `2Gi` as request and limit | `metadataAgentMemory` and `effectiveAgentResources`, `operators/neutron/internal/controller/reconcile_daemonset.go:414-424` |
+| `libvirt`, container `libvirtd` | CPU request `100m`, memory request `256Mi`, limit `512Mi`, for bash and the probes | `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml:105-110` |
+
+Every other row is judged on memory alone: `over_request` lists the rows
+whose memory target exceeds the request. For a service row this contradicts
+`memoryBase + p × defaultMemoryPerProcess` at its process count, for a
+backing-service row its `Minimal` figure.
+
+### Recorded lab run
+
+No lab run is recorded yet.
