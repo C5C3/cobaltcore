@@ -680,21 +680,32 @@ keeps its build until it restarts. The libvirt DaemonSet stays on its digest
 with `IfNotPresent`. While ghcr.io cannot be reached, a pod that starts waits
 in `ImagePullBackOff` although the node holds the image.
 
+The shoot's VPA updater runs with `--min-replicas=1`, so a component of the
+Minimal profile that opts into `verticalAutoscaling` loses its only pod in
+`Recreate` mode whenever the pod's request lies outside the recommendation,
+with or without `minReplicas: 1`. In the
+[lab autoscaling run](./reference/infrastructure/infrastructure-manifests.md#lab-autoscaling)
+the evicted Placement API had no ready pod for 11 and 12 seconds. In
+`InPlaceOrRecreate` mode with `minReplicas: 1` the updater resized the pod in
+place, without a restart. Without `minReplicas` the run's pod already lay
+inside the recommended range, so the run did not show what that mode does
+there.
+
 ## Proven by
 
 The page as of commit `e6a34f1b`, before Cinder was added, ran in page order
 on 2026-10-03, every `bash` block but the `git clone`, on shoot `forge` with
 two workers and Kubernetes v1.35.6, from a bare cluster to a bare cluster, and
-each block exited 0 on its first attempt. Of the Cinder additions, the volume
-checks of Part 2, Steps 8 and 9 have not run on the lab yet; the run of
-2026-10-04 below ran the others. The node selection
+each block exited 0 on its first attempt. Of the Cinder additions, the run of
+2026-10-04 below ran all but the volume checks of Part 2, Steps 8 and 9, and
+the run of 2026-10-05 below ran those as well. The node selection
 of Part 2 changed after the run: a command that needs one node takes it from
 `nodes` by slice, and Step 9 evicts the node `host` names. On 2026-10-04, on
 `forge`, the opening block of Part 2 read the same zone in bash and in zsh.
 Step 5 changed after that: it boots `lab-<n>` on every node, where the run
 booted `lab-a` and `lab-b` on two, and the Teardown deletes every `lab-<n>`.
-Step 9 has not run with the changes; the run of 2026-10-04 below ran Step 5
-and the server delete of the Teardown on three workers. The port-forward of
+The run of 2026-10-05 below ran Step 9 with the changes, and the run of
+2026-10-04 ran Step 5 and the server delete of the Teardown on three workers. The port-forward of
 Part 1, Step 6 ran in a second terminal until the teardown had finished and
 was then stopped. The console commands of Part 2, Step 6 were typed by a
 script. The teardown waited 93 seconds for the stack's objects in `openstack`
@@ -725,6 +736,24 @@ Steps 7 and 10 hard-rebooted `lab-0` twice, and Step 10 still read
 `lab-volume-marker` and backed the volume up. A script typed the console
 commands, and the port-forward ran in a second terminal without a restart.
 Nothing was done by hand on the workers.
+
+On 2026-10-05 the page as of commit `d34fde24` ran on shoot `newforge`, three
+workers on Kubernetes v1.35.6, from a bare cluster to a bare cluster, in one
+session with the
+[lab measurement](./reference/testing/sizing-calibration.md#lab-measurement)
+and the
+[lab autoscaling run](./reference/infrastructure/infrastructure-manifests.md#lab-autoscaling).
+Part 1 ran Steps 1 to 7, without the `git clone` and without the optional
+checks Step 7 links, and Part 2 ran Steps 1 to 10. Step 7 attached the volume
+to `lab-0`, Step 8 live-migrated `lab-0` with it and read `lab-volume-marker`
+on the destination, Step 9 evicted that node with the volume still `in-use`,
+and Step 10 backed it up. Every block exited 0 on its first attempt. The
+measurement's blocks ran around Part 1, Step 4 and after Part 2, Step 10. The
+first five lines of the Teardown followed, then the autoscaling block, then the
+Teardown's last line, which exited 0 and left the platform's namespaces alone.
+A script typed the console commands through `tmux send-keys`, and the
+port-forward ran in a second terminal without a restart. Nothing was done by
+hand on the cluster or the workers.
 
 ## Related references
 
