@@ -836,7 +836,10 @@ deploy-infra:
 # dizzy-keystone and dizzy-glance run dizzy's chaos churn soak (a 5-minute
 # small profile by default) against the quick-start ControlPlane, exporting
 # metrics to the dizzy VictoriaMetrics; watch them at
-# https://dizzy.127-0-0-1.nip.io.
+# https://dizzy.127-0-0-1.nip.io. On the metal-stack lab
+# (EXTERNAL_CLUSTER=true), open the Gateway port-forward on 8443 and
+# `kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428`
+# first; Grafana is then at https://dizzy.127-0-0-1.nip.io:8443.
 #
 # Variables:
 #   DIZZY_SCENARIO      alternate scenario file.
@@ -845,6 +848,8 @@ deploy-infra:
 #                       so Renovate has exactly one string to bump.
 #   DIZZY_SECRET        ControlPlane admin Secret name override.
 #   DIZZY_CP_NAMESPACE  ControlPlane admin Secret namespace override.
+#   EXTERNAL_CLUSTER    true: reach Keystone and VictoriaMetrics through those
+#                       two port-forwards, without docker.
 #
 # The three preflights are kept separate so the failure modes stay
 # distinguishable — the kubectl/cluster-reachability failure is not conflated
