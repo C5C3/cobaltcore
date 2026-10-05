@@ -89,6 +89,16 @@ func WithSidecarResourceDefaults(rr *corev1.ResourceRequirements) corev1.Resourc
 	return withDefaults(rr, sidecarCPURequest.DeepCopy(), sidecarMemory.DeepCopy())
 }
 
+// WithGivenResourceDefaults applies the per-resource rule of
+// WithResourceDefaults to a copy of rr (nil is empty) with the caller's own
+// figures, for a container whose CPU does not follow the service default (the
+// Neutron metadata agent): a CPU the block names neither way gets cpu as a
+// request and no limit, and a memory the block names neither way gets memory
+// as both request and limit. Anything the block names is kept as written.
+func WithGivenResourceDefaults(rr *corev1.ResourceRequirements, cpu, memory resource.Quantity) corev1.ResourceRequirements {
+	return withDefaults(rr, cpu.DeepCopy(), memory)
+}
+
 // withDefaults is the per-resource rule WithResourceDefaults documents, with
 // the CPU request and the memory figure given.
 func withDefaults(rr *corev1.ResourceRequirements, cpu, memory resource.Quantity) corev1.ResourceRequirements {
