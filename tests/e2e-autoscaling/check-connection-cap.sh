@@ -89,9 +89,12 @@ fi
 SELECTOR="$(kubectl get deployment "${DEPLOY}" -n "${NS}" -o json \
   | jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')"
 # A pod on its way out (after a rollout or a scale-in) is not part of the
-# fleet any more, so it is left out rather than counted as not ready. Checks 3
-# and 4 read the pods from this one listing.
-PODS_JSON="$(kubectl get pods -n "${NS}" -l "${SELECTOR}" -o json \
+# fleet any more, so it is left out rather than counted as not ready. A Job's
+# pod is not part of it either: the selector matches the name and instance
+# labels alone, which the pods of a service's CronJobs (Keystone's hourly
+# trust-flush, for one) carry too, and a Completed one never turns ready.
+# Checks 3 and 4 read the pods from this one listing.
+PODS_JSON="$(kubectl get pods -n "${NS}" -l "${SELECTOR},!job-name" -o json \
   | jq '[.items[] | select(.metadata.deletionTimestamp == null)]')"
 mapfile -t PODS < <(jq -r '.[].metadata.name' <<<"${PODS_JSON}")
 pod_json() { # <pod>

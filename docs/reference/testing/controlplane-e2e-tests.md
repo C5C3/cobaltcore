@@ -1147,7 +1147,9 @@ Completed one reports no metrics, and on a scale-down the HPA counts a pod
 without metrics at the full target, which holds Keystone one pod above its
 minimum. Steps 4, 6 and 11 therefore delete the Succeeded Job pods of the
 Keystone child while they poll (`keystone-hpa.sh drop-job-pods`), so the
-scale-in they wait for depends on the behavior alone.
+scale-in they wait for depends on the behavior alone. Steps 8 and 10 do not
+delete them: `check-connection-cap.sh` leaves every pod with a `job-name`
+label out of its checks 3 and 4.
 
 **Load and burst Jobs.** Both run the tempest image with the per-CR
 `k-orc-clouds-yaml` Secret mounted, and exit 2 when its `admin` cloud is not a
