@@ -514,6 +514,19 @@ floor to an in-place resize in `InPlaceOrRecreate` mode unless it runs with
 `--in-place-skip-disruption-budget`, which is off by default
 ([VPA 1.8.0 flags](https://github.com/kubernetes/autoscaler/blob/vertical-pod-autoscaler-1.8.0/vertical-pod-autoscaler/docs/flags.md)).
 
+A Gardener shoot runs its updater with `--min-replicas=1`, so there the floor
+does not hold a single replica. On the metal-stack lab the
+[lab autoscaling run](../infrastructure/infrastructure-manifests.md#lab-autoscaling)
+of 2026-10-05 showed this for the one Placement API pod of the Minimal profile.
+In `Off` mode the pod kept its request. In `Initial` mode the running pod kept
+its request, and its successor after a delete started with the recommendation
+as its CPU and memory request. In `Recreate` mode the updater evicted the pod
+within seconds, with and without `minReplicas: 1`, and the API had no ready
+pod for 11 to 12 seconds. In `InPlaceOrRecreate` mode with `minReplicas: 1` the
+updater resized the pod in place, with the same UID and no restart; without
+`minReplicas` the pod's request already lay inside the recommended range, so
+that case showed nothing.
+
 ### Example
 
 ```yaml
