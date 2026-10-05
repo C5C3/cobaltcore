@@ -194,14 +194,14 @@ resume_installed_flux_objects() {
 # ---------------------------------------------------------------------------
 # stack_namespaces — The namespaces the stack creates, one per line: every
 # Namespace of deploy/flux-system/namespaces.yaml, the two the kind base files
-# declare (envoy-gateway-system, headlamp-system), chaos-mesh, which the opt-in
-# Chaos Mesh overlay declares, and flux-system. No other namespace is ever
-# deleted. Fails when yq cannot read the file.
+# declare (envoy-gateway-system, headlamp-system), chaos-mesh and dizzy, which
+# the opt-in Chaos Mesh and dizzy overlays declare, and flux-system. No other
+# namespace is ever deleted. Fails when yq cannot read the file.
 # ---------------------------------------------------------------------------
 stack_namespaces() {
   yq -N -r 'select(.kind == "Namespace") | .metadata.name' \
     "${REPO_ROOT}/deploy/flux-system/namespaces.yaml" || return 1
-  printf '%s\n' envoy-gateway-system headlamp-system chaos-mesh flux-system
+  printf '%s\n' envoy-gateway-system headlamp-system chaos-mesh dizzy flux-system
 }
 
 # ---------------------------------------------------------------------------
@@ -624,6 +624,35 @@ teardown_nfs() {
 }
 
 # ---------------------------------------------------------------------------
+# teardown_dizzy — The end of step 3 of teardown_external_cluster: remove the
+# dizzy metrics stack of the overlay's dizzy/, which hack/deploy-infra.sh
+# applies under WITH_DIZZY=true, while the helm-controller and the
+# source-controller still run (step 5 removes them). A no-op unless
+# ${OVERLAY_ROOT}/dizzy/kustomization.yaml exists.
+#   1. the HelmReleases dizzy-victoria-metrics and dizzy-grafana. Their
+#      finalizer has the helm-controller uninstall both charts, so the delete
+#      returns once the StatefulSet of VictoriaMetrics is gone;
+#   2. the HelmRepositories victoria-metrics and grafana in flux-system;
+#   3. the claims in dizzy, which Helm leaves behind: the claim of a volume
+#      claim template belongs to no release. Not earlier, while the pod still
+#      mounts it.
+# The objects are named, not rendered: the overlay's configMapGenerator reads
+# dashboards the deploy stages, so `kubectl kustomize` fails on a checkout
+# without them, as for the kube-prometheus-stack release. Step 7 deletes the
+# namespace dizzy with the HTTPRoute and the ConfigMap.
+# ---------------------------------------------------------------------------
+teardown_dizzy() {
+  if [[ ! -f "${OVERLAY_ROOT}/dizzy/kustomization.yaml" ]]; then
+    return 0
+  fi
+  delete_and_wait "the dizzy HelmReleases" helmreleases.helm.toolkit.fluxcd.io \
+    dizzy-victoria-metrics dizzy-grafana -n dizzy
+  delete_and_wait "the dizzy HelmRepositories" helmrepositories.source.toolkit.fluxcd.io \
+    victoria-metrics grafana -n flux-system
+  delete_and_wait "the PVCs in dizzy" pvc --all -n dizzy
+}
+
+# ---------------------------------------------------------------------------
 # teardown_external_cluster — Remove the stack from the current context's cluster.
 #
 # The order makes every finalizer run while the controller that clears it still
@@ -657,15 +686,18 @@ teardown_nfs() {
 #      what was suspended, so the helm-controller uninstalls every chart and the
 #      Flux Kustomizations prune K-ORC and the RabbitMQ operator; the Gateway and
 #      GatewayClass go first, while Envoy Gateway still clears their finalizer,
-#      and the opt-in kube-prometheus-stack release goes last;
+#      and the opt-in kube-prometheus-stack release goes after the rest, then,
+#      when the overlay has dizzy/, the dizzy stack (teardown_dizzy): its two
+#      HelmReleases, so the helm-controller uninstalls both charts, its two
+#      HelmRepositories and its claims;
 #   4. the PVCs in shared-services and openstack, which Helm and the operators
 #      leave behind. Not earlier: the openbao-operator chart's admission policy
 #      denies deleting its managed PVCs to everyone but the operator until the
 #      chart is uninstalled;
 #   5. the FluxInstance, so the flux-operator uninstalls the toolkit;
 #   6. the flux-system namespace and the flux-operator's cluster-scoped RBAC;
-#   7. the stack namespaces (stack_namespaces), by name, chaos-mesh among
-#      them, then the objects of STACK_CHART_OBJECT_KINDS whose
+#   7. the stack namespaces (stack_namespaces), by name, chaos-mesh and dizzy
+#      among them, then the objects of STACK_CHART_OBJECT_KINDS whose
 #      helm.toolkit.fluxcd.io/namespace label names one of them: Helm hook
 #      objects, which no uninstall removes, then the two Leases
 #      cert-manager's leader election leaves in kube-system, once no
@@ -776,6 +808,8 @@ teardown_external_cluster() {
   # The opt-in monitoring release, by file: its overlay's configMapGenerator needs
   # a file the deploy stages, so `-k` does not render on a fresh checkout.
   delete_and_wait "the kube-prometheus-stack release" -f "${REPO_ROOT}/deploy/kind/prometheus/release.yaml"
+  # The dizzy stack, while the helm-controller can still uninstall its charts.
+  teardown_dizzy
 
   # 4. The volumes Helm and the operators leave behind.
   delete_and_wait "the PVCs in shared-services" pvc --all -n shared-services

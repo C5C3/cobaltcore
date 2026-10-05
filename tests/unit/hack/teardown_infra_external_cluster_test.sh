@@ -21,7 +21,8 @@
 #      every delete, resumes only the suspended Flux objects that installed
 #      something, splits the base render into the Gateway pass and the rest,
 #      deletes exactly the stack CRDs of a mixed list, chaos-mesh.org included,
-#      names no namespace outside the stack's, chaos-mesh included, and reads,
+#      names no namespace outside the stack's, chaos-mesh and dizzy included,
+#      and reads,
 #      logs and deletes the cluster-scoped objects whose
 #      helm.toolkit.fluxcd.io/namespace label names a stack namespace after the
 #      stack namespaces are gone and before the CRDs, reads them again in the
@@ -79,6 +80,14 @@
 #      CRDs gets no experiment delete but the overlay delete, an overlay
 #      without chaos-mesh/ no read and no delete, and a second run exits 0
 #      without "No resources found".
+#   6. The dizzy stack goes at the end of step 3: its two HelmReleases, then
+#      its two HelmRepositories, then the PVCs in dizzy, after the
+#      kube-prometheus-stack release and before the PVCs of step 4, and step 7
+#      and the final count name the namespace dizzy. An overlay without
+#      dizzy/ gets none of the three deletes. A HelmRelease delete that runs
+#      out exits 1 with kubectl's line and deletes nothing after it; a second
+#      run, on which the Flux kinds are gone, and a cluster deployed without
+#      WITH_DIZZY=true, on which the deletes find nothing, exit 0.
 #
 # main() runs against a recording kubectl stub on a private PATH prefix and the
 # real yq; the external-cluster checks are SKIP without yq.
@@ -218,10 +227,15 @@ ippools.crd.projectcalico.org"
 #                          WITH_NFS=true
 #   KUBECTL_NFS_RELEASE_RC non-empty: the read of that HelmRelease fails with
 #                          Forbidden
+#   KUBECTL_DIZZY_DELETE_RC
+#                          exit code of the delete of the dizzy HelmReleases
+#                          alone, which then times out on
+#                          dizzy-victoria-metrics (default 0)
 # The step 0 reads answer two nodes, lab-a and lab-b, and a fixtures domain
-# hvo-cc3test that a second run no longer finds. The read of the HelmRelease
-# kube-system/csi-driver-nfs answers it, and on a second run fails on the
-# missing HelmRelease kind. The pod read answers two pods
+# hvo-cc3test that a second run no longer finds. On a second run the named
+# deletes of HelmReleases and HelmRepositories fail on the missing kind. The
+# read of the HelmRelease kube-system/csi-driver-nfs answers it, and on a
+# second run fails on the missing HelmRelease kind. The pod read answers two pods
 # without an nfs.csi.k8s.io volume (pods.json), and {"items":[]} on a second
 # run. The PersistentVolume read answers a Bound volume of another driver and
 # a Released one of nfs.csi.k8s.io (pvs.json), and {"items":[]} on a second
@@ -684,6 +698,12 @@ case "$args" in
           exit "${KUBECTL_NOVACOMPUTE_DELETE_RC}"
         fi
         ;;
+      "delete helmreleases.helm.toolkit.fluxcd.io dizzy-victoria-metrics "*)
+        if [ "${KUBECTL_DIZZY_DELETE_RC:-0}" != "0" ]; then
+          echo "error: timed out waiting for the condition on helmreleases/dizzy-victoria-metrics" >&2
+          exit "${KUBECTL_DIZZY_DELETE_RC}"
+        fi
+        ;;
       "delete networkchaos.chaos-mesh.org,"*)
         if [ "${KUBECTL_CHAOS_DELETE_RC:-0}" != "0" ]; then
           echo "networkchaos.chaos-mesh.org \"lab-keystone-delay\" deleted" >&2
@@ -705,6 +725,14 @@ case "$args" in
           ;;
         "delete fluxinstance "*)
           echo 'error: the server doesn'"'"'t have a resource type "fluxinstance"' >&2
+          exit 1
+          ;;
+        "delete helmreleases.helm.toolkit.fluxcd.io "*)
+          echo 'error: the server doesn'"'"'t have a resource type "helmreleases"' >&2
+          exit 1
+          ;;
+        "delete helmrepositories.source.toolkit.fluxcd.io "*)
+          echo 'error: the server doesn'"'"'t have a resource type "helmrepositories"' >&2
           exit 1
           ;;
       esac
@@ -773,12 +801,12 @@ have_yq() {
 }
 
 # stack_namespace_names — the Namespaces of deploy/flux-system/namespaces.yaml,
-# space-separated, then the two the kind base declares and the one of the
-# Chaos Mesh overlay.
+# space-separated, then the two the kind base declares and the ones of the
+# Chaos Mesh and dizzy overlays.
 stack_namespace_names() {
   yq -N -r 'select(.kind == "Namespace") | .metadata.name' \
     "$PROJECT_ROOT/deploy/flux-system/namespaces.yaml" | tr '\n' ' '
-  printf '%s' 'envoy-gateway-system headlamp-system chaos-mesh'
+  printf '%s' 'envoy-gateway-system headlamp-system chaos-mesh dizzy'
 }
 
 # ---------------------------------------------------------------------------
@@ -882,6 +910,9 @@ test_external_teardown_order() {
     'kubectl delete -f - [kinds: Gateway GatewayClass]' \
     'kubectl delete -f - [kinds: HelmRelease HelmRepository]' \
     'kubectl delete -f deploy/kind/prometheus/release.yaml' \
+    'kubectl delete helmreleases.helm.toolkit.fluxcd.io dizzy-victoria-metrics dizzy-grafana -n dizzy' \
+    'kubectl delete helmrepositories.source.toolkit.fluxcd.io victoria-metrics grafana -n flux-system' \
+    'kubectl delete pvc --all -n dizzy' \
     'kubectl delete pvc --all -n shared-services' \
     'kubectl delete pvc --all -n openstack' \
     'kubectl delete fluxinstance flux -n flux-system' \
@@ -1649,6 +1680,104 @@ test_chaos_mesh_step() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 7b: the dizzy stack, at the end of step 3
+# ---------------------------------------------------------------------------
+test_dizzy_step() {
+  echo "Test: the dizzy step uninstalls both charts before it deletes the claims, and stops on a delete that runs out"
+
+  if ! have_yq; then
+    echo "  SKIP: yq not installed (28 checks skipped)"
+    SKIP=$((SKIP + 28))
+    return
+  fi
+
+  local tmp output rc calls releases repositories claims flags
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  export CALL_LOG="$tmp/calls.log"
+  flags='--ignore-not-found --wait --timeout=600s'
+  releases="kubectl delete helmreleases.helm.toolkit.fluxcd.io dizzy-victoria-metrics dizzy-grafana -n dizzy $flags"
+  repositories="kubectl delete helmrepositories.source.toolkit.fluxcd.io victoria-metrics grafana -n flux-system $flags"
+  claims="kubectl delete pvc --all -n dizzy $flags"
+
+  # The default overlay carries dizzy/. The stub answers the three deletes
+  # with no output and exit 0, as a cluster deployed without WITH_DIZZY=true
+  # does.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "the teardown exits 0" "0" "$rc"
+  local monitoring_line releases_line repositories_line claims_line shared_line
+  monitoring_line="$(grep -nF 'kubectl delete -f '"$PROJECT_ROOT"'/deploy/kind/prometheus/release.yaml ' <<<"$calls" | cut -d: -f1 | head -n1)"
+  releases_line="$(grep -nxF "$releases" <<<"$calls" | cut -d: -f1 | head -n1)"
+  repositories_line="$(grep -nxF "$repositories" <<<"$calls" | cut -d: -f1 | head -n1)"
+  claims_line="$(grep -nxF "$claims" <<<"$calls" | cut -d: -f1 | head -n1)"
+  shared_line="$(grep -nF 'kubectl delete pvc --all -n shared-services ' <<<"$calls" | cut -d: -f1 | head -n1)"
+  assert_eq "the dizzy HelmReleases are deleted once, ignoring absence and waiting" "1" "$(grep -cxF "$releases" <<<"$calls")"
+  assert_eq "the dizzy HelmRepositories are deleted once, ignoring absence and waiting" "1" "$(grep -cxF "$repositories" <<<"$calls")"
+  assert_eq "the PVCs in dizzy are deleted once, ignoring absence and waiting" "1" "$(grep -cxF "$claims" <<<"$calls")"
+  assert_eq "the HelmReleases go after the kube-prometheus-stack release" "true" \
+    "$([[ -n "$monitoring_line" && -n "$releases_line" && "$monitoring_line" -lt "$releases_line" ]] && echo true || echo false)"
+  assert_eq "the HelmRepositories after the HelmReleases" "true" \
+    "$([[ -n "$releases_line" && -n "$repositories_line" && "$releases_line" -lt "$repositories_line" ]] && echo true || echo false)"
+  assert_eq "the claims after the HelmRepositories" "true" \
+    "$([[ -n "$repositories_line" && -n "$claims_line" && "$repositories_line" -lt "$claims_line" ]] && echo true || echo false)"
+  assert_eq "and before the PVCs in shared-services" "true" \
+    "$([[ -n "$claims_line" && -n "$shared_line" && "$claims_line" -lt "$shared_line" ]] && echo true || echo false)"
+  assert_contains "the HelmRelease delete is logged" "$output" "Deleting the dizzy HelmReleases..."
+  assert_contains "the claim delete is logged" "$output" "Deleting the PVCs in dizzy..."
+  assert_contains "the namespace delete of step 7 names dizzy" \
+    "$(grep -E '^kubectl delete namespace ' <<<"$calls" | grep -v '^kubectl delete namespace flux-system ')" " dizzy "
+  assert_contains "the final count reads dizzy" \
+    "$(grep -E '^kubectl get namespace .* --ignore-not-found -o name$' <<<"$calls")" " dizzy "
+  assert_contains "and finds nothing left" "$output" \
+    "Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0"
+
+  # An overlay without dizzy/: the step deletes nothing.
+  mkdir -p "$tmp/no-dizzy/base" "$tmp/no-dizzy/infrastructure"
+  : >"$tmp/no-dizzy/base/kustomization.yaml"
+  : >"$tmp/no-dizzy/infrastructure/kustomization.yaml"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-dizzy")"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an overlay without dizzy/ tears down" "0" "$rc"
+  assert_not_contains "without the HelmRelease delete" "$calls" "delete helmreleases.helm.toolkit.fluxcd.io dizzy-victoria-metrics"
+  assert_not_contains "without the HelmRepository delete" "$calls" "delete helmrepositories.source.toolkit.fluxcd.io victoria-metrics"
+  assert_not_contains "without the claim delete" "$calls" "delete pvc --all -n dizzy"
+
+  # The helm-controller's uninstall outlives the HelmRelease delete: exit 1
+  # with kubectl's line, and nothing after it is deleted, the claims and Flux
+  # included.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_DIZZY_DELETE_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a HelmRelease delete that runs out exits 1" "1" "$rc"
+  assert_contains "the error names the step" "$output" \
+    "ERROR: deleting the dizzy HelmReleases failed or did not finish within 600s:"
+  assert_contains "and the HelmRelease kubectl still waits for" "$output" \
+    "error: timed out waiting for the condition on helmreleases/dizzy-victoria-metrics"
+  assert_not_contains "no HelmRepository delete follows" "$calls" "delete helmrepositories.source.toolkit.fluxcd.io victoria-metrics"
+  assert_not_contains "no claim delete" "$calls" "delete pvc --all -n dizzy"
+  assert_not_contains "no PVC delete of step 4" "$calls" "delete pvc --all -n shared-services"
+  assert_not_contains "and Flux stays" "$calls" "delete fluxinstance"
+
+  # A second run: the HelmRelease and HelmRepository kinds are gone.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_SECOND_RUN=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a second run exits 0" "0" "$rc"
+  assert_contains "its HelmRelease delete, whose kind has no mapping, passes" "$calls" "$releases"
+  assert_contains "and so does the claim delete after it" "$calls" "$claims"
+  assert_not_contains "and it prints no 'No resources found'" "$output" "No resources found"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
 # Test 8: yq is required
 # ---------------------------------------------------------------------------
 test_requires_yq() {
@@ -1723,6 +1852,7 @@ test_script_names_no_platform_namespace
 test_external_teardown_failures
 test_hypervisor_step_zero
 test_chaos_mesh_step
+test_dizzy_step
 test_requires_yq
 test_requires_mikefarah_yq
 
