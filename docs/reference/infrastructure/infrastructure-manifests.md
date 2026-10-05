@@ -4306,7 +4306,70 @@ part's end; `GATE FAILED: metric`; an HPA or Deployment left after H6;
 anything the teardown leaves; and a hand action neither the block nor the
 quick start names. A failed load Job with a scale-out that held is a finding.
 
-No lab run of the block is recorded yet.
+The run of 2026-10-05 ran the block unchanged on shoot `newforge`, on
+Kubernetes v1.35.6, from commit `d34fde24`
+(`d34fde24334c2809ba2225654c206af9f217eee9`), in the session of
+[#1224](https://github.com/C5C3/cobaltcore/issues/1224). The VPA CRD admitted
+`["Off","Initial","Recreate","InPlaceOrRecreate","Auto"]`. The block started
+from Part 2 of the Quick Start (metal-stack) with its servers, volume, backup
+and network deleted by the first five lines of the
+[Teardown](../../quick-start-metal-stack.md#teardown), and it was pasted a
+section at a time, each case in two parts split at its `hold` line. The
+baseline pod, `4890bf21`, requested `15m`. No gate failed, and nothing was done
+by hand. The outputs are in two comments on #1223,
+[the VPA cases](https://github.com/C5C3/cobaltcore/issues/1223#issuecomment-5999186474)
+and [the HPA part](https://github.com/C5C3/cobaltcore/issues/1223#issuecomment-5999186980).
+In the table a pod is named by the first eight characters of its UID, and the
+seconds with `ready=0` count from the first `vpa.log` line with `ready=0` to the
+next one with `ready=1`; the lines are about five seconds apart.
+
+| Case | Mode and `minReplicas` | Pod over the hold (UID, restarts, CPU request in the spec and running) | Successor after a hand delete | Seconds with `ready=0` | Finding or issue |
+| --- | --- | --- | --- | --- | --- |
+| V1 | `Off`, unset | `4890bf21`, 0, `15m` and `15m`, before and after | `fa529e0c`, `15m` | 22, after the hand delete | none; as documented |
+| V2 | `Initial`, unset | `fa529e0c`, 0, `15m` and `15m`, before and after | `1271bf3e`, `60m`, memory request `109814751` | 34, after the hand delete | finding: the successor's memory request is the target, 105 MiB in place of `368Mi` |
+| V3 | `Recreate`, unset | `5c28ca0b`, 0, `70m` and `70m`, before and after; the updater had evicted `1271bf3e` between 16:10:03 and 16:10:08, within 11 seconds of the patch | not run, no hand delete in V3 | 12, after the eviction | finding: an eviction at one replica, because Gardener's updater runs with `--min-replicas=1` (`computeUpdaterArgs`, `pkg/component/autoscaling/vpa/updater.go` at `gardener/gardener@92a252c0`) |
+| V4 | `Recreate`, 1 | before `5c28ca0b`, 0, `70m` and `70m`; after `3653d9dd`, 0, `93m` and `93m` | not run, no hand delete in V4 | 11, after the eviction | none; the successor requests the recommender's own target, `93m`, above the floor of `80m` |
+| V5 | `InPlaceOrRecreate`, unset | `3653d9dd`, 0, `93m` and `93m`, before and after | not run, no hand delete in V5 | 0 | finding: `93m` lay inside the VPA's range (lower bound `90m`, upper bound `200m`), so the case shows nothing about a replica floor |
+| V6 | `InPlaceOrRecreate`, 1 | `3653d9dd`, 0, `100m` and `100m`, before and after; resized in place between 16:28:05 and 16:28:11, before the hold | not run, no hand delete in V6 | 0 | none; as documented |
+
+The `applied at` and `target` lines of the cases: V1 at 15:57:46Z with `50m`
+at 15:58:13Z, V2 at 16:03:58Z with `60m` at 16:04:09Z, V3 at 16:09:57Z with
+`70m` at 16:10:13Z, V4 at 16:15:44Z with `93m` at the same second, V5 at
+16:21:05Z, its hand VPA at 16:21:06Z, with `90m` at 16:22:09Z, and V6 at
+16:27:28Z with `100m` at 16:28:10Z.
+
+`vpaready=` read `VPAReady` from V1's patch to V5's, and `VPANotRequired` from
+`vpa_block V5 null` on; the operator's VPA `controlplane-placement` was gone
+before V5's hand VPA was applied. The pod after the VPA part's end,
+`0627f3e1`, requests `15m` again. What a deployer on a single-replica profile
+gets, case by case:
+
+- V1: with `Off` the pod keeps its request, and a successor starts with the
+  rendered request as well.
+- V2: with `Initial` the running pod keeps its request, and the next pod starts
+  with the recommendation for both resources, here `60m` and 105 MiB, under the
+  unchanged memory limit of `368Mi`.
+- V3: with `Recreate` and no `minReplicas`, the platform's updater evicts the
+  only pod as soon as its request lies outside the recommendation, and the
+  component has no ready pod until the successor is ready, 12 seconds here.
+- V4: with `minReplicas: 1` the same happens, 11 seconds here.
+- V5: with `InPlaceOrRecreate` nothing happens while the request lies inside
+  the recommended range.
+- V6: once the request lies outside the range, the pod is resized in place,
+  with the same UID, no restart and no time without a ready pod.
+
+The HPA part read a CPU utilization at 16:34:32Z (`metric`), 31 seconds after
+H1's patch, and one ready replica at 16:34:39Z (`idle`), when the load Job was
+applied. The first line above one replica came 26 seconds after the apply and
+read `desired=3`; no line with `desired=2` exists, so the HPA went from one to
+three in one step. Three pods were ready at 16:35:46Z (`scale-out`), 67
+seconds after the apply. The peak reading was `cpu=5693`, in percent of the
+`15m` request. The Job ended at 16:49:50Z with
+`RESULT total=6289 ok=6289 fail=0`, and the Deployment was back at one ready
+replica 133 seconds later, at 16:52:03Z (`scale-in`). After H6, `hpa_state`
+printed no HPA and `ready=1`. `EXTERNAL_CLUSTER=true make teardown-infra` then
+exited 0 and left the platform's namespaces alone and no VPA outside
+`kube-system`. The run found none of the defects listed above.
 
 ### Lab hypervisors
 
