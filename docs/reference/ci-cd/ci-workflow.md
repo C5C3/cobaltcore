@@ -2448,7 +2448,7 @@ The CI workflow depends on the following artifacts:
 | `hack/ci-deploy-korc.sh` | `e2e-operator` (c5c3 leg), `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone` jobs | Applies K-ORC from an authenticated clone at the pinned commit |
 | `hack/ci-deploy-operator.sh` | `e2e-operator`, `e2e-chaos`, `tempest`, `e2e-controlplane` jobs | Deploys operator via Helm; `e2e-controlplane` sets `OPERATOR_REPLICAS=1` |
 | `hack/ci-check-node-budget.sh` | `e2e-controlplane` job, through the full-chain suite's Link 6z | Fails when the pods on the kind node request more than 4000m CPU or 16Gi memory |
-| `hack/ci-vpa-recommendations.sh` | `e2e-controlplane`, `e2e-controlplane-sso`, `tempest` jobs under `ci:measure-sizing` | Records the VPA recommendations of the `openstack` workloads for the [sizing measurement](#sizing-measurement) |
+| `hack/ci-vpa-recommendations.sh` | `e2e-controlplane`, `e2e-controlplane-sso`, `tempest` jobs under `ci:measure-sizing`, and by hand in the [lab measurement](../testing/sizing-calibration.md#lab-measurement) | Records the VPA recommendations of the `openstack` workloads for the [sizing measurement](#sizing-measurement); its `prepare` subcommand removes the MariaDB scale subresource on the lab, which refuses `WITH_VPA=true` |
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests |
 | `.github/actions/setup-test-deps/` | `chainsaw-lint` job, `setup-e2e-infra` composite action | Composite action for testdeps cache + `make install-test-deps` |
 | `.github/actions/setup-e2e-infra/` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Composite action for infra setup |
