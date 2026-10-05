@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1640" height="818" viewBox="0 0 1640 818" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="One stack, five building blocks">
+<title>One stack, five building blocks</title>
+<rect width="1640" height="818" fill="#F6F5F1"/>
+<rect x="40" y="40" width="220" height="130" rx="16" fill="#1D47A6"/>
+<text x="150" y="115.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">OpenStack</text>
+<rect x="285.5" y="41.5" width="417" height="127" rx="14.5" fill="#F8E8E9" stroke="#C6343C" stroke-width="3"/>
+<text x="494" y="96.24" font-size="34" font-weight="700" fill="#A3262E" text-anchor="middle">VMs</text>
+<text x="494" y="135.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">Nova on KVM or Cloud Hypervisor</text>
+<rect x="733.5" y="41.5" width="417" height="127" rx="14.5" fill="#E3F1F2" stroke="#0E7D89" stroke-width="3"/>
+<text x="942" y="96.24" font-size="34" font-weight="700" fill="#0B5F69" text-anchor="middle">Storage</text>
+<text x="942" y="135.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">Cinder on Ceph</text>
+<rect x="1181.5" y="41.5" width="417" height="127" rx="14.5" fill="#FAF3DA" stroke="#B38A00" stroke-width="3"/>
+<text x="1390" y="96.24" font-size="34" font-weight="700" fill="#6F5600" text-anchor="middle">Network</text>
+<text x="1390" y="135.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">Neutron on OVN</text>
+<rect x="40" y="192" width="220" height="130" rx="16" fill="#1E6B40"/>
+<text x="150" y="267.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">CobaltCore</text>
+<rect x="285.5" y="193.5" width="1313" height="127" rx="14.5" fill="#E6F1EA" stroke="#2F8A57" stroke-width="3"/>
+<text x="942" y="248.24" font-size="34" font-weight="700" fill="#1E6B40" text-anchor="middle">OpenStack control planes</text>
+<text x="942" y="287.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">Kubernetes operators, one ControlPlane resource per control plane</text>
+<rect x="40" y="344" width="220" height="130" rx="16" fill="#4B3592"/>
+<text x="150" y="419.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">Gardener</text>
+<rect x="285.5" y="345.5" width="1313" height="127" rx="14.5" fill="#EEEAF7" stroke="#5E43A8" stroke-width="3"/>
+<text x="942" y="400.24" font-size="34" font-weight="700" fill="#4B3592" text-anchor="middle">Kubernetes clusters</text>
+<text x="942" y="439.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">Created and managed via the IronCore provider extension</text>
+<rect x="40" y="496" width="220" height="130" rx="16" fill="#4F5A67"/>
+<text x="150" y="571.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">Garden Linux</text>
+<rect x="285.5" y="497.5" width="1313" height="127" rx="14.5" fill="#E9ECEF" stroke="#7D8794" stroke-width="3"/>
+<text x="942" y="552.24" font-size="34" font-weight="700" fill="#2B3440" text-anchor="middle">Operating system</text>
+<text x="942" y="591.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">On every node</text>
+<rect x="40" y="648" width="220" height="130" rx="16" fill="#A44E07"/>
+<text x="150" y="723.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">IronCore</text>
+<rect x="285.5" y="649.5" width="417" height="127" rx="14.5" fill="#FBEFE3" stroke="#C9620F" stroke-width="3"/>
+<text x="494" y="725.24" font-size="34" font-weight="700" fill="#A44E07" text-anchor="middle">Server provisioning</text>
+<rect x="733.5" y="649.5" width="417" height="127" rx="14.5" fill="#FBEFE3" stroke="#C9620F" stroke-width="3"/>
+<text x="942" y="725.24" font-size="34" font-weight="700" fill="#A44E07" text-anchor="middle">Server lifecycle</text>
+<rect x="1181.5" y="649.5" width="417" height="127" rx="14.5" fill="#FBEFE3" stroke="#C9620F" stroke-width="3"/>
+<text x="1390" y="725.24" font-size="34" font-weight="700" fill="#A44E07" text-anchor="middle">Switch management</text>
+</svg>
