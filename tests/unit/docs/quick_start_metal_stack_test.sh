@@ -54,6 +54,9 @@
 #  16. the Caveats link the lab fault runs of
 #      docs/reference/infrastructure/infrastructure-manifests.md#lab-fault-runs
 #      and do not say that no lab run has tested the NFS outage
+#  17. Part 1, Step 3 links the platform's autoscalers of
+#      docs/reference/infrastructure/infrastructure-manifests.md#lab-autoscaling,
+#      and the page does not say that the VPA needs a kind node
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -562,6 +565,23 @@ test_caveats_name_the_fault_runs() {
     "$(tr -s '\n ' ' ' <<<"$body")" 'no lab run has tested that'
 }
 
+# --- Test 17: Step 3 names the platform's autoscalers ---
+# The shoot runs a VPA and a metrics-server, so Step 3 links what a workload
+# opts into instead of calling WITH_VPA a flag that needs a kind node. The
+# page is joined into one line, so a sentence wrapped differently still
+# counts.
+test_step_3_names_the_platform_autoscalers() {
+  echo "Test: Part 1, Step 3 links the platform's autoscalers"
+  local step
+  step="$(section '^## Part 1: ' |
+    awk '/^### Step 3:/ { inside = 1; next } inside && /^### / { exit } inside { print }')"
+  assert_not_empty "Part 1 holds Step 3" "$step"
+  assert_contains "Step 3 links infrastructure-manifests.md#lab-autoscaling" "$step" \
+    'infrastructure-manifests.md#lab-autoscaling'
+  assert_not_contains "the page does not say 'the other flags that need a kind node'" \
+    "$(tr -s '\n ' ' ' <"$QUICK_START_DOC")" 'the other flags that need a kind node'
+}
+
 test_frontmatter
 test_sidebar
 test_sections
@@ -578,6 +598,7 @@ test_teardown_order
 test_no_array_index
 test_step_5_boots_every_node
 test_caveats_name_the_fault_runs
+test_step_3_names_the_platform_autoscalers
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
