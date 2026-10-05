@@ -308,7 +308,7 @@ validating webhook is unavailable.
 | `spec.autoscaling.minReplicas` | Minimum: 1 | — |
 | `spec.autoscaling.targetCPUUtilization` | Minimum: 1 | — |
 | `spec.autoscaling.targetMemoryUtilization` | Minimum: 1 | — |
-| `spec.deployment.verticalAutoscaling.updateMode` | Enum: `Off`, `Initial`, `Recreate`, `Auto` | — |
+| `spec.deployment.verticalAutoscaling.updateMode` | Enum: `Off`, `Initial`, `Recreate`, `InPlaceOrRecreate`, `Auto` | — |
 | `spec.deployment.verticalAutoscaling.minReplicas` | Minimum: 1 | — |
 | `spec.deployment.verticalAutoscaling.minAllowed`, `.maxAllowed` | MaxProperties: 2 | — |
 | `spec.uwsgi.processes` | Minimum: 1 | — |
@@ -439,12 +439,12 @@ CR created before is deleted.
 The operator owns the VPA's lifetime. What the VPA then does depends on the
 VPA components the cluster runs: the recommender computes the recommendation,
 the admission controller writes it into the requests of new pods, and the
-updater evicts running pods to apply it. A cluster that runs the recommender
-alone gets recommendations and no changed pod.
+updater evicts or resizes running pods to apply it. A cluster that runs the
+recommender alone gets recommendations and no changed pod.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `updateMode` | `string` | Yes | — | The VPA's `spec.updatePolicy.updateMode`. `Off` only recommends, `Initial` sets the requests when a pod is created, and `Recreate` and `Auto` also evict running pods to apply them. `Auto` behaves like `Recreate` in VPA 1.8 and is deprecated upstream. `InPlaceOrRecreate` and `InPlace` are not offered: both need feature gates on the VPA and the cluster. YAML reads a bare `Off` as a boolean, so write `updateMode: "Off"`. |
+| `updateMode` | `string` | Yes | — | The VPA's `spec.updatePolicy.updateMode`. `Off` only recommends, `Initial` sets the requests when a pod is created, and `Recreate` and `Auto` also evict running pods to apply them. `Auto` behaves like `Recreate` in VPA 1.8 and is deprecated upstream. `InPlaceOrRecreate` resizes a running pod and evicts it only when the resize fails. It is generally available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the feature gate `InPlacePodVerticalScaling` on. A cluster whose VPA CRD predates the mode refuses the VPA, and `VPAReady` reports `VPAError`. `InPlace` is not offered: it is alpha in VPA 1.8 behind a VPA feature gate. YAML reads a bare `Off` as a boolean, so write `updateMode: "Off"`. |
 | `minReplicas` | `*int32` | No | unset | The VPA's `spec.updatePolicy.minReplicas`: the updater evicts no pod while fewer replicas run. Minimum: 1. Unset, the updater's own default of 2 applies (see [One replica](#one-replica)). |
 | `minAllowed` | `corev1.ResourceList` | No | unset | The lower bound of the recommendation, `minAllowed` of the container policy. Only `cpu` and `memory`. |
 | `maxAllowed` | `corev1.ResourceList` | No | unset | The upper bound of the recommendation, `maxAllowed` of the container policy. Only `cpu` and `memory`, each at least the `minAllowed` of the same resource. |
@@ -492,7 +492,7 @@ VPA belongs on a component no HPA scales.
 | `VPANotRequired` | `True` | No workload opts in. A VPA the CR created before is deleted. |
 | `VPANotInstalled` | `False` | A workload opts in, but the cluster its children land on does not serve `autoscaling.k8s.io/v1` `VerticalPodAutoscaler`. The message names the workloads. Nothing is created or deleted, and every other sub-reconciler keeps running; the aggregate `Ready` stays `False` until the VPA is installed or the opt-in is removed. |
 | `CapabilityProbeFailed` | `False` | The target cluster the CR names could not be asked whether it serves the kind. The pass is retried. |
-| `VPAError` | `False` | Listing, applying or deleting a VPA failed. The message carries the error, and the pass is retried. |
+| `VPAError` | `False` | Listing, applying or deleting a VPA failed, for example on a cluster whose VPA CRD refuses the `updateMode` (`Unsupported value: "InPlaceOrRecreate"`). The message carries the error, and the pass is retried. |
 
 The operator asks the management cluster for the kind once, at startup. A VPA
 CRD installed after the operator started is seen after an operator restart;
@@ -509,7 +509,10 @@ The updater evicts a pod only while at least `minReplicas` replicas run, and
 its own default is 2. On the Minimal sizing profile every component runs one
 replica, so a VPA in `Recreate` or `Auto` mode only recommends until the block
 sets `minReplicas: 1`. With it, the updater evicts the only pod, and the
-component is down until its replacement is ready.
+component is down until its replacement is ready. The updater applies the same
+floor to an in-place resize in `InPlaceOrRecreate` mode unless it runs with
+`--in-place-skip-disruption-budget`, which is off by default
+([VPA 1.8.0 flags](https://github.com/kubernetes/autoscaler/blob/vertical-pod-autoscaler-1.8.0/vertical-pod-autoscaler/docs/flags.md)).
 
 ### Example
 
@@ -1685,7 +1688,7 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Autoscaling target over a zero request | `spec.deployment.resources.requests.<cpu\|memory>`, or `limits.<cpu\|memory>` when no request is named | `field.Invalid` | A zero or negative request, or a zero or negative limit the API server would copy into the request, for the resource a set `targetCPUUtilization` or `targetMemoryUtilization` measures. The HPA divides the pods' usage by the sum of their containers' requests, so a zero request fails the metric or inflates it. A block that names neither passes, because the render-time default fills a positive request. Webhook-only: a `resource.Quantity` floor has no marker. |
 | Autoscaling target over a zero proxy request | `spec.federation.proxyResources.requests.<cpu\|memory>`, or `limits.<cpu\|memory>` | `field.Invalid` | The same rule for the federation proxy sidecar, which joins the API pod while `spec.federation` is set. |
 | Vertical autoscaling beside autoscaling | `spec.deployment.verticalAutoscaling` | `field.Forbidden` | `spec.autoscaling` and `spec.deployment.verticalAutoscaling` are both set (`cannot be set while spec.autoscaling scales the same Deployment`). Defense-in-depth alongside the CEL XValidation rule on the spec root. |
-| Vertical autoscaling update mode | `spec.deployment.verticalAutoscaling.updateMode` | `field.NotSupported` | A value other than `Off`, `Initial`, `Recreate` or `Auto`. Defense-in-depth alongside the `Enum` marker. |
+| Vertical autoscaling update mode | `spec.deployment.verticalAutoscaling.updateMode` | `field.NotSupported` | A value other than `Off`, `Initial`, `Recreate`, `InPlaceOrRecreate` or `Auto`. Defense-in-depth alongside the `Enum` marker. |
 | Vertical autoscaling minReplicas minimum | `spec.deployment.verticalAutoscaling.minReplicas` | `field.Invalid` | `minReplicas < 1` when set (`must be at least 1`). Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Vertical autoscaling resources | `spec.deployment.verticalAutoscaling.minAllowed[<key>]`, `.maxAllowed[<key>]` | `field.NotSupported` | A key other than `cpu` and `memory`. Defense-in-depth alongside the two CEL XValidation rules on `VerticalAutoscalingSpec`. |
 | Vertical autoscaling bounds | `spec.deployment.verticalAutoscaling.minAllowed[<key>]` | `field.Invalid` | `minAllowed` of a resource above `maxAllowed` of the same resource (`must not exceed maxAllowed`). Webhook-only: CEL cannot compare quantities across two maps. |
