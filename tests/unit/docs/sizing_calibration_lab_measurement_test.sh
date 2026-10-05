@@ -15,23 +15,29 @@
 #      the `snapshot`, the `report` and the two `kubectl delete vpa` lines
 #      come in this order
 #   3. each name comes from its source: the script's managed-by label, the
-#      libvirtd scope's unit, the libvirt pods' app label, and the three CR
+#      libvirtd scope's unit, the libvirt pods' app label, the three CR
 #      names of deploy/lab/metal-stack/hypervisor/compute.yaml that the five
-#      workload names of `verdicts` start with
+#      workload names of `verdicts` start with, the components the operators
+#      append to them, and the libvirt DaemonSet's name; the fixture header is
+#      the report header of the script, whose columns 3, 9, 12, 13, 16 and 17
+#      are the ones the helpers read
 #   4. the page holds none of the four run-sequence commands that
 #      test_one_runbook of tests/unit/docs/quick_start_metal_stack_test.sh
 #      keeps on the quick start alone
 #   5. the helpers run from the page on a fixture of five rows: `floors`,
 #      `floor_bounds`, `verdicts` and `over_request` print their lines, and
-#      `libvirtd_scope` prints a node and its scope's readings per pod
+#      `libvirtd_scope` prints a node and its scope's readings per pod;
+#      `floor_bounds` takes each resource's bound from its own workload, and
+#      a target equal to its request is `confirmed` and no `over_request`
+#      line, a CPU target above it `contradicted`
 #   6. empty: on a TSV of the comment and header lines alone the four awk
 #      helpers print nothing and exit 0, `pod_state` prints nothing for an
 #      empty pod list, and `no_recommendation` nothing when every VPA has a
 #      recommendation
 #   7. absent: a row without requests gets `no default` and no over_request
-#      line, `pod_state` prints `-` without the vpaUpdates annotation and
-#      `-/-` for a container without requests, and `no_recommendation` lists
-#      a VPA without a status
+#      line, `pod_state` leaves a terminating pod out, sorts its lines, prints
+#      `-` without the vpaUpdates annotation and `-/-` for a container
+#      without requests, and `no_recommendation` lists a VPA without a status
 #   8. upstream error: `verdicts` on a missing TSV exits 2 and names the file,
 #      `floor_bounds` then prints nothing, `pod_state` and `no_recommendation`
 #      print no line when `kubectl` cannot reach the server, and
@@ -234,7 +240,8 @@ test_command_order() {
 }
 
 # --- Test 3: the names come from their sources ---
-# A renamed label, unit or CR fails here before the block reads nothing.
+# A renamed label, unit, CR, component or report column fails here before the
+# block reads nothing or the wrong column.
 test_name_sources() {
   echo "Test: each name the section uses is the one its source sets"
   local hypervisor="$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor"
@@ -264,6 +271,32 @@ test_name_sources() {
   verdicts_helper="$(helper verdicts)"
   assert_contains "verdicts picks the five compute workloads" "$verdicts_helper" \
     '/^(lab-nova-compute|lab-chassis-ovn-controller|lab-chassis-ovs|lab-metadata-agent-metadata-agent|libvirt)$/'
+  # The operators name a DaemonSet <CR name>-<component>: the name function's
+  # return line and the component's constant.
+  local entry
+  for entry in \
+    'nova/internal/controller/reconcile_novacompute_daemonset.go|return cr.Name + "-" + novaComputeComponent' \
+    'nova/internal/controller/novacompute_controller.go|const novaComputeComponent = "nova-compute"' \
+    'ovn/internal/controller/reconcile_controller.go|return cr.Name + "-" + componentOVNController' \
+    'ovn/internal/controller/reconcile_controller.go|const componentOVNController = "ovn-controller"' \
+    'ovn/internal/controller/reconcile_ovs.go|return cr.Name + "-" + componentOVS' \
+    'ovn/internal/controller/reconcile_ovs.go|const componentOVS = "ovs"' \
+    'neutron/internal/controller/reconcile_daemonset.go|return cr.Name + "-" + metadataAgentComponent' \
+    'neutron/internal/controller/neutronmetadataagent_controller.go|const metadataAgentComponent = "metadata-agent"'; do
+    assert_file_contains_fixed "operators/${entry%%|*} holds '${entry#*|}'" \
+      "$PROJECT_ROOT/operators/${entry%%|*}" "${entry#*|}"
+  done
+  assert_eq "the libvirt DaemonSet is named libvirt" "libvirt" \
+    "$(awk '/^kind: DaemonSet$/ { k = 1 } k && /^  name: / { print $2; exit }' "$hypervisor/libvirt-daemonset.yaml")"
+  # The helpers read the report by position, and the fixtures follow the
+  # header the script writes.
+  local script_cols pair
+  script_cols="$(awk '/\| \(\["namespace", "kind"/,/as \$cols/' "$PROJECT_ROOT/hack/ci-vpa-recommendations.sh" |
+    { grep -o '"[a-z_]*"' || true; } | tr -d '"' | paste -sd ' ')"
+  assert_eq "the fixture header is the report header of the script" "$script_cols" "$(tr '\t' ' ' <<<"$COLUMNS_LINE")"
+  for pair in 3:workload 9:container 12:cpu_target_m 13:memory_target_mi 16:cpu_request_m 17:memory_request_mi; do
+    assert_eq "column ${pair%%:*} of the report is ${pair#*:}" "${pair#*:}" "$(cut -d' ' -f"${pair%%:*}" <<<"$script_cols")"
+  done
 }
 
 # --- Test 4: the run sequence stays on the quick start ---
@@ -297,6 +330,12 @@ test_helpers() {
     '24 22 2 openstack/DaemonSet/lab-chassis-ovs'
   assert_eq "floor_bounds prints the smallest bounds" "floor bounds: cpu below 12m, memory at most 11Mi" \
     "$(run "$dir" 'floor_bounds "$dir/r.tsv"' 2>&1 || true)"
+  tsv "$dir/split.tsv" \
+    'openstack Deployment a 1 - - a - a - - 11 300 50 600 15 368 368 2026-10-05T12:00:00Z' \
+    'openstack Deployment b 1 - - b - b - - 40 11 50 50 15 368 368 2026-10-05T12:00:00Z'
+  assert_eq "floor_bounds takes each resource's bound from its own workload" \
+    "floor bounds: cpu below 12m, memory at most 11Mi" \
+    "$(run "$dir" 'floor_bounds "$dir/split.tsv"' 2>&1 || true)"
 
   out="$(run "$dir" 'verdicts "$dir/r.tsv"' 2>&1 || true)"
   assert_eq "verdicts prints the four rows of the compute workloads" \
@@ -309,6 +348,13 @@ libvirt libvirtd cpu 11m request 100: confirmed; memory 11Mi request 256: confir
     "openstack lab-metadata-agent-metadata-agent metadata-agent memory target 2100Mi above request 2048Mi
 openstack controlplane-placement placement-api memory target 400Mi above request 368Mi" \
     "$(run "$dir" 'over_request "$dir/r.tsv"' 2>&1 || true)"
+  tsv "$dir/boundary.tsv" \
+    'openstack DaemonSet lab-nova-compute - NovaCompute lab nova nova-compute nova-compute - - 126 256 300 600 70 256 256 2026-10-05T12:00:00Z'
+  assert_eq "verdicts contradicts a CPU target above its request and confirms a memory target equal to it" \
+    "lab-nova-compute nova-compute cpu 126m request 70: contradicted; memory 256Mi request 256: confirmed" \
+    "$(run "$dir" 'verdicts "$dir/boundary.tsv"' 2>&1 || true)"
+  assert_eq "over_request prints no line for a memory target equal to its request" "" \
+    "$(run "$dir" 'over_request "$dir/boundary.tsv"' 2>&1 || true)"
 
   printf 'pod/libvirt-a\npod/libvirt-b\n' >"$dir/stub/pod.out"
   echo worker-a >"$dir/stub/node-libvirt-a.out"
@@ -354,11 +400,12 @@ test_absent() {
   assert_eq "over_request prints no line for it" "" "$(run "$dir" 'over_request "$dir/r.tsv"' 2>&1 || true)"
   need_jq || return 0
   printf '%s' '{"items":[
-    {"metadata":{"name":"p-1","uid":"u-1"},"spec":{"containers":[{"name":"c"}]}},
     {"metadata":{"name":"p-2","uid":"u-2","annotations":{"vpaUpdates":"Pod resources updated by v: container 0: cpu request"}},
      "spec":{"containers":[{"name":"a","resources":{"requests":{"cpu":"15m","memory":"368Mi"}}}]},
-     "status":{"containerStatuses":[{"restartCount":2}]}}]}' >"$dir/stub/pods.out"
-  assert_eq "pod_state prints - without the annotation and -/- without requests" \
+     "status":{"containerStatuses":[{"restartCount":2}]}},
+    {"metadata":{"name":"p-0","uid":"u-0","deletionTimestamp":"2026-10-05T12:00:00Z"},"spec":{"containers":[{"name":"c"}]}},
+    {"metadata":{"name":"p-1","uid":"u-1"},"spec":{"containers":[{"name":"c"}]}}]}' >"$dir/stub/pods.out"
+  assert_eq "pod_state leaves a terminating pod out, sorts, and prints - without the annotation and -/- without requests" \
     "$(printf 'openstack\tp-1\tu-1\t0\t-\tc=-/-\nopenstack\tp-2\tu-2\t2\tPod resources updated by v: container 0: cpu request\ta=15m/368Mi')" \
     "$(run "$dir" 'pod_state openstack' 2>&1 || true)"
   printf '%s' '{"items":[{"metadata":{"name":"sizing-daemonset-a"}},
