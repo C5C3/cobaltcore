@@ -23,6 +23,7 @@ the page embeds. A change to a diagram updates both files in the same commit.
 | `cobaltcore-architecture` | The five clusters (Operation and Monitoring, OpenStack Control Plane, Ceph Storage, OpenStack Compute, OpenStack Network) on Garden Linux, managed by Gardener, on bare metal managed by IronCore | [The multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture) |
 | `cobaltcore-control-planes` | One Operation and Monitoring cluster that creates and manages several OpenStack control planes | [Several control planes](../architecture/index.md#several-control-planes) |
 | `cobaltcore-attached-clusters` | One control plane with several storage, compute, and network clusters attached | [Attached clusters](../architecture/index.md#attached-clusters) |
+| `conventions-legend` | The notation for frames, objects, arrows, sequences, state machines, markers and outside actors | [Notation legend](./architecture-diagrams.md#notation-legend) |
 
 ## Change a diagram
 
@@ -106,3 +107,38 @@ The shapes and arrows carry a fixed meaning:
 
 The icons in `cobaltcore-overview` are plain line icons and can be replaced by
 another icon set.
+
+### Notation legend
+
+The legend draws one sample of every element in the table below.
+
+![The notation of the docs figures in six groups. Frames: a cluster frame with a K8s chip that contains a namespace frame with an ns chip. Objects: a custom resource as a filled pill, a workload as an outline pill, a Secret and a ConfigMap as sheets with a folded corner, a Job and a CronJob as boxes with a bar at each side. Arrows: green for creates, blue for the OpenStack API, magenta for secret material labelled ExternalSecret or PushSecret, dark for order (solid when declared, dotted at run time), a grey line with a filled diamond for an owner reference, a dotted grey line with an open diamond for ownership by label, and a dashed arrow for optional parts. Sequences: numbered step badges at the tail of each arrow. State machines: an initial marker, a state, a stuck state in grey, and a transition labelled with its trigger and who drives it. Markers and outside actors: the chips by hand, kind only and lab only, and the actors Workstation, CI runner and Identity provider.](../diagrams/conventions-legend.svg)
+
+Every draw.io style also carries `whiteSpace=wrap;html=1;` and the font
+settings of the existing files. `<stroke>` and `<text>` are the palette colors
+of the role that owns the object.
+
+| Element | Meaning | Looks like | draw.io style |
+| --- | --- | --- | --- |
+| Cluster frame | One Kubernetes cluster | Light frame, dark `K8s` chip and bold name at the top left | `rounded=1;absoluteArcSize=1;arcSize=37;fillColor=#FDFCF9;strokeColor=#3A4452;strokeWidth=3;` |
+| Namespace frame | One namespace inside a cluster frame | Recessed frame, grey `ns` chip and bold name at the top left | `rounded=1;absoluteArcSize=1;arcSize=24;fillColor=#F6F5F1;strokeColor=#7D8794;strokeWidth=2;` and for the chip `fillColor=#7D8794;strokeColor=none;` |
+| Custom resource | A CR a person or an operator applies | Filled pill, bold light text | `rounded=1;absoluteArcSize=1;arcSize=40;fillColor=<text>;strokeColor=none;` |
+| Workload | Deployment, StatefulSet, DaemonSet or pod | Outline pill | `rounded=1;absoluteArcSize=1;arcSize=34;fillColor=#FDFCF9;strokeColor=<stroke>;strokeWidth=2;` |
+| Secret | A Kubernetes Secret | Sheet with a folded corner in the Secret colors | `shape=note;size=16;fillColor=#F7E8F0;strokeColor=#B0387F;strokeWidth=2;` |
+| ConfigMap | A ConfigMap | Sheet with a folded corner, grey | `shape=note;size=16;fillColor=#FDFCF9;strokeColor=#7D8794;strokeWidth=2;` |
+| Job, CronJob | A workload that runs to completion. The label starts with the kind | Box with a bar at each side | `shape=process;size=0.08;fillColor=#FDFCF9;strokeColor=<stroke>;strokeWidth=2;` |
+| Creates | An operator creates or reconciles what the arrow points at | Green arrow | `strokeColor=#2F8A57;strokeWidth=3;endArrow=block;endFill=1;` |
+| OpenStack API | An OpenStack API or control-plane connection | Blue arrow | `strokeColor=#2457C5;strokeWidth=3;endArrow=block;endFill=1;` |
+| Secret material | A secret value travels in the arrow's direction. The label names the resource that moves it: `ExternalSecret` out of OpenBao, `PushSecret` into it | Magenta arrow, label in font size 20 | `strokeColor=#B0387F;strokeWidth=3;endArrow=block;endFill=1;` |
+| Order | What must be ready first points at what waits for it | Dark arrow, solid when declared or enforced, dotted when it holds only at run time | `strokeColor=#3A4452;strokeWidth=3;endArrow=block;endFill=1;` plus `dashed=1;dashPattern=1 3;` |
+| Owner reference | The owner garbage-collects the object | Grey line, filled diamond at the owner | `strokeColor=#7D8794;strokeWidth=2;endArrow=none;startArrow=diamondThin;startFill=1;startSize=14;` |
+| Ownership by label | Owned through labels, because no owner reference can cross the namespace or cluster | Dotted grey line, open diamond at the owner | `strokeColor=#7D8794;strokeWidth=2;endArrow=none;startArrow=diamondThin;startFill=0;startSize=14;dashed=1;dashPattern=1 3;` |
+| Optional | An optional part or a further instance of the same kind | Dashed arrow in the color of its kind | the style of its kind plus `dashed=1;dashPattern=3 2;` |
+| Step badge | Step n of a sequence. The page lists the steps under the same numbers | Dark circle with a light number at the tail of the arrow | `ellipse;aspect=fixed;fillColor=#17202B;strokeColor=none;fontColor=#FDFCF9;fontStyle=1;fontSize=20;` at 36 by 36 |
+| State | A state of a state machine | Box with slightly rounded corners, bold name | `rounded=1;absoluteArcSize=1;arcSize=12;fillColor=#FDFCF9;strokeColor=#3A4452;strokeWidth=2;` |
+| Stuck state | A state the machine leaves only after someone intervenes | The same box, grey | `rounded=1;absoluteArcSize=1;arcSize=12;fillColor=#E9ECEF;strokeColor=#7D8794;strokeWidth=2;` |
+| Initial marker | Where the machine starts | Small dark dot with an Order arrow into the first state | `ellipse;aspect=fixed;fillColor=#17202B;strokeColor=none;` at 20 by 20 |
+| Transition | A change of state. First label line: the trigger. Second line, font size 20 in `#55606E`: who drives it | Order arrow with a two-line label | the Order style |
+| By hand | A person does this step, no controller | Outlined dark chip `by hand` at the top right of the part | `rounded=1;arcSize=50;fillColor=#FDFCF9;strokeColor=#17202B;strokeWidth=2;fontColor=#17202B;fontStyle=1;fontSize=18;` |
+| kind only, lab only | The part exists on that devstack only. The part itself is drawn solid, since dashed means optional | Outlined grey chip `kind only` or `lab only` | `rounded=1;arcSize=50;fillColor=#FDFCF9;strokeColor=#7D8794;strokeWidth=2;fontColor=#55606E;fontStyle=1;fontSize=18;` |
+| Outside actor | A workstation, a CI runner or an identity provider. It sits on the canvas, outside every cluster frame | Box with a bold name and a second line, font size 20 in `#55606E`, that says what acts | `rounded=1;absoluteArcSize=1;arcSize=16;fillColor=#FDFCF9;strokeColor=#3A4452;strokeWidth=2;` |
