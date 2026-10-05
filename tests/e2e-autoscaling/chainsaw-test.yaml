@@ -326,7 +326,7 @@ spec:
 
           # The sizing blocks reach the component each one sizes.
           assert_eq "cp-autoscaling-neutron spec.workers.deployment.verticalAutoscaling" \
-            '{"updateMode":"Off"}' \
+            '{"maxAllowed":{"cpu":"1"},"updateMode":"InPlaceOrRecreate"}' \
             "$(kubectl get neutron cp-autoscaling-neutron -n "${NS}" -o json | jq -cS '.spec.workers.deployment.verticalAutoscaling')"
           assert_eq "cp-autoscaling-cinder spec.scheduler.deployment.verticalAutoscaling" \
             '{"maxAllowed":{"cpu":"1"},"minReplicas":1,"updateMode":"Auto"}' \
@@ -373,6 +373,10 @@ spec:
             "$(kubectl get vpa cp-autoscaling-cinder-scheduler -n "${NS}" -o json | jq -cS '.spec.resourcePolicy.containerPolicies[0].maxAllowed')"
           assert_eq "cp-autoscaling-nova-conductor updateMode" Initial \
             "$(kubectl get vpa cp-autoscaling-nova-conductor -n "${NS}" -o jsonpath='{.spec.updatePolicy.updateMode}')"
+          for vpa in cp-autoscaling-neutron-periodic-workers cp-autoscaling-neutron-ovn-maintenance-worker; do
+            assert_eq "${vpa} updateMode" InPlaceOrRecreate \
+              "$(kubectl get vpa "${vpa}" -n "${NS}" -o jsonpath='{.spec.updatePolicy.updateMode}')"
+          done
           assert_eq "cp-autoscaling-nova-conductor minAllowed" '{"memory":"256Mi"}' \
             "$(kubectl get vpa cp-autoscaling-nova-conductor -n "${NS}" -o json | jq -cS '.spec.resourcePolicy.containerPolicies[0].minAllowed')"
           for vpa in cp-autoscaling-ovn-nb cp-autoscaling-ovn-sb; do

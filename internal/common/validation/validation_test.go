@@ -727,6 +727,9 @@ func TestVerticalAutoscaling(t *testing.T) {
 	}{
 		{name: "nil block"},
 		{name: "updateMode Off", v: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"}},
+		{name: "updateMode InPlaceOrRecreate", v: &commonv1.VerticalAutoscalingSpec{
+			UpdateMode: "InPlaceOrRecreate", MinReplicas: ptr.To(int32(1)),
+		}},
 		{name: "every field", v: &commonv1.VerticalAutoscalingSpec{
 			UpdateMode: "Auto", MinReplicas: ptr.To(int32(1)),
 			MinAllowed: list("cpu", "100m", "memory", "128Mi"), MaxAllowed: list("cpu", "1", "memory", "1Gi"),
@@ -758,6 +761,13 @@ func TestVerticalAutoscaling(t *testing.T) {
 			wantType: field.ErrorTypeNotSupported,
 			wantPath: "spec.deployment.verticalAutoscaling.updateMode",
 			wantSub:  `Unsupported value: "Sometimes"`,
+		},
+		{
+			name:     "updateMode InPlace",
+			v:        &commonv1.VerticalAutoscalingSpec{UpdateMode: "InPlace"},
+			wantType: field.ErrorTypeNotSupported,
+			wantPath: "spec.deployment.verticalAutoscaling.updateMode",
+			wantSub:  `Unsupported value: "InPlace": supported values: "Off", "Initial", "Recreate", "InPlaceOrRecreate", "Auto"`,
 		},
 		{
 			name:     "empty updateMode",

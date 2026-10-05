@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -157,6 +158,25 @@ func TestBuildVPA_UnsetFieldsRenderNoKey(t *testing.T) {
 	}))
 	updatePolicy, _, _ := unstructuredMap(raw, "spec", "updatePolicy")
 	g.Expect(updatePolicy).To(Equal(map[string]any{"updateMode": "Off"}))
+}
+
+// InPlaceOrRecreate reaches the VPA as it is, and a block that sets only the
+// mode renders neither minReplicas nor either bound.
+func TestBuildVPA_RendersInPlaceOrRecreate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	vpa := BuildVPA("default", vpaLabels(), VPATarget{Kind: "Deployment", Name: "svc", Spec: &commonv1.VerticalAutoscalingSpec{
+		UpdateMode: "InPlaceOrRecreate",
+	}})
+
+	g.Expect(vpa.Spec.UpdatePolicy.UpdateMode).To(HaveValue(Equal(vpav1.UpdateModeInPlaceOrRecreate)))
+	raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(vpa)
+	g.Expect(err).NotTo(HaveOccurred())
+	updatePolicy, _, _ := unstructuredMap(raw, "spec", "updatePolicy")
+	g.Expect(updatePolicy).To(Equal(map[string]any{"updateMode": "InPlaceOrRecreate"}))
+	policies, _, _ := unstructuredSlice(raw, "spec", "resourcePolicy", "containerPolicies")
+	g.Expect(policies).To(HaveLen(1))
+	g.Expect(policies[0]).NotTo(HaveKey("minAllowed"))
+	g.Expect(policies[0]).NotTo(HaveKey("maxAllowed"))
 }
 
 // The rendered VPA shares no map with the CR's block, so the flow cannot write
@@ -414,6 +434,30 @@ func TestReconcileVPAs_ClientErrors(t *testing.T) {
 			g.Expect(cond.Reason).To(Equal(ReasonVPAError))
 		})
 	}
+}
+
+// A cluster whose VPA CRD predates InPlaceOrRecreate refuses the apply with
+// the schema's Unsupported value, and the flow reports it through VPAError.
+func TestReconcileVPAs_ModeRefusedByTheCRD_VPAError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := vpaScheme()
+	refused := apierrors.NewInvalid(VPAGVK.GroupKind(), "svc", field.ErrorList{
+		field.NotSupported(field.NewPath("spec", "updatePolicy", "updateMode"), "InPlaceOrRecreate",
+			[]string{"Off", "Initial", "Recreate", "Auto"}),
+	})
+	ops := &failingOps{fail: "apply", err: refused}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(testOwner()).WithInterceptorFuncs(ops.funcs()).Build()
+	var conds []metav1.Condition
+	target := VPATarget{Kind: "Deployment", Name: "svc", Spec: &commonv1.VerticalAutoscalingSpec{UpdateMode: "InPlaceOrRecreate"}}
+
+	res, err := ReconcileVPAs(context.Background(), c, s, testOwner(), vpaParams(&conds, target))
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue())
+	g.Expect(err).To(MatchError(ContainSubstring("ensuring VerticalPodAutoscaler default/svc: ")))
+	g.Expect(res.IsZero()).To(BeTrue())
+	cond := conditions.GetCondition(conds, vpaCondition)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(ReasonVPAError))
+	g.Expect(cond.Message).To(ContainSubstring(`Unsupported value: "InPlaceOrRecreate"`))
 }
 
 // A VPA that vanishes between the list and the delete is the outcome the delete
