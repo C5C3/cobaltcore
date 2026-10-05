@@ -4,7 +4,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the `#### Lab fault runs` subsection of
-# docs/reference/infrastructure/infrastructure-manifests.md (#1222):
+# docs/reference/infrastructure/infrastructure-manifests.md (#1222), the
+# records its session left in the `#### Proving run` and `### Lab NFS stack`
+# subsections, and the Proving run's table (#1246):
 #   1. the heading occurs once, after `#### Proving run` and before
 #      `### Lab ControlPlane`
 #   2. every `kind: <X>Chaos` line of the subsection is `kind: PodChaos`, and
@@ -36,6 +38,13 @@
 #  12. `probes_ok`, run from the page with `openstack` stubbed, holds on new
 #      `ok` lines of both probes and fails on a stalled probe and on a first
 #      console read that fails or prints nothing
+#  13. the table of the `#### Proving run` judges steps 2 and 4 against the
+#      run's baseline: row 2 calls its times the run's baseline, row 4 names
+#      both distances to the largest time of step 2, and neither row names a
+#      fixed 0.3 s; the paragraph below the table names row 4's distances and
+#      the NetworkChaos latency, ties the distances to that delay, names the
+#      spread of step 2 as what shrinks the room under the delay, and adds
+#      the distances to the recorded 0.306 s
 #
 # Subsections run from their heading to the next heading of any level, fenced
 # code included. INFRA_MANIFESTS_DOC overrides the page.
@@ -303,6 +312,45 @@ test_probes_need_first_read() {
   assert_eq "an empty first read fails" "1" "$(probes "$helpers" '' 0 "$stalled" 0)"
 }
 
+# --- Test 13: the Proving run judges the delay against the run's baseline ---
+test_proving_run_baseline_rows() {
+  echo "Test: the Proving run's rows for steps 2 and 4 compare with the run's baseline"
+  local proving row2 row4
+  proving="$(subsection '#### Proving run')"
+  row2="$(grep -E '^\| 2 \|' <<<"$proving" || true)"
+  row4="$(grep -E '^\| 4 \|' <<<"$proving" || true)"
+  assert_not_empty "the Proving run's table has a row for step 2" "$row2"
+  assert_not_empty "the Proving run's table has a row for step 4" "$row4"
+  assert_contains "step 2 is the run's baseline" "$row2" "the run's baseline"
+  assert_contains "the delayed times are judged against step 2" "$row4" \
+    'each at least 0.2 s above the largest time of step 2'
+  assert_contains "the released times are judged against step 2" "$row4" \
+    'each less than 0.1 s above the largest time of step 2'
+  assert_not_contains "step 2 names no fixed 0.3 s" "$row2" '0.3 s'
+  assert_not_contains "step 4 names no fixed 0.3 s" "$row4" '0.3 s'
+  # The paragraph below the table restates row 4's distances, so it is read
+  # against the distances row 4 names.
+  local inj rel para
+  inj="$(sed -nE 's/.*each at least ([0-9.]+) s above the largest time of step 2.*/\1/p' <<<"$row4")"
+  rel="$(sed -nE 's/.*each less than ([0-9.]+) s above the largest time of step 2.*/\1/p' <<<"$row4")"
+  para="$(awk '/^Steps 2 and 4 name no absolute time/ { p = 1 } p && /^$/ { exit } p' <<<"$proving" | tr '\n' ' ')"
+  assert_not_empty "the Proving run explains the baseline below its table" "$para"
+  assert_contains "the paragraph names row 4's injected distance" "$para" "at least ${inj} s above it"
+  assert_contains "the paragraph names row 4's released distance" "$para" "less than ${rel} s above it"
+  # The delay is the latency of the run block's NetworkChaos.
+  local delay_ms room
+  delay_ms="$(sed -nE 's/^[[:space:]]*latency: ([0-9]+)ms$/\1/p' <<<"$proving" | head -n 1)"
+  assert_not_empty "the Proving run's NetworkChaos sets a latency" "$delay_ms"
+  assert_contains "the paragraph names the NetworkChaos latency" "$para" "delay of ${delay_ms} ms counts as injected"
+  room="$(awk -v ms="$delay_ms" -v d="$inj" 'BEGIN { printf "%g", ms / 1000 - d }')"
+  assert_contains "the paragraph ties both distances to the delay" "$para" \
+    "${inj} s is ${room} s below the delay, and ${rel} s is ${rel} s above no delay, which is the room for jitter of a request as slow as the largest time of step 2."
+  assert_contains "the room shrinks by step 2's spread under the delay" "$para" \
+    "the room is ${room} s less the spread of step 2's times under the delay, and ${rel} s plus that spread after the release."
+  assert_contains "the worked example adds both distances to 0.306 s" "$para" \
+    "With a largest baseline time of 0.306 s the two limits are $(awk -v d="$inj" 'BEGIN { printf "%g", 0.306 + d }') s and $(awk -v d="$rel" 'BEGIN { printf "%g", 0.306 + d }') s."
+}
+
 test_position
 test_podchaos_only
 test_experiment_lines
@@ -315,6 +363,7 @@ test_proving_run_record
 test_gate_needs_alive_agents
 test_nfs_stack_record
 test_probes_need_first_read
+test_proving_run_baseline_rows
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
