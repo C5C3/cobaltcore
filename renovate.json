@@ -402,10 +402,10 @@
         "/tests/e2e/infrastructure/nfs-health/chainsaw-test\\.yaml$/"
       ],
       "matchStrings": [
-        "image: (?<depName>docker\\.io/itsthenetwork/nfs-server-alpine):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+        "image: (?<depName>ghcr\\.io/kubernetes-sigs/nfs-ganesha):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
       ],
       "datasourceTemplate": "docker",
-      "versioningTemplate": "docker"
+      "versioningTemplate": "regex:^V(?<major>\\d+)\\.(?<minor>\\d+)(\\.(?<patch>\\d+))?$"
     },
     {
       "customType": "regex",
@@ -858,7 +858,7 @@
         "deploy/kind/nfs/nfs-server.yaml",
         "tests/e2e/infrastructure/nfs-health/chainsaw-test.yaml"
       ],
-      "matchPackageNames": ["docker.io/itsthenetwork/nfs-server-alpine"],
+      "matchPackageNames": ["ghcr.io/kubernetes-sigs/nfs-ganesha"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
@@ -868,7 +868,7 @@
         "deploy/kind/nfs/nfs-server.yaml",
         "tests/e2e/infrastructure/nfs-health/chainsaw-test.yaml"
       ],
-      "matchPackageNames": ["docker.io/itsthenetwork/nfs-server-alpine"],
+      "matchPackageNames": ["ghcr.io/kubernetes-sigs/nfs-ganesha"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "automerge": false,
       "minimumReleaseAge": "3 days",

@@ -17,10 +17,19 @@
 #     defaults the driver relies on (attachRequired, fsGroupPolicy,
 #     kubeletDir) stay untouched.
 #   - The server Deployment keeps the contract the Cinder suites depend on:
-#     one writer on an RWO claim, SHARED_DIRECTORY=/exports, a privileged
-#     container, digest-pinned images, and exports pre-created as
-#     42424:42424 mode 0770.
-#   - The Service exposes 2049/TCP alone (the image serves NFSv4 only, so
+#     one writer on an RWO claim, a privileged NFS-Ganesha container whose
+#     configuration exports /exports as the NFSv4 pseudo-root and keeps its
+#     client records in /var/lib/nfs/ganesha under a fixed server scope, the
+#     claim mounted twice by subPath, digest-pinned images, and the memory
+#     Ganesha needs.
+#   - The init container's script, run against a temporary directory with a
+#     stub chown, lays a claim out as exports/ and ganesha/, moves the entries
+#     of a claim the kernel server wrote into exports/, moves nothing on a
+#     second run, removes the empty volumes/ and backups/ a later kernel
+#     server start leaves at the root, stops on any other name present on
+#     both levels and on a failed mv, and hands exports/volumes and
+#     exports/backups to 42424:42424 mode 0770.
+#   - The Service exposes 2049/TCP alone (the server speaks NFSv4 only, so
 #     neither rpcbind's 111 nor a mountd port is reachable or needed).
 #   - kustomize build of deploy/flux-system, deploy/kind/base and
 #     deploy/kind/infrastructure renders ZERO NFS resources (default posture:
@@ -48,7 +57,7 @@ KIND_NFS_SOURCE="$KIND_NFS_DIR/source.yaml"
 KIND_NFS_RELEASE="$KIND_NFS_DIR/release.yaml"
 KIND_NFS_SERVER="$KIND_NFS_DIR/nfs-server.yaml"
 
-SERVER_IMAGE_PATTERN='^docker\.io/itsthenetwork/nfs-server-alpine:[^@]+@sha256:[a-f0-9]{64}$'
+SERVER_IMAGE_PATTERN='^ghcr\.io/kubernetes-sigs/nfs-ganesha:[^@]+@sha256:[a-f0-9]{64}$'
 
 # Read a single value out of a rendered stream. Prints the first line of the
 # yq result, or the empty string when the expression matches nothing; every
@@ -64,6 +73,12 @@ render_value() {
 count_matches() {
   local stream="$1" pattern="$2"
   printf '%s\n' "$stream" | { grep -cE "$pattern" || true; }
+}
+
+# Read a whole multi-line value out of a rendered stream, such as a script.
+render_text() {
+  local stream="$1" expression="$2"
+  printf '%s\n' "$stream" | yq -r "$expression" 2>/dev/null | grep -v '^---$'
 }
 
 # Render a kustomization the way hack/deploy-infra.sh does: no
@@ -264,8 +279,8 @@ test_nfs_server_deployment_contract() {
   echo "Test: the nfs-server Deployment and its claim carry the expected contract"
 
   if ! command -v kustomize >/dev/null 2>&1 || ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: kustomize or yq not installed (15 checks skipped)"
-    SKIP=$((SKIP + 15))
+    echo "  SKIP: kustomize or yq not installed (33 checks skipped)"
+    SKIP=$((SKIP + 33))
     return
   fi
 
@@ -273,7 +288,7 @@ test_nfs_server_deployment_contract() {
   if ! rendered="$(render_dir "$KIND_NFS_DIR")"; then
     echo "  FAIL: kustomize build $KIND_NFS_DIR failed:"
     echo "$rendered" | head -20
-    FAIL=$((FAIL + 15))
+    FAIL=$((FAIL + 33))
     return
   fi
 
@@ -287,11 +302,39 @@ test_nfs_server_deployment_contract() {
   assert_eq "the Deployment runs a single replica" \
     "1" "$(render_value "$rendered" "$deploy | .spec.replicas")"
 
-  # The image entrypoint exits 1 without SHARED_DIRECTORY.
-  assert_eq "the server container sets SHARED_DIRECTORY to /exports" \
-    "/exports" "$(render_value "$rendered" \
-      "$server | .env[] | select(.name == \"SHARED_DIRECTORY\") | .value")"
-  assert_eq "the server container is privileged (it drives the host kernel's rpc.nfsd)" \
+  # The image has no entrypoint; both containers run a script.
+  assert_eq "the server container runs its script through /bin/sh -c" \
+    "/bin/sh -c" "$(render_value "$rendered" "$server | .command | join(\" \")")"
+  assert_eq "the init container runs its script through /bin/sh -c" \
+    "/bin/sh -c" "$(render_value "$rendered" "$init | .command | join(\" \")")"
+  local env_lines
+  env_lines="$(count_matches "$rendered" 'SHARED_DIRECTORY')"
+  assert_eq "no rendered line names SHARED_DIRECTORY" "0" "${env_lines// /}"
+
+  # Each line of the Ganesha configuration the export and the client records
+  # rest on, the log level that prints the `Root fs for export` line nfs-health
+  # requires, and the exec that makes Ganesha PID 1. Lines are compared whole,
+  # with their indentation trimmed.
+  local script line
+  script="$(render_text "$rendered" "$server | .args[0]" | sed -E 's/^[[:space:]]+//')"
+  for line in 'Protocols = 4;' 'RecoveryBackend = fs;' 'RecoveryRoot = /var/lib/nfs/ganesha;' \
+    'Minor_Versions = 1, 2;' 'Server_Scope = "nfs-server.openstack";' 'Path = /exports;' 'Pseudo = /;' \
+    'Squash = No_Root_Squash;' 'Attr_Expiration_Time = 0;' 'FSAL { Name = VFS; }' \
+    'COMPONENTS { FSAL = INFO; }' \
+    'exec ganesha.nfsd -F -L /dev/stdout -f /tmp/ganesha.conf -p /tmp/ganesha.pid'; do
+    if grep -qxF -- "$line" <<<"$script"; then
+      echo "  PASS: the server script holds the line '$line'"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: the server script lacks the line '$line'"
+      FAIL=$((FAIL + 1))
+    fi
+  done
+  # The core block and the export block both restrict Ganesha to NFSv4.
+  assert_eq "the server script sets Protocols = 4 in both blocks" "2" \
+    "$(grep -cxF -- 'Protocols = 4;' <<<"$script")"
+
+  assert_eq "the server container is privileged (Ganesha reads the filesystem UUID from the device node)" \
     "true" "$(render_value "$rendered" "$server | .securityContext.privileged")"
   # The server never calls the Kubernetes API, so the privileged pod must not
   # carry a bearer token for the `openstack` default ServiceAccount.
@@ -303,20 +346,21 @@ test_nfs_server_deployment_contract() {
   assert_eq "the liveness probe checks 2049" \
     "2049" "$(render_value "$rendered" "$server | .livenessProbe.tcpSocket.port")"
 
-  # The init container hands both exports to the restricted openstack user,
-  # so the NFS backup driver skips its chgrp/chmod root branches.
-  local init_name init_command
-  init_name="$(render_value "$rendered" "$init | .name")"
-  assert_eq "the init container is named prepare-exports" "prepare-exports" "$init_name"
-  init_command="$(printf '%s\n' "$rendered" | yq -r "$init | .command | join(\" \")" 2>/dev/null \
-    | grep -v '^---$' | head -n1)"
-  assert_not_empty "the init container declares a command" "$init_command"
-  assert_contains "the init container creates both export directories" \
-    "$init_command" "mkdir -p /exports/volumes /exports/backups"
-  assert_contains "the init container chowns the exports to 42424:42424" \
-    "$init_command" "chown 42424:42424"
-  assert_contains "the init container sets mode 0770 on the exports" \
-    "$init_command" "chmod 0770"
+  # One claim, two subPath mounts: the export and, outside it, the records.
+  assert_eq "the server mounts exports/ at /exports and ganesha/ at /var/lib/nfs/ganesha" \
+    "exports:/exports:exports exports:/var/lib/nfs/ganesha:ganesha" \
+    "$(render_value "$rendered" "$server | .volumeMounts | map(.name + \":\" + .mountPath + \":\" + (.subPath // \"\")) | join(\" \")")"
+  assert_eq "the init container is named prepare-exports" \
+    "prepare-exports" "$(render_value "$rendered" "$init | .name")"
+  assert_eq "the init container mounts the claim root at /claim, without a subPath" \
+    "exports:/claim:" \
+    "$(render_value "$rendered" "$init | .volumeMounts | map(.name + \":\" + .mountPath + \":\" + (.subPath // \"\")) | join(\" \")")"
+
+  # Ganesha does the I/O in its own process: 397 MiB at its measured peak.
+  assert_eq "the server container is limited to 1Gi" \
+    "1Gi" "$(render_value "$rendered" "$server | .resources.limits.memory")"
+  assert_eq "the server container requests 128Mi" \
+    "128Mi" "$(render_value "$rendered" "$server | .resources.requests.memory")"
 
   # One pinned image for the whole overlay.
   local server_image init_image
@@ -325,10 +369,10 @@ test_nfs_server_deployment_contract() {
   assert_not_empty "the server container declares an image" "$server_image"
   assert_eq "the init container reuses the server image" "$server_image" "$init_image"
   if grep -qE "$SERVER_IMAGE_PATTERN" <<<"$server_image"; then
-    echo "  PASS: the server image is a digest-pinned nfs-server-alpine tag"
+    echo "  PASS: the server image is a digest-pinned nfs-ganesha tag"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: the server image '$server_image' is not a digest-pinned nfs-server-alpine tag"
+    echo "  FAIL: the server image '$server_image' is not a digest-pinned nfs-ganesha tag"
     FAIL=$((FAIL + 1))
   fi
 
@@ -344,7 +388,138 @@ test_nfs_server_deployment_contract() {
       | grep -v '^---$' | head -n1)"
 }
 
-# --- Test 6: the Service exposes 2049/TCP alone ---
+# run_prepare_exports <script> <claim dir> <stub dir>
+# Runs the init container's script with bash -c against <claim dir>, the stubs
+# of <stub dir> first on PATH. Prints its output; returns its exit status.
+run_prepare_exports() {
+  local script="${1//\/claim/$2}"
+  : >"$3/chown.log"
+  CHOWN_LOG="$3/chown.log" PATH="$3:$PATH" bash -c "$script" 2>&1
+}
+
+# --- Test 6: prepare-exports lays the claim out and moves a flat one ---
+test_prepare_exports_script() {
+  echo "Test: prepare-exports lays the claim out, moves a kernel server's claim into exports/, and stops on a conflict"
+
+  if ! command -v kustomize >/dev/null 2>&1 || ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: kustomize or yq not installed (27 checks skipped)"
+    SKIP=$((SKIP + 27))
+    return
+  fi
+
+  local rendered script
+  if ! rendered="$(render_dir "$KIND_NFS_DIR")"; then
+    echo "  FAIL: kustomize build $KIND_NFS_DIR failed:"
+    echo "$rendered" | head -20
+    FAIL=$((FAIL + 27))
+    return
+  fi
+  script="$(render_text "$rendered" \
+    'select(.kind == "Deployment" and .metadata.name == "nfs-server") | .spec.template.spec.initContainers[] | select(.name == "prepare-exports") | .args[0]')"
+  # The script runs on this machine with /claim replaced, so one that names
+  # no /claim would act on paths outside the temporary directory.
+  if [[ -z "$script" || "$script" != *"/claim"* ]]; then
+    echo "  FAIL: the prepare-exports script is empty or names no /claim; not running it (27 checks)"
+    FAIL=$((FAIL + 27))
+    return
+  fi
+
+  local tmp claim out rc
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/bin" "$tmp/badmv"
+  # Not root: the stub chown logs instead of changing the owner.
+  printf '#!/bin/sh\necho "$*" >>"$CHOWN_LOG"\n' >"$tmp/bin/chown"
+  printf '#!/bin/sh\necho "mv: cannot move $1" >&2\nexit 1\n' >"$tmp/badmv/mv"
+  cp "$tmp/bin/chown" "$tmp/badmv/chown"
+  chmod +x "$tmp/bin/chown" "$tmp/badmv/mv" "$tmp/badmv/chown"
+
+  # An empty claim, as on a fresh cluster.
+  claim="$tmp/empty"
+  mkdir -p "$claim"
+  rc=0
+  out="$(run_prepare_exports "$script" "$claim" "$tmp/bin")" || rc=$?
+  assert_eq "an empty claim: exit 0" "0" "$rc"
+  assert_eq "an empty claim: exports/volumes, exports/backups and ganesha exist" "yes" \
+    "$( [[ -d "$claim/exports/volumes" && -d "$claim/exports/backups" && -d "$claim/ganesha" ]] && echo yes)"
+  assert_eq "an empty claim: both exports are handed to 42424:42424" \
+    "42424:42424 $claim/exports/volumes $claim/exports/backups" "$(cat "$tmp/bin/chown.log")"
+  assert_eq "an empty claim: both exports are mode 0770" "770 770" \
+    "$(stat -c '%a' "$claim/exports/volumes" "$claim/exports/backups" | paste -sd ' ' -)"
+  assert_eq "an empty claim: ganesha is mode 0700" "700" "$(stat -c '%a' "$claim/ganesha")"
+  assert_not_contains "an empty claim: nothing is moved" "$out" "moved"
+  assert_contains "an empty claim: the closing line is printed" "$out" \
+    "prepare-exports: exports/volumes and exports/backups are 42424:42424 0770"
+
+  # A claim the kernel server wrote: the shares at its root.
+  claim="$tmp/flat"
+  mkdir -p "$claim/volumes" "$claim/backups" "$claim/volumes-b" "$claim/lost+found"
+  touch "$claim/volumes/volume-old" "$claim/.marker"
+  rc=0
+  out="$(run_prepare_exports "$script" "$claim" "$tmp/bin")" || rc=$?
+  assert_eq "a flat claim: exit 0" "0" "$rc"
+  assert_eq "a flat claim: four entries are moved into exports/" \
+    "$(printf 'prepare-exports: moved %s into exports/\n' .marker backups volumes volumes-b | sort)" \
+    "$(grep 'moved' <<<"$out" | sort)"
+  assert_eq "a flat claim: the volume file is in exports/volumes" "yes" \
+    "$( [[ -f "$claim/exports/volumes/volume-old" ]] && echo yes)"
+  assert_eq "a flat claim: lost+found stays at the top" "yes" \
+    "$( [[ -d "$claim/lost+found" && ! -e "$claim/exports/lost+found" ]] && echo yes)"
+  assert_eq "a flat claim: the root holds exports, ganesha and lost+found alone" \
+    "exports ganesha lost+found" "$(ls -A "$claim" | sort | paste -sd ' ' -)"
+
+  # The same claim again: a second start moves nothing.
+  rc=0
+  out="$(run_prepare_exports "$script" "$claim" "$tmp/bin")" || rc=$?
+  assert_eq "a second run: exit 0" "0" "$rc"
+  assert_not_contains "a second run: nothing is moved" "$out" "moved"
+  assert_eq "a second run: the volume file stays" "yes" \
+    "$( [[ -f "$claim/exports/volumes/volume-old" ]] && echo yes)"
+
+  # A deploy of the kernel server over a laid-out claim: empty volumes/ and
+  # backups/ at the root again, beside the shares in exports/.
+  claim="$tmp/downgraded"
+  mkdir -p "$claim/volumes" "$claim/backups" "$claim/exports/volumes" "$claim/exports/backups" "$claim/ganesha"
+  touch "$claim/exports/volumes/volume-old"
+  rc=0
+  out="$(run_prepare_exports "$script" "$claim" "$tmp/bin")" || rc=$?
+  assert_eq "a kernel server's empty leftovers: exit 0" "0" "$rc"
+  assert_eq "a kernel server's empty leftovers: both are removed" \
+    "$(printf 'prepare-exports: removed the empty %s left by a kernel-server start\n' "$claim/backups" "$claim/volumes")" \
+    "$(grep 'removed' <<<"$out" | sort)"
+  assert_eq "a kernel server's empty leftovers: the root holds exports and ganesha alone" \
+    "exports ganesha" "$(ls -A "$claim" | sort | paste -sd ' ' -)"
+  assert_eq "a kernel server's empty leftovers: the volume file stays in exports/volumes" "yes" \
+    "$( [[ -f "$claim/exports/volumes/volume-old" ]] && echo yes)"
+
+  # A name on both levels that holds a file: the script stops before the next
+  # entry.
+  claim="$tmp/collision"
+  mkdir -p "$claim/volumes" "$claim/exports/volumes" "$claim/zzz"
+  touch "$claim/volumes/volume-new"
+  rc=0
+  out="$(run_prepare_exports "$script" "$claim" "$tmp/bin")" || rc=$?
+  assert_eq "a collision: exit 1" "1" "$rc"
+  assert_contains "a collision: the line names both paths" "$out" \
+    "prepare-exports: $claim/volumes and $claim/exports/volumes both exist; move one of them away"
+  assert_eq "a collision: zzz stays at the top" "yes" \
+    "$( [[ -d "$claim/zzz" && ! -e "$claim/exports/zzz" ]] && echo yes)"
+  assert_eq "a collision: no export is handed over" "" "$(cat "$tmp/bin/chown.log")"
+
+  # A failing mv: set -e ends the script at that line.
+  claim="$tmp/badmv-claim"
+  mkdir -p "$claim/volumes"
+  rc=0
+  out="$(run_prepare_exports "$script" "$claim" "$tmp/badmv")" || rc=$?
+  assert_nonzero_exit "a failed mv: the script exits non-zero" "$rc"
+  assert_not_contains "a failed mv: no moved line for the entry" "$out" "moved volumes"
+  assert_not_contains "a failed mv: no closing line" "$out" "42424:42424 0770"
+  assert_eq "a failed mv: the entry stays at the top" "yes" \
+    "$( [[ -d "$claim/volumes" && ! -e "$claim/exports/volumes" ]] && echo yes)"
+
+  rm -rf "$tmp"
+}
+
+# --- Test 7: the Service exposes 2049/TCP alone ---
 test_service_exposes_only_2049() {
   echo "Test: the nfs-server Service exposes 2049/TCP alone"
 
@@ -374,14 +549,14 @@ test_service_exposes_only_2049() {
   assert_eq "the Service port is TCP" \
     "TCP" "$(render_value "$rendered" "$svc | .spec.ports[0].protocol")"
 
-  # The image serves NFSv4 only, so rpcbind's 111 and a mountd port are
+  # The server speaks NFSv4 only, so rpcbind's 111 and a mountd port are
   # neither reachable nor needed anywhere in the overlay.
   local legacy_ports
   legacy_ports="$(count_matches "$rendered" 'port:[[:space:]]+(111|20048)[[:space:]]*$')"
   assert_eq "no rpcbind (111) or mountd (20048) port is exposed" "0" "${legacy_ports// /}"
 }
 
-# --- Tests 7-9: default posture renders nothing NFS ---
+# --- Tests 8-10: default posture renders nothing NFS ---
 test_flux_system_renders_no_nfs() {
   echo "Test: kustomize build deploy/flux-system renders no NFS resources"
   assert_renders_no_nfs "the production overlay" "$FLUX_SYSTEM_DIR"
@@ -403,6 +578,7 @@ test_kustomization_is_self_contained
 test_kustomize_build_renders_five_documents
 test_helm_release_contract
 test_nfs_server_deployment_contract
+test_prepare_exports_script
 test_service_exposes_only_2049
 test_flux_system_renders_no_nfs
 test_kind_base_renders_no_nfs

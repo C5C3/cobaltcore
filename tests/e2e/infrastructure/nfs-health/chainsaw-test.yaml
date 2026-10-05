@@ -316,9 +316,9 @@ spec:
               - name: probe
                 # The pinned reference deploy/kind/nfs/nfs-server.yaml already
                 # uses, so this suite adds no second image and the node has it
-                # cached from the server rollout. Alpine, so busybox provides
-                # sh, grep, stat and umask.
-                image: docker.io/itsthenetwork/nfs-server-alpine:12@sha256:7fa99ae65c23c5af87dd4300e543a86b119ed15ba61422444207efc7abd0ba20
+                # cached from the server rollout. Fedora, so its coreutils and
+                # grep provide sh, grep, stat and umask.
+                image: ghcr.io/kubernetes-sigs/nfs-ganesha:V6.5@sha256:9ac92d14019a82be4355bf7956fdc557db1219e95976d1174ef23a5f544c11e6
                 securityContext:
                   allowPrivilegeEscalation: false
                   capabilities:

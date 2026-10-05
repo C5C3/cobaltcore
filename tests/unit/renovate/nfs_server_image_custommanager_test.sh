@@ -4,19 +4,21 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify renovate.json declares a customManagers entry that targets the
-# itsthenetwork/nfs-server-alpine image pin in the kind NFS overlay and in the
-# nfs-health e2e suite, plus the paired packageRules:
+# ghcr.io/kubernetes-sigs/nfs-ganesha image pin in the kind NFS overlay and in
+# the nfs-health e2e suite, plus the paired packageRules:
 #   - the docker-datasource matchStrings regex captures the image's depName,
 #     tag (currentValue) AND digest (currentDigest) in both files
+#   - the versioning is a regex that reads the package's tags, V3.5, V4.0.8
+#     and V6.5, and the tag the pins carry: Renovate's docker versioning
+#     strips a lowercase v alone, so it reads none of them as a version
 #   - packageRules disable major bumps and gate minor/patch/digest behind a
 #     3-day minimumReleaseAge WITHOUT automerge
 #
 # Why no automerge, unlike the aws-cli and keycloak e2e fixtures it is
-# otherwise modelled on: the image is a personal Docker Hub account with no
-# upstream release since 2019-05-08, and CI runs it with `privileged: true` on
-# a self-hosted runner. For a dormant tag every digest change is a repoint of a
-# mutable tag, which is a signal to read rather than routine maintenance, and
-# the digest pin is the only control on it.
+# otherwise modelled on: the image is a third-party build of a userspace NFS
+# server, and CI and the metal-stack lab run it with `privileged: true`. A new
+# tag or a repointed one is a signal to read rather than routine maintenance,
+# and the digest pin is the only control on it.
 #
 # The suite reuses the overlay's reference so the node has the image cached, so
 # both pins must stay identical and Renovate must bump them together.
@@ -42,7 +44,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 
-NFS_PACKAGE="docker.io/itsthenetwork/nfs-server-alpine"
+NFS_PACKAGE="ghcr.io/kubernetes-sigs/nfs-ganesha"
 OVERLAY_PATH="deploy/kind/nfs/nfs-server.yaml"
 SUITE_PATH="tests/e2e/infrastructure/nfs-health/chainsaw-test.yaml"
 
@@ -51,8 +53,8 @@ test_custom_manager_captures_image() {
   echo "Test: customManagers regex captures the nfs-server depName/tag/digest"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (11 checks skipped)"
-    SKIP=$((SKIP + 11))
+    echo "  SKIP: jq not installed (18 checks skipped)"
+    SKIP=$((SKIP + 18))
     return
   fi
 
@@ -66,12 +68,15 @@ test_custom_manager_captures_image() {
 
   if [ -z "$entry" ]; then
     echo "  FAIL: no docker-datasource customManagers entry for $OVERLAY_PATH"
-    FAIL=$((FAIL + 11))
+    FAIL=$((FAIL + 18))
     return
   fi
 
   assert_eq "customManagers.datasourceTemplate is docker" \
     "docker" "$(jq -r '.datasourceTemplate' <<<"$entry")"
+  # The tags carry a capital V, which docker versioning does not strip.
+  assert_eq "customManagers.versioningTemplate reads V<major>.<minor>[.<patch>]" \
+    'regex:^V(?<major>\d+)\.(?<minor>\d+)(\.(?<patch>\d+))?$' "$(jq -r '.versioningTemplate' <<<"$entry")"
 
   local patterns
   patterns="$(jq -r '.managerFilePatterns | join(",")' <<<"$entry")"
@@ -81,8 +86,8 @@ test_custom_manager_captures_image() {
     "$patterns" "tests/e2e/infrastructure/nfs-health/chainsaw-test"
 
   if ! command -v perl >/dev/null 2>&1; then
-    echo "  SKIP: perl not installed (8 checks skipped)"
-    SKIP=$((SKIP + 8))
+    echo "  SKIP: perl not installed (14 checks skipped)"
+    SKIP=$((SKIP + 14))
     return
   fi
 
@@ -91,7 +96,7 @@ test_custom_manager_captures_image() {
 
   local path line captured
   for path in "$OVERLAY_PATH" "$SUITE_PATH"; do
-    line="$(grep -E 'image: docker\.io/itsthenetwork/nfs-server-alpine' \
+    line="$(grep -E 'image: ghcr\.io/kubernetes-sigs/nfs-ganesha' \
       "$PROJECT_ROOT/$path" | head -1)"
     assert_not_empty "nfs-server image line present in $path" "$line"
 
@@ -110,6 +115,26 @@ test_custom_manager_captures_image() {
     assert_contains "regex captures the depName in $path" "$captured" "depName=${NFS_PACKAGE}"
     assert_contains "regex captures the tag as currentValue in $path" "$captured" "currentValue="
     assert_contains "regex captures the sha256 digest in $path" "$captured" "currentDigest=sha256:"
+  done
+
+  # A pin to a tag the versioning cannot read stops the updates without an
+  # error, so apply the regex to the pinned tag and to the shapes around it.
+  local versioning pinned_tag version want got
+  versioning="$(jq -r '.versioningTemplate' <<<"$entry")"
+  versioning="${versioning#regex:}"
+  pinned_tag="$(grep -hoE 'image: ghcr\.io/kubernetes-sigs/nfs-ganesha:[^@[:space:]]+' \
+    "$PROJECT_ROOT/$OVERLAY_PATH" | head -1 | sed 's/.*nfs-ganesha://')"
+  assert_not_empty "the overlay carries a pinned tag to test" "$pinned_tag"
+  for version in "$pinned_tag|0" "V3.5|0" "V4.0.8|0" "latest|1" "v6.5|1"; do
+    want="${version##*|}"
+    version="${version%|*}"
+    got=0
+    RE="$versioning" VALUE="$version" perl -e 'exit(($ENV{VALUE} =~ /$ENV{RE}/) ? 0 : 1)' || got=$?
+    if [ "$want" = 0 ]; then
+      assert_eq "the versioning regex reads '$version'" "0" "$got"
+    else
+      assert_eq "the versioning regex rejects '$version'" "1" "$got"
+    fi
   done
 }
 
@@ -172,7 +197,7 @@ test_all_nfs_server_pins_covered() {
   fi
 
   local pinned
-  pinned="$(cd "$PROJECT_ROOT" && grep -rl 'image: docker\.io/itsthenetwork/nfs-server-alpine' \
+  pinned="$(cd "$PROJECT_ROOT" && grep -rl 'image: ghcr\.io/kubernetes-sigs/nfs-ganesha' \
     deploy/kind tests/e2e | sort)"
   assert_not_empty "at least one nfs-server image pin exists" "$pinned"
 
@@ -201,7 +226,7 @@ test_all_nfs_server_pins_covered() {
   # The suite reuses the overlay's reference, so a bump that lands in only one
   # of the files would pull a second image onto the kind node.
   local distinct
-  distinct="$(cd "$PROJECT_ROOT" && grep -rh 'image: docker\.io/itsthenetwork/nfs-server-alpine' \
+  distinct="$(cd "$PROJECT_ROOT" && grep -rh 'image: ghcr\.io/kubernetes-sigs/nfs-ganesha' \
     deploy/kind tests/e2e | sed 's/^[[:space:]]*//' | sort -u | wc -l | tr -d '[:space:]')"
   assert_eq "all nfs-server pins reference the same tag and digest" "1" "$distinct"
 }
