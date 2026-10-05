@@ -229,7 +229,7 @@ E2E Jobs (pull requests only, depend on build-e2e-images):
   e2e-nova-libvirt > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-nova-libvirt == 'true'
   tempest ────────> needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
-  cleanup-e2e-tags > needs: [build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, e2e-nova-libvirt, tempest]
+  cleanup-e2e-tags > needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, tempest]
 
 Publish Jobs (push events only — main and v* tags; publish-only-on-merge):
   build-and-push (matrix: operator × platform) ──> needs: [changes], if: push && has-e2e-operators == 'true'
@@ -1614,7 +1614,10 @@ matrix over the E2E target packages after every consumer that might still pull
 the images has finished. The `always() && needs.build-e2e-images.result ==
 'success'` condition means the cleanup runs on success, failure, cancelled, or
 skipped consumer outcomes — but only when `build-e2e-images` actually pushed
-something.
+something. A job that uses the `load-e2e-images` action and is missing from
+`needs` races the deletion, and on a run that skips every listed consumer its
+pull fails with `manifest unknown`. `tests/unit/ci/cleanup_e2e_tags_needs_test.sh`
+fails for every such job.
 
 The package list is the `cleanup-e2e-packages` output of the `changes` job,
 derived by `hack/ci-generate-cleanup-matrix.sh` from `images/` and `operators/`.
@@ -1633,7 +1636,9 @@ per-platform manifests untagged via `push-by-digest` and needs those digests
 intact for `merge-operator-images` (GH-312).
 
 **Dependencies:** `needs: [changes, build-e2e-images, e2e-operator,
-e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, e2e-nova-libvirt, tempest]`
+e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane,
+e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster,
+e2e-ovn-overlay, e2e-nova-libvirt, tempest]`
 **Permissions:** `contents: read`, `packages: write`
 
 The job is `continue-on-error`: pruning is housekeeping, and a package whose only
