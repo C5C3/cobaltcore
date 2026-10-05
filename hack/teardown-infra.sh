@@ -593,7 +593,7 @@ teardown_hypervisors() {
 #   4. the CSIDriver the release created, selected by the two labels the
 #      helm-controller sets on every object of a release, so a CSIDriver the
 #      platform ships is never named. After a clean uninstall it finds nothing.
-# The kernel modules the overlay's pods loaded (nfsd, nfs, nfsv4 and their
+# The kernel modules the overlay's pods loaded (nfs, nfsv4 and their
 # dependencies) stay on the nodes until they reboot.
 # ---------------------------------------------------------------------------
 teardown_nfs() {

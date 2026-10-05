@@ -30,8 +30,8 @@
 #
 # WITH_NFS is threaded the same way so the `e2e-infra` job's additive re-run
 # leg can opt in to the kind NFS server plus csi-driver-nfs, and to the
-# best-effort host-side `nfsd`, `nfs` and `nfsv4` module load. When the
-# calling job leaves WITH_NFS unset, `${{ env.WITH_NFS }}` resolves to an
+# best-effort host-side `nfs` and `nfsv4` module load. When the calling job
+# leaves WITH_NFS unset, `${{ env.WITH_NFS }}` resolves to an
 # empty string and hack/deploy-infra.sh's `${WITH_NFS:-false}` default keeps
 # the stack out of the install.
 #

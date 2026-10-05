@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify hack/deploy-infra.sh gates the NFS storage stack behind WITH_NFS, in
-# both modes: the host-side nfsd/nfs/nfsv4 module load of the kind mode, the
+# both modes: the host-side nfs/nfsv4 module load of the kind mode, the
 # overlay apply (deploy/kind/nfs in kind mode, the overlay's nfs/ under
 # EXTERNAL_CLUSTER=true) with its rollout wait on the nfs-server Deployment,
 # and the csi-driver-nfs HelmRelease wait. The default Quick Start must install
@@ -15,7 +15,7 @@
 # pinned in tests/unit/hack/deploy_infra_external_cluster_test.sh.
 #
 # It also pins the loader half: load_nfs_kernel_modules delegates to the shared
-# load_host_kernel_modules with the three module names, and that loader keeps
+# load_host_kernel_modules with the two module names, and that loader keeps
 # its best-effort posture (it warns and returns 0 on every host condition), so
 # the rollout wait is what actually fails a broken install.
 #
@@ -43,7 +43,7 @@ SETUP_ACTION="$PROJECT_ROOT/.github/actions/setup-e2e-infra/action.yaml"
 
 # The purpose string load_nfs_kernel_modules hands the shared loader. Kept in
 # one place so the delegation-line assertion and the loader drives agree.
-NFS_PURPOSE='NFS server and client (kernel nfsd for the in-cluster server, nfs and nfsv4 for the csi-driver-nfs node plugin)'
+NFS_PURPOSE='NFS client (nfs and nfsv4 for the csi-driver-nfs node plugin)'
 
 PASS=0
 FAIL=0
@@ -207,9 +207,9 @@ test_nfs_kustomize_is_gated() {
 
 # ---------------------------------------------------------------------------
 # Test 8: the rollout wait follows the apply and fails the run
-# The module load above is best-effort, so a host without nfsd leaves the
-# server CrashLooping. Applying the overlay and walking on would hand the
-# Cinder suites a share nothing serves, so the wait aborts deploy-infra.
+# A server whose prepare-exports or Ganesha exits never becomes ready.
+# Applying the overlay and walking on would hand the Cinder suites a share
+# nothing serves, so the wait aborts deploy-infra.
 # ---------------------------------------------------------------------------
 test_rollout_guard_follows_the_apply() {
   echo "Test: the nfs-server rollout wait follows the overlay apply"
@@ -398,23 +398,21 @@ test_absent_csidriver_is_healed_on_a_later_run() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 8e: a failed nfs-server rollout names what loads nfsd in each mode
-# Under EXTERNAL_CLUSTER=true no module is loaded on the host, so the server's
-# own init container load-nfsd is what a failed rollout points at; the kind
-# server has no such container, and its error names the host's nfsd.
+# Test 8e: a failed nfs-server rollout names the two container logs
+# The server loads no module in either mode, so one error serves both: it
+# names the logs of prepare-exports and of the server, and no EXTERNAL_CLUSTER
+# test sits between the rollout wait and the exit.
 # ---------------------------------------------------------------------------
-test_rollout_error_follows_the_mode() {
-  echo "Test: a failed nfs-server rollout names load-nfsd under EXTERNAL_CLUSTER=true and the host's nfsd in kind mode"
+test_rollout_error_names_the_container_logs() {
+  echo "Test: a failed nfs-server rollout logs one error in both modes and exits 1"
 
   local branch
-  branch="$(grep -A5 'kubectl rollout status deployment/nfs-server -n openstack' "$DEPLOY_INFRA_SH" | sed 's/^[[:space:]]*//')"
-  assert_eq "the rollout error branches on EXTERNAL_CLUSTER, load-nfsd first" \
+  branch="$(grep -A3 'kubectl rollout status deployment/nfs-server -n openstack' "$DEPLOY_INFRA_SH" | sed 's/^[[:space:]]*//')"
+  assert_eq "the rollout wait logs the one error and exits 1" \
     "$(printf '%s\n' \
       'if ! kubectl rollout status deployment/nfs-server -n openstack --timeout="${POD_TIMEOUT}s"; then' \
-      'if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then' \
-      "log \"ERROR: the NFS server did not roll out. Its init container load-nfsd loads the nfsd module from the node's /lib/modules; read 'kubectl logs -n openstack deployment/nfs-server -c load-nfsd'.\"" \
-      'else' \
-      'log "ERROR: the NFS server did not roll out. The host kernel needs the nfsd module; deploy-infra loads it best-effort and only warns when it cannot."' \
+      "log \"ERROR: the NFS server did not roll out. Read 'kubectl logs -n openstack deployment/nfs-server -c prepare-exports' and 'kubectl logs -n openstack deployment/nfs-server -c nfs-server'.\"" \
+      'exit 1' \
       'fi')" \
     "$branch"
 }
@@ -459,9 +457,25 @@ test_entry_point_delegates_to_the_shared_loader() {
   echo "Test: load_nfs_kernel_modules delegates to load_host_kernel_modules"
 
   assert_file_contains_literal \
-    "load_nfs_kernel_modules asks for nfsd, nfs and nfsv4" \
+    "load_nfs_kernel_modules asks for nfs and nfsv4 alone" \
     "$DEPLOY_INFRA_SH" \
-    "load_host_kernel_modules \"${NFS_PURPOSE}\" nfsd nfs nfsv4"
+    "load_host_kernel_modules \"${NFS_PURPOSE}\" nfs nfsv4"
+}
+
+# ---------------------------------------------------------------------------
+# Test 10b: the external-mode refusal names what the kind overlay needs
+# Under EXTERNAL_CLUSTER=true the script loads no module on the host, and the
+# kind overlay's clients need nfs and nfsv4 on every node; its server needs
+# none. tests/unit/hack/deploy_infra_external_cluster_test.sh drives the
+# refusal itself.
+# ---------------------------------------------------------------------------
+test_external_refusal_names_the_client_modules() {
+  echo "Test: the external-mode refusal of deploy/kind/nfs names the client modules"
+
+  assert_file_contains_literal \
+    "the refusal says the clients need nfs and nfsv4 on every node" \
+    "$DEPLOY_INFRA_SH" \
+    "deploy/kind/nfs is not applied to an external cluster: its clients need the nfs and nfsv4 modules on every node, which this mode does not load."
 }
 
 # ---------------------------------------------------------------------------
@@ -472,7 +486,7 @@ test_loader_skips_non_linux() {
   echo "Test: the NFS module load skips a non-Linux host"
 
   local output rc
-  output="$(run_loader 'uname() { echo Darwin; }' "$NFS_PURPOSE" nfsd nfs nfsv4)"
+  output="$(run_loader 'uname() { echo Darwin; }' "$NFS_PURPOSE" nfs nfsv4)"
   rc=$?
 
   assert_eq "the loader returns 0 on a non-Linux host" "0" "$rc"
@@ -489,13 +503,13 @@ test_loader_warns_without_sudo() {
   echo "Test: the NFS module load warns when it cannot become root"
 
   local output rc
-  output="$(run_loader 'uname() { echo Linux; }; id() { echo 1000; }; sudo() { return 1; }' "$NFS_PURPOSE" nfsd nfs nfsv4)"
+  output="$(run_loader 'uname() { echo Linux; }; id() { echo 1000; }; sudo() { return 1; }' "$NFS_PURPOSE" nfs nfsv4)"
   rc=$?
 
   assert_eq "the loader returns 0 without root" "0" "$rc"
   assert_contains "the missing privileges are logged" \
     "$output" "WARNING: not root and no passwordless sudo"
-  assert_contains "the warning names the NFS purpose" "$output" "NFS server and client"
+  assert_contains "the warning names the NFS purpose" "$output" "NFS client"
 }
 
 # ---------------------------------------------------------------------------
@@ -607,9 +621,10 @@ test_rollout_guard_follows_the_apply
 test_immutable_csidriver_is_dropped_before_the_apply
 test_dropped_csidriver_is_forced_back
 test_absent_csidriver_is_healed_on_a_later_run
-test_rollout_error_follows_the_mode
+test_rollout_error_names_the_container_logs
 test_nfs_appended_dynamically
 test_entry_point_delegates_to_the_shared_loader
+test_external_refusal_names_the_client_modules
 test_loader_skips_non_linux
 test_loader_warns_without_sudo
 test_loader_survives_failing_modprobe
