@@ -3138,11 +3138,23 @@ What a run shows:
 | Step | Expected |
 | --- | --- |
 | 1 | the resolved chart version; `chaos-daemon` rolled out on both workers; one `are loaded` line per node |
-| 2 | five times below 0.3 s |
+| 2 | five times, the run's baseline; step 4 compares against the largest of them |
 | 3 | `AllInjected`, a Keystone API pod with a new UID that becomes Ready, and the PodChaos deleted within 60 seconds |
-| 4 | `AllInjected` and five times 0.3 s or more; the delete returns within 120 seconds, then five times below 0.3 s |
+| 4 | `AllInjected` and five times, each at least 0.2 s above the largest time of step 2; the delete returns within 120 seconds, then five times, each less than 0.1 s above the largest time of step 2 |
 | 5 | the pod's UID unchanged and `restarts=0`; the PodChaos reports that no pod is selected |
 | 6 | the teardown exits 0, logs `Deleting the Chaos Mesh experiments...` and ends with `Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0`; then `0`, `NotFound` and `0` |
+
+Steps 2 and 4 name no absolute time, because a request's time includes the
+round trip from the workstation to the shoot, and that differs from one
+workstation to the next. Take the largest of the five times of step 2. The
+delay of 300 ms counts as injected when each time of step 4's first loop is at
+least 0.2 s above it, and as released when each time of the second loop is
+less than 0.1 s above it. 0.2 s is 0.1 s below the delay, and 0.1 s is 0.1 s
+above no delay, which is the room for jitter of a request as slow as the
+largest time of step 2. Both limits count from that time, so for a request as
+fast as the fastest time of step 2 the room is 0.1 s less the spread of step
+2's times under the delay, and 0.1 s plus that spread after the release. With
+a largest baseline time of 0.306 s the two limits are 0.506 s and 0.406 s.
 
 The run of 2026-10-04 started from a bare `newforge`, the lab's shoot of three
 Xeon D-2141I workers on Kubernetes v1.35.6, and ran from commit `647736c1`. It
@@ -3151,13 +3163,14 @@ after Part 1, Step 7 of the quick start, and step 6 an hour and a half later,
 after the fault runs and the quick start's deletes. Step 1 printed the chart
 version 2.8.4, rolled `chaos-daemon` out on all three workers and printed one
 `are loaded` line per node. Step 2 took 0.252, 0.261, 0.278, 0.303 and 0.306
-seconds, so two of the five were not below 0.3 s. Step 3 matched its row. In
+seconds, so the largest baseline time is 0.306 s. Step 3 matched its row. In
 step 4 the five requests under the delay took 0.812, 0.779, 0.984, 1.084 and
-0.905 seconds, the delete returned within its 120 seconds, and the five
-requests after it took 0.325, 0.299, 0.317, 0.328 and 0.307 seconds, four of
-them not below 0.3 s. Steps 2 and 4 therefore differ from the table, although
-the delay added 0.5 to 0.8 seconds and its release took them away again: from
-that workstation the round trip to the shoot is itself near 0.3 seconds
+0.905 seconds, each at least 0.473 s above 0.306 s; the delete returned within
+its 120 seconds, and the five requests after it took 0.325, 0.299, 0.317,
+0.328 and 0.307 seconds, at most 0.022 s above it. Steps 2 and 4 match their
+rows. The table of commit `647736c1` expected a fixed 0.3 s in both steps, and
+six of the run's ten requests without the delay did not stay below it, because
+from that workstation the round trip to the shoot is itself near 0.3 seconds
 ([#1246](https://github.com/c5c3/cobaltcore/issues/1246)). Step 5 matched: the
 probe pod kept its UID with `restarts=0`, and the PodChaos reported
 `Failed to select targets: no pod is selected`. Step 6 matched: the teardown
