@@ -22,9 +22,9 @@
 #   - report exits 1 without a snapshot and 2 on a malformed one, and a usage
 #     error exits 2 with the usage text;
 #   - prepare removes the scale subresource from every version of the MariaDB
-#     CRD with one replace, keeps the other subresources, replaces nothing when
-#     no version serves it, and exits 2 on a failing or empty read and on a
-#     failing replace;
+#     CRD with one replace, also when only a later version serves it, keeps
+#     the other subresources, replaces nothing when no version serves it, and
+#     exits 2 on a failing or empty read and on a failing replace;
 #   - e2e-controlplane, e2e-controlplane-sso and tempest pass WITH_VPA from the
 #     ci:measure-sizing label and start, collect and upload the measurement
 #     around their suites.
@@ -632,8 +632,9 @@ crd() {
             names: {kind: "MariaDB", plural: "mariadbs"}, versions: $versions}}'
 }
 
-# The first version serves status and scale, the second no subresource.
-SCALED_VERSIONS='[{"name":"v1alpha1","served":true,"storage":true,"subresources":{"status":{},"scale":{"specReplicasPath":".spec.replicas"}}},{"name":"v1alpha2","served":true,"storage":false}]'
+# The first version serves status and scale, the second scale alone, the
+# third no subresource.
+SCALED_VERSIONS='[{"name":"v1alpha1","served":true,"storage":true,"subresources":{"status":{},"scale":{"specReplicasPath":".spec.replicas"}}},{"name":"v1alpha2","served":true,"storage":false,"subresources":{"scale":{"specReplicasPath":".spec.replicas"}}},{"name":"v1beta1","served":true,"storage":false}]'
 
 test_prepare_removes_the_scale_subresource() {
   echo "Test: prepare removes the scale subresource with one replace and keeps the rest"
@@ -656,8 +657,24 @@ test_prepare_removes_the_scale_subresource() {
     "$(jq '[.spec.versions[] | select(.subresources.scale != null)] | length' "$STUB_REPLACE_FILE" 2>&1)"
   assert_eq "the first version keeps its status subresource" '{"status":{}}' \
     "$(jq -c '.spec.versions[0].subresources' "$STUB_REPLACE_FILE" 2>&1)"
-  assert_eq "the second version gains no subresources key" "false" \
-    "$(jq '.spec.versions[1] | has("subresources")' "$STUB_REPLACE_FILE" 2>&1)"
+  assert_eq "the second version loses its scale subresource" '{}' \
+    "$(jq -c '.spec.versions[1].subresources' "$STUB_REPLACE_FILE" 2>&1)"
+  assert_eq "the third version gains no subresources key" "false" \
+    "$(jq '.spec.versions[2] | has("subresources")' "$STUB_REPLACE_FILE" 2>&1)"
+
+  # Only a later version serves scale.
+  reset_stub "$tmp"
+  STUB_CRD_JSON="$(crd '[{"name":"v1alpha1"},{"name":"v1alpha2","subresources":{"scale":{}}}]')"
+  export STUB_CRD_JSON
+  run_vpa "$tmp" prepare
+  rc=$?
+  assert_eq "scale on a later version only: exit code is 0" "0" "$rc"
+  assert_eq "scale on a later version only: stdout says the subresource was removed" \
+    "MariaDB CRD scale subresource removed" "$(cat "$tmp/out")"
+  assert_eq "scale on a later version only: one kubectl replace -f - is sent" "1" \
+    "$(grep -c '^\[replace\]\[-f\]\[-\]$' "$KUBECTL_LOG")"
+  assert_eq "scale on a later version only: the replaced CRD serves no scale" "0" \
+    "$(jq '[.spec.versions[] | select(.subresources.scale != null)] | length' "$STUB_REPLACE_FILE" 2>&1)"
   rm -rf "$tmp"
 }
 
