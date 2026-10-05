@@ -124,6 +124,13 @@ namespaces the lab declares, with pods that load its kernel modules on the
 nodes; see
 [Lab Chaos Mesh](./reference/infrastructure/infrastructure-manifests.md#lab-chaos-mesh).
 
+`WITH_DIZZY=true` is optional too, and this page does not need it either.
+Added to the deploy command, it deploys the metrics stack of a dizzy load or
+chaos soak: VictoriaMetrics, which keeps the metrics on a volume, and Grafana
+with dizzy's dashboards. A soak reaches them through the port-forward of
+Step 6 and a second one to VictoriaMetrics; see
+[Lab dizzy stack](./reference/infrastructure/infrastructure-manifests.md#lab-dizzy-stack).
+
 The shoot brings a VerticalPodAutoscaler and a metrics-server of its own, so
 the script refuses `WITH_VPA=true` and `WITH_METRICS_SERVER=true` and installs
 neither. A workload opts into the platform's VPA with its
@@ -616,8 +623,13 @@ and backup on it. The node state under `/var/lib/nova`, `/var/lib/libvirt` and
 `/etc/pki` stays on the nodes, and the NFS kernel modules stay loaded until a
 node reboots. A Chaos Mesh deployed with `WITH_CHAOS_MESH=true` goes before
 the hypervisors: its experiments are released while its controller still runs,
-and its kernel modules stay loaded until a node reboots as well. Stop the port-forward of Part 1 once the teardown has finished,
-and delete `gateway-ca.pem`.
+and its kernel modules stay loaded until a node reboots as well. A dizzy stack
+deployed with `WITH_DIZZY=true` goes in the teardown's step 3, and its claim
+with it. Where the default class has the reclaim policy `Delete`, the metrics
+on its volume go too. Stop the port-forward of Part 1, and the one to
+VictoriaMetrics if you opened it, once the teardown has finished. Delete
+`gateway-ca.pem`, and `_output/dizzy/clouds.yaml` if a soak wrote it: it holds
+the admin password of the removed stack.
 
 ## Caveats
 
