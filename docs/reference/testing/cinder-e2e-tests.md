@@ -86,8 +86,8 @@ the way any other client's request does.
 ### The exports the suites mount
 
 `WITH_NFS=true` installs the kind NFS server and csi-driver-nfs. The server
-pre-creates `/volumes` and `/backups` as `42424:42424` mode `0770`, and `fsid=0`
-makes `/exports` the NFSv4 pseudo-root, so a backend addresses
+pre-creates `/volumes` and `/backups` as `42424:42424` mode `0770`, and
+`Pseudo = /` makes `/exports` the NFSv4 pseudo-root, so a backend addresses
 `nfs-server.openstack.svc.cluster.local:/volumes`. `multi-backend` creates a
 third export, `/volumes-b`, in its first step and removes it in that step's
 cleanup. The operator mounts an export as an inline CSI volume at

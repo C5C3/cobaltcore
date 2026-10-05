@@ -103,9 +103,10 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra
 ```
 
 That adds the NFS server to `openstack` and `csi-driver-nfs` to `kube-system`.
-On a Linux host it also loads the `nfsd`, `nfs` and `nfsv4` kernel modules
-through sudo. On macOS the script skips the module step: those modules belong
-to the Linux VM kernel Docker Desktop runs. The
+On a Linux host it also loads, through sudo, the `nfs` and `nfsv4` kernel
+modules that `csi-driver-nfs` mounts the shares with. On macOS the script
+skips the module step: those modules belong to the Linux VM kernel Docker
+Desktop runs. The
 [NFS storage stack](./reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-opt-in)
 reference describes the overlay.
 

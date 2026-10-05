@@ -30,7 +30,7 @@ The lab assumes a cluster of this shape:
 | A Gardener shoot on metal-stack with two or more Ready workers that carry the same `topology.kubernetes.io/zone` label | `kubectl get nodes -L topology.kubernetes.io/zone` |
 | `/dev/kvm` on every worker and the same CPU model; `deploy/lab/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe, `== kvm device` and `== cpu` |
 | The module files `vhost_net`, `openvswitch` and `geneve` for the running kernel | probe, `== module files for <kernel>` |
-| For the NFS stack that holds Cinder's volumes and backups: the module files `nfsd`, `nfs` and `nfsv4` for the running kernel | probe, `== module files for <kernel>` |
+| For the NFS stack that holds Cinder's volumes and backups: the module files `nfs` and `nfsv4` for the running kernel | probe, `== module files for <kernel>` |
 | Only with the optional `WITH_CHAOS_MESH=true`: the module files `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` for the running kernel | probe, `== module files for <kernel>` |
 | cgroup v2 | probe, `== cgroup` |
 | `/var/lib` on a volume with room for the instance disks (192 GiB on the surveyed node) | probe, `== disks` |
@@ -648,18 +648,23 @@ Every Cinder volume and backup of the lab lives on one NFS server pod with one
 sits on the same volume as its source: it restores a deleted or overwritten
 volume, and the loss of the export takes both. Nova mounts the share `hard`
 with NFS 4.2, so while the server pod is away, a guest's requests to an
-attached volume wait, and they do not resume when it is back. In the
-[lab fault runs](./reference/infrastructure/infrastructure-manifests.md#lab-fault-runs),
-a reschedule of the pod stalled the guest's disk for 107 seconds, and a
-scale-down to 0 for 300 seconds, which stood for a node replacement, for 414
-seconds. Each time the restarted NFS server had no record of its clients, the
-node lost the lock QEMU held on the volume file, and from then on every
-request to the volume failed with an I/O error until the Nova server it was
-attached to was hard-rebooted with `openstack server reboot --hard`
-([#1245](https://github.com/c5c3/cobaltcore/issues/1245)). The guest's network
-kept working. Meanwhile Nova reported the server `ACTIVE`, Cinder the volume
-`in-use` and `cinder-volume` `up`, and every CR stayed `Ready`, so only the
-guest shows the failure.
+attached volume wait. The server is NFS-Ganesha, which keeps its NFSv4 client
+records on the export claim, so once the pod is back the node can reclaim the
+lock QEMU holds on the volume file; the `cinder-nfs-outage` chaos suite checks
+that a lock outlives a restart of the server. The
+[lab fault runs](./reference/infrastructure/infrastructure-manifests.md#lab-fault-runs)
+have not measured that on the lab yet. They ran on 2026-10-04 on the kernel's
+NFS server, which kept no records: a reschedule of the pod stalled the guest's
+disk for 107 seconds, and a scale-down to 0 for 300 seconds, which stood for a
+node replacement, for 414 seconds. Each time the node lost QEMU's lock, and
+from then on every request to the volume failed with an I/O error until the
+Nova server it was attached to was hard-rebooted with
+`openstack server reboot --hard`
+([#1245](https://github.com/c5c3/cobaltcore/issues/1245)). A volume that fails
+that way after a restart of the server pod still needs that reboot. The
+guest's network kept working. Meanwhile Nova reported the server `ACTIVE`,
+Cinder the volume `in-use` and `cinder-volume` `up`, and every CR stayed
+`Ready`, so only the guest shows the failure.
 [Lab NFS stack](./reference/infrastructure/infrastructure-manifests.md#lab-nfs-stack)
 describes the posture of the export.
 
