@@ -413,12 +413,20 @@ func agentDaemonSetName(cr *neutronv1alpha1.NeutronMetadataAgent) string {
 // (docs/reference/testing/sizing-calibration.md, Metadata agent memory).
 var metadataAgentMemory = resource.MustParse("2Gi")
 
+// metadataAgentCPU is the CPU request of both agent containers, in place of
+// the service default. The agent idles at 1 to 2 millicores and works in
+// bursts, when a server boots on its node: it provisions the server's network
+// and serves the metadata requests of the boot. The figure covers a minute in
+// which 31 servers boot on 31 new networks of one node, with 15% headroom
+// (docs/reference/testing/sizing-calibration.md, Metadata agent CPU).
+var metadataAgentCPU = resource.MustParse("230m")
+
 // effectiveAgentResources resolves the requests and limits of both agent
 // containers through the shared per-resource rule: a CPU spec.resources names
-// neither as request nor as limit gets a 70m request and no limit, a memory it
-// names neither way gets metadataAgentMemory as request and limit, and
-// anything else it sets is kept. A CR that names nothing therefore lands in
-// the Burstable QoS class rather than in BestEffort.
+// neither as request nor as limit gets metadataAgentCPU as request and no
+// limit, a memory it names neither way gets metadataAgentMemory as request and
+// limit, and anything else it sets is kept. A CR that names nothing therefore
+// lands in the Burstable QoS class rather than in BestEffort.
 func effectiveAgentResources(cr *neutronv1alpha1.NeutronMetadataAgent) corev1.ResourceRequirements {
-	return commonv1.WithResourceDefaults(&cr.Spec.Resources, metadataAgentMemory.DeepCopy())
+	return commonv1.WithGivenResourceDefaults(&cr.Spec.Resources, metadataAgentCPU, metadataAgentMemory)
 }

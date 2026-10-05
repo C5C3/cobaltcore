@@ -67,7 +67,7 @@ func pinMessagingAndNovaAgent() *neutronv1alpha1.NeutronMetadataAgent {
 
 // pinCustomResourcesAgent pins an image by digest and names both resource
 // blocks, so the golden shows the CR's own requests and limits rather than the
-// shared container defaults.
+// agent's defaults.
 func pinCustomResourcesAgent() *neutronv1alpha1.NeutronMetadataAgent {
 	cr := validAgent()
 	cr.Spec.Image = commonv1.ImageSpec{
@@ -89,7 +89,7 @@ func pinCustomResourcesAgent() *neutronv1alpha1.NeutronMetadataAgent {
 
 // pinAgentDaemonSetGolden is the defaulted agent: no bus, no Nova metadata
 // API, so the agent container carries no environment and the pod template no
-// annotation, and both containers run on the shared resource defaults.
+// annotation, and both containers run on the agent's resource defaults.
 const pinAgentDaemonSetGolden = `metadata:
   labels:
     app.kubernetes.io/component: metadata-agent
@@ -133,7 +133,7 @@ spec:
           limits:
             memory: 2Gi
           requests:
-            cpu: 70m
+            cpu: 230m
             memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: true
@@ -197,7 +197,7 @@ spec:
           limits:
             memory: 2Gi
           requests:
-            cpu: 70m
+            cpu: 230m
             memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: false
@@ -315,7 +315,7 @@ spec:
           limits:
             memory: 2Gi
           requests:
-            cpu: 70m
+            cpu: 230m
             memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: true
@@ -379,7 +379,7 @@ spec:
           limits:
             memory: 2Gi
           requests:
-            cpu: 70m
+            cpu: 230m
             memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: false
