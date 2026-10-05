@@ -900,8 +900,9 @@ FIXTURES: list[Fixture] = [
       updateMode: Sometimes
 """,
         comment="""\
-# spec.deployment.verticalAutoscaling.updateMode outside Off, Initial, Recreate
-# and Auto violates the Enum marker; the webhook mirrors it.""",
+# spec.deployment.verticalAutoscaling.updateMode outside Off, Initial,
+# Recreate, InPlaceOrRecreate and Auto violates the Enum marker; the webhook
+# mirrors it.""",
     ),
     Fixture(
         filename="37-vertical-autoscaling-min-replicas-zero.yaml",

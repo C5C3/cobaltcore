@@ -616,7 +616,8 @@ FIXTURES: tuple[Fixture, ...] = (
         filename="28-vertical-autoscaling-update-mode.yaml",
         comment=(
             "spec.api.deployment.verticalAutoscaling.updateMode outside Off, Initial,\n"
-            "Recreate and Auto violates the Enum marker; the webhook mirrors it."
+            "Recreate, InPlaceOrRecreate and Auto violates the Enum marker; the webhook\n"
+            "mirrors it."
         ),
         name="cinder-vpa-update-mode",
         extra=(
