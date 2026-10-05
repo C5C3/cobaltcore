@@ -18,8 +18,9 @@
 #      conventions list it as a devstack with the same deploy command, and
 #      the guide scaffold prints that command as the bring-up, refuses a
 #      second `--opt-in WITH_NFS=true` and a kind-only `--opt-in
-#      WITH_REGISTRY_CACHE=true`, and accepts `--opt-in WITH_CHAOS_MESH=true`
-#      and `--opt-in WITH_DIZZY=true`, which the lab overlay carries; of the
+#      WITH_REGISTRY_CACHE=true`, and accepts `--opt-in WITH_CHAOS_MESH=true`,
+#      `--opt-in WITH_DIZZY=true` and `--opt-in WITH_PROMETHEUS=true`, which
+#      the lab overlay carries; of the
 #      WITH_* flags hack/deploy-infra.sh declares, it refuses exactly those
 #      its preflight_external_cluster refuses
 #   6. Part 2 links no anchor of Part 1 and defines `nodes` and `zone` itself
@@ -59,6 +60,9 @@
 #  17. Part 1, Step 3 links the platform's autoscalers of
 #      docs/reference/infrastructure/infrastructure-manifests.md#lab-autoscaling,
 #      and the page does not say that the VPA needs a kind node
+#  18. Part 1, Step 3 names the optional WITH_PROMETHEUS=true with both
+#      port-forwards and links
+#      docs/reference/infrastructure/infrastructure-manifests.md#lab-prometheus-stack
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -336,6 +340,11 @@ test_devstack() {
   assert_eq "the guide scaffold accepts WITH_DIZZY=true, which the lab overlay carries" "0" "$rc"
   assert_not_empty "and adds it to the bring-up" \
     "$(grep -xF -- 'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_DIZZY=true make deploy-infra' <<<"$out" || true)"
+  out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_PROMETHEUS=true 2>&1)"
+  rc=$?
+  assert_eq "the guide scaffold accepts WITH_PROMETHEUS=true, which the lab overlay carries" "0" "$rc"
+  assert_not_empty "and adds it to the bring-up" \
+    "$(grep -xF -- 'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_PROMETHEUS=true make deploy-infra' <<<"$out" || true)"
   out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_REGISTRY_CACHE=true 2>&1)"
   rc=$?
   assert_eq "the guide scaffold still refuses the kind-only WITH_REGISTRY_CACHE=true" "2" "$rc"
@@ -608,6 +617,25 @@ test_step_3_names_the_platform_autoscalers() {
     "$(tr -s '\n ' ' ' <"$QUICK_START_DOC")" 'the other flags that need a kind node'
 }
 
+# --- Test 18: Step 3 names the optional Prometheus stack ---
+# shellcheck disable=SC2016 # the page's literal text, not expanded here
+test_step_3_names_the_lab_prometheus() {
+  echo "Test: Part 1, Step 3 names WITH_PROMETHEUS=true and links the Lab Prometheus stack"
+  local step
+  step="$(section '^## Part 1: ' |
+    awk '/^### Step 3:/ { inside = 1; next } inside && /^### / { exit } inside { print }')"
+  assert_contains "Step 3 names WITH_PROMETHEUS=true" "$step" '`WITH_PROMETHEUS=true`'
+  assert_contains "and the Prometheus port-forward" "$step" \
+    '`kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090`'
+  assert_contains "and the Grafana port-forward" "$step" \
+    '`kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80`'
+  assert_contains "Step 3 links infrastructure-manifests.md#lab-prometheus-stack" "$step" \
+    'infrastructure-manifests.md#lab-prometheus-stack'
+  # The deploy command of the page stays the one without the flag.
+  assert_eq "no fenced line of the page sets WITH_PROMETHEUS" "0" \
+    "$(awk '/^```/ { f = !f; next } f' "$QUICK_START_DOC" | grep -c 'WITH_PROMETHEUS' || true)"
+}
+
 test_frontmatter
 test_sidebar
 test_sections
@@ -625,6 +653,7 @@ test_no_array_index
 test_step_5_boots_every_node
 test_caveats_name_the_fault_runs
 test_step_3_names_the_platform_autoscalers
+test_step_3_names_the_lab_prometheus
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

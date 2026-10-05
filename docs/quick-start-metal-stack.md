@@ -131,6 +131,17 @@ with dizzy's dashboards. A soak reaches them through the port-forward of
 Step 6 and a second one to VictoriaMetrics; see
 [Lab dizzy stack](./reference/infrastructure/infrastructure-manifests.md#lab-dizzy-stack).
 
+`WITH_PROMETHEUS=true` is optional as well. Added to the deploy command, it
+deploys Prometheus and Grafana. Prometheus keeps its metrics on a volume and
+scrapes the service operators, and the hypervisor operator once Part 2 has
+applied it. Grafana carries a dashboard for the Keystone operator and one for
+the hypervisor operator. Prometheus is reached with
+`kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090`
+and Grafana with
+`kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80`,
+where it signs in `admin` with the password `prom-operator`; see
+[Lab Prometheus stack](./reference/infrastructure/infrastructure-manifests.md#lab-prometheus-stack).
+
 The shoot brings a VerticalPodAutoscaler and a metrics-server of its own, so
 the script refuses `WITH_VPA=true` and `WITH_METRICS_SERVER=true` and installs
 neither. A workload opts into the platform's VPA with its
@@ -626,8 +637,11 @@ the hypervisors: its experiments are released while its controller still runs,
 and its kernel modules stay loaded until a node reboots as well. A dizzy stack
 deployed with `WITH_DIZZY=true` goes in the teardown's step 3, and its claim
 with it. Where the default class has the reclaim policy `Delete`, the metrics
-on its volume go too. Stop the port-forward of Part 1, and the one to
-VictoriaMetrics if you opened it, once the teardown has finished. Delete
+on its volume go too. A Prometheus deployed with `WITH_PROMETHEUS=true` goes in
+the same step, and its claim with it, then the Service and the Endpoints
+`kube-prometheus-stack-kubelet` that its operator wrote in `kube-system`. Stop
+the port-forward of Part 1, and those to VictoriaMetrics, Prometheus and
+Grafana if you opened them, once the teardown has finished. Delete
 `gateway-ca.pem`, and `_output/dizzy/clouds.yaml` if a soak wrote it: it holds
 the admin password of the removed stack.
 
@@ -696,6 +710,15 @@ place, without a restart. Without `minReplicas` the run's pod already lay
 inside the recommended range, so the run did not show what that mode does
 there.
 
+With `WITH_PROMETHEUS=true`, Prometheus loads the hypervisor operator's
+alerts, and those that read `kube_customresource_*` series never have data:
+only a kube-state-metrics with the operator chart's custom-resource config
+exports them, and the lab runs none. The hvo rows of
+[Lab hypervisors](./reference/infrastructure/infrastructure-manifests.md#lab-hypervisors)
+name the alerts with and without data. No
+lab run has judged the chart's scrape jobs `apiserver`, `coredns` and `kubelet`
+yet, so a target of one of them may show `down`.
+
 ## Proven by
 
 The page as of commit `e6a34f1b`, before Cinder was added, ran in page order
@@ -759,6 +782,10 @@ Teardown's last line, which exited 0 and left the platform's namespaces alone.
 A script typed the console commands through `tmux send-keys`, and the
 port-forward ran in a second terminal without a restart. Nothing was done by
 hand on the cluster or the workers.
+
+No lab run has set `WITH_PROMETHEUS=true` yet; the
+[Lab Prometheus run](./reference/infrastructure/infrastructure-manifests.md#lab-prometheus-run)
+lists the steps that would prove it.
 
 ## Related references
 

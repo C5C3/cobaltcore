@@ -18,7 +18,13 @@
 # #1178 build from those commits, which carry the same tag. Neither ref has
 # a Renovate manager. Each moves with its pin, and
 # tests/unit/deploy/metal_stack_hypervisor_test.sh fails while its short SHA
-# differs from the pinned commit.
+# differs from the pinned commit. A move of hvo's chart re-reads its two
+# PrometheusRules and its dashboard: the hvo rows of `### Lab hypervisors` and
+# the `### Lab Prometheus stack` section of
+# docs/reference/infrastructure/infrastructure-manifests.md name its alerts
+# and query counts beside the chart tag they were read from, and
+# tests/unit/docs/infrastructure_manifests_lab_prometheus_test.sh fails while
+# that tag differs from ref.tag.
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
