@@ -15,10 +15,13 @@
 # Strategy: hybrid — source the script (the `BASH_SOURCE[0] == ${0}` guard at
 # the bottom of deploy-infra.sh keeps main() from auto-running) to assert the
 # runtime default of WITH_DIZZY for each env scenario, and grep the script
-# source to lock in the three strict gate locations:
-#   1. Step 3 overlay apply (stage-dashboards + kubectl apply -k deploy/kind/dizzy)
-#   2. Phase 3 helm-release wait list append (dizzy-victoria-metrics, dizzy-grafana)
-#   3. post-wait Grafana URL log
+# source to lock in the four strict gate locations:
+#   1. the EXTERNAL_CLUSTER=true preflight check for the overlay's
+#      dizzy/kustomization.yaml
+#   2. Step 3 overlay apply (stage-dashboards + kubectl apply -k of the dizzy/
+#      of OVERLAY_ROOT, deploy/kind/dizzy in kind mode)
+#   3. Phase 3 helm-release wait list append (dizzy-victoria-metrics, dizzy-grafana)
+#   4. post-wait Grafana URL log
 # The configuration-banner line is asserted via grep so the user-visible summary
 # stays in lockstep with the runtime value. The 8428 kind extraPortMapping is
 # pinned here too: it must survive a KIND_HOST_PORT override byte-for-byte so a
@@ -115,7 +118,8 @@ test_explicit_false() {
 # Test 4: defensive non-true value
 # A typo like WITH_DIZZY=yes must NOT enable the overlay; every gate uses the
 # strict `== "true"` comparison. We assert the value passes through verbatim AND
-# that all gate sites use exact-match. There are exactly three runtime gates:
+# that all gate sites use exact-match. There are exactly four runtime gates:
+#   - the EXTERNAL_CLUSTER=true preflight overlay check
 #   - Step 3 stage-dashboards + overlay apply
 #   - Phase 3 helm_releases append
 #   - post-wait Grafana URL log
@@ -129,7 +133,7 @@ test_non_true_value_does_not_trigger_install() {
 
   local gate_count
   gate_count="$(grep -cE '"\$\{WITH_DIZZY\}" == "true"' "$DEPLOY_INFRA_SH" || true)"
-  assert_eq "deploy-infra.sh has exactly 3 strict WITH_DIZZY==true gates" "3" "$gate_count"
+  assert_eq "deploy-infra.sh has exactly 4 strict WITH_DIZZY==true gates" "4" "$gate_count"
 }
 
 # ---------------------------------------------------------------------------
@@ -153,24 +157,28 @@ test_banner_includes_dizzy_line() {
 
 # ---------------------------------------------------------------------------
 # Test 6: Step 3 overlay apply is gated, and stage-dashboards runs first
-# The kustomize apply for deploy/kind/dizzy must live inside the WITH_DIZZY gate
-# so the default Quick Start does not install it, and dizzy.sh stage-dashboards
-# MUST run inside the SAME gate BEFORE the apply so the configMapGenerator's
-# staged JSONs exist when kustomize renders the ConfigMap.
+# The kustomize apply of the dizzy/ of OVERLAY_ROOT (deploy/kind/dizzy in kind
+# mode) must live inside the WITH_DIZZY gate so the default Quick Start does not
+# install it, and dizzy.sh stage-dashboards MUST run inside the SAME gate BEFORE
+# the apply so the configMapGenerator's staged JSONs exist when kustomize
+# renders the ConfigMap.
 # ---------------------------------------------------------------------------
 test_dizzy_apply_is_gated_after_staging() {
   echo "Test: dizzy overlay apply is gated and staged after dizzy.sh stage-dashboards"
 
-  # There is exactly one apply of the dizzy overlay.
+  # There is exactly one apply of the dizzy overlay, and it reads the overlay
+  # root, which is deploy/kind in kind mode.
   local apply_hits
-  apply_hits="$(grep -cF 'kubectl apply -k "${REPO_ROOT}/deploy/kind/dizzy"' "$DEPLOY_INFRA_SH" || true)"
+  apply_hits="$(grep -cF 'kubectl apply -k "${OVERLAY_ROOT}/dizzy"' "$DEPLOY_INFRA_SH" || true)"
   assert_eq "deploy-infra.sh applies the dizzy overlay exactly once" "1" "$apply_hits"
+  assert_file_not_contains "deploy-infra.sh no longer hardcodes the kind dizzy overlay" \
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/dizzy"'
 
   local apply_line stage_line gate_before_apply gate_before_stage
-  apply_line="$(grep -nF 'kubectl apply -k "${REPO_ROOT}/deploy/kind/dizzy"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -nF 'kubectl apply -k "${OVERLAY_ROOT}/dizzy"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   stage_line="$(grep -nF 'dizzy.sh" stage-dashboards' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
 
-  assert_not_empty "kubectl apply -k deploy/kind/dizzy line is found" "$apply_line"
+  assert_not_empty "kubectl apply -k of the overlay root's dizzy/ line is found" "$apply_line"
   assert_not_empty "dizzy.sh stage-dashboards line is found" "$stage_line"
 
   # The most recent WITH_DIZZY gate above each anchor line.

@@ -160,9 +160,11 @@ WITH_METRICS_SERVER="${WITH_METRICS_SERVER:-false}"
 WITH_VPA="${WITH_VPA:-false}"
 if [[ "${WITH_VPA}" == "true" ]]; then WITH_METRICS_SERVER=true; fi
 
-# Gates the opt-in dizzy kind overlay (deploy/kind/dizzy) which installs
-# VictoriaMetrics + Grafana for dizzy load/chaos runs. Defaults to false so the
-# kind Quick Start stays minimal; set WITH_DIZZY=true to install.
+# Gates the opt-in dizzy overlay, the dizzy/ of OVERLAY_ROOT, which installs
+# VictoriaMetrics + Grafana for dizzy load/chaos runs: in kind mode
+# deploy/kind/dizzy, under EXTERNAL_CLUSTER=true the overlay's dizzy/, which
+# keeps the metrics on a volume behind a ClusterIP Service. Defaults to false so
+# the kind Quick Start stays minimal; set WITH_DIZZY=true to install.
 WITH_DIZZY="${WITH_DIZZY:-false}"
 
 # Gates the opt-in NFS storage stack: the NFS server in `openstack` plus the
@@ -336,11 +338,12 @@ INFRA_ONLY="${INFRA_ONLY:-false}"
 # Selects the external-cluster mode: deploy onto whatever cluster the current
 # kubeconfig context points at (KUBECONFIG or ~/.kube/config, as kubectl
 # resolves it) instead of a kind cluster this script creates. The script never
-# switches contexts. Docker and kind are not needed; the five kind-bound opt-ins
-# (WITH_VPA, WITH_METRICS_SERVER, WITH_REGISTRY_CACHE, WITH_OVN_KERNEL_MODULES,
-# WITH_DIZZY) are refused in preflight_checks, WITH_NFS=true is accepted only
-# for an overlay with an nfs/ kustomization and WITH_CHAOS_MESH=true only for
-# one with a chaos-mesh/ kustomization; the cluster is checked for a default
+# switches contexts. Docker and kind are not needed; the four kind-bound opt-ins
+# (WITH_VPA, WITH_METRICS_SERVER, WITH_REGISTRY_CACHE, WITH_OVN_KERNEL_MODULES)
+# are refused in preflight_checks, WITH_NFS=true is accepted only for an overlay
+# with an nfs/ kustomization, WITH_CHAOS_MESH=true only for one with a
+# chaos-mesh/ kustomization and WITH_DIZZY=true only for one with a dizzy/
+# kustomization; the cluster is checked for a default
 # StorageClass, no node-local-dns, a Ready node and, under WITH_NFS=true, a
 # foreign NFS CSIDriver and the node network, otherwise for the NFS CSIDriver
 # the Cinder backends of the overlay's ControlPlane mount, before anything is
@@ -370,7 +373,12 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # kustomization as well, which Step 3 applies under WITH_CHAOS_MESH=true in
 # place of deploy/kind/chaos-mesh. It has to render the DaemonSet
 # chaos-mesh-modules and the HelmRelease chaos-mesh in chaos-mesh, the two
-# names this script waits for. Read only under EXTERNAL_CLUSTER=true.
+# names this script waits for. An overlay may carry a dizzy/ kustomization too,
+# which Step 3 applies under WITH_DIZZY=true in place of deploy/kind/dizzy. It
+# has to render the HelmReleases dizzy-victoria-metrics and dizzy-grafana in
+# dizzy, the two names this script waits for and make teardown-infra deletes,
+# and it takes its dashboards from deploy/kind/dizzy/dashboards/, which Step 3
+# stages. Read only under EXTERNAL_CLUSTER=true.
 EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
 
 # Derived from the two knobs above, not overridable. OVERLAY_ROOT is the
@@ -1451,7 +1459,9 @@ preflight_checks() {
 # the two kustomizations Steps 3 and 5 apply, then WITH_NFS=true for an overlay
 # without the nfs/ kustomization Step 3 applies in place of deploy/kind/nfs,
 # then WITH_CHAOS_MESH=true for one without the chaos-mesh/ kustomization Step 3
-# applies in place of deploy/kind/chaos-mesh, then an overlay whose by-hand
+# applies in place of deploy/kind/chaos-mesh, then WITH_DIZZY=true for one
+# without the dizzy/ kustomization Step 3 applies in place of deploy/kind/dizzy,
+# then an overlay whose by-hand
 # controlplane/ does not render exactly one ControlPlane,
 # openstack/CONTROLPLANE_NAME, or, without WITH_NFS=true, one with a Cinder
 # backend on the in-cluster NFS server, then a kubeconfig context whose API
@@ -1461,8 +1471,9 @@ preflight_checks() {
 # the top of the script. The flags are read by indirect expansion (${!flag})
 # rather than as literal `"${WITH_X}" == "true"` tests, because each
 # tests/unit/hack/deploy_infra_<flag>_flag_test.sh counts those literals and a
-# second gate here would change the count. The overlay checks of WITH_NFS and
-# WITH_CHAOS_MESH below are literal gates, and those two tests count them.
+# second gate here would change the count. The overlay checks of WITH_NFS,
+# WITH_CHAOS_MESH and WITH_DIZZY below are literal gates, and those three tests
+# count them.
 #
 # Logs the context and the API server URL, so the transcript records which
 # cluster the run went to.
@@ -1473,8 +1484,7 @@ preflight_external_cluster() {
     "WITH_VPA|the platform runs Gardener's VPA, so nothing is installed; opt a workload in with its verticalAutoscaling block (spec.sizing.<component>.<workload>.verticalAutoscaling on the ControlPlane)" \
     "WITH_METRICS_SERVER|the platform serves v1beta1.metrics.k8s.io, so nothing is installed; scale an API with its autoscaling block (spec.sizing.<component>.api.autoscaling on the ControlPlane)" \
     "WITH_REGISTRY_CACHE|the pull-through cache needs the kind Docker network" \
-    "WITH_OVN_KERNEL_MODULES|it loads kernel modules on the host" \
-    "WITH_DIZZY|it reads the kind node's published ports with docker port"; do
+    "WITH_OVN_KERNEL_MODULES|it loads kernel modules on the host"; do
     flag="${entry%%|*}"
     if [[ "${!flag}" == "true" ]]; then
       log "ERROR: EXTERNAL_CLUSTER=true does not support ${flag}=true: ${entry#*|}"
@@ -1501,6 +1511,14 @@ preflight_external_cluster() {
   # WITH_CHAOS_MESH=true takes the overlay's own chaos-mesh/, tested by file.
   if [[ "${WITH_CHAOS_MESH}" == "true" && ! -f "${OVERLAY_ROOT}/chaos-mesh/kustomization.yaml" ]]; then
     log "ERROR: EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true needs ${OVERLAY_ROOT}/chaos-mesh/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/chaos-mesh is not applied to an external cluster: it lets an experiment select a pod in every namespace and relies on kernel modules that this mode does not load on the host."
+    exit 1
+  fi
+
+  # The kind dizzy overlay publishes VictoriaMetrics on a NodePort that only a
+  # kind node maps to a host port and keeps the metrics in an emptyDir, so
+  # WITH_DIZZY=true takes the overlay's own dizzy/, tested by file.
+  if [[ "${WITH_DIZZY}" == "true" && ! -f "${OVERLAY_ROOT}/dizzy/kustomization.yaml" ]]; then
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_DIZZY=true needs ${OVERLAY_ROOT}/dizzy/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/dizzy is not applied to an external cluster: it publishes VictoriaMetrics on NodePort 30428, which only a kind node maps to a host port, and keeps the metrics in an emptyDir."
     exit 1
   fi
 
@@ -3146,34 +3164,38 @@ main() {
 
   # Opt-in dizzy overlay (VictoriaMetrics + Grafana). Layered on top of the base
   # so the default Quick Start stays minimal; enable with WITH_DIZZY=true. The
-  # overlay is self-contained (no `../../` parent-dir references), so kubectl's
-  # embedded kustomize renders it under the default LoadRestrictionsRootOnly
-  # security check — same contract as the chaos-mesh, prometheus, and
-  # metrics-server overlays (no `--load-restrictor` flag required,
-  # kubernetes/kubectl#948).
+  # kind mode applies deploy/kind/dizzy, which is self-contained (no `../../`
+  # parent-dir references); the external mode applies the overlay's dizzy/,
+  # which references deploy/kind/dizzy as a directory. kubectl's embedded
+  # kustomize renders both under the default LoadRestrictionsRootOnly security
+  # check — same contract as the chaos-mesh, prometheus, and metrics-server
+  # overlays (no `--load-restrictor` flag required, kubernetes/kubectl#948).
   if [[ "${WITH_DIZZY}" == "true" ]]; then
     # Stage the three Grafana dashboard JSONs from the pinned dizzy release into
     # the git-ignored deploy/kind/dizzy/dashboards/ so the overlay's
     # configMapGenerator can reference them without a parent-dir traversal (same
     # LoadRestrictionsRootOnly contract as the prometheus overlay's staged JSON).
     # This MUST run immediately before `kubectl apply -k` so the files exist when
-    # kustomize renders the ConfigMap.
+    # kustomize renders the ConfigMap. The lab overlay reads the same directory.
     "${SCRIPT_DIR}/dizzy.sh" stage-dashboards
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/dizzy"
-    log "dizzy kind overlay applied (WITH_DIZZY=true)."
+    kubectl apply -k "${OVERLAY_ROOT}/dizzy"
+    log "dizzy overlay ${OVERLAY_ROOT}/dizzy applied (WITH_DIZZY=true)."
     # VictoriaMetrics OTLP ingest is exposed on host 8428 → NodePort 30428 via
     # the kind extraPortMapping in hack/kind-config.yaml. A cluster created
     # before that mapping was added lacks the port, so host→VictoriaMetrics OTLP
     # ingest will not work. Probe the control-plane node's published port and
-    # warn (but continue) so the operator knows to recreate the cluster.
-    local dizzy_metrics_port
-    dizzy_metrics_port="$(docker port "${CLUSTER_NAME}-control-plane" 30428/tcp 2>/dev/null || true)"
-    if [[ -z "${dizzy_metrics_port}" ]]; then
-      log "  WARNING: cluster '${CLUSTER_NAME}' predates the dizzy metrics port mapping"
-      log "           (host 8428 → NodePort 30428) in hack/kind-config.yaml. Host→"
-      log "           VictoriaMetrics OTLP ingest will NOT work. To activate it, recreate"
-      log "           the cluster with WITH_DIZZY=true (e.g."
-      log "           \`make teardown-infra && WITH_DIZZY=true make deploy-infra\`)."
+    # warn (but continue) so the operator knows to recreate the cluster. The
+    # external mode has no kind node; its ingest is a port-forward.
+    if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then
+      local dizzy_metrics_port
+      dizzy_metrics_port="$(docker port "${CLUSTER_NAME}-control-plane" 30428/tcp 2>/dev/null || true)"
+      if [[ -z "${dizzy_metrics_port}" ]]; then
+        log "  WARNING: cluster '${CLUSTER_NAME}' predates the dizzy metrics port mapping"
+        log "           (host 8428 → NodePort 30428) in hack/kind-config.yaml. Host→"
+        log "           VictoriaMetrics OTLP ingest will NOT work. To activate it, recreate"
+        log "           the cluster with WITH_DIZZY=true (e.g."
+        log "           \`make teardown-infra && WITH_DIZZY=true make deploy-infra\`)."
+      fi
     fi
   fi
 
