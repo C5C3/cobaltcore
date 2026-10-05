@@ -88,6 +88,16 @@
 #      out exits 1 with kubectl's line and deletes nothing after it; a second
 #      run, on which the Flux kinds are gone, and a cluster deployed without
 #      WITH_DIZZY=true, on which the deletes find nothing, exit 0.
+#   7. kube-prometheus-stack goes in step 3, after the base overlay: its
+#      HelmRelease by file, then the PVCs in monitoring, then the Service and
+#      Endpoints kube-prometheus-stack-kubelet in kube-system, once each,
+#      logged, and before the dizzy HelmReleases and the PVCs of step 4; an
+#      overlay without prometheus/ gets all three as well. A release delete
+#      that runs out exits 1 with kubectl's line and neither later delete, a
+#      Service delete refused with Forbidden exits 1 with kubectl's line, and
+#      a second run, on which the Flux kinds are gone, and a cluster deployed
+#      without WITH_PROMETHEUS=true, on which the deletes find nothing, exit
+#      0.
 #
 # main() runs against a recording kubectl stub on a private PATH prefix and the
 # real yq; the external-cluster checks are SKIP without yq.
@@ -231,6 +241,14 @@ ippools.crd.projectcalico.org"
 #                          exit code of the delete of the dizzy HelmReleases
 #                          alone, which then times out on
 #                          dizzy-victoria-metrics (default 0)
+#   KUBECTL_PROMETHEUS_DELETE_RC
+#                          exit code of the delete of the kube-prometheus-stack
+#                          release alone, which then times out on its
+#                          HelmRelease (default 0)
+#   KUBECTL_KUBELET_SERVICE_DELETE_RC
+#                          exit code of the delete of the kubelet Service and
+#                          Endpoints alone, which the API server then refuses
+#                          with Forbidden (default 0)
 # The step 0 reads answer two nodes, lab-a and lab-b, and a fixtures domain
 # hvo-cc3test that a second run no longer finds. On a second run the named
 # deletes of HelmReleases and HelmRepositories fail on the missing kind. The
@@ -704,6 +722,18 @@ case "$args" in
           exit "${KUBECTL_DIZZY_DELETE_RC}"
         fi
         ;;
+      "delete -f "*"/deploy/kind/prometheus/release.yaml "*)
+        if [ "${KUBECTL_PROMETHEUS_DELETE_RC:-0}" != "0" ]; then
+          echo "error: timed out waiting for the condition on helmreleases/kube-prometheus-stack" >&2
+          exit "${KUBECTL_PROMETHEUS_DELETE_RC}"
+        fi
+        ;;
+      "delete service,endpoints kube-prometheus-stack-kubelet "*)
+        if [ "${KUBECTL_KUBELET_SERVICE_DELETE_RC:-0}" != "0" ]; then
+          echo 'Error from server (Forbidden): services "kube-prometheus-stack-kubelet" is forbidden: User "lab" cannot delete resource "services" in API group "" in the namespace "kube-system"' >&2
+          exit "${KUBECTL_KUBELET_SERVICE_DELETE_RC}"
+        fi
+        ;;
       "delete networkchaos.chaos-mesh.org,"*)
         if [ "${KUBECTL_CHAOS_DELETE_RC:-0}" != "0" ]; then
           echo "networkchaos.chaos-mesh.org \"lab-keystone-delay\" deleted" >&2
@@ -910,6 +940,8 @@ test_external_teardown_order() {
     'kubectl delete -f - [kinds: Gateway GatewayClass]' \
     'kubectl delete -f - [kinds: HelmRelease HelmRepository]' \
     'kubectl delete -f deploy/kind/prometheus/release.yaml' \
+    'kubectl delete pvc --all -n monitoring' \
+    'kubectl delete service,endpoints kube-prometheus-stack-kubelet -n kube-system' \
     'kubectl delete helmreleases.helm.toolkit.fluxcd.io dizzy-victoria-metrics dizzy-grafana -n dizzy' \
     'kubectl delete helmrepositories.source.toolkit.fluxcd.io victoria-metrics grafana -n flux-system' \
     'kubectl delete pvc --all -n dizzy' \
@@ -1778,6 +1810,105 @@ test_dizzy_step() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 7c: kube-prometheus-stack and what its uninstall leaves, in step 3
+# ---------------------------------------------------------------------------
+test_prometheus_step() {
+  echo "Test: the Prometheus step uninstalls the chart, then deletes its claims and the kubelet Service, and stops on a delete that fails"
+
+  if ! have_yq; then
+    echo "  SKIP: yq not installed (24 checks skipped)"
+    SKIP=$((SKIP + 24))
+    return
+  fi
+
+  local tmp output rc calls release claims kubelet flags
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  export CALL_LOG="$tmp/calls.log"
+  flags='--ignore-not-found --wait --timeout=600s'
+  release="kubectl delete -f $PROJECT_ROOT/deploy/kind/prometheus/release.yaml $flags"
+  claims="kubectl delete pvc --all -n monitoring $flags"
+  kubelet="kubectl delete service,endpoints kube-prometheus-stack-kubelet -n kube-system $flags"
+
+  # The stub answers the three deletes with no output and exit 0, as a
+  # cluster deployed without WITH_PROMETHEUS=true does.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "the teardown exits 0" "0" "$rc"
+  local base_line release_line claims_line kubelet_line dizzy_line shared_line
+  base_line="$(grep -nF '[kinds: HelmRelease HelmRepository]' <<<"$calls" | cut -d: -f1 | head -n1)"
+  release_line="$(grep -nxF "$release" <<<"$calls" | cut -d: -f1 | head -n1)"
+  claims_line="$(grep -nxF "$claims" <<<"$calls" | cut -d: -f1 | head -n1)"
+  kubelet_line="$(grep -nxF "$kubelet" <<<"$calls" | cut -d: -f1 | head -n1)"
+  dizzy_line="$(grep -nF 'kubectl delete helmreleases.helm.toolkit.fluxcd.io dizzy-victoria-metrics ' <<<"$calls" | cut -d: -f1 | head -n1)"
+  shared_line="$(grep -nF 'kubectl delete pvc --all -n shared-services ' <<<"$calls" | cut -d: -f1 | head -n1)"
+  assert_eq "the release is deleted by file once, ignoring absence and waiting" "1" "$(grep -cxF "$release" <<<"$calls")"
+  assert_eq "the PVCs in monitoring are deleted once, ignoring absence and waiting" "1" "$(grep -cxF "$claims" <<<"$calls")"
+  assert_eq "the kubelet Service and Endpoints are deleted once, ignoring absence and waiting" "1" "$(grep -cxF "$kubelet" <<<"$calls")"
+  assert_eq "the release goes after the base overlay" "true" \
+    "$([[ -n "$base_line" && -n "$release_line" && "$base_line" -lt "$release_line" ]] && echo true || echo false)"
+  assert_eq "the claims after the release" "true" \
+    "$([[ -n "$release_line" && -n "$claims_line" && "$release_line" -lt "$claims_line" ]] && echo true || echo false)"
+  assert_eq "the kubelet Service and Endpoints after the claims" "true" \
+    "$([[ -n "$claims_line" && -n "$kubelet_line" && "$claims_line" -lt "$kubelet_line" ]] && echo true || echo false)"
+  assert_eq "and before the dizzy HelmReleases" "true" \
+    "$([[ -n "$kubelet_line" && -n "$dizzy_line" && "$kubelet_line" -lt "$dizzy_line" ]] && echo true || echo false)"
+  assert_eq "and the PVCs in shared-services" "true" \
+    "$([[ -n "$kubelet_line" && -n "$shared_line" && "$kubelet_line" -lt "$shared_line" ]] && echo true || echo false)"
+  assert_contains "the claim delete is logged" "$output" "Deleting the PVCs in monitoring..."
+  assert_contains "the kubelet Service delete is logged" "$output" \
+    "Deleting the kubelet Service and Endpoints the Prometheus Operator left in kube-system..."
+
+  # An overlay without prometheus/: the step is not gated on the overlay.
+  mkdir -p "$tmp/no-prometheus/base" "$tmp/no-prometheus/infrastructure"
+  : >"$tmp/no-prometheus/base/kustomization.yaml"
+  : >"$tmp/no-prometheus/infrastructure/kustomization.yaml"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-prometheus")"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an overlay without prometheus/ tears down" "0" "$rc"
+  assert_eq "with all three deletes" "3" \
+    "$(grep -cxF -e "$release" -e "$claims" -e "$kubelet" <<<"$calls")"
+
+  # The helm-controller's uninstall outlives the release delete: exit 1 with
+  # kubectl's line, and no claim or Service is deleted.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_PROMETHEUS_DELETE_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a release delete that runs out exits 1" "1" "$rc"
+  assert_contains "the error names the step" "$output" \
+    "ERROR: deleting the kube-prometheus-stack release failed or did not finish within 600s:"
+  assert_contains "and the HelmRelease kubectl still waits for" "$output" \
+    "error: timed out waiting for the condition on helmreleases/kube-prometheus-stack"
+  assert_not_contains "no claim delete follows" "$calls" "delete pvc --all -n monitoring"
+  assert_not_contains "nor the kubelet Service delete" "$calls" "delete service,endpoints kube-prometheus-stack-kubelet"
+
+  # The API server refuses the Service delete.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_KUBELET_SERVICE_DELETE_RC=1)"
+  rc=$?
+  assert_eq "a refused kubelet Service delete exits 1" "1" "$rc"
+  assert_contains "with kubectl's line" "$output" \
+    'Error from server (Forbidden): services "kube-prometheus-stack-kubelet" is forbidden'
+
+  # A second run: the HelmRelease kind is gone.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_SECOND_RUN=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a second run exits 0" "0" "$rc"
+  assert_contains "its release delete, whose kind has no mapping, passes" "$calls" "$release"
+  assert_contains "and so does the kubelet Service delete after it" "$calls" "$kubelet"
+  assert_not_contains "and it prints no 'No resources found'" "$output" "No resources found"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
 # Test 8: yq is required
 # ---------------------------------------------------------------------------
 test_requires_yq() {
@@ -1853,6 +1984,7 @@ test_external_teardown_failures
 test_hypervisor_step_zero
 test_chaos_mesh_step
 test_dizzy_step
+test_prometheus_step
 test_requires_yq
 test_requires_mikefarah_yq
 
