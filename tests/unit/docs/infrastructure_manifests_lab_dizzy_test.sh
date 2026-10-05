@@ -7,7 +7,7 @@
 # docs/reference/infrastructure/infrastructure-manifests.md (#1225):
 #   1. the heading occurs once, after `#### Lab fault runs` and before
 #      `### Lab ControlPlane`; `#### Lab dizzy run` occurs once, after it, and
-#      the next heading is `### Lab ControlPlane`
+#      the next heading is `### Lab Prometheus stack`
 #   2. the subsection names the overlay file, the deploy command, both
 #      port-forward commands, `EXTERNAL_CLUSTER=true make dizzy-keystone`, the
 #      claim server-volume-dizzy-victoria-metrics-server-0, the posture and the
@@ -111,7 +111,7 @@ test_position() {
     FAIL=$((FAIL + 1))
   fi
   next="$(awk -F: -v run="${run:-0}" '$1 > run { sub(/^[0-9]+:/, ""); print; exit }' <<<"$all")"
-  assert_eq "the heading after '#### Lab dizzy run' is '### Lab ControlPlane'" "### Lab ControlPlane" "$next"
+  assert_eq "the heading after '#### Lab dizzy run' is '### Lab Prometheus stack'" "### Lab Prometheus stack" "$next"
 }
 
 # --- Test 2: the section's content ---

@@ -78,7 +78,7 @@ created.
 | `cert-manager` | cert-manager operator and its resources |
 | `mariadb-system` | MariaDB Operator |
 | `external-secrets` | External Secrets Operator |
-| `monitoring` | Prometheus Operator CRDs (consumed by the optional kube-prometheus-stack kind overlay) |
+| `monitoring` | Prometheus Operator CRDs (consumed by the optional kube-prometheus-stack of the kind overlay and of the [Lab Prometheus stack](#lab-prometheus-stack), which declares no Namespace of its own) |
 | `memcached-system` | Memcached Operator |
 | `garage-system` | Garage Operator (S3 object store for the CI/e2e stack) |
 | `keystone-system` | Keystone Operator controller (workload CRs continue to live in `openstack`) |
@@ -2069,6 +2069,10 @@ untouched. The
 [`document-intentional-environment-divergence-in-overlays`](https://github.com/c5c3/cobaltcore/blob/main/.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md)
 review pattern catalogues the full surface area.
 
+The metal-stack lab runs the same stack with its metrics on a volume, the
+scrape jobs a Gardener shoot can feed, and a dashboard for the hypervisor
+operator; see [Lab Prometheus stack](#lab-prometheus-stack).
+
 ### metrics-server (kind-only opt-in)
 
 **File:** `deploy/kind/metrics-server/kustomization.yaml`
@@ -2583,8 +2587,10 @@ metal-stack cluster, planned in
 `EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), its `nfs/` as
 well when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)), its
 `chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see
-[Lab Chaos Mesh](#lab-chaos-mesh)), and its `dizzy/` when `WITH_DIZZY=true`
-is set (see [Lab dizzy stack](#lab-dizzy-stack)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
+[Lab Chaos Mesh](#lab-chaos-mesh)), its `dizzy/` when `WITH_DIZZY=true`
+is set (see [Lab dizzy stack](#lab-dizzy-stack)), and its `prometheus/` when
+`WITH_PROMETHEUS=true` is set (see
+[Lab Prometheus stack](#lab-prometheus-stack)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
 finished (see [Lab ControlPlane](#lab-controlplane)), and after it
 `hypervisor-fixtures/` and `hypervisor/` (see
 [Lab hypervisors](#lab-hypervisors)). The ControlPlane's opt-in
@@ -2799,7 +2805,9 @@ checks the cluster for a default StorageClass, for the absence of a
 `node-local-dns` DaemonSet (the instance's NetworkPolicy would need
 `spec.network.dnsEndpointIPs` for a host-networked resolver) and for a Ready
 node, and prints the port-forward command when it
-completes. The teardown removes the stack in finalizer order and leaves the
+completes. Under `WITH_PROMETHEUS=true` it applies `prometheus/` in place of
+`deploy/kind/prometheus`, and it refuses that flag for an overlay without one.
+The teardown removes the stack in finalizer order and leaves the
 platform's namespaces and CRDs alone. Both are described in
 [E2E Deployment](e2e-deployment.md#make-teardown-infra), with every variable.
 
@@ -3915,6 +3923,242 @@ What a run shows:
 
 No lab run of this stack is recorded yet.
 
+### Lab Prometheus stack
+
+**Files:** `deploy/lab/metal-stack/prometheus/kustomization.yaml`,
+`deploy/lab/metal-stack/prometheus/hypervisor-operator.json`
+
+The kube-prometheus-stack of the metal-stack lab
+([#1226](https://github.com/c5c3/cobaltcore/issues/1226), from the Prometheus
+findings of [#1219](https://github.com/c5c3/cobaltcore/issues/1219)): the
+Prometheus and Grafana of the
+[kube-prometheus-stack (kind-only opt-in)](#kube-prometheus-stack-kind-only-opt-in),
+with the metrics on a volume, the scrape jobs a Gardener shoot can feed, and a
+dashboard for openstack-hypervisor-operator (hvo). `hack/deploy-infra.sh`
+applies the directory in Step 3 when `WITH_PROMETHEUS=true` is set beside
+`EXTERNAL_CLUSTER=true`, in place of `deploy/kind/prometheus`. The flag
+composes onto the deploy command of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md), which does not
+need it:
+
+```bash
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_PROMETHEUS=true make deploy-infra
+```
+
+The kustomization takes `deploy/kind/prometheus` as its one resource, deletes
+its Namespace and patches its HelmRelease. Its render holds three objects in
+`monitoring`: the HelmRelease `kube-prometheus-stack` and the ConfigMaps
+`keystone-operator-dashboard` and `hypervisor-operator-dashboard`. The
+storage follows the decision D7 of #1219.
+
+| Property | Kind | Lab |
+| --- | --- | --- |
+| Namespace `monitoring` | declared by the overlay, without labels | not in the render. The base overlay declares it with the label `apiserver-proxy.networking.gardener.cloud/inject: disable` and the annotation `chaos-mesh.org/inject: enabled` (see [Lab overlay](#lab-overlay)), and a second apply of the kind Namespace would remove both |
+| Scrape jobs | the chart's defaults | `kubeEtcd`, `kubeScheduler`, `kubeControllerManager` and `kubeProxy` off. Gardener runs etcd, the scheduler and the controller manager in the seed. The chart's kube-proxy Service selects `k8s-app: kube-proxy`, while the shoot's kube-proxy pods carry `app: kubernetes` and `role: proxy`. Each of the four Services in `kube-system` would select nothing. `apiserver`, `coredns` and `kubelet` stay on |
+| Retention | `6h` | `7d`, bounded by `retentionSize: 8GB` |
+| Storage | emptyDir | a volume claim template of 10Gi, `ReadWriteOnce`, without a `storageClassName` |
+| Rule selector | the chart's default, the label `release: kube-prometheus-stack` | `ruleSelectorNilUsesHelmValues: false`, which renders `ruleSelector: {}`: Prometheus loads every PrometheusRule, hvo's included, the posture the kind overlay takes for ServiceMonitors |
+| Prometheus memory | request `256Mi`, limit `512Mi`, sized for one kind node | request `1Gi`, limit `2Gi`: the lab scrapes three kubelets with cAdvisor, and the request follows that working set |
+| Dashboards | `keystone-operator` | `keystone-operator` and `hypervisor-operator` |
+
+Everything else is the kind overlay's: the chart range `>=65.0.0 <70.0.0`,
+the dependency on `cert-manager`, `crds.enabled: false`, Alertmanager,
+node-exporter and kube-state-metrics off, the open ServiceMonitor selectors,
+Prometheus's CPU request, Grafana's resources, and Grafana without a volume,
+since a redeploy restores everything it holds. With these values the chart
+renders one namespaced object outside `monitoring`, the Service
+`kube-system/kube-prometheus-stack-coredns`, which the uninstall removes. The
+Prometheus Operator writes a second Service there,
+`kube-prometheus-stack-kubelet`, with its Endpoints, for the `kubelet`
+job; no uninstall removes those two. `tests/unit/deploy/metal_stack_prometheus_test.sh`
+pins the render.
+
+`hypervisor-operator.json` is a Grafana dashboard with the uid
+`hypervisor-operator` and four `timeseries` panels: reconciliation rate,
+reconciliation errors, reconciliation duration (p99) and workqueue depth. Their
+expressions are those of the controller-runtime panels of hvo's chart
+dashboard, each on `job=~".*hypervisor-operator.*"`; the job of hvo's target is
+its Service name, `hypervisor-operator-controller-manager-metrics-service`.
+The chart's own dashboard is a Perses dashboard, which Grafana cannot load, and
+in chart `1.2.3_sha-a2baf3f` 12 of its 16 queries read `kube_customresource_*`
+series, which only a kube-state-metrics with the chart's custom-resource config
+exports. The file
+sits in the overlay directory, so the generator reads it without a staging
+step. The panels stay empty until [Lab hypervisors](#lab-hypervisors) are
+applied; hvo's release turns on its ServiceMonitor and its PrometheusRules on
+every lab.
+
+In this mode the deploy script's preflight accepts `WITH_PROMETHEUS=true` only
+for an overlay with `prometheus/kustomization.yaml` and refuses any other
+before it contacts the cluster. Step 3 stages the Keystone dashboard into
+`deploy/kind/prometheus/keystone-operator.json`, which the lab overlay reads
+through its resource, applies `<overlay>/prometheus`, and logs
+`Prometheus overlay <overlay>/prometheus applied (WITH_PROMETHEUS=true).`.
+Without the staged file the render fails, as on kind. Phase 3 waits for the
+HelmRelease with a timeout of at least 1200 seconds, as on kind. The deploy
+then turns on the ServiceMonitors of the nine service operators; under
+`WITH_CONTROLPLANE=true` their releases run by then, and it waits for each.
+
+**Access.** Nothing outside the cluster reaches the stack. Prometheus and
+Grafana each take a port-forward from the workstation, in a terminal of its
+own:
+
+```bash
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+```
+
+Prometheus then answers on `http://localhost:9090` and Grafana on
+`http://localhost:3000`, where it signs in `admin` with the chart's default
+password `prom-operator`, as on kind (see
+[Extended Quick Start, Step 4c](../../quick-start-extended.md#step-4c-grafana-ui)).
+A port-forward ends with the pod it reached and is restarted by hand.
+
+**Storage.** The claim names no storage class and binds to the default class,
+which Step 1 of the deploy checks exists. A restarted Prometheus pod mounts the
+same claim, so the metrics survive it, up to 7 days or 8GB. A lab that already
+runs the release of the kind overlay gets a volume claim template added to a
+live Prometheus: the Prometheus Operator replaces the StatefulSet, and the
+metrics in the old emptyDir are lost.
+
+**Posture.** Grafana keeps the chart's default admin password, and Prometheus
+answers without authentication. Both sit behind ClusterIP Services that every
+pod of the cluster reaches and nothing outside it, and the lab is one tenant's
+cluster. Prometheus sends its ServiceAccount token to hvo's metrics Service
+with `insecureSkipVerify`, the TLS setting of the chart's ServiceMonitor, so it
+does not check whom it hands the token to. The token reads nodes, Services,
+Endpoints, EndpointSlices, pods and Ingresses cluster-wide, as the ClusterRole
+`kube-prometheus-stack-prometheus` grants.
+
+**Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes the stack in
+its step 3, after the base overlay and while the helm-controller still runs
+(see [E2E Deployment](e2e-deployment.md#make-teardown-infra)). It deletes the
+HelmRelease by the file `deploy/kind/prometheus/release.yaml`, so the
+helm-controller uninstalls the chart, then the claims in `monitoring`, which
+Helm and the Prometheus Operator leave behind, then the Service and the
+Endpoints `kube-prometheus-stack-kubelet` in `kube-system`. Where the default
+class has the reclaim policy `Delete`, the metrics go with the claim. Its step 7
+deletes the namespace `monitoring` with the two ConfigMaps. A release delete
+that outlives `TEARDOWN_TIMEOUT` stops the teardown with exit 1 before any claim
+is deleted. On a cluster deployed without the flag the three deletes find
+nothing.
+
+#### Lab Prometheus run
+
+The run starts from a bare lab, where
+`kubectl get namespace openstack monitoring flux-system` answers `NotFound` for
+all three; a cluster that carries a stack is not deployed onto. It saves the
+Services, Endpoints and EndpointSlices of `kube-system`, deploys with the
+command above, then runs
+[Step 4](../../quick-start-metal-stack.md#cp-apply),
+[Step 5](../../quick-start-metal-stack.md#cp-tenant) and
+[Step 6](../../quick-start-metal-stack.md#cp-access) of Part 1 and
+[Step 1](../../quick-start-metal-stack.md#hv-nodes) to
+[Step 4](../../quick-start-metal-stack.md#hv-onboarding) of Part 2 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md). Step 3 below
+runs at least ten minutes after the deploy and opens the Prometheus
+port-forward in another terminal; step 5 opens the Grafana one. From the root
+of the clone:
+
+```bash
+# 1. A bare lab, the objects of kube-system, then the deploy (then Part 1,
+#    Steps 4 to 6 and Part 2, Steps 1 to 4 of the quick start)
+kubectl get namespace openstack monitoring flux-system
+kube_system_objects() {
+  kubectl get service,endpoints,endpointslices -n kube-system -o name | sort
+}
+mkdir -p _output
+kube_system_objects >_output/kube-system-before.txt
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_PROMETHEUS=true make deploy-infra
+
+# 2. State: the release with its chart version, the label and the annotation,
+#    the claim and the default class, the chart's Services in kube-system, and
+#    hvo's ServiceMonitor and PrometheusRules
+kubectl get helmrelease kube-prometheus-stack -n monitoring
+kubectl get helmrelease kube-prometheus-stack -n monitoring -o jsonpath='{.status.history[0].chartVersion}{"\n"}'
+kubectl get namespace monitoring -o jsonpath='{.metadata.labels}{"\n"}{.metadata.annotations}{"\n"}'
+kubectl get pvc -n monitoring
+kubectl get storageclass
+kubectl get service -n kube-system -o name | grep '^service/kube-prometheus-stack'
+kubectl get servicemonitor,prometheusrule -n openstack
+
+# 3. In another terminal, ten minutes after the deploy:
+#      kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+#    Every active target: job, namespace, health, last error
+targets() {
+  curl -fsS 'http://localhost:9090/api/v1/targets?state=active' |
+    jq -r '.data.activeTargets[] | [.labels.job, .labels.namespace, .health, .lastError] | @tsv' | sort
+}
+targets
+
+# 4. The dashboard's four expressions as instant queries (the number of series
+#    each returns), then hvo's alerts with their health
+query() {
+  curl -fsS http://localhost:9090/api/v1/query --data-urlencode "query=$1" --data-urlencode "time=${2:-$(date +%s)}" |
+    jq '.data.result | length'
+}
+jq -r '.panels[].targets[].expr' deploy/lab/metal-stack/prometheus/hypervisor-operator.json |
+  while IFS= read -r expr; do echo "$(query "$expr") ${expr}"; done
+curl -fsS http://localhost:9090/api/v1/rules |
+  jq -r '.data.groups[] | select(.file | test("openstack-hypervisor-operator-(operator|eviction)-alerts")) | .rules[] | [.name, .health] | @tsv'
+
+# 5. In another terminal:
+#      kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+curl -fsS -u admin:prom-operator 'http://localhost:3000/api/search?type=dash-db' | jq -r '.[].uid' | sort
+
+# 6. Storage: note the time, replace the pod, restart the Prometheus
+#    port-forward of step 3 once the rollout is done, then query `up` at the
+#    noted time and read the new pod's restarts and memory
+before="$(date +%s)"
+kubectl delete pod prometheus-kube-prometheus-stack-prometheus-0 -n monitoring
+kubectl rollout status statefulset/prometheus-kube-prometheus-stack-prometheus -n monitoring --timeout=300s
+query up "$before"
+kubectl get pod prometheus-kube-prometheus-stack-prometheus-0 -n monitoring \
+  -o jsonpath='{range .status.containerStatuses[*]}{.name} {.restartCount}{"\n"}{end}'
+kubectl top pod prometheus-kube-prometheus-stack-prometheus-0 -n monitoring --containers
+
+# 7. Stop both port-forwards, tear down, compare kube-system with step 1, and
+#    wait up to 600 seconds for the volume of the claim to go
+EXTERNAL_CLUSTER=true make teardown-infra
+kube_system_objects | diff _output/kube-system-before.txt - && echo "kube-system unchanged"
+kubectl get namespace monitoring
+monitoring_pvs() {
+  kubectl get pv -o json | jq '[.items[] | select(.spec.claimRef.namespace == "monitoring")] | length'
+}
+SECONDS=0
+until [ "$(monitoring_pvs)" = 0 ] || [ "$SECONDS" -ge 600 ]; do sleep 5; done
+echo "PersistentVolumes of monitoring: $(monitoring_pvs) after ${SECONDS}s"
+rm _output/kube-system-before.txt
+```
+
+What a run shows:
+
+| Step | Expected |
+| --- | --- |
+| 1 | three `NotFound` lines; the deploy exits 0 and logs `Prometheus overlay <clone>/deploy/lab/metal-stack/prometheus applied (WITH_PROMETHEUS=true).` |
+| 2 | the HelmRelease `Ready` and its chart version; the label `apiserver-proxy.networking.gardener.cloud/inject: disable` and the annotation `chaos-mesh.org/inject: enabled`; one claim `Bound` with 10Gi on the class `kubectl get storageclass` marks `(default)`; at most `service/kube-prometheus-stack-coredns` and `service/kube-prometheus-stack-kubelet`; the ServiceMonitor `hypervisor-operator` and the PrometheusRules `openstack-hypervisor-operator-operator-alerts` and `openstack-hypervisor-operator-eviction-alerts` |
+| 3 | a target `up` in each of `keystone-system`, `horizon-system`, `glance-system`, `placement-system`, `barbican-system`, `ovn-system`, `neutron-system`, `cinder-system` and `nova-system`; the target of the job `hypervisor-operator-controller-manager-metrics-service` `up` without a last error; no target `down` |
+| 4 | a count above 0 for the reconciliation rate and the workqueue depth; the 10 alerts of the two rules, each `ok` |
+| 5 | `hypervisor-operator` and `keystone-operator` |
+| 6 | the rollout completes; a count above 0 for `up` at the noted time; `0` restarts for every container; the memory of the `prometheus` container |
+| 7 | the teardown exits 0, logs `Deleting the PVCs in monitoring...` and `Deleting the kubelet Service and Endpoints the Prometheus Operator left in kube-system...` and ends with `Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0`; `kube-system unchanged`; then `NotFound`, and `0` PersistentVolumes |
+
+Three scrape jobs of the chart can only be judged on the lab: `apiserver`,
+whose target is the address of the shoot's `kubernetes` Endpoints, the
+apiserver-proxy address; `coredns`; and `kubelet`. A job with at least one
+target `up` ten minutes after the deploy stays. A job whose targets are all
+`down` is switched off in the overlay (`kubeApiServer.enabled`,
+`coreDns.enabled`, or `kubelet.enabled` together with
+`prometheusOperator.kubeletService.enabled`), the deploy runs a second time
+from the commit that switches it off, and the record names the job and its
+last error. A Prometheus container
+that was `OOMKilled` gets its memory limit doubled, and a memory in step 6
+above the request becomes the request, rounded up to the next 256Mi; the
+record names the old and the new values. The overlay, its test and the
+table of the section above carry the values the run ends on.
+
+No lab run of this stack is recorded yet.
+
 ### Lab ControlPlane
 
 **Files:** `deploy/lab/metal-stack/controlplane/kustomization.yaml`,
@@ -4558,10 +4802,13 @@ root on its node's libvirtd (see
 | hvo | `env.osAuthUrl` | `http://controlplane-keystone.openstack.svc:5000/v3` | The in-cluster Keystone URL, the `spec.keystoneEndpoint` of `controlplane-nova`. The auth Secret's `auth_url` is the public loopback URL |
 | hvo | `env.certificateNamespace` | `hypervisor-system` | The Issuer's namespace |
 | hvo | `env.agentNamespaces` | `openstack` | The namespace of the pool, chassis and metadata agent pods, which an offboarding waits for |
-| hvo | `serviceMonitor.enabled`, `prometheusRules.create`, `dashboards.create`, `customResourceMetrics.create` | `false` | The lab runs no Prometheus Operator |
+| hvo | `serviceMonitor.enabled`, `prometheusRules.create` | `true` | On every lab, with or without Prometheus: chart `1.2.3_sha-a2baf3f` renders the ServiceMonitor `hypervisor-operator` and the PrometheusRules `openstack-hypervisor-operator-operator-alerts` (7 alerts) and `openstack-hypervisor-operator-eviction-alerts` (3 alerts) in `openstack`. Without a Prometheus Operator they are inert objects, and the [Lab Prometheus stack](#lab-prometheus-stack) picks them up without a second apply. Two alerts have data, `HypervisorOperatorReconcileErrors` and `HypervisorOperatorDown`. The other 8 read `kube_customresource_*` series, which the lab never has: `HypervisorOnboardingStuck`, `HypervisorEvictionStuck`, `HypervisorEvictedTooLong`, `HypervisorTraitSyncFailed`, `HypervisorAggregateSyncFailed`, `EvictionFailed`, `EvictionMigrationFailing` and `EvictionOutstandingRamHigh` |
+| hvo | `customResourceMetrics.create` | `false` | Its ConfigMaps configure a kube-state-metrics to export the `kube_customresource_*` series of the `Hypervisor` and `Eviction` CRs, and the lab runs no kube-state-metrics |
+| hvo | `dashboards.create` | `false` | The chart's dashboard is a Perses dashboard, which Grafana cannot load. The Lab Prometheus stack loads a Grafana dashboard with its four controller-runtime panels instead |
 | hvo | post-renderer | `OS_INTERFACE=internal` on the manager | hvo takes the endpoints of `compute`, `placement`, `image` and `network` from the catalog interface `OS_INTERFACE` names (patch 0004), and the chart has no value for the variable. The internal endpoints are the in-cluster Service URLs over plain HTTP, so the pod needs neither a host alias nor the gateway certificates. Without the variable hvo reads the `public` endpoints, the `*.127-0-0-1.nip.io:8443` URLs, which resolve to the pod itself |
 | hvo | post-renderer | `imagePullPolicy: Always` on the manager | The chart sets no pull policy, so a node would keep the image it cached under `sha-<commit>`. `build-images.yaml` moves that tag to every `main` build, so its content changes whenever a patch does. An image built before patch 0002 refuses the flag below, and one built before patch 0004 ignores `OS_INTERFACE` |
 | hvo | post-renderer | `--default-high-availability=false` appended to the manager's `args` | The flag of the image's patch 0002: hvo creates each `Hypervisor` with `spec.highAvailability: false`. While the field is `true`, onboarding waits for `HaEnabled=True`, which only SAP's kvm-ha-service sets. The chart has no value for the flag, so a JSON patch appends it to the argument list the chart renders, and `controllerManager.manager.args` stays unset |
+| hvo | post-renderer | `bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token` on the ServiceMonitor's one endpoint | hvo defaults `--metrics-secure` to `true` and serves its metrics behind controller-runtime's authentication and authorization filter, and the chart's ServiceMonitor sends no token, so every scrape would answer 401. With the JSON patch Prometheus presents its own ServiceAccount token, and the chart's ClusterRole `kube-prometheus-stack-prometheus` grants `get` on `/metrics`, which the filter asks the API server about. The ServiceMonitor CRD marks the field deprecated in favour of `authorization`, which would need a token Secret in `openstack`. The endpoint keeps the chart's `insecureSkipVerify` |
 | kna | chart | `0.2.0_sha-1e4e4b8` | The upstream chart of the pinned kna commit, the `ARG KNA_COMMIT` line of `images/kvm-node-agent/Dockerfile`. Its `appVersion`, `sha-<commit>`, is the image tag. Upstream publishes no image under that tag, and the tag `0.2.0` would leave the private keys at 0644 |
 | kna | `controllerManager.manager.image.repository` | `ghcr.io/c5c3/kvm-node-agent` | The image built from that commit with the key mode patch, which writes the private keys with mode 0600 (see [kvm-node-agent](../ci-cd/container-images.md#kvm-node-agent)) |
 | kna | `controllerManager.manager.env.libvirtDefaultUri` | `qemu:///system` | The chart's default `ch:///system` is Cloud Hypervisor |
