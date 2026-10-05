@@ -643,20 +643,21 @@ func scalingRules(fldPath *field.Path, r *autoscalingv2.HPAScalingRules) field.E
 // verticalAutoscalingUpdateModes are the updateMode values a
 // verticalAutoscaling block accepts, the twin of the Enum marker on
 // commonv1.VerticalAutoscalingSpec.UpdateMode.
-var verticalAutoscalingUpdateModes = []string{"Off", "Initial", "Recreate", "Auto"}
+var verticalAutoscalingUpdateModes = []string{"Off", "Initial", "Recreate", "InPlaceOrRecreate", "Auto"}
 
 // verticalAutoscalingResources are the resource keys minAllowed and maxAllowed
 // accept, the twin of the two CEL rules on commonv1.VerticalAutoscalingSpec.
 var verticalAutoscalingResources = []string{string(corev1.ResourceCPU), string(corev1.ResourceMemory)}
 
 // VerticalAutoscaling checks a verticalAutoscaling block at fldPath. A nil v
-// returns none. It rejects an updateMode outside Off, Initial, Recreate and
-// Auto, a minReplicas below 1, a key of minAllowed or maxAllowed other than
-// cpu and memory, a cpu or memory bound whose decimal scale lies beyond
-// ceilingMaxScale, and a minAllowed[k] above maxAllowed[k] for a k both lists
-// name. The last two rules have no CEL twin: CEL cannot compare quantities
-// across two maps. A bound out of scale is never compared, since the
-// comparison would build the number it spells out (see ceilingMaxScale).
+// returns none. It rejects an updateMode outside Off, Initial, Recreate,
+// InPlaceOrRecreate and Auto, a minReplicas below 1, a key of minAllowed or
+// maxAllowed other than cpu and memory, a cpu or memory bound whose decimal
+// scale lies beyond ceilingMaxScale, and a minAllowed[k] above maxAllowed[k]
+// for a k both lists name. The last two rules have no CEL twin: CEL cannot
+// compare quantities across two maps. A bound out of scale is never compared,
+// since the comparison would build the number it spells out (see
+// ceilingMaxScale).
 func VerticalAutoscaling(fldPath *field.Path, v *commonv1.VerticalAutoscalingSpec) field.ErrorList {
 	if v == nil {
 		return nil

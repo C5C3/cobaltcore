@@ -1111,11 +1111,12 @@ changes that make the caps testable and a third that makes the VPAs testable:
   controller enforces before it reads any metric, so each is checked at its
   maximum without a load of its own.
 - `verticalAutoscaling` on three components no HPA scales:
-  `neutron.workers` (`updateMode: "Off"`), `cinder.scheduler` (`Auto`,
-  `minReplicas: 1`, `maxAllowed.cpu: "1"`) and `nova.conductor` (`Initial`,
-  `minAllowed.memory: 256Mi`). The OVNCentral opts its Northbound and
-  Southbound databases and northd in on its own spec, all with `"Off"`, so six
-  blocks give seven VPAs: the Neutron block covers both worker Deployments.
+  `neutron.workers` (`InPlaceOrRecreate`, `maxAllowed.cpu: "1"`),
+  `cinder.scheduler` (`Auto`, `minReplicas: 1`, `maxAllowed.cpu: "1"`) and
+  `nova.conductor` (`Initial`, `minAllowed.memory: 256Mi`). The OVNCentral
+  opts its Northbound and Southbound databases and northd in on its own spec,
+  all with `"Off"`, so six blocks give seven VPAs: the Neutron block covers
+  both worker Deployments.
 
 | Step | Behaviour Validated |
 | --- | --- |
@@ -1123,7 +1124,7 @@ changes that make the caps testable and a third that makes the VPAs testable:
 | 2. `seed-and-apply` (5m) | The eight Static KV paths are seeded with a password generated inside the OpenBao pod, the suite's broker vhost and messaging Secret are created, and the OVNCentral and the ControlPlane are applied |
 | 3. `controlplane-ready` (45m) | The ControlPlane reaches `Ready` |
 | 4. `projection-and-shape` (5m) | The Keystone child and its HPA carry the `scaleDown` behavior; all seven HPAs target 150% CPU; Keystone runs one ready pod and every pinned API two; Keystone's PDB carries `maxUnavailable: 1` and every pinned PDB `minAvailable: 1` without `maxUnavailable`; User `cp-autoscaling-keystone` carries `maxUserConnections: 18`, `(3+1)×2×(1+1)+2` |
-| 5. `vertical-autoscaling` (15m) | The three sizing blocks reach the Neutron, Cinder and Nova children; each of the seven opted-in workloads has a VPA named like it, labelled with its CR, targeting its Deployment or StatefulSet, with the one `*` container policy (`RequestsOnly`, `cpu` and `memory`); the Cinder and Nova VPAs carry their update policy and bounds, and the two Raft VPAs the `minAllowed` floor of `70m` and `256Mi`; Keystone has no VPA and no workload has both a VPA and an HPA; `VPAReady` is `True/VPAReady` on the four opted-in children and `True/VPANotRequired` on the other four; the recommender provides a memory recommendation for the Northbound database's `ovsdb` container within 600 s and marks no VPA `ConfigUnsupported`; removing the Neutron block removes its two VPAs, turns its `VPAReady` to `VPANotRequired`, and leaves the other five |
+| 5. `vertical-autoscaling` (15m) | The three sizing blocks reach the Neutron, Cinder and Nova children; each of the seven opted-in workloads has a VPA named like it, labelled with its CR, targeting its Deployment or StatefulSet, with the one `*` container policy (`RequestsOnly`, `cpu` and `memory`); the Cinder and Nova VPAs carry their update policy and bounds, and both Neutron worker VPAs `InPlaceOrRecreate`, and the two Raft VPAs the `minAllowed` floor of `70m` and `256Mi`; Keystone has no VPA and no workload has both a VPA and an HPA; `VPAReady` is `True/VPAReady` on the four opted-in children and `True/VPANotRequired` on the other four; the recommender provides a memory recommendation for the Northbound database's `ovsdb` container within 600 s and marks no VPA `ConfigUnsupported`; removing the Neutron block removes its two VPAs, turns its `VPAReady` to `VPANotRequired`, and leaves the other five |
 | 6. `start-load` (7m) | Keystone is at one pod (HPA `desiredReplicas: 1`, one ready replica) within 240 s, whatever the plane's own traffic scaled it to after step 4, and only then the load Job is applied and its pod runs |
 | 7. `scale-out` (8m) | The Keystone HPA reaches `desiredReplicas: 3` and the Deployment three ready pods; the peak `averageUtilization` seen is above 150. The step polls until it has seen both |
 | 8. `keystone-at-maximum` (5m) | `check-connection-cap.sh` for Keystone at three pods, retried for up to 240 s while the load reaches the pods the HPA just added |

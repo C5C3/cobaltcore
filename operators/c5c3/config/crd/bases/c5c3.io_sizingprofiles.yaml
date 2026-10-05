@@ -462,11 +462,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -1042,11 +1048,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -1215,11 +1227,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -1488,11 +1506,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -1657,11 +1681,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -2214,11 +2244,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -2707,11 +2743,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -3142,11 +3184,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -3829,11 +3877,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -4075,11 +4129,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -4512,11 +4572,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -4721,11 +4787,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -4931,11 +5003,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -5214,11 +5292,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -5419,11 +5503,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:
@@ -5855,11 +5945,17 @@ spec:
                             description: |-
                               UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                               recommends, Initial sets requests at pod creation, Recreate and Auto
-                              evict pods to apply them.
+                              evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                              and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                              available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                              feature gate InPlacePodVerticalScaling on. A cluster whose
+                              VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                              applies, and VPAReady turns False with reason VPAError.
                             enum:
                             - "Off"
                             - Initial
                             - Recreate
+                            - InPlaceOrRecreate
                             - Auto
                             type: string
                         required:

@@ -145,7 +145,7 @@ func TestValidateSizingSpec(t *testing.T) {
 			wantErr: []string{"spec.sizing.keystone.api.verticalAutoscaling: Forbidden: autoscaling and verticalAutoscaling cannot both be set on one component"},
 		},
 		{
-			name: "verticalAutoscaling on the workers, the scheduler and the volume",
+			name: "verticalAutoscaling on the workers, the scheduler, the volume and the conductor",
 			spec: SizingSpec{
 				Neutron: &NeutronSizingSpec{Workers: &WorkersSizingSpec{
 					VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Off"},
@@ -156,6 +156,9 @@ func TestValidateSizingSpec(t *testing.T) {
 					}},
 					Volume: &PinnedDeploymentSizingSpec{VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "Initial"}},
 				},
+				Nova: &NovaSizingSpec{Conductor: &WorkerSizingSpec{DeploymentSizingSpec: DeploymentSizingSpec{
+					VerticalAutoscaling: &commonv1.VerticalAutoscalingSpec{UpdateMode: "InPlaceOrRecreate", MinReplicas: ptr.To[int32](1)},
+				}}},
 			},
 		},
 		{
