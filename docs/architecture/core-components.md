@@ -124,4 +124,4 @@ the [Hypervisor Cluster](../future/hypervisor-cluster.md), the
 [Storage Cluster](../future/storage-cluster.md), and a dedicated
 [Management Cluster](../future/management-cluster.md). The not-yet-onboarded
 OpenStack services are listed on the
-[Architecture](./index.md#the-original-multi-cluster-picture) page.
+[Architecture](./index.md#services-not-onboarded-yet) page.

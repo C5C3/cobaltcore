@@ -14,8 +14,15 @@ from the declarative infrastructure manifests, through the service operators,
 to the c5c3-operator orchestration layer — built with the Operator SDK (Go),
 controller-runtime, and Kubebuilder. The [Architecture](./architecture/)
 section shows how the pieces fit together, from the implemented
-management/target-cluster topology to the multi-cluster picture of the
-original design.
+management/target-cluster topology to the
+[multi-cluster target picture](./architecture/index.md#the-multi-cluster-target-picture).
+
+![What CobaltCore does: a layer stack from bare metal provisioned and managed by IronCore, through Garden Linux on every node and Kubernetes clusters managed by Gardener, to CobaltCore operating the OpenStack control planes and the OpenStack clouds whose API serves users and tools. Why it matters: Kubernetes-native OpenStack, one resource per cloud, growth with demand, built-in day-2 operations, and open building blocks.](./architecture/diagrams/cobaltcore-overview.svg)
+
+The layers below CobaltCore in this picture belong to the target picture.
+No deployment in this repository runs on IronCore or Garden Linux yet: the
+stack runs on a local kind cluster, or on a Gardener shoot on metal-stack in
+the [Quick Start (metal-stack)](./quick-start-metal-stack.md).
 
 The Keystone operator is the reference implementation that establishes the
 patterns — CRD layout, sub-reconciler chain, webhooks, finalizers,
