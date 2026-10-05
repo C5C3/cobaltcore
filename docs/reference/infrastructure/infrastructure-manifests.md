@@ -2263,7 +2263,9 @@ WITH_DIZZY=true make deploy-infra
 ```
 
 To drive the chaos soak against the ControlPlane, see
-[dizzy Chaos Testing](../testing/dizzy-chaos-testing.md).
+[dizzy Chaos Testing](../testing/dizzy-chaos-testing.md). The metal-stack lab
+runs the same stack with its metrics on a volume; see
+[Lab dizzy stack](#lab-dizzy-stack).
 
 **Posture summary.** Same shape as the entries above: the production omission is
 explicit, the opt-in flag has a single documented name (`WITH_DIZZY`), and the
@@ -2502,9 +2504,10 @@ metal-stack cluster, planned in
 `deploy/flux-system/kustomization.yaml` does not reference the tree.
 `hack/deploy-infra.sh` applies its `base/` and `infrastructure/` under
 `EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), its `nfs/` as
-well when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)), and
-its `chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see
-[Lab Chaos Mesh](#lab-chaos-mesh)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
+well when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)), its
+`chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see
+[Lab Chaos Mesh](#lab-chaos-mesh)), and its `dizzy/` when `WITH_DIZZY=true`
+is set (see [Lab dizzy stack](#lab-dizzy-stack)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
 finished (see [Lab ControlPlane](#lab-controlplane)), and after it
 `hypervisor-fixtures/` and `hypervisor/` (see
 [Lab hypervisors](#lab-hypervisors)). The ControlPlane's opt-in
@@ -2711,8 +2714,8 @@ EXTERNAL_CLUSTER=true make teardown-infra
 ```
 
 The deploy runs against the current kubeconfig context and never switches it.
-It refuses the kind-only opt-ins (`WITH_NFS` and `WITH_CHAOS_MESH` aside, which
-apply `nfs/` and `chaos-mesh/`),
+It refuses the kind-only opt-ins (`WITH_NFS`, `WITH_CHAOS_MESH` and
+`WITH_DIZZY` aside, which apply `nfs/`, `chaos-mesh/` and `dizzy/`),
 checks the cluster for a default StorageClass, for the absence of a
 `node-local-dns` DaemonSet (the instance's NetworkPolicy would need
 `spec.network.dnsEndpointIPs` for a host-networked resolver) and for a Ready
@@ -3637,6 +3640,179 @@ volumes while the attached one failed. At the session's end `last_probe disk`
 printed `ok 82`, the volume file held `probe-82`, Step 10 read
 `lab-volume-marker` and backed the volume up, and the deletes, proving step 6
 and the namespace check left only the six platform namespaces.
+
+### Lab dizzy stack
+
+**File:** `deploy/lab/metal-stack/dizzy/kustomization.yaml`
+
+The metrics stack of a dizzy soak for the metal-stack lab
+([#1225](https://github.com/c5c3/cobaltcore/issues/1225), from the dizzy
+findings of [#1219](https://github.com/c5c3/cobaltcore/issues/1219)): the
+VictoriaMetrics and Grafana of the
+[dizzy load/chaos stack](#dizzy-load-chaos-stack-kind-only-opt-in), with the
+metrics on a volume. `hack/deploy-infra.sh` applies the directory in Step 3
+when `WITH_DIZZY=true` is set beside `EXTERNAL_CLUSTER=true`, in place of
+`deploy/kind/dizzy`. The flag composes onto the deploy command of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md), which does not
+need it:
+
+```bash
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_DIZZY=true make deploy-infra
+```
+
+The kustomization takes `deploy/kind/dizzy` as its one resource, so its render
+holds the seven objects of the kind overlay: the Namespace `dizzy`, the
+HelmRepositories `victoria-metrics` and `grafana`, the HelmReleases
+`dizzy-victoria-metrics` and `dizzy-grafana`, the HTTPRoute `dizzy-grafana`
+and the ConfigMap `grafana-dashboards`. The first two rows below are its
+differences from kind; the storage follows the decision D7 of #1219.
+
+| Property | Value |
+| --- | --- |
+| Namespace label | `apiserver-proxy.networking.gardener.cloud/inject: disable` on `dizzy`, the lab's rule for every namespace it declares (see [Lab overlay](#lab-overlay)). The namespace carries no `chaos-mesh.org/inject` annotation: the stack measures a soak under faults, so no experiment of the [Lab Chaos Mesh](#lab-chaos-mesh) selects its pods |
+| VictoriaMetrics | the StatefulSet `dizzy-victoria-metrics-server` keeps its metrics on the claim `server-volume-dizzy-victoria-metrics-server-0`, 10Gi on the cluster's default class, behind the headless ClusterIP Service `dizzy-victoria-metrics-server` on port 8428. On kind it keeps them in an emptyDir and publishes NodePort 30428 |
+| Inherited from kind | both HelmRepositories and both chart ranges; `retentionPeriod: 30d` and the two `opentelemetry.*` arguments of VictoriaMetrics; the Grafana release with anonymous Viewer access, the provisioned `victoriametrics` datasource and the three dashboards, without a volume; the HTTPRoute on the listener `https-dizzy`; the dashboard ConfigMap |
+| Namespaces | `dizzy` for the two releases, the HTTPRoute and the ConfigMap, `flux-system` for the HelmRepositories |
+| Pinned by | `tests/unit/deploy/metal_stack_dizzy_test.sh` |
+
+In this mode the deploy script's preflight accepts `WITH_DIZZY=true` only for
+an overlay with `dizzy/kustomization.yaml` and refuses any other before it
+contacts the cluster. Step 3 stages the three dashboards into
+`deploy/kind/dizzy/dashboards/` with `hack/dizzy.sh stage-dashboards`, which
+the lab overlay reads as well, and applies `<overlay>/dizzy`. It calls no
+`docker port`. Phase 3 waits for both HelmReleases, as on kind; the
+VictoriaMetrics release is Ready once its claim is bound. The completion
+banner prints two `dizzy:` lines below its `Access:` lines.
+
+**Access.** Nothing outside the cluster reaches the stack. A soak runs
+through two port-forwards from the workstation, each in a terminal of its
+own: the Gateway's on local port 8443, which serves Grafana at
+`https://dizzy.127-0-0-1.nip.io:8443` beside Keystone, and one to
+VictoriaMetrics on local port 8428, which takes dizzy's OTLP export.
+
+```bash
+kubectl -n envoy-gateway-system port-forward \
+  "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
+kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428
+EXTERNAL_CLUSTER=true make dizzy-keystone
+```
+
+With `EXTERNAL_CLUSTER=true`, `hack/dizzy.sh` takes the Keystone URL of the
+first port-forward, `https://keystone.127-0-0-1.nip.io:8443/v3`, and calls no
+`docker`. dizzy verifies Keystone against the Gateway's certificates, which
+the script collects from the Secrets `openstack/*-nip-io-tls` into
+`_output/dizzy/gateway-ca.pem`. When nothing answers on `localhost:8428` it warns and names the
+second port-forward. Neither script opens a port-forward, so one that has
+ended is restarted by hand. [dizzy Chaos Testing](../testing/dizzy-chaos-testing.md)
+describes the soak and its dashboards.
+
+**Storage.** The claim names no storage class and binds to the default class,
+which Step 1 of the deploy checks exists. A restarted pod mounts the same
+claim, so the metrics of a soak survive it. 10Gi holds the 30 days of
+retention many times over: a soak exports five metric families every 15
+seconds. Grafana holds nothing a redeploy does not restore, so it has no
+volume.
+
+**Posture.** Grafana answers anonymous Viewers, and VictoriaMetrics accepts
+writes and reads without authentication. Both sit behind ClusterIP Services
+that every pod of the cluster reaches and nothing outside it. The lab is one
+tenant's cluster.
+
+**Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes the stack at
+the end of its step 3, while the helm-controller still runs (see
+[E2E Deployment](e2e-deployment.md#make-teardown-infra)). It deletes the two
+HelmReleases, so the helm-controller uninstalls both charts, then the two
+HelmRepositories, then the claims in `dizzy`, which Helm leaves behind. Where
+the default class has the reclaim policy `Delete`, the volume and the metrics
+on it go with the claim. Its step 7 deletes the namespace `dizzy` with the
+HTTPRoute and the ConfigMap. A HelmRelease delete that outlives
+`TEARDOWN_TIMEOUT` stops the teardown with exit 1 before any claim is
+deleted.
+
+#### Lab dizzy run
+
+The run starts from a bare lab, where
+`kubectl get namespace openstack dizzy flux-system` answers `NotFound` for
+all three; a cluster that carries a stack is not deployed onto. It deploys
+with the command above, then runs
+[Step 4](../../quick-start-metal-stack.md#cp-apply),
+[Step 5](../../quick-start-metal-stack.md#cp-tenant) and
+[Step 6](../../quick-start-metal-stack.md#cp-access) of Part 1 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md). The Gateway
+port-forward of Step 6 stays open, and step 3 below opens the
+VictoriaMetrics port-forward in another terminal. Steps 6 and 7 run within an
+hour of the soak's end, because their queries read the last hour. From the
+root of the clone:
+
+```bash
+# 1. A bare lab, then the deploy (then Part 1, Steps 4 to 6 of the quick start)
+kubectl get namespace openstack dizzy flux-system
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_DIZZY=true make deploy-infra
+
+# 2. State: both releases with their chart versions, the label, the Service,
+#    the claim and the default class
+kubectl get helmrelease -n dizzy
+kubectl get helmrelease -n dizzy \
+  -o jsonpath='{range .items[*]}{.metadata.name} {.status.history[0].chartVersion}{"\n"}{end}'
+kubectl get namespace dizzy -o jsonpath='{.metadata.labels}{"\n"}'
+kubectl get svc dizzy-victoria-metrics-server -n dizzy -o jsonpath='{.spec.type} {.spec.ports[0].nodePort}{"\n"}'
+kubectl get pvc -n dizzy
+kubectl get storageclass
+
+# 3. In another terminal:
+#      kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428
+curl -fsS http://localhost:8428/health; echo
+
+# 4. The Keystone soak, the scenario's five minutes
+EXTERNAL_CLUSTER=true make dizzy-keystone; echo "exit $?"
+
+# 5. The dizzy_ metric names in VictoriaMetrics
+curl -fsS http://localhost:8428/api/v1/label/__name__/values | jq -r '.data[]' | grep '^dizzy_'
+
+# 6. Through Grafana on the Gateway port-forward: the dashboards, then the
+#    expression each dashboard's panels read
+curl -sk 'https://dizzy.127-0-0-1.nip.io:8443/api/search?type=dash-db' | jq -r '.[].uid' | sort
+queries() {
+  for metric in dizzy_iterations_total dizzy_operation_duration_seconds_count dizzy_resource_time_to_ready_seconds_count; do
+    curl -sk -H 'Content-Type: application/json' https://dizzy.127-0-0-1.nip.io:8443/api/ds/query \
+      -d "{\"queries\":[{\"refId\":\"A\",\"datasource\":{\"type\":\"prometheus\",\"uid\":\"victoriametrics\"},\"expr\":\"sum(last_over_time(${metric}[1h]))\",\"instant\":true}],\"from\":\"now-1h\",\"to\":\"now\"}" |
+      jq -c --arg m "$metric" '{metric: $m, values: .results.A.frames[0].data.values}'
+  done
+}
+queries
+
+# 7. Storage: a new pod on the same claim, then the same queries
+kubectl delete pod dizzy-victoria-metrics-server-0 -n dizzy
+kubectl rollout status statefulset/dizzy-victoria-metrics-server -n dizzy --timeout=300s
+queries
+
+# 8. Stop both port-forwards, tear down, and wait up to 600 seconds for the
+#    volume of the claim to go
+EXTERNAL_CLUSTER=true make teardown-infra
+kubectl get namespace dizzy
+dizzy_pvs() {
+  kubectl get pv -o json | jq '[.items[] | select(.spec.claimRef.namespace == "dizzy")] | length'
+}
+SECONDS=0
+until [ "$(dizzy_pvs)" = 0 ] || [ "$SECONDS" -ge 600 ]; do sleep 5; done
+echo "PersistentVolumes of dizzy: $(dizzy_pvs) after ${SECONDS}s"
+rm _output/dizzy/clouds.yaml
+```
+
+What a run shows:
+
+| Step | Expected |
+| --- | --- |
+| 1 | three `NotFound` lines; the deploy exits 0, prints the two `dizzy:` lines and no `predates the dizzy metrics port mapping` warning |
+| 2 | both HelmReleases `Ready` with their chart versions; the label `apiserver-proxy.networking.gardener.cloud/inject: disable`; `ClusterIP` and no node port; the claim `server-volume-dizzy-victoria-metrics-server-0` `Bound` with 10Gi on the class `kubectl get storageclass` marks `(default)` |
+| 3 | `OK` |
+| 4 | `exit 0`; the log holds `Keystone auth URL: https://keystone.127-0-0-1.nip.io:8443/v3`, and neither a `docker port` line nor a `WARNING` |
+| 5 | names of the five families of [dizzy Chaos Testing](../testing/dizzy-chaos-testing.md#metric-families): `dizzy_operation_duration_seconds`, `dizzy_resource_time_to_ready_seconds`, `dizzy_iteration_duration_seconds`, `dizzy_iteration_operations_total` and `dizzy_iterations_total` |
+| 6 | `dizzy-api-operations`, `dizzy-overview` and `dizzy-time-to-ready`; three lines whose `values` is `[[<ms>],[<number>]]`, none `[]` |
+| 7 | the rollout completes; the three lines hold the numbers of step 6 |
+| 8 | the teardown exits 0, logs `Deleting the dizzy HelmReleases...` and `Deleting the PVCs in dizzy...` and ends with `Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0`; then `NotFound`, and `0` PersistentVolumes |
+
+No lab run of this stack is recorded yet.
 
 ### Lab ControlPlane
 
