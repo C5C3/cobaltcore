@@ -1,0 +1,151 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for the metal-stack lab: kube-prometheus-stack, the
+# Prometheus and Grafana that scrape the operators of the stack and
+# openstack-hypervisor-operator (#1226). hack/deploy-infra.sh applies it in
+# Step 3 under EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true, in place of
+# deploy/kind/prometheus:
+#
+#   EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true make deploy-infra
+#
+# It takes the kind Prometheus overlay as its base and differs from it in
+# four places:
+#   - The render holds no Namespace. The base overlay declares monitoring
+#     (deploy/flux-system/namespaces.yaml) and gives it the Gardener opt-out
+#     label and the chaos-mesh.org/inject annotation (../base/kustomization.yaml).
+#     The kind overlay declares monitoring without either, so a second apply
+#     of that Namespace would remove both. The patch deletes the Namespace
+#     from the render, and this overlay never touches the object; a patch that
+#     restated the label would still drop the annotation.
+#   - The scrape jobs of etcd, the scheduler, the controller manager and
+#     kube-proxy are off. The first three run in Gardener's seed, and the
+#     shoot's kube-proxy pods carry app: kubernetes and role: proxy, not the
+#     k8s-app: kube-proxy the chart's Service selects; each Service in
+#     kube-system would select nothing. With these values the chart renders
+#     one object outside monitoring, the Service
+#     kube-system/kube-prometheus-stack-coredns, which the uninstall removes.
+#   - Prometheus keeps its metrics on a 10Gi volume for 7 days, bounded to
+#     8GB, with a memory request of 1Gi and a limit of 2Gi: the lab scrapes
+#     three kubelets with cAdvisor, where the kind request of 256Mi and limit
+#     of 512Mi are sized for one kind node. The request follows the working
+#     set the lab expects, so the scheduler places the pod where that memory
+#     is free and the kubelet does not rank it first for eviction.
+#   - ruleSelectorNilUsesHelmValues: false renders ruleSelector: {}, so
+#     Prometheus loads every PrometheusRule, the hypervisor operator's
+#     included, without a release label; the kind overlay takes the same
+#     posture for ServiceMonitors.
+# It also adds the Grafana dashboard hypervisor-operator.json beside the
+# Keystone dashboard, with the labels of the Keystone entry: the four
+# controller-runtime panels of the hypervisor operator's upstream dashboard,
+# which is a Perses dashboard that Grafana cannot load.
+#
+# What stays as on kind: the chart range, the cert-manager dependency,
+# crds.enabled: false, Alertmanager, node-exporter and kube-state-metrics off,
+# the open ServiceMonitor selectors, Prometheus's CPU request, Grafana's
+# resources, and Grafana without a volume, since a redeploy restores
+# everything it holds. The Keystone dashboard comes from
+# deploy/kind/prometheus/keystone-operator.json, which Step 3 stages before
+# it applies this directory; without it the render fails, as on kind.
+#
+# Storage (D7 of #1219): the claim of the Prometheus StatefulSet names no
+# storageClassName and binds to the cluster's default class; the deploy's
+# Step 1 checks that one exists. A restarted pod keeps the metrics. A lab that
+# already runs the release of the kind overlay gets a volume claim template
+# added to a live Prometheus: the Prometheus Operator replaces the
+# StatefulSet, and the metrics in the old emptyDir are lost.
+#
+# Access, through a port-forward from the workstation each:
+#
+#   kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+#   kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+#
+# Grafana signs in admin with the chart's default password prom-operator.
+#
+# The teardown, `EXTERNAL_CLUSTER=true make teardown-infra`, deletes the
+# HelmRelease in its step 3, so the helm-controller uninstalls the chart, then
+# the claims in monitoring, which Helm and the Prometheus Operator leave
+# behind, then the Service and the Endpoints kube-prometheus-stack-kubelet in
+# kube-system, which the Prometheus Operator writes and no uninstall removes.
+# Where the default class has the reclaim policy Delete, the metrics go with
+# the claim. Its step 7 deletes the namespace monitoring with the ConfigMaps.
+#
+# POSTURE: Grafana keeps the chart's default admin password, and Prometheus
+# answers without authentication. Both sit on ClusterIP Services that every
+# pod of the cluster reaches and nothing outside it. Prometheus sends its
+# ServiceAccount token to the hypervisor operator's metrics Service, whose
+# certificate it does not verify (insecureSkipVerify in the chart's
+# ServiceMonitor). The lab is one tenant's cluster.
+#
+# The kind overlay sits outside this directory. A directory reference is
+# allowed under kustomize's default LoadRestrictionsRootOnly check, so
+# `kubectl apply -k` works without `--load-restrictor`.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../kind/prometheus
+
+patches:
+  - patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: monitoring
+
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: kube-prometheus-stack
+      namespace: monitoring
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: kube-prometheus-stack
+        namespace: monitoring
+      spec:
+        values:
+          kubeEtcd:
+            enabled: false
+          kubeScheduler:
+            enabled: false
+          kubeControllerManager:
+            enabled: false
+          kubeProxy:
+            enabled: false
+          prometheus:
+            prometheusSpec:
+              retention: 7d
+              retentionSize: 8GB
+              ruleSelectorNilUsesHelmValues: false
+              resources:
+                requests:
+                  memory: 1Gi
+                limits:
+                  memory: 2Gi
+              storageSpec:
+                volumeClaimTemplate:
+                  spec:
+                    accessModes:
+                      - ReadWriteOnce
+                    resources:
+                      requests:
+                        storage: 10Gi
+
+configMapGenerator:
+  # The labels of the Keystone entry in ../../../kind/prometheus: the Grafana
+  # sidecar loads every ConfigMap labelled grafana_dashboard: "1".
+  - name: hypervisor-operator-dashboard
+    namespace: monitoring
+    files:
+      - hypervisor-operator.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/part-of: kube-prometheus-stack
