@@ -19,6 +19,13 @@ credential through
 [K-ORC](https://github.com/k-orc/openstack-resource-controller), mirrors it to
 OpenBao, and registers the identity catalog.
 
+The figure shows the cluster this page builds, from the one `ControlPlane` CR
+to the running services. Target clusters, the dashed box, are not part of this
+page. [Architecture](./architecture/index.md#implemented-topology) describes
+the whole picture.
+
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](./diagrams/cobaltcore-management-cluster.svg)
+
 ## Prerequisites
 
 Same toolchain as the [Quick Start](./quick-start.md), plus:

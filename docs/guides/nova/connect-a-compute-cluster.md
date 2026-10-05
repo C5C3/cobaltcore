@@ -19,6 +19,12 @@ the message broker, and the installs of hvo and kvm-node-agent. This guide
 attaches one compute cluster. Repeat steps 4 to 7 for every further cluster,
 with names of its own for the chassis, the agent and the pool.
 
+The [multi-cluster target picture](../../architecture/index.md#attached-clusters)
+shows where such a cluster sits: one of several compute clusters attached to
+one control plane.
+
+![One OpenStack Control Plane with attached Ceph Storage clusters, OpenStack Compute clusters running KVM or Cloud Hypervisor, and OpenStack Network clusters running OVN, two of each and more.](../../diagrams/cobaltcore-attached-clusters.svg)
+
 ## Prerequisites
 
 ::: info Devstack
