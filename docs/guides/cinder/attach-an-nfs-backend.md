@@ -67,7 +67,7 @@ cinder pods run as, which is what lets the NFS driver do its file operations as
 the service user instead of through a root helper the image has no sudoers entry
 for.
 
-The server exports `/exports` with `fsid=0`, which makes it the NFSv4
+The server exports `/exports` with `Pseudo = /`, which makes it the NFSv4
 pseudo-root. A client addresses the two directories as:
 
 ```text
