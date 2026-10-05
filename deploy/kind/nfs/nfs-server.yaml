@@ -86,10 +86,14 @@
 # cinder-volume and cinder-backup are deleted once Ganesha has rolled out:
 # they mount both shares for as long as they run.
 #
-# MEMORY. Ganesha handles the I/O in its own process. It idled at 26 MiB and
-# peaked at 397 MiB resident under a 3 GiB write and four parallel 1 GiB
-# writers, and a 256Mi limit got it OOM-killed. It requests 128Mi and is
-# limited to 1Gi.
+# MEMORY. Ganesha handles the I/O in its own process. On the metal-stack lab
+# it idled at 49 MiB, and its working set peaked at 547 MiB while four guests
+# rewrote a 2 GiB volume each for 300 seconds (#1260). It requests 640Mi, that
+# peak plus 15 % rounded up to a multiple of 64Mi, and is limited to 1Gi.
+# Under writes the container's usage stays at the limit: the page cache of the
+# files Ganesha writes is charged to it, and the kernel reclaims that cache
+# at the limit. A 256Mi limit got Ganesha OOM-killed in a local run, at 397 MiB
+# resident under a 3 GiB write and four parallel 1 GiB writers.
 #
 # NON-PRODUCTION posture, accepted for kind and for the metal-stack lab, one
 # tenant's cluster:
@@ -262,7 +266,7 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
+              memory: 640Mi
             limits:
               memory: 1Gi
           volumeMounts:

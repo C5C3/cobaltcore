@@ -357,11 +357,12 @@ test_nfs_server_deployment_contract() {
     "exports:/claim:" \
     "$(render_value "$rendered" "$init | .volumeMounts | map(.name + \":\" + .mountPath + \":\" + (.subPath // \"\")) | join(\" \")")"
 
-  # Ganesha does the I/O in its own process: 397 MiB at its measured peak.
+  # Ganesha does the I/O in its own process: a working set of 547 MiB at its
+  # peak on the lab, which the request covers with 15 % on top.
   assert_eq "the server container is limited to 1Gi" \
     "1Gi" "$(render_value "$rendered" "$server | .resources.limits.memory")"
-  assert_eq "the server container requests 128Mi" \
-    "128Mi" "$(render_value "$rendered" "$server | .resources.requests.memory")"
+  assert_eq "the server container requests 640Mi" \
+    "640Mi" "$(render_value "$rendered" "$server | .resources.requests.memory")"
 
   # One pinned image for the whole overlay.
   local server_image init_image
