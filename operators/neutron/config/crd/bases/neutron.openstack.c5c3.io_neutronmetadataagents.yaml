@@ -403,10 +403,11 @@ spec:
                   container and its wait-for-chassis init container. The operator never
                   writes defaults into this field; it resolves them when it renders the
                   pod, per resource: a CPU the block names neither as request nor as limit
-                  gets a 70m request and no limit, and a memory the block names neither
-                  way gets 2Gi as both request and limit, which fits 32 networks on the
-                  node; a node with more networks needs a larger value. A resource the
-                  block names is used as written, and anything else it sets is kept.
+                  gets a 230m request and no limit, which covers a minute of 31 servers
+                  booting on the node, and a memory the block names neither way gets 2Gi
+                  as both request and limit, which fits 32 networks on the node; a node
+                  with more networks needs a larger value. A resource the block names is
+                  used as written, and anything else it sets is kept.
                 properties:
                   claims:
                     description: |-

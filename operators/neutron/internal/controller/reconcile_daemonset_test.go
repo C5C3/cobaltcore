@@ -23,7 +23,6 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
-	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
@@ -386,16 +385,28 @@ func TestBuildAgentDaemonSet_SharedSecretDigestAnnotation(t *testing.T) {
 	}))
 }
 
+// agentResourceDefaults is the block both agent containers get when the CR
+// names neither CPU nor memory: a 230m CPU request, no CPU limit, and 2Gi of
+// memory as request and limit. The figures are literals on purpose, so a test
+// comparing a rendered container against them does not follow a change of the
+// operator's constants.
+func agentResourceDefaults() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("230m"), corev1.ResourceMemory: resource.MustParse("2Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+	}
+}
+
 // A CR that names no resources still lands in the Burstable QoS class: an
 // unbounded agent on a compute node competes with the instances it serves. The
-// CPU request is the shared default and the memory is the agent's own figure.
-// The defaults fill each resource on its own, so a CPU-only block still gets
-// its memory, a block naming both is used as written, and a memory named as
-// the zero quantity counts as named.
+// CPU request and the memory are the agent's own figures. The defaults fill
+// each resource on its own, so a CPU-only block still gets its memory, a
+// memory-only block still gets its CPU request, a block naming both is used as
+// written, and a memory named as the zero quantity counts as named.
 func TestEffectiveAgentResources_FillsTheAgentDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	g.Expect(effectiveAgentResources(validAgent())).To(Equal(testutil.RenderedResourceDefaults("2Gi")))
+	g.Expect(effectiveAgentResources(validAgent())).To(Equal(agentResourceDefaults()))
 
 	cpuOnly := validAgent()
 	cpuOnly.Spec.Resources = corev1.ResourceRequirements{
@@ -406,6 +417,15 @@ func TestEffectiveAgentResources_FillsTheAgentDefaults(t *testing.T) {
 		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
 	}))
 	g.Expect(cpuOnly.Spec.Resources.Limits).To(BeNil(), "the fill must not write into the CR")
+
+	memoryOnly := validAgent()
+	memoryOnly.Spec.Resources = corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+	}
+	g.Expect(effectiveAgentResources(memoryOnly)).To(Equal(corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("230m")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+	}))
 
 	full := validAgent()
 	full.Spec.Resources = corev1.ResourceRequirements{
@@ -438,7 +458,7 @@ func TestAgentSelectorLabels_NarrowByComponent(t *testing.T) {
 
 // TestBuildAgentDaemonSet_RendersResourceDefaults verifies that both agent
 // containers, the wait-for-chassis init container and the agent, render 2Gi
-// as memory request and limit beside a 70m CPU request and no CPU limit when
+// as memory request and limit beside a 230m CPU request and no CPU limit when
 // spec.resources names nothing.
 func TestBuildAgentDaemonSet_RendersResourceDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -446,9 +466,9 @@ func TestBuildAgentDaemonSet_RendersResourceDefaults(t *testing.T) {
 	ds := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "", "")
 
 	g.Expect(ds.Spec.Template.Spec.InitContainers).To(HaveLen(1))
-	g.Expect(ds.Spec.Template.Spec.InitContainers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("2Gi")))
+	g.Expect(ds.Spec.Template.Spec.InitContainers[0].Resources).To(Equal(agentResourceDefaults()))
 	g.Expect(ds.Spec.Template.Spec.Containers).To(HaveLen(1))
-	g.Expect(ds.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("2Gi")))
+	g.Expect(ds.Spec.Template.Spec.Containers[0].Resources).To(Equal(agentResourceDefaults()))
 }
 
 // TestNeutronMetadataAgentDaemonSet_ImagePullPolicy pins the pull policy of every container and init
