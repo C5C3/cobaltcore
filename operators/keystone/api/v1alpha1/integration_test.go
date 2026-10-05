@@ -445,6 +445,41 @@ func TestIntegration_CRD_CELOnly_VerticalAutoscaling(t *testing.T) {
 	}
 }
 
+// TestIntegration_CRD_AdmitsInPlaceOrRecreate pins the updateMode enum of the
+// CRD against an envtest API server with NO validating webhook installed:
+// InPlaceOrRecreate is admitted, and InPlace, which upstream's VPA offers only
+// behind an alpha feature gate, is refused by the schema.
+func TestIntegration_CRD_AdmitsInPlaceOrRecreate(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		mode    string
+		wantSub string
+	}{
+		{mode: "InPlaceOrRecreate"},
+		{mode: "InPlace", wantSub: `Unsupported value: "InPlace"`},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-celonly-vpa-mode-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			k := validIntegrationKeystone("vpa-mode", ns.Name)
+			k.Spec.Deployment.VerticalAutoscaling = &VerticalAutoscalingSpec{UpdateMode: tc.mode}
+
+			err := c.Create(ctx, k)
+			if tc.wantSub == "" {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
 // --- Field immutability (CEL transition rules, #466) ---
 
 // updateImmutableFieldRejected is the shared body for the field-immutability
