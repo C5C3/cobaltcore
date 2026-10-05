@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1008" viewBox="0 0 1808 1008" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Diagram notation">
+<title>Diagram notation</title>
+<rect width="1808" height="1008" fill="#F6F5F1"/>
+<rect x="40" y="40" width="850" height="272" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Frames</text>
+<rect x="61.5" y="103.5" width="540" height="185" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="88" y="124" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="126" y="150.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="178" y="152.8" font-size="30" font-weight="700" fill="#17202B">Management cluster</text>
+<rect x="88" y="184" width="487" height="80" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="106" y="201" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="132" y="223.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="172" y="224.64" font-size="24" font-weight="700" fill="#2B3440">openstack</text>
+<text x="626" y="149.2" font-size="20" font-weight="400" fill="#55606E">Cluster frame</text>
+<text x="626" y="223.2" font-size="20" font-weight="400" fill="#55606E">Namespace frame</text>
+<rect x="918" y="40" width="850" height="272" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="937" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Objects</text>
+<rect x="978" y="108" width="214" height="40" rx="20" fill="#1E6B40"/>
+<text x="1085" y="136.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane CR</text>
+<rect x="1240" y="111" width="170" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1325" y="136.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Deployment</text>
+<path d="M1458 104 H1692 L1708 120 V152 H1458 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1692,104 1692,120 1708,120" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1583" y="136.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">admin-password</text>
+<text x="1085" y="181.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Custom resource</text>
+<text x="1325" y="181.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Workload</text>
+<text x="1583" y="181.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Secret</text>
+<path d="M943 208 H1157 L1173 224 V256 H943 Z" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1157,208 1157,224 1173,224" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="1058" y="240.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">service-config</text>
+<rect x="1213" y="208" width="190" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M1228.2 208 V256 M1387.8 208 V256" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="1308" y="240.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Job db-sync</text>
+<rect x="1423" y="208" width="320" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M1448.6 208 V256 M1717.4 208 V256" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="1583" y="240.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">CronJob key-rotation</text>
+<text x="1058" y="285.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">ConfigMap</text>
+<text x="1478" y="285.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Job, CronJob</text>
+<rect x="40" y="340" width="850" height="314" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="379.36" font-size="26" font-weight="700" fill="#2B3440">Arrows</text>
+<polyline points="84.5,468 214,468" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="224.5,468 209.5,475.2 209.5,460.8" fill="#2F8A57"/>
+<polyline points="291.5,468 421,468" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="431.5,468 416.5,475.2 416.5,460.8" fill="#2457C5"/>
+<text x="568.5" y="425.2" font-size="20" font-weight="400" fill="#8A2B63" text-anchor="middle">ExternalSecret</text>
+<polyline points="498.5,442 628,442" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="638.5,442 623.5,449.2 623.5,434.8" fill="#B0387F"/>
+<text x="568.5" y="477.2" font-size="20" font-weight="400" fill="#8A2B63" text-anchor="middle">PushSecret</text>
+<polyline points="498.5,494 628,494" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="638.5,494 623.5,501.2 623.5,486.8" fill="#B0387F"/>
+<text x="775.5" y="425.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">declared</text>
+<polyline points="705.5,442 835,442" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="845.5,442 830.5,449.2 830.5,434.8" fill="#3A4452"/>
+<text x="775.5" y="477.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">run time</text>
+<polyline points="705.5,494 835,494" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="3 9"/>
+<polygon points="845.5,494 830.5,501.2 830.5,486.8" fill="#3A4452"/>
+<text x="154.5" y="533.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">creates</text>
+<text x="361.5" y="533.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">OpenStack API</text>
+<text x="568.5" y="533.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Secret material</text>
+<text x="775.5" y="533.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Order</text>
+<polyline points="102.5,582 224.5,582" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polygon points="86.5,582 94.5,577.3 102.5,582 94.5,586.7" fill="#7D8794"/>
+<polyline points="309.5,582 431.5,582" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="2 6"/>
+<polygon points="293.5,582 301.5,577.3 309.5,582 301.5,586.7" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="498.5,582 628,582" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="638.5,582 623.5,589.2 623.5,574.8" fill="#3A4452"/>
+<text x="154.5" y="619.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Owner reference</text>
+<text x="361.5" y="619.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Ownership by label</text>
+<text x="568.5" y="619.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">optional</text>
+<rect x="918" y="340" width="850" height="314" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="937" y="379.36" font-size="26" font-weight="700" fill="#2B3440">Sequences</text>
+<rect x="978" y="437" width="200" height="124" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1078" y="507.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Operator</text>
+<rect x="1508" y="437" width="200" height="124" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1608" y="507.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Service</text>
+<polyline points="1179,478 1494.5,478" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1505,478 1490,485.2 1490,470.8" fill="#3A4452"/>
+<polyline points="1507,520 1191.5,520" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1181,520 1196,527.2 1196,512.8" fill="#3A4452"/>
+<circle cx="1205" cy="478" r="18" fill="#17202B"/>
+<text x="1205" y="485.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<circle cx="1481" cy="520" r="18" fill="#17202B"/>
+<text x="1481" y="527.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<text x="1343" y="594.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Step badge</text>
+<rect x="40" y="682" width="850" height="286" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="721.36" font-size="26" font-weight="700" fill="#2B3440">State machines</text>
+<circle cx="150" cy="846" r="10" fill="#17202B"/>
+<polyline points="162,846 217.5,846" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="228,846 213,853.2 213,838.8" fill="#3A4452"/>
+<rect x="230" y="818" width="160" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="310" y="854.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Active</text>
+<text x="509.5" y="802.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">trigger</text>
+<text x="509.5" y="827.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">who drives it</text>
+<polyline points="391,846 617.5,846" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="628,846 613,853.2 613,838.8" fill="#3A4452"/>
+<rect x="630" y="818" width="160" height="56" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="710" y="854.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Failed</text>
+<text x="150" y="907.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Initial marker</text>
+<text x="310" y="907.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">State</text>
+<text x="510" y="907.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Transition</text>
+<text x="710" y="907.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Stuck state</text>
+<rect x="918" y="682" width="850" height="286" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="937" y="721.36" font-size="26" font-weight="700" fill="#2B3440">Markers and outside actors</text>
+<rect x="1130" y="746" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="1182" y="767.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<rect x="1314" y="746" width="118" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1373" y="767.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">kind only</text>
+<rect x="1448" y="746" width="108" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1502" y="767.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">lab only</text>
+<text x="1182" y="805.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">By hand</text>
+<text x="1435" y="805.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">kind only, lab only</text>
+<rect x="938" y="836" width="250" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1063" y="870.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Workstation</text>
+<text x="1063" y="897.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">a person with kubectl</text>
+<rect x="1218" y="836" width="250" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1343" y="870.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">CI runner</text>
+<text x="1343" y="897.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">a workflow job</text>
+<rect x="1498" y="836" width="250" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1623" y="870.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Identity provider</text>
+<text x="1623" y="897.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">an OIDC or SAML login</text>
+<text x="1343" y="941.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Outside actor</text>
+</svg>
