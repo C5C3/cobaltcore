@@ -559,6 +559,20 @@ test_refused_flags() {
     assert_nonzero_exit "${flag}=true is refused" "$rc"
     assert_contains "the refusal names ${flag}" "$output" \
       "ERROR: EXTERNAL_CLUSTER=true does not support ${flag}=true:"
+    # The platform brings both autoscalers, so their refusals name the field
+    # that uses them.
+    case "$flag" in
+      WITH_VPA)
+        assert_contains "the WITH_VPA refusal says the platform runs the VPA" "$output" \
+          "ERROR: EXTERNAL_CLUSTER=true does not support WITH_VPA=true: the platform runs Gardener's VPA"
+        assert_contains "the WITH_VPA refusal names the opt-in field" "$output" \
+          "verticalAutoscaling block (spec.sizing.<component>.<workload>.verticalAutoscaling on the ControlPlane)"
+        ;;
+      WITH_METRICS_SERVER)
+        assert_contains "the WITH_METRICS_SERVER refusal names the opt-in field" "$output" \
+          "autoscaling block (spec.sizing.<component>.api.autoscaling on the ControlPlane)"
+        ;;
+    esac
     assert_eq "${flag}=true is refused before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
   done
   unset KUBECTL_LOG

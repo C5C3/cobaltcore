@@ -1470,8 +1470,8 @@ preflight_checks() {
 preflight_external_cluster() {
   local entry flag
   for entry in \
-    "WITH_VPA|the platform runs Gardener's VPA" \
-    "WITH_METRICS_SERVER|the platform serves v1beta1.metrics.k8s.io" \
+    "WITH_VPA|the platform runs Gardener's VPA, so nothing is installed; opt a workload in with its verticalAutoscaling block (spec.sizing.<component>.<workload>.verticalAutoscaling on the ControlPlane)" \
+    "WITH_METRICS_SERVER|the platform serves v1beta1.metrics.k8s.io, so nothing is installed; scale an API with its autoscaling block (spec.sizing.<component>.api.autoscaling on the ControlPlane)" \
     "WITH_REGISTRY_CACHE|the pull-through cache needs the kind Docker network" \
     "WITH_OVN_KERNEL_MODULES|it loads kernel modules on the host" \
     "WITH_DIZZY|it reads the kind node's published ports with docker port"; do
