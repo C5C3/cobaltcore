@@ -13,8 +13,7 @@
 # A DaemonSet, because neither client can carry an init container from this
 # repository: the chart renders csi-nfs-node and the nova-operator renders
 # nova-compute. The tolerations follow csi-nfs-node, which tolerates every
-# taint. nfsd, the server's module, is loaded by the init container load-nfsd
-# of the server pod (kustomization.yaml), not here.
+# taint.
 #
 # A reboot unloads the modules, so the pod has to start again then: the
 # container hold only keeps the pod running, without a privilege. bash is its
@@ -27,7 +26,8 @@
 # image is host-prepare's (../hypervisor/libvirt-daemonset.yaml), pinned like
 # it by its keeper tag and digest; hack/ci-tag-libvirt-keeper.sh mints that
 # tag once and never moves it. hold reuses the image, so the overlay adds no
-# image; tests/unit/deploy/metal_stack_nfs_test.sh keeps the three equal.
+# image; tests/unit/deploy/metal_stack_nfs_test.sh keeps both equal to
+# host-prepare's.
 # Renovate moves both lines in the pull request that moves the DaemonSet's.
 #
 # The load prints one line per pod, `nfs-client-modules: nfs and nfsv4 are

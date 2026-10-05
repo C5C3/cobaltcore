@@ -8,7 +8,7 @@
 # packageRules:
 #   - the docker-datasource matchStrings regex captures the depName, the whole
 #     keeper tag (currentValue) and the whole digest (currentDigest) of all
-#     eight image: lines across the five manifests (2, 1, 1, 2, 2), and the
+#     seven image: lines across the four manifests (2, 1, 2, 2), and the
 #     versioning is deb, which compares the -r<N> suffix and the Ubuntu
 #     revision numerically;
 #   - allowedVersions accepts the keeper shape <libvirt-package-version>-r<N>
@@ -17,8 +17,9 @@
 #   - majors are disabled, and minor, patch and digest bumps are grouped and
 #     never automerged, without a minimumReleaseAge: this repository's own
 #     main builds the image, and the bump is the review the pin exists for;
-#   - the manager and all three rules name all five manifests, so one group
-#     moves all eight lines.
+#   - the manager and all three rules name the four manifests and no other
+#     file, so one group moves all seven lines and no list names a file that
+#     carries no pin.
 #
 # This is the regression test the check-renovate-coverage skill requires for
 # every customManager; that skill's audit does not scan deploy/lab/, so this
@@ -48,7 +49,6 @@ LIBVIRT_PACKAGE="ghcr.io/c5c3/libvirt"
 # Each manifest and the number of libvirt image: lines it carries.
 MANIFESTS="deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml 2
 deploy/lab/metal-stack/probe/nfs-module-load.yaml 1
-deploy/lab/metal-stack/nfs/kustomization.yaml 1
 deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml 2
 deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml 2"
 
@@ -69,13 +69,13 @@ libvirt_rule() {
     | select($1)" "$RENOVATE_FILE" | head -1
 }
 
-# --- Test 1: the manager captures the whole pin of all eight lines ---
+# --- Test 1: the manager captures the whole pin of all seven lines ---
 test_custom_manager_captures_every_pin() {
-  echo "Test: customManagers regex captures depName, tag and digest of all eight libvirt image lines"
+  echo "Test: customManagers regex captures depName, tag and digest of all seven libvirt image lines"
 
   if ! command -v jq >/dev/null 2>&1 || ! command -v perl >/dev/null 2>&1; then
-    echo "  SKIP: jq or perl not installed (8 checks skipped)"
-    SKIP=$((SKIP + 8))
+    echo "  SKIP: jq or perl not installed (7 checks skipped)"
+    SKIP=$((SKIP + 7))
     return
   fi
 
@@ -83,7 +83,7 @@ test_custom_manager_captures_every_pin() {
   entry="$(libvirt_manager)"
   if [ -z "$entry" ]; then
     echo "  FAIL: no docker-datasource customManagers entry for the libvirt DaemonSet"
-    FAIL=$((FAIL + 8))
+    FAIL=$((FAIL + 7))
     return
   fi
 
@@ -121,12 +121,12 @@ test_custom_manager_captures_every_pin() {
     fi
   done <<<"$MANIFESTS"
 
-  # The eight lines name one reference, so one group bump moves them together.
+  # The seven lines name one reference, so one group bump moves them together.
   local all_lines
   all_lines="$(while read -r path count; do
     grep -hE '^[[:space:]]*image: ghcr\.io/c5c3/libvirt' "$PROJECT_ROOT/$path" || true
   done <<<"$MANIFESTS" | sed -E 's/^[[:space:]]*//' | sort -u)"
-  assert_eq "the eight lines name one reference" "1" "$(grep -c . <<<"$all_lines")"
+  assert_eq "the seven lines name one reference" "1" "$(grep -c . <<<"$all_lines")"
 }
 
 # --- Test 2: allowedVersions admits the keeper shape alone ---
@@ -211,7 +211,7 @@ test_update_rules() {
 
 # --- Test 4: every file in the manager and in every rule ---
 test_every_file_is_covered() {
-  echo "Test: the manager and all three packageRules name all five manifests"
+  echo "Test: the manager and all three packageRules name the four manifests and no other file"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (20 checks skipped)"
@@ -250,6 +250,21 @@ test_every_file_is_covered() {
         "$(jq -r --arg f "$path" '((.matchFileNames // []) | index($f)) != null' <<<"${rule:-{\}}")"
     done
   done <<<"$MANIFESTS"
+
+  # A file left in a list after its pin moved out matches nothing, and the
+  # checks above would not notice it.
+  local manifests
+  manifests="$(grep -c . <<<"$MANIFESTS")"
+  assert_eq "managerFilePatterns names $manifests files" "$manifests" "$(grep -c . <<<"$patterns")"
+  for name in allowed major minor; do
+    case "$name" in
+      allowed) rule="$rule_allowed" ;;
+      major) rule="$rule_major" ;;
+      minor) rule="$rule_minor" ;;
+    esac
+    assert_eq "the $name rule names $manifests files" "$manifests" \
+      "$(jq -r '(.matchFileNames // []) | length' <<<"${rule:-{\}}")"
+  done
 }
 
 # --- Run ---
