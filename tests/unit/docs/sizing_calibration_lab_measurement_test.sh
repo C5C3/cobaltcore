@@ -37,6 +37,13 @@
 #      print no line when `kubectl` cannot reach the server, and
 #      `libvirtd_scope` prints the node and the error text per pod when
 #      `kubectl exec` fails
+#   9. the record: `### Recorded lab run` holds one line that starts with
+#      `The run of <YYYY-MM-DD>`, and the page no longer says that no lab run
+#      is recorded. Run on the record's report table, `verdicts` prints its
+#      verdict table, `floors` the rows of its floor table, `floor_bounds`
+#      what its floors sentence names and `over_request` its
+#      `over-request.log` block, and the VPAs it counts are the table's
+#      workloads
 #
 # The jq parts of checks 6 to 8 count as one SKIP each without jq. The
 # section runs from its heading to the end of the page, fenced code included.
@@ -392,6 +399,57 @@ test_upstream_error() {
   assert_starts_with "the second line holds its own node" "$(sed -n 2p <<<"$out")" "worker-b sh: cd:"
 }
 
+# --- Test 9: the record of the lab run ---
+test_record() {
+  echo "Test: '### Recorded lab run' holds the record of one run, whose figures the helpers print"
+  local record
+  record="$(awk '
+    /^[[:space:]]*(```|~~~)/ { fenced = !fenced }
+    inside { print; next }
+    !fenced && $0 == "### Recorded lab run" { inside = 1 }
+  ' <<<"$SECTION")"
+  assert_eq "one line of the subsection starts with 'The run of <date>'" "1" \
+    "$(grep -cE '^The run of 20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$record" || true)"
+  assert_eq "the page no longer says 'No lab run is recorded yet.'" "0" \
+    "$(grep -cF 'No lab run is recorded yet.' "$DOC" || true)"
+
+  # The record's figures, recomputed by the helpers from its report table.
+  local report floor_rows row
+  report="$TMP/record.tsv"
+  assert_eq "the record's report table has the columns of the header" "$(tr '\t' ' ' <<<"$COLUMNS_LINE")" \
+    "$(awk '/^\| namespace \|/ { sub(/^\| /, ""); sub(/ \|$/, ""); gsub(/ \| /, " "); print; exit }' <<<"$record")"
+  {
+    echo '# record'
+    echo "$COLUMNS_LINE"
+    awk '/^\| (hypervisor-system|openstack) \|/ { sub(/^\| /, ""); sub(/ \|$/, ""); gsub(/ \| /, "\t"); print }' <<<"$record"
+  } >"$report"
+  assert_eq "the verdict table is what verdicts prints" \
+    "$(run "$TMP" 'verdicts "$dir/record.tsv"' 2>&1 || true)" \
+    "$(awk '
+      function q(v) { gsub(/`/, "", v); if (v == "none") return "-"; if (v ~ /Gi$/) return v * 1024; sub(/(m|Mi)$/, "", v); return v }
+      /^\| / { sub(/^\| /, ""); sub(/ \|$/, "") }
+      split($0, f, / \| /) == 8 && f[3] ~ /^[0-9]+$/ {
+        gsub(/`/, "", f[1]); gsub(/`/, "", f[2]); split(f[8], v, /; /)
+        printf "%s %s cpu %sm request %s: %s; memory %sMi request %s: %s\n", f[1], f[2], f[3], q(f[5]), v[1], f[4], q(f[6]), v[2] }
+    ' <<<"$record")"
+  floor_rows="$(awk '
+    /^\| / { sub(/^\| /, ""); sub(/ \|$/, "") }
+    split($0, f, / \| /) == 6 && f[2] ~ /^[0-9]+$/ { gsub(/`/, "", f[1]); gsub(/[^0-9]/, "", f[5]); gsub(/[^0-9]/, "", f[6]); print f[5], f[6], f[2], f[1] }
+  ' <<<"$record")"
+  assert_not_empty "the record has a floor table" "$floor_rows"
+  while IFS= read -r row; do
+    assert_eq "floors prints the floor table's row '$row'" "1" \
+      "$(run "$TMP" 'floors "$dir/record.tsv"' 2>&1 | grep -cxF -- "$row" || true)"
+  done <<<"$floor_rows"
+  assert_contains "the floors sentence names what floor_bounds prints" "$record" \
+    "\`floors.log\` ends in \`$(run "$TMP" 'floor_bounds "$dir/record.tsv"' 2>&1 || true)\`"
+  assert_eq "the over-request.log block is what over_request prints" \
+    "$(run "$TMP" 'over_request "$dir/record.tsv"' 2>&1 || true)" \
+    "$(awk '/^```text$/ { f = 1; next } f && /^```$/ { exit } f' <<<"$record")"
+  assert_contains "the record counts one VPA per workload of the report" "$record" \
+    "each of the $(tail -n +3 "$report" | cut -f1-3 | sort -u | wc -l | tr -d ' ') VPAs"
+}
+
 test_position
 test_command_order
 test_name_sources
@@ -400,6 +458,7 @@ test_helpers
 test_empty
 test_absent
 test_upstream_error
+test_record
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

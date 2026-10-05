@@ -909,4 +909,149 @@ backing-service row its `Minimal` figure.
 
 ### Recorded lab run
 
-No lab run is recorded yet.
+The run of 2026-10-05 measured on shoot `newforge` from commit `d34fde24`
+(`d34fde24334c2809ba2225654c206af9f217eee9`), on Kubernetes v1.35.6, with the
+operators from the charts published from `main`
+(`deploy/flux-system/releases/c5c3-operator.yaml`). The shoot has three
+workers, whose `== cpu` line of the node probe reads
+`Intel(R) Xeon(R) D-2141I CPU @ 2.20GHz`. Below, a node is named by the last
+part of its name, `shoot--df33f0b4c1--newforge-group-0-85bcf-<suffix>`. At
+15:27:32Z the shoot's namespaces were `default`, `firewall`,
+`kube-node-lease`, `kube-public`, `kube-system` and `metallb-system` and no
+other. Its platform facts were those
+[Lab autoscaling](../infrastructure/infrastructure-manifests.md#lab-autoscaling)
+gives: the VPA CRD admitted `Off`, `Initial`, `Recreate`, `InPlaceOrRecreate`
+and `Auto`, `kube-system` held six VPAs in mode `InPlaceOrRecreate`, the
+resource metrics API was available and `pods/resize` was served. Of those
+VPAs, `vpn-shoot` read the target `11m` and `11500000` and the CPU lower bound
+`10m`, the lowest values the recommender gives (see the floor rule). Part 2,
+Step 5 booted one server on each worker, `lab-0` on `7znw9`, `lab-1` on
+`hmw67` and `lab-2` on `rt6kn`, each bound to one network, `lab-net`. Step 8
+moved `lab-0` to `rt6kn`, and Step 9 evicted `rt6kn`, so from 15:48Z on
+`7znw9` ran `lab-0` and `lab-2`, `hmw67` ran `lab-1`, and `rt6kn` ran none.
+The watch's first pass ran at 15:33:06Z, before the ControlPlane was applied,
+and the last snapshot, the time every row carries, was taken at 15:55:08Z.
+The comment line of `recommendations.tsv` reads
+`run=- attempt=- sha=d34fde24334c2809ba2225654c206af9f217eee9 job=lab leg=newforge recommender=-`.
+Part 1, Steps 1 to 7 ran, without the `git clone` of Step 1 and without the
+optional checks Step 7 links, and Part 2, Steps 1 to 10 ran. The ControlPlane
+was `Ready` at 15:38:28Z, at the end of Part 1, Step 6. Every block of the
+quick start and of this page exited 0 on its first attempt. A script typed
+the console commands of Part 2, Steps 6 to 8 through `tmux send-keys`. Nothing
+was done by hand on the cluster: the kubeconfig had a current context, so no
+context was selected, and the two reads outside the pages, the server list
+after Step 10 and `kubectl top` after the third block, changed nothing. The
+files of the run are in the
+[comment on #1224](https://github.com/C5C3/cobaltcore/issues/1224#issuecomment-5999185983).
+
+| Workload | Container | CPU target (m) | Memory target (MiB) | CPU request | Memory request | CI reading | Verdict (CPU; memory) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `lab-chassis-ovn-controller` | `ovn-controller` | 11 | 11 | none | none | 23 m, 11 MiB | no default; no default |
+| `lab-chassis-ovs` | `ovs-vswitchd` | 23 | 23 | none | none | 23 m, 11 to 23 MiB | no default; no default |
+| `lab-chassis-ovs` | `ovsdb-server` | 11 | 11 | none | none | 23 m, 11 MiB | no default; no default |
+| `lab-metadata-agent-metadata-agent` | `metadata-agent` | 126 | 641 | `70m` | `2Gi` | 11 to 23 m, 156 to 175 MiB | contradicted; confirmed |
+| `lab-nova-compute` | `nova-compute` | 143 | 455 | none | none | 11 to 93 m, 175 MiB, on the fake driver | no default; no default |
+| `libvirt` | `libvirtd` | 11 | 11 | `100m` | `256Mi` | none | confirmed; confirmed |
+
+`lab-nova-compute` renders no request, so its targets of `143m` and `455Mi`
+under KVM stand without a default; on the fake driver CI read up to `93m` and
+`175Mi`. The two chassis DaemonSets render no request either, and their three
+containers read 11 to 23 m and 11 to 23 MiB, at or below what CI read. The
+metadata agent's CPU request of `70m` is contradicted by its target of `126m`
+([#1259](https://github.com/C5C3/cobaltcore/issues/1259)). Its memory of
+`2Gi` is confirmed: the target was `641Mi`, which is 557 MiB without the 15 %
+margin, beside the 550 MiB of the lab reading that `L` rests on (see
+[From the readings to the figure](#from-the-readings-to-the-figure)). The
+libvirt pod's `100m` and `256Mi` are confirmed for bash and the probes, whose
+targets are the lowest values the recommender gives.
+
+| Workload | Containers | Smallest CPU target | Smallest memory target | CPU bound | Memory bound |
+| --- | --- | --- | --- | --- | --- |
+| `openstack/DaemonSet/lab-chassis-ovs` | 2 | `11m` | `11Mi` | below `24m` | at most `22Mi` |
+
+`floors.log` ends in `floor bounds: cpu below 12m, memory at most 11Mi`. The
+bounds are at most `12m` and `11Mi`, so no lab row is a floor share, and every
+lab row compares with the CI row of the same container at its value.
+
+| Node | `memory.current` | `memory.peak` | CPU time | Servers on the node at the read |
+| --- | --- | --- | --- | --- |
+| `hmw67` | 19 MiB | 51 MiB | 7.7 s | `lab-1` |
+| `rt6kn` | 18 MiB | 48 MiB | 9.1 s | none; `lab-2` until Step 9, and `lab-0` from Step 8 to Step 9 |
+| `7znw9` | 19 MiB | 47 MiB | 9.0 s | `lab-0` and `lab-2` since Step 9; `lab-0` until Step 8 |
+
+The table gives `cobaltcore-libvirtd.scope` at the start of the third block,
+in MiB rounded up and in seconds. The scope holds libvirtd alone, which
+runs in the host's `system.slice`; no pod request covers it, and QEMU is
+in neither figure.
+
+The checks of the run:
+
+- `prepare.log` holds `MariaDB CRD scale subresource removed`, printed at
+  15:33:06Z before Part 1, Step 4, and `MariaDB CRD serves no scale subresource`
+  from the third block. The report has the row `openstack-db`, `mariadb`.
+- `pods.changed` is empty: each of the 38 pods of `pods.before`, read at
+  15:39Z, kept its UID, its restart count and its requests, the pods of the
+  finished Jobs among them.
+- `pods.rewritten` is empty.
+- `no-recommendation.log` is empty: each of the 35 VPAs of the measurement
+  held a recommendation, and the deletes left none (`No resources found`).
+
+`over-request.log` holds three rows:
+
+```text
+hypervisor-system migration-port-reservation hold memory target 11Mi above request 4Mi
+openstack nfs-client-modules hold memory target 11Mi above request 8Mi
+openstack nfs-server nfs-server memory target 75Mi above request 64Mi
+```
+
+The `nfs-server` row contradicts the `64Mi` request of
+`deploy/kind/nfs/nfs-server.yaml`
+([#1260](https://github.com/C5C3/cobaltcore/issues/1260)). The two `hold` rows
+read `11Mi`, the lowest value the recommender gives (see the floor rule): their
+containers used less than 10 MB, and `kubectl top` read `0Mi` for each of them
+at 15:56:10Z. They contradict neither `4Mi` nor `8Mi`, and no issue is filed
+for them. No service or backing-service row exceeds its memory request.
+
+The table below is the report of the run, `recommendations.md` as the third
+block wrote it:
+
+Sizing measurement: `run=- attempt=- sha=d34fde24334c2809ba2225654c206af9f217eee9 job=lab leg=newforge recommender=-`
+
+| namespace | kind | workload | replicas | owner_kind | owner_name | app | component | container | processes | threads | cpu_target_m | memory_target_mi | cpu_upper_m | memory_upper_mi | cpu_request_m | memory_request_mi | memory_limit_mi | snapshot |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| hypervisor-system | DaemonSet | kvm-node-agent-controller-manager | - | - | - | kvm-node-agent | - | manager | - | - | 11 | 35 | 1131 | 3558 | 10 | 64 | 128 | 2026-10-05T15:55:08Z |
+| hypervisor-system | DaemonSet | migration-port-reservation | - | - | - | migration-port-reservation | - | hold | - | - | 11 | 11 | 1138 | 1136 | 1 | 4 | 16 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-barbican | 1 | Barbican | controlplane-barbican | barbican | api | barbican-api | 1 | 1 | 11 | 138 | 943 | 11835 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | StatefulSet | controlplane-barbican-bao | 1 | OpenBaoCluster | controlplane-barbican-bao | openbao | - | openbao | - | - | 23 | 61 | 2829 | 4900 | - | - | - | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-cinder | 1 | Cinder | controlplane-cinder | cinder | api | cinder-api | 1 | 1 | 23 | 175 | 11614 | 14179 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-cinder-backup | 1 | Cinder | controlplane-cinder | cinder | backup | backup | - | - | 163 | 215 | 23823 | 17300 | 15 | 2048 | 2048 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-cinder-scheduler | 1 | Cinder | controlplane-cinder | cinder | scheduler | scheduler | - | - | 23 | 156 | 11711 | 12761 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-cinder-volume-nfs1 | 1 | Cinder | controlplane-cinder | cinder | volume-nfs1 | volume-nfs1 | - | - | 49 | 260 | 16488 | 21074 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-glance | 1 | Glance | controlplane-glance | glance | api | glance-api | - | - | 23 | 284 | 11625 | 23040 | 15 | 1040 | 1040 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-horizon | 1 | Horizon | controlplane-horizon | horizon | api | horizon | 2 | 1 | 11 | 260 | 5150 | 21211 | 15 | 720 | 720 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-keystone | 1 | Keystone | controlplane-keystone | keystone | api | keystone | 1 | 1 | 126 | 156 | 11086 | 12080 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-neutron | 1 | Neutron | controlplane-neutron | neutron | api | neutron-api | 1 | 1 | 93 | 260 | 28375 | 21036 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-neutron-ovn-maintenance-worker | 1 | Neutron | controlplane-neutron | neutron | ovn-maintenance-worker | ovn-maintenance-worker | - | - | 11 | 363 | 933 | 30783 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-neutron-periodic-workers | 1 | Neutron | controlplane-neutron | neutron | periodic-workers | periodic-workers | - | - | 11 | 335 | 949 | 28902 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-nova | 1 | Nova | controlplane-nova | nova | api | nova-api | 1 | 1 | 23 | 215 | 14848 | 19581 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-nova-conductor | 1 | Nova | controlplane-nova | nova | conductor | conductor | - | - | 49 | 156 | 12933 | 14092 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-nova-metadata | 1 | Nova | controlplane-nova | nova | metadata | nova-metadata | 1 | 1 | 11 | 156 | 13148 | 14327 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-nova-novncproxy | 1 | Nova | controlplane-nova | nova | novncproxy | novncproxy | - | - | 11 | 138 | 13121 | 12658 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-nova-scheduler | 1 | Nova | controlplane-nova | nova | scheduler | scheduler | - | - | 23 | 138 | 13026 | 12566 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | StatefulSet | controlplane-ovn-nb | 1 | OVNCentral | controlplane-ovn | ovncentral | nb | ovsdb | - | - | 11 | 11 | 805 | 804 | 70 | 256 | - | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-ovn-northd | 1 | OVNCentral | controlplane-ovn | ovncentral | northd | northd | - | 1 | 11 | 11 | 839 | 838 | 70 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | StatefulSet | controlplane-ovn-sb | 1 | OVNCentral | controlplane-ovn | ovncentral | sb | ovsdb | - | - | 23 | 11 | 1695 | 809 | 70 | 256 | - | 2026-10-05T15:55:08Z |
+| openstack | Deployment | controlplane-placement | 1 | Placement | controlplane-placement | placement | api | placement-api | 1 | 1 | 11 | 105 | 7526 | 8476 | 15 | 368 | 368 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | hypervisor-operator-controller-manager | 1 | - | - | openstack-hypervisor-operator | - | manager | - | - | 11 | 35 | 2405 | 3617 | 10 | 64 | 128 | 2026-10-05T15:55:08Z |
+| openstack | DaemonSet | lab-chassis-ovn-controller | - | OVNChassis | lab-chassis | ovnchassis | ovn-controller | ovn-controller | - | - | 11 | 11 | 1224 | 1222 | - | - | - | 2026-10-05T15:55:08Z |
+| openstack | DaemonSet | lab-chassis-ovs | - | OVNChassis | lab-chassis | ovnchassis | ovs | ovs-vswitchd | - | - | 23 | 23 | 2366 | 2314 | - | - | - | 2026-10-05T15:55:08Z |
+| openstack | DaemonSet | lab-chassis-ovs | - | OVNChassis | lab-chassis | ovnchassis | ovs | ovsdb-server | - | - | 11 | 11 | 1131 | 1129 | - | - | - | 2026-10-05T15:55:08Z |
+| openstack | DaemonSet | lab-metadata-agent-metadata-agent | - | NeutronMetadataAgent | lab-metadata-agent | neutronmetadataagent | metadata-agent | metadata-agent | - | - | 126 | 641 | 27260 | 70692 | 70 | 2048 | 2048 | 2026-10-05T15:55:08Z |
+| openstack | DaemonSet | lab-nova-compute | - | NovaCompute | lab | novacompute | nova-compute | nova-compute | - | - | 143 | 455 | 25592 | 47080 | - | - | - | 2026-10-05T15:55:08Z |
+| openstack | DaemonSet | libvirt | - | - | - | libvirt | - | libvirtd | - | - | 11 | 11 | 1123 | 1121 | 100 | 256 | 512 | 2026-10-05T15:55:08Z |
+| openstack | DaemonSet | nfs-client-modules | - | - | - | nfs-client-modules | - | hold | - | - | 11 | 11 | 762 | 761 | 1 | 8 | 32 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | nfs-server | 1 | - | - | nfs-server | - | nfs-server | - | - | 11 | 75 | 775 | 5260 | 50 | 64 | 256 | 2026-10-05T15:55:08Z |
+| openstack | StatefulSet | openbao-instance | 1 | OpenBaoCluster | openbao-instance | openbao | - | openbao | - | - | 23 | 61 | 1595 | 4203 | - | - | - | 2026-10-05T15:55:08Z |
+| openstack | StatefulSet | openstack-db | 1 | MariaDB | openstack-db | mariadb | - | mariadb | - | - | 63 | 489 | 4656 | 36074 | 65 | 1024 | 1024 | 2026-10-05T15:55:08Z |
+| openstack | Deployment | openstack-memcached | 1 | Memcached | openstack-memcached | memcached | - | memcached | - | - | 11 | 35 | 808 | 2543 | 15 | 96 | 96 | 2026-10-05T15:55:08Z |
+| openstack | StatefulSet | openstack-rabbitmq-server | 1 | RabbitmqCluster | openstack-rabbitmq | openstack-rabbitmq | rabbitmq | rabbitmq | - | - | 23 | 195 | 1685 | 14240 | 815 | 512 | 512 | 2026-10-05T15:55:08Z |
