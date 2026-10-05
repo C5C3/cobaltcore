@@ -2684,7 +2684,7 @@ Keystone discipline:
 | `spec.sizing.database.storageSize`, `SizingProfile spec.database.storageSize` | Pattern `^[0-9]+(Mi\|Gi\|Ti)$` |
 | `spec.sizing` and `SizingProfile spec`: every `spreadConstraints[]` | `maxSkew` Minimum 1; `topologyKey` MinLength 1; `whenUnsatisfiable` Enum `DoNotSchedule`, `ScheduleAnyway` |
 | `spec.sizing` and `SizingProfile spec`: every `api` and `horizon.api` (CEL) | `!(has(self.autoscaling) && has(self.verticalAutoscaling))` → "autoscaling and verticalAutoscaling cannot both be set on one component" |
-| `spec.sizing` and `SizingProfile spec`: every `verticalAutoscaling` | `updateMode` Enum `Off`, `Initial`, `Recreate`, `Auto`; `minReplicas` Minimum 1; `minAllowed` and `maxAllowed` at most two keys, CEL: only `cpu` and `memory` (see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec)) |
+| `spec.sizing` and `SizingProfile spec`: every `verticalAutoscaling` | `updateMode` Enum `Off`, `Initial`, `Recreate`, `InPlaceOrRecreate`, `Auto`; `minReplicas` Minimum 1; `minAllowed` and `maxAllowed` at most two keys, CEL: only `cpu` and `memory` (see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec)) |
 | `CredentialRotation spec.target` | Enum: `adminApplicationCredential`, `serviceAccountPassword` |
 | `CredentialRotation spec.keystoneService` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`; MinLength 1; MaxLength 253 |
 | `CredentialRotation` (CEL) | `target == 'serviceAccountPassword'` ⇒ `has(self.keystoneService)` → "keystoneService is required when target is serviceAccountPassword" |

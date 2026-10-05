@@ -2152,9 +2152,9 @@ that the ControlPlane's and the OVNCentral's `verticalAutoscaling` blocks opt
 into, and the
 [e2e-autoscaling suite](../testing/controlplane-e2e-tests.md#e2e-autoscaling)
 waits for the recommender to serve one of them. Without the updater and the
-admission controller, an opt-in with `updateMode` `Initial`, `Recreate` or
-`Auto` changes no pod on this overlay either, so the suite asserts the VPA
-objects and a recommendation, not rewritten requests.
+admission controller, an opt-in with `updateMode` `Initial`, `Recreate`,
+`InPlaceOrRecreate` or `Auto` changes no pod on this overlay either, so the
+suite asserts the VPA objects and a recommendation, not rewritten requests.
 
 Recommendation-only mode changes no pod, so the release installs the VPA CRDs
 and the recommender alone: the updater and the admission controller are
