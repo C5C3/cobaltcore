@@ -7,10 +7,11 @@
 #   1. EXTERNAL_CLUSTER and EXTERNAL_OVERLAY default and pass through verbatim,
 #      and the derived OVERLAY_ROOT and PUBLIC_PORT follow the mode.
 #   2. preflight_checks in external mode needs only kubectl and jq, still needs
-#      yq under WITH_CONTROLPLANE=true, refuses each of the five kind-bound
+#      yq under WITH_CONTROLPLANE=true, refuses each of the four kind-bound
 #      opt-ins by name, accepts WITH_NFS=true only for an overlay with an
-#      nfs/ kustomization and WITH_CHAOS_MESH=true only for one with a
-#      chaos-mesh/ kustomization (refusing a directory without one, and only
+#      nfs/ kustomization, WITH_CHAOS_MESH=true only for one with a
+#      chaos-mesh/ kustomization and WITH_DIZZY=true only for one with a
+#      dizzy/ kustomization (refusing a directory without one, and only
 #      after the base/ check, before the cluster is contacted), refuses an
 #      overlay without its two kustomizations, a
 #      CONTROLPLANE_NAME the overlay's rendered by-hand ControlPlane does not
@@ -52,8 +53,11 @@
 #      and file gate, and waits for the nfs-client-modules rollout behind an
 #      EXTERNAL_CLUSTER gate, Step 3 applies the overlay root's chaos-mesh/ and
 #      waits for the chaos-mesh-modules rollout behind an EXTERNAL_CLUSTER
-#      gate, the host NFS and Chaos Mesh module loads, the nofile cap and the
-#      Keystone preload sit behind an EXTERNAL_CLUSTER gate, the CR rewrite and
+#      gate, Step 3 applies the overlay root's dizzy/ after staging the
+#      dashboards and probes the kind node's 30428 mapping behind an
+#      EXTERNAL_CLUSTER gate, the host NFS and Chaos Mesh module loads, the
+#      nofile cap and the Keystone preload sit behind an EXTERNAL_CLUSTER
+#      gate, the CR rewrite and
 #      the by-hand CR hint key on PUBLIC_PORT, the external by-hand hint names
 #      the overlay's controlplane/ kustomization behind an EXTERNAL_CLUSTER and
 #      file gate and its CR by CONTROLPLANE_NAME while the kind hint keeps the
@@ -552,7 +556,7 @@ test_refused_flags() {
   # WITH_VPA=true folds into WITH_METRICS_SERVER=true at the top of the script,
   # so it has to be checked first to be named at all.
   for flag in WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE \
-    WITH_OVN_KERNEL_MODULES WITH_DIZZY; do
+    WITH_OVN_KERNEL_MODULES; do
     : >"$KUBECTL_LOG"
     output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true "${flag}=true")"
     rc=$?
@@ -706,6 +710,70 @@ test_chaos_mesh_overlay_preflight() {
   assert_contains "for its missing base/ and infrastructure/" "$output" \
     "EXTERNAL_OVERLAY='$tmp/empty' has no base/ and infrastructure/ kustomization"
   assert_not_contains "and not for its chaos-mesh/" "$output" "WITH_CHAOS_MESH=true needs"
+  unset KUBECTL_LOG
+}
+
+# ---------------------------------------------------------------------------
+# Test 3d: WITH_DIZZY=true needs the overlay's dizzy/ kustomization
+# ---------------------------------------------------------------------------
+test_dizzy_overlay_preflight() {
+  echo "Test: preflight_checks under EXTERNAL_CLUSTER=true accepts WITH_DIZZY=true only with a dizzy/ kustomization"
+
+  local tmp output rc
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stub_path "$tmp/bin" kubectl jq
+  export KUBECTL_LOG="$tmp/kubectl.log"
+
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_DIZZY=true)"
+  rc=$?
+  assert_eq "WITH_DIZZY=true passes with the default overlay, which has dizzy/" "0" "$rc"
+  assert_contains "and reaches the end of preflight" "$output" "Pre-flight checks passed."
+
+  # An overlay with the two kustomizations Steps 3 and 5 apply and no dizzy/.
+  mkdir -p "$tmp/no-dizzy/base" "$tmp/no-dizzy/infrastructure"
+  : >"$tmp/no-dizzy/base/kustomization.yaml"
+  : >"$tmp/no-dizzy/infrastructure/kustomization.yaml"
+  local refusal="EXTERNAL_CLUSTER=true WITH_DIZZY=true needs $tmp/no-dizzy/dizzy/kustomization.yaml, which does not exist"
+
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_DIZZY=true EXTERNAL_OVERLAY="$tmp/no-dizzy")"
+  rc=$?
+  assert_eq "WITH_DIZZY=true is refused for an overlay without dizzy/" "1" "$rc"
+  assert_contains "the refusal names the missing kustomization" "$output" "$refusal"
+  assert_contains "and says why the kind overlay does not fit" "$output" \
+    "deploy/kind/dizzy is not applied to an external cluster: it publishes VictoriaMetrics on NodePort 30428, which only a kind node maps to a host port, and keeps the metrics in an emptyDir."
+  assert_eq "and comes before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
+
+  # The check tests the file, not the directory.
+  mkdir -p "$tmp/no-dizzy/dizzy"
+  : >"$KUBECTL_LOG"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_DIZZY=true EXTERNAL_OVERLAY="$tmp/no-dizzy")"
+  rc=$?
+  assert_eq "a dizzy/ directory without a kustomization is refused too" "1" "$rc"
+  assert_contains "with the same message" "$output" "$refusal"
+  assert_eq "before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
+
+  # Only the value true turns the stack on.
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-dizzy")"
+  rc=$?
+  assert_eq "the overlay without a dizzy/ kustomization passes without WITH_DIZZY" "0" "$rc"
+  assert_not_contains "without the refusal" "$output" "WITH_DIZZY=true needs"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_DIZZY=yes EXTERNAL_OVERLAY="$tmp/no-dizzy")"
+  rc=$?
+  assert_eq "and with WITH_DIZZY=yes" "0" "$rc"
+  assert_not_contains "WITH_DIZZY=yes is not refused" "$output" "WITH_DIZZY=true needs"
+
+  # The overlay check comes first: an overlay with neither base/ nor dizzy/ is
+  # reported for its base/.
+  mkdir -p "$tmp/empty"
+  output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true WITH_DIZZY=true EXTERNAL_OVERLAY="$tmp/empty")"
+  rc=$?
+  assert_nonzero_exit "an overlay with neither base/ nor dizzy/ is refused" "$rc"
+  assert_contains "for its missing base/ and infrastructure/" "$output" \
+    "EXTERNAL_OVERLAY='$tmp/empty' has no base/ and infrastructure/ kustomization"
+  assert_not_contains "and not for its dizzy/" "$output" "WITH_DIZZY=true needs"
   unset KUBECTL_LOG
 }
 
@@ -1173,6 +1241,28 @@ test_main_gates() {
     "ERROR: DaemonSet chaos-mesh/chaos-mesh-modules did not roll out, so not every node has the NetworkChaos kernel modules. Read 'kubectl logs -n chaos-mesh -l app.kubernetes.io/name=chaos-mesh-modules -c load --prefix --tail=-1'."
   assert_contains "and exits 1" "$chaos_failure" "exit 1"
 
+  # WITH_DIZZY=true: the overlay root's dizzy/, deploy/kind/dizzy in kind mode,
+  # and the probe of the kind node's published port in kind mode only.
+  local dizzy_apply='kubectl apply -k "${OVERLAY_ROOT}/dizzy"'
+  assert_file_contains_fixed "Step 3 applies the overlay root's dizzy/" \
+    "$DEPLOY_INFRA_SH" "$dizzy_apply"
+  assert_file_not_contains "Step 3 no longer hardcodes the kind dizzy overlay" \
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/dizzy"'
+  assert_file_contains_fixed "the apply logs the directory it applied" \
+    "$DEPLOY_INFRA_SH" 'log "dizzy overlay ${OVERLAY_ROOT}/dizzy applied (WITH_DIZZY=true)."'
+  local dizzy_probe='dizzy_metrics_port="$(docker port "${CLUSTER_NAME}-control-plane" 30428/tcp'
+  assert_eq "the 30428 probe sits two lines below an EXTERNAL_CLUSTER gate" \
+    'if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then' \
+    "$(grep -B2 -F "$dizzy_probe" "$DEPLOY_INFRA_SH" | head -n1 | sed 's/^[[:space:]]*//')"
+  local probe_gate probe_warning probe_gate_end
+  probe_gate="$(($(line_of "$dizzy_probe") - 2))"
+  probe_warning="$(line_of 'predates the dizzy metrics port mapping')"
+  # The gate's closing fi is the first line after it at the gate's indentation.
+  probe_gate_end="$(awk -v start="$probe_gate" -v indent="$(sed -n "${probe_gate}p" "$DEPLOY_INFRA_SH" | sed -E 's/^([[:space:]]*).*/\1/')" \
+    'NR > start && $0 == indent "fi" { print NR; exit }' "$DEPLOY_INFRA_SH")"
+  assert_before "the gate opens before the port-mapping warning" "$probe_gate" "$probe_warning"
+  assert_before "and closes after it" "$probe_warning" "$probe_gate_end"
+
   assert_contains "the Keystone preload sits behind an EXTERNAL_CLUSTER gate" \
     "$(grep -B3 -F 'docker pull "ghcr.io/c5c3/keystone:' "$DEPLOY_INFRA_SH")" \
     'if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then'
@@ -1234,6 +1324,7 @@ test_external_preflight
 test_refused_flags
 test_nfs_overlay_preflight
 test_chaos_mesh_overlay_preflight
+test_dizzy_overlay_preflight
 test_kind_preflight_unchanged
 test_check_external_cluster
 test_resolve_api_server_egress
