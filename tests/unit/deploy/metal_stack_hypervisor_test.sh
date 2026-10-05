@@ -31,7 +31,10 @@
 #      pod: no host alias, no volume, and no gateway hostname or lab service
 #      address anywhere in the render. A second post-renderer patch appends
 #      --default-high-availability=false to the manager's arguments, and the
-#      values set no argument list.
+#      values set no argument list. The ServiceMonitor and the
+#      PrometheusRules are on, the dashboards and the custom-resource metrics
+#      off, and a third patch gives the ServiceMonitor's one endpoint the pod's
+#      ServiceAccount token file.
 #   9. The kna release runs the image ghcr.io/c5c3/kvm-node-agent without a
 #      tag, sets the libvirt URI, the node label field path, DAC_OVERRIDE
 #      alone without a runAsUser or runAsGroup, NAMESPACE, and the pull
@@ -482,7 +485,7 @@ test_ca_and_compute() {
 test_hvo_release() {
   echo "Test: the openstack-hypervisor-operator release"
 
-  render "$HYPERVISOR_DIR" 23 || return
+  render "$HYPERVISOR_DIR" 25 || return
 
   local release=openstack-hypervisor-operator env='.spec.values.controllerManager.manager.env'
   assert_eq "the release lives in openstack" "openstack" \
@@ -517,7 +520,11 @@ test_hvo_release() {
     "$(val HelmRelease "$release" "$env.certificateNamespace")"
   assert_eq "the agent namespace is openstack" "openstack" \
     "$(val HelmRelease "$release" "$env.agentNamespaces")"
-  assert_eq "the monitoring objects are off" "false false false false" \
+  # The ServiceMonitor and the alert rules are inert without a Prometheus
+  # Operator. The dashboard is a Perses one, and the custom-resource metrics
+  # need a kube-state-metrics the lab does not run.
+  assert_eq "the ServiceMonitor and the PrometheusRules are on, the dashboards and the custom-resource metrics off" \
+    "true true false false" \
     "$(val HelmRelease "$release" '.spec.values | (.serviceMonitor.enabled | tostring) + " " +
       (.prometheusRules.create | tostring) + " " + (.dashboards.create | tostring) + " " +
       (.customResourceMetrics.create | tostring)')"
@@ -542,7 +549,7 @@ test_hvo_release() {
 
   # The chart has no value for patch 0002's flag, so a second patch appends
   # it and the chart's own argument list stays as it renders.
-  assert_eq "the post-renderer holds two patches" "2" \
+  assert_eq "the post-renderer holds three patches" "3" \
     "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches | length')"
   assert_eq "the second patch targets the Deployment" "Deployment" \
     "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches[1].target.kind')"
@@ -552,6 +559,15 @@ test_hvo_release() {
       (length | tostring) + " " + .[0].op + " " + .[0].path + " " + .[0].value')"
   assert_eq "the values set no argument list" "false" \
     "$(val HelmRelease "$release" '.spec.values.controllerManager.manager | has("args")')"
+
+  # hvo serves its metrics behind an authentication filter, and the chart's
+  # ServiceMonitor sends no token.
+  assert_eq "the third patch targets the ServiceMonitor" "ServiceMonitor" \
+    "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches[2].target.kind')"
+  assert_eq "the third patch adds the ServiceAccount token file to the first endpoint" \
+    "1 add /spec/endpoints/0/bearerTokenFile /var/run/secrets/kubernetes.io/serviceaccount/token" \
+    "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches[2].patch | from_yaml |
+      (length | tostring) + " " + .[0].op + " " + .[0].path + " " + .[0].value')"
 }
 
 # --- Test 9: the kna release ---
