@@ -729,7 +729,7 @@ as one `script` step because chainsaw has no step-level skip:
 | # | Assertion | Namespace | Resource |
 | --- | --- | --- | --- |
 | 1 | Presence gate on `Deployment/nfs-server` (`--ignore-not-found`, so only a genuine absence skips and a failed lookup fails), then leftover `Namespace/nfs-health-probe` and the two `nfs-health-*` PersistentVolumes deleted up front | `openstack`, (cluster-scoped) | `Deployment`, `Namespace`, `PersistentVolume` |
-| 2 | `nfs-server` rolled out and its EndpointSlices carry at least one address | `openstack` | `Deployment`, `EndpointSlice` |
+| 2 | `nfs-server` rolled out, its container log holds `Root fs for export /exports is /exports` (otherwise the suite prints the log's `FSAL` lines), and its EndpointSlices carry at least one address | `openstack` | `Deployment`, `EndpointSlice` |
 | 3 | `HelmRelease/csi-driver-nfs` Ready, `DaemonSet/csi-nfs-node` with `numberReady >= 1`, `CSIDriver/nfs.csi.k8s.io` present | `kube-system`, (cluster-scoped) | `HelmRelease`, `DaemonSet`, `CSIDriver` |
 | 4 | Two static PV/PVC pairs (`nfs.csi.k8s.io`, `nfsvers=4.1,soft,timeo=30,retrans=2`) bound at the os-brick mount points `/var/lib/cinder/mnt/<md5(share)>` and `/var/lib/cinder/backup_mount/<md5(share)>`, the md5 taken over the share string with no trailing newline | `nfs-health-probe` | `PersistentVolume`, `PersistentVolumeClaim` |
 | 5 | A `restricted`-admitted probe pod (UID 42424, no `fsGroup`) finds both mounts in `/proc/mounts`, writes and reads back `nfs-health.probe` under each, and `stat` reports `42424 42424 660` twice; the pod phase must be `Succeeded` and the log capture non-empty | `nfs-health-probe` | `Pod` (throwaway, the pinned server image) |

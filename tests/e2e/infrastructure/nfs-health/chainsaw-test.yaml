@@ -149,6 +149,27 @@ spec:
           fi
           echo "OK: Deployment/nfs-server is rolled out"
 
+          # Ganesha takes the first mount of a device it finds in the pod's
+          # mount table as that device's filesystem, and the export's file
+          # handles carry its id. On kind the claim sits on the node's own
+          # disk, the device behind /etc/hosts in the pod as well, and the
+          # runtime mounts shorter paths first. This line is what shows that
+          # the export got /exports. A failure here means that assumption is
+          # wrong, which is a decision on the claim layout, not a retry.
+          LOG_ERR="$(mktemp)"
+          if ! SERVER_LOG="$(kubectl logs -n openstack deployment/nfs-server -c nfs-server 2>"${LOG_ERR}")"; then
+            echo "FAIL: cannot read the nfs-server log: $(cat "${LOG_ERR}")"
+            rm -f "${LOG_ERR}"
+            exit 1
+          fi
+          rm -f "${LOG_ERR}"
+          if ! grep -qF 'Root fs for export /exports is /exports' <<<"${SERVER_LOG}"; then
+            echo "FAIL: ganesha did not take /exports as the filesystem of its export"
+            grep -F 'FSAL' <<<"${SERVER_LOG}" || true
+            exit 1
+          fi
+          echo "OK: ganesha took /exports as the filesystem of its export"
+
           # A Service with no EndpointSlice address answers nothing on 2049,
           # and the mount below would fail with a timeout that names no cause.
           ADDRS="$(kubectl get endpointslices -n openstack \
