@@ -61,8 +61,10 @@
 #      the by-hand CR hint key on PUBLIC_PORT, the external by-hand hint names
 #      the overlay's controlplane/ kustomization behind an EXTERNAL_CLUSTER and
 #      file gate and its CR by CONTROLPLANE_NAME while the kind hint keeps the
-#      bundled CR, and the external banners name the port-forward on
-#      PUBLIC_PORT and the teardown.
+#      bundled CR, the external banners name the port-forward on PUBLIC_PORT
+#      and the teardown, the dizzy Grafana URL keys on PUBLIC_PORT, and,
+#      behind a WITH_DIZZY gate between the Access: lines and the teardown
+#      line, the external banner names the VictoriaMetrics port-forward.
 #
 # The script is sourced (its BASH_SOURCE guard keeps main() from running) and
 # driven against a kubectl stub scripted through environment variables.
@@ -1312,6 +1314,30 @@ test_main_gates() {
     "$banner" "gateway.envoyproxy.io/owning-gateway-name=openstack-gw"
   assert_contains "the completion banner names the external teardown" \
     "$banner" "EXTERNAL_CLUSTER=true make teardown-infra"
+  # WITH_DIZZY=true: the Grafana URL on the public port, and the second
+  # port-forward in the external banner, before the teardown line.
+  local url_block
+  url_block="$(grep -A5 -F 'local dizzy_grafana_url="https://dizzy.127-0-0-1.nip.io"' "$DEPLOY_INFRA_SH")"
+  assert_contains "the Grafana URL block tests PUBLIC_PORT" "$url_block" \
+    'if [[ "${PUBLIC_PORT}" != "443" ]]; then'
+  assert_contains "and appends it" "$url_block" \
+    'dizzy_grafana_url="${dizzy_grafana_url}:${PUBLIC_PORT}"'
+  assert_file_not_contains "no line builds the dizzy URL from KIND_HOST_PORT" \
+    "$DEPLOY_INFRA_SH" 'dizzy_grafana_url}:${KIND_HOST_PORT}'
+  local external_banner dizzy_forward dizzy_next access_line dizzy_line teardown_line
+  external_banner="$(awk '/Infrastructure deployment complete!/,/To tear down: EXTERNAL_CLUSTER=true make teardown-infra/' \
+    "$DEPLOY_INFRA_SH" | sed 's/^[[:space:]]*//')"
+  dizzy_forward='log "dizzy:  kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428"'
+  dizzy_next='log "        then EXTERNAL_CLUSTER=true make dizzy-keystone, and Grafana at https://dizzy.127-0-0-1.nip.io:${PUBLIC_PORT} through the port-forward above"'
+  assert_eq "the external banner names the VictoriaMetrics port-forward and then the soak and Grafana, behind a WITH_DIZZY gate" \
+    "$(printf '%s\n' 'if [[ "${WITH_DIZZY}" == "true" ]]; then' "$dizzy_forward" "$dizzy_next" 'fi')" \
+    "$(grep -B1 -A2 -xF "$dizzy_forward" <<<"$external_banner")"
+  access_line="$(grep -n '^log "        then https://keystone.127-0-0-1.nip.io:' <<<"$external_banner" | cut -d: -f1)"
+  dizzy_line="$(grep -nxF "$dizzy_forward" <<<"$external_banner" | cut -d: -f1)"
+  teardown_line="$(grep -nxF 'log "To tear down: EXTERNAL_CLUSTER=true make teardown-infra"' <<<"$external_banner" | cut -d: -f1)"
+  assert_before "the dizzy: lines follow the Access: lines" "$access_line" "$dizzy_line"
+  assert_before "and come before the teardown line" "$dizzy_line" "$teardown_line"
+
   assert_file_contains_fixed "the run banner reports the cluster mode" \
     "$DEPLOY_INFRA_SH" 'Cluster mode        : external (EXTERNAL_CLUSTER=true; overlay ${OVERLAY_ROOT}; port-forward on ${PUBLIC_PORT})'
 }

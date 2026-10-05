@@ -3590,8 +3590,8 @@ main() {
 
   if [[ "${WITH_DIZZY}" == "true" ]]; then
     local dizzy_grafana_url="https://dizzy.127-0-0-1.nip.io"
-    if [[ "${KIND_HOST_PORT}" != "443" ]]; then
-      dizzy_grafana_url="${dizzy_grafana_url}:${KIND_HOST_PORT}"
+    if [[ "${PUBLIC_PORT}" != "443" ]]; then
+      dizzy_grafana_url="${dizzy_grafana_url}:${PUBLIC_PORT}"
     fi
     log "dizzy Grafana: ${dizzy_grafana_url} (anonymous read-only; dashboards land once a dizzy soak exports metrics)"
   fi
@@ -4142,6 +4142,12 @@ main() {
     fi
     log "Access: kubectl -n envoy-gateway-system port-forward ${envoy_target} ${PUBLIC_PORT}:443"
     log "        then https://keystone.127-0-0-1.nip.io:${PUBLIC_PORT}/v3 and the other *.127-0-0-1.nip.io:${PUBLIC_PORT} hostnames"
+    # VictoriaMetrics has no route on the Gateway; dizzy's OTLP export takes a
+    # second port-forward, which hack/dizzy.sh expects on localhost:8428.
+    if [[ "${WITH_DIZZY}" == "true" ]]; then
+      log "dizzy:  kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428"
+      log "        then EXTERNAL_CLUSTER=true make dizzy-keystone, and Grafana at https://dizzy.127-0-0-1.nip.io:${PUBLIC_PORT} through the port-forward above"
+    fi
     log "To tear down: EXTERNAL_CLUSTER=true make teardown-infra"
   else
     log "Cluster: ${CLUSTER_NAME}"

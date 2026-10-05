@@ -15,13 +15,14 @@
 # Strategy: hybrid — source the script (the `BASH_SOURCE[0] == ${0}` guard at
 # the bottom of deploy-infra.sh keeps main() from auto-running) to assert the
 # runtime default of WITH_DIZZY for each env scenario, and grep the script
-# source to lock in the four strict gate locations:
+# source to lock in the five strict gate locations:
 #   1. the EXTERNAL_CLUSTER=true preflight check for the overlay's
 #      dizzy/kustomization.yaml
 #   2. Step 3 overlay apply (stage-dashboards + kubectl apply -k of the dizzy/
 #      of OVERLAY_ROOT, deploy/kind/dizzy in kind mode)
 #   3. Phase 3 helm-release wait list append (dizzy-victoria-metrics, dizzy-grafana)
 #   4. post-wait Grafana URL log
+#   5. the two dizzy: lines of the EXTERNAL_CLUSTER=true completion banner
 # The configuration-banner line is asserted via grep so the user-visible summary
 # stays in lockstep with the runtime value. The 8428 kind extraPortMapping is
 # pinned here too: it must survive a KIND_HOST_PORT override byte-for-byte so a
@@ -118,11 +119,12 @@ test_explicit_false() {
 # Test 4: defensive non-true value
 # A typo like WITH_DIZZY=yes must NOT enable the overlay; every gate uses the
 # strict `== "true"` comparison. We assert the value passes through verbatim AND
-# that all gate sites use exact-match. There are exactly four runtime gates:
+# that all gate sites use exact-match. There are exactly five runtime gates:
 #   - the EXTERNAL_CLUSTER=true preflight overlay check
 #   - Step 3 stage-dashboards + overlay apply
 #   - Phase 3 helm_releases append
 #   - post-wait Grafana URL log
+#   - the dizzy: lines of the external completion banner
 # ---------------------------------------------------------------------------
 test_non_true_value_does_not_trigger_install() {
   echo "Test: WITH_DIZZY=yes passes through but does not trigger install"
@@ -133,7 +135,7 @@ test_non_true_value_does_not_trigger_install() {
 
   local gate_count
   gate_count="$(grep -cE '"\$\{WITH_DIZZY\}" == "true"' "$DEPLOY_INFRA_SH" || true)"
-  assert_eq "deploy-infra.sh has exactly 4 strict WITH_DIZZY==true gates" "4" "$gate_count"
+  assert_eq "deploy-infra.sh has exactly 5 strict WITH_DIZZY==true gates" "5" "$gate_count"
 }
 
 # ---------------------------------------------------------------------------
