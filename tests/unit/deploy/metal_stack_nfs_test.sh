@@ -15,7 +15,7 @@
 #      of host-prepare (deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml)
 #      pulled IfNotPresent, privileged, with a read-only root and the node's
 #      /lib/modules mounted read-only; its own container keeps the kind image
-#      and SHARED_DIRECTORY.
+#      and the two subPath mounts of the claim.
 #   5. The mounter is the kind release: its chart version, inline volumes on.
 #   6. nfs-client-modules mounts no token, shares no host namespace, rolls
 #      out with RollingUpdate, tolerates every taint, loads in a privileged
@@ -166,8 +166,9 @@ test_server_loads_nfsd_before_the_exports() {
     "$KIND_NFS_DIR/nfs-server.yaml")"
   assert_same_nonempty "the server container keeps the image of deploy/kind/nfs/nfs-server.yaml" \
     "$(val Deployment nfs-server "$SERVER_POD.containers[] | select(.name == \"nfs-server\") | .image")" "$kind_image"
-  assert_eq "the server exports /exports" "/exports" \
-    "$(val Deployment nfs-server "$SERVER_POD.containers[] | select(.name == \"nfs-server\") | .env[] | select(.name == \"SHARED_DIRECTORY\") | .value")"
+  assert_eq "the server mounts exports/ at /exports and ganesha/ at /var/lib/nfs/ganesha" \
+    "exports:/exports:exports exports:/var/lib/nfs/ganesha:ganesha" \
+    "$(val Deployment nfs-server "$SERVER_POD.containers[] | select(.name == \"nfs-server\") | .volumeMounts | map(.name + \":\" + .mountPath + \":\" + (.subPath // \"\")) | join(\" \")")"
 }
 
 # --- Test 5: the mounter ---
