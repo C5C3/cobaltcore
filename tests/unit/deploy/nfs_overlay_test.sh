@@ -18,8 +18,9 @@
 #     kubeletDir) stay untouched.
 #   - The server Deployment keeps the contract the Cinder suites depend on:
 #     one writer on an RWO claim, a privileged NFS-Ganesha container whose
-#     configuration exports /exports as the NFSv4 pseudo-root and keeps its
-#     client records in /var/lib/nfs/ganesha under a fixed server scope, the
+#     configuration exports /exports as the NFSv4 pseudo-root, caches neither
+#     attributes nor directory entries, and keeps its client records in
+#     /var/lib/nfs/ganesha under a fixed server scope, the
 #     claim mounted twice by subPath, digest-pinned images, and the memory
 #     Ganesha needs.
 #   - The init container's script, run against a temporary directory with a
@@ -279,8 +280,8 @@ test_nfs_server_deployment_contract() {
   echo "Test: the nfs-server Deployment and its claim carry the expected contract"
 
   if ! command -v kustomize >/dev/null 2>&1 || ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: kustomize or yq not installed (33 checks skipped)"
-    SKIP=$((SKIP + 33))
+    echo "  SKIP: kustomize or yq not installed (34 checks skipped)"
+    SKIP=$((SKIP + 34))
     return
   fi
 
@@ -288,7 +289,7 @@ test_nfs_server_deployment_contract() {
   if ! rendered="$(render_dir "$KIND_NFS_DIR")"; then
     echo "  FAIL: kustomize build $KIND_NFS_DIR failed:"
     echo "$rendered" | head -20
-    FAIL=$((FAIL + 33))
+    FAIL=$((FAIL + 34))
     return
   fi
 
@@ -319,7 +320,7 @@ test_nfs_server_deployment_contract() {
   script="$(render_text "$rendered" "$server | .args[0]" | sed -E 's/^[[:space:]]+//')"
   for line in 'Protocols = 4;' 'RecoveryBackend = fs;' 'RecoveryRoot = /var/lib/nfs/ganesha;' \
     'Minor_Versions = 1, 2;' 'Server_Scope = "nfs-server.openstack";' 'Path = /exports;' 'Pseudo = /;' \
-    'Squash = No_Root_Squash;' 'Attr_Expiration_Time = 0;' 'FSAL { Name = VFS; }' \
+    'Squash = No_Root_Squash;' 'Attr_Expiration_Time = 0;' 'Dir_Chunk = 0;' 'FSAL { Name = VFS; }' \
     'COMPONENTS { FSAL = INFO; }' \
     'exec ganesha.nfsd -F -L /dev/stdout -f /tmp/ganesha.conf -p /tmp/ganesha.pid'; do
     if grep -qxF -- "$line" <<<"$script"; then

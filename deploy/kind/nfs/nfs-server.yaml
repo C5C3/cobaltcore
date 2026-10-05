@@ -31,6 +31,13 @@
 #     files of the export from inside this pod with kubectl exec. With the
 #     default of 60 a chown made there reached a client after 94 seconds,
 #     with 0 after 4.
+#   - Dir_Chunk = 0 turns off Ganesha's cache of directory entries. The
+#     chaos suite cinder-nfs-outage, the multi-backend suite and the NFS
+#     backend guide remove a file or a directory of the export from inside
+#     this pod, behind Ganesha's back. With the cache on, every later READDIR
+#     of that directory failed with `Stale file handle` for every client, also
+#     on a fresh mount, and so did a mount of a directory removed and created
+#     again. Without it Ganesha reads each directory from the filesystem.
 #   - FSAL = INFO logs `Added filesystem ... /exports ... fsid=<id>` and
 #     `Root fs for export /exports is /exports`: the filesystem the export
 #     sits on and the id every file handle carries.
@@ -214,6 +221,9 @@ spec:
                   RecoveryRoot = /var/lib/nfs/ganesha;
                   Minor_Versions = 1, 2;
                   Server_Scope = "nfs-server.openstack";
+              }
+              MDCACHE {
+                  Dir_Chunk = 0;
               }
               EXPORT {
                   Export_Id = 1;

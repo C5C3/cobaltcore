@@ -2333,7 +2333,13 @@ the tree asks for 4.1 or 4.2. A 4.0 client sends no `RECLAIM_COMPLETE`, so it
 would hold every restart of the server in its grace period for the full 90
 seconds. `Attr_Expiration_Time = 0` turns Ganesha's attribute cache off: a
 `chown` made with `kubectl exec` inside the server pod reached a client after 4
-seconds, where the default of 60 took 94.
+seconds, where the default of 60 took 94. `Dir_Chunk = 0` turns its cache of
+directory entries off. The `cinder-nfs-outage` and `multi-backend` suites and
+the [NFS backend guide](../../guides/cinder/attach-an-nfs-backend.md) remove a
+file or a directory of the export inside the server pod, behind Ganesha. With
+the cache on, every later listing of that directory failed with
+`Stale file handle` for every client, also on a fresh mount, and so did a
+mount of a directory that was removed and created again.
 
 **Client records.** After a server restart an NFSv4 client reclaims its opens
 and locks, and the server admits a reclaim only from a client it recorded
