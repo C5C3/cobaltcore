@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Architecture Diagrams
 
-The diagrams of these docs live in `docs/architecture/diagrams/`. Each one is
+The diagrams of these docs live in `docs/diagrams/`. Each one is
 a pair: a `.drawio` file that is the editable source, and an `.svg` file that
 the page embeds. A change to a diagram updates both files in the same commit.
 
@@ -39,7 +39,7 @@ the page embeds. A change to a diagram updates both files in the same commit.
 5. Commit the `.drawio` and the `.svg` together.
 
 A new diagram follows the same pattern. Put the pair into
-`docs/architecture/diagrams/`, reference the `.svg` by a relative path from
+`docs/diagrams/`, reference the `.svg` by a relative path from
 the page that shows it, and give the image an alt text that states what the
 diagram shows. The build resolves the path, so a
 missing file fails `npm run docs:build`.
