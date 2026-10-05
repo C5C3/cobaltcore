@@ -215,6 +215,82 @@ func TestWithResourceDefaults_ReturnsACopy(t *testing.T) {
 	g.Expect(next.Limits[corev1.ResourceMemory]).To(gomega.Equal(resource.MustParse("512Mi")))
 }
 
+func TestWithGivenResourceDefaults(t *testing.T) {
+	q := resource.MustParse
+	cpu, memory := q("130m"), q("2Gi")
+	for _, tc := range []struct {
+		name string
+		in   *corev1.ResourceRequirements
+		want corev1.ResourceRequirements
+	}{
+		{
+			name: "nil block gets the given CPU request and the given memory as request and limit",
+			in:   nil,
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("130m"), corev1.ResourceMemory: q("2Gi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: q("2Gi")},
+			},
+		},
+		{
+			name: "empty block is a nil block",
+			in:   &corev1.ResourceRequirements{},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("130m"), corev1.ResourceMemory: q("2Gi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: q("2Gi")},
+			},
+		},
+		{
+			name: "a named CPU request is kept and the memory is defaulted",
+			in:   &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: q("50m")}},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("50m"), corev1.ResourceMemory: q("2Gi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: q("2Gi")},
+			},
+		},
+		{
+			name: "a CPU limit gets no request beside it",
+			in:   &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceCPU: q("1")}},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: q("2Gi")},
+				Limits:   corev1.ResourceList{corev1.ResourceCPU: q("1"), corev1.ResourceMemory: q("2Gi")},
+			},
+		},
+		{
+			name: "a named memory is kept and the CPU is defaulted",
+			in:   &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: q("4Gi")}},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: q("130m")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: q("4Gi")},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			got := WithGivenResourceDefaults(tc.in, cpu, memory)
+
+			g.Expect(got).To(gomega.Equal(tc.want))
+		})
+	}
+}
+
+// Writing to a result must change neither the caller's quantities nor the
+// next result.
+func TestWithGivenResourceDefaults_ReturnsACopy(t *testing.T) {
+	g := gomega.NewWithT(t)
+	cpu, memory := resource.MustParse("130m"), resource.MustParse("2Gi")
+
+	first := WithGivenResourceDefaults(nil, cpu, memory)
+	first.Requests[corev1.ResourceCPU] = resource.MustParse("4")
+	first.Limits[corev1.ResourceMemory] = resource.MustParse("8Gi")
+
+	next := WithGivenResourceDefaults(nil, cpu, memory)
+	g.Expect(next.Requests[corev1.ResourceCPU]).To(gomega.Equal(resource.MustParse("130m")))
+	g.Expect(next.Limits[corev1.ResourceMemory]).To(gomega.Equal(resource.MustParse("2Gi")))
+	g.Expect(cpu).To(gomega.Equal(resource.MustParse("130m")))
+	g.Expect(memory).To(gomega.Equal(resource.MustParse("2Gi")))
+}
+
 func TestWithSidecarResourceDefaults_EmptyBlock(t *testing.T) {
 	want := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
