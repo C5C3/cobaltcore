@@ -37,6 +37,9 @@
 #      API's verticalAutoscaling and V5's null, the H1 patch sets the Keystone
 #      API's autoscaling with maxReplicas 3 and the H6 one null, and
 #      `drop_job_pods` deletes the Succeeded pods of the Keystone child's Jobs
+#  13. the record: the subsection holds one line that starts with
+#      `The run of <YYYY-MM-DD>`, and the page no longer says that no lab run
+#      of the block is recorded
 #
 # Checks 7 to 12 need jq and count as one SKIP each without it. The helpers
 # run with the block's own `ns=`, `dep=`, `sel=` and `ks=` lines. Subsections
@@ -418,6 +421,15 @@ test_patches() {
     "$(paste -sd ' ' "$dir/args" 2>/dev/null || true)"
 }
 
+# --- Test 13: the record of the lab run ---
+test_record() {
+  echo "Test: the subsection holds the record of one run of the block"
+  assert_eq "one line of the subsection starts with 'The run of <date>'" "1" \
+    "$(grep -cE '^The run of 20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$AUTOSCALING" || true)"
+  assert_eq "the page no longer says 'No lab run of the block is recorded yet.'" "0" \
+    "$(grep -cF 'No lab run of the block is recorded yet.' "$DOC" || true)"
+}
+
 test_position
 test_vpa_blocks
 test_in_place_mode
@@ -430,6 +442,7 @@ test_absent
 test_state
 test_await_hpa
 test_patches
+test_record
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
