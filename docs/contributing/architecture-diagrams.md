@@ -13,6 +13,8 @@ The diagrams of these docs live in `docs/diagrams/`. Each one is
 a pair: a `.drawio` file that is the editable source, and an `.svg` file that
 the page embeds. A change to a diagram updates both files in the same commit.
 
+## Inventory
+
 | Diagram | Shows | Embedded in |
 | --- | --- | --- |
 | `cobaltcore-overview` | What CobaltCore does, as a layer stack from bare metal to the OpenStack clouds, and why it matters | [Overview](../index.md) |
