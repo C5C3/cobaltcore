@@ -2196,6 +2196,10 @@ StatefulSet cannot be measured. The mariadb-operator-crds HelmRelease has no
 drift detection, so the change lasts until the next chart upgrade, and
 nothing in the kind stack scales a MariaDB through the subresource.
 
+On an external cluster, which refuses `WITH_VPA=true`,
+`hack/ci-vpa-recommendations.sh prepare` removes the subresource for the
+[lab measurement](../testing/sizing-calibration.md#lab-measurement).
+
 **Opt-in usage:**
 
 ```bash
@@ -3925,6 +3929,10 @@ ControlPlane:
 - `spec.sizing.<component>.api.autoscaling` renders an HPA for that API (see
   [AutoscalingSpec](../keystone/keystone-crd.md#autoscalingspec)), which reads
   the pods' CPU from the platform's metrics-server.
+
+The sizing measurement uses the platform's recommender as well, with VPAs in
+mode `Off` and neither block (see
+[Lab measurement](../testing/sizing-calibration.md#lab-measurement)).
 
 The [Lab ControlPlane](#lab-controlplane) sets neither block. The block below
 patches the live ControlPlane, records what the platform did, and removes the
