@@ -40,11 +40,32 @@ the page embeds. A change to a diagram updates both files in the same commit.
    it in the light and the dark theme.
 5. Commit the `.drawio` and the `.svg` together.
 
-A new diagram follows the same pattern. Put the pair into
-`docs/diagrams/`, reference the `.svg` by a relative path from
-the page that shows it, and give the image an alt text that states what the
-diagram shows. The build resolves the path, so a
-missing file fails `npm run docs:build`.
+A new diagram follows the same pattern. Put the pair into `docs/diagrams/`
+under a name from [File names](#file-names). On a page directly under `docs/`
+the path is `./diagrams/<name>.svg`. A page further down puts one `../` per
+directory level in front of `diagrams/<name>.svg`, so a page two levels down
+spells it `../../diagrams/<name>.svg`. Give the image an alt text that states
+what the diagram shows, and add a row to the [inventory](#inventory) that lists
+every page that embeds it. When a file, a row and an embed disagree,
+`tests/unit/docs/diagrams_inventory_test.sh` fails, and a missing file also
+fails `npm run docs:build`.
+
+## File names
+
+A file is named `<prefix><subject>`, lower case, words joined by hyphens.
+
+| Prefix | Figures |
+| --- | --- |
+| `cobaltcore-` | The product architecture: the six figures of the start page and the Architecture page |
+| `quickstart-` | Entry pages: the quick-start map and the request path |
+| `secrets-` | Secret and credential paths between OpenBao, ESO, the operators and the services |
+| `controlplane-` | ControlPlane orchestration, placement and target clusters |
+| `service-` | Service operator patterns and paths specific to one service |
+| `compute-` | Compute nodes, the compute cluster, Nova, OVN and the metadata path |
+| `deploy-` | Installation: Flux dependencies, the deploy run, overlays |
+| `ci-` | CI and image builds |
+| `test-` | Test beds |
+| `conventions-` | Figures about the figures: the legend |
 
 ## Visual conventions
 
@@ -62,6 +83,7 @@ installed falls back to Arial.
 | OpenStack Network / OVN | `#B38A00` | `#6F5600` | `#FAF3DA` |
 | Garden Linux | `#7D8794` | `#2B3440` | `#E9ECEF` |
 | Platform and infrastructure components | `#7D8794` | `#2B3440` | `#EEF0F3` |
+| Secret material | `#B0387F` | `#8A2B63` | `#F7E8F0` |
 | Background | none | none | `#F6F5F1` |
 
 The shapes and arrows carry a fixed meaning:
@@ -77,6 +99,10 @@ The shapes and arrows carry a fixed meaning:
 - Blue arrows: OpenStack API and control-plane connections.
 - Dashed boxes: optional parts, or further instances of the same kind
   (**+ more**).
+- Green arrows: an operator creates or reconciles what the arrow points at.
+- Line patterns: solid is declared in an object or enforced in code, dashed
+  (`3 2`) is optional or a further instance, and dotted (`1 3`) holds at run
+  time and is declared nowhere.
 
 The icons in `cobaltcore-overview` are plain line icons and can be replaced by
 another icon set.
