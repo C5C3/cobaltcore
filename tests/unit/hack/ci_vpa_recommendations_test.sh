@@ -21,6 +21,10 @@
 #     for what is unset, and prints the Markdown table;
 #   - report exits 1 without a snapshot and 2 on a malformed one, and a usage
 #     error exits 2 with the usage text;
+#   - prepare removes the scale subresource from every version of the MariaDB
+#     CRD with one replace, keeps the other subresources, replaces nothing when
+#     no version serves it, and exits 2 on a failing or empty read and on a
+#     failing replace;
 #   - e2e-controlplane, e2e-controlplane-sso and tempest pass WITH_VPA from the
 #     ci:measure-sizing label and start, collect and upload the measurement
 #     around their suites.
@@ -63,6 +67,10 @@ VPA_KIND="verticalpodautoscalers.autoscaling.k8s.io"
 #                         $STUB_APPLY_FAIL
 #   get <vpa kind>        $STUB_VPAS_JSON
 #   get deployments       $STUB_RECOMMENDER_IMAGE (the kube-system lookup)
+#   get crd               $STUB_CRD_JSON, or fails with NotFound when
+#                         $STUB_CRD_FAIL
+#   replace -f            appends stdin to $STUB_REPLACE_FILE, or fails with
+#                         Conflict when $STUB_REPLACE_FAIL
 # sleep counts its calls in $SLEEP_COUNT and, on the second call, kills the
 # watch loop that called it.
 make_stub() {
@@ -108,6 +116,23 @@ case "$1 $2" in
     printf '%s' "$STUB_RECOMMENDER_IMAGE"
     exit 0
     ;;
+  "get crd")
+    if [ -n "${STUB_CRD_FAIL:-}" ]; then
+      echo 'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io "mariadbs.k8s.mariadb.com" not found' >&2
+      exit 1
+    fi
+    printf '%s\n' "${STUB_CRD_JSON:-}"
+    exit 0
+    ;;
+  "replace -f")
+    if [ -n "${STUB_REPLACE_FAIL:-}" ]; then
+      cat >/dev/null
+      echo "Error from server (Conflict): the object has been modified" >&2
+      exit 1
+    fi
+    cat >>"$STUB_REPLACE_FILE"
+    exit 0
+    ;;
 esac
 echo "[kubectl-stub] unexpected invocation: $*" >&2
 exit 64
@@ -128,11 +153,14 @@ STUB
 
 # reset_stub <tmp>
 # Points the stub at <tmp> and restores every answer to its default: the VPA
-# kind is served, and the namespace has no workload and no VPA.
+# kind is served, the namespace has no workload and no VPA, and the MariaDB
+# CRD answer is empty. A test that sets a STUB_CRD_* or STUB_REPLACE_FAIL
+# variable exports it, since reset_stub unsets them.
 reset_stub() {
   local tmp="$1"
   export KUBECTL_LOG="$tmp/kubectl.log"
   export STUB_APPLY_FILE="$tmp/applied.json"
+  export STUB_REPLACE_FILE="$tmp/replaced.json"
   export SLEEP_COUNT="$tmp/sleep.count"
   export STUB_API_RESOURCES="verticalpodautoscalercheckpoints.autoscaling.k8s.io
 $VPA_KIND"
@@ -140,9 +168,10 @@ $VPA_KIND"
   export STUB_VPAS_JSON='{"apiVersion":"v1","kind":"List","items":[]}'
   export STUB_RECOMMENDER_IMAGE="registry.k8s.io/autoscaling/vpa-recommender:1.8.0"
   unset STUB_API_FAIL_ONCE STUB_LIST_FAIL STUB_APPLY_FAIL
+  unset STUB_CRD_JSON STUB_CRD_FAIL STUB_REPLACE_FAIL
   unset GITHUB_RUN_ID GITHUB_RUN_ATTEMPT GITHUB_SHA GITHUB_JOB MEASURE_LEG
   : >"$KUBECTL_LOG"
-  rm -f "$STUB_APPLY_FILE" "$SLEEP_COUNT"
+  rm -f "$STUB_APPLY_FILE" "$STUB_REPLACE_FILE" "$SLEEP_COUNT"
 }
 
 # new_tmp prints a fresh temp dir with the stubs; the caller runs reset_stub
@@ -510,7 +539,7 @@ test_usage_errors() {
   tmp="$(new_tmp)"
   reset_stub "$tmp"
 
-  for args in "measure $tmp/sizing openstack" "snapshot" "snapshot $tmp/sizing" "watch $tmp/sizing" "report" ""; do
+  for args in "measure $tmp/sizing openstack" "snapshot" "snapshot $tmp/sizing" "watch $tmp/sizing" "report" "prepare extra" ""; do
     # shellcheck disable=SC2086 # split the argument list on purpose
     run_vpa "$tmp" $args
     rc=$?
@@ -589,6 +618,112 @@ test_wiring() {
 }
 
 # ---------------------------------------------------------------------------
+# Tests 11 to 13: prepare
+# ---------------------------------------------------------------------------
+
+# crd <versions json>
+# The MariaDB CRD in the shape `kubectl get crd -o json` prints it, with the
+# given spec.versions.
+crd() {
+  jq -cn --argjson versions "$1" '
+    {apiVersion: "apiextensions.k8s.io/v1", kind: "CustomResourceDefinition",
+     metadata: {name: "mariadbs.k8s.mariadb.com", resourceVersion: "4711"},
+     spec: {group: "k8s.mariadb.com", scope: "Namespaced",
+            names: {kind: "MariaDB", plural: "mariadbs"}, versions: $versions}}'
+}
+
+# The first version serves status and scale, the second no subresource.
+SCALED_VERSIONS='[{"name":"v1alpha1","served":true,"storage":true,"subresources":{"status":{},"scale":{"specReplicasPath":".spec.replicas"}}},{"name":"v1alpha2","served":true,"storage":false}]'
+
+test_prepare_removes_the_scale_subresource() {
+  echo "Test: prepare removes the scale subresource with one replace and keeps the rest"
+  local tmp rc
+  tmp="$(new_tmp)"
+  reset_stub "$tmp"
+  STUB_CRD_JSON="$(crd "$SCALED_VERSIONS")"
+  export STUB_CRD_JSON
+
+  run_vpa "$tmp" prepare
+  rc=$?
+  assert_eq "exit code is 0" "0" "$rc"
+  assert_eq "stdout says the subresource was removed" "MariaDB CRD scale subresource removed" "$(cat "$tmp/out")"
+  assert_eq "the CRD is read by name" "1" \
+    "$(grep -c '^\[get\]\[crd\]\[mariadbs\.k8s\.mariadb\.com\]\[-o\]\[json\]$' "$KUBECTL_LOG")"
+  assert_eq "one kubectl replace -f - is sent" "1" "$(grep -c '^\[replace\]\[-f\]\[-\]$' "$KUBECTL_LOG")"
+  assert_eq "the replace carries one document, the MariaDB CRD" "mariadbs.k8s.mariadb.com" \
+    "$(jq -rs 'if length == 1 then .[0].metadata.name else "\(length) documents" end' "$STUB_REPLACE_FILE" 2>&1)"
+  assert_eq "no version of the replaced CRD serves scale" "0" \
+    "$(jq '[.spec.versions[] | select(.subresources.scale != null)] | length' "$STUB_REPLACE_FILE" 2>&1)"
+  assert_eq "the first version keeps its status subresource" '{"status":{}}' \
+    "$(jq -c '.spec.versions[0].subresources' "$STUB_REPLACE_FILE" 2>&1)"
+  assert_eq "the second version gains no subresources key" "false" \
+    "$(jq '.spec.versions[1] | has("subresources")' "$STUB_REPLACE_FILE" 2>&1)"
+  rm -rf "$tmp"
+}
+
+test_prepare_without_a_scale_subresource() {
+  echo "Test: prepare replaces nothing when no version serves the scale subresource"
+  local tmp rc entry label versions
+  tmp="$(new_tmp)"
+  for entry in \
+    'versions with a status subresource only|[{"name":"v1alpha1","served":true,"storage":true,"subresources":{"status":{}}}]' \
+    'a version without a subresources key|[{"name":"v1alpha1","served":true,"storage":true}]' \
+    'versions: []|[]'; do
+    label="${entry%%|*}"
+    versions="${entry#*|}"
+    reset_stub "$tmp"
+    STUB_CRD_JSON="$(crd "$versions")"
+    export STUB_CRD_JSON
+
+    run_vpa "$tmp" prepare
+    rc=$?
+    assert_eq "$label: exit code is 0" "0" "$rc"
+    assert_eq "$label: stdout says no version serves it" "MariaDB CRD serves no scale subresource" "$(cat "$tmp/out")"
+    assert_eq "$label: no kubectl replace" "0" "$(grep -c '^\[replace\]' "$KUBECTL_LOG")"
+  done
+  rm -rf "$tmp"
+}
+
+test_prepare_errors() {
+  echo "Test: prepare exits 2 on a failing read, a failing replace and an empty answer"
+  local tmp rc
+  tmp="$(new_tmp)"
+
+  reset_stub "$tmp"
+  export STUB_CRD_FAIL=1
+  run_vpa "$tmp" prepare
+  rc=$?
+  assert_eq "a failing read exits 2" "2" "$rc"
+  assert_eq "the message carries kubectl's stderr" \
+    'ci-vpa-recommendations: reading the MariaDB CRD mariadbs.k8s.mariadb.com failed: Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io "mariadbs.k8s.mariadb.com" not found' \
+    "$(cat "$tmp/err")"
+  assert_eq "a failing read sends no replace" "0" "$(grep -c '^\[replace\]' "$KUBECTL_LOG")"
+
+  reset_stub "$tmp"
+  STUB_CRD_JSON="$(crd "$SCALED_VERSIONS")"
+  export STUB_CRD_JSON
+  export STUB_REPLACE_FAIL=1
+  run_vpa "$tmp" prepare
+  rc=$?
+  assert_eq "a failing replace exits 2" "2" "$rc"
+  assert_starts_with "the message names the replace" "$(cat "$tmp/err")" \
+    'ci-vpa-recommendations: replacing the MariaDB CRD mariadbs.k8s.mariadb.com failed:'
+  assert_contains "the message carries kubectl's stderr" "$(cat "$tmp/err")" \
+    'Error from server (Conflict): the object has been modified'
+  assert_eq "a failing replace prints no result line" "" "$(cat "$tmp/out")"
+
+  reset_stub "$tmp"
+  export STUB_CRD_JSON=''
+  run_vpa "$tmp" prepare
+  rc=$?
+  assert_eq "an empty answer exits 2" "2" "$rc"
+  assert_starts_with "the message says the CRD cannot be parsed" "$(cat "$tmp/err")" \
+    'ci-vpa-recommendations: cannot parse the MariaDB CRD mariadbs.k8s.mariadb.com'
+  assert_eq "an empty answer sends no replace" "0" "$(grep -c '^\[replace\]' "$KUBECTL_LOG")"
+  rm -rf "$tmp"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 if [ -z "$JQ_BIN" ]; then
@@ -604,6 +739,9 @@ else
   test_report_offline_defaults
   test_report_errors
   test_usage_errors
+  test_prepare_removes_the_scale_subresource
+  test_prepare_without_a_scale_subresource
+  test_prepare_errors
 fi
 test_wiring
 
