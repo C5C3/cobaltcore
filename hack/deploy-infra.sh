@@ -170,12 +170,13 @@ WITH_DIZZY="${WITH_DIZZY:-false}"
 # Gates the opt-in NFS storage stack: the NFS server in `openstack` plus the
 # csi-driver-nfs mounter in `kube-system`. In kind mode it applies
 # deploy/kind/nfs and gates the host-side load of the modules that stack needs,
-# `nfsd` for the in-cluster server and `nfs` plus `nfsv4` for the csi-driver-nfs
-# node plugin. Under EXTERNAL_CLUSTER=true it applies the overlay's nfs/
-# instead, whose pods load those modules on the nodes, and loads nothing on the
-# machine that runs this script. Defaults to false so the kind Quick Start
-# stays minimal and needs no sudo; set WITH_NFS=true to install it. The server
-# image is amd64 only and runs privileged, so the stack stays opt-in.
+# `nfs` plus `nfsv4` for the csi-driver-nfs node plugin; the server,
+# NFS-Ganesha, runs in userspace and needs none. Under EXTERNAL_CLUSTER=true it
+# applies the overlay's nfs/ instead, whose pods load those modules on the
+# nodes, and loads nothing on the machine that runs this script. Defaults to
+# false so the kind Quick Start stays minimal and needs no sudo; set
+# WITH_NFS=true to install it. The server runs privileged, so the stack stays
+# opt-in.
 WITH_NFS="${WITH_NFS:-false}"
 
 # Gates the opt-in message-bus kind overlay (deploy/kind/messaging): a single
@@ -1498,11 +1499,12 @@ preflight_external_cluster() {
     exit 1
   fi
 
-  # The kind NFS overlay needs nfsd, nfs and nfsv4, which this mode does not
-  # load on the host, so WITH_NFS=true takes the overlay's own nfs/. The file is
-  # tested, so an nfs/ directory without a kustomization is refused as well.
+  # The clients of the kind NFS overlay need nfs and nfsv4, which this mode does
+  # not load on the host, so WITH_NFS=true takes the overlay's own nfs/. The
+  # file is tested, so an nfs/ directory without a kustomization is refused as
+  # well.
   if [[ "${WITH_NFS}" == "true" && ! -f "${OVERLAY_ROOT}/nfs/kustomization.yaml" ]]; then
-    log "ERROR: EXTERNAL_CLUSTER=true WITH_NFS=true needs ${OVERLAY_ROOT}/nfs/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/nfs is not applied to an external cluster: its server needs kernel modules that this mode does not load on the host."
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_NFS=true needs ${OVERLAY_ROOT}/nfs/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/nfs is not applied to an external cluster: its clients need the nfs and nfsv4 modules on every node, which this mode does not load."
     exit 1
   fi
 
@@ -2040,20 +2042,20 @@ load_ovn_kernel_modules() {
 }
 
 # ---------------------------------------------------------------------------
-# load_nfs_kernel_modules — Ensure the NFS server and client prerequisites on the host.
+# load_nfs_kernel_modules — Ensure the NFS client prerequisites on the host.
 #
-# The kind mode's module load. The in-cluster NFS server drives the host
-# kernel's nfsd instead of a userspace server, so nfsd has to be loadable on
-# the node. The csi-driver-nfs node plugin mounts the exports through the host
-# kernel's NFS client, which needs nfs and nfsv4. Under EXTERNAL_CLUSTER=true
-# main() does not call it: this script then runs on a workstation, and the
-# pods of the overlay's nfs/ load the modules on the nodes.
+# The kind mode's module load. The csi-driver-nfs node plugin mounts the
+# exports through the host kernel's NFS client, which needs nfs and nfsv4. The
+# in-cluster server is NFS-Ganesha, a userspace server, and needs no module.
+# Under EXTERNAL_CLUSTER=true main() does not call it: this script then runs on
+# a workstation, and the pods of the overlay's nfs/ load the modules on the
+# nodes.
 #
 # Best-effort, like every caller of load_host_kernel_modules. The Step 3
 # rollout wait on the server is the hard gate.
 # ---------------------------------------------------------------------------
 load_nfs_kernel_modules() {
-  load_host_kernel_modules "NFS server and client (kernel nfsd for the in-cluster server, nfs and nfsv4 for the csi-driver-nfs node plugin)" nfsd nfs nfsv4
+  load_host_kernel_modules "NFS client (nfs and nfsv4 for the csi-driver-nfs node plugin)" nfs nfsv4
 }
 
 # ---------------------------------------------------------------------------
@@ -2944,7 +2946,7 @@ main() {
   log "metrics-server      : ${WITH_METRICS_SERVER} (set WITH_METRICS_SERVER=true to install)"
   log "VPA recommender    : ${WITH_VPA} (set WITH_VPA=true to install the recommender and metrics-server)"
   log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
-  log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the NFS server + csi-driver-nfs; in kind mode it also modprobes nfsd/nfs/nfsv4 on the host, under EXTERNAL_CLUSTER=true the pods of the overlay's nfs/ load them on the nodes)"
+  log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the NFS server + csi-driver-nfs; in kind mode it also modprobes nfs/nfsv4 on the host, under EXTERNAL_CLUSTER=true the pods of the overlay's nfs/ load them on the nodes)"
   log "Message bus         : ${WITH_MESSAGING} (set WITH_MESSAGING=true for the kind-only shared-rabbitmq broker)"
   log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
@@ -2983,10 +2985,10 @@ main() {
     log "Skipping OVN kernel modules (WITH_OVN_KERNEL_MODULES=false)."
   fi
 
-  # Load the NFS server and client modules the same way, gated on WITH_NFS so
-  # the default Quick Start needs neither sudo nor modprobe access. In external
-  # mode this machine is not a node of the cluster; the pods of the overlay's
-  # nfs/ load the modules on the nodes instead.
+  # Load the NFS client modules the same way, gated on WITH_NFS so the default
+  # Quick Start needs neither sudo nor modprobe access. In external mode this
+  # machine is not a node of the cluster; the pods of the overlay's nfs/ load
+  # the modules on the nodes instead.
   if [[ "${WITH_NFS}" == "true" ]]; then
     if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
       log "Skipping the host-side NFS kernel modules (EXTERNAL_CLUSTER=true; the pods of ${OVERLAY_ROOT}/nfs load them on the nodes)."
@@ -3209,12 +3211,11 @@ main() {
   # required, kubernetes/kubectl#948), same contract as the chaos-mesh,
   # prometheus, metrics-server and dizzy overlays.
   #
-  # The rollout waits are hard gates. In kind mode the module load above only
-  # warns when the host has no nfsd, so asking for WITH_NFS=true and getting a
-  # CrashLooping server is an error, not a warning. In external mode the
-  # server's init container load-nfsd loads nfsd, and the DaemonSet
-  # nfs-client-modules loads nfs and nfsv4 on every node; a node that cannot
-  # load them keeps its pod in Init, and the wait on it fails the run.
+  # The rollout waits are hard gates. Asking for WITH_NFS=true and getting a
+  # server whose prepare-exports or Ganesha exits is an error, not a warning.
+  # In external mode the DaemonSet nfs-client-modules loads nfs and nfsv4 on
+  # every node; a node that cannot load them keeps its pod in Init, and the
+  # wait on it fails the run.
   if [[ "${WITH_NFS}" == "true" ]]; then
     # `CSIDriver.spec.volumeLifecycleModes` is immutable, so a cluster whose
     # nfs.csi.k8s.io predates `feature.enableInlineVolume` cannot be upgraded
@@ -3328,11 +3329,7 @@ main() {
       log "CSIDriver/nfs.csi.k8s.io recreated by csi-driver-nfs with the Ephemeral lifecycle mode."
     fi
     if ! kubectl rollout status deployment/nfs-server -n openstack --timeout="${POD_TIMEOUT}s"; then
-      if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
-        log "ERROR: the NFS server did not roll out. Its init container load-nfsd loads the nfsd module from the node's /lib/modules; read 'kubectl logs -n openstack deployment/nfs-server -c load-nfsd'."
-      else
-        log "ERROR: the NFS server did not roll out. The host kernel needs the nfsd module; deploy-infra loads it best-effort and only warns when it cannot."
-      fi
+      log "ERROR: the NFS server did not roll out. Read 'kubectl logs -n openstack deployment/nfs-server -c prepare-exports' and 'kubectl logs -n openstack deployment/nfs-server -c nfs-server'."
       exit 1
     fi
     log "NFS server rolled out."

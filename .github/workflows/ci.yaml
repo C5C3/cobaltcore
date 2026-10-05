@@ -1032,7 +1032,7 @@ jobs:
       # inside this one invocation: the script's Phase-3 wait covers the
       # metrics-server and csi-driver-nfs HelmReleases, and its Step-3
       # `kubectl rollout status deployment/nfs-server` covers the server (the
-      # best-effort nfsd/nfs/nfsv4 modprobe runs under the same passwordless
+      # best-effort nfs/nfsv4 modprobe runs under the same passwordless
       # sudo the OVN legs rely on). Either failing fails the step. The
       # additive-convergence property is unchanged: the base stack was
       # installed by the first run and re-converged by the second, so this
