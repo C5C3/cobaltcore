@@ -84,9 +84,9 @@
 # registers nfs4 and nfsd, and the eleven modules the load added are removed
 # again. The nfs module registers nfs4, not nfsv4, so it is the `nfsv4:` line,
 # not `nfs4: registered`, that shows the NFSv4 client code loads. This decided
-# D1 of #1193 for the kernel nfsd in a privileged pod, as on kind, and D2 for
-# a privileged init container that loads the modules from the node's
-# /lib/modules, as this Job does.
+# D1 of #1193 for the kernel nfsd in a privileged pod, which #1245 later
+# replaced with NFS-Ganesha, and D2 for a privileged init container that loads
+# the modules from the node's /lib/modules, as this Job does.
 ---
 apiVersion: batch/v1
 kind: Job

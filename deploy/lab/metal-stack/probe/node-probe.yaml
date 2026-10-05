@@ -167,14 +167,15 @@
 # /var/lib is the 192G LVM volume; the uplinks lan0 and lan1 carry MTU 9000
 # and the pod network (the cali* host ends) MTU 1460; no libvirt, QEMU, OVS or
 # NFS server runs on the host. The `nfsd`, `nfs` and `nfsv4` module files mean
-# the NFS stack of #1193 can use the node's kernel: the server can be the
-# kernel's nfsd in a privileged pod, as on kind, and the clients can mount
-# NFSv4. nfs-module-load.yaml loaded all three on the same node on
-# 2026-10-03; that run and the probe's run of the same day decided D1 and D2
-# of #1193 in a comment there. `not registered` under `== filesystems` means
-# no NFS module is loaded. The nfs module registers nfs4, not nfsv4, so
-# `nfs4: registered` does not show that the NFSv4 client code is there; the
-# `nfsv4` module file does.
+# the NFS stack of #1193 can use the node's kernel: the clients can mount
+# NFSv4. D1 of #1193 chose the kernel's nfsd in a privileged pod as the
+# server; #1245 replaced it with NFS-Ganesha, a userspace server, so the
+# `nfsd` file describes the node alone. nfs-module-load.yaml loaded all three
+# on the same node on 2026-10-03; that run and the probe's run of the same day
+# decided D1 and D2 of #1193 in a comment there. `not registered` under
+# `== filesystems` means no NFS module is loaded. The nfs module registers
+# nfs4, not nfsv4, so `nfs4: registered` does not show that the NFSv4 client
+# code is there; the `nfsv4` module file does.
 #
 # The six Chaos Mesh module files, `ip_set`, `ip_set_hash_ip`,
 # `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf`, each print a path,

@@ -2289,12 +2289,10 @@ cluster. Shipping `csi-driver-nfs` from `deploy/flux-system/releases/` would
 put a privileged `hostNetwork` DaemonSet into every production deployment for
 a service no production cluster runs yet.
 
-One more reason keeps it opt-in on kind. The server image
-`itsthenetwork/nfs-server-alpine:12` is amd64-only (a single-architecture
-manifest, last pushed 2019-05-08) and drives the host kernel's `rpc.nfsd`. An
-always-on manifest would put a privileged pod into the default Quick Start
-that CrashLoops on every arm64 laptop and every host without a loadable
-`nfsd`.
+One more reason keeps it opt-in on kind. The server, NFS-Ganesha, runs in a
+privileged container, and on a Linux host the deploy script loads `nfs` and
+`nfsv4` for the mounter through sudo. An always-on manifest would put a
+privileged pod into the default Quick Start and ask every run for sudo.
 
 The overlay is self-contained: `source.yaml`, `release.yaml` and
 `nfs-server.yaml` are all local to `deploy/kind/nfs/`. It ships **no**
@@ -2312,25 +2310,88 @@ its one accepted co-tenant.
 | Chart | `csi-driver-nfs` |
 | Chart version | `4.13.4`, an exact pin tracked by Renovate's flux manager (majors disabled, no automerge). Unlike the chaos-mesh, metrics-server and dizzy overlays this one carries no `>=x <y` range: a range would let Flux adopt a new chart on its next reconcile with no repo diff, and this release installs a privileged `hostNetwork` DaemonSet whose relied-on chart defaults it does not override |
 | Source | `csi-driver-nfs` HelmRepository (`https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts`). That is the only place upstream publishes the chart; every index entry carries an absolute tarball URL back under `master/charts/`, so pinning the repository URL to a tag would freeze the index without making the downloaded chart more immutable. The version pin therefore controls which version Flux installs, not which bytes: Flux `spec.verify` is OCI-only and nothing records a checksum, so a rewrite of the pinned tarball upstream is adopted on the next reconcile. Accepted for the kind overlay and for the lab, which takes the release unchanged; a content pin means mirroring the chart into a registry this project controls and referencing it by digest |
-| Server image | `docker.io/itsthenetwork/nfs-server-alpine:12`, digest-pinned, tracked by a Renovate `customManager` |
+| Server image | `ghcr.io/kubernetes-sigs/nfs-ganesha:V6.5`, NFS-Ganesha 6.5 on Fedora 41 with amd64 and arm64 manifests, from [nfs-ganesha-server-and-external-provisioner](https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner). Digest-pinned and tracked by a Renovate `customManager` whose regex versioning reads the `V`-prefixed tags (majors disabled, no automerge) |
 | Dependencies | none |
 
-**Export layout.** The server exports `/exports` with `fsid=0`, which makes it
-the NFSv4 pseudo-root. The init container `prepare-exports` creates
-`/exports/volumes` and `/exports/backups` as `42424:42424` with mode `0770`. A
-client therefore mounts the two shares as:
+**Export layout.** The server exports `/exports` with `Pseudo = /`, which makes
+it the NFSv4 pseudo-root. In the pod, `/exports` is the directory `exports/` of
+the claim. The init container `prepare-exports` creates `exports/volumes` and
+`exports/backups` there as `42424:42424` with mode `0770`. A client therefore
+mounts the two shares as:
 
 ```text
 nfs-server.openstack.svc.cluster.local:/volumes
 nfs-server.openstack.svc.cluster.local:/backups
 ```
 
-A path of `:/exports/volumes` resolves to `/exports/exports/volumes` on the
-server and fails. Those two share strings are what the `CinderBackend` and
-`CinderBackupBackend` of #979 carry. The server speaks NFSv4 only
-(`rpc.nfsd --no-udp --no-nfs-version 2 --no-nfs-version 3`), so `2049/TCP` is
-the whole client surface and the Service exposes neither 111 nor a mountd
-port.
+A path of `:/exports/volumes` does not exist on the server and fails. Those two
+share strings are what the `CinderBackend` and `CinderBackupBackend` of #979
+carry. The server speaks NFSv4.1 and 4.2 over TCP alone (`Protocols = 4`,
+`Minor_Versions = 1, 2`, `Transports = TCP`), so `2049/TCP` is the whole client
+surface and the Service exposes neither 111 nor a mountd port. Every mount in
+the tree asks for 4.1 or 4.2. A 4.0 client sends no `RECLAIM_COMPLETE`, so it
+would hold every restart of the server in its grace period for the full 90
+seconds. `Attr_Expiration_Time = 0` turns Ganesha's attribute cache off: a
+`chown` made with `kubectl exec` inside the server pod reached a client after 4
+seconds, where the default of 60 took 94.
+
+**Client records.** After a server restart an NFSv4 client reclaims its opens
+and locks, and the server admits a reclaim only from a client it recorded
+before. QEMU holds a lock on the file of every attached volume, so a refused
+reclaim leaves the guest's disk failing every request until its Nova server is
+hard-rebooted ([#1245](https://github.com/c5c3/cobaltcore/issues/1245)). The
+kernel's `nfsd` in a pod keeps no records. Ganesha writes them with
+`RecoveryBackend = fs` below `RecoveryRoot = /var/lib/nfs/ganesha`, a directory
+of the export claim, so they outlive the pod, also when it moves to another
+node. It announces the fixed server scope `Server_Scope = "nfs-server.openstack"`.
+A server announces its hostname by default, a Deployment pod gets a new one at
+every restart, and the Linux client does not reclaim from a server whose scope
+changed. The pod spec sets no `hostname`.
+
+The claim holds `exports/` and `ganesha/`. The server container mounts it
+twice by `subPath`, `exports` at `/exports` and `ganesha` at
+`/var/lib/nfs/ganesha`, so a client that mounts the export does not see the
+records, and `/exports` stays the path a `kubectl exec` into the pod names. A
+forged file handle does reach the records, as the posture summary below
+states. `prepare-exports` mounts the claim root at `/claim`, creates both
+directories, and moves every other entry of the root but `lost+found` into
+`exports/`, printing `prepare-exports: moved <name> into exports/` for each. A
+claim the kernel server wrote, with `volumes/` and `backups/` at its root,
+keeps its volume files that way. A name present on both levels stops the
+container with exit 1 and
+`prepare-exports: /claim/<name> and /claim/exports/<name> both exist; move one of them away`,
+unless it is an empty directory, which the container removes, and a second
+start moves nothing. The move keeps the files. A client that mounted the
+kernel server still holds file handles Ganesha does not know, so a stack that
+ran the kernel server switches only when it is redeployed from a bare cluster,
+or after every Nova server with a volume attached has had it detached and the
+`cinder-volume` and `cinder-backup` pods are deleted once Ganesha has rolled
+out: they mount both shares for as long as they run.
+
+A deploy from a tree older than
+[#1245](https://github.com/c5c3/cobaltcore/issues/1245), a revert or a branch
+that predates it, runs the kernel server against the claim root. It serves an
+empty `volumes/` and `backups/` there and leaves its writes at the root, while
+every existing volume and backup file stays unseen in `exports/`. The next
+Ganesha start removes the two directories while they are empty and stops on
+the conflict line once they hold a file. Delete the claim or rebase the branch
+before such a deploy.
+
+The server's log is `kubectl logs -n openstack deployment/nfs-server -c nfs-server`.
+At start Ganesha logs `CRIT` lines about D-Bus and
+`Cannot acquire credentials for principal nfs`, and
+`Cannot register NFS V4 on UDP`. They are expected: the pod runs no D-Bus, no
+Kerberos and no rpcbind. With `FSAL = INFO` it logs
+`Added filesystem ... /exports ... fsid=<id>`, the id every file handle of the
+export carries, and `Root fs for export /exports is /exports`, which the
+`nfs-health` suite requires. A restart logs `NFS Server Now IN GRACE` and, once
+every recorded client has reclaimed or the 90 seconds are over,
+`NFS Server Now NOT IN GRACE`.
+
+The server container requests 128Mi and is limited to 1Gi. Ganesha does the
+I/O in its own process: in a local run it idled at 26 MiB and peaked at 397 MiB
+resident under a 3 GiB write and four parallel 1 GiB writers, and a 256Mi limit
+got it OOM-killed.
 
 **Value overrides:**
 
@@ -2345,9 +2406,10 @@ Everything else stays at the chart default: `driver.name: nfs.csi.k8s.io`,
 `kubeletDir: /var/lib/kubelet`.
 
 When `WITH_NFS=true`, `hack/deploy-infra.sh` does four things. In kind mode it
-loads `nfsd`, `nfs` and `nfsv4` on the host before the cluster is created,
-best-effort through the same loader as `WITH_OVN_KERNEL_MODULES` (Linux only,
-root or passwordless sudo, otherwise a warning). Under `EXTERNAL_CLUSTER=true`
+loads `nfs` and `nfsv4`, the modules the `csi-driver-nfs` node plugin mounts
+with, on the host before the cluster is created, best-effort through the same
+loader as `WITH_OVN_KERNEL_MODULES` (Linux only, root or passwordless sudo,
+otherwise a warning). The server needs no module. Under `EXTERNAL_CLUSTER=true`
 it loads nothing on the host and applies the overlay's `nfs/` in place of
 `deploy/kind/nfs`, whose pods load the modules on the nodes; see
 [Lab NFS stack](#lab-nfs-stack). On a cluster whose
@@ -2373,8 +2435,8 @@ racing the delete puts the pre-`Ephemeral` object back, which an
 existence-only check would accept.
 In kind mode it applies `deploy/kind/nfs` in Step 3 and waits for the
 `nfs-server` Deployment to roll out; a failed rollout is an error that stops
-the run and names the `nfsd` module, because a CrashLooping server on a host
-without `nfsd` must not end in a green summary. It appends `csi-driver-nfs`
+the run and names the logs of `prepare-exports` and `nfs-server`, because a
+server that does not come up must not end in a green summary. It appends `csi-driver-nfs`
 to the Phase 3 HelmRelease wait list. All four actions are gated strictly on
 the flag; the default run is unchanged.
 
@@ -2392,10 +2454,15 @@ shares mount under `restricted` PodSecurity.
 is explicit, the opt-in flag has a single documented name (`WITH_NFS`), and
 the kind overlay is self-contained under `deploy/kind/nfs/`. The
 non-production posture is recorded in the header of `nfs-server.yaml`: a
-privileged server,
-`sec=sys` with `no_root_squash` and a wildcard client list, an amd64-only
-image, and `ghcr.io/nfs-ganesha/nfs-ganesha` as the recorded fallback if a
-runner kernel lacks `nfsd`. The `Ephemeral` lifecycle mode widens that posture
+privileged server, because Ganesha reads the filesystem UUID behind its file
+handles from the device node, `sec=sys` with `No_Root_Squash` and no client
+list, and a third-party image pinned by digest. A client that dials 2049
+reaches more than both shares: Ganesha checks a file handle against the
+filesystem alone, not against the export path, so a forged handle reaches
+every file of the filesystem that holds the claim, as root. On the lab that is
+the claim's volume with the client records in `ganesha/`, on kind the host
+disk behind the kind node's `/var`. The kernel server's `no_subtree_check`
+export reached as far. The `Ephemeral` lifecycle mode widens that posture
 by one step: reaching the export no longer needs a cluster-scoped
 `PersistentVolume`, so anyone who can create a Pod mounts both shares from the
 pod spec alone. PodSecurity does not bound that. In a namespace that is not
@@ -2654,7 +2721,9 @@ privileged init container loads the modules from the node's `/lib/modules`
 (D2). The
 [comment on #1193](https://github.com/c5c3/cobaltcore/issues/1193#issuecomment-5969676743)
 holds the output of both runs; the header comment of `nfs-module-load.yaml`
-carries the load test's.
+carries the load test's. [#1245](https://github.com/c5c3/cobaltcore/issues/1245)
+replaced the kernel's `nfsd` with NFS-Ganesha, a userspace server, so the server
+needs no module, and the probe's `nfsd` lines describe the node alone.
 
 ### Lab overlay
 
@@ -2753,20 +2822,21 @@ EXTERNAL_CLUSTER=true WITH_NFS=true make deploy-infra
 
 The kustomization takes `deploy/kind/nfs` as its base, the way the
 [Lab overlay](#lab-overlay) takes the kind base, and adds the DaemonSet
-`nfs-client-modules`. Its render holds six objects and no Namespace. The three
-differences from kind follow the decisions D1 to D3 of
+`nfs-client-modules`. Its render holds six objects and no Namespace. The two
+differences from kind follow the decisions D2 and D3 of
 [#1193](https://github.com/c5c3/cobaltcore/issues/1193); the load test of the
-[Node probe](#node-probe) settled D1 and D2. A fourth difference sits outside
-the kustomization: the deploy script applies the NetworkPolicy of
+[Node probe](#node-probe) settled D2. D1 chose the kernel's `nfsd` as the
+server, and [#1245](https://github.com/c5c3/cobaltcore/issues/1245) superseded
+it with NFS-Ganesha, so the server pod is the kind one. A third difference sits
+outside the kustomization: the deploy script applies the NetworkPolicy of
 `client-policy.yaml`.
 
 | Property | Value |
 | --- | --- |
 | Export claim | `nfs-server-exports`, 100Gi, `ReadWriteOnce` (D3), with no storage class. The patch removes the kind pin `standard`, so the claim binds to the cluster's default class like the volumes of the [Lab overlay](#lab-overlay). D3 named `premium`, which is the default class of `forge`. One volume holds both exports, so 100Gi bounds every Cinder volume and backup of the lab together. The kind claim asks for 5Gi on `standard` |
-| Server and shares | as on kind: `itsthenetwork/nfs-server-alpine:12` by digest, the Service on 2049, and the shares `nfs-server.openstack.svc.cluster.local:/volumes` and `:/backups`. The image is amd64 only, and so are both workers |
+| Server and shares | as on kind: the server pod with `prepare-exports` and NFS-Ganesha on `ghcr.io/kubernetes-sigs/nfs-ganesha:V6.5` by digest, its client records on the export claim, the Service on 2049, and the shares `nfs-server.openstack.svc.cluster.local:/volumes` and `:/backups`. The server loads no module |
 | Mounter | as on kind: the `csi-driver-nfs` HelmRelease in `kube-system`, chart `4.13.4` with its three values. The chart's `kubeletDir`, `/var/lib/kubelet`, is the lab's kubelet root |
-| `nfsd` | the init container `load-nfsd` of the server pod, before `prepare-exports` (D1, D2). It runs `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`, the pinned image of `host-prepare` in [Lab hypervisors](#lab-hypervisors), pulled `IfNotPresent`, privileged, as root, with a read-only root filesystem and the node's `/lib/modules` mounted read-only. Renovate moves the reference in the pull request that moves the DaemonSet's. In the server's own pod the load precedes the server on every start, also after a node reboot |
-| `nfs` and `nfsv4` | the DaemonSet `nfs-client-modules` in `openstack`, on every node, tolerating every taint as `csi-nfs-node` does. A privileged init container `load` on the same image loads both, and an unprivileged container `hold` keeps the pod running, so the load repeats after a reboot. `csi-nfs-node` and `nova-compute` mount the shares through the node's kernel, and the chart and the nova-operator render them, so neither can carry an init container from this repository |
+| `nfs` and `nfsv4` | the DaemonSet `nfs-client-modules` in `openstack`, on every node, tolerating every taint as `csi-nfs-node` does (D2). A privileged init container `load` loads both, as root, with a read-only root filesystem and the node's `/lib/modules` mounted read-only, and an unprivileged container `hold` keeps the pod running, so the load repeats after a reboot. Both run `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`, the pinned image of `host-prepare` in [Lab hypervisors](#lab-hypervisors), pulled `IfNotPresent`; Renovate moves the reference in the pull request that moves the DaemonSet's. `csi-nfs-node` and `nova-compute` mount the shares through the node's kernel, and the chart and the nova-operator render them, so neither can carry an init container from this repository |
 | Client policy | the NetworkPolicy `nfs-server-clients` in `openstack`, from the template `client-policy.yaml`. It selects the server's pods and admits one `ipBlock`, the cluster's node network, to TCP 2049. `csi-nfs-node` and `nova-compute` are host-network pods, so the node network names every client. The template carries the placeholder `NODE_NETWORK`; the deploy script replaces it with `data.nodeNetwork` of the ConfigMap `kube-system/shoot-info`, which Gardener writes into every shoot, `10.128.44.0/22` on `forge` |
 | Namespaces | `openstack` for the server and `nfs-client-modules`, `kube-system` for the chart, `flux-system` for the HelmRepository |
 | Gardener label | none added. The server and `nfs-client-modules` pods run in `openstack`, which the [Lab overlay](#lab-overlay) labels, and mount no ServiceAccount token. The chart's pods are host-network pods in `kube-system`, the platform's namespace, so the lab's `gardener.cloud--deny-all` NetworkPolicy there does not apply to them, and they reach the API server as the platform's own host-network pods do |
@@ -2790,21 +2860,27 @@ applies the client policy and then `<overlay>/nfs`, so the server never
 listens without the policy, and waits up to `POD_TIMEOUT` seconds for the
 `nfs-server` Deployment and then for the `nfs-client-modules` DaemonSet. A
 failed wait exits 1 and names the log to read. Phase 3 waits for the
-`csi-driver-nfs` HelmRelease, as on kind. The two loaders log one line per pod:
+`csi-driver-nfs` HelmRelease, as on kind. The server's two containers and the
+loader log with:
 
 ```bash
-kubectl logs -n openstack deployment/nfs-server -c load-nfsd
+kubectl logs -n openstack deployment/nfs-server -c prepare-exports
+kubectl logs -n openstack deployment/nfs-server -c nfs-server
 kubectl logs -n openstack -l app.kubernetes.io/name=nfs-client-modules -c load --prefix --tail=-1
 ```
 
-A pod prints `load-nfsd: nfsd is loaded` or
-`nfs-client-modules: nfs and nfsv4 are loaded`. When `modprobe` fails, it
-prints `cannot load <module> from /lib/modules/<kernel>` after its prefix and
-exits 1, and its pod stays in `Init`.
+`prepare-exports` prints a `prepare-exports: moved <name> into exports/` line
+for each entry it moved and then
+`prepare-exports: exports/volumes and exports/backups are 42424:42424 0770`.
+The server's lines are those of [NFS storage stack](#nfs-storage-stack-opt-in).
+A loader pod prints `nfs-client-modules: nfs and nfsv4 are loaded`. When
+`modprobe` fails, it prints
+`nfs-client-modules: cannot load <module> from /lib/modules/<kernel>` and exits
+1, and its pod stays in `Init`.
 
-**Posture.** The lab carries the kind posture (D1 of #1193), narrowed in one
-place by the client policy. The server container is privileged, the export is
-`sec=sys` with `no_root_squash` and a wildcard client list, and with the
+**Posture.** The lab carries the kind posture, narrowed in one place by the
+client policy. The server container is privileged, the export is `sec=sys`
+with `No_Root_Squash` and no client list, and with the
 `Ephemeral` lifecycle mode every principal that can create a pod mounts both
 shares from the pod spec. PodSecurity does not bound that: in a namespace that
 is not `restricted` the pod mounts them as root, and a `restricted` namespace
@@ -2842,15 +2918,12 @@ backup on it go too.
 
 **What the pods change on a node.**
 
-- `load-nfsd` loads `nfsd` and its dependencies on the node of the server pod,
-  and `nfs-client-modules` loads `nfs`, `nfsv4` and their dependencies on every
-  node. Together these are the eleven modules the load test of #1194 listed:
-  `auth_rpcgss`, `dns_resolver`, `fscache`, `grace`, `lockd`, `netfs`, `nfs`,
-  `nfs_acl`, `nfsd`, `nfsv4` and `sunrpc`. Nothing unloads them; they stay
-  until the node reboots, also after a teardown.
-- The server pod runs the kernel's NFS server threads and mounts the `nfsd`
-  control filesystem inside the pod; port 2049 listens in the pod's network
-  namespace.
+- `nfs-client-modules` loads `nfs`, `nfsv4` and their dependencies on every
+  node, and the server loads none. Nothing unloads them; they stay until the
+  node reboots, also after a teardown.
+- The server pod runs NFS-Ganesha as a process of the pod, which listens on
+  port 2049 in the pod's network namespace and keeps its client records on the
+  export claim.
 - `csi-nfs-node` registers its socket under
   `/var/lib/kubelet/plugins/csi-nfsplugin` and
   `/var/lib/kubelet/plugins_registry` and mounts the shares below
@@ -3501,7 +3574,7 @@ state >"$faults/nfs-server-kill.state"
 openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/nfs-server-kill.console"
 kubectl get pod -n openstack -l "${sel}" -o wide | tee "$faults/nfs-server-kill.pod"
 kubectl get events -n openstack --sort-by=.lastTimestamp | grep -E 'nfs-server|AttachVolume|Multi-Attach' >"$faults/nfs-server-kill.events"
-kubectl logs -n openstack deployment/nfs-server -c nfs-server | head -n 40 >"$faults/nfs-server-kill.pod-log"
+kubectl logs -n openstack deployment/nfs-server -c nfs-server | grep -E 'IN GRACE|check grace|Added filesystem' >"$faults/nfs-server-kill.pod-log"
 kubectl delete podchaos lab-nfs-server-kill -n openstack --wait --timeout=60s
 
 # F5: the NFS server scaled to 0 for 300 seconds (a node replacement)
@@ -3532,8 +3605,8 @@ timeout 120 bash -c 'until ! openstack volume show lab-vol-after >/dev/null 2>&1
 
 Every wait has a bound. A replacement pod with a new UID gets 300 seconds, and
 its Ready 600. The gate `recovered` gets 600 seconds after F1 to F3 and 900
-after F4 and F5, because a fresh `nfsd` starts in its NFSv4 grace period of up
-to 90 seconds and the client retries on its own back-off (see
+after F4 and F5, because the restarted server starts in its NFSv4 grace period
+of up to 90 seconds and the client retries on its own back-off (see
 `tests/e2e-chaos/cinder-nfs-outage/chainsaw-test.yaml`). F5 holds the
 scale-down for 300 seconds, gives the server's pod 120 seconds to go and 600
 to roll out, and the new volume gets 300. When a helper prints
@@ -3641,13 +3714,18 @@ new pod within seconds. A killed `nova-compute` pod is back long before Nova
 misses its heartbeat, and the share it mounted stays mounted. A killed
 `ovn-controller` pod leaves the datapath in place: the guest lost no ping
 across the tunnel, and only the `OVNChassis` condition showed the restart.
-When the NFS server pod is rescheduled, an attached volume stalls for about
-two minutes and then fails every request until the Nova server it is attached
-to is hard-rebooted, while every API reports the volume `in-use` and healthy:
-the restarted `nfsd` logged `Unable to initialize client recovery tracking! (-22)`
-and refused the reclaim of QEMU's lock. A longer outage stalls the guest's disk
-for as long as the server is away, with hung-task warnings in the guest, and
-then fails the same way once the server is back. After F5, `lab-vol-after`
+On the kernel's `nfsd`, the lab's NFS server in that run, a reschedule of the
+server pod stalled the attached volume for about two minutes, and then every
+request to it failed until the Nova server it was attached to was
+hard-rebooted, while every API reported the volume `in-use` and healthy: the
+restarted `nfsd` logged `Unable to initialize client recovery tracking! (-22)`
+and refused the reclaim of QEMU's lock. The longer outage stalled the guest's
+disk for as long as the server was away, with hung-task warnings in the guest,
+and then failed the same way once the server was back.
+[#1245](https://github.com/c5c3/cobaltcore/issues/1245) replaced that server
+with NFS-Ganesha, which keeps its client records on the export claim (see
+[NFS storage stack](#nfs-storage-stack-opt-in)); F4 and F5 have not run on it
+yet. After F5, `lab-vol-after`
 was `available` within seconds and was deleted, so the backend served new
 volumes while the attached one failed. At the session's end `last_probe disk`
 printed `ok 82`, the volume file held `probe-82`, Step 10 read
@@ -4260,10 +4338,10 @@ tag `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1`, which
 [Release-independent images](../ci-cd/build-images-workflow.md#release-independent-images)).
 `imagePullPolicy: IfNotPresent` pulls the digest once per node. Renovate
 proposes each new keeper tag as one pull request, never automerged, that moves
-all eight lines naming the image: the two containers here, the load test of
-the [Node probe](#node-probe), `load-nfsd` and both containers of
-`nfs-client-modules` in the [Lab NFS stack](#lab-nfs-stack), and both
-containers of `chaos-mesh-modules` in the [Lab Chaos Mesh](#lab-chaos-mesh).
+all seven lines naming the image: the two containers here, the load test of
+the [Node probe](#node-probe), both containers of `nfs-client-modules` in the
+[Lab NFS stack](#lab-nfs-stack), and both containers of `chaos-mesh-modules`
+in the [Lab Chaos Mesh](#lab-chaos-mesh).
 The update
 strategy is `OnDelete` and the pod has no liveness probe: a rollout, or a
 restart on a slow answer, would interrupt running migrations. A merged bump
@@ -4748,7 +4826,7 @@ The fake driver of the kind suites reaches none of it:
 | Live-migration CPU check | with `cpuMode: host-passthrough`, and with `host-model`, every live migration ends in `NoValidHost`: Nova's pre-check on the destination fails with `Unacceptable CPU info: CPU doesn't have compatibility`, although `virsh hypervisor-cpu-compare` there accepts the guest CPU | `cpuMode: custom` with `Skylake-Server-IBRS`, the host-model of both workers |
 | Console log after a libvirt restart | with libvirt's default `stdio_handler = "logd"`, `openstack console log show` stopped at the restart: QEMU's log went through `virtlogd`, which ran in the old pod. The guest and its network kept running. With `file` the log grows across a restart | `stdio_handler = "file"` in `qemu.conf` ([#1174](https://github.com/c5c3/cobaltcore/issues/1174)) |
 | CPU model change under a server | on 2026-10-01 a server booted with `host-passthrough` kept that CPU through a hard reboot after the pool moved to `custom`; the run recorded no time for the reboot. The cpuMode block above ran on 2026-10-02 on the first node. A, after the boot: the pod's file says `cpu_mode = host-passthrough`, the domain `mode='host-passthrough'`. B, before the reboot: a pod started 10 seconds after the patch, its file says `cpu_mode = custom` and `cpu_models = Skylake-Server-IBRS`, the domain is still `host-passthrough`. B, after the reboot: the same pod, and the live and the `--inactive` `<cpu>` say `mode='custom'` with the model `Skylake-Server-IBRS`. C, first reboot: the pod of B with its `custom` file, `DaemonSetReady` `False`, the domain `mode='custom'` while the CR says `host-passthrough`. C, second reboot: a new pod, its file says `cpu_mode = host-passthrough` and no `cpu_models`, the domain `mode='host-passthrough'`. A first pass of the same run sent C's second reboot 3 seconds after the new pods started, before `nova-compute` took requests: it cleared the reboot's task state at start-up, the reboot action ended in `Error`, `--wait` reported success and the domain stayed `custom`. `wait_compute` comes from that pass | [Changing the libvirt settings of a pool with servers](../nova/novacompute-crd.md#changing-the-libvirt-settings-of-a-pool-with-servers) |
-| NFS server restart under an attached volume | on 2026-10-04 a PodChaos `pod-kill` of the NFS server (F4) and its scale-down for 300 seconds (F5) restarted `nfsd`, which logged `Unable to initialize client recovery tracking! (-22)`. The compute node logged `lost 1 locks`, and the guest got `I/O error, dev vdb` on every request to the attached volume until a hard reboot, while Nova, Cinder and the CRs reported nothing (see [Lab fault runs](#lab-fault-runs)) | none yet: [#1245](https://github.com/c5c3/cobaltcore/issues/1245) |
+| NFS server restart under an attached volume | on 2026-10-04 a PodChaos `pod-kill` of the NFS server (F4) and its scale-down for 300 seconds (F5) restarted `nfsd`, which logged `Unable to initialize client recovery tracking! (-22)`. The compute node logged `lost 1 locks`, and the guest got `I/O error, dev vdb` on every request to the attached volume until a hard reboot, while Nova, Cinder and the CRs reported nothing (see [Lab fault runs](#lab-fault-runs)) | [#1245](https://github.com/c5c3/cobaltcore/issues/1245): the server is NFS-Ganesha, with its client records on the export claim and a fixed server scope, and `cinder-nfs-outage` checks that a lock outlives a restart; F4 and F5 have not run on it yet |
 
 ### Node port check
 
