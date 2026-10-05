@@ -624,6 +624,37 @@ teardown_nfs() {
 }
 
 # ---------------------------------------------------------------------------
+# teardown_prometheus — Step 3 of teardown_external_cluster, after the base
+# overlay: remove kube-prometheus-stack, which hack/deploy-infra.sh applies
+# under WITH_PROMETHEUS=true, while the helm-controller still runs (step 5
+# removes it).
+#   1. the HelmRelease kube-prometheus-stack, by the file of the kind overlay,
+#      which every Prometheus overlay inherits: the overlay's
+#      configMapGenerator reads a dashboard the deploy stages, so `-k` does not
+#      render on a fresh checkout. Its finalizer has the helm-controller
+#      uninstall the chart, so the delete returns once the Prometheus
+#      StatefulSet is gone;
+#   2. the claims in monitoring, which Helm and the Prometheus Operator leave
+#      behind: the claim of a volume claim template belongs to no release.
+#      Where the default class has the reclaim policy Delete, the metrics go
+#      with it;
+#   3. the Service and the Endpoints kube-prometheus-stack-kubelet in
+#      kube-system, which the Prometheus Operator writes for its kubelet
+#      ServiceMonitor and no uninstall removes. Not earlier: the operator
+#      writes both again while it runs.
+# Not gated on the overlay: on a cluster deployed without WITH_PROMETHEUS=true
+# the three deletes find nothing. A release delete that outlives
+# TEARDOWN_TIMEOUT exits 1 before any claim is deleted. Step 7 deletes the
+# namespace monitoring with the dashboard ConfigMaps.
+# ---------------------------------------------------------------------------
+teardown_prometheus() {
+  delete_and_wait "the kube-prometheus-stack release" -f "${REPO_ROOT}/deploy/kind/prometheus/release.yaml"
+  delete_and_wait "the PVCs in monitoring" pvc --all -n monitoring
+  delete_and_wait "the kubelet Service and Endpoints the Prometheus Operator left in kube-system" \
+    service,endpoints kube-prometheus-stack-kubelet -n kube-system
+}
+
+# ---------------------------------------------------------------------------
 # teardown_dizzy — The end of step 3 of teardown_external_cluster: remove the
 # dizzy metrics stack of the overlay's dizzy/, which hack/deploy-infra.sh
 # applies under WITH_DIZZY=true, while the helm-controller and the
@@ -638,8 +669,9 @@ teardown_nfs() {
 #      mounts it.
 # The objects are named, not rendered: the overlay's configMapGenerator reads
 # dashboards the deploy stages, so `kubectl kustomize` fails on a checkout
-# without them, as for the kube-prometheus-stack release. Step 7 deletes the
-# namespace dizzy with the HTTPRoute and the ConfigMap.
+# without them, as for the kube-prometheus-stack release, which
+# teardown_prometheus deletes by file before this function runs. Step 7
+# deletes the namespace dizzy with the HTTPRoute and the ConfigMap.
 # ---------------------------------------------------------------------------
 teardown_dizzy() {
   if [[ ! -f "${OVERLAY_ROOT}/dizzy/kustomization.yaml" ]]; then
@@ -686,10 +718,13 @@ teardown_dizzy() {
 #      what was suspended, so the helm-controller uninstalls every chart and the
 #      Flux Kustomizations prune K-ORC and the RabbitMQ operator; the Gateway and
 #      GatewayClass go first, while Envoy Gateway still clears their finalizer,
-#      and the opt-in kube-prometheus-stack release goes after the rest, then,
-#      when the overlay has dizzy/, the dizzy stack (teardown_dizzy): its two
-#      HelmReleases, so the helm-controller uninstalls both charts, its two
-#      HelmRepositories and its claims;
+#      and the opt-in kube-prometheus-stack goes after the rest
+#      (teardown_prometheus): its HelmRelease, so the helm-controller
+#      uninstalls the chart, the claims in monitoring and the Service and
+#      Endpoints kube-prometheus-stack-kubelet the Prometheus Operator left in
+#      kube-system; then, when the overlay has dizzy/, the dizzy stack
+#      (teardown_dizzy): its two HelmReleases, so the helm-controller
+#      uninstalls both charts, its two HelmRepositories and its claims;
 #   4. the PVCs in shared-services and openstack, which Helm and the operators
 #      leave behind. Not earlier: the openbao-operator chart's admission policy
 #      denies deleting its managed PVCs to everyone but the operator until the
@@ -707,9 +742,9 @@ teardown_dizzy() {
 # chart objects still present, which must all be zero. Every delete ignores
 # absence, so a second run finds nothing and exits 0; a wait that runs out
 # exits 1 (delete_and_wait). In kube-system only the maint-<node> objects of
-# step 0, the csi-driver-nfs HelmRelease of step 2 with its chart, and the two
-# cert-manager Leases of step 7 are deleted; the platform's namespaces and CRDs
-# are never named.
+# step 0, the csi-driver-nfs HelmRelease of step 2 with its chart, the
+# kubelet Service and Endpoints of step 3, and the two cert-manager Leases of
+# step 7 are deleted; the platform's namespaces and CRDs are never named.
 # ---------------------------------------------------------------------------
 teardown_external_cluster() {
   local cmd
@@ -805,9 +840,8 @@ teardown_external_cluster() {
   printf '%s\n' "${render}" |
     yq 'select(.kind != "Namespace" and .kind != "FluxInstance" and .kind != "Gateway" and .kind != "GatewayClass")' |
     delete_and_wait "the base overlay (HelmReleases, Flux sources and Kustomizations)" -f -
-  # The opt-in monitoring release, by file: its overlay's configMapGenerator needs
-  # a file the deploy stages, so `-k` does not render on a fresh checkout.
-  delete_and_wait "the kube-prometheus-stack release" -f "${REPO_ROOT}/deploy/kind/prometheus/release.yaml"
+  # The opt-in monitoring release, then what its uninstall leaves behind.
+  teardown_prometheus
   # The dizzy stack, while the helm-controller can still uninstall its charts.
   teardown_dizzy
 
