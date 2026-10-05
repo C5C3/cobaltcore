@@ -305,8 +305,8 @@ FIXTURES: tuple[Fixture, ...] = (
     Fixture(
         filename="15-vertical-autoscaling-update-mode.yaml",
         comment=(
-            "spec.verticalAutoscaling.updateMode outside Off, Initial, Recreate and Auto\n"
-            "violates the Enum marker; the webhook mirrors it."
+            "spec.verticalAutoscaling.updateMode outside Off, Initial, Recreate,\n"
+            "InPlaceOrRecreate and Auto violates the Enum marker; the webhook mirrors it."
         ),
         extra=(
             "  verticalAutoscaling:\n"

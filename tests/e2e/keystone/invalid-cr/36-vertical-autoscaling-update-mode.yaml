@@ -2,8 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# spec.deployment.verticalAutoscaling.updateMode outside Off, Initial, Recreate
-# and Auto violates the Enum marker; the webhook mirrors it.
+# spec.deployment.verticalAutoscaling.updateMode outside Off, Initial,
+# Recreate, InPlaceOrRecreate and Auto violates the Enum marker; the webhook
+# mirrors it.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:

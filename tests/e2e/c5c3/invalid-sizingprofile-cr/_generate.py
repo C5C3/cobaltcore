@@ -250,7 +250,8 @@ FIXTURES: tuple[Fixture, ...] = (
         filename="11-sizing-vertical-autoscaling-update-mode.yaml",
         comment=(
             "spec.nova.conductor.verticalAutoscaling.updateMode outside Off, Initial,\n"
-            "Recreate and Auto violates the Enum marker; the webhook mirrors it."
+            "Recreate, InPlaceOrRecreate and Auto violates the Enum marker; the webhook\n"
+            "mirrors it."
         ),
         name="c5c3-e2e-sizing-vpa-update-mode",
         spec=(

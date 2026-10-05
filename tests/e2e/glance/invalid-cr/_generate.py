@@ -766,8 +766,9 @@ FIXTURES: tuple[Fixture, ...] = (
     Fixture(
         filename="40-vertical-autoscaling-update-mode.yaml",
         comment=(
-            "spec.deployment.verticalAutoscaling.updateMode outside Off, Initial, Recreate\n"
-            "and Auto violates the Enum marker; the webhook mirrors it."
+            "spec.deployment.verticalAutoscaling.updateMode outside Off, Initial,\n"
+            "Recreate, InPlaceOrRecreate and Auto violates the Enum marker; the webhook\n"
+            "mirrors it."
         ),
         name="glance-vpa-update-mode",
         deployment=(
