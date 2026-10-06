@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1558" viewBox="0 0 1808 1558" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Anatomy of a hypervisor node">
+<title>Anatomy of a hypervisor node</title>
+<rect width="1808" height="1558" fill="#F6F5F1"/>
+<rect x="40" y="40" width="466" height="1394" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Custom resources</text>
+<text x="59" y="113.2" font-size="20" font-weight="400" fill="#55606E">in the namespace {ns}; all three select the node</text>
+<rect x="541.5" y="41.5" width="1225" height="1391" rx="12" fill="#FDFCF9" stroke="#7D8794" stroke-width="3"/>
+<rect x="568" y="60" width="84" height="36" rx="18" fill="#3A4452"/>
+<text x="610" y="86.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">node</text>
+<text x="666" y="86.64" font-size="24" font-weight="700" fill="#17202B">{node}</text>
+<text x="758.01" y="85.2" font-size="20" font-weight="400" fill="#55606E">every pod here runs in the network namespace of the node</text>
+<rect x="606" y="124" width="874" height="180" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="625" y="163.36" font-size="26" font-weight="700" fill="#2B3440">{chassis}-ovs</text>
+<rect x="630" y="184" width="236" height="48" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<path d="M648.88 184 V232 M847.12 184 V232" fill="none" stroke="#B38A00" stroke-width="2"/>
+<text x="748" y="216.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">init host-prepare</text>
+<text x="882" y="202.2" font-size="20" font-weight="400" fill="#55606E">loads openvswitch and geneve</text>
+<text x="882" y="228.2" font-size="20" font-weight="400" fill="#55606E">creates /run/openvswitch and /run/ovn</text>
+<rect x="630" y="248" width="180" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="720" y="273.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">ovsdb-server</text>
+<rect x="830" y="248" width="180" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="920" y="273.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">ovs-vswitchd</text>
+<rect x="606" y="404" width="874" height="180" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="625" y="443.36" font-size="26" font-weight="700" fill="#2B3440">{chassis}-ovn-controller</text>
+<rect x="630" y="464" width="214" height="48" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<path d="M647.12 464 V512 M826.88 464 V512" fill="none" stroke="#B38A00" stroke-width="2"/>
+<text x="737" y="496.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">init apply-node</text>
+<text x="860" y="482.2" font-size="20" font-weight="400" fill="#55606E">waits for its entry in ConfigMap {chassis}-nodes</text>
+<text x="860" y="508.2" font-size="20" font-weight="400" fill="#55606E">writes system-id, ovn-encap-ip and ovn-remote</text>
+<rect x="630" y="528" width="190" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="725" y="553.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">ovn-controller</text>
+<text x="836" y="552.2" font-size="20" font-weight="400" fill="#55606E">registers the chassis in the Southbound database</text>
+<rect x="606" y="654" width="874" height="180" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="625" y="693.36" font-size="26" font-weight="700" fill="#2B3440">{agent}-metadata-agent</text>
+<rect x="630" y="714" width="280" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M652.4 714 V762 M887.6 714 V762" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="770" y="746.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">init wait-for-chassis</text>
+<text x="926" y="745.2" font-size="20" font-weight="400" fill="#55606E">until the Southbound database has the Chassis_Private row</text>
+<rect x="630" y="778" width="200" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="730" y="803.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">metadata-agent</text>
+<rect x="606" y="926" width="874" height="244" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="625" y="965.36" font-size="26" font-weight="700" fill="#2B3440">{pool}-nova-compute</text>
+<rect x="630" y="986" width="334" height="48" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<path d="M656.72 986 V1034 M937.28 986 V1034" fill="none" stroke="#C6343C" stroke-width="2"/>
+<text x="797" y="1018.64" font-size="24" font-weight="600" fill="#A3262E" text-anchor="middle">init create-instances-dir</text>
+<rect x="630" y="1050" width="280" height="48" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<path d="M652.4 1050 V1098 M887.6 1050 V1098" fill="none" stroke="#C6343C" stroke-width="2"/>
+<text x="770" y="1082.64" font-size="24" font-weight="600" fill="#A3262E" text-anchor="middle">init wait-for-chassis</text>
+<text x="926" y="1081.2" font-size="20" font-weight="400" fill="#55606E">until the local Open vSwitch database has a system-id</text>
+<rect x="630" y="1114" width="190" height="34" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="725" y="1139.64" font-size="24" font-weight="600" fill="#A3262E" text-anchor="middle">nova-compute</text>
+<rect x="1520" y="144" width="222" height="846" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1631" y="575.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">/run/openvswitch</text>
+<polyline points="1480,164 1520,164" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1480,444 1520,444" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1480,694 1520,694" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1480,966 1520,966" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="1310" y="330" width="130" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1375" y="362.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">/run/ovn</text>
+<polyline points="1375,304 1375,330" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1375,404 1375,378" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="1300" y="858" width="150" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1375" y="890.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">/run/netns</text>
+<polyline points="1375,834 1375,858" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="1212" y="1214" width="150" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1287" y="1246.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">/run/libvirt</text>
+<rect x="1400" y="1214" width="180" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1490" y="1246.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">/var/lib/nova</text>
+<rect x="1212" y="1302" width="368" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1396" y="1327.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">libvirtd</text>
+<text x="1212" y="1363.2" font-size="20" font-weight="400" fill="#55606E">not run by an operator</text>
+<text x="1212" y="1389.2" font-size="20" font-weight="400" fill="#55606E">a host service, or a DaemonSet the cluster owner provides</text>
+<polyline points="1287,1170 1287,1214" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1455,1170 1455,1214" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1287,1302 1287,1262" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1490,1302 1490,1262" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="606" y="1214" width="556" height="154" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="625" y="1253.36" font-size="26" font-weight="700" fill="#2B3440">Gateway node</text>
+<text x="625" y="1287.2" font-size="20" font-weight="400" fill="#55606E">the node also matches spec.gateway.nodeSelector</text>
+<text x="625" y="1315.2" font-size="20" font-weight="400" fill="#55606E">apply-node sets ovn-cms-options=enable-chassis-as-gw</text>
+<text x="625" y="1343.2" font-size="20" font-weight="400" fill="#55606E">no further pod, container or host path</text>
+<polyline points="666,304 666,393.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="666,404 658.8,389 673.2,389" fill="#3A4452"/>
+<text x="686" y="345.2" font-size="20" font-weight="400" fill="#2B3440">every OVS pod Ready</text>
+<text x="686" y="373.2" font-size="20" font-weight="400" fill="#55606E">the operator creates the second DaemonSet only then</text>
+<polyline points="630,545 586,545 586,738 619.5,738" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="630,738 615,745.2 615,730.8" fill="#3A4452"/>
+<text x="604" y="626.2" font-size="20" font-weight="400" fill="#2B3440">chassis registered</text>
+<polyline points="630,488 566,488 566,1074 619.5,1074" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="630,1074 615,1081.2 615,1066.8" fill="#3A4452"/>
+<text x="584" y="887.2" font-size="20" font-weight="400" fill="#2B3440">system-id written</text>
+<rect x="60" y="309" width="290" height="48" rx="20" fill="#6F5600"/>
+<text x="205" y="341.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">OVNChassis {chassis}</text>
+<text x="60" y="384.2" font-size="20" font-weight="400" fill="#55606E">spec.nodeSelector</text>
+<polyline points="350,321 518,321 518,224 595.5,224" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="606,224 591,231.2 591,216.8" fill="#2F8A57"/>
+<polyline points="350,345 530,345 530,442 595.5,442" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="606,442 591,449.2 591,434.8" fill="#2F8A57"/>
+<rect x="60" y="771" width="380" height="48" rx="20" fill="#1D47A6"/>
+<text x="250" y="803.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">NeutronMetadataAgent {agent}</text>
+<text x="60" y="846.2" font-size="20" font-weight="400" fill="#55606E">takes the node selector of {chassis}</text>
+<polyline points="440,795 595.5,795" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="606,795 591,802.2 591,787.8" fill="#2F8A57"/>
+<rect x="60" y="1107" width="270" height="48" rx="20" fill="#A3262E"/>
+<text x="195" y="1139.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">NovaCompute {pool}</text>
+<text x="60" y="1182.2" font-size="20" font-weight="400" fill="#55606E">spec.nodeSelector</text>
+<polyline points="330,1131 595.5,1131" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="606,1131 591,1138.2 591,1123.8" fill="#2F8A57"/>
+<text x="40" y="1485.2" font-size="20" font-weight="400" fill="#55606E">{chassis}, {agent}, {pool}: the OVNChassis, the NeutronMetadataAgent and the NovaCompute. {ns}: their namespace. {node}: a node all three select.</text>
+<text x="40" y="1511.2" font-size="20" font-weight="400" fill="#55606E">nova-compute also mounts /dev, /sys/fs/cgroup, /lib/modules and the iSCSI, NVMe and multipath configuration of the node.</text>
+</svg>
