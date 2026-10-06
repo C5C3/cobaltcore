@@ -80,7 +80,7 @@ All events follow these conventions:
 
 > **Note:** `SecretStoreDetached` fires on the pass that de-projects the store,
 > which is the pass the operator would otherwise report as a success. Nothing
-> else marks the loss: the store CR carries no finalizer and its deletion is not
+> else marks the loss: no finalizer holds the store CR and its deletion is not
 > validated. The counting violations behind
 > `SecretStoresReady=False / NoDefaultSecretStore` and `MultipleOpenBaoStores`
 > raise **no** event; read those off the condition.
@@ -161,14 +161,15 @@ Every waiting and failure state of the BarbicanSecretStore controller goes
 through one helper, which records the False sub-condition and a Warning event
 carrying the same reason and message. None of these states reaches the workqueue
 as an error: an unreachable server or a credential nobody has provided yet is a
-state to report and retry (at 30s), not a reconcile failure. The reason
-vocabulary is therefore identical to the condition reasons documented under
+state to report and retry (at 30s, or at 15s for `WaitingForParent` and
+`TargetClusterUnavailable`), not a reconcile failure. The reason vocabulary is
+therefore identical to the condition reasons documented under
 [Conditions](./barbican-secret-store-crd.md#conditions).
 
 | Reason | Type | Condition it lands on | Trigger Condition |
 | --- | --- | --- | --- |
 | `WaitingForCredentials` | Warning | `CredentialsReady` | A referenced Secret does not carry a non-empty `role-id`, `secret-id`, or `ca.crt` yet |
-| `InvalidCredentials` | Warning | `CredentialsReady` | The server rejects the AppRole credentials, and the re-mint cooldown declines to replace them |
+| `InvalidCredentials` | Warning | `CredentialsReady` | The server rejects the AppRole credentials. A brownfield store reports that at once; a managed store reports it when the re-mint cooldown declines to replace them, or when the server rejects a freshly minted secret ID too |
 | `InsufficientCapabilities` | Warning | `CredentialsReady` | The AppRole policy does not grant the required capabilities on the mount's data path |
 | `OpenBaoUnreachable` | Warning | `CredentialsReady` or `ProvisioningReady` | The server did not answer, or the client could not be built |
 | `InstanceNotFound` | Warning | `ProvisioningReady` | The referenced `OpenBaoCluster` does not exist |

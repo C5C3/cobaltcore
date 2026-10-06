@@ -235,8 +235,8 @@ the rollout that follows.
 | Interval | Used by |
 | --- | --- |
 | 10s | Deployment readiness polling, HTTPRoute acceptance, health-check retry |
-| 15s | ESO secret-gate polling (Secrets, DBConnectionSecret) |
-| 30s | MariaDB and db-sync database wait, the finalizer hold while the MariaDB CRs tear down, and every waiting or failure state of the store controller |
+| 15s | ESO secret-gate polling (Secrets, DBConnectionSecret), the store controller's `WaitingForParent` and `TargetClusterUnavailable` states, and its remote-children finalizer hold while a deleted store's target cluster does not resolve or nothing names it |
+| 30s | MariaDB and db-sync database wait, the finalizer hold while the MariaDB CRs tear down, and every other waiting or failure state of the store controller |
 | 30s TTL | Health-probe cache (a passing `/healthcheck` probe is reused within the TTL) |
 | 15m | Store credential revalidation: every pass for a brownfield store, and for a managed store whose secret ID carries no TTL and has no re-mint timer to ride on |
 
@@ -272,7 +272,9 @@ while the credential in the pods is still valid.
   `RemoteChildrenAbandoned` Warning names what stays behind, and the CR
   leaves etcd instead of hanging in Terminating. See
   [Target Clusters](../target-clusters.md).
-  A `BarbicanSecretStore` carries no finalizer at all; see
+  A `BarbicanSecretStore` carries no finalizer while its parent is on the
+  management cluster, and the remote-children finalizer while its parent names
+  `spec.targetClusterRef`; see
   [Retained Artefacts](./barbican-secret-store-crd.md#retained-artefacts).
 
 ## Watches
@@ -313,8 +315,9 @@ Beyond the owned set it watches:
   only by its own. The `ClusterSecretStore` leg is not registered when the
   operator runs with `--namespace`.
 
-The store controller watches two objects of its own, both without a generation
-predicate for the same reason: the parent `Barbican`, whose status flips carry
+The store controller watches three objects of its own. The third is its
+credentials Secret on a target cluster. The other two carry no generation
+predicate, for the same reason: the parent `Barbican`, whose status flips carry
 the projection landing in the Deployment, and the `OpenBaoCluster` a managed
 store names, whose Available condition is what unblocks a store waiting on it.
 Both resolve through field indexes registered by the Barbican controller's

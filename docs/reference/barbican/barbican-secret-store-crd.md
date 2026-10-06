@@ -120,11 +120,12 @@ Secret.
 
 Two modes, selected by which of `instanceRef` and `server` is set. Managed mode
 points at an `OpenBaoCluster` this cluster runs: the operator mints the AppRole
-credentials at runtime and owns the KV mount. Brownfield mode points at an
-OpenBao or HashiCorp Vault server elsewhere and is validate-only, the same
-read-only posture K-ORC takes with unmanaged imports: the operator reads the
-referenced Secrets and renders the configuration, and never creates a mount, a
-policy, an AppRole, or secret material on that server.
+secret ID at runtime and checks that the KV mount exists. The mount, the policy
+and the AppRole role come from the self-init of the instance. Brownfield mode
+points at an OpenBao or HashiCorp Vault server elsewhere and is validate-only,
+the same read-only posture K-ORC takes with unmanaged imports: the operator
+reads the referenced Secrets and renders the configuration, and never creates a
+mount, a policy, an AppRole, or secret material on that server.
 
 The figure shows both modes for the store a ControlPlane projects, which calls
 them dedicated and external.
@@ -219,7 +220,7 @@ than one. Two gates enforce it:
   than one credential-ready OpenBao store lands on the same path under
   `MultipleOpenBaoStores`.
 
-Flipping `isDefault` between siblings re-renders the config Secret: unlike the
+Replacing the default store re-renders the config Secret: unlike the
 Glance backends split, barbican keeps the default marker inside the per-store
 section (`global_default`) of the one document, so the content hash changes and
 the pods roll.
@@ -227,10 +228,12 @@ the pods roll.
 Deleting a store is not a no-op for the data behind it. Barbican resolves every
 stored secret through the `secret_stores` row naming the store it was written
 to, so once a `[secretstore:<name>]` section is gone, every secret written under
-it stops resolving. Nothing else says so: the store CR carries no finalizer, its
-deletion is not validated, and the parent re-renders as soon as the remaining
-stores form a valid projection. The `SecretStoreDetached` Warning event fires on
-the pass that de-projects the store and names that consequence.
+it stops resolving. Nothing else says so: no finalizer holds the store CR (with
+a parent on a target cluster it carries one that only removes its credentials
+Secret there), its deletion is not validated, and the parent re-renders as soon
+as the remaining stores form a valid projection. The `SecretStoreDetached`
+Warning event fires on the pass that de-projects the store and names that
+consequence.
 
 ### Conditions
 
@@ -305,8 +308,9 @@ The managed flow (an `OpenBaoCluster` in the suite, the minted `-approle`
 Secret, and the rendered store section) lives in
 `tests/e2e/barbican/secretstore-managed`. The brownfield flow, where the AppRole
 is seeded outside the operator and the store is validate-only, lives in
-`tests/e2e/barbican/secretstore-brownfield`. Flipping `isDefault` between two
-attached stores and re-rendering `global_default` lives in
+`tests/e2e/barbican/secretstore-brownfield`. Clearing the default, which keeps
+the last-good config, and replacing the store by a new default one, which
+re-renders `global_default`, lives in
 `tests/e2e/barbican/default-secretstore-switch`. The detach path lives in
 `tests/e2e/barbican/deletion-cleanup`. The rejection corpus lives in
 `tests/e2e/barbican/invalid-barbicansecretstore-cr` and covers the union rules,
@@ -317,9 +321,12 @@ guards, the transition rules, and both sibling rules.
 
 A managed store's AppRole credentials live in a Secret named after the store,
 `<store>-approle`, carrying `role-id` and `secret-id` under the contract keys.
-The operator writes it with a controller owner reference to the store CR, so
-Kubernetes garbage collection reclaims it when the store is deleted. There is no
-finalizer, and that is the design: the AppRole itself is shared instance state
+With a parent on the management cluster the operator writes it with a controller
+owner reference to the store CR, so Kubernetes garbage collection reclaims it
+when the store is deleted. With a parent that names `spec.targetClusterRef` the
+Secret lives on that cluster and carries ownership labels, and the store's
+remote-children finalizer deletes it. No finalizer revokes the AppRole, and that
+is the design: the AppRole itself is shared instance state
 the self-init contract owns rather than state of this CR, so revoking it on
 delete would break every other store on the same instance. Deleting a store
 detaches it and nothing more.
