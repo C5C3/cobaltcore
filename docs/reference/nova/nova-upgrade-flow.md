@@ -28,8 +28,8 @@ rows the old code no longer writes. The operator walks four phases in a fixed
 order: `Expanding`, `Migrating`, `RollingUpdate`, `Contracting`.
 
 The phase machine lives in `internal/common/database` (`upgrade.go`) and is
-shared with Keystone, Glance and Cinder. Nova supplies the service-specific
-parts: the `nova-status` and `nova-manage` phase commands, the five workloads
+shared with Keystone, Glance, Cinder and Neutron. Nova supplies the
+service-specific parts: the `nova-status` and `nova-manage` phase commands, the five workloads
 the rolling update has to converge, and the `DatabaseReady` condition every
 phase reports on. The sibling pages are
 [Cinder Upgrade Flow](../cinder/cinder-upgrade-flow.md),

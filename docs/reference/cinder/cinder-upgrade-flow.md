@@ -28,9 +28,9 @@ rows the old code no longer writes. The operator walks four phases in a fixed
 order: `Expanding`, `Migrating`, `RollingUpdate`, `Contracting`.
 
 The phase machine lives in `internal/common/database` (`upgrade.go`) and is
-shared with Keystone and Glance. Cinder supplies the service-specific parts: the
-`spec.openStackRelease` seam, the `cinder-manage` and `cinder-status` phase
-commands, and the `DatabaseReady` condition every phase reports on. The sibling
+shared with Keystone, Glance, Nova and Neutron. Cinder supplies the
+service-specific parts: the `spec.openStackRelease` seam, the `cinder-manage`
+and `cinder-status` phase commands, and the `DatabaseReady` condition every phase reports on. The sibling
 pages are [Glance Upgrade Flow](../glance/glance-upgrade-flow.md) and
 [Keystone Upgrade Flow](../keystone/keystone-upgrade-flow.md).
 
