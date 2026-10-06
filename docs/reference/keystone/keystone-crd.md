@@ -1008,9 +1008,9 @@ port 5000. Removing the field deletes the existing HTTPRoute.
 The operator plays the **application-developer** role in the Gateway API model: it
 manages only the `HTTPRoute`. The referenced `Gateway` (and its `GatewayClass`) are
 **platform-team** concerns and must be pre-provisioned — this operator does not
-create or reconcile them. Cross-namespace `parentRef` references additionally
-require a `ReferenceGrant` in the target namespace, which is out of scope for this
-operator.
+create or reconcile them. A cross-namespace `parentRef` attaches only when the
+Gateway listener's `allowedRoutes` admits the CR's namespace; no `ReferenceGrant`
+is involved, and configuring the Gateway is out of scope for this operator.
 
 **Gateway API CRD prerequisite:** the `gateway.networking.k8s.io/v1` `HTTPRoute`
 CRD must be installed in the cluster before the Keystone operator starts. The
@@ -1055,7 +1055,7 @@ aliases `commonv1.GatewayParentRefSpec`.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `name` | `string` | Yes | — | Gateway resource name. Minimum length: 1. |
-| `namespace` | `string` | No | CR namespace | Namespace of the referenced Gateway. When empty, the Gateway is assumed to live in the Keystone CR's namespace. Cross-namespace references require a `ReferenceGrant`. |
+| `namespace` | `string` | No | CR namespace | Namespace of the referenced Gateway. When empty, the Gateway is assumed to live in the Keystone CR's namespace. A cross-namespace reference attaches only when the Gateway listener's `allowedRoutes` admits the CR's namespace. |
 | `sectionName` | `string` | No | `""` | Targets a specific listener on the Gateway (e.g., `"https"`) when the Gateway defines multiple listeners. When empty, the HTTPRoute attaches to all compatible listeners. |
 
 ### HTTPRoute Resource Mapping
