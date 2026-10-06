@@ -70,6 +70,8 @@ The controller watches the primary Keystone CR and all owned resources:
 | `Job` | `Owns()` | Triggers reconciliation when owned Job changes |
 | `PodDisruptionBudget` | `Owns()` | Triggers reconciliation when owned PDB changes |
 | `HorizontalPodAutoscaler` | `Owns()` | Triggers reconciliation when owned HPA changes |
+| `NetworkPolicy` | `Owns()` | Triggers reconciliation when the owned NetworkPolicy changes |
+| `VerticalPodAutoscaler` | `Owns()` (optional) | Registered only when the cluster serves the VerticalPodAutoscaler kind; reacts to changes of its spec |
 | `CronJob` | `Owns()` | Triggers reconciliation when owned CronJob changes |
 | `HTTPRoute` | `Owns()` (optional) | Registered only when the `gateway.networking.k8s.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. That detection gates the local watch leg and answers for Keystone CRs whose children stay on the management cluster; a CR naming a target cluster is probed against that cluster's `RESTMapper` on every pass. Triggers reconciliation when owned HTTPRoute changes (only created when `spec.gateway` is set). |
 | `Certificate` | `Owns()` (optional) | Registered only when the `cert-manager.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. As with the HTTPRoute leg, that detection gates the local watch and answers for CRs without a target cluster, while a CR that names one is probed against its target per pass. Triggers reconciliation when the managed `<name>-db-client` Certificate changes, so later issuance failures surface in `DatabaseTLSReady` (only created when managed DB TLS is enabled). |
@@ -367,7 +369,7 @@ Sub-reconcilers execute in a defined order using two execution modes:
    concurrently via `errgroup.WithContext`. Each goroutine operates on a `DeepCopy` of
    the Keystone CR to prevent data races. There are two groups: the first (after
    Config) runs FernetKeys / CredentialKeys / NetworkPolicy; the second (after
-   Deployment and config pruning) runs HTTPRoute / HealthCheck / HPA / Bootstrap /
+   Deployment and config pruning) runs HTTPRoute / HealthCheck / HPA / VPA / Bootstrap /
    TrustFlush, which share no inter-dependency once the Deployment/Service/Config
    outputs exist. `reconcilePasswordRotation` stays sequential after the second
    group because it depends on Bootstrap having seeded the initial admin
@@ -401,7 +403,7 @@ on failure. Without that, `setReadyCondition` would re-aggregate the still-True
 sub-conditions and persist a stale `Ready=True` at the new generation — the
 failure would be visible only in logs and the error counter.
 
-The parallel group follows a different contract: all three sub-reconcilers run
+A parallel group follows a different contract: all its members run
 simultaneously, errors cancel the errgroup context, and conditions from completed
 sub-reconcilers are merged even on partial failure.
 
@@ -439,8 +441,8 @@ joined error containing only the status update error.
 
 ### Ready Condition Aggregation
 
-After all sub-reconcilers succeed, `setReadyCondition()` evaluates whether all
-sub-condition types are `True` using `conditions.AllTrue()`:
+On every status write, including a pass that ends early,
+`setReadyCondition()` evaluates whether all sub-condition types are `True` using `conditions.AllTrue()`:
 
 | All Sub-Conditions True | Ready Condition | Reason |
 | --- | --- | --- |
@@ -460,9 +462,9 @@ The pipeline uses two parallel groups, each driven by `reconcileParallelGroup`:
   `reconcileNetworkPolicy` — runs after `reconcileConfig` completes and before
   `reconcileDatabase` begins.
 - **Group 2** — `reconcileHTTPRoute`, `reconcileHealthCheck`, `reconcileHPA`,
-  `reconcileBootstrap`, and `reconcileTrustFlush` — runs after
+  `reconcileVPA`, `reconcileBootstrap`, and `reconcileTrustFlush` — runs after
   `reconcileDeployment` and config pruning. Once the Deployment/Service and the
-  config ConfigMap exist, these five share no data dependency on each other.
+  config ConfigMap exist, these six share no data dependency on each other.
 
 Both groups' members are eligible for parallelization because they have no data
 dependencies on each other (see [Dependency Graph](#dependency-graph) below).
@@ -507,14 +509,16 @@ output (other than conditions merged after the group completes).
 | Sub-Reconciler | Inputs | Condition Type | Dependencies | Parallel |
 | --- | --- | --- | --- | --- |
 | `reconcileSecrets` | CR spec | `SecretsReady` | none | no (must run first) |
+| `reconcileDatabaseTLS` | CR spec | `DatabaseTLSReady` | Secrets | no |
+| `reconcileDBConnectionSecret` | database credentials Secret | `SecretsReady` (*returns dbConnectionHash*) | Secrets, DatabaseTLS | no |
+| `reconcileIdentityBackends` | backend CRs + bind/client Secrets + provider metadata | `IdentityBackendsReady` | DBConnectionSecret (position only — it must run before Config, whose `[identity]` options it drives) | no (never requeues: waiting states are watch-driven) |
 | `reconcileConfig` | CR spec, DB secret | `SecretsReady` (False on failure; *returns configMapName*) | Secrets | no (produces configMapName) |
 | `reconcileFernetKeys` | configMapName | `FernetKeysReady` | Config | **yes (group 1)** |
 | `reconcileCredentialKeys` | configMapName | `CredentialKeysReady` | Config | **yes (group 1)** |
-| `reconcileNetworkPolicy` | CR spec | `NetworkPolicyReady` | none | **yes (group 1)** |
-| `reconcileIdentityBackends` | backend CRs + bind/client Secrets + provider metadata | `IdentityBackendsReady` | DBConnectionSecret (position only — it must run before Config, whose `[identity]` options it drives) | no (never requeues: waiting states are watch-driven) |
+| `reconcileNetworkPolicy` | CR spec, federation projection | `NetworkPolicyReady` | IdentityBackends | **yes (group 1)** |
 | `reconcileDatabase` | configMapName | `DatabaseReady` | Config | no (complex state machine) |
 | `reconcilePolicyValidation` | configMapName | `PolicyValidReady` | Config | no (gates Deployment) |
-| `reconcileDeployment` | configMapName | `DeploymentReady` | Database (implicit) | no |
+| `reconcileDeployment` | configMapName, dbConnectionHash, domainsSecretName, federation projection | `DeploymentReady` | Database (implicit) | no |
 | `pruneStaleConfigMaps` | configMapName | `SecretsReady` (False on failure) | Deployment (must be ready) | no |
 | `reconcileHTTPRoute` | CR spec | `HTTPRouteReady` | Deployment (ensures backend Service exists) | **yes (group 2)** |
 | `reconcileHealthCheck` | status.endpoint | `KeystoneAPIReady` | Deployment (sets endpoint) | **yes (group 2)** |
@@ -1422,8 +1426,9 @@ after a full reconcile loop, every condition in the status carries the correct
 
 | Condition Type | Set By | Description |
 | --- | --- | --- |
-| `SecretsReady` | `reconcileSecrets` | ESO-provided credentials are synced |
+| `SecretsReady` | `reconcileSecrets`, `reconcileDBConnectionSecret`, and on failure `reconcileConfig` and the prune step | ESO-provided credentials are synced |
 | `DatabaseReady` | `reconcileDatabase` | MariaDB CRs ready and db_sync complete |
+| `DatabaseTLSReady` | `reconcileDatabaseTLS` | Client certificate for the database issued (`CertificateIssued`), supplied by the user (`ExternallyManaged`) or not required (`NotRequired`) |
 | `FernetKeysReady` | `reconcileFernetKeys` | Fernet Secret, script ConfigMap, CronJob, and PushSecret ensured |
 | `CredentialKeysReady` | `reconcileCredentialKeys` | Credential keys Secret, script ConfigMap, CronJob, and PushSecret ensured |
 | `NetworkPolicyReady` | `reconcileNetworkPolicy` | NetworkPolicy configured or not required |
@@ -3450,6 +3455,9 @@ keystone-pipeline-scoped (the guard tests require map values to be members of
 | Sub-Reconciler | Transient State | RequeueAfter | Permanent Failure |
 | --- | --- | --- | --- |
 | `reconcileSecrets` | ESO not synced | 15s | API error → exponential backoff |
+| `reconcileDatabaseTLS` | Client Certificate pending | 15s | Missing certificate refs set `DatabaseTLSReady=False/MissingCertificateRefs` and return an error |
+| `reconcileDBConnectionSecret` | Database credentials not synced | 15s | API error → exponential backoff |
+| `reconcileIdentityBackends` | None: waiting states never requeue | — | List, render or create failure → exponential backoff |
 | `reconcileDatabase` | MariaDB CRs not ready | 30s | `ErrJobFailed` from db_sync |
 | `reconcileDatabase` | db_sync running | 30s | API error → exponential backoff |
 | `reconcileFernetKeys` | Initial key generation / rotation applied | 15s | API error → exponential backoff |
@@ -3462,6 +3470,7 @@ keystone-pipeline-scoped (the guard tests require map values to be members of
 | `reconcileHTTPRoute` | Gateway has not yet set `Accepted=True` on parent status | 10s | API error on ensure/get/delete → exponential backoff |
 | `reconcileHealthCheck` | Non-2xx, timeout, DNS, connection refused | 10s | Malformed URL → exponential backoff |
 | `reconcileHPA` | — | — | API error → exponential backoff |
+| `reconcileVPA` | — | — | API error → exponential backoff |
 | `reconcileBootstrap` | Job running | 60s | `ErrJobFailed` from bootstrap |
 | `reconcileTrustFlush` | — | — | API error → exponential backoff |
 | `reconcilePasswordRotation` | Rotation applied (short-circuit) | `RequeueNextPass` (1s) | API error → exponential backoff |
@@ -3791,10 +3800,12 @@ responsible for driving:
 | `sub_reconciler` | `condition_type` |
 | --- | --- |
 | `Secrets`, `DBConnectionSecret`, `Config` | `SecretsReady` |
+| `IdentityBackends` | `IdentityBackendsReady` |
 | `FernetKeys` | `FernetKeysReady` |
 | `CredentialKeys` | `CredentialKeysReady` |
 | `NetworkPolicy` | `NetworkPolicyReady` |
 | `Database` | `DatabaseReady` |
+| `DatabaseTLS` | `DatabaseTLSReady` |
 | `PolicyValidation` | `PolicyValidReady` |
 | `Deployment` | `DeploymentReady` |
 | `HTTPRoute` | `HTTPRouteReady` |
@@ -3803,6 +3814,7 @@ responsible for driving:
 | `VPA` | `VPAReady` |
 | `Bootstrap` | `BootstrapReady` |
 | `TrustFlush` | `TrustFlushReady` |
+| `PasswordRotation` | `PasswordRotationReady` |
 
 The collapsed `SecretsReady` mapping for `Secrets`, `DBConnectionSecret`,
 and `Config` is intentional — those three sub-reconcilers form the

@@ -9,8 +9,8 @@ The Keystone operator deploys and manages the OpenStack Identity Service as a
 Kubernetes-native workload. It is the reference implementation for all CobaltCore
 service operators — the patterns established here (CRD layout, sub-reconciler
 chain, webhooks, finalizers, instrumentation) are replicated by the Horizon,
-Glance, Placement, Barbican and Neutron operators and by the OVN layer
-underneath Neutron.
+Glance, Placement, Barbican, Neutron, Cinder and Nova operators and by the
+OVN layer underneath Neutron.
 
 This page is a feature catalogue and entry point. Each item links to the
 in-depth reference doc for that area.
@@ -32,9 +32,13 @@ entry with its condition and its requeue interval.
 - **Two parallel groups.** FernetKeys, CredentialKeys and NetworkPolicy run
   concurrently via `errgroup`, and so do HTTPRoute, HealthCheck, HPA, VPA,
   Bootstrap and TrustFlush, to cut tail latency on cold reconciles.
-- **Two finalizers.** The standard cleanup finalizer cascades owned resources;
-  the OpenBao finalizer gates deletion on ESO `PushSecret` cleanup so
-  Fernet/credential key backups in OpenBao stay consistent.
+- **Two finalizers, three on a target cluster.**
+  `keystone.openstack.c5c3.io/finalizer` deletes the MariaDB `Database`,
+  `User` and `Grant`; the OpenBao finalizer gates deletion on ESO `PushSecret`
+  cleanup so Fernet/credential key backups in OpenBao stay consistent. A
+  Keystone with `spec.targetClusterRef` also carries
+  `openstack.c5c3.io/remote-children`, which sweeps the children that carry
+  ownership labels in place of an owner reference.
 - **Watch-driven reactivity.** Field-indexed `Secret` watches and a
   `PushSecret` name-match mapper with predicate filter wake the workqueue
   only on transitions the state machine branches on, not on every ESO sync
@@ -50,7 +54,7 @@ entry with its condition and its requeue interval.
   topologySpreadConstraints, priorityClassName, nodeSelector, tolerations,
   affinity), and a `jobs` block that sizes, prioritizes and places every Job
   and CronJob.
-- **Status with sub-conditions.** Fifteen typed sub-conditions plus
+- **Status with sub-conditions.** Sixteen typed sub-conditions plus
   `installedRelease`, `targetRelease`, `upgradePhase`, and `endpoint` —
   surfaced via `kubectl get keystones` printer columns.
 - **Validating + Defaulting webhooks.** CEL validation rules enforced by the
@@ -178,8 +182,8 @@ See the [Key Rotation Guide](../../guides/keystone/keystone-key-rotation.md).
 - **Topology spread + PriorityClass.** Sensible defaults across zone and
   hostname; webhook validates that referenced PriorityClasses exist.
 - **ConfigMap rotation pruning.** Stale `<name>-config-<hash>` ConfigMaps
-  are pruned after rollout, retaining the three most recent revisions for
-  fast rollback.
+  are pruned after rollout, keeping the current revision and the three newest
+  before it for fast rollback.
 
 ## Where to go next
 
