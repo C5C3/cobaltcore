@@ -973,6 +973,10 @@ is bootstrapped by `selfsigned-cluster-issuer` in
 cannot sign leaves for a separate trust chain, so the openbao trust domain owns
 its own CA (mirrors the `openstack-db-ca` precedent).
 
+The figure shows the OpenBao trust domain beside the other three.
+
+![Issuer chains as four trust domains under the ClusterIssuer selfsigned-cluster-issuer, which signs the four CA certificates. Database: openstack-db-ca signs the MariaDB and MaxScale certificates and the Keystone database client certificate. OVN: openstack-ovn-ca signs the Northbound and Southbound server certificates, one shared client certificate and the relay certificate. OpenBao: openbao-ca signs the server certificate openbao-tls and every client certificate the listener requires, for the OpenBao pods, both ESO stores and the database credential generators. Lab only: libvirt-migration-ca signs one certificate per hypervisor node for libvirt and QEMU migration. A server accepts any client certificate of its own CA, so a certificate of one domain opens nothing in another.](../../diagrams/secrets-issuer-chains.svg)
+
 **Client certificates.** Two additional `cert-manager.io/v1` Certificates
 issue *client*-auth keypairs from the same `openbao-ca-issuer`, both
 declared in `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml`:

@@ -943,9 +943,17 @@ after the corresponding operator HelmReleases install their Helm charts.
 | Name | `selfsigned-cluster-issuer` |
 | Scope | Cluster-scoped (no namespace) |
 
-The self-signed ClusterIssuer provides a default certificate issuer for development
-environments. It requires cert-manager CRDs (`cert-manager.io/v1`) which are installed
-by the cert-manager HelmRelease.
+The self-signed ClusterIssuer signs the CA certificates of the trust domains:
+`openstack-db-ca`, `openstack-ovn-ca` and `openbao-ca`, and `libvirt-migration-ca`
+on the metal-stack lab. Each CA signs the leaves of its own domain through a CA
+issuer. The kind overlay also uses the self-signed issuer directly for the
+Gateway listener certificates. It requires cert-manager CRDs (`cert-manager.io/v1`)
+which are installed by the cert-manager HelmRelease.
+
+The figure shows the four CAs with their leaves. The CAs are separate because
+each server accepts every client certificate of its own CA.
+
+![Issuer chains as four trust domains under the ClusterIssuer selfsigned-cluster-issuer, which signs the four CA certificates. Database: openstack-db-ca signs the MariaDB and MaxScale certificates and the Keystone database client certificate. OVN: openstack-ovn-ca signs the Northbound and Southbound server certificates, one shared client certificate and the relay certificate. OpenBao: openbao-ca signs the server certificate openbao-tls and every client certificate the listener requires, for the OpenBao pods, both ESO stores and the database credential generators. Lab only: libvirt-migration-ca signs one certificate per hypervisor node for libvirt and QEMU migration. A server accepts any client certificate of its own CA, so a certificate of one domain opens nothing in another.](../../diagrams/secrets-issuer-chains.svg)
 
 ### OpenStack DB CA Issuer
 
