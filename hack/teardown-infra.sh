@@ -464,6 +464,37 @@ teardown_chaos_mesh() {
 }
 
 # ---------------------------------------------------------------------------
+# teardown_dizzy_soak — Remove the dizzy soak that `make dizzy-soak-start`
+# started from ${OVERLAY_ROOT}/dizzy-soak, after the Chaos Mesh step and
+# before step 0: a running soak keeps servers on the lab hypervisors, and a
+# NovaCompute keeps its finalizer while Nova counts a server on its nodes. A
+# no-op unless ${OVERLAY_ROOT}/dizzy-soak/kustomization.yaml exists.
+#   1. the Job dizzy-soak and the pod dizzy-soak-reader, in the foreground.
+#      The Job's pod gets TERM, so dizzy removes its resources and the runner
+#      writes its report, within its grace period of 540 seconds, below
+#      TEARDOWN_TIMEOUT;
+#   2. the render of the directory: the K-ORC identity in openstack, which
+#      K-ORC deletes in Keystone while it still runs, the ServiceAccount, the
+#      ClusterRole and ClusterRoleBinding, and the claim with the reports. A
+#      render that fails exits 1 before the delete.
+# The Secrets and ConfigMaps start wrote go with their namespaces in step 7.
+# ---------------------------------------------------------------------------
+teardown_dizzy_soak() {
+  if [[ ! -f "${OVERLAY_ROOT}/dizzy-soak/kustomization.yaml" ]]; then
+    return 0
+  fi
+  delete_and_wait "the dizzy soak Job and reader pod" jobs.batch/dizzy-soak pod/dizzy-soak-reader \
+    -n dizzy --cascade=foreground
+
+  local render
+  if ! render="$(kubectl kustomize "${OVERLAY_ROOT}/dizzy-soak")"; then
+    log "ERROR: cannot render ${OVERLAY_ROOT}/dizzy-soak (kustomize's error is above)."
+    exit 1
+  fi
+  printf '%s\n' "${render}" | delete_and_wait "the dizzy soak objects" -f -
+}
+
+# ---------------------------------------------------------------------------
 # teardown_hypervisors — Step 0 of teardown_external_cluster: remove the lab
 # hypervisors (deploy/lab/metal-stack/hypervisor and hypervisor-fixtures,
 # applied by hand) while the ControlPlane, the operators, K-ORC,
@@ -691,7 +722,10 @@ teardown_dizzy() {
 # exists. First, when the overlay has chaos-mesh/, Chaos Mesh goes
 # (teardown_chaos_mesh): its schedules and workflows, then its experiments,
 # while chaos-controller-manager still releases their faults, then the overlay
-# without its Namespace, so the helm-controller uninstalls the chart. Then:
+# without its Namespace, so the helm-controller uninstalls the chart. Next,
+# when the overlay has dizzy-soak/, the dizzy soak goes (teardown_dizzy_soak):
+# its Job and reader pod, which ends a running soak with its report, then the
+# render of dizzy-soak/ (the K-ORC identity, the RBAC and the claim). Then:
 #   0. the lab hypervisors, when the overlay has them (teardown_hypervisors),
 #      while everything they need still runs;
 #   1. every ControlPlane in openstack, while the c5c3-operator runs, so it
@@ -786,6 +820,9 @@ teardown_external_cluster() {
   # Chaos Mesh, before step 0: every fault is released while its controller
   # runs.
   teardown_chaos_mesh
+
+  # The dizzy soak, before step 0: its servers would keep the NovaComputes.
+  teardown_dizzy_soak
 
   # 0. The lab hypervisors.
   teardown_hypervisors
