@@ -317,7 +317,8 @@ but `Conflict`. The rules, in order:
    name): `Conflict`. Otherwise this CR takes it as `Pending`.
 2. A held node that is no longer selected, is gone from the cluster, or belongs
    to a CR being deleted: `Releasing` without a disable when a pool that is not
-   being deleted selects it (a handover), `Draining` otherwise.
+   being deleted selects it (a handover). Otherwise `Draining`, except that an
+   entry already `Releasing` stays `Releasing`.
 3. A `Conflict` entry that is no longer selected is dropped.
 
 Pools of different Novas, or on different clusters, never conflict.
@@ -668,8 +669,9 @@ deleted, or for every node when the CR is deleted:
 2. The pool never migrates an instance. On a compute cluster,
    openstack-hypervisor-operator's Eviction, started through
    `Hypervisor.spec.maintenance`, empties the host; without it the owner does.
-   The Eviction live-migrates an ACTIVE server without block migration, which
-   needs [Live migration](#live-migration).
+   The Eviction live-migrates an ACTIVE server, which needs
+   [Live migration](#live-migration). The hvo image this repository builds
+   leaves the choice of block migration to Nova.
 3. When Nova counts no server on the host, the node goes `Releasing` and its pod
    is released.
 4. Once the pod is gone the pool deletes the compute service. Nova removes the

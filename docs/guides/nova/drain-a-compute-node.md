@@ -373,7 +373,7 @@ kubectl --context "$COMPUTE_CONTEXT" label node "$NODE" openstack.c5c3.io/nova-c
 ```
 
 The entry goes `Draining`, finds no service and no server, goes `Releasing`, and
-is dropped without a call to Nova. Take the node out of the chassis as well, as
+is dropped without a service delete. Take the node out of the chassis as well, as
 [Drain a Chassis Node](../ovn/drain-a-chassis-node.md) describes, or its
 Southbound `Chassis` row stays.
 

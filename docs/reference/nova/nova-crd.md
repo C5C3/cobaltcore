@@ -493,13 +493,14 @@ byte-identical to the live one and no workload rolls on a reordered slice.
 | `OS_NEUTRON__METADATA_PROXY_SHARED_SECRET` | `spec.metadata.sharedSecretRef` | `[neutron] metadata_proxy_shared_secret` | The metadata API alone |
 | `NOVA_AMQP_PORT` | the resolved transport URL | nothing; the readiness probe reads it | The scheduler and the conductor |
 
-"Every role" includes the migration Jobs and the archive CronJob. They read
-neither the bus nor Keystone, but an override is inert without the section that
-consumes it, and one environment for every process is what keeps a Job from
-migrating a different database than the API serves. The console proxy is the one
-exception: it reads console tokens out of the cell schema and opens no
-`nova_api` connection, so an override for a section it does not configure would
-only be an unused Secret reference.
+"Every role" includes the migration Jobs and the archive CronJob. They connect
+to neither the bus nor Keystone (the db-sync Job reads `[DEFAULT] transport_url`
+only to fill the cell mapping of `cell1`), but an override is inert without the
+section that consumes it, and one environment for every process is what keeps a
+Job from migrating a different database than the API serves. The console proxy
+is the one exception: it reads console tokens out of the cell schema and opens
+no `nova_api` connection, so an override for a section it does not configure
+would only be an unused Secret reference.
 
 `NOVA_AMQP_PORT` is a plain shell variable rather than an oslo.config override.
 The `nova-amqp-ready` probe reads it, and the port travels in the environment so
