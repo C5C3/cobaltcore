@@ -65,11 +65,18 @@ the c5c3-operator reads but never creates. Nova is projected through
 OpenBao is the source of truth for credentials, and ESO moves them in both
 directions: `ExternalSecret` resources deliver admin and database credentials
 to the services, `PushSecret` resources write operator-generated secrets back
-to OpenBao. Multi-tenant deployments get a per-ControlPlane tenant store
-provisioned by the operator. The bootstrap sequence and the credential chain
-are documented in
+to OpenBao. Every ControlPlane reaches OpenBao through a tenant store of its
+own, which the c5c3-operator provisions in the ControlPlane namespace. A shared
+cluster store serves standalone service CRs. The credentials of a
+ControlPlane's managed database are by default issued per lease by OpenBao's
+database engine. The bootstrap sequence and the credential chain are
+documented in
 [OpenBao Bootstrap](../reference/infrastructure/openbao-bootstrap.md) and
 [Infrastructure Manifests](../reference/infrastructure/infrastructure-manifests.md#admin-credential-chain).
+
+The figure shows the three paths and the store each one uses.
+
+![Secret flow on the management cluster. OpenBao in shared-services holds a KV engine and a database engine, and the External Secrets Operator moves three kinds of secret. Read: an ExternalSecret copies a value from the KV engine through a secret store into a Secret that pods and Jobs consume. Write-back: a PushSecret copies a Secret an operator wrote through the store into the KV engine. Dynamic: a VaultDynamicSecret generator draws a short-lived MariaDB user from the database engine with a login of its own and no store. A ControlPlane namespace uses the SecretStore openbao-tenant-store, which the c5c3-operator creates and which logs in with the role eso-tenant. The ClusterSecretStore openbao-cluster-store, with the role eso-management, serves standalone service CRs in the openstack namespace.](../diagrams/secrets-flow.svg)
 
 ## Service exposure
 

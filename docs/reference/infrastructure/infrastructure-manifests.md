@@ -474,14 +474,22 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 | `webhook.port` | `9443` | Webhook server listen port |
 | `certController.enabled` | `true` | Manage webhook TLS certificates |
 
-The production ESO kustomization renders the shared cluster-scoped
-`ClusterSecretStore/openbao-cluster-store` (`deploy/eso/`), which remains the
-**default** store every ControlPlane and its children use. Per-tenant namespaced
-`SecretStore`s are **not** created here — they are provisioned per ControlPlane
-by `deploy/openbao/bootstrap/setup-eso-tenant.sh` when a tenant opts in via
-`spec.secretStoreRef` (see the
+The production ESO kustomization renders one store,
+`ClusterSecretStore/openbao-cluster-store` (`deploy/eso/`). It serves the
+namespaces `openstack` and `shared-services`: standalone service CRs that set
+no `spec.secretStoreRef`, and the static ExternalSecrets of the kind overlay.
+A ControlPlane does not use it by default. The c5c3-operator provisions a
+namespaced `SecretStore/openbao-tenant-store` in every ControlPlane namespace
+(`reconcileESOTenantStore`) and routes the ControlPlane and its children
+through it. `spec.secretStoreRef` on the ControlPlane is the opt-out for a
+store you manage yourself, and `deploy/openbao/bootstrap/setup-eso-tenant.sh`
+provisions the same store by hand for a standalone namespace (see the
 [OpenBao bootstrap reference](./openbao-bootstrap.md#setup-eso-tenant-sh) and the
 [multi-tenant deployment guide](../../guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities)).
+
+The figure shows both stores and the paths that run through them.
+
+![Secret flow on the management cluster. OpenBao in shared-services holds a KV engine and a database engine, and the External Secrets Operator moves three kinds of secret. Read: an ExternalSecret copies a value from the KV engine through a secret store into a Secret that pods and Jobs consume. Write-back: a PushSecret copies a Secret an operator wrote through the store into the KV engine. Dynamic: a VaultDynamicSecret generator draws a short-lived MariaDB user from the database engine with a login of its own and no store. A ControlPlane namespace uses the SecretStore openbao-tenant-store, which the c5c3-operator creates and which logs in with the role eso-tenant. The ClusterSecretStore openbao-cluster-store, with the role eso-management, serves standalone service CRs in the openstack namespace.](../../diagrams/secrets-flow.svg)
 
 ### Memcached Operator
 
