@@ -145,7 +145,14 @@ case "\$1" in
     exit 0
     ;;
   exec)
-    # \$2 is the container, \$3 the command.
+    # \$2 is the container, \$3 the command. The disk-use block runs sh, which
+    # ci_dump_diagnostics_node_disk_test.sh covers; it answers here with a fixed
+    # reading so the dmesg modes below stay the only source of dmesg text.
+    if [ "\$3" = "sh" ]; then
+      printf '%s\n' "Filesystem  Size  Used Avail Use% Mounted on" "overlay  72G  31G  41G  43% /"
+      printf '18G\t/var/lib/containerd\n'
+      exit 0
+    fi
     case "${dmesg_mode}" in
       oom)
         printf '%s\n' \\
