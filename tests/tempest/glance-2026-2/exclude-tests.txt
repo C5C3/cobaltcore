@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tempest exclude list for Glance image API tests.
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+# Follows the same format as the per-release test-excludes lists.
+#
+# No exclusions yet — the full tempest.api.image suite runs against Glance.
