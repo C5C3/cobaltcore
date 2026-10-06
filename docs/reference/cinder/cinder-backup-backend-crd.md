@@ -193,7 +193,7 @@ lists the five steps and what differs per kind.
 | `CredentialsReady` | CinderBackupBackend | True | `CredentialsNotRequired` | The NFS export is mounted with the pod's own identity, so there is no credential to resolve. |
 | `CredentialsReady` | CinderBackupBackend | False | `WaitingForParent` | No Cinder of the name in `spec.cinderRef` exists, so which cluster the backup service runs on is unknown. The CR requeues after 15 seconds. |
 | `CredentialsReady` | CinderBackupBackend | False | `TargetClusterUnavailable` | The parent Cinder's `spec.targetClusterRef` names a target cluster that is not registered or no longer resolves. See [Target Clusters](../target-clusters.md). |
-| `ConfigProjected` | CinderBackupBackend | True | `ConfigProjected` | The `cinder-backup` Deployment mounts a `backup.conf` carrying this backend's rendered section. |
+| `ConfigProjected` | CinderBackupBackend | True | `ConfigProjected` | The `backup` volume of the `cinder-backup` Deployment references the Secret rendered for this backend. The controller compares the name of that Secret and does not read it. |
 | `ConfigProjected` | CinderBackupBackend | False | `WaitingForProjection` | The projection has not landed in the Deployment yet, or the parent Cinder no longer exists and the standing claim is stale. |
 | `Ready` | CinderBackupBackend | True | `AllReady` | Both sub-conditions are True. |
 | `Ready` | CinderBackupBackend | False | `NotAllReady` | At least one sub-condition is not True. |

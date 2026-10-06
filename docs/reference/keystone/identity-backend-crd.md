@@ -493,8 +493,8 @@ finalizer:
    adopted domains always leave the domain in place.
 4. **Fail open.** When the referenced Keystone CR is gone (stack teardown),
    the finalizer releases with a log line. When the admin credential is no
-   longer available, it releases with a Warning event. Neither holds the
-   backend hostage, and the domain is retained.
+   longer available, it releases with the Warning event `DomainDeleteFailed`.
+   Neither holds the backend hostage, and the domain is retained.
 
 ## Immutability and Validation Summary
 
