@@ -181,74 +181,65 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 34 jobs organised in a directed acyclic graph. Every gate, test,
-and E2E job except `test-shell` additionally carries a
-`github.event_name == 'pull_request'` guard; the publish and release jobs run only on
-push events:
+The workflow defines 37 jobs. `changes` and `test-shell` run on every event. The
+gate, test and E2E jobs carry a `github.event_name == 'pull_request'` guard, and
+`cleanup-e2e-tags` follows `build-e2e-images`, which runs on a pull request
+only. The publish and release jobs run on push events only.
 
-```
-Gate Jobs (pull requests; test-shell also on push):
-  lint ────────────────────────┐   (go == 'true')
-  format-check                 │   (go == 'true')
-  shellcheck ──────────────────┤   (always on PRs)
-  feature-ids                  │   (always on PRs)
-  test-shell                   │   (PRs + push: main, tags)
-  verify-codegen ──────────────┤   (go == 'true')
-  verify-invalid-cr-fixtures ──┤   (always on PRs)
-  chainsaw-lint ───────────────┤   (always on PRs, unless the run is a no-op)
-  actionlint ──────────────────┤   (actionlint == 'true')
-  test (matrix) ───────────────┼──> build-e2e-images ──> E2E Jobs
-  test-integration ────────────┘
+The figure groups the jobs into stages and draws the order of the stages. The
+table lists every job with its stage and its `needs:` list, and links the
+section that describes the job.
 
-Conditional Jobs (pull requests only, path-filtered via changes job):
-  test-race ────> needs: [changes], if: needs.changes.outputs.go == 'true'
-  govulncheck ─> needs: [changes], if: needs.changes.outputs.go == 'true'
-  helm-validate ──> needs: [changes], if: needs.changes.outputs.helm == 'true'
-  docs ──────────> needs: [changes], if: needs.changes.outputs.docs == 'true'
+![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-ovn-overlay and e2e-nova-libvirt. e2e-chaos follows e2e-operator, tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
 
-Image Build (pull requests only, depends on gates):
-  build-e2e-images ──> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]
+| Job | Stage | `needs` |
+| --- | --- | --- |
+| [`changes`](#changes) | Change detection | none |
+| [`lint`](#lint) | Gates | `changes` |
+| [`format-check`](#format-check) | Checks | `changes` |
+| [`shellcheck`](#shellcheck) | Gates | `changes` |
+| [`feature-ids`](#feature-ids) | Checks | `changes` |
+| [`review-markers`](#review-markers) | Checks | `changes` |
+| [`test-shell`](#test-shell) | Every event | none |
+| [`verify-invalid-cr-fixtures`](#verify-invalid-cr-fixtures) | Gates | `changes` |
+| [`chainsaw-lint`](#chainsaw-lint) | Gates | `changes` |
+| [`actionlint`](#actionlint) | Checks | `changes` |
+| [`test`](#test) | Gates | `changes` |
+| [`test-integration`](#test-integration) | Gates | `changes` |
+| [`test-race`](#test-race) | Checks | `changes` |
+| [`govulncheck`](#govulncheck) | Checks | `changes` |
+| [`verify-codegen`](#verify-codegen) | Gates | `changes` |
+| [`docs`](#docs) | Checks | `changes` |
+| [`helm-validate`](#helm-validate) | Checks | `changes` |
+| [`e2e-infra`](#e2e-infra) | Infrastructure suite | `changes` |
+| [`build-e2e-images`](#build-e2e-images) | Image build | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `verify-invalid-cr-fixtures`, `chainsaw-lint` |
+| [`e2e-operator`](#e2e-operator) | E2E fan-out | `changes`, `build-e2e-images` |
+| [`e2e-operator-upgrade`](#e2e-operator-upgrade) | E2E fan-out | `changes`, `build-e2e-images` |
+| [`e2e-chaos`](#e2e-chaos) | Chaos | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images`, `e2e-operator` |
+| [`e2e-prometheus`](#e2e-prometheus) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`e2e-controlplane`](#e2e-controlplane) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`e2e-controlplane-sso`](#e2e-controlplane-sso) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`e2e-autoscaling`](#e2e-autoscaling) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`e2e-external-keystone`](#e2e-external-keystone) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`e2e-multicluster`](#e2e-multicluster) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`e2e-ovn-overlay`](#e2e-ovn-overlay) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`e2e-nova-libvirt`](#e2e-nova-libvirt) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`tempest`](#tempest) | Tempest | `changes`, `build-e2e-images`, `e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus` |
+| [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `tempest` |
+| [`build-and-push`](#build-and-push) | Publish images | `changes` |
+| [`merge-operator-images`](#merge-operator-images) | Publish images | `changes`, `build-and-push` |
+| [`helm-push`](#helm-push) | Publish charts | `changes` |
+| [`helm-push-target-cluster`](#helm-push-target-cluster) | Publish charts | `changes` |
+| [`github-release`](#github-release) | Release | `changes`, `merge-operator-images`, `helm-push` |
 
-E2E Jobs (pull requests only, depend on build-e2e-images):
-  e2e-infra ──────> needs: [changes], if: needs.changes.outputs.e2e-infra == 'true'
-  e2e-operator ───> needs: [changes, build-e2e-images]
-  e2e-operator-upgrade > needs: [changes, build-e2e-images], if: needs.changes.outputs.e2e-operator-upgrade == 'true'
-  e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]
-  e2e-prometheus ─> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
-                     if: needs.changes.outputs.e2e-prometheus == 'true'
-  e2e-controlplane > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
-                     if: needs.changes.outputs.e2e-controlplane == 'true'
-  e2e-controlplane-sso > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
-                     if: needs.changes.outputs.e2e-controlplane == 'true'
-  e2e-external-keystone > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
-                     if: needs.changes.outputs.e2e-controlplane == 'true'
-  e2e-autoscaling > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
-                     if: needs.changes.outputs.e2e-autoscaling == 'true'
-  e2e-ovn-overlay > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
-                     if: needs.changes.outputs.e2e-ovn-overlay == 'true'
-  e2e-nova-libvirt > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
-                     if: needs.changes.outputs.e2e-nova-libvirt == 'true'
-  tempest ────────> needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
-  cleanup-e2e-tags > needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, tempest]
-
-Publish Jobs (push events only — main and v* tags; publish-only-on-merge):
-  build-and-push (matrix: operator × platform) ──> needs: [changes], if: push && has-e2e-operators == 'true'
-    └──> merge-operator-images ──> needs: [changes, build-and-push], if: push event
-  helm-push ──> needs: [changes], if: push && has-e2e-operators == 'true'
-
-Release Job (v* tags only, depends on publish):
-  github-release ──> needs: [changes, merge-operator-images, helm-push], if: v* tag
-```
-
-The E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`,
-`e2e-prometheus`, `e2e-controlplane`, `e2e-external-keystone`, `tempest`) share
-infrastructure setup via
-the `setup-e2e-infra` composite action and diagnostic teardown via
-`hack/ci-dump-diagnostics.sh`. They run on the `self-hosted` runners, as does
-`test-integration` — with two exceptions: the keystone leg of the
-`e2e-operator` matrix and the `pod` leg of the `e2e-chaos` matrix are pinned
-back to the `blacksmith-4vcpu-ubuntu-2404` runner for now, because those suites
-have not been stable on the self-hosted runners.
+`e2e-infra`, the jobs of the E2E fan-out, `e2e-chaos` and `tempest` bring up a
+kind cluster through the `create-kind-cluster` and `setup-e2e-infra` composite
+actions and dump diagnostics through `hack/ci-dump-diagnostics.sh`. They run on
+the `self-hosted` runners, as do `test-integration` and `build-e2e-images`, with
+two exceptions: the keystone leg of the `e2e-operator` matrix and the `pod` leg
+of the `e2e-chaos` matrix are pinned back to the `blacksmith-4vcpu-ubuntu-2404`
+runner for now, because those suites have not been stable on the self-hosted
+runners.
 
 ## Jobs
 

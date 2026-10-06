@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1312" viewBox="0 0 1808 1312" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="CI stage overview">
+<title>CI stage overview</title>
+<rect width="1808" height="1312" fill="#F6F5F1"/>
+<rect x="40" y="40" width="300" height="125" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Every event</text>
+<text x="59" y="114.2" font-size="20" font-weight="400" fill="#2B3440">test-shell</text>
+<text x="59" y="142.2" font-size="20" font-weight="400" fill="#55606E">needs no other job</text>
+<rect x="388" y="40" width="540" height="125" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="407" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Change detection</text>
+<text x="407" y="114.2" font-size="20" font-weight="400" fill="#2B3440">changes</text>
+<text x="407" y="142.2" font-size="20" font-weight="400" fill="#55606E">one flag per job, from the changed paths and the labels</text>
+<rect x="976" y="40" width="792" height="385" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="995" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Push to main or a v* tag</text>
+<rect x="1000" y="103" width="320" height="153" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1019" y="142.36" font-size="26" font-weight="700" fill="#2B3440">Publish images</text>
+<text x="1019" y="177.2" font-size="20" font-weight="400" fill="#2B3440">build-and-push</text>
+<text x="1019" y="205.2" font-size="20" font-weight="400" fill="#2B3440">merge-operator-images</text>
+<text x="1019" y="233.2" font-size="20" font-weight="400" fill="#55606E">the operator images</text>
+<rect x="1000" y="276" width="320" height="125" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1019" y="315.36" font-size="26" font-weight="700" fill="#2B3440">Publish charts</text>
+<text x="1019" y="350.2" font-size="20" font-weight="400" fill="#2B3440">helm-push</text>
+<text x="1019" y="378.2" font-size="20" font-weight="400" fill="#2B3440">helm-push-target-cluster</text>
+<rect x="1494" y="170" width="250" height="192" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1513" y="209.36" font-size="26" font-weight="700" fill="#2B3440">Release</text>
+<text x="1513" y="244.2" font-size="20" font-weight="400" fill="#2B3440">github-release</text>
+<text x="1513" y="272.2" font-size="20" font-weight="400" fill="#55606E">v* tags only</text>
+<rect x="40" y="481" width="1728" height="665" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="520.36" font-size="26" font-weight="700" fill="#2B3440">Pull request</text>
+<rect x="60" y="544" width="272" height="377" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="79" y="583.36" font-size="26" font-weight="700" fill="#2B3440">Gates</text>
+<text x="79" y="618.2" font-size="20" font-weight="400" fill="#2B3440">lint</text>
+<text x="79" y="646.2" font-size="20" font-weight="400" fill="#2B3440">shellcheck</text>
+<text x="79" y="674.2" font-size="20" font-weight="400" fill="#2B3440">test</text>
+<text x="79" y="702.2" font-size="20" font-weight="400" fill="#2B3440">test-integration</text>
+<text x="79" y="730.2" font-size="20" font-weight="400" fill="#2B3440">verify-codegen</text>
+<text x="79" y="758.2" font-size="20" font-weight="400" fill="#2B3440">verify-invalid-cr-fixtures</text>
+<text x="79" y="786.2" font-size="20" font-weight="400" fill="#2B3440">chainsaw-lint</text>
+<text x="79" y="814.2" font-size="20" font-weight="400" fill="#55606E">needed by the image build</text>
+<rect x="374" y="544" width="308" height="377" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="393" y="583.36" font-size="26" font-weight="700" fill="#2B3440">Image build</text>
+<text x="393" y="618.2" font-size="20" font-weight="400" fill="#2B3440">build-e2e-images</text>
+<text x="393" y="646.2" font-size="20" font-weight="400" fill="#55606E">builds what changed</text>
+<text x="393" y="674.2" font-size="20" font-weight="400" fill="#55606E">and reuses the images of main</text>
+<rect x="724" y="544" width="246" height="377" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="743" y="583.36" font-size="26" font-weight="700" fill="#2B3440">E2E fan-out</text>
+<text x="743" y="618.2" font-size="20" font-weight="400" fill="#2B3440">e2e-operator</text>
+<text x="743" y="646.2" font-size="20" font-weight="400" fill="#2B3440">e2e-operator-upgrade</text>
+<text x="743" y="674.2" font-size="20" font-weight="400" fill="#2B3440">e2e-prometheus</text>
+<text x="743" y="702.2" font-size="20" font-weight="400" fill="#2B3440">e2e-controlplane</text>
+<text x="743" y="730.2" font-size="20" font-weight="400" fill="#2B3440">e2e-controlplane-sso</text>
+<text x="743" y="758.2" font-size="20" font-weight="400" fill="#2B3440">e2e-autoscaling</text>
+<text x="743" y="786.2" font-size="20" font-weight="400" fill="#2B3440">e2e-external-keystone</text>
+<text x="743" y="814.2" font-size="20" font-weight="400" fill="#2B3440">e2e-multicluster</text>
+<text x="743" y="842.2" font-size="20" font-weight="400" fill="#2B3440">e2e-ovn-overlay</text>
+<text x="743" y="870.2" font-size="20" font-weight="400" fill="#2B3440">e2e-nova-libvirt</text>
+<text x="743" y="898.2" font-size="20" font-weight="400" fill="#55606E">one kind cluster per job</text>
+<rect x="1012" y="544" width="202" height="377" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1031" y="583.36" font-size="26" font-weight="700" fill="#2B3440">Chaos</text>
+<text x="1031" y="618.2" font-size="20" font-weight="400" fill="#2B3440">e2e-chaos</text>
+<text x="1031" y="646.2" font-size="20" font-weight="400" fill="#55606E">after e2e-operator</text>
+<rect x="1256" y="544" width="204" height="377" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1275" y="583.36" font-size="26" font-weight="700" fill="#2B3440">Tempest</text>
+<text x="1275" y="618.2" font-size="20" font-weight="400" fill="#2B3440">tempest</text>
+<text x="1275" y="646.2" font-size="20" font-weight="400" fill="#55606E">one job per service</text>
+<text x="1275" y="674.2" font-size="20" font-weight="400" fill="#55606E">and release</text>
+<rect x="1502" y="544" width="244" height="377" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1521" y="583.36" font-size="26" font-weight="700" fill="#2B3440">Cleanup</text>
+<text x="1521" y="618.2" font-size="20" font-weight="400" fill="#2B3440">cleanup-e2e-tags</text>
+<text x="1521" y="646.2" font-size="20" font-weight="400" fill="#55606E">deletes the run-scoped</text>
+<text x="1521" y="674.2" font-size="20" font-weight="400" fill="#55606E">image tags, also</text>
+<text x="1521" y="702.2" font-size="20" font-weight="400" fill="#55606E">after a failure</text>
+<rect x="60" y="969" width="1000" height="153" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="79" y="1008.36" font-size="26" font-weight="700" fill="#2B3440">Checks</text>
+<text x="79" y="1043.2" font-size="20" font-weight="400" fill="#2B3440">format-check</text>
+<text x="319" y="1043.2" font-size="20" font-weight="400" fill="#2B3440">feature-ids</text>
+<text x="559" y="1043.2" font-size="20" font-weight="400" fill="#2B3440">review-markers</text>
+<text x="799" y="1043.2" font-size="20" font-weight="400" fill="#2B3440">actionlint</text>
+<text x="79" y="1071.2" font-size="20" font-weight="400" fill="#2B3440">test-race</text>
+<text x="319" y="1071.2" font-size="20" font-weight="400" fill="#2B3440">govulncheck</text>
+<text x="559" y="1071.2" font-size="20" font-weight="400" fill="#2B3440">docs</text>
+<text x="799" y="1071.2" font-size="20" font-weight="400" fill="#2B3440">helm-validate</text>
+<text x="79" y="1099.2" font-size="20" font-weight="400" fill="#55606E">needed by no other job</text>
+<rect x="1208" y="969" width="300" height="125" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1227" y="1008.36" font-size="26" font-weight="700" fill="#2B3440">Infrastructure suite</text>
+<text x="1227" y="1043.2" font-size="20" font-weight="400" fill="#2B3440">e2e-infra</text>
+<text x="1227" y="1071.2" font-size="20" font-weight="400" fill="#55606E">needs only changes</text>
+<polyline points="658,165 658,470.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="658,481 650.8,466 665.2,466" fill="#3A4452"/>
+<polyline points="928,102.5 965.5,102.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="976,102.5 961,109.7 961,95.3" fill="#3A4452"/>
+<polyline points="332,574 363.5,574" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="374,574 359,581.2 359,566.8" fill="#3A4452"/>
+<polyline points="682,574 713.5,574" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="724,574 709,581.2 709,566.8" fill="#3A4452"/>
+<polyline points="970,574 1001.5,574" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1012,574 997,581.2 997,566.8" fill="#3A4452"/>
+<polyline points="1214,574 1245.5,574" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1256,574 1241,581.2 1241,566.8" fill="#3A4452"/>
+<polyline points="1460,574 1491.5,574" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1502,574 1487,581.2 1487,566.8" fill="#3A4452"/>
+<polyline points="1358,969 1358,931.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1358,921 1365.2,936 1350.8,936" fill="#3A4452"/>
+<polyline points="1320,220 1483.5,220" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1494,220 1479,227.2 1479,212.8" fill="#3A4452"/>
+<polyline points="1320,312 1483.5,312" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1494,312 1479,319.2 1479,304.8" fill="#3A4452"/>
+<text x="40" y="1197.2" font-size="20" font-weight="400" fill="#55606E">A label is a job of .github/workflows/ci.yaml, under its key. A box holds the jobs of one stage, and a frame the stages of one event.</text>
+<text x="40" y="1231.2" font-size="20" font-weight="400" fill="#55606E">An arrow says that a job of the stage at its tip needs a job of the stage at its tail. The job table on the page lists every needs entry.</text>
+<text x="40" y="1265.2" font-size="20" font-weight="400" fill="#55606E">From the image build on, a job starts when the image build succeeded and none of the jobs it needs failed or was cancelled. A gate that was skipped holds nothing back.</text>
+</svg>
