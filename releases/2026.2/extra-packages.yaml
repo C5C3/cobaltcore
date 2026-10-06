@@ -81,7 +81,16 @@ neutron:
     - haproxy
     - iproute2
 cinder:
-  pip_extras: []
+  pip_extras:
+    # cinder 29.0.0 moved the backup drivers' libraries out of its hard
+    # requirements into these extras (boto3, google-api-python-client,
+    # python-swiftclient); 28.0.0 installed all three. The image keeps them:
+    # tests/container-images/verify_cinder.sh imports boto3, and
+    # oslo-config-generator loads cinder.opts, which imports
+    # cinder/backup/drivers/gcs.py and with it googleapiclient.
+    - s3
+    - gcs
+    - swift
   pip_packages: []
   apt_packages:
     # uWSGI is compiled in venv-builder against the shared libpython; without
