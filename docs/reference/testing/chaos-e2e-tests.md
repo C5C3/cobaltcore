@@ -242,6 +242,13 @@ assertion windows.
 | [nova-broker-outage](#nova-broker-outage) | — | `nova-broker-chaos` | Message-bus partition (degrade and recover) | `SchedulerReady=False/WaitingForScheduler`, `ConductorReady=False/WaitingForConductor` and `Ready=False/NotAllReady` within 180 s, the API container ready at `restartCount` 0 throughout, a server create unanswered within 45 s while `GET /` answers 200 (`BLOCKED-OK`), the two conditions True again within 120 s of the lift and the stalled create reaching ACTIVE (`RECOVERED-OK`) |
 | [nova-mariadb-outage](#nova-mariadb-outage) | — | `nova-db-chaos` | Database partition (fail-closed read) | `DeploymentReady`, `NovaAPIReady`, `SchedulerReady` and `ConductorReady` all `True` maintained, a Keystone token still obtainable, `GET /v2.1/servers` answering 5xx or timing out and never 4xx (`FAILCLOSED-OK`), the same list answering an empty array before and after (`LIST-OK`) |
 | [nova-placement-outage](#nova-placement-outage) | — | `nova-placement-chaos` | Scheduling outage (fail-closed build) | `SchedulerReady=True/SchedulerReady`, `NovaAPIReady=True/APIHealthy` and `Ready=True/AllReady` maintained, `GET /`, a server list and a 202 on create all answered under the fault, the build reaching ERROR within 300 s with a fault that reports an unplaced build (`FAILCLOSED-OK`), a fresh create reaching ACTIVE after the lift (`RECOVERED-OK`) |
+| [horizon-memcached-pod-kill](#horizon-memcached-pod-kill) | — | `horizon-chaos-mc` | No-regression | `Ready=True/AllReady` at baseline, after Memcached has recovered and after the PodChaos is deleted, every dashboard container at `restartCount` 0 |
+| [horizon-operator-pod-kill](#horizon-operator-pod-kill) | — | `horizon-chaos-op` | Operator self-recovery | Every pre-chaos operator pod UID snapshotted, `PodChaos mode: one` replaces one operator pod, operator `readyReplicas` back at `spec.replicas`, a replica patch afterwards reaches Deployment `horizon-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady` |
+| [glance-operator-pod-kill](#glance-operator-pod-kill) | — | `glance-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted, `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `glance-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady` |
+| [placement-operator-pod-kill](#placement-operator-pod-kill) | — | `placement-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted, `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `placement-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady` |
+| [barbican-operator-pod-kill](#barbican-operator-pod-kill) | — | `barbican-chaos-op` | Operator self-recovery | `SecretStoresReady=True/AllStoresProjected` and `Ready=True/AllReady` at baseline, every pre-chaos operator and workload pod UID snapshotted, `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `barbican-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady` |
+| [glance-garage-outage](#glance-garage-outage) | — | `glance-garage-chaos` | Object-store partition (fail-closed write) | `BackendsReady=True/AllBackendsProjected` at baseline, `Ready=True/AllReady` maintained, `GET /healthcheck` 200 under the partition, `PUT /v2/images/{id}/file` never 2xx under the partition (`FAILCLOSED-OK`), the image not `active` after the partition (`STAYED-FAILED-OK`), a fresh upload reaching `active` (`WRITE-OK`) |
+| [barbican-openbao-outage](#barbican-openbao-outage) | — | `barbican-bao-outage` | Secret-store partition (fail-closed write) | `BarbicanAPIReady=True/APIHealthy` maintained, `GET /healthcheck` 200 before and after the failed write, a Keystone token still obtainable, `POST /v1/secrets` answering 5xx or timing out and never 2xx or 4xx (`FAILCLOSED-OK`), no secret of that name returning the payload after the partition (`STAYED-FAILED-OK`), a fresh secret read back with its payload (`WRITE-OK`) |
 
 ---
 
@@ -1350,6 +1357,437 @@ from `nova-system`, `keystone-system`, `ovn-system`, `neutron-system`,
 
 ---
 
+### horizon-memcached-pod-kill
+
+**File:** `tests/e2e-chaos/horizon-memcached-pod-kill/chainsaw-test.yaml`
+
+**Purpose:** A `PodChaos` kills one Memcached pod under a Horizon. Horizon keeps its
+sessions in signed cookies, so Memcached only backs the Django cache. Losing it lowers
+the cache hit rate. It logs no user out and changes no condition. The suite therefore
+asserts recovery without a restart: `Ready` stays `True` and no dashboard container
+restarts.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Horizon CR | `apply` | Applies `00-horizon-cr.yaml`: Horizon CR `horizon-chaos-mc` with one replica and cache `clusterRef` `openstack-memcached` |
+| 2 | Assert baseline Ready=True | `assert` (5m) | `Ready=True` with reason `AllReady` |
+| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-memcached-horizon` (`action: pod-kill`, `mode: one`, `gracePeriod: 0`) targeting `app.kubernetes.io/name: memcached` in `openstack` |
+| 4 | Verify the kill took effect and Memcached recovered | `script` (150s) + `assert` (5m) | Reads `.spec.replicas` of Deployment `openstack-memcached`, polls `readyReplicas` up to 15 times at 2 s until it drops below that count, then up to 45 times at 2 s until it equals that count again. Then asserts `Ready=True` with reason `AllReady` |
+| 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-memcached-horizon` |
+| 6 | Assert Ready held and zero dashboard pod restarts | `assert` (5m) + `script` | `Ready=True` with reason `AllReady`. The script reads the `restartCount` of every container in the pods labelled `app.kubernetes.io/name=horizon,app.kubernetes.io/instance=horizon-chaos-mc` and fails when one of them is not 0 |
+
+**Fixtures:** `00-horizon-cr.yaml`, `01-podchaos.yaml`
+
+**Catch blocks:** Step 2 calls `../diagnostics.sh baseline horizon-chaos-mc --cr-kind=horizon`.
+Steps 4 and 6 call `../diagnostics.sh chaos horizon-chaos-mc --cr-kind=horizon` with
+`--dep-label=app.kubernetes.io/name=memcached`. Steps 1, 3 and 5 have no catch block.
+
+**Design notes:**
+
+- The suite asserts no degraded condition. A degraded condition would need a
+  cache-health probe, and the operator has none. Recovery without a restart is the
+  contract the suite can observe.
+- Step 4 polls the Deployment's `readyReplicas`. A `kubectl wait` on single Pods
+  errors with `NotFound` when Chaos Mesh deletes the Pod (issue #214), and
+  Deployment-level polling is not affected by a Pod replacement.
+- Step 4 first requires `readyReplicas` to drop below the desired count. Without that
+  check the recovery loop would pass even if the PodChaos selector matched no pod.
+- The 150s script timeout covers a worst case of 120 s (15 polls and 45 polls at 2 s)
+  with a 30 s margin.
+- The step 4 script omits `set -euo pipefail`. Its polling loop uses the default
+  `${READY:-0}`, which would fail under `set -e` when kubectl returns empty output.
+- Step 6 checks every dashboard pod, not only the first one.
+
+---
+
+### horizon-operator-pod-kill
+
+**File:** `tests/e2e-chaos/horizon-operator-pod-kill/chainsaw-test.yaml`
+
+**Purpose:** A `PodChaos` kills one horizon-operator pod. The operator runs two
+replicas. The suite proves the kill by pod identity: it snapshots every operator pod
+UID before the fault and waits until at least one of them is gone. It then proves that
+the recovered operator reconciles. A replica count patched after the recovery has to
+reach the Deployment of the CR.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Horizon CR and wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-horizon-cr.yaml`: Horizon CR `horizon-chaos-op` with one replica, which reaches `Ready=True/AllReady` |
+| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshot and the polls share state: reads `.spec.replicas` of Deployment `horizon-operator` in `horizon-system`, snapshots the operator pod UIDs, applies `01-podchaos.yaml` (PodChaos `kill-horizon-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: horizon-operator` in `horizon-system`), waits up to 120 s for at least one pre-chaos UID to disappear, then waits up to 120 s for `readyReplicas` to equal the desired count |
+| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-horizon-operator` from `horizon-system` |
+| 4 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | Applies `02-patch-scale.yaml`: sets `spec.deployment.replicas` to 2. Deployment `horizon-chaos-op` reaches `replicas: 2`, `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is `Ready=True/AllReady` |
+
+**Fixtures:** `00-horizon-cr.yaml`, `01-podchaos.yaml`, `02-patch-scale.yaml`
+
+**Catch blocks:** Step 1 calls `../diagnostics.sh baseline horizon-chaos-op --cr-kind=horizon`.
+Steps 2 and 4 call `../diagnostics.sh chaos horizon-chaos-op --cr-kind=horizon` with
+`--dep-label=app.kubernetes.io/name=horizon-operator` and `--dep-ns=horizon-system`.
+Step 3 has no catch block.
+
+**Design notes:**
+
+- The snapshot covers every pre-chaos operator pod UID. Recording only `.items[0]` is
+  racy: `PodChaos mode: one` picks its victim at random among the two replicas, so the
+  recorded pod stays alive in about half the runs and the poll for its disappearance
+  fails spuriously.
+- "At least one pre-chaos UID is gone" proves the kill whichever pod Chaos Mesh picked.
+- Step 2 reads the desired replica count from the Deployment, so the test stays valid
+  if the operator replica count changes.
+- The first poll skips an iteration in which kubectl returns no UIDs. An empty list
+  would otherwise count as "no pre-chaos UID present".
+- The 270s script timeout covers a worst case of 240 s (two phases of 60 polls at 2 s)
+  with a 30 s margin.
+- The script omits `set -euo pipefail`. The polling loops use `${VAR:-0}` defaults
+  that would fail under `set -e` when kubectl returns empty output, and the script
+  checks every loop exit condition itself.
+
+---
+
+### glance-operator-pod-kill
+
+**File:** `tests/e2e-chaos/glance-operator-pod-kill/chainsaw-test.yaml`
+
+**Purpose:** A `PodChaos` kills one glance-operator pod. The operator is a
+control-plane component, so the kill must not disturb the running Glance pods. The
+suite states that as pod identity: it snapshots the UIDs of the pods that carry the
+instance label of the CR before the kill, and it fails if one of those UIDs is missing
+after the operator has recovered. A replica count patched afterwards has to reach the
+Deployment of the CR, which shows that the recovered operator reconciles spec changes.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Glance CR and default store, wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-glance-cr.yaml`: Glance CR `glance-chaos-op` with database `glance_chaos_op` and one replica. Applies `01-glance-backend.yaml`: GlanceBackend `glance-chaos-op-s3` (`type: S3`, `isDefault: true`, bucket `glance-images`). The CR reaches `Ready=True/AllReady` |
+| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshots and the polls share state: reads `.spec.replicas` of Deployment `glance-operator` in `glance-system`, snapshots the operator pod UIDs and the UIDs of the pods labelled `app.kubernetes.io/instance=glance-chaos-op` in `openstack`, applies `02-podchaos.yaml` (PodChaos `kill-glance-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: glance-operator` in `glance-system`), waits up to 120 s for at least one pre-chaos operator UID to disappear, waits up to 120 s for `readyReplicas` to equal the desired count, then fails if a pre-chaos workload UID is missing |
+| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-glance-operator` from `glance-system` |
+| 4 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | Applies `03-patch-scale.yaml`: sets `spec.deployment.replicas` to 2. Deployment `glance-chaos-op` reaches `replicas: 2`, `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is `Ready=True/AllReady` |
+
+**Fixtures:** `00-glance-cr.yaml`, `01-glance-backend.yaml`, `02-podchaos.yaml`,
+`03-patch-scale.yaml`
+
+**Catch blocks:** Step 1 calls `../diagnostics.sh baseline glance-chaos-op --cr-kind=glance`.
+Steps 2 and 4 call `../diagnostics.sh chaos glance-chaos-op --cr-kind=glance` with
+`--dep-label=app.kubernetes.io/name=glance-operator` and `--dep-ns=glance-system`.
+Step 3 has no catch block.
+
+**Design notes:**
+
+- glance-api registers no store without a default backend and cannot go Ready, so
+  step 1 applies `01-glance-backend.yaml` together with the CR. The backend points at
+  the in-cluster Garage S3 endpoint and takes its credentials from the Secret
+  `garage-s3-credentials`.
+- The snapshot covers every pre-chaos operator pod UID. Recording only `.items[0]` is
+  racy: `PodChaos mode: one` picks its victim at random among the two replicas, so the
+  recorded pod stays alive in about half the runs and the poll for its disappearance
+  fails spuriously.
+- The workload comparison is the operational-independence half of the contract. A
+  pre-chaos workload UID that is gone means the operator kill disturbed a Glance pod,
+  and the step fails with both UID lists printed.
+- The script sets `REPLACED=0` before the first poll. Every iteration can skip on an
+  empty UID list, and an unset `REPLACED` would turn the guard after the loop into an
+  "integer expression expected" error that the `if` reads as false. The script would
+  then continue to the second poll without failing.
+- The 270s script timeout covers a worst case of 240 s (two phases of 60 polls at 2 s)
+  with a 30 s margin. The workload comparison is two kubectl reads without polling.
+- The script omits `set -euo pipefail`. The polling loops use `${VAR:-0}` defaults
+  that would fail under `set -e` when kubectl returns empty output, and the script
+  checks every loop exit condition itself.
+
+---
+
+### placement-operator-pod-kill
+
+**File:** `tests/e2e-chaos/placement-operator-pod-kill/chainsaw-test.yaml`
+
+**Purpose:** A `PodChaos` kills one placement-operator pod. The operator is a
+control-plane component, so the kill must not disturb the running Placement pods. The
+suite snapshots the UIDs of the pods that carry the instance label of the CR before
+the kill, and it fails if one of those UIDs is missing after the operator has
+recovered. A replica count patched afterwards has to reach the Deployment of the CR,
+which shows that the recovered operator reconciles spec changes.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Placement CR and wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-placement-cr.yaml`: Placement CR `placement-chaos-op` with database `placement_chaos_op` and one replica, which reaches `Ready=True/AllReady` |
+| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshots and the polls share state: reads `.spec.replicas` of Deployment `placement-operator` in `placement-system`, snapshots the operator pod UIDs and the UIDs of the pods labelled `app.kubernetes.io/instance=placement-chaos-op` in `openstack`, applies `01-podchaos.yaml` (PodChaos `kill-placement-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: placement-operator` in `placement-system`), waits up to 120 s for at least one pre-chaos operator UID to disappear, waits up to 120 s for `readyReplicas` to equal the desired count, then fails if a pre-chaos workload UID is missing |
+| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-placement-operator` from `placement-system` |
+| 4 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | Applies `02-patch-scale.yaml`: sets `spec.deployment.replicas` to 2. Deployment `placement-chaos-op` reaches `replicas: 2`, `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is `Ready=True/AllReady` |
+
+**Fixtures:** `00-placement-cr.yaml`, `01-podchaos.yaml`, `02-patch-scale.yaml`
+
+**Catch blocks:** Step 1 calls `../diagnostics.sh baseline placement-chaos-op` and steps 2
+and 4 call `../diagnostics.sh chaos placement-chaos-op`, all three with
+`--cr-kind=placement`, `--dep-label=app.kubernetes.io/name=placement-operator` and
+`--dep-ns=placement-system`. Step 3 has no catch block.
+
+**Design notes:**
+
+- Placement has no store backend, so the CR is the only object the suite needs
+  before the baseline.
+- The snapshot covers every pre-chaos operator pod UID. Recording only `.items[0]` is
+  racy: `PodChaos mode: one` picks its victim at random among the two replicas, so the
+  recorded pod stays alive in about half the runs and the poll for its disappearance
+  fails spuriously.
+- The workload comparison is the operational-independence half of the contract. A
+  pre-chaos workload UID that is gone means the operator kill disturbed a Placement
+  pod, and the step fails with both UID lists printed.
+- The script sets `REPLACED=0` before the first poll, for the reason
+  `glance-operator-pod-kill` gives.
+- The 270s script timeout covers a worst case of 240 s (two phases of 60 polls at 2 s)
+  with a 30 s margin. The workload comparison is two kubectl reads without polling.
+- The script omits `set -euo pipefail`. The polling loops use `${VAR:-0}` defaults
+  that would fail under `set -e` when kubectl returns empty output, and the script
+  checks every loop exit condition itself.
+
+---
+
+### barbican-operator-pod-kill
+
+**File:** `tests/e2e-chaos/barbican-operator-pod-kill/chainsaw-test.yaml`
+
+**Purpose:** A `PodChaos` kills one barbican-operator pod. The operator is a
+control-plane component, so the kill must not disturb the running Barbican pods. The
+suite snapshots the UIDs of the pods that carry the instance label of the CR before
+the kill, and it fails if one of those UIDs is missing after the operator has
+recovered. A replica count patched afterwards has to reach the Deployment of the CR,
+which shows that the recovered operator reconciles spec changes.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Barbican CR and store, wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-barbican-cr.yaml`: Barbican CR `barbican-chaos-op` with database `barbican_chaos_opkill` and one replica. Applies `01-barbican-secretstore.yaml`: BarbicanSecretStore `barbican-chaos-op-store` (`type: OpenBao`, `isDefault: true`, `instanceRef` `openbao-instance`). The CR reaches `SecretStoresReady=True/AllStoresProjected` and `Ready=True/AllReady` |
+| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshots and the polls share state: reads `.spec.replicas` of Deployment `barbican-operator` in `barbican-system`, snapshots the operator pod UIDs and the UIDs of the pods labelled `app.kubernetes.io/instance=barbican-chaos-op` in `openstack`, applies `02-podchaos.yaml` (PodChaos `kill-barbican-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: barbican-operator` in `barbican-system`), waits up to 120 s for at least one pre-chaos operator UID to disappear, waits up to 120 s for `readyReplicas` to equal the desired count, then fails if a pre-chaos workload UID is missing |
+| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-barbican-operator` from `barbican-system` |
+| 4 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | Applies `03-patch-scale.yaml`: sets `spec.deployment.replicas` to 2. Deployment `barbican-chaos-op` reaches `replicas: 2`, `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is `Ready=True/AllReady` |
+
+**Fixtures:** `00-barbican-cr.yaml`, `01-barbican-secretstore.yaml`, `02-podchaos.yaml`,
+`03-patch-scale.yaml`
+
+**Catch blocks:** Step 1 calls `../diagnostics.sh baseline barbican-chaos-op` and steps 2
+and 4 call `../diagnostics.sh chaos barbican-chaos-op`, all three with
+`--cr-kind=barbican`, `--dep-label=app.kubernetes.io/name=barbican-operator` and
+`--dep-ns=barbican-system`. Step 1 also dumps the BarbicanSecretStore
+`barbican-chaos-op-store` as YAML. Step 3 has no catch block.
+
+**Design notes:**
+
+- Barbican resolves its secret store when the process starts, so step 1 applies a
+  default store together with the CR. A Barbican without a credential-ready default
+  store reports `SecretStoresReady=False` with reason `NoDefaultSecretStore` and
+  renders no config.
+- The store runs in managed mode. `instanceRef` names the OpenBaoCluster
+  `openbao-instance` in the same namespace, and the server URL, the CA Secret
+  `openbao-instance-tls-ca` and the provisioner ServiceAccount follow from that name.
+- The single-default rule is scoped to `spec.barbicanRef`, so this store does not
+  collide with the default stores that other suites attach to their own Barbicans.
+- The suite runs without a Keystone. The CRD requires `keystoneEndpoint` and the
+  operator renders it into `[keystone_authtoken]`, but nothing in the suite
+  authenticates: the readiness probe requests `/healthcheck`, which is routed outside
+  the authtoken pipeline. `barbican-openbao-outage` is the suite that authenticates.
+- The workload snapshot selects by the instance label alone, so it also holds the
+  completed db-sync and schema-check Job pods. Neither Job carries a TTL, so both pods
+  stay until the end of the run and only a real deletion changes their UIDs.
+- The snapshot covers every pre-chaos operator pod UID, and the script sets
+  `REPLACED=0` before the first poll, both for the reasons `glance-operator-pod-kill`
+  gives.
+- The 270s script timeout covers a worst case of 240 s (two phases of 60 polls at 2 s)
+  with a 30 s margin. The workload comparison is two kubectl reads without polling.
+
+---
+
+### glance-garage-outage
+
+**File:** `tests/e2e-chaos/glance-garage-outage/chainsaw-test.yaml`
+
+**Purpose:** A `NetworkChaos` partition severs glance-api from Garage, the S3 store
+behind the default image backend. The suite proves that the image write path fails
+closed while the API and the CR stay up. An upload during the partition must not
+answer 2xx, and the image must still be non-active once Garage is reachable again.
+In the same window `GET /healthcheck` answers 200 and the CR stays `Ready=True`:
+Glance readiness requests `/healthcheck`, which the oslo middleware serves without
+touching S3, so the storage outage is invisible to readiness. That is the contrast
+with `mariadb-network-partition`, where the readiness probe is database-aware and a
+MariaDB partition turns `Ready` to `False`.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply the Glance CR and default S3 store | `apply` + `assert` (5m) | Applies `00-glance-cr.yaml`: Glance CR `glance-garage-chaos` with database `glance_garage_chaos` and one replica. Applies `01-glancebackend-cr.yaml`: GlanceBackend `glance-garage-chaos-s3` (`type: S3`, `isDefault: true`, host `http://garage.shared-services.svc.cluster.local:3900`, bucket `glance-images`). The CR reaches `BackendsReady=True/AllBackendsProjected` and `Ready=True/AllReady` |
+| 2 | Baseline write | `script` (5m) | Pod `glance-garage-baseline-probe` on image `ghcr.io/c5c3/glance:2025.2` runs a python client against `http://glance-garage-chaos.openstack.svc:9292`: `POST /v2/images` creates `garage-baseline-probe`, `PUT /v2/images/{id}/file` uploads a payload to the default store, and `GET /v2/images/{id}` must report status `active`. The step reads the sentinel `WRITE-OK` from the pod log |
+| 3 | Inject NetworkChaos | `apply` | Applies `02-networkchaos.yaml`: NetworkChaos `partition-garage` (`action: partition`, `mode: all`, `direction: both`, `duration: "600s"`) |
+| 4 | Assert injection active | `script` (60s) | `kubectl wait networkchaos/partition-garage -n openstack --for=condition=AllInjected --timeout=60s` |
+| 5 | Assert fail-closed | `script` (5m) + `assert` (5m) | Pod `glance-garage-failclosed-probe`: `GET /healthcheck` answers 200, `POST /v2/images` still creates the record `garage-outage-failclosed`, and one `PUT /v2/images/{id}/file` bounded at 90 seconds must not answer 2xx. A non-2xx status, a timeout and a connection error all pass. Sentinel `FAILCLOSED-OK`. Then asserts `Ready=True/AllReady` on the CR |
+| 6 | Lift the partition | `delete` | Removes NetworkChaos `partition-garage` |
+| 7 | Assert the failed write stayed failed | `script` (3m) | Pod `glance-garage-failclosed-verify`: `GET /v2/images?name=garage-outage-failclosed` must list the image, and no listed image may have status `active`. Sentinel `STAYED-FAILED-OK` |
+| 8 | Assert recovery | `script` (5m) | Pod `glance-garage-recovery-probe`: creates `garage-recovery-probe`, uploads a payload, and the image must report status `active`. Sentinel `WRITE-OK` |
+
+**Fixtures:** `00-glance-cr.yaml`, `01-glancebackend-cr.yaml`, `02-networkchaos.yaml`
+
+**Catch blocks:** Steps 1 and 2 call `../diagnostics.sh baseline glance-garage-chaos --cr-kind=glance`.
+Steps 4 to 8 call `../diagnostics.sh chaos glance-garage-chaos --cr-kind=glance` with
+`--dep-label=app.kubernetes.io/name=glance-operator`, `--dep-ns=glance-system` and
+`--log-label=app.kubernetes.io/instance=glance-garage-chaos`. Steps 4, 5 and 6 also dump
+the NetworkChaos as YAML. Steps 5, 6 and 8 also list the Garage storage pods in
+`shared-services`. Step 3 has no catch block.
+
+**Design notes:**
+
+- `02-networkchaos.yaml` names the Garage storage pods as `selector`
+  (`garage.rajsingh.info/cluster: garage` and `garage.rajsingh.info/tier: storage` in
+  `shared-services`) and the Glance pods as `target` (`app.kubernetes.io/name: glance`
+  and `app.kubernetes.io/instance: glance-garage-chaos` in `openstack`), with
+  `direction: both` and `duration: "600s"`.
+- The rule is enforced on the Garage (server) side because glance-api connects to the
+  ClusterIP Service `garage.shared-services.svc.cluster.local:3900`, never to a Garage
+  pod IP. Chaos Mesh installs its drop rule in the network namespace of the `selector`
+  pods and matches the `target` pods by pod IP. A rule on the glance-api side would
+  match Garage pod IPs while the packet still carries the Service ClusterIP, because
+  kube-proxy translates the ClusterIP to a pod IP later, in the root namespace of the
+  node. That rule would never match. On the Garage side the packet is already
+  translated and carries the glance-api pod IP as its source.
+- The `selector` label pair is the selector the cluster-level S3 API Service uses for
+  its backends, so the partition severs the traffic that the Service routes. The
+  namespace of the NetworkChaos object does not limit the selection: Chaos Mesh
+  selects cluster-wide.
+- `duration` is a safety net in case the test does not delete the object. Step 6
+  deletes it. The fixture sets 600s because the value has to exceed the 5m assert
+  window: with an equal value Chaos Mesh would restore the connection while step 5 is
+  still probing, and a failing `PUT` could turn into a success.
+- Step 4 uses `kubectl wait` because `status.conditions` of a NetworkChaos is a fixed
+  list of four items (`Selected`, `AllInjected`, `AllRecovered`, `Paused`), and the
+  list merge of a Chainsaw resource assert rejects a shorter expected list.
+- Creating the image record in step 5 is a database-only write, which the partition
+  does not affect. It gives the probe an image id to upload to.
+- Step 7 exists because a timeout in step 5 only proves that the client gave up. The
+  store client of Glance could still have completed the upload through its own
+  retries. A fail-closed upload leaves the record `queued` or `killed`, and `active`
+  would mean the data arrived after the probe stopped waiting.
+- Every probe takes its verdict from the pod log. `kubectl run -i` carries only what
+  the container writes after the attach is established, so a fast probe could reach
+  its sentinel before the capture starts. The probe pod therefore runs without `--rm`,
+  and a trap deletes it.
+- Each probe step polls for the pod phase `Succeeded` or `Failed`. A failed probe ends
+  in `Failed`, and waiting only for `Succeeded` would use up the step timeout and lose
+  the log. The sentinel is the verdict, the phase is not.
+- The suite runs without a Keystone, and three settings in `00-glance-cr.yaml`
+  together open the API to requests without a token. `allow_anonymous_access=true`
+  admits the request. The `unauthenticated-context` middleware replaces the anonymous
+  context, which is read-only and would make every write answer 403 before any policy
+  check. `policyOverrides` sets the image API rules to `@`, the always-allow value of
+  oslo.policy, because the CRD forbids an empty rule value.
+
+---
+
+### barbican-openbao-outage
+
+**File:** `tests/e2e-chaos/barbican-openbao-outage/chainsaw-test.yaml`
+
+**Purpose:** A `NetworkChaos` partition severs barbican-api from OpenBao, the store
+behind the default secret store. The suite proves that the secret write path fails
+closed while the API stays up. A `POST /v1/secrets` during the partition must answer
+5xx or time out, and no secret of that name may return the payload once OpenBao is
+reachable again. In the same window `GET /healthcheck` answers 200 and
+`BarbicanAPIReady` stays `True`: the healthcheck app is routed outside the authtoken
+pipeline and touches neither the database nor the store, so only secret traffic fails.
+Barbican has no anonymous mode and the secret path needs a project-scoped token, so
+the suite brings its own Keystone and every probe takes a token as the bootstrap admin
+first.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-barbican-outage` with database `keystone_barbican_outage` and one replica, which reaches `Ready=True/AllReady`. The probes take their tokens from it |
+| 2 | Apply the Barbican CR and its default store | `apply` + `assert` (5m) | Applies `01-barbican-cr.yaml`: Barbican CR `barbican-bao-outage` with database `barbican_bao_outage` and two replicas. Applies `02-barbican-secretstore.yaml`: BarbicanSecretStore `barbican-bao-outage-store` (`type: OpenBao`, `isDefault: true`, `instanceRef` `openbao-instance`). The CR reaches `SecretStoresReady=True/AllStoresProjected` and `Ready=True/AllReady`, and the store reaches `Ready=True/AllReady` |
+| 3 | Baseline round trip | `script` (5m) | Pod `barbican-bao-baseline-probe` on image `ghcr.io/c5c3/barbican:2025.2` runs a python client: it takes a project-scoped admin token from Keystone, `POST /v1/secrets` stores `bao-outage-baseline` with a payload, and `GET /v1/secrets/{uuid}/payload` must return the same payload. The step reads the sentinel `WRITE-OK` from the pod log |
+| 4 | Inject NetworkChaos | `apply` | Applies `03-networkchaos.yaml`: NetworkChaos `partition-openbao-barbican` (`action: partition`, `mode: all`, `direction: both`, `duration: "600s"`) |
+| 5 | Assert injection active | `script` (60s) | `kubectl wait networkchaos/partition-openbao-barbican -n openstack --for=condition=AllInjected --timeout=60s` |
+| 6 | Assert fail-closed | `script` (5m) + `assert` (5m) | Pod `barbican-bao-failclosed-probe`: `GET /healthcheck` answers 200, a Keystone token is still obtainable, and one `POST /v1/secrets` named `bao-outage-failclosed`, bounded at 90 seconds, must fail as a store outage fails. A 2xx or a 4xx fails the probe. A 5xx, a timeout and a connection error pass. A second `GET /healthcheck` answers 200. Sentinel `FAILCLOSED-OK`. Then asserts `BarbicanAPIReady=True/APIHealthy` on the CR |
+| 7 | Lift the partition | `delete` | Removes NetworkChaos `partition-openbao-barbican` |
+| 8 | Assert the failed write stayed failed | `script` (3m) | Pod `barbican-bao-failclosed-verify`: lists `GET /v1/secrets?name=bao-outage-failclosed` and requests the payload of every listed secret. An empty list passes, an HTTP error on the payload passes, and a payload equal to `bao-outage-failclosed-payload` fails the step. Sentinel `STAYED-FAILED-OK` |
+| 9 | Assert recovery | `script` (5m) | Pod `barbican-bao-recovery-probe`: stores `bao-outage-recovery` and must read its payload back unchanged. Sentinel `WRITE-OK` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-barbican-cr.yaml`, `02-barbican-secretstore.yaml`,
+`03-networkchaos.yaml`
+
+**Catch blocks:** Step 1 calls `../diagnostics.sh baseline keystone-barbican-outage`. Steps
+2 and 3 call `../diagnostics.sh baseline barbican-bao-outage` and steps 5 to 9 call
+`../diagnostics.sh chaos barbican-bao-outage`, all with `--cr-kind=barbican`,
+`--dep-label=app.kubernetes.io/name=openbao` and `--dep-ns=openstack`. The chaos calls
+add `--log-label=app.kubernetes.io/instance=barbican-bao-outage`. Step 2 also dumps the
+BarbicanSecretStore as YAML. Steps 5, 6 and 7 also dump the NetworkChaos as YAML. Steps
+6 and 9 also list the OpenBao pods in `openstack`. Step 4 has no catch block.
+
+**Design notes:**
+
+- `03-networkchaos.yaml` names the OpenBao pods as `selector`
+  (`app.kubernetes.io/name: openbao` and `openbao.org/cluster: openbao-instance` in
+  `openstack`) and the Barbican API pods as `target` (`app.kubernetes.io/name: barbican`,
+  `app.kubernetes.io/instance: barbican-bao-outage` and
+  `app.kubernetes.io/component: api` in `openstack`), with `direction: both` and
+  `duration: "600s"`.
+- The rule is enforced on the OpenBao (server) side because barbican-api connects to
+  no OpenBao pod IP. The managed store derives its server URL from the instance name,
+  so the vault plugin connects to the ClusterIP Service `openbao-instance.openstack.svc`.
+  Chaos Mesh installs its drop rule in the network namespace of the `selector` pods
+  and matches the `target` pods by pod IP. A rule on the barbican-api side would match
+  OpenBao pod IPs while the packet still carries the Service ClusterIP, because
+  kube-proxy translates the ClusterIP to a pod IP later, in the root namespace of the
+  node. That rule would never match. On the OpenBao side the packet is already
+  translated and carries the barbican-api pod IP as its source.
+- The `selector` uses the name label and the cluster label only. The pod template
+  also sets `openbao.org/workload-pool` and `openbao.org/revision`, and both change
+  with the workload generation. The two labels are enough: the management OpenBao
+  runs in `shared-services`, and `openbao-instance` is the only OpenBaoCluster in
+  `openstack`.
+- The `target` is narrowed to `app.kubernetes.io/component: api`. barbican-api is the
+  only workload of this Barbican that talks to the secret store. The db-sync,
+  schema-check and db-clean pods carry the same name and instance labels but reach
+  only MariaDB, so a partition on them would widen the fault past what the suite
+  asserts.
+- `duration` is a safety net in case the test does not delete the object. Step 7
+  deletes it. The fixture sets 600s because the value has to exceed the 5m assert
+  window: with an equal value Chaos Mesh would restore the connection while step 6 is
+  still probing, and a failing write could turn into a success.
+- A 4xx during the partition fails the suite. The subject is the store, and a
+  regression in the auth pipeline (a wrong `serviceUser`, a misrendered
+  `[keystone_authtoken]`) would turn every write into a 401 that could otherwise pass
+  for proof.
+- The fail-closed `POST` is attempted once. A retry could create a second secret under
+  the same name and blur what step 8 reads.
+- Step 6 asserts `BarbicanAPIReady` and leaves the aggregate `Ready` condition out.
+  The store controller revalidates its AppRole credentials against OpenBao on its own
+  schedule, so `CredentialsReady` may change inside the window.
+- The Barbican CR runs two replicas. The fail-closed probe leaves one uWSGI worker
+  waiting on a request that drops into the partition, and the suite asserts that
+  `/healthcheck` keeps answering meanwhile. With one replica (two uWSGI processes) the
+  waiting worker would be half the capacity that serves health traffic.
+- Step 5 uses `kubectl wait` because `status.conditions` of a NetworkChaos is a fixed
+  list of four items (`Selected`, `AllInjected`, `AllRecovered`, `Paused`), and the
+  list merge of a Chainsaw resource assert rejects a shorter expected list. Asserting
+  the negative conditions would be worse: Chaos Mesh writes all four as `False` before
+  the selector has run, so a `Selected=False` assertion passes on an experiment that
+  injected nothing.
+- Step 8 exists because a timeout in step 6 only proves that the client gave up. The
+  vault plugin could still have completed the write through its own retries. An empty
+  list means the `POST` created no row. A row without a readable payload is the other
+  accepted outcome: Barbican creates the metadata before it hands the payload to the
+  plugin, so a store failure can leave the record behind.
+- Every probe takes its verdict from the pod log, for the reason
+  `glance-garage-outage` gives. The bootstrap admin password reaches the probe pod as
+  the environment variable `OS_PASSWORD`, read from the Secret `keystone-admin`.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -1617,6 +2055,81 @@ tests/e2e-chaos/
 ├── chainsaw-config.yaml              Chaos-specific Chainsaw configuration
 ├── diagnostics.sh                    Shared diagnostic collection script
 ├── README.md                         Quick-start documentation
+├── unseal-openbao.sh                 Re-unseals openbao-0 after a chaos pod-kill
+├── api-pod-kill-pdb/                 SC-CHAOS-008: PDB availability guarantee
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-api, replicas: 3)
+│   ├── 01-podchaos.yaml              PodChaos targeting keystone API pods (multi-label)
+│   └── chainsaw-test.yaml            Test: PDB minAvailable=1, availability maintained
+├── barbican-openbao-outage/          Secret-store partition under the Barbican API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-barbican-outage
+│   ├── 01-barbican-cr.yaml           Barbican CR barbican-bao-outage, two replicas
+│   ├── 02-barbican-secretstore.yaml  Default OpenBao store barbican-bao-outage-store
+│   ├── 03-networkchaos.yaml          NetworkChaos severing barbican-api↔OpenBao traffic (server-side)
+│   └── chainsaw-test.yaml            Test: BarbicanAPIReady maintained, the write fails closed
+├── barbican-operator-pod-kill/       barbican-operator pod kill
+│   ├── 00-barbican-cr.yaml           Barbican CR fixture (barbican-chaos-op)
+│   ├── 01-barbican-secretstore.yaml  Default OpenBao store barbican-chaos-op-store
+│   ├── 02-podchaos.yaml              PodChaos targeting barbican-operator in barbican-system
+│   ├── 03-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
+│   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── cinder-broker-outage/             Message-bus partition under a Cinder
+│   ├── 00-rabbitmqcluster.yaml       The broker of this suite (cinder-chaos-rabbitmq)
+│   ├── 01-cinder-cr.yaml             Cinder CR cinder-broker-chaos
+│   ├── 02-cinderbackend-cr.yaml      NFS backend broker-chaos-nfs1
+│   ├── 03-networkchaos.yaml          NetworkChaos severing cinder↔broker traffic (server-side)
+│   └── chainsaw-test.yaml            Test: scheduler and volume service NotReady → recovery
+├── cinder-nfs-outage/                NFS export outage under a Cinder
+│   ├── 00-cinder-cr.yaml             Cinder CR cinder-nfs-chaos
+│   ├── 01-cinderbackend-cr.yaml      NFS backend nfs-chaos-nfs1
+│   ├── 02-lock-holder-pod.yaml       Lock holder Pod cinder-nfs-chaos-probe-lock
+│   └── chainsaw-test.yaml            Test: Ready maintained, the create fails closed
+├── cinder-operator-pod-kill/         cinder-operator pod kill
+│   ├── 00-cinder-cr.yaml             Cinder CR cinder-chaos-op
+│   ├── 01-cinderbackend-cr.yaml      NFS backend chaos-op-nfs1
+│   ├── 02-podchaos.yaml              PodChaos targeting cinder-operator in cinder-system
+│   ├── 03-patch-scale.yaml           Patch API replicas to 2 after the operator pod kill
+│   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── cronjob-rotation-failure/         SC-CHAOS-005: CronJob fault tolerance
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-cron)
+│   ├── 01-podchaos.yaml              PodChaos pod-failure targeting job pods
+│   └── chainsaw-test.yaml            Test: FernetKeysReady=True maintained
+├── deletion-stuck-finalizer/         SC-CHAOS-010: Deletion with mariadb-operator down
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-stuck)
+│   └── chainsaw-test.yaml            Test: scale mariadb-operator to 0, delete CR, assert stuck → recovery
+├── glance-garage-outage/             Garage S3 partition under the Glance API
+│   ├── 00-glance-cr.yaml             Glance CR glance-garage-chaos, API open without a token
+│   ├── 01-glancebackend-cr.yaml      Default S3 store glance-garage-chaos-s3
+│   ├── 02-networkchaos.yaml          NetworkChaos severing glance-api↔Garage traffic (server-side)
+│   └── chainsaw-test.yaml            Test: Ready maintained, the upload fails closed
+├── glance-operator-pod-kill/         glance-operator pod kill
+│   ├── 00-glance-cr.yaml             Glance CR fixture (glance-chaos-op)
+│   ├── 01-glance-backend.yaml        Default S3 store glance-chaos-op-s3
+│   ├── 02-podchaos.yaml              PodChaos targeting glance-operator in glance-system
+│   ├── 03-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
+│   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── horizon-memcached-pod-kill/       Memcached pod kill under a Horizon
+│   ├── 00-horizon-cr.yaml            Horizon CR fixture (horizon-chaos-mc)
+│   ├── 01-podchaos.yaml              PodChaos targeting memcached in openstack
+│   └── chainsaw-test.yaml            Test: Ready=True maintained, no dashboard restart
+├── horizon-operator-pod-kill/        horizon-operator pod kill
+│   ├── 00-horizon-cr.yaml            Horizon CR fixture (horizon-chaos-op)
+│   ├── 01-podchaos.yaml              PodChaos targeting horizon-operator in horizon-system
+│   ├── 02-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
+│   └── chainsaw-test.yaml            Test: one operator pod replaced, replica patch
+├── keystone-federation/              Federation sidecar kill and IdP outage
+│   ├── 00-keycloak.yaml              In-suite Keycloak (keycloak-chaos) importing one realm
+│   ├── 01-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-fed, replicas: 2)
+│   ├── 02-backend-cr.yaml            OIDC KeystoneIdentityBackend keycloak-chaos
+│   ├── 03-container-kill.yaml        PodChaos container-kill on federation-proxy in one pod
+│   └── chainsaw-test.yaml            Test: sidecar restart → recovery, IdP outage fails closed
+├── mariadb-network-latency/          SC-CHAOS-007: MariaDB network latency
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-lat)
+│   ├── 01-networkchaos.yaml          NetworkChaos injecting 10s latency on keystone→mariadb
+│   └── chainsaw-test.yaml            Test: Ready=True maintained, no crash-loop
+├── mariadb-network-partition/        SC-CHAOS-006: MariaDB network partition
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-part)
+│   ├── 01-networkchaos.yaml          NetworkChaos severing keystone↔mariadb traffic (server-side)
+│   └── chainsaw-test.yaml            Test: DeploymentReady=False → recovery
 ├── mariadb-pod-kill/                 SC-CHAOS-001: MariaDB pod kill
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-db)
 │   ├── 01-podchaos.yaml              PodChaos targeting mariadb in openstack
@@ -1625,38 +2138,20 @@ tests/e2e-chaos/
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-mc)
 │   ├── 01-podchaos.yaml              PodChaos targeting memcached in openstack
 │   └── chainsaw-test.yaml            Test: Ready=True maintained (no regression)
-├── openbao-pod-kill/                 SC-CHAOS-003: OpenBao pod kill
-│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-bao)
-│   ├── 01-podchaos.yaml              PodChaos targeting openbao in shared-services
-│   └── chainsaw-test.yaml            Test: SecretsReady=False → recovery
-├── operator-pod-crash/               SC-CHAOS-004: Operator self-recovery
-│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-op)
-│   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator in keystone-system
-│   └── chainsaw-test.yaml            Test: Ready=True maintained after operator restart
-├── cronjob-rotation-failure/         SC-CHAOS-005: CronJob fault tolerance
-│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-cron)
-│   ├── 01-podchaos.yaml              PodChaos pod-failure targeting job pods
-│   └── chainsaw-test.yaml            Test: FernetKeysReady=True maintained
-├── mariadb-network-partition/        SC-CHAOS-006: MariaDB network partition
-│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-part)
-│   ├── 01-networkchaos.yaml          NetworkChaos severing keystone↔mariadb traffic (server-side)
-│   └── chainsaw-test.yaml            Test: DeploymentReady=False → recovery
-├── mariadb-network-latency/          SC-CHAOS-007: MariaDB network latency
-│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-lat)
-│   ├── 01-networkchaos.yaml          NetworkChaos injecting 10s latency on keystone→mariadb
-│   └── chainsaw-test.yaml            Test: Ready=True maintained, no crash-loop
-├── api-pod-kill-pdb/                 SC-CHAOS-008: PDB availability guarantee
-│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-api, replicas: 3)
-│   ├── 01-podchaos.yaml              PodChaos targeting keystone API pods (multi-label)
-│   └── chainsaw-test.yaml            Test: PDB minAvailable=1, availability maintained
-├── operator-pod-kill/                SC-CHAOS-009: Operator pod kill all + failover
-│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-opk)
-│   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator (mode: all)
-│   ├── 02-patch-replicas.yaml        Patch replicas 1→2 for post-failover reconciliation
-│   └── chainsaw-test.yaml            Test: Leader re-election, conditions maintained, replica patch
-├── deletion-stuck-finalizer/         SC-CHAOS-010: Deletion with mariadb-operator down
-│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-stuck)
-│   └── chainsaw-test.yaml            Test: scale mariadb-operator to 0, delete CR, assert stuck → recovery
+├── neutron-broker-outage/            Message-bus partition under the Neutron API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-neutron-broker
+│   ├── 01-rabbitmqcluster.yaml       The broker of this suite (neutron-chaos-rabbitmq)
+│   ├── 02-ovncentral-cr.yaml         OVNCentral neutron-broker-ovn
+│   ├── 03-neutron-cr.yaml            Neutron CR neutron-broker-chaos
+│   ├── 04-networkchaos.yaml          NetworkChaos severing neutron↔broker traffic (server-side)
+│   └── chainsaw-test.yaml            Test: Ready maintained, no broker connection at any point
+├── neutron-mariadb-outage/           Database partition under the Neutron API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-neutron-outage
+│   ├── 01-messaging-secret.yaml      Transport URL Secret neutron-db-chaos-messaging
+│   ├── 02-ovncentral-cr.yaml         OVNCentral neutron-db-chaos-ovn
+│   ├── 03-neutron-cr.yaml            Neutron CR neutron-db-chaos
+│   ├── 04-networkchaos.yaml          NetworkChaos severing neutron-api↔MariaDB traffic (server-side)
+│   └── chainsaw-test.yaml            Test: two conditions maintained, the write fails closed
 ├── nova-broker-outage/               Message-bus partition under a Nova
 │   ├── 00-rabbitmqcluster.yaml       The broker of this suite (nova-chaos-rabbitmq)
 │   ├── 01-keystone-cr.yaml           Keystone keystone-nova-broker-chaos
@@ -1685,24 +2180,48 @@ tests/e2e-chaos/
 │   ├── 05-list-job.yaml              The server list before and after the fault (LIST-OK)
 │   ├── 06-failclosed-job.yaml        GET / serves while the read fails (FAILCLOSED-OK)
 │   └── chainsaw-test.yaml            Test: four conditions maintained, the read fails closed
-└── nova-placement-outage/            Placement partition under the scheduler
-    ├── 01-keystone-cr.yaml           Keystone keystone-nova-placement-chaos
-    ├── 02-catalog-setup-job.yaml     Compute, placement, image and network catalog rows
-    ├── 03-messaging-secret.yaml      Transport URL for the Neutron beside the Nova
-    ├── 04-ovncentral-cr.yaml         OVNCentral nova-placement-chaos-ovn
-    ├── 05-neutron-cr.yaml            Neutron neutron-nova-placement-chaos
-    ├── 06-placement-cr.yaml          Placement placement-nova-placement-chaos
-    ├── 07-glance-cr.yaml             Glance glance-nova-placement-chaos
-    ├── 08-glancebackend-cr.yaml      S3 backend glance-nova-placement-chaos-s3
-    ├── 09-image-seed-job.yaml        The image the servers boot from
-    ├── 10-metadata-secret.yaml       The metadata shared secret
-    ├── 11-nova-cr.yaml               Nova CR nova-placement-chaos on a shared-broker vhost
-    ├── 12-fake-compute.yaml          nova-compute on the fake driver, host fake-1
-    ├── 13-networkchaos.yaml          NetworkChaos severing scheduler↔Placement traffic (server-side)
-    ├── 14-baseline-job.yaml          A server boots through a reachable Placement (BASELINE-OK)
-    ├── 15-failclosed-job.yaml        The build ends in ERROR, nothing else fails (FAILCLOSED-OK)
-    ├── 16-recovered-job.yaml         The scheduler places servers again (RECOVERED-OK)
-    └── chainsaw-test.yaml            Test: Ready maintained, the build fails closed
+├── nova-placement-outage/            Placement partition under the scheduler
+│   ├── 01-keystone-cr.yaml           Keystone keystone-nova-placement-chaos
+│   ├── 02-catalog-setup-job.yaml     Compute, placement, image and network catalog rows
+│   ├── 03-messaging-secret.yaml      Transport URL for the Neutron beside the Nova
+│   ├── 04-ovncentral-cr.yaml         OVNCentral nova-placement-chaos-ovn
+│   ├── 05-neutron-cr.yaml            Neutron neutron-nova-placement-chaos
+│   ├── 06-placement-cr.yaml          Placement placement-nova-placement-chaos
+│   ├── 07-glance-cr.yaml             Glance glance-nova-placement-chaos
+│   ├── 08-glancebackend-cr.yaml      S3 backend glance-nova-placement-chaos-s3
+│   ├── 09-image-seed-job.yaml        The image the servers boot from
+│   ├── 10-metadata-secret.yaml       The metadata shared secret
+│   ├── 11-nova-cr.yaml               Nova CR nova-placement-chaos on a shared-broker vhost
+│   ├── 12-fake-compute.yaml          nova-compute on the fake driver, host fake-1
+│   ├── 13-networkchaos.yaml          NetworkChaos severing scheduler↔Placement traffic (server-side)
+│   ├── 14-baseline-job.yaml          A server boots through a reachable Placement (BASELINE-OK)
+│   ├── 15-failclosed-job.yaml        The build ends in ERROR, nothing else fails (FAILCLOSED-OK)
+│   ├── 16-recovered-job.yaml         The scheduler places servers again (RECOVERED-OK)
+│   └── chainsaw-test.yaml            Test: Ready maintained, the build fails closed
+├── openbao-pod-kill/                 SC-CHAOS-003: OpenBao pod kill
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-bao)
+│   ├── 01-podchaos.yaml              PodChaos targeting openbao in shared-services
+│   └── chainsaw-test.yaml            Test: SecretsReady=False → recovery
+├── operator-pod-crash/               SC-CHAOS-004: Operator self-recovery
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-op)
+│   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator in keystone-system
+│   └── chainsaw-test.yaml            Test: Ready=True maintained after operator restart
+├── operator-pod-kill/                SC-CHAOS-009: Operator pod kill all + failover
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-opk)
+│   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator (mode: all)
+│   ├── 02-patch-replicas.yaml        Patch replicas 1→2 for post-failover reconciliation
+│   └── chainsaw-test.yaml            Test: Leader re-election, conditions maintained, replica patch
+├── ovn-southbound-outage/            Southbound database outage under a chassis
+│   ├── 01-ovncentral-cr.yaml         OVNCentral ovn-sb-chaos
+│   ├── 02-ovnchassis-cr.yaml         OVNChassis ovn-sb-chaos-chassis
+│   ├── 03-podchaos.yaml              PodChaos pod-failure on every Southbound member
+│   ├── 04-probe-scripts.yaml         ConfigMap of the scripts the probe Pods run
+│   └── chainsaw-test.yaml            Test: ping answers under the fault, chassis recovers
+└── placement-operator-pod-kill/      placement-operator pod kill
+    ├── 00-placement-cr.yaml          Placement CR fixture (placement-chaos-op)
+    ├── 01-podchaos.yaml              PodChaos targeting placement-operator in placement-system
+    ├── 02-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
+    └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
 ```
 
 ## Adding New Scenarios
