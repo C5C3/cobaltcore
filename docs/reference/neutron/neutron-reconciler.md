@@ -42,8 +42,14 @@ Secrets ──► DBConnectionSecret ──► TransportURLSecret ──► OVNE
   ──► Config ──► OVNDBSync ──► Database ──► Deployment ──► Workers ──► ┬─ HTTPRoute
                                                                        ├─ HealthCheck
                                                                        ├─ HPA
+                                                                       ├─ VPA
                                                                        └─ NetworkPolicy   (parallel)
 ```
+
+The pipeline follows the pattern of the Keystone operator: a lane of steps that
+ends the pass at the first requeue or error, and a group whose members all run.
+[Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
+draws that pattern with every step of the Keystone operator.
 
 | Step | What it does | Condition |
 | --- | --- | --- |

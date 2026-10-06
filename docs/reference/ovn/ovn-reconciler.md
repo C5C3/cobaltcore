@@ -35,6 +35,11 @@ TLS ──► Northbound ──► Southbound ──► Endpoints ──► ┬�
                                                     └─ VPA      (parallel)
 ```
 
+The pipeline follows the pattern of the Keystone operator: a lane of steps that
+ends the pass at the first requeue or error, and a group whose members all run.
+[Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
+draws that pattern with every step of the Keystone operator.
+
 | Step | What it does | Condition |
 | --- | --- | --- |
 | TLS | Probes the target cluster for the `cert-manager.io/v1` Certificate kind, requests the two server keypairs, the client keypair and the relay keypair, and publishes `status.clientSecretName` once the client Secret carries `tls.crt`, `tls.key` and `ca.crt` | `TLSReady` |

@@ -26,9 +26,15 @@ collectors cover the recurring purge (`glance_operator_db_purge_total`,
 Secrets ──► DBConnectionSecret ──► Backends ──► Config ──► Database ──► Deployment ──► ┬─ HTTPRoute
                                                                                        ├─ HealthCheck
                                                                                        ├─ HPA
+                                                                                       ├─ VPA
                                                                                        ├─ NetworkPolicy
                                                                                        └─ DBPurge        (parallel)
 ```
+
+The pipeline follows the pattern of the Keystone operator: a lane of steps that
+ends the pass at the first requeue or error, and a group whose members all run.
+[Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
+draws that pattern with every step of the Keystone operator.
 
 | Step | What it does | Condition |
 | --- | --- | --- |
