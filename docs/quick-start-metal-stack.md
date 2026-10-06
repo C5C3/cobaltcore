@@ -142,6 +142,9 @@ chaos soak: VictoriaMetrics, which keeps the metrics on a volume, and Grafana
 with dizzy's dashboards. A soak reaches them through the port-forward of
 Step 6 and a second one to VictoriaMetrics; see
 [Lab dizzy stack](./reference/infrastructure/infrastructure-manifests.md#lab-dizzy-stack).
+Once Part 2 has run, `make dizzy-soak-start` starts a six-hour soak inside the
+cluster that needs no port-forward and ends with a report and a verdict; see
+[In-cluster soak](./reference/testing/dizzy-chaos-testing.md#in-cluster-soak).
 
 `WITH_PROMETHEUS=true` is optional as well. Added to the deploy command, it
 deploys Prometheus and Grafana. Prometheus keeps its metrics on a volume and
@@ -671,7 +674,10 @@ and backup on it. The node state under `/var/lib/nova`, `/var/lib/libvirt` and
 `/etc/pki` stays on the nodes, and the NFS kernel modules stay loaded until a
 node reboots. A Chaos Mesh deployed with `WITH_CHAOS_MESH=true` goes before
 the hypervisors: its experiments are released while its controller still runs,
-and its kernel modules stay loaded until a node reboots as well. A dizzy stack
+and its kernel modules stay loaded until a node reboots as well. A dizzy soak
+started with `make dizzy-soak-start` ends before the hypervisors go, and its
+project, Keystone user and report claim go with it, so fetch its reports with
+`make dizzy-soak-report` first. A dizzy stack
 deployed with `WITH_DIZZY=true` goes in the teardown's step 3, and its claim
 with it. Where the default class has the reclaim policy `Delete`, the metrics
 on its volume go too. A Prometheus deployed with `WITH_PROMETHEUS=true` goes in

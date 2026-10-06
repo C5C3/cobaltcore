@@ -74,6 +74,7 @@
 <text x="1243" y="922.36" font-size="26" font-weight="700" fill="#2B3440">Without a base</text>
 <text x="1243" y="956.2" font-size="20" font-weight="400" fill="#55606E">controlplane, probe, migration-ports</text>
 <text x="1243" y="982.2" font-size="20" font-weight="400" fill="#55606E">hypervisor, which lists ../migration-ports</text>
+<text x="1243" y="1008.2" font-size="20" font-weight="400" fill="#55606E">dizzy-soak: make dizzy-soak-start</text>
 <rect x="1652" y="898" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
 <text x="1704" y="919.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
 <polyline points="594,218 621.5,218" fill="none" stroke="#3A4452" stroke-width="3"/>

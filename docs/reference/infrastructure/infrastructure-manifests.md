@@ -2666,7 +2666,8 @@ well when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)), its
 [Lab Chaos Mesh](#lab-chaos-mesh)), its `dizzy/` when `WITH_DIZZY=true`
 is set (see [Lab dizzy stack](#lab-dizzy-stack)), and its `prometheus/` when
 `WITH_PROMETHEUS=true` is set (see
-[Lab Prometheus stack](#lab-prometheus-stack)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
+[Lab Prometheus stack](#lab-prometheus-stack)); `make dizzy-soak-start` applies
+its `dizzy-soak/` (see [Lab dizzy soak](#lab-dizzy-soak)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
 finished (see [Lab ControlPlane](#lab-controlplane)), and after it
 `hypervisor-fixtures/` and `hypervisor/` (see
 [Lab hypervisors](#lab-hypervisors)). The ControlPlane's opt-in
@@ -2846,7 +2847,7 @@ overlay to the lab, and who applies each directory.
 [Kustomize Overlay Structure](e2e-deployment.md#kustomize-overlay-structure)
 lists every directory with its base.
 
-![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class and label the Namespaces. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports and hypervisor under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
+![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class and label the Namespaces. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports, dizzy-soak and hypervisor under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl, except dizzy-soak, which make dizzy-soak-start applies. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
 
 The patches remove the kind pin `standard` from the OpenBao, MariaDB and
 Garage volumes. The lab has a `standard` class too, so the pin would bind to it
@@ -3953,6 +3954,72 @@ on it go with the claim. Its step 7 deletes the namespace `dizzy` with the
 HTTPRoute and the ConfigMap. A HelmRelease delete that outlives
 `TEARDOWN_TIMEOUT` stops the teardown with exit 1 before any claim is
 deleted.
+
+#### Lab dizzy soak
+
+**Files:** `deploy/lab/metal-stack/dizzy-soak/kustomization.yaml`,
+`identity.yaml`, `rbac.yaml`, `reports-pvc.yaml`, `job.yaml`, `scenario.yaml`
+
+The long-running dizzy soak of the lab
+([#1274](https://github.com/c5c3/cobaltcore/issues/1274)): a Job in `dizzy`
+that runs `dizzy mix chaos` in the OpenStack project `dizzy-soak` and samples
+the platform beside it. `make dizzy-soak-start` applies the directory;
+`hack/deploy-infra.sh` never does. The soak needs the dizzy stack above, which
+declares the namespace `dizzy`, a Ready ControlPlane and the fixtures of
+[Lab hypervisors](#lab-hypervisors).
+[dizzy Chaos Testing](../testing/dizzy-chaos-testing.md#in-cluster-soak)
+describes the commands, the settings, the report and the verdict.
+
+The kustomization renders the first nine objects below. `start` writes the
+Secrets and ConfigMaps and creates the Job from `job.yaml`, which the
+kustomization does not list; `scenario.yaml` is the default scenario, which
+`start` ships as a ConfigMap.
+
+| Object | Namespace | From | Purpose |
+| --- | --- | --- | --- |
+| K-ORC Domain `dizzy-soak-domain` | `openstack` | `identity.yaml` | Imports the domain `Default`, which stays on deletion |
+| K-ORC Project `dizzy-soak` | `openstack` | `identity.yaml` | The project of the run, with the services' default quotas |
+| K-ORC User `dizzy-soak` | `openstack` | `identity.yaml` | The run's Keystone user, its password from the Secret `dizzy-soak-user-password` |
+| K-ORC Role `dizzy-soak-admin-role` | `openstack` | `identity.yaml` | Imports the role `admin` |
+| K-ORC RoleAssignment `dizzy-soak-admin` | `openstack` | `identity.yaml` | `admin` for the user on the project, which the migration pre-check of dizzy's Legacy persona needs |
+| ServiceAccount `dizzy-soak` | `dizzy` | `rbac.yaml` | The runner's identity in the cluster |
+| ClusterRole and ClusterRoleBinding `dizzy-soak-platform-reader` | cluster | `rbac.yaml` | `get` and `list` on pods, namespaces, the pods of `metrics.k8s.io`, the ControlPlanes and the twelve service kinds |
+| PersistentVolumeClaim `dizzy-soak-reports` | `dizzy` | `reports-pvc.yaml` | 5Gi, `ReadWriteOnce`, on the default class; one report directory per run |
+| Secret `dizzy-soak-user-password` | `openstack` | `start`, once | The key `password`, 32 characters |
+| Secret `dizzy-soak-clouds` | `dizzy` | `start` | The `clouds.yaml` of the user, with `interface: internal` |
+| ConfigMaps `dizzy-soak-runner`, `dizzy-soak-scenario`, `dizzy-soak-config` | `dizzy` | `start` | `hack/dizzy-soak-runner.sh`, the scenario and the settings |
+| Job `dizzy-soak` | `dizzy` | `job.yaml`, by `start` | Its init container copies dizzy out of `ghcr.io/b42labs/dizzy` at the pin of `hack/dizzy.sh`; its container `runner` runs the runner on the digest-pinned `docker.io/alpine/k8s` |
+| Pod `dizzy-soak-reader` | `dizzy` | `report`, for one copy | Mounts the claim read-only to copy a finished run |
+
+**Reaching the APIs.** The public endpoints of the lab's catalog resolve to
+`127.0.0.1`, which leads nowhere from a pod. The co-located services also
+register an `internal` endpoint on their Service name, and Keystone answers in
+the cluster at `http://controlplane-keystone.openstack.svc:5000/v3`. The
+soak's `clouds.yaml` names that URL and `interface: internal`, so the run
+needs no CA file and no Gateway. The personas of `dizzy mix` build compute,
+network, block-storage and image clients, and each of the four services has an
+internal endpoint. dizzy exports its metrics to
+`http://dizzy-victoria-metrics-server.dizzy.svc:8428/opentelemetry/v1/metrics`.
+
+**Posture.** The ClusterRole reads across the cluster with `get` and `list`
+alone and reads no Secret. The Keystone user holds `admin` on its own project,
+because dizzy's Legacy persona skips live migration without it. Its password
+lives in the Secret `dizzy-soak-user-password`, never in Git, an argument or a
+ConfigMap, and reaches Keystone over plain HTTP inside the cluster. The pods
+run as 65534 without privilege escalation or capabilities, and the reader pod
+mounts no ServiceAccount token.
+
+**Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes the soak
+after the Chaos Mesh step and before the hypervisors (see
+[E2E Deployment](e2e-deployment.md#make-teardown-infra)). It first deletes the
+Job and the reader pod in the foreground, which ends a running soak with its
+report, then the render of the directory, while K-ORC still deletes the
+project and the user in Keystone. Its step 7 deletes the Secrets and
+ConfigMaps with their namespaces. A Job delete that outlives
+`TEARDOWN_TIMEOUT` stops the teardown with exit 1 before any hypervisor is
+touched.
+
+**Pinned by:** `tests/unit/deploy/metal_stack_dizzy_soak_test.sh`.
 
 #### Lab dizzy run
 
