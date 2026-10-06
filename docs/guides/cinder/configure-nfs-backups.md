@@ -114,6 +114,11 @@ pre-existing backup fails to restore: its chunks are on the export that was left
 behind. No condition and no event reports that. Treat a change of server or path
 as a migration, and move the chunks with it.
 
+The figure shows the backup pod beside the volume services, with the exports
+each of them mounts.
+
+![The Cinder processes with their NFS mounts. One Cinder resource runs four processes: the API {cinder} on port 8776, the scheduler {cinder}-scheduler, one cinder-volume Deployment {cinder}-volume-{backend} per CinderBackend, and the backup Deployment {cinder}-backup, which exists only while a CinderBackupBackend is attached. All four hold a connection to RabbitMQ and to MariaDB: the API hands a volume request to the scheduler over the bus, the scheduler hands it to a cinder-volume, and backup jobs travel the same way. Each cinder-volume mounts the NFS export of its own backend at /var/lib/cinder/mnt/{md5}, where {md5} is the MD5 of server:path. The backup pod mounts every volume export at that same path and its backup target at /var/lib/cinder/backup_mount/{md5}. Every export in a Cinder pod is an inline CSI volume of the driver nfs.csi.k8s.io. On a hypervisor node nova-compute mounts the export itself when a volume attaches, at /var/lib/nova/mnt/{md5}, and mount propagation carries that mount to QEMU on the host. Locks are files inside each pod, and Memcached holds the token cache only.](../../diagrams/service-cinder-nfs-mounts.svg)
+
 The pod mounts more than its own target. It carries every volume backend's export
 under `/var/lib/cinder/mnt/<md5>` beside `/var/lib/cinder/backup_mount/<md5>`,
 because a backup reads the source volume itself through os-brick rather than a

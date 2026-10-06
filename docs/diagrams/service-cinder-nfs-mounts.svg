@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1446" viewBox="0 0 1808 1446" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Cinder: processes, backends and NFS mounts">
+<title>Cinder: processes, backends and NFS mounts</title>
+<rect width="1808" height="1446" fill="#F6F5F1"/>
+<rect x="470" y="40" width="200" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="570" y="72.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">RabbitMQ</text>
+<text x="690" y="55.2" font-size="20" font-weight="400" fill="#55606E">the API hands a request to the scheduler, the scheduler to a cinder-volume</text>
+<text x="690" y="81.2" font-size="20" font-weight="400" fill="#55606E">backup jobs travel the same way; notifications: driver noop</text>
+<rect x="700" y="150" width="200" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="800" y="182.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">MariaDB</text>
+<text x="916" y="181.2" font-size="20" font-weight="400" fill="#55606E">one pooled connection per process</text>
+<rect x="450" y="262" width="400" height="888" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="469" y="301.36" font-size="26" font-weight="700" fill="#2B3440">Cinder {cinder}</text>
+<text x="469" y="335.2" font-size="20" font-weight="400" fill="#55606E">four processes; each holds</text>
+<text x="469" y="361.2" font-size="20" font-weight="400" fill="#55606E">the bus and the database</text>
+<rect x="474" y="384" width="300" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="624" y="416.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{cinder}</text>
+<text x="474" y="457.2" font-size="20" font-weight="400" fill="#55606E">API, port 8776</text>
+<rect x="474" y="482" width="300" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="624" y="514.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{cinder}-scheduler</text>
+<text x="474" y="555.2" font-size="20" font-weight="400" fill="#55606E">picks a backend for every</text>
+<text x="474" y="581.2" font-size="20" font-weight="400" fill="#55606E">volume request</text>
+<rect x="474" y="614" width="300" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="624" y="646.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{cinder}-volume-{b1}</text>
+<text x="474" y="687.2" font-size="20" font-weight="400" fill="#55606E">cinder-volume, host {cinder}@{b1}</text>
+<text x="474" y="713.2" font-size="20" font-weight="400" fill="#55606E">one pod, strategy Recreate</text>
+<rect x="474" y="780" width="300" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="624" y="812.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{cinder}-backup</text>
+<text x="474" y="853.2" font-size="20" font-weight="400" fill="#55606E">cinder-backup, host {cinder}-backup</text>
+<text x="474" y="879.2" font-size="20" font-weight="400" fill="#55606E">only while a CinderBackupBackend</text>
+<text x="474" y="905.2" font-size="20" font-weight="400" fill="#55606E">is attached</text>
+<rect x="474" y="948" width="300" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="624" y="980.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{cinder}-volume-{b2}</text>
+<text x="474" y="1021.2" font-size="20" font-weight="400" fill="#55606E">cinder-volume, host {cinder}@{b2}</text>
+<rect x="474" y="1046" width="300" height="54" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="624" y="1081.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">+ more</text>
+<text x="474" y="1125.2" font-size="20" font-weight="400" fill="#55606E">one Deployment per CinderBackend</text>
+<rect x="40" y="464" width="370" height="48" rx="20" fill="#1D47A6"/>
+<text x="225" y="496.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">CinderBackend {b1}</text>
+<text x="40" y="537.2" font-size="20" font-weight="400" fill="#55606E">spec.nfs: server, path,</text>
+<text x="40" y="563.2" font-size="20" font-weight="400" fill="#55606E">mountOptions</text>
+<rect x="40" y="780" width="370" height="48" rx="20" fill="#1D47A6"/>
+<text x="225" y="812.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">CinderBackupBackend {bk}</text>
+<text x="40" y="853.2" font-size="20" font-weight="400" fill="#55606E">at most one per Cinder</text>
+<rect x="40" y="948" width="370" height="48" rx="20" fill="#1D47A6"/>
+<text x="225" y="980.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">CinderBackend {b2}</text>
+<rect x="1250" y="614" width="380" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1440" y="646.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">NFS export {server1}:{path1}</text>
+<text x="1250" y="687.2" font-size="20" font-weight="400" fill="#55606E">one file per volume</text>
+<rect x="1250" y="772" width="380" height="64" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1440" y="812.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">NFS export {server3}:{path3}</text>
+<text x="1250" y="861.2" font-size="20" font-weight="400" fill="#55606E">the backup target</text>
+<rect x="1250" y="948" width="380" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1440" y="980.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">NFS export {server2}:{path2}</text>
+<rect x="1180" y="1056" width="588" height="204" rx="12" fill="#FDFCF9" stroke="#7D8794" stroke-width="3"/>
+<rect x="1206.5" y="1074.5" width="84" height="36" rx="18" fill="#3A4452"/>
+<text x="1248.5" y="1101.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">node</text>
+<text x="1304.5" y="1101.14" font-size="24" font-weight="700" fill="#17202B">{node}</text>
+<text x="1404.11" y="1099.7" font-size="20" font-weight="400" fill="#55606E">a hypervisor node</text>
+<rect x="1204" y="1130" width="516" height="48" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="1462" y="1162.64" font-size="24" font-weight="600" fill="#A3262E" text-anchor="middle">nova-compute</text>
+<text x="1204" y="1203.2" font-size="20" font-weight="400" fill="#55606E">pod of a NovaCompute pool</text>
+<text x="1204" y="1229.2" font-size="20" font-weight="400" fill="#55606E">mounts the export itself when a volume attaches</text>
+<polyline points="380,512 380,638 463.5,638" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="474,638 459,645.2 459,630.8" fill="#2F8A57"/>
+<polyline points="410,972 463.5,972" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="474,972 459,979.2 459,964.8" fill="#2F8A57"/>
+<polyline points="410,804 463.5,804" fill="none" stroke="#2F8A57" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="474,804 459,811.2 459,796.8" fill="#2F8A57"/>
+<polyline points="774,638 1250,638" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="774,972 1250,972" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="774,790 880,790 880,736 1450,736 1450,662" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<polyline points="774,818 880,818 880,890 1450,890 1450,948" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<polyline points="774,804 1250,804" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<polyline points="1720,1154 1742,1154 1742,522 1270,522 1270,614" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1600,1130 1600,996" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="520,262 520,98.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="520,88 527.2,103 512.8,103" fill="#2457C5"/>
+<polyline points="800,262 800,208.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="800,198 807.2,213 792.8,213" fill="#2457C5"/>
+<text x="76.64" y="603.2" font-size="20" font-weight="400" fill="#2B3440">one Deployment per backend</text>
+<text x="996.8" y="627.2" font-size="20" font-weight="400" fill="#2B3440">/var/lib/cinder/mnt/{md5}</text>
+<text x="892" y="725.2" font-size="20" font-weight="400" fill="#2B3440">every volume export, at the path of the volume service</text>
+<text x="892" y="793.2" font-size="20" font-weight="400" fill="#2B3440">/var/lib/cinder/backup_mount/{md5}</text>
+<text x="1282" y="511.2" font-size="20" font-weight="400" fill="#2B3440">/var/lib/nova/mnt/{md5}</text>
+<text x="1282" y="549.2" font-size="20" font-weight="400" fill="#55606E">Bidirectional through /var/lib/nova:</text>
+<text x="1282" y="575.2" font-size="20" font-weight="400" fill="#55606E">QEMU on the host sees the mount</text>
+<text x="143.38" y="169.2" font-size="20" font-weight="400" fill="#2B3440">OS_DEFAULT__TRANSPORT_URL</text>
+<text x="812" y="233.2" font-size="20" font-weight="400" fill="#2B3440">OS_DATABASE__CONNECTION</text>
+<text x="40" y="1321.2" font-size="20" font-weight="400" fill="#55606E">{cinder}: the Cinder resource, {cp}-cinder under a ControlPlane. {b1}, {b2}: two CinderBackends. {bk}: the CinderBackupBackend. {md5}: the MD5 of server:path.</text>
+<text x="40" y="1347.2" font-size="20" font-weight="400" fill="#55606E">Every export in a Cinder pod is an inline CSI volume of the driver nfs.csi.k8s.io: the kubelet mounts it, no pod is privileged.</text>
+<text x="40" y="1373.2" font-size="20" font-weight="400" fill="#55606E">The backup pod mounts an export two backends share once.</text>
+<text x="40" y="1399.2" font-size="20" font-weight="400" fill="#55606E">Locks are files under /var/lib/cinder, an emptyDir per pod (tooz file driver). Memcached holds the cache of validated tokens and nothing else.</text>
+</svg>

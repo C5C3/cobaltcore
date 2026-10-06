@@ -389,6 +389,10 @@ shared directory plus the overlays it alone may see.
 | `/etc/cinder-db-tls/` | `ca.crt`, `tls.crt`, `tls.key` | Only while `spec.database.tls` is enabled |
 | `/etc/rabbitmq-ca` | `ca.crt`, the file `ssl_ca_file` names | Only while `spec.messaging.tls` is set |
 
+The figure shows the two NFS rows of the table: which pod mounts which export.
+
+![The Cinder processes with their NFS mounts. One Cinder resource runs four processes: the API {cinder} on port 8776, the scheduler {cinder}-scheduler, one cinder-volume Deployment {cinder}-volume-{backend} per CinderBackend, and the backup Deployment {cinder}-backup, which exists only while a CinderBackupBackend is attached. All four hold a connection to RabbitMQ and to MariaDB: the API hands a volume request to the scheduler over the bus, the scheduler hands it to a cinder-volume, and backup jobs travel the same way. Each cinder-volume mounts the NFS export of its own backend at /var/lib/cinder/mnt/{md5}, where {md5} is the MD5 of server:path. The backup pod mounts every volume export at that same path and its backup target at /var/lib/cinder/backup_mount/{md5}. Every export in a Cinder pod is an inline CSI volume of the driver nfs.csi.k8s.io. On a hypervisor node nova-compute mounts the export itself when a volume attaches, at /var/lib/nova/mnt/{md5}, and mount propagation carries that mount to QEMU on the host. Locks are files inside each pod, and Memcached holds the token cache only.](../../diagrams/service-cinder-nfs-mounts.svg)
+
 The migration, purge and service-remove Jobs mount the whole config ConfigMap at
 `/etc/cinder/cinder.conf.d`. The one extra file they see is `scheduler.conf`,
 whose host identity `cinder-manage` never consults. The four workloads mount
