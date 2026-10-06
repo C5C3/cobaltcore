@@ -213,25 +213,41 @@ test_lhafile_version_pinned() {
   assert_eq "installed lhafile version ${installed} is a recorded pin (${pins[*]})" "yes" "$matched"
 }
 
-# --- Test 12: the S3 location-repair patch is applied ---
-test_s3_location_repair_patch_applied() {
+# --- Test 12: the S3 location repair converges ---
+test_s3_location_repair_converges() {
   echo "Test: the S3 location repair accepts a scheme-prefixed s3_store_host"
-  # Proves both build paths applied
+  # glance.common.store_utils rewrites stored S3 location URLs whenever an API
+  # request touches an image's locations. The check drives the repair the
+  # image carries rather than grepping the source text, and branches on it.
+  #
+  # Glance 31.1.0 and 32.0.0 (2025.2, 2026.1) carry
+  # _update_s3_location_and_store_id, which compares each location against
+  # the URL _construct_s3_url builds from the store configuration. This branch
+  # proves both build paths applied
   # patches/glance/<release>/0001-normalize-scheme-prefixed-s3-host-in-location-repair.patch,
   # which strips the http:// or https:// prefix of s3_store_host in
   # _construct_s3_url. The glance-operator always renders the prefix (the
   # GlanceBackend CRD requires ^https?:// on spec.s3.host), and the stored
   # location URLs carry only the bare authority, so an unpatched image logs
   # "S3 URL mismatch" and rewrites the location row on every API request that
-  # touches an S3 image.
-  # The check drives the real repair, _update_s3_location_and_store_id, rather
-  # than grepping the source text. The location URL comes from the S3 driver's
-  # own StoreLocation, fed the prefixed host the way Store.add() feeds it, so
-  # a change on either side of the comparison is caught. Both halves are
-  # asserted for an http:// and an https:// host: matching credentials leave
-  # the location alone, and a rotated access key still rewrites it, which is
-  # what the repair exists for. Stderr is echoed on failure so the reason is
-  # named rather than collapsed into a bare exit code.
+  # touches an S3 image. Both halves are asserted for an http:// and an
+  # https:// host: matching credentials leave the location alone, and a
+  # rotated access key still rewrites it, which is what the repair exists for.
+  #
+  # Glance 33.0.0 (2026.2) removed both functions and carries no patch. Its
+  # _update_s3_location_credentials strips credentials embedded in a legacy
+  # location URL and reports whether it changed the location, and the S3
+  # driver writes credential-free URLs. This branch asserts for the same two
+  # hosts that a driver-written location carries no credentials and is left
+  # alone, that a legacy location is rewritten once to the driver-written
+  # form, and that a second pass changes nothing.
+  #
+  # In both branches the location URL comes from the S3 driver's own
+  # StoreLocation, fed the prefixed host the way Store.add() feeds it, so a
+  # change on either side of the comparison is caught. An image carrying
+  # neither function fails with a message naming this test. Stderr is echoed
+  # on failure so the reason is named rather than collapsed into a bare exit
+  # code.
   local exit_code=0 err=""
   err=$(docker run --rm "$IMAGE" \
     /var/lib/openstack/bin/python -c \
@@ -263,19 +279,44 @@ def repair(host, access_key):
     return written, updated, loc["url"]
 
 
-for host in ("http://garage.example:3900", "https://s3.example.com"):
-    written, updated, url = repair(host, "key")
-    if updated or url != written:
-        sys.exit("%s: matching credentials still report an S3 URL mismatch "
-                 "for %s" % (host, written))
-    written, updated, url = repair(host, "rotated")
-    if not updated or url != written.replace("//key:", "//rotated:", 1):
-        sys.exit("%s: a rotated access key no longer rewrites %s (got %s)"
-                 % (host, written, url))' \
+if hasattr(store_utils, "_update_s3_location_and_store_id"):
+    for host in ("http://garage.example:3900", "https://s3.example.com"):
+        written, updated, url = repair(host, "key")
+        if updated or url != written:
+            sys.exit("%s: matching credentials still report an S3 URL mismatch "
+                     "for %s" % (host, written))
+        written, updated, url = repair(host, "rotated")
+        if not updated or url != written.replace("//key:", "//rotated:", 1):
+            sys.exit("%s: a rotated access key no longer rewrites %s (got %s)"
+                     % (host, written, url))
+elif hasattr(store_utils, "_update_s3_location_credentials"):
+    strip = store_utils._update_s3_location_credentials
+    for host in ("http://garage.example:3900", "https://s3.example.com"):
+        written = s3.StoreLocation(
+            store_specs={"scheme": "s3", "s3serviceurl": host,
+                         "bucket": "glance-images", "key": "image-1"},
+            conf=None).get_uri()
+        if "@" in written:
+            sys.exit("%s: the driver wrote credentials into %s"
+                     % (host, written))
+        loc = {"url": written, "metadata": {"store": "s3-store"}}
+        if strip(loc) or loc["url"] != written:
+            sys.exit("%s: a driver-written location was rewritten: %s"
+                     % (host, loc["url"]))
+        legacy = written.replace("://", "://key:secret@", 1)
+        loc["url"] = legacy
+        if not strip(loc) or loc["url"] != written:
+            sys.exit("%s: the legacy location %s did not become %s (got %s)"
+                     % (host, legacy, written, loc["url"]))
+        if strip(loc) or loc["url"] != written:
+            sys.exit("%s: the second pass rewrote %s" % (host, loc["url"]))
+else:
+    sys.exit("glance.common.store_utils carries neither S3 location repair; "
+             "rewrite Test 12")' \
     2>&1 > /dev/null) || exit_code=$?
   [ "$exit_code" -eq 0 ] || echo "    $err"
 
-  assert_eq "the S3 location repair leaves matching locations alone" "0" "$exit_code"
+  assert_eq "the S3 location repair converges under a scheme-prefixed s3_store_host" "0" "$exit_code"
 }
 
 # --- Run all tests ---
@@ -304,7 +345,7 @@ test_lhafile_importable
 echo ""
 test_lhafile_version_pinned
 echo ""
-test_s3_location_repair_patch_applied
+test_s3_location_repair_converges
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
