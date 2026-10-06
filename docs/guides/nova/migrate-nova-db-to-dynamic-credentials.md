@@ -53,10 +53,16 @@ on the ControlPlane, or the shared `spec.infrastructure.database.credentialsMode
 when that is empty. The Nova CRD rejects a child whose `apiDatabase` and
 `database` carry different modes, so the two chains always switch together.
 
-The figure shows one chain. Nova has two, and the tables above name the
+The first figure shows one chain. Nova has two, and the tables above name the
 objects of each.
 
 ![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](../../diagrams/secrets-db-credentials.svg)
+
+The second figure shows which process holds which of the two connections. The
+migration changes where the credentials behind them come from, and none of
+these edges.
+
+![The Nova control plane as five Deployments with the connections each holds. The compute API {nova}, the metadata API {nova}-metadata, the scheduler and the conductor hold three connections: the API database nova_api, the cell database nova, and the message bus. The console proxy {nova}-novncproxy, which can be switched off, holds the cell database and the bus. Three Secrets carry the connection strings: {nova}-api-db-connection, {nova}-db-connection and {nova}-transport-url. MariaDB has three schemas: nova_api with the cell map and the mappings, nova for cell1, the one real cell, and nova_cell0 for instances no host could take. cell0 has no connection of its own; the API reads it through the cell mapping with the user of the cell database. The Job {nova}-db-sync maps both cells and migrates all three schemas. The bus is one RabbitMQ transport with the RPC topics scheduler, conductor and compute.{host}, and notifications are off. nova-compute runs in a NovaCompute pool, not among the five, and the bus is its only connection.](../../diagrams/compute-nova-control-plane.svg)
 
 ## Prerequisites
 

@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1255" viewBox="0 0 1808 1255" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Nova control plane: processes, schemas and the bus">
+<title>Nova control plane: processes, schemas and the bus</title>
+<rect width="1808" height="1255" fill="#F6F5F1"/>
+<rect x="430" y="40" width="790" height="882" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="449" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Nova {nova}</text>
+<text x="449" y="113.2" font-size="20" font-weight="400" fill="#55606E">five Deployments; each holds the bus and the cell database</text>
+<rect x="454" y="150" width="740" height="418" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="473" y="189.36" font-size="26" font-weight="700" fill="#2B3440">these four also hold the API database</text>
+<rect x="478" y="223" width="270" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="613" y="248.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{nova}</text>
+<text x="478" y="284.2" font-size="20" font-weight="400" fill="#55606E">compute API, port 8774</text>
+<rect x="478" y="311" width="270" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="613" y="336.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{nova}-metadata</text>
+<text x="478" y="372.2" font-size="20" font-weight="400" fill="#55606E">metadata API, port 8775</text>
+<rect x="478" y="399" width="270" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="613" y="424.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{nova}-scheduler</text>
+<rect x="478" y="487" width="270" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="613" y="512.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{nova}-conductor</text>
+<text x="478" y="548.2" font-size="20" font-weight="400" fill="#55606E">reaches the cell database for the compute nodes</text>
+<rect x="454" y="605" width="270" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="589" y="630.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{nova}-novncproxy</text>
+<text x="740" y="616.2" font-size="20" font-weight="400" fill="#55606E">console proxy, port 6080</text>
+<text x="740" y="642.2" font-size="20" font-weight="400" fill="#55606E">off with spec.consoleProxy.enabled: false</text>
+<path d="M40 335 H354 L370 351 V383 H40 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="354,335 354,351 370,351" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="205" y="367.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{nova}-api-db-connection</text>
+<text x="40" y="410.2" font-size="20" font-weight="400" fill="#55606E">[api_database] connection</text>
+<path d="M40 698 H354 L370 714 V746 H40 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="354,698 354,714 370,714" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="205" y="730.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{nova}-db-connection</text>
+<text x="40" y="773.2" font-size="20" font-weight="400" fill="#55606E">[database] connection</text>
+<text x="40" y="799.2" font-size="20" font-weight="400" fill="#55606E">one user for nova and nova_cell0</text>
+<path d="M40 828 H354 L370 844 V876 H40 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="354,828 354,844 370,844" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="205" y="860.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{nova}-transport-url</text>
+<text x="40" y="903.2" font-size="20" font-weight="400" fill="#55606E">[DEFAULT] transport_url</text>
+<polyline points="370,359 443.5,359" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="454,359 439,366.2 439,351.8" fill="#B0387F"/>
+<polyline points="370,722 419.5,722" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="430,722 415,729.2 415,714.8" fill="#B0387F"/>
+<polyline points="370,852 419.5,852" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="430,852 415,859.2 415,844.8" fill="#B0387F"/>
+<rect x="1300" y="40" width="300" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M1324 40 V88 M1576 40 V88" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="1450" y="72.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Job {nova}-db-sync</text>
+<text x="1300" y="115.2" font-size="20" font-weight="400" fill="#55606E">migrates all three schemas</text>
+<rect x="1290" y="148" width="478" height="608" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1309" y="187.36" font-size="26" font-weight="700" fill="#2B3440">MariaDB</text>
+<rect x="1314" y="216" width="300" height="48" rx="20" fill="#2B3440"/>
+<text x="1464" y="248.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Database nova_cell0</text>
+<text x="1314" y="291.2" font-size="20" font-weight="400" fill="#55606E">cell0: instances no host could take</text>
+<rect x="1314" y="335" width="300" height="48" rx="20" fill="#2B3440"/>
+<text x="1464" y="367.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Database nova_api</text>
+<text x="1314" y="410.2" font-size="20" font-weight="400" fill="#55606E">cell map, flavors, instance and host mappings</text>
+<rect x="1314" y="648" width="300" height="48" rx="20" fill="#2B3440"/>
+<text x="1464" y="680.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Database nova</text>
+<text x="1314" y="723.2" font-size="20" font-weight="400" fill="#55606E">cell1, the one real cell</text>
+<polyline points="1570,88 1570,137.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1570,148 1562.8,133 1577.2,133" fill="#2457C5"/>
+<text x="1586" y="125.2" font-size="20" font-weight="400" fill="#2B3440">maps cell0 and cell1</text>
+<polyline points="748,240 1303.5,240" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1314,240 1299,247.2 1299,232.8" fill="#2457C5"/>
+<text x="764" y="229.2" font-size="20" font-weight="400" fill="#2B3440">through the cell mapping, as the user of nova</text>
+<polyline points="1194,359 1303.5,359" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1314,359 1299,366.2 1299,351.8" fill="#2457C5"/>
+<polyline points="1220,672 1303.5,672" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1314,672 1299,679.2 1299,664.8" fill="#2457C5"/>
+<rect x="1290" y="822" width="300" height="197" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1440" y="929.14" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">RabbitMQ</text>
+<text x="1290" y="1046.2" font-size="20" font-weight="400" fill="#55606E">one transport, vhost / on a managed bus</text>
+<text x="1290" y="1072.2" font-size="20" font-weight="400" fill="#55606E">RPC topics scheduler, conductor, compute.{host}</text>
+<text x="1290" y="1098.2" font-size="20" font-weight="400" fill="#55606E">notifications: driver noop</text>
+<polyline points="1220,862 1279.5,862" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1290,862 1275,869.2 1275,854.8" fill="#2457C5"/>
+<rect x="900" y="972" width="190" height="34" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="995" y="997.64" font-size="24" font-weight="600" fill="#A3262E" text-anchor="middle">nova-compute</text>
+<text x="900" y="1033.2" font-size="20" font-weight="400" fill="#55606E">pods of a NovaCompute pool</text>
+<text x="900" y="1059.2" font-size="20" font-weight="400" fill="#55606E">no database connection</text>
+<polyline points="1090,989 1279.5,989" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1290,989 1275,996.2 1275,981.8" fill="#2457C5"/>
+<text x="1190" y="978.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">its only connection</text>
+<text x="40" y="1156.2" font-size="20" font-weight="400" fill="#55606E">{nova}: the Nova resource, {cp}-nova under a ControlPlane. {host}: a compute host.</text>
+<text x="40" y="1182.2" font-size="20" font-weight="400" fill="#55606E">The schema names are the ones a ControlPlane sets. A standalone Nova names them in spec.apiDatabase.database and spec.database.database; cell0 is that name plus _cell0.</text>
+<text x="40" y="1208.2" font-size="20" font-weight="400" fill="#55606E">A connection string reaches its process as an environment variable, never in the ConfigMap.</text>
+</svg>
