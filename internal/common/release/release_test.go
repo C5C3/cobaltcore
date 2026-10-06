@@ -289,3 +289,44 @@ func TestIsPatchOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestAtLeast(t *testing.T) {
+	tests := []struct {
+		name string
+		rel  Release
+		want bool
+	}{
+		{
+			name: "earlier year is not at least",
+			rel:  Release{Year: 2025, Minor: 2},
+			want: false,
+		},
+		{
+			name: "same year lower minor is not at least",
+			rel:  Release{Year: 2026, Minor: 1},
+			want: false,
+		},
+		{
+			name: "same version is at least",
+			rel:  Release{Year: 2026, Minor: 2},
+			want: true,
+		},
+		{
+			name: "patch suffix ignored",
+			rel:  Release{Year: 2026, Minor: 2, Patch: "p1"},
+			want: true,
+		},
+		{
+			name: "later year lower minor is at least",
+			rel:  Release{Year: 2027, Minor: 1},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(tt.rel.AtLeast(2026, 2)).To(Equal(tt.want))
+		})
+	}
+}
