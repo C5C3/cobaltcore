@@ -108,7 +108,14 @@ cinder:
     - qemu-utils
 nova:
   pip_extras: []
-  pip_packages: []
+  pip_packages:
+    # os-vif's ovs plugin imports pyroute2 (os_vif/internal/ip/linux/
+    # impl_pyroute2.py) and os-vif 5.2.1 lists it in its requirements.txt,
+    # but the published wheel's metadata does not, so nothing installs it.
+    # Without it os-vif loads only its noop plugin, and the option catalog
+    # generated from this image loses the [os_vif_ovs] section. Pinned by
+    # upper-constraints.txt.
+    - pyroute2
   apt_packages:
     # uWSGI is compiled in venv-builder against the shared libpython; without
     # this, uwsgi fails to load (python-base ships no libpython3.12.so.1.0).
@@ -126,6 +133,10 @@ nova-compute:
     # ships it as an sdist only; the build stage compiles it against
     # libvirt-dev.
     - libvirt-python
+    # os-vif 5.2.1 omits pyroute2 from its wheel metadata although its ovs
+    # plugin imports it (see nova above). Without it nova-compute cannot plug
+    # an instance port into Open vSwitch.
+    - pyroute2
   apt_packages:
     # libvirt.so.0, libvirt-qemu.so.0 and libvirt-lxc.so.0, which the
     # binding's extension modules link (nova/virt/libvirt/host.py imports it).
