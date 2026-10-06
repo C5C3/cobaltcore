@@ -641,14 +641,12 @@ logs `unknown role: keystone-<namespace>`. Nothing is lost: run the onboarding
 script and ESO syncs the credential on its next retry.
 :::
 
-::: tip Optional: a per-tenant OpenBao identity
-By default this ControlPlane reaches OpenBao through the shared cluster store
-`openbao-cluster-store`. To give it its own OpenBao identity (so OpenBao itself
-enforces isolation from other tenants), run
-`deploy/openbao/bootstrap/setup-eso-tenant.sh openstack`, wait for the
-`openbao-tenant-store` SecretStore to be `Ready`, then set
-`spec.secretStoreRef: {kind: SecretStore, name: openbao-tenant-store}` on the
-ControlPlane. See the
+::: tip A per-tenant OpenBao identity is the default
+This ControlPlane reaches OpenBao through a store of its own. The c5c3-operator
+provisions the `SecretStore` `openbao-tenant-store` in the `openstack` namespace
+and routes the ControlPlane and its children through it, so OpenBao itself
+isolates it from other tenants. There is nothing to run. `spec.secretStoreRef`
+is the override for a store you manage yourself. See the
 [multi-tenant deployment guide](./guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities).
 :::
 
