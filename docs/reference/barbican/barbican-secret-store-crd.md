@@ -126,6 +126,11 @@ read-only posture K-ORC takes with unmanaged imports: the operator reads the
 referenced Secrets and renders the configuration, and never creates a mount, a
 policy, an AppRole, or secret material on that server.
 
+The figure shows both modes for the store a ControlPlane projects, which calls
+them dedicated and external.
+
+![The two modes of a Barbican secret store, side by side. Dedicated: the c5c3-operator creates an OpenBaoCluster {cp}-barbican-bao and declares its self-init, which provisions the KV mount barbican/, a policy, the AppRole role barbican and a Kubernetes auth role. The barbican-operator logs in to that instance through Kubernetes auth, checks the mount, reads the role ID and mints a secret ID into the Secret {cp}-barbican-store-approle. The API pods of {cp}-barbican read the secret ID from that Secret and the CA from {cp}-barbican-bao-tls-ca, and store their secrets in the instance. External: an OpenBao or Vault server runs outside the control plane, and its KV mount, policy and AppRole are provisioned by hand, as are the Secret with the role ID and the secret ID and the optional Secret with a CA bundle. The barbican-operator only reads the two Secrets, logs in with the AppRole and checks its capabilities; it writes nothing to the server. The API pods use the same two Secrets. On the kind devstack the OpenBaoCluster openbao-instance stands in for the outside server. In both modes the management OpenBao in shared-services is a separate server that delivers the database credentials of Barbican and no store credential.](../../diagrams/service-barbican-secret-stores.svg)
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `instanceRef` | [`*InstanceRefSpec`](#instancerefspec) | Managed mode | — | The `OpenBaoCluster` (`openbao.org/v1alpha1`) in this store's namespace to provision against. Everything else is derived from that name by convention: the server URL `https://<instance>.<namespace>.svc:8200`, the CA Secret `<instance>-tls-ca`, and the provisioner ServiceAccount `<instance>-provisioner` the operator mints a bound token for. |
