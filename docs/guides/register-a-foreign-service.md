@@ -45,7 +45,7 @@ is what makes the commands below read sensibly.
 | Piece | Namespace | Why |
 | --- | --- | --- |
 | The allowlist entry | `openstack` | It is consent the ControlPlane gives, so it lives on the ControlPlane CR |
-| The K-ORC children: user, project, role import, role assignment, catalog service row, endpoint rows | `openstack` | K-ORC reads the admin `clouds.yaml` from each child's own namespace, and that credential is materialized once, beside the ControlPlane |
+| The K-ORC children: user, project, role import, role assignment, catalog service row, region import, endpoint rows | `openstack` | K-ORC reads the admin `clouds.yaml` from each child's own namespace, and that credential is materialized once, beside the ControlPlane |
 | The tenant secret store and the consumer Secret | `workflow` | Credentials are delivered where the workload that reads them runs |
 
 The children follow the credential into `openstack`. Copying the cloud-admin
@@ -194,10 +194,10 @@ kubectl get secretstore,serviceaccount,certificate -n workflow \
   -l c5c3.io/controlplane-name=controlplane
 ```
 
-The seven K-ORC children sit in the ControlPlane's namespace:
+The eight K-ORC children sit in the ControlPlane's namespace:
 
 ```bash
-KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud
+KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud
 
 kubectl get "$KORC_KINDS" -n openstack \
   -l c5c3.io/keystoneservice-name=workflow,c5c3.io/keystoneservice-namespace=workflow
@@ -448,7 +448,7 @@ credentials left to reach Keystone with, so the rows there are not removed. See
 
 There is no registration path for a standalone Keystone. `spec.controlPlaneRef`
 is required, and the two things it reaches for exist only on a ControlPlane: the
-admin application credential the K-ORC children authenticate with, and the tenant
+admin credentials the K-ORC children authenticate with, and the tenant
 secret store the consumer Secret is delivered through. A Keystone CR you own
 carries neither. On such an installation, create service accounts and catalog
 entries through the identity API directly.

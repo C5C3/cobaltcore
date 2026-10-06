@@ -34,8 +34,10 @@ only the ControlPlane-projected built-in registrations keep the placed-service
 delivery legs.
 
 The ControlPlane projects a `KeystoneService` child per built-in service
-(Glance, Placement, Barbican), so those registrations run through this same
-reconciler. Their projection is the ControlPlane's, documented with it.
+(Glance, Placement, Barbican, Neutron, Cinder, Nova) and two account-only ones,
+for the network service's compute notifier and for the hypervisor operator, so
+those registrations run through this same reconciler. Their projection is the
+ControlPlane's, documented with it.
 
 ## Controller Registration
 
