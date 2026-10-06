@@ -86,6 +86,14 @@ public endpoint. The kind overlay installs Envoy Gateway as the demo
 implementation; production overlays do not ship a Gateway controller, and
 platform owners bring their own implementation.
 
+The figure follows a request on the kind devstack. What `spec.gateway`
+configures is the part inside the cluster, from the Gateway to the pods, and
+the port mapping in front of it exists on kind only.
+[The request path, hop by hop](../quick-start-extended.md#request-path) names
+each hop.
+
+![The path of a request from the workstation to an OpenStack API on the kind devstack, in six numbered hops. Hop 1: the public nip.io service resolves {svc}.127-0-0-1.nip.io to 127.0.0.1. Hop 2: the client connects to 127.0.0.1 on the host port, which is 443 or the value of KIND_HOST_PORT. Hop 3: the extraPortMappings entry of hack/kind-config.yaml forwards the host port to port 31443 of the kind node, the NodePort of the Envoy proxy Service in envoy-gateway-system. Hop 4: the Service hands the connection to the Envoy proxy, which serves the Gateway openstack-gw in the namespace openstack, with one HTTPS listener per hostname and the certificate Secret {svc}-nip-io-tls. Hop 5: the HTTPRoute, which the service operator renders from spec.gateway of the service resource, sends the request to the Service by hostname and path. Hop 6: the Service reaches the pods over plain HTTP. The publicEndpoint of the service resource is the public URL in the catalog and has to carry the host port. Two paths leave hops out: a port-forward to the Service, started by hand, skips hops 1 to 5, and the metal-stack lab forwards local port 8443 to the Envoy proxy Service in place of hops 2 and 3.](../diagrams/quickstart-request-path.svg)
+
 ## Multi-cluster placement
 
 The implemented multi-cluster model is management cluster plus target

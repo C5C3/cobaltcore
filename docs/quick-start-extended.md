@@ -984,6 +984,11 @@ host's TCP :443 to the Envoy proxy's NodePort `31443`, so the endpoint resolves 
 to `127.0.0.1` via the [nip.io](https://nip.io/) wildcard DNS service, with no `/etc/hosts`
 edit and no `kubectl port-forward` required.
 
+The figure follows such a request from the workstation to the Keystone pods.
+[The request path, hop by hop](#request-path) names each hop and where a first run stops.
+
+![The path of a request from the workstation to an OpenStack API on the kind devstack, in six numbered hops. Hop 1: the public nip.io service resolves {svc}.127-0-0-1.nip.io to 127.0.0.1. Hop 2: the client connects to 127.0.0.1 on the host port, which is 443 or the value of KIND_HOST_PORT. Hop 3: the extraPortMappings entry of hack/kind-config.yaml forwards the host port to port 31443 of the kind node, the NodePort of the Envoy proxy Service in envoy-gateway-system. Hop 4: the Service hands the connection to the Envoy proxy, which serves the Gateway openstack-gw in the namespace openstack, with one HTTPS listener per hostname and the certificate Secret {svc}-nip-io-tls. Hop 5: the HTTPRoute, which the service operator renders from spec.gateway of the service resource, sends the request to the Service by hostname and path. Hop 6: the Service reaches the pods over plain HTTP. The publicEndpoint of the service resource is the public URL in the catalog and has to carry the host port. Two paths leave hops out: a port-forward to the Service, started by hand, skips hops 1 to 5, and the metal-stack lab forwards local port 8443 to the Envoy proxy Service in place of hops 2 and 3.](./diagrams/quickstart-request-path.svg)
+
 ::: warning Did you set `KIND_HOST_PORT=8443` in Step 2?
 Then the endpoint is `https://keystone.127-0-0-1.nip.io:8443/v3` instead of the
 default `:443`. Substitute `:8443` everywhere this section writes
@@ -1074,6 +1079,58 @@ openstack token issue
 ```
 
 This reaches the ClusterIP Service directly and bypasses the Gateway data plane entirely.
+
+### The request path, hop by hop {#request-path}
+
+The numbers are those of the figure at the top of this section.
+
+1. Name resolution. `keystone.127-0-0-1.nip.io` resolves to `127.0.0.1` through
+   the public nip.io service. A resolver with DNS rebind protection drops that
+   answer, and `curl` fails with `Could not resolve host`. The tip in
+   [Step 7 of the Quick Start (ControlPlane)](./quick-start-controlplane.md#step-7-—-verify)
+   has the `/etc/hosts` entries and the `--resolve` form.
+2. Host port. The client connects to `127.0.0.1` on port `443`, or on the port
+   `KIND_HOST_PORT` names. kind binds that port when it creates the cluster, so
+   a host that may not bind a port below 1024 fails in
+   [Step 2](#step-2-—-create-the-kind-cluster) already, with
+   `bind: permission denied` or a missing `vmnetd` socket.
+3. Port mapping and NodePort. The `extraPortMappings` entry of
+   `hack/kind-config.yaml` forwards the host port to port `31443` of the kind
+   node. That is the NodePort of the Envoy proxy Service in
+   `envoy-gateway-system`, which the `EnvoyProxy` `envoy-nodeport` pins.
+4. Envoy proxy and Gateway. The Service hands the connection to the Envoy proxy
+   on port `443`. Envoy serves the `Gateway` `openstack-gw` in `openstack`,
+   which has one HTTPS listener per hostname. The server name of the TLS
+   handshake selects the listener, and the listener ends TLS with the
+   certificate in the Secret `keystone-nip-io-tls`. `selfsigned-cluster-issuer`
+   issued it, so the client needs `--insecure` or the CA file of
+   [Accept the self-signed certificate](#accept-the-self-signed-certificate).
+5. HTTPRoute. The keystone-operator renders the `HTTPRoute` `keystone` from
+   `spec.gateway` of the Keystone CR. The route attaches to `openstack-gw`,
+   matches the hostname and the path prefix, and names the Service `keystone`
+   on port `5000` as its backend. Until the Gateway accepts the route, the CR
+   reports `HTTPRouteReady=False` with the reason `HTTPRouteNotAccepted`, and a
+   hostname without a route answers `404`.
+6. Service and pods. Envoy forwards the request over plain HTTP to the pods
+   behind the Service `keystone`.
+
+The catalog decides where the request after the token goes. Keystone hands the
+client the public URL of each service, and for the identity service that is
+`spec.bootstrap.publicEndpoint`. With `KIND_HOST_PORT=8443` it has to carry
+`:8443`, as in the variant at the end of
+[Step 7](#step-7-—-create-a-keystone-cr). The CR of Step 7 itself sets no
+`publicEndpoint`, so its catalog holds the cluster-internal URL that the note
+in [Verify access](#step-2-—-verify-access) describes. A
+`ControlPlane` service block without `publicEndpoint` advertises
+`https://<hostname>` on port `443`, which is why the CR of the
+[Quick Start (ControlPlane)](./quick-start-controlplane.md) carries a
+`publicEndpoint` with `:8443` for every API.
+
+Two paths leave hops out. The [fallback](#fallback-kubectl-port-forward)
+forwards a local port to the Service `keystone` and skips hops 1 to 5, TLS
+included. The [Quick Start (metal-stack)](./quick-start-metal-stack.md) has no
+host port to map, so it forwards local port `8443` to the Envoy proxy Service,
+in place of hops 2 and 3.
 
 ---
 
