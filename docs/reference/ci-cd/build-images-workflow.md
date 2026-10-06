@@ -46,12 +46,13 @@ header (matching `ci.yaml`).
 
 ## Trigger Events
 
-The workflow triggers on two events:
+The workflow triggers on three events:
 
 | Event | Scope | Description |
 | --- | --- | --- |
 | `push` | `branches: [main, stable/**]` | Runs on every push to `main` or any `stable/**` branch (recursive glob) |
 | `pull_request` | all branches | Runs when a changed path is one of the workflow's inputs; the [`changes`](#changes) job then decides which images the run builds |
+| `workflow_dispatch` | manual run | Builds every image, like a push |
 
 Push events produce multi-arch images pushed to GHCR. Pull request events produce
 single-arch images loaded locally for testing (see [PR vs Push Behavior](#pr-vs-push-behavior)).
@@ -85,13 +86,22 @@ attestation permissions are scoped to merge and build jobs only:
 permissions:
   contents: read
 
-# Job-level (merge jobs + build-service-images)
+# Job-level (merge jobs)
 permissions:
   contents: read
   packages: write
   id-token: write
   attestations: write
+  artifact-metadata: write
   security-events: write
+
+# Job-level (build-service-images, build-nova-compute-image)
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 # Verification jobs (verify-base-images, verify-service-images)
 permissions:
@@ -109,14 +119,14 @@ sign the attestation without managing keys. `attestations: write` grants
 access to the GitHub Attestations API for storing signed attestations.
 `security-events: write` allows uploading Grype vulnerability scan results in SARIF
 format to the GitHub Security tab; it is scoped to the `merge-*` jobs, the only jobs that
-upload. `id-token` and `attestations` are scoped to the merge jobs and to
-`build-service-images`. The per-platform build jobs run the PR-only Grype scan via
-`supply-chain-attest` with `scan-mode: image` but upload no SARIF, so none of them holds
-`security-events`. The verification jobs
+upload. `id-token`, `attestations` and `artifact-metadata` are scoped to the merge jobs,
+`build-service-images` and `build-nova-compute-image`. The per-platform build jobs run
+the PR-only Grype scan via `supply-chain-attest` with `scan-mode: image` but upload no
+SARIF, so none of them holds `security-events`. The verification jobs
 (`verify-base-images`, `verify-service-images`) do **not** receive `id-token`,
 `attestations`, or `security-events` permissions — they only need `contents: read` (for
-checkout and test scripts) and `packages: read` (for pulling images from GHCR), following
-the principle of least privilege.
+checkout and test scripts) and `packages: read` (for pulling images from GHCR),
+following the principle of least privilege.
 
 ## Concurrency
 
@@ -134,10 +144,10 @@ ensuring every merge commit produces a complete set of images.
 
 ## Reusable Components
 
-Repeated inline step sequences are extracted into six composite GitHub Actions and
-four standalone CI scripts. These components encapsulate patterns that were previously
-duplicated across multiple jobs, ensuring consistency and reducing the workflow from
-~934 lines to under 600 lines. All components follow the repository's CI script
+Repeated inline step sequences are extracted into nine composite GitHub Actions and
+thirteen `hack/` scripts. These components encapsulate patterns that were previously
+duplicated across multiple jobs, ensuring consistency. This section documents four of
+the actions and four of the scripts. All components follow the repository's CI script
 and composite action conventions.
 
 ### setup-docker-registry
@@ -153,10 +163,10 @@ that was previously inlined in every job.
 | `password` | yes | — | Registry password/token |
 | `install-cosign` | no | `'true'` | Whether to install cosign |
 
-**Usage:** All 9 jobs that previously inlined docker login + buildx + cosign now call
-this composite action. Jobs that do not need cosign (build jobs, verification jobs) pass
-`install-cosign: 'false'`. Only merge jobs (which run attestation and signing) leave it
-at the default `'true'`.
+**Usage:** Every job that pulls or pushes images calls this composite action: 27 of the
+31 jobs, all but `changes`, `lint-dockerfiles`, `prepare` and `generate-matrix`. Jobs
+that do not need cosign (build jobs, verification jobs) pass `install-cosign: 'false'`.
+Only merge jobs (which run attestation and signing) leave it at the default `'true'`.
 
 ### supply-chain-attest
 
@@ -169,8 +179,8 @@ inline sequence that was previously duplicated for each image type.
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `image-name` | yes | — | Bare image name without tag/digest (e.g. `ghcr.io/c5c3/python-base`) |
-| `image-digest` | yes | — | Image digest (`sha256:...`) |
-| `sbom-output-file` | yes | — | SBOM output filename (e.g. `sbom-python-base.cyclonedx.json`) |
+| `image-digest` | no | `''` | Image digest (`sha256:...`); required when `scan-mode` is `sbom` |
+| `sbom-output-file` | no | `''` | SBOM output filename (e.g. `sbom-python-base.cyclonedx.json`); required when `scan-mode` is `sbom` |
 | `grype-category` | yes | — | SARIF category for the GitHub Security tab |
 | `scan-mode` | no | `'sbom'` | `'sbom'` for full supply chain (non-PR) or `'image'` for scan-only (PR) |
 | `image-ref-for-scan` | no | `''` | Full image ref for image-mode scan |
@@ -212,8 +222,8 @@ duplicated (with "MUST stay in sync" comments) between `build-service-images` an
 2. Reads the version from `releases/<release>/source-refs.yaml` via `yq` (fails with
    `::error::` if not found or null)
 3. Checks out `openstack/<service>` at the resolved ref into `src/<service>`
-4. Applies patches from `patches/<service>/<release>/*.patch` via `git apply` (skipped if
-   no patches exist, guarded by `hashFiles`)
+4. Applies patches from `patches/<service>/<release>/*.patch` via `git apply` (skipped
+   if no patches exist, guarded by a shell `compgen -G` check)
 5. Runs `scripts/apply-constraint-overrides.sh <release>`
 
 **Usage:** Both `build-service-images` and `test-service-images` call this composite
@@ -251,9 +261,9 @@ final manifest digest. Follows the repo's CI-script conventions: shebang, SPDX h
 
 Writes `digest=sha256:<hex>` to `$GITHUB_OUTPUT`.
 
-**Usage:** `merge-base-images` (×2 for python-base and venv-builder),
-`merge-tempest-image`, and `merge-service-images` all call this script via `run:` with
-env vars passed through the step's `env:` block.
+**Usage:** The `Create and push manifest` step of the `merge-manifest-and-attest`
+composite action calls this script via `run:` with env vars passed through the step's
+`env:` block. Every merge job reaches it through that action.
 
 ### hack/ci-run-unit-tests.sh
 
@@ -374,30 +384,34 @@ prepare ──────────┤
                   ├──> build-hvo (matrix: amd64 + arm64)
                   │      └──> merge-hvo-image (push only) ──> verify-hvo-image (push only)
                   │
-                  ├──> build-kna (matrix: amd64 + arm64)
-                  │      └──> merge-kna-image (push only) ──> verify-kna-image (push only)
+                  └──> build-kna (matrix: amd64 + arm64)
+                         └──> merge-kna-image (push only) ──> verify-kna-image (push only)
+
+lint-dockerfiles ─┬──> build-base-images (matrix: amd64 + arm64)
+prepare ──────────┘      └──> merge-base-images ──> verify-base-images ──> generate-matrix ──┐
+                                                                                             │
+                  ┌──────────────────────────────────────────────────────────────────────────┘
                   │
-                  └──> build-base-images (matrix: amd64 + arm64)
-                         └──> merge-base-images ──> verify-base-images ──┬──> generate-matrix
-                                                                         │
-                         ┌───────────────────────────────────────────────┘
-                         │
-                         ├──> build-tempest (matrix: release × platform)
-                         │       └──> merge-tempest-image (push only)
-                         │
-                         ├──> build-service-images (matrix: service × release × platform)
-                         │       └──> merge-service-images ──┐
-                         │                                   ├──> verify-service-images (push only)
-                         ├──> test-service-images ───────────┘
-                         │          └── hack/ci-run-unit-tests.sh (stestr run)
-                         │
-                         └──> build-nova-compute-image (matrix: release × platform)
-                                 └──> merge-nova-compute-image (push only) ──> verify-nova-compute-image (push only)
+                  ├──> build-tempest (matrix: release × platform)
+                  │      └──> merge-tempest-image (push only)
+                  │
+                  ├──> build-service-images (matrix: service × release × platform)
+                  │      └──> merge-service-images (push only) ──┐
+                  │                                              ├──> verify-service-images (push only)
+                  ├──> test-service-images ──────────────────────┘
+                  │      └── hack/ci-run-unit-tests.sh (stestr run)
+                  │
+                  └──> build-nova-compute-image (matrix: release × platform)
+                         └──> merge-nova-compute-image (push only) ──> verify-nova-compute-image (push only)
 ```
 
-`changes` is also a dependency of `generate-matrix`, `build-service-images` and
-`test-service-images`: it supplies the service list the matrix is built from and the
-flag those two gate on.
+The graph leaves out the `needs` entries that a drawn path already implies (`prepare` on
+`build-tempest`, `build-service-images`, `build-nova-compute-image` and every merge job
+except `merge-nova-compute-image`, `lint-dockerfiles` on `build-tempest`, and
+`merge-base-images`, `verify-base-images` and `generate-matrix` on jobs further down
+their chain) and `changes` on `generate-matrix`, `build-tempest`, `build-service-images`
+and `test-service-images`: `changes` supplies the service list the matrix is built from
+and the flags the other three gate on.
 
 Each platform (linux/amd64 on `ubuntu-latest`, linux/arm64 on `ubuntu-24.04-arm`) is
 built on a native runner and pushed by digest. `merge-base-images` then assembles the
@@ -415,9 +429,9 @@ job runs upstream unit tests for each service via `hack/ci-run-unit-tests.sh`, i
 verification runs as an inline step within `build-service-images` because `--load` makes
 the image available only on the same runner (ARM64 is excluded on PRs).
 
-All jobs use the `setup-docker-registry` composite action for Docker Buildx
-setup, registry authentication, and optional cosign installation, replacing the
-previously duplicated three-step setup sequence.
+Every job that pulls or pushes images uses the `setup-docker-registry` composite action
+for Docker Buildx setup, registry authentication, and optional cosign installation,
+replacing the previously duplicated three-step setup sequence.
 
 ### changes
 
@@ -473,11 +487,11 @@ The rclone shifter that copies OVN database backups from a PVC to S3
 runs as the `shifter` container of the `OVNCentral` backup CronJob, which the
 operator renders only when `spec.backup.s3` is set. Like the federation proxy,
 the image carries no OpenStack code, so the job pair follows the base-image
-shape: a two-platform build job depending only on `lint-dockerfiles` and
-`prepare` (PR mode loads the amd64 image locally for the inline Grype scan and
-the `tests/container-images/verify_backup_shifter.sh` verify script), and a
-PR-skipped merge job assembling the multi-arch manifest with the `:latest` +
-`:<sha>` tags, followed by the supply-chain pipeline.
+shape: a two-platform build job depending on `changes`, `lint-dockerfiles` and `prepare`
+(PR mode loads the amd64 image locally for the inline Grype scan and the
+`tests/container-images/verify_backup_shifter.sh` verify script), and a PR-skipped merge
+job assembling the multi-arch manifest with the `:latest` + `:<sha>` tags, followed by
+the supply-chain pipeline.
 
 Condition: `needs.changes.outputs.build-shifter == 'true'`. On a pull request the
 build job runs when `images/backup-shifter/**` or
@@ -489,13 +503,12 @@ The libvirt daemon and QEMU for containerized hypervisor nodes
 (`images/libvirt/`, single-stage `ubuntu:noble` + distro libvirt, QEMU, the QEMU
 disk tools and OVMF). The hypervisor package of issue #1142 runs it as a
 DaemonSet beside `nova-compute`. Like the backup shifter, the image carries no
-OpenStack code, so the job pair follows the base-image shape: a two-platform
-build job depending only on `lint-dockerfiles` and `prepare` (PR mode loads the
-amd64 image locally for the inline Grype scan and the
-`tests/container-images/verify_libvirt.sh` verify script, which starts
-`libvirtd` and queries the QEMU driver), and a PR-skipped merge job assembling
-the multi-arch manifest with the `:latest` + `:<sha>` tags, followed by the
-supply-chain pipeline. The arm64 leg builds on a push only.
+OpenStack code, so the job pair follows the base-image shape: a two-platform build job
+depending on `changes`, `lint-dockerfiles` and `prepare` (PR mode loads the amd64 image
+locally for the inline Grype scan and the `tests/container-images/verify_libvirt.sh`
+verify script, which starts `libvirtd` and queries the QEMU driver), and a PR-skipped
+merge job assembling the multi-arch manifest with the `:latest` + `:<sha>` tags,
+followed by the supply-chain pipeline. The arm64 leg builds on a push only.
 
 On `main`, the step `Mint the libvirt keeper tag` of the merge job runs
 `hack/ci-tag-libvirt-keeper.sh` on the merged index and gives it the third tag,
@@ -539,9 +552,9 @@ as the `github_token` secret (`secrets: github_token=...`), which the
 Dockerfile mounts into the one `RUN` that fetches and turns into the
 basic-auth header `actions/checkout` sends. A secret reaches no layer; a build
 without it, such as a local `docker build`, fetches anonymously.
-`images/nova/Dockerfile` is the second Dockerfile here fetching from
-github.com, for the noVNC console assets, and gets the same secret from the
-`Build service image` step of `build-service-images`.
+`images/nova/Dockerfile` is the one service Dockerfile fetching from github.com, for the
+noVNC console assets, and gets the same secret from the `Build service image` step of
+`build-service-images`.
 
 `build-ovn` needs `changes`, `lint-dockerfiles` and `prepare`, and carries
 `if: needs.changes.outputs.build-ovn == 'true'`: on a pull request it runs when
@@ -656,7 +669,7 @@ is assembled by the subsequent `merge-base-images` job.
 | --- | --- |
 | `runs-on` | <code v-pre>${{ matrix.runner }}</code> (`ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64) |
 | `timeout-minutes` | `45` |
-| `needs` | `[lint-dockerfiles]` |
+| `needs` | `[lint-dockerfiles, prepare]` |
 | Matrix | `platform: [linux/amd64, linux/arm64]` × native runner |
 | Push behavior | Pushes by digest to GHCR (even on PRs); tags assigned by `merge-base-images` |
 
@@ -668,16 +681,12 @@ is assembled by the subsequent `merge-base-images` job.
 | --- | --- | --- | --- |
 | 1 | Reject fork PRs | Shell (conditional) | Fails fast with `::error::` if the PR originates from a fork |
 | 2 | Checkout | `actions/checkout@v7` | Checks out the repository |
-| 3 | Normalize image owner | Shell script | Outputs lowercase `owner` value from `${{ github.repository_owner }}` for use in image references |
-| 4 | Prepare platform pair | `.github/actions/platform-pair` | Converts `linux/amd64` → `linux-amd64` for use in artifact names and cache scopes |
-| 5 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login (cosign disabled); replaces inline buildx + login steps |
-| 6 | Resolve ubuntu:noble digest | Shell | Resolves the upstream base image digest for OCI base-image annotations |
-| 7 | Generate metadata for python-base | `docker/metadata-action@v6` | Produces OCI labels (title, description, licenses, vendor) for python-base |
-| 8 | Build python-base | `docker/build-push-action@v7` | Context: `images/python-base`, single platform, `push-by-digest=true`; digest exported as artifact |
-| 9 | Export python-base digest | `.github/actions/export-digest` | Writes digest to staging dir and uploads as artifact `digests-python-base-<platform-pair>` |
-| 10 | Generate metadata for venv-builder | `docker/metadata-action@v6` | Produces OCI labels for venv-builder |
-| 11 | Build venv-builder | `docker/build-push-action@v7` | Context: `images/venv-builder`, single platform, `push-by-digest=true`; uses python-base from step 8 by digest |
-| 12 | Export venv-builder digest | `.github/actions/export-digest` | Writes digest to staging dir and uploads as artifact `digests-venv-builder-<platform-pair>` |
+| 3 | Prepare platform pair | `.github/actions/platform-pair` | Converts `linux/amd64` → `linux-amd64` for use in artifact names and cache scopes |
+| 4 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login (cosign disabled); replaces inline buildx + login steps |
+| 5 | Resolve ubuntu:noble digest | `hack/ci-resolve-ubuntu-digest.sh` | Resolves the upstream base image digest for OCI base-image annotations |
+| 6 | Build and push python-base | `.github/actions/build-push-image` | Context: `images/python-base`, single platform, `push-by-digest=true`; generates the OCI labels and uploads the digest as artifact `digests-python-base-<platform-pair>` |
+| 7 | Wait for python-base digest to propagate | `hack/ci-wait-for-image.sh` | Blocks until the pushed python-base digest resolves on GHCR, before venv-builder builds from it |
+| 8 | Build and push venv-builder | `.github/actions/build-push-image` | Context: `images/venv-builder`, single platform, `push-by-digest=true`; uses python-base from step 6 by digest; generates the OCI labels and uploads the digest as artifact `digests-venv-builder-<platform-pair>` |
 
 :::
 
@@ -691,8 +700,8 @@ on the final manifests.
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `23` |
-| `needs` | `[build-base-images]` |
-| Permissions | `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `security-events: write` |
+| `needs` | `[build-base-images, prepare]` |
+| Permissions | `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `artifact-metadata: write`, `security-events: write` |
 
 **Steps:**
 
@@ -701,14 +710,9 @@ on the final manifests.
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
 | 1 | Checkout | `actions/checkout@v7` | Checks out the repository |
-| 2 | Normalize image owner | Shell script | Outputs lowercase `owner` value |
-| 3 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login + cosign |
-| 4 | Download python-base digests | `actions/download-artifact@v4` | Downloads all `digests-python-base-*` artifacts, merges into `/tmp/digests/python-base/` |
-| 5 | Create python-base manifest | `hack/ci-merge-manifest.sh` | Assembles per-platform digests into multi-arch manifest; tags `:latest` and `:${{ github.sha }}`; outputs merged manifest digest |
-| 6 | Supply chain attest python-base | `.github/actions/supply-chain-attest` | SBOM + Grype scan + SARIF upload + attestation + provenance + cosign sign. Uses `scan-mode: sbom` on push, `image` on PR; SARIF is uploaded on push only |
-| 7 | Download venv-builder digests | `actions/download-artifact@v4` | Downloads all `digests-venv-builder-*` artifacts |
-| 8 | Create venv-builder manifest | `hack/ci-merge-manifest.sh` | Same pattern as step 5 for venv-builder |
-| 9 | Supply chain attest venv-builder | `.github/actions/supply-chain-attest` | Same pattern as step 6 for venv-builder |
+| 2 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login + cosign |
+| 3 | Merge and attest python-base | `.github/actions/merge-manifest-and-attest` | Downloads all `digests-python-base-*` artifacts into `/tmp/digests/python-base/` (`actions/download-artifact@v8`), assembles the multi-arch manifest with `hack/ci-merge-manifest.sh`, tags `:latest` and `:${{ github.sha }}`, then runs `supply-chain-attest`. Uses `scan-mode: image` on PR (Grype scan only), `sbom` otherwise (SBOM + Grype scan + SARIF upload + attestation + provenance + cosign sign) |
+| 4 | Merge and attest venv-builder | `.github/actions/merge-manifest-and-attest` | Same pattern as step 3 for venv-builder |
 
 :::
 
@@ -725,6 +729,8 @@ mapping from any base image in GHCR back to the commit that produced it.
 | Output | Format | Example |
 | --- | --- | --- |
 | `python-base-image` | `ghcr.io/<owner>/python-base@sha256:<digest>` | `ghcr.io/c5c3/python-base@sha256:abc123...` |
+| `python-base-name` | `ghcr.io/<owner>/python-base` | `ghcr.io/c5c3/python-base` |
+| `python-base-digest` | `sha256:<digest>` | `sha256:abc123...` |
 | `venv-builder-image` | `ghcr.io/<owner>/venv-builder@sha256:<digest>` | `ghcr.io/c5c3/venv-builder@sha256:def456...` |
 
 These outputs are consumed by `verify-base-images` and `build-service-images` via
@@ -750,9 +756,7 @@ service image builds begin. Runs after `merge-base-images` and blocks
 | --- | --- | --- | --- |
 | 1 | Checkout | `actions/checkout@v7` | Checks out the repository (needed for test scripts) |
 | 2 | Setup Docker registry | `.github/actions/setup-docker-registry` | GHCR login (cosign disabled); replaces inline login step |
-| 3 | Pull base images | Shell | Pulls both `python-base` and `venv-builder` by digest from `merge-base-images` outputs |
-| 4 | Verify python-base | Shell | Runs `verify_python_base.sh` with the digest-tagged image ref |
-| 5 | Verify venv-builder | Shell | Runs `verify_venv_builder.sh` with the digest-tagged image ref |
+| 3 | Pull and verify base images | Shell | Pulls both `python-base` and `venv-builder` by digest from `merge-base-images` outputs, then runs `verify_python_base.sh` and `verify_venv_builder.sh` with the digest-tagged image refs |
 
 **Test scripts executed:**
 
@@ -784,7 +788,7 @@ stages of every image.
 | --- | --- |
 | `runs-on` | <code v-pre>${{ matrix.runner }}</code> (`ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64) |
 | `timeout-minutes` | `45` |
-| `needs` | `[changes, merge-base-images, verify-base-images, generate-matrix]` |
+| `needs` | `[changes, merge-base-images, verify-base-images, generate-matrix, prepare]` |
 | Condition | `needs.changes.outputs.has-services == 'true'` |
 | Matrix | `service × release × platform × runner` (from `generate-matrix.build-matrix`; ARM64 excluded on PRs) |
 
@@ -796,15 +800,12 @@ stages of every image.
 | --- | --- | --- | --- |
 | 1 | Checkout | `actions/checkout@v7` | Checks out this repository |
 | 2 | Checkout service source | `.github/actions/checkout-service-source` | Resolves source ref, clones upstream, applies patches and constraint overrides |
-| 3 | Resolve extra packages | Shell | Reads `releases/<release>/extra-packages.yaml` via `yq` to extract `pip_extras` (comma-joined), `pip_packages` (space-joined), and `apt_packages` (space-joined). All three fields tolerate empty values — the Dockerfile handles them via conditional guards. |
+| 3 | Resolve extra packages | `hack/ci-resolve-extra-packages.sh` | Reads `releases/<release>/extra-packages.yaml` via `yq` to extract `pip_extras` (comma-joined), `pip_packages` (space-joined), and `apt_packages` (space-joined). All three fields tolerate empty values — the Dockerfile handles them via conditional guards. |
 | 4 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags (see [Tag Schema](#tag-schema)). Passes no `image` input, so the image is named after the service |
 | 5 | Prepare platform pair | `.github/actions/platform-pair` | Converts `linux/amd64` → `linux-amd64` for artifact names and cache scopes |
 | 6 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login (cosign disabled) |
-| 7 | Generate metadata for service image | `docker/metadata-action@v6` | Produces OCI labels and overrides version to the upstream release ref via `type=raw` strategy |
-| 8 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args, and passes the workflow token as the `github_token` BuildKit secret. A secret reaches only a `RUN` that mounts it, and `images/nova/Dockerfile` (the noVNC fetch) is the one service Dockerfile that does. Non-PR: `push-by-digest=true`, digest exported as artifact. PR: `load: true`, composite tag |
-| 9 | Export service image digest | `.github/actions/export-digest` | Non-PR only. Uploads artifact `digests-service-<service>-<release>-<platform-pair>` |
-| 10 | Supply chain scan (PR) | `.github/actions/supply-chain-attest` | PR only: scans locally loaded image via Grype (`scan-mode: image`); no SARIF upload |
-| 11 | Verify service image (PR) | Shell (conditional) | PR only: runs `verify_${{ matrix.service }}.sh` with the locally loaded image ref |
+| 7 | Build service image | `.github/actions/build-push-image` | Produces OCI labels with `docker/metadata-action@v6` and overrides version to the upstream release ref via `type=raw` strategy. Builds with `docker/build-push-action@v7`, four named build contexts and three build args, and passes the workflow token as the `github_token` BuildKit secret. A secret reaches only a `RUN` that mounts it, and `images/nova/Dockerfile` (the noVNC fetch) is the one service Dockerfile that does. Non-PR: `push-by-digest=true`, digest uploaded as artifact `digests-service-<service>-<release>-<platform-pair>`. PR: `load: true`, composite tag, Grype scan of the locally loaded image (`scan-mode: image`; no SARIF upload), then `verify_${{ matrix.service }}.sh` with the locally loaded image ref |
+| 8 | Verify option catalog | `hack/gen-option-catalog.sh --check` | PR only, for `keystone`, `glance`, `neutron`, `cinder` and `nova`: diffs the option catalog generated from the locally loaded image against the committed catalog file |
 
 :::
 
@@ -818,10 +819,10 @@ Runs only on push events.
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `45` |
-| `needs` | `[merge-base-images, build-service-images, generate-matrix]` |
+| `needs` | `[merge-base-images, build-service-images, generate-matrix, prepare]` |
 | `if` | `github.event_name != 'pull_request'` |
 | Matrix | `service × release` (from `generate-matrix.matrix`) |
-| Permissions | `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `security-events: write` |
+| Permissions | `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `artifact-metadata: write`, `security-events: write` |
 
 Tag derivation uses the same `.github/actions/derive-service-tags` composite action as
 `build-service-images`, ensuring the manifest is assembled under the exact same tags that
@@ -834,14 +835,10 @@ were computed during the build.
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
 | 1 | Checkout | `actions/checkout@v7` | Checks out the repository |
-| 2 | Install yq | `mikefarah/yq@v4` | Required by the derive-service-tags composite action |
-| 3 | Normalize image owner | Shell script | Outputs lowercase `owner` value |
-| 4 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login + cosign |
-| 5 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags; no `image` input |
-| 6 | Download service image digests | `actions/download-artifact@v4` | Downloads all `digests-service-<service>-<release>-*` artifacts |
-| 7 | Build service image tags | Shell | Assembles composite + SHA tags (all branches), version + release tags (main only) |
-| 8 | Create and push service image manifest | `hack/ci-merge-manifest.sh` | Assembles per-platform digests into multi-arch manifest; outputs merged manifest digest |
-| 9 | Supply chain attest service image | `.github/actions/supply-chain-attest` | SBOM + Grype scan + SARIF upload + attestation + provenance + cosign sign |
+| 2 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login + cosign |
+| 3 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags; no `image` input |
+| 4 | Build service image tags | Shell | Assembles composite + SHA tags (all branches), version + release tags (main only) |
+| 5 | Merge and attest service image | `.github/actions/merge-manifest-and-attest` | Downloads all `digests-service-<service>-<release>-*` artifacts (`actions/download-artifact@v8`), assembles per-platform digests into multi-arch manifest with `hack/ci-merge-manifest.sh`, then runs `supply-chain-attest`: SBOM + Grype scan + SARIF upload + attestation + provenance + cosign sign |
 
 :::
 
@@ -932,28 +929,26 @@ and steps:
 
 | Test | Validates |
 | --- | --- |
-| `test_five_jobs_defined` | All five jobs (build-base-images, verify-base-images, build-service-images, test-service-images, verify-service-images) exist |
 | `test_test_service_images_job_structure` | `runs-on: ubuntu-latest`, `timeout-minutes: 90`, `contents: read`, `packages: read`, no `id-token`, `attestations`, or `security-events` |
-| `test_test_service_images_has_matrix` | Matrix includes `service: keystone` and `release: 2025.2`, with `fail-fast: false` |
-| `test_test_service_images_depends_on_base` | `needs` array contains `build-base-images` and `verify-base-images` |
-| `test_test_service_images_uses_venv_builder_output` | Steps reference `needs.build-base-images.outputs.venv-builder-image` |
-| `test_test_service_images_source_ref_step` | Source-ref step uses `yq` to read `source-refs.yaml` with null/empty guard |
-| `test_test_service_images_checkout_service_source` | Checks out upstream service repo at correct ref and path |
-| `test_test_service_images_apply_patches` | Conditional patch application step with `hashFiles` guard |
+| `test_test_service_images_has_matrix` | Matrix is a `fromJson` expression over a `generate-matrix` output, with `fail-fast: false` |
+| `test_test_service_images_depends_on_base` | `needs` array contains `merge-base-images` and `verify-base-images` |
+| `test_test_service_images_uses_venv_builder_output` | `Run tests` step env `VENV_BUILDER_IMAGE` references `needs.merge-base-images.outputs.venv-builder-image` |
+| `test_test_service_images_source_ref_step` | Job calls `checkout-service-source`, whose source-ref step reads `source-refs.yaml` with null/empty guard |
+| `test_test_service_images_checkout_service_source` | `checkout-service-source` checks out upstream service repo at correct ref and path |
+| `test_test_service_images_apply_patches` | `Apply patches` step of `checkout-service-source` runs `git -C` on `*.patch` files behind a `compgen -G` guard |
 | `test_test_service_images_constraint_overrides` | Constraint overrides step references `apply-constraint-overrides.sh` |
-| `test_test_service_images_run_tests_volumes` | Run tests step mounts service source, constraints, test-excludes, and results volumes |
-| `test_test_service_images_run_tests_stestr` | `pip install` with `stestr`, `stestr init`, and `stestr run` |
-| `test_test_service_images_exclude_list` | `--exclude-list` included only when service-specific exclusion file exists |
+| `test_test_service_images_run_tests_volumes` | `Run tests` step calls `hack/ci-run-unit-tests.sh`, which mounts service source, constraints, test-excludes, and results volumes |
+| `test_test_service_images_run_tests_stestr` | `hack/ci-run-unit-tests.sh` has `pip install` with `stestr`, `stestr init`, and `stestr run` |
+| `test_test_service_images_exclude_list` | `hack/ci-run-unit-tests.sh` builds `EXCLUDE_LIST_ARG`, checks for `test-excludes/${SERVICE_NAME}.txt` and passes `exclude-list` |
 | `test_test_service_images_subunit_output` | `stestr last --subunit` exports results to `testresults.subunit` |
-| `test_test_service_images_upload_artifacts` | `actions/upload-artifact` step for subunit output with `if: always()` and 30-day retention |
+| `test_test_service_images_upload_artifacts` | `Upload test results` step for subunit output with `if: always()` and 30-day retention |
 | `test_test_service_images_artifact_name` | Artifact name includes `matrix.service` and `matrix.release` for disambiguation |
 | `test_test_service_images_env_vars` | `run:` blocks use `env:` for matrix values, not direct <code v-pre>${{ matrix.* }}</code> interpolation |
-| `test_test_service_images_docker_run` | Run tests uses `docker run` with `VENV_BUILDER_IMAGE` |
-| `test_test_service_images_feature_comment` | Workflow contains the expected feature comment |
-| `test_verify_service_images_depends_on_service_images` | `verify-service-images` `needs` includes both `build-service-images` and `test-service-images` |
+| `test_test_service_images_docker_run` | `Run tests` step calls `hack/ci-run-unit-tests.sh`, which uses `docker run` with `VENV_BUILDER_IMAGE` |
+| `test_verify_service_images_depends_on_service_images` | `verify-service-images` `needs` includes `merge-service-images`, `test-service-images` and `generate-matrix` |
 | `test_timeout_minutes_on_all_jobs` | All jobs including `test-service-images` have `timeout-minutes` set |
-| `test_runs_on_ubuntu_latest` | All jobs including `test-service-images` use `runs-on: ubuntu-latest` |
-| `test_matrix_jobs_fail_fast_false` | All matrix jobs including `test-service-images` have `fail-fast: false` |
+| `test_runs_on_ubuntu_latest` | `test-service-images`, `verify-base-images`, `merge-base-images`, `merge-service-images`, `verify-service-images` and the six release-independent merge jobs use `runs-on: ubuntu-latest`; `build-base-images`, `build-service-images`, the six release-independent build jobs and `verify-ovn-image`, `verify-hvo-image`, `verify-kna-image` use `matrix.runner` |
+| `test_matrix_jobs_fail_fast_false` | `build-service-images`, `test-service-images` and `verify-service-images` have `fail-fast: false` |
 
 The `verify_release_config.sh` script validates test-excludes file structure:
 
@@ -974,7 +969,7 @@ Validates that built service images are functional by running `verify_${{ matrix
 :::
 
 On PRs, the equivalent verification runs as an inline step within `build-service-images`
-(step 11 above) because `--load` makes the image available only on the same runner.
+(step 7 above) because `--load` makes the image available only on the same runner.
 
 | Property | Value |
 | --- | --- |
@@ -994,7 +989,8 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 | 1 | Checkout | `actions/checkout@v7` | Checks out the repository (needed for test scripts, `source-refs.yaml`, and patch counting) |
 | 2 | Setup Docker registry | `.github/actions/setup-docker-registry` | GHCR login (cosign disabled); replaces inline login step |
 | 3 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Reconstructs tags using the same logic as `build-service-images` and `merge-service-images`; no `image` input |
-| 4 | Pull and verify | Shell | `docker pull <image-ref>` then runs `verify_${{ matrix.service }}.sh` with the pulled image ref |
+| 4 | Pull and verify service image | Shell | `docker pull <image-ref>` then runs `verify_${{ matrix.service }}.sh` with the pulled image ref |
+| 5 | Verify option catalog | `hack/gen-option-catalog.sh --check` | For `keystone`, `glance`, `neutron`, `cinder` and `nova`: diffs the option catalog generated from the pulled image against the committed catalog file |
 
 :::
 
@@ -1199,13 +1195,13 @@ The workflow behaves differently depending on the trigger event:
 | Base images | Per-platform digests pushed; multi-arch manifest assembled by `merge-base-images` | Same |
 | Base image verification | `verify-base-images` job (always runs) | `verify-base-images` job (always runs) |
 | Service matrix | The services whose sources changed, both releases each | Every service |
-| Tempest images | On `images/tempest/**`, its verify script, or a base change | Always |
-| OVN, federation proxy, backup shifter, libvirt | On their own sources | Always |
+| Tempest images | On `images/tempest/**`, its verify script, a base change, or a plumbing change | Always |
+| OVN, federation proxy, backup shifter, libvirt, openstack-hypervisor-operator, kvm-node-agent | On their own sources, or a plumbing change | Always |
 | Service image platforms | `linux/amd64` only (ARM64 excluded) | `linux/amd64,linux/arm64` |
 | Service image push | No (`load: true` on amd64 runner) | Yes (by digest, tags assigned by `merge-service-images`) |
 | Service image tags | Computed but not published | Published to GHCR |
 | SBOM generation | Skipped | CycloneDX JSON for every merged manifest |
-| Vulnerability scanning | Image-based scan on PR (`image:` input in `build-service-images`) | SBOM-based scan in `merge-service-images` (`sbom:` input) |
+| Vulnerability scanning | Image-based scan on PR (`image:` input): service images in `build-service-images`, base images in `merge-base-images` | SBOM-based scan in the merge jobs (`sbom:` input) |
 | SBOM attestation | Skipped | Sigstore-signed, pushed to GHCR |
 | Cosign signing | Skipped | Keyless signature for every merged manifest |
 | OIDC token request | None | Requested in merge jobs for Sigstore signing |
@@ -1251,19 +1247,19 @@ All actions are pinned to full commit SHAs with version comments, matching the
 convention in `ci.yaml`:
 
 ```yaml
-uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
-uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4
-uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6
-uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
+uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6
+uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
 uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
 uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7
-uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763  # v4
-uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v3
+uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4
+uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4
 uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad  # v4
 ```
 
-(GHCR authentication runs `docker login` via the `registry-login` composite action
-rather than `docker/login-action`; the pinned SHAs above are kept current by
+(GHCR authentication runs `docker login` via the `registry-login` composite action,
+with no third-party login action; the pinned SHAs above are kept current by
 Renovate, so treat the workflow files as the authoritative source.)
 
 This prevents supply-chain attacks via tag mutation while remaining auditable through
@@ -1296,8 +1292,8 @@ merge job and performs:
    as an OCI referrer artifact alongside the image. No signing keys are managed; the OIDC
    token binds the attestation to the specific workflow run.
 
-This pattern is applied to all four image types via the `supply-chain-attest` composite
-action:
+This pattern is applied to every published image via the `supply-chain-attest` composite
+action; the table lists four of them:
 
 ::: v-pre
 
@@ -1331,17 +1327,17 @@ uniformly.
 
 ### Required Permissions
 
-SBOM attestation requires two additional job-level permissions beyond the existing
+SBOM attestation requires three additional job-level permissions beyond the existing
 `contents: read` and `packages: write`:
 
 | Permission | Purpose |
 | --- | --- |
 | `id-token: write` | Allows the GitHub Actions runner to request a short-lived Sigstore OIDC token for keyless signing |
 | `attestations: write` | Grants access to the GitHub Attestations API for storing signed attestations |
+| `artifact-metadata: write` | Allows `actions/attest` to write its storage record |
 
-These permissions are granted to `merge-base-images`, `merge-tempest-image`,
-`merge-service-images`, and `build-service-images` (for PR-only scans via
-`supply-chain-attest` with `scan-mode: image`). Verification jobs (`verify-base-images`,
+These permissions are granted to every merge job, to `build-service-images` and to
+`build-nova-compute-image`. Verification jobs (`verify-base-images`,
 `verify-service-images`) do not receive these permissions.
 
 ### Verifying Attestations
@@ -1378,15 +1374,15 @@ The `verify_build_images_workflow.sh` script validates SBOM/attestation configur
 
 | Test | Validates |
 | --- | --- |
-| `test_sbom_permissions_on_build_base_images` | `id-token: write` and `attestations: write` on `build-base-images` |
-| `test_sbom_permissions_on_build_service_images` | `id-token: write` and `attestations: write` on `build-service-images` |
-| `test_verify_jobs_no_sbom_permissions` | Verification jobs do **not** have `id-token` or `attestations` permissions |
-| `test_sbom_generation_steps_exist` | SBOM generation steps exist in both build jobs |
-| `test_sbom_format_cyclonedx_json` | All SBOM steps specify `format: cyclonedx-json` |
-| `test_sbom_generation_references_digest` | SBOM steps reference the correct digest output |
-| `test_sbom_attestation_steps_exist` | Attestation steps exist in both build jobs |
-| `test_sbom_attestation_push_to_registry` | All attestation steps have `push-to-registry: true` |
-| `test_sbom_steps_pr_skip_guard` | All SBOM/attestation steps have `github.event_name != 'pull_request'` guard |
+| `test_sbom_permissions_on_build_base_images` | `id-token: write` and `attestations: write` on `merge-base-images` |
+| `test_sbom_permissions_on_build_service_images` | `id-token: write` and `attestations: write` on `merge-service-images` |
+| `test_verify_jobs_no_sbom_permissions` | `verify-base-images`, `verify-service-images`, `test-service-images`, `verify-ovn-image`, `verify-hvo-image` and `verify-kna-image` do **not** have `id-token` or `attestations` permissions |
+| `test_sbom_generation_steps_exist` | `supply-chain-attest` has one `anchore/sbom-action` step; `merge-base-images` calls `merge-manifest-and-attest` twice, `merge-service-images` once |
+| `test_sbom_format_cyclonedx_json` | The SBOM step specifies `format: cyclonedx-json` |
+| `test_sbom_generation_references_digest` | The SBOM step builds its image ref from `inputs.image-name` and `inputs.image-digest`; `merge-manifest-and-attest` forwards `steps.merge.outputs.digest`; the three merge calls pass their image |
+| `test_sbom_attestation_steps_exist` | `supply-chain-attest` has one `actions/attest` step |
+| `test_sbom_attestation_push_to_registry` | The `actions/attest` step has `push-to-registry: true` |
+| `test_sbom_steps_pr_skip_guard` | The SBOM and attestation steps have the `scan-mode == 'sbom'` guard; both `merge-base-images` calls pick `scan-mode` from the event name; `merge-service-images` has the job-level `github.event_name != 'pull_request'` guard |
 
 ## Cosign Image Signing
 
@@ -1410,8 +1406,8 @@ pipeline:
    No signing keys are managed; the GitHub Actions OIDC token binds the signature to the
    specific workflow run.
 
-This pattern is applied to all four image types via the `supply-chain-attest` composite
-action:
+This pattern is applied to every published image via the `supply-chain-attest` composite
+action; the table lists four of them:
 
 | Image | Job | Digest source |
 | --- | --- | --- |
@@ -1451,13 +1447,12 @@ The `verify_build_images_workflow.sh` script validates cosign signing configurat
 
 | Test | Validates |
 | --- | --- |
-| `test_cosign_installer_in_build_base_images` | `sigstore/cosign-installer` step exists in `build-base-images` |
-| `test_cosign_installer_in_build_service_images` | `sigstore/cosign-installer` step exists in `build-service-images` |
-| `test_cosign_sign_steps_count` | 2 sign steps in `build-base-images`, 1 in `build-service-images` |
-| `test_cosign_sign_steps_pr_guard` | All sign steps have `github.event_name != 'pull_request'` guard |
-| `test_cosign_sign_steps_reference_digest` | Sign steps reference the correct digest output |
-| `test_cosign_sign_uses_yes_flag` | All sign steps use the `--yes` flag |
-| `test_cosign_id_token_permission_comment` | `id-token: write` comment references cosign signing |
+| `test_cosign_installer_in_build_base_images` | `setup-docker-registry` has one `sigstore/cosign-installer` step, and `merge-base-images` leaves `install-cosign` at its default |
+| `test_cosign_installer_in_build_service_images` | `merge-service-images` leaves `install-cosign` at its default |
+| `test_cosign_sign_steps_count` | `supply-chain-attest` has one `cosign sign` step |
+| `test_cosign_sign_steps_pr_guard` | The sign step has the `scan-mode == 'sbom'` guard; `merge-service-images` has the job-level `github.event_name != 'pull_request'` guard |
+| `test_cosign_sign_steps_reference_digest` | The sign step takes `IMAGE_NAME` and `IMAGE_DIGEST` from the action inputs and signs `${IMAGE_NAME}@${IMAGE_DIGEST}` |
+| `test_cosign_sign_uses_yes_flag` | The sign step uses the `--yes` flag |
 
 ## Vulnerability Scanning
 
@@ -1497,8 +1492,8 @@ The `supply-chain-attest` composite action includes two vulnerability scanning s
    matched and every image-building pull request carried a neutral `grype` check reading
    "N configurations not found". Without a PR upload GitHub creates no such check.
 
-This pattern is applied to all four image types via the `supply-chain-attest` composite
-action:
+This pattern is applied to every published image via the `supply-chain-attest` composite
+action; the table lists four of them:
 
 ::: v-pre
 
@@ -1590,23 +1585,22 @@ configuration:
 
 | Test | Validates |
 | --- | --- |
-| `test_grype_scan_steps_in_build_base_images` | 4 `anchore/scan-action` steps exist in `build-base-images` (2 per image: SBOM + image) |
-| `test_grype_scan_step_in_build_service_images` | 2 `anchore/scan-action` steps exist in `build-service-images` (SBOM + image) |
+| `test_grype_scan_steps_in_build_base_images` | 2 `anchore/scan-action` steps exist in `supply-chain-attest` (SBOM + image) |
+| `test_grype_scan_step_in_build_service_images` | `build-push-image` calls `supply-chain-attest` once, and the `build-service` step passes a `grype-category` with `matrix.service` |
 | `test_grype_scan_action_sha_pinned` | `anchore/scan-action` is SHA-pinned with `# v7` version comment |
-| `test_grype_scan_steps_cover_both_contexts` | Each image has both a push-context (SBOM) and PR-context (image) scan step with appropriate `if:` guards |
-| `test_grype_sbom_input_wiring` | SBOM input references correct filenames (`sbom-python-base.cyclonedx.json`, etc.) |
-| `test_grype_image_input_wiring` | Image input references correct image refs for PR context |
-| `test_grype_severity_threshold` | All Grype steps use `severity-cutoff: high` |
-| `test_grype_fail_build_false` | All Grype steps use `fail-build: false` |
-| `test_grype_output_format_sarif` | All Grype steps use `output-format: sarif` |
-| `test_sarif_upload_steps_exist` | 2 `upload-sarif` steps in `build-base-images`, 1 in `build-service-images` |
-| `test_sarif_upload_categories` | SARIF upload categories match image names (`grype-python-base`, etc.) |
+| `test_grype_scan_steps_cover_both_contexts` | The `grype-sbom` step has the `scan-mode == 'sbom'` guard and the `grype-image` step the `scan-mode == 'image'` guard; both `merge-base-images` calls toggle `scan-mode` on the event name; `merge-service-images` has the job-level pull-request guard; the `build-push-image` scan call is guarded on `push-by-digest == 'false'` and uses `scan-mode: image` |
+| `test_grype_sbom_input_wiring` | The `grype-sbom` step reads `inputs.sbom-output-file`, and the merge calls pass the filenames (`sbom-python-base.cyclonedx.json`, etc.) |
+| `test_grype_image_input_wiring` | The `grype-image` step reads `inputs.image-ref-for-scan`; `merge-manifest-and-attest` builds it from `inputs.image` and the merged digest; the `build-service` step passes the composite tag |
+| `test_grype_severity_threshold` | Both Grype steps use `severity-cutoff: high` |
+| `test_grype_fail_build_false` | Both Grype steps use `fail-build: false` |
+| `test_grype_output_format_sarif` | Both Grype steps use `output-format: sarif` |
+| `test_sarif_upload_steps_exist` | 1 `upload-sarif` step in `supply-chain-attest` |
+| `test_sarif_upload_categories` | The upload category forwards `inputs.grype-category`; the callers pass `grype-python-base`, `grype-venv-builder` and categories with `matrix.service` |
 | `test_sarif_upload_always_condition` | The SARIF upload step has `if: always()`, the pull-request guard, and the SARIF output guard |
-| `test_sarif_upload_action_sha_pinned` | `github/codeql-action/upload-sarif` is SHA-pinned with `# v3` version comment |
+| `test_sarif_upload_action_sha_pinned` | `github/codeql-action/upload-sarif` is SHA-pinned with `# v4` version comment |
 | `test_sarif_upload_references_grype_output` | SARIF upload `sarif_file` references Grype step output |
 | `test_security_events_permission_scoped_to_merge_jobs` | The `merge-*` jobs have `security-events: write`; the per-platform build jobs do not |
 | `test_verify_jobs_no_security_events_permission` | Verify jobs do **not** have `security-events` permission |
-| `test_security_events_permission_comment` | `security-events` permission comment references SARIF upload |
 
 ## OCI Annotations
 
@@ -1652,9 +1646,7 @@ description, licenses, vendor). These supplement the auto-generated labels.
 
 | Step ID | Job | Image input |
 | --- | --- | --- |
-| `meta-python-base` | `build-base-images` | <code v-pre>ghcr.io/${{ steps.meta.outputs.owner }}/python-base</code> |
-| `meta-venv-builder` | `build-base-images` | <code v-pre>ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder</code> |
-| `meta-service` | `build-service-images` | <code v-pre>${{ steps.tags.outputs.image }}</code> |
+| `meta` | every build job, inside the `build-push-image` composite action | <code v-pre>${{ inputs.image-name }}</code> |
 
 Each metadata-action step's `outputs.labels` is wired into the corresponding
 `build-push-action` step via the `labels` input. At push time, CI-generated labels
@@ -1668,11 +1660,12 @@ Git context (branch name or tag). For keystone, this would produce a Git-derived
 rather than the upstream OpenStack release version (e.g., `28.0.0`).
 
 To ensure the OCI version annotation reflects the actual software version, the
-`meta-service` step uses a `type=raw` tag strategy:
+`Build service image` step passes a `type=raw` tag strategy as the `metadata-tags`
+input, which `build-push-image` hands to the `tags` input of its `meta` step:
 
 ```yaml
-tags: |
-  type=raw,value=${{ steps.source-ref.outputs.ref }}
+metadata-tags: |
+  type=raw,value=${{ steps.checkout-source.outputs.source-ref }}
 ```
 
 This overrides the version to match the value from `source-refs.yaml` (e.g., `28.0.0`).
@@ -1692,17 +1685,17 @@ The `verify_build_images_workflow.sh` script validates OCI annotation configurat
 
 | Test | Validates |
 | --- | --- |
-| `test_metadata_action_steps_exist_in_build_base_images` | `build-base-images` has `meta-python-base` and `meta-venv-builder` steps using `docker/metadata-action` |
-| `test_metadata_action_step_exists_in_build_service_images` | `build-service-images` has `meta-service` step using `docker/metadata-action` |
-| `test_service_metadata_uses_raw_version_strategy` | `meta-service` step uses `type=raw` with `steps.source-ref.outputs.ref` |
-| `test_base_metadata_steps_have_no_tags_override` | `meta-python-base` and `meta-venv-builder` do not specify a `tags` input |
-| `test_python_base_build_push_has_labels_input` | `build-python-base` step wires `steps.meta-python-base.outputs.labels` |
-| `test_venv_builder_build_push_has_labels_input` | `build-venv-builder` step wires `steps.meta-venv-builder.outputs.labels` |
-| `test_service_build_push_has_labels_input` | `build-service` step wires `steps.meta-service.outputs.labels` |
-| `test_metadata_action_labels_include_oci_title` | All 3 metadata-action steps include `org.opencontainers.image.title` |
-| `test_metadata_action_labels_include_oci_description` | All 3 metadata-action steps include `org.opencontainers.image.description` |
-| `test_metadata_action_labels_include_oci_licenses` | All 3 metadata-action steps include `org.opencontainers.image.licenses=Apache-2.0` |
-| `test_metadata_action_labels_include_oci_vendor` | All 3 metadata-action steps include `org.opencontainers.image.vendor` |
+| `test_metadata_action_steps_exist_in_build_base_images` | `build-push-image` has one `docker/metadata-action` step with the ID `meta`, and `build-base-images` calls `build-push-image` twice |
+| `test_metadata_action_step_exists_in_build_service_images` | `build-service-images` calls `build-push-image` once |
+| `test_service_metadata_uses_raw_version_strategy` | `build-service` step passes `metadata-tags` with `type=raw` and `steps.checkout-source.outputs.source-ref`, and the `meta` step forwards `inputs.metadata-tags` |
+| `test_base_metadata_steps_have_no_tags_override` | `build-python-base` and `build-venv-builder` do not pass a `metadata-tags` input |
+| `test_python_base_build_push_has_labels_input` | `build` step of `build-push-image` wires `steps.meta.outputs.labels` |
+| `test_venv_builder_build_push_has_labels_input` | `build-venv-builder` step passes `labels-title: venv-builder` |
+| `test_service_build_push_has_labels_input` | `build-service` step passes a `labels-title` with `matrix.service` |
+| `test_metadata_action_labels_include_oci_title` | The `meta` step includes `org.opencontainers.image.title`, and the `build-python-base`, `build-venv-builder` and `build-service` steps pass `labels-title` |
+| `test_metadata_action_labels_include_oci_description` | The `meta` step includes `org.opencontainers.image.description`, and the same three steps pass `labels-description` |
+| `test_metadata_action_labels_include_oci_licenses` | The `meta` step includes `org.opencontainers.image.licenses=Apache-2.0` |
+| `test_metadata_action_labels_include_oci_vendor` | The `meta` step includes `org.opencontainers.image.vendor` |
 | `test_dockerfile_static_labels_python_base` | `images/python-base/Dockerfile` has `LABEL` for title, description, licenses, vendor |
 | `test_dockerfile_static_labels_venv_builder` | `images/venv-builder/Dockerfile` has `LABEL` for title, description, licenses, vendor |
 | `test_dockerfile_static_labels_keystone` | `images/keystone/Dockerfile` has `LABEL` for title, description, licenses, vendor in Stage 2 |
@@ -1793,10 +1786,12 @@ The tag derivation, build context resolution, source checkout (via
 `checkout-service-source`), unit test execution (via `hack/ci-run-unit-tests.sh`), supply
 chain attestation (via `supply-chain-attest`), and verification steps all use matrix
 variables and work automatically for new services. The `verify-service-images`
-job derives its own image refs independently via its own matrix strategy. Note that adding
-a new service also requires creating a corresponding `verify_<service>.sh` test script in
-`tests/container-images/` and updating the inline PR verification step in
-`build-service-images` accordingly.
+job derives its own image refs independently via its own matrix strategy. Note that
+adding a new service also requires creating a corresponding `verify_<service>.sh` test
+script in `tests/container-images/`; the inline PR verification in
+`build-service-images` derives the script name from the matrix. A service whose option
+catalog the workflow verifies also joins the `if` list of the `Verify option catalog`
+steps in `build-service-images` and `verify-service-images`.
 
 ### Release-independent images (non-OpenStack upstream)
 
@@ -1812,7 +1807,7 @@ have no entry in `source-refs.yaml` or `extra-packages.yaml`, and
   workflow, the local builder and the verify script all call it.
 - `hack/ci-build-<image>-image.sh`, so a contributor reproduces the CI build
   with one command.
-- A `build-<image>` job that needs `lint-dockerfiles` and `prepare` with its
+- A `build-<image>` job that needs `changes`, `lint-dockerfiles` and `prepare` with its
   platform include matrix written out, a PR-skipped `merge-<image>-image` job,
   and a `verify-<image>-image` job when the merged manifest is checked after
   the push. The Dockerfile also joins the `lint-dockerfiles` matrix.
@@ -1866,10 +1861,11 @@ releases/2026.1/
 
 `extra-packages.yaml` is required — the workflow reads it to resolve `PIP_EXTRAS`,
 `PIP_PACKAGES`, and `EXTRA_APT_PACKAGES` build arguments. `test-refs.yaml` is required —
-the `build-tempest` job reads it to resolve `TEMPEST_VERSION` and
-`KEYSTONE_TEMPEST_PLUGIN_VERSION` build arguments. See
-[Container Images — extra-packages.yaml](container-images.md#extra-packages-yaml) for the
-YAML schema and `releases/2025.2/extra-packages.yaml` for a working example.
+the `build-tempest` job reads it to resolve the `TEMPEST_VERSION`,
+`BARBICAN_TEMPEST_PLUGIN_VERSION`, `KEYSTONE_TEMPEST_PLUGIN_VERSION` and
+`NEUTRON_TEMPEST_PLUGIN_VERSION` build arguments. See
+[Container Images — extra-packages.yaml](container-images.md#extra-packages-yaml) for
+the YAML schema and `releases/2025.2/extra-packages.yaml` for a working example.
 
 ### 2. Verify matrix discovery
 
@@ -1908,12 +1904,11 @@ release configuration, and constraint override scripts.
 
 ### Trigger Events
 
-The workflow triggers on the same events as `build-images.yaml`:
+The workflow triggers on pull requests only:
 
 | Event | Scope | Description |
 | --- | --- | --- |
-| `push` | `branches: [main, stable/**]` | Runs on every push to `main` or any `stable/**` branch |
-| `pull_request` | all branches | Runs on every pull request |
+| `pull_request` | all branches | Runs when a changed path matches `images/**`, `releases/**`, `patches/**`, `scripts/**`, `hack/tempest/**`, `hack/gen-option-catalog.sh`, the keystone or glance option catalogs, `tests/container-images/**`, `tests/scripts/**`, `tests/tempest/test_retry_helpers.py`, `build-images.yaml` or `verify-container-images.yaml` |
 
 ### Permissions and Concurrency
 
@@ -1942,6 +1937,8 @@ non-zero, the job fails.
 | 5 | Verify release config | Shell | Runs `tests/container-images/verify_release_config.sh` |
 | 6 | Verify SPDX headers | Shell | Runs `tests/container-images/verify_spdx_headers.sh` |
 | 7 | Test apply-constraint-overrides | Shell | Runs `tests/scripts/test_apply_constraint_overrides.sh` |
+| 8 | Install tempest retry helper test dependencies | Shell | Installs `python3-defusedxml` with `apt-get` |
+| 9 | Test tempest retry helpers | Shell | Runs `tests/tempest/test_retry_helpers.py` |
 
 **Test scripts executed:**
 
