@@ -30,6 +30,12 @@ Five long-running processes carry the service.
 | `nova-conductor` | the `{name}-conductor` Deployment | The one process that reaches the cell database on behalf of a compute node |
 | `nova-novncproxy` | the `{name}-novncproxy` Deployment | Bridges a browser's noVNC session to the VNC server of the hypervisor an instance runs on, on port 6080 |
 
+The figure shows the five Deployments with the connections each holds.
+`nova-compute` is not among them: it runs as a `NovaCompute` pool, and the bus
+is its only connection.
+
+![The Nova control plane as five Deployments with the connections each holds. The compute API {nova}, the metadata API {nova}-metadata, the scheduler and the conductor hold three connections: the API database nova_api, the cell database nova, and the message bus. The console proxy {nova}-novncproxy, which can be switched off, holds the cell database and the bus. Three Secrets carry the connection strings: {nova}-api-db-connection, {nova}-db-connection and {nova}-transport-url. MariaDB has three schemas: nova_api with the cell map and the mappings, nova for cell1, the one real cell, and nova_cell0 for instances no host could take. cell0 has no connection of its own; the API reads it through the cell mapping with the user of the cell database. The Job {nova}-db-sync maps both cells and migrates all three schemas. The bus is one RabbitMQ transport with the RPC topics scheduler, conductor and compute.{host}, and notifications are off. nova-compute runs in a NovaCompute pool, not among the five, and the bus is its only connection.](../../diagrams/compute-nova-control-plane.svg)
+
 No `[DEFAULT] host` is rendered, so every replica registers under its own pod
 name. That is what lets the scheduler and the conductor run more than one pod:
 each holds a service record of its own, while a shared identity would collapse
