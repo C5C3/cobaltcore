@@ -507,6 +507,19 @@ carries `start-time = %t`, which uWSGI expands while it reads it; rendering the
 same marker on the command line would pass the literal `%t` and kill neutron on
 `int('%t')`.
 
+From 2026.2 on, neutron-server ignores that marker. Neutron 29.0.0 records its
+WSGI start time and its first-worker election in files under
+`tempfile.gettempdir()`, named after the PID of the uWSGI master. The root
+filesystem is read-only, so the API pod of such a release mounts an emptyDir at
+`/tmp`; without it the OVN mechanism driver fails its post-fork initialization
+and the API answers no request. The command also carries
+`--hook-asap "exec:rm -f /tmp/neutron_start_time* /tmp/neutron_first_worker*"`.
+The emptyDir outlives a container restart and the master has the same PID in
+every container, so a container that replaces a killed one would otherwise read
+the old start time, and its workers would collide in the OVN hash ring with the
+rows the killed workers left behind. Below 2026.2 the pod renders neither the
+volume nor the hook.
+
 **Config delivery.** A uWSGI-imported application has no argv to carry
 `--config-file`, so the API container names its files in the environment instead:
 `OS_NEUTRON_CONFIG_DIR` is `/etc/neutron`, the mount point of the rendered

@@ -161,6 +161,57 @@ func TestBuildNeutronDeployment_UWSGICommand(t *testing.T) {
 		"the uWSGI ini is the last argument, after the flags the shared builder owns")
 }
 
+// TestBuildNeutronDeployment_WSGIMarkerFilesByRelease pins the API pod on both
+// sides of the 2026.2 boundary. Neutron 29.0.0 writes its WSGI start time to a
+// file under tempfile.gettempdir(), and with no writable temp directory on the
+// read-only root filesystem the OVN mechanism driver fails its post-fork
+// initialization and the API answers no request. From 2026.2 on the pod carries
+// an emptyDir at /tmp and uWSGI removes the markers of an earlier container
+// before it forks; below 2026.2 the pod renders neither.
+func TestBuildNeutronDeployment_WSGIMarkerFilesByRelease(t *testing.T) {
+	tmpVolume := corev1.Volume{
+		Name:         "tmp",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}
+	tmpMount := corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"}
+	ini := []string{"--ini", "/etc/neutron/uwsgi.ini"}
+	hook := []string{
+		"--hook-asap",
+		"exec:rm -f /tmp/neutron_start_time* /tmp/neutron_first_worker*",
+	}
+
+	for _, tc := range []struct {
+		release     string
+		markerFiles bool
+	}{
+		{release: "2025.2", markerFiles: false},
+		{release: "2026.1", markerFiles: false},
+		{release: "2026.2", markerFiles: true},
+		{release: "2027.1", markerFiles: true},
+	} {
+		t.Run(tc.release, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			neutron := validNeutron()
+			neutron.Spec.OpenStackRelease = tc.release
+
+			pod := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "", "").
+				Spec.Template.Spec
+			command := pod.Containers[0].Command
+
+			if tc.markerFiles {
+				g.Expect(pod.Volumes).To(ContainElement(tmpVolume))
+				g.Expect(pod.Containers[0].VolumeMounts).To(ContainElement(tmpMount))
+				g.Expect(command[len(command)-4:]).To(Equal(append(ini, hook...)))
+			} else {
+				g.Expect(pod.Volumes).NotTo(ContainElement(tmpVolume))
+				g.Expect(pod.Containers[0].VolumeMounts).NotTo(ContainElement(tmpMount))
+				g.Expect(command).NotTo(ContainElement("--hook-asap"))
+				g.Expect(command[len(command)-2:]).To(Equal(ini))
+			}
+		})
+	}
+}
+
 // TestBuildNeutronDeployment_EnvAndProbes pins the five variables the API
 // container runs with and the probe target. The two OS_NEUTRON_* variables are
 // how a uWSGI-imported application finds its configuration: there is no argv to

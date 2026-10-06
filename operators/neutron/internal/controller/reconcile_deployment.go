@@ -25,6 +25,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/release"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 )
@@ -44,6 +45,23 @@ const neutronAPIPort int32 = 9696
 // application object the neutron image ships. It has to stay in lockstep with
 // images/neutron, which installs neutron with the same module layout.
 const neutronWSGIModule = "neutron.wsgi.api"
+
+// tmpMountPath is the writable temp directory the API container of a
+// marker-file release gets (see neutronReleaseKeepsWSGIMarkersInFiles). It is
+// the first directory tempfile.gettempdir() tries with no TMPDIR set, and none
+// of its fallbacks is writable on the read-only root filesystem.
+const tmpMountPath = "/tmp"
+
+// neutronWSGIMarkerCleanupHook is the uWSGI --hook-asap value that removes the
+// marker files of an earlier container before the master forks its workers.
+// neutron/common/wsgi_utils.py names them after the parent PID, which is the
+// uWSGI master and so the same PID in every container of the pod, and the
+// emptyDir behind tmpMountPath outlives a container restart. A container that
+// replaces a killed one would otherwise read its predecessor's start time, and
+// its workers would collide in the OVN hash ring with the rows the killed
+// workers left behind.
+const neutronWSGIMarkerCleanupHook = "exec:rm -f " +
+	tmpMountPath + "/neutron_start_time* " + tmpMountPath + "/neutron_first_worker*"
 
 // Pod volume names. The config volume carries the name the shared migration-Job
 // builder uses for its own config mount, so a Job and a pod of the same CR
@@ -260,6 +278,11 @@ func buildNeutronDeployment(neutron *neutronv1alpha1.Neutron,
 	configMapName, dsnDigest, authtokenDigest, transportDigest, ovnClientDigest, novaNotifierDigest string,
 ) *appsv1.Deployment {
 	volumes, mounts := neutronWorkloadVolumes(neutron, configMapName)
+	if neutronReleaseKeepsWSGIMarkersInFiles(neutron.Spec.OpenStackRelease) {
+		tmpVol, tmpMount := tmpVolumeAndMount()
+		volumes = append(volumes, tmpVol)
+		mounts = append(mounts, tmpMount)
+	}
 	return deployment.BuildWorkload(deployment.WorkloadParams{
 		Namespace:      neutron.Namespace,
 		Name:           neutron.Name,
@@ -273,7 +296,7 @@ func buildNeutronDeployment(neutron *neutronv1alpha1.Neutron,
 			Name:            "neutron-api",
 			Image:           neutron.Spec.Image.Reference(),
 			ImagePullPolicy: neutron.Spec.Image.EffectivePullPolicy(),
-			Command:         neutronUWSGICommand(neutron.Spec.APIServer),
+			Command:         neutronUWSGICommand(neutron),
 			Env:             neutronAPIEnv(neutron),
 			Ports: []corev1.ContainerPort{{
 				Name:          "neutron-api",
@@ -342,19 +365,40 @@ func neutronAPIEnv(neutron *neutronv1alpha1.Neutron) []corev1.EnvVar {
 // The launch mode is --module: the image ships no entry script, so the WSGI
 // application is imported from neutronWSGIModule. The trailing --ini names the
 // uwsgi.ini the config step renders into the same ConfigMap, which carries the
-// start-time marker the API reports its uptime from.
-func neutronUWSGICommand(apiServer *neutronv1alpha1.APIServerSpec) []string {
+// start-time marker the API reports its uptime from. A marker-file release
+// ignores that marker and gets neutronWSGIMarkerCleanupHook after it.
+func neutronUWSGICommand(neutron *neutronv1alpha1.Neutron) []string {
 	var uwsgi *neutronv1alpha1.UWSGISpec
-	if apiServer != nil {
-		uwsgi = apiServer.UWSGI
+	if neutron.Spec.APIServer != nil {
+		uwsgi = neutron.Spec.APIServer.UWSGI
+	}
+
+	trailing := []string{"--ini", neutronConfigMountPath + "/" + uwsgiConfDataKey}
+	if neutronReleaseKeepsWSGIMarkersInFiles(neutron.Spec.OpenStackRelease) {
+		trailing = append(trailing, "--hook-asap", neutronWSGIMarkerCleanupHook)
 	}
 
 	return deployment.BuildUWSGICommand(deployment.UWSGICommandParams{
 		UWSGI:        uwsgi,
 		Bind:         fmt.Sprintf(":%d", neutronAPIPort),
 		Module:       neutronWSGIModule,
-		TrailingArgs: []string{"--ini", neutronConfigMountPath + "/" + uwsgiConfDataKey},
+		TrailingArgs: trailing,
 	})
+}
+
+// neutronReleaseKeepsWSGIMarkersInFiles reports whether the neutron-server of
+// spec.openStackRelease records its WSGI start time and its first-worker
+// election in files under tempfile.gettempdir(): true from 2026.2 (neutron
+// 29.0.0) onward, false below it and for an unparseable release, which read
+// uWSGI's start-time option and write no file. Without a writable temp
+// directory the OVN mechanism driver of such a release fails its post-fork
+// initialization and the API never answers a request.
+func neutronReleaseKeepsWSGIMarkersInFiles(openStackRelease string) bool {
+	rel, err := release.ParseRelease(openStackRelease)
+	if err != nil {
+		return false
+	}
+	return rel.AtLeast(2026, 2)
 }
 
 // neutronAPIProbeHandler returns the shared startup/readiness/liveness probe
@@ -481,6 +525,22 @@ func stateVolumeAndMount() (corev1.Volume, corev1.VolumeMount) {
 	mount := corev1.VolumeMount{
 		Name:      stateVolumeName,
 		MountPath: neutronStatePath,
+	}
+	return volume, mount
+}
+
+// tmpVolumeAndMount backs tmpMountPath with an emptyDir for the API container of
+// a marker-file release. Only the API Deployment carries it: with the service
+// plugins the operator renders, the worker Deployments and the ovn-db-sync
+// CronJob never reach neutron/common/wsgi_utils.py.
+func tmpVolumeAndMount() (corev1.Volume, corev1.VolumeMount) {
+	volume := corev1.Volume{
+		Name:         tmpVolumeName,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}
+	mount := corev1.VolumeMount{
+		Name:      tmpVolumeName,
+		MountPath: tmpMountPath,
 	}
 	return volume, mount
 }
