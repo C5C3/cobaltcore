@@ -97,8 +97,9 @@ nodes stay until a node reboots. Then:
    where its CRD exists:
    1. every `NovaCompute`, `NeutronMetadataAgent` and `OVNChassis` in
       `openstack`. A `NovaCompute` keeps its finalizer
-      `nova.openstack.c5c3.io/compute-drain` until Nova counts no server on its
-      nodes, so a pool that still holds servers outlives the wait: the teardown
+      `nova.openstack.c5c3.io/compute-drain` until every one of its nodes is
+      released: no server on it, its pod gone and its compute service deleted,
+      so a pool that still holds servers outlives the wait: the teardown
       exits 1 with the delete's error and the line
       `Delete the servers on the lab hypervisors first (openstack server list --all-projects).`;
    2. the `Hypervisor`, `Eviction` and `Migration` objects of `kvm.cloud.sap`,
