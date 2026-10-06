@@ -196,17 +196,25 @@ dependencies the Keystone operator needs:
 make deploy-infra
 ```
 
-Internally this performs the following steps:
+The figure shows the run with its waits and with the step each opt-in changes.
+[Deployment Sequence](./reference/infrastructure/e2e-deployment.md#deployment-sequence)
+describes every step of the run in full, with each wait and the variable that
+bounds it.
+
+![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](./diagrams/deploy-infra-run.svg)
+
+The table sums the steps up. Rows 2a and 2b are the two CRD installs that end
+Step 2.
 
 | Step | What happens |
 |------|-------------|
 | 1 | Kind cluster already exists — skipped (cluster was created in Step 2) |
 | 2 | **Install flux-operator** + apply `FluxInstance/flux` — flux-operator reconciles the Flux controller Deployments from the `FluxInstance` spec, then the step blocks until `FluxInstance/flux` reports `Ready=True`. Reaching `Ready=True` guarantees the Flux toolkit CRDs (`source.toolkit.fluxcd.io`, `helm.toolkit.fluxcd.io`, `kustomize.toolkit.fluxcd.io`, `notification.toolkit.fluxcd.io`) are registered, so Step 3 can apply `HelmRepository` and `HelmRelease` objects without a separate `wait_for_crds` gate |
 | 2a | **Install Gateway API CRDs** — `kubectl apply --server-side` of the upstream `standard-install.yaml` for the version in `GATEWAY_API_VERSION` (default matches `sigs.k8s.io/gateway-api` in `operators/keystone/go.mod`). Required by the keystone-operator's HTTPRoute watch — without it the operator logs `no matches for kind HTTPRoute` at startup. |
-| 2b | **Install Envoy Gateway + `openstack-gw` Gateway** (kind-only) — base overlay installs the `envoy-gateway` HelmRelease and creates `GatewayClass/envoy`, `Certificate/keystone-nip-io-tls`, and `Gateway/openstack-gw` so `https://keystone.127-0-0-1.nip.io/v3` becomes reachable from the developer's host once Keystone attaches an HTTPRoute in Step 7. Production overlays exclude this. |
-| 3 | Apply base kustomize overlay — namespaces, `HelmRepository` sources, `HelmRelease` objects (the Flux toolkit CRDs they depend on were registered by Step 2) |
-| 4 | Wait for HelmReleases to become `Ready`: cert-manager (and its webhook admitting a dry-run) → OpenBao TLS prerequisites → prometheus-operator-crds, openbao, mariadb-operator, external-secrets, memcached-operator |
-| 5 | Apply infrastructure kustomize overlay — `ClusterSecretStore`, `ExternalSecret` objects, `MariaDB` and `Memcached` cluster CRs |
+| 2b | **Install the Envoy Gateway CRDs** — `kubectl apply --server-side` of the upstream `envoy-gateway-crds.yaml` for the version in `ENVOY_GATEWAY_VERSION`. The `envoy-gateway` HelmRelease, `GatewayClass/envoy` and `Gateway/openstack-gw` follow with the base overlay in Step 3, the NodePort `EnvoyProxy` and `Certificate/keystone-nip-io-tls` with the infrastructure overlay in Step 5. `https://keystone.127-0-0-1.nip.io/v3` is reachable from the developer's host once Keystone attaches an HTTPRoute in Step 7 of this page. Production overlays ship no Gateway. |
+| 3 | Apply base kustomize overlay — namespaces, `HelmRepository` sources, `HelmRelease` objects and the `envoy-gateway` release with `GatewayClass/envoy` and `Gateway/openstack-gw` (the Flux toolkit CRDs they depend on were registered by Step 2) |
+| 4 | Wait for HelmReleases to become `Ready`: cert-manager (and its webhook admitting a dry-run) → OpenBao TLS prerequisites → prometheus-operator-crds, openbao, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, envoy-gateway, garage-operator, openbao-operator → the `rabbitmq-cluster-operator` Kustomization |
+| 5 | Apply infrastructure kustomize overlay — `ClusterSecretStore`, `ExternalSecret` objects, `MariaDB` and `Memcached` cluster CRs, the NodePort `EnvoyProxy` and the Gateway certificates. The step ends when `Gateway/openstack-gw` reports `Programmed` |
 | 6 | Wait for the OpenBao pod to reach `Running` phase |
 | 7 | **Bootstrap OpenBao** — initialize, unseal (5 shares, 3-of-5 threshold), configure secret engines, auth methods, policies, and seed the bootstrap secrets |
 | 8 | Wait for `ExternalSecret` objects (`keystone-admin`, `keystone-db`, `mariadb-root-password`) to sync their Kubernetes `Secret` counterparts from OpenBao |

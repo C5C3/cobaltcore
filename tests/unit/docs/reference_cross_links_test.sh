@@ -4,10 +4,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the reference-docs cross-links stay intact:
-#   1. docs/reference/infrastructure/e2e-deployment.md — the ASCII
-#      deployment diagram contains an "Install Envoy Gateway + Gateway/
-#      openstack-gw (kind-only)" block positioned between the Gateway
-#      API standard CRDs step and Step 3.
+#   1. docs/reference/infrastructure/e2e-deployment.md — the step list of
+#      "## Deployment Sequence" names the Gateway API and the Envoy Gateway
+#      CRD installs and Gateway/openstack-gw, and both installs stand, in
+#      that order, between item 2 and item 3 of the list.
 #   2. docs/reference/keystone/keystone-crd.md — the Basic Gateway
 #      Exposure example carries a kind-specific admonition that
 #        (a) links to the Quick Start Extended Access section
@@ -33,9 +33,9 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 E2E_DOC="$PROJECT_ROOT/docs/reference/infrastructure/e2e-deployment.md"
 CRD_DOC="$PROJECT_ROOT/docs/reference/keystone/keystone-crd.md"
 
-# --- Test 1: e2e-deployment.md diagram contains the Envoy block ---
-test_e2e_diagram_has_envoy_block() {
-  echo "Test: e2e-deployment.md diagram contains 'Install Envoy Gateway + Gateway/openstack-gw'"
+# --- Test 1: the e2e-deployment.md step list names the Gateway installs ---
+test_e2e_step_list_has_gateway_installs() {
+  echo "Test: e2e-deployment.md step list names the Gateway API and Envoy Gateway CRD installs"
 
   if [[ ! -f "$E2E_DOC" ]]; then
     echo "  FAIL: $E2E_DOC does not exist"
@@ -43,37 +43,48 @@ test_e2e_diagram_has_envoy_block() {
     return
   fi
 
-  assert_file_contains "diagram mentions Envoy Gateway install" \
+  assert_file_contains "step list names the Gateway API CRD install" \
     "$E2E_DOC" \
-    'Install Envoy Gateway'
-  assert_file_contains "diagram names Gateway/openstack-gw" \
+    'Install Gateway API standard CRDs'
+  assert_file_contains "step list names the Envoy Gateway CRD install" \
+    "$E2E_DOC" \
+    'Install Envoy Gateway CRDs'
+  assert_file_contains "step list names Gateway/openstack-gw" \
     "$E2E_DOC" \
     'Gateway/openstack-gw'
-  assert_file_contains "diagram marks kind-only gating" \
-    "$E2E_DOC" \
-    'kind-only'
 }
 
-# --- Test 2: Envoy block sits between Gateway API CRDs and Step 3 ---
-test_e2e_envoy_block_position() {
-  echo "Test: Envoy Gateway block is positioned between 'Install Gateway API standard CRDs' and 'Step 3'"
+# --- Test 2: both CRD installs sit in item 2 of the step list ---
+# The page has a second numbered list, the teardown steps, above
+# "## Deployment Sequence", so the anchors are searched from that heading to
+# the next line that starts with "#".
+test_e2e_gateway_installs_in_step_2() {
+  echo "Test: the Gateway API and Envoy Gateway CRD installs sit between item 2 and item 3 of the step list"
 
-  local crds_line envoy_line step3_line
-  crds_line="$( { grep -nF 'Install Gateway API standard CRDs' "$E2E_DOC" || true; } | head -n1 | cut -d: -f1)"
-  envoy_line="$( { grep -nF 'Install Envoy Gateway' "$E2E_DOC" || true; } | head -n1 | cut -d: -f1)"
-  step3_line="$( { grep -nE '^Step 3 ── ' "$E2E_DOC" || true; } | head -n1 | cut -d: -f1)"
+  # One awk pass prints the four line numbers, an empty field for a missing
+  # anchor. awk reads UTF-8 bytes as text in every locale, grep does not.
+  local step2_line crds_line envoy_line step3_line
+  IFS=: read -r step2_line crds_line envoy_line step3_line <<<"$(awk '
+    /^## Deployment Sequence$/ { in_section = 1; next }
+    in_section && /^#/ { exit }
+    in_section && !step2 && /^2\. / { step2 = NR }
+    in_section && !crds && index($0, "Install Gateway API standard CRDs") { crds = NR }
+    in_section && !envoy && index($0, "Install Envoy Gateway CRDs") { envoy = NR }
+    in_section && !step3 && /^3\. / { step3 = NR }
+    END { print step2 ":" crds ":" envoy ":" step3 }
+  ' "$E2E_DOC")"
 
-  if [[ -z "$crds_line" || -z "$envoy_line" || -z "$step3_line" ]]; then
-    echo "  FAIL: missing anchor line(s); CRDs=${crds_line:-<none>} envoy=${envoy_line:-<none>} step3=${step3_line:-<none>}"
+  if [[ -z "$step2_line" || -z "$crds_line" || -z "$envoy_line" || -z "$step3_line" ]]; then
+    echo "  FAIL: missing anchor line(s); step2=${step2_line:-<none>} CRDs=${crds_line:-<none>} envoy=${envoy_line:-<none>} step3=${step3_line:-<none>}"
     FAIL=$((FAIL + 1))
     return
   fi
 
-  if (( crds_line < envoy_line && envoy_line < step3_line )); then
-    echo "  PASS: CRDs (line $crds_line) < Envoy block (line $envoy_line) < Step 3 (line $step3_line)"
+  if (( step2_line < crds_line && crds_line < envoy_line && envoy_line < step3_line )); then
+    echo "  PASS: item 2 (line $step2_line) < CRDs (line $crds_line) < Envoy CRDs (line $envoy_line) < item 3 (line $step3_line)"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: expected CRDs < envoy < Step 3 (got crds=$crds_line envoy=$envoy_line step3=$step3_line)"
+    echo "  FAIL: expected item 2 < CRDs < Envoy CRDs < item 3 (got step2=$step2_line crds=$crds_line envoy=$envoy_line step3=$step3_line)"
     FAIL=$((FAIL + 1))
   fi
 }
@@ -142,8 +153,8 @@ test_crd_admonition_near_example_heading() {
 }
 
 # --- Run ---
-test_e2e_diagram_has_envoy_block
-test_e2e_envoy_block_position
+test_e2e_step_list_has_gateway_installs
+test_e2e_gateway_installs_in_step_2
 test_crd_admonition_links_quick_start
 test_crd_admonition_near_example_heading
 
