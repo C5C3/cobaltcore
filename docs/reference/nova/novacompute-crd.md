@@ -365,7 +365,7 @@ stays out of the aggregate. For the pipeline see
 | `ServicesReady` | False | `ServicesDown` | Nova reports an Active node's service down |
 | `ServicesReady` | False | `ComputeAPIError` | A Keystone or Nova call failed, or a cell did not answer the service list. Retried after 30 seconds at most: a failed hypervisor list keeps a `Releasing` node's 10-second poll |
 | `ServicesReady` | False | `PodListError` | Listing the pods on a Releasing node failed |
-| `Ready` | True | `AllReady` | All six sub-conditions are True |
+| `Ready` | True | `AllReady` | All seven sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
 | `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
 | `VPAReady` | True | `VPANotRequired` | No workload opts in (`spec.verticalAutoscaling` unset); a VPA the CR created before is deleted |

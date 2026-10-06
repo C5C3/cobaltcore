@@ -679,7 +679,7 @@ see the [reconciler reference](./neutron-reconciler.md).
 | `HPAReady` | True | `HPANotRequired` | `spec.autoscaling` is unset, so any previous HPA was deleted |
 | `NetworkPolicyReady` | True | `NetworkPolicyReady` | The NetworkPolicy matches the desired state |
 | `NetworkPolicyReady` | True | `NetworkPolicyNotRequired` | `spec.networkPolicy` is unset, so any previous policy was deleted and traffic flows unrestricted |
-| `Ready` | True | `AllReady` | All ten sub-conditions are True |
+| `Ready` | True | `AllReady` | All eleven sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
 | `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
 | `VPAReady` | True | `VPANotRequired` | No workload opts in (every `verticalAutoscaling` block unset); a VPA the CR created before is deleted |

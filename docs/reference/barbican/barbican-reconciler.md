@@ -6,7 +6,7 @@ quadrant: operator
 # Barbican Reconciler Architecture
 
 The Barbican controller runs the shared table-driven pipeline
-(`internal/common/reconcile`) with eleven sub-reconcilers. Every step is
+(`internal/common/reconcile`) with twelve sub-reconcilers. Every step is
 instrumented under the `barbican_operator` metrics prefix, and the first step to
 return a non-zero result or an error short-circuits the chain. Conditions and
 the requeue are persisted on every exit path through the shared status skeleton,
@@ -82,14 +82,14 @@ Two orderings in that chain are decisions rather than data dependencies:
   parent through the `BarbicanSecretStore` watch, which is a faster signal than
   any requeue interval.
 
-The four members of the parallel group have no inter-dependency once the
+The five members of the parallel group have no inter-dependency once the
 Deployment and Service exist. Each works on its own copy of the CR, sets one
 condition type, and always sets it, so a cluster without Gateway API or without
 autoscaling still resolves the aggregate through the `NotRequired` reasons.
 
 ## Conditions
 
-The aggregate `Ready` condition is `True` (reason `AllReady`) when all nine
+The aggregate `Ready` condition is `True` (reason `AllReady`) when all ten
 sub-conditions are `True`, and `False` (`NotAllReady`) otherwise.
 
 | Type | True reasons | False reasons |

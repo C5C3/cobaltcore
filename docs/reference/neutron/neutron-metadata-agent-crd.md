@@ -417,7 +417,7 @@ set on every pass: the agent runs no optional step. The aggregate `Ready` is
 | `DaemonSetReady` | True | `DaemonSetReady` | The DaemonSet runs a ready pod on every node it schedules. The message counts the nodes |
 | `DaemonSetReady` | False | `DaemonSetProgressing` | Fewer nodes run a ready pod than the DaemonSet schedules. The message counts both |
 | `DaemonSetReady` | False | `DaemonSetError` | The DaemonSet could not be applied or read |
-| `Ready` | True | `AllReady` | All three sub-conditions are True |
+| `Ready` | True | `AllReady` | All four sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
 | `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
 | `VPAReady` | True | `VPANotRequired` | No workload opts in (`spec.verticalAutoscaling` unset); a VPA the CR created before is deleted |

@@ -6,8 +6,8 @@ quadrant: operator
 # OVN Reconciler Architecture
 
 The ovn-operator runs two controllers over the shared table-driven pipeline
-(`internal/common/reconcile`): `OVNCentralReconciler` with seven sub-reconcilers
-and `OVNChassisReconciler` with five. In both, the first step to return a
+(`internal/common/reconcile`): `OVNCentralReconciler` with eight sub-reconcilers
+and `OVNChassisReconciler` with seven. In both, the first step to return a
 non-zero result or an error short-circuits the chain, and every exit path
 persists the conditions and the requeue through the shared status skeleton, which
 skips the write when a pass left status unchanged.
@@ -148,12 +148,13 @@ var subReconcilerConditionTypes = map[string]string{
 	"Backup":     conditionTypeBackupReady,
 	"VPA":        "VPAReady",
 
-	"Central":     conditionTypeCentralReady,
-	"Nodes":       conditionTypeNodesReady,
-	"OVS":         conditionTypeOVSReady,
-	"Controller":  conditionTypeControllerReady,
-	"ChassisVPA":  "VPAReady",
-	"Maintenance": conditionTypeMaintenanceReady,
+	"Central":      conditionTypeCentralReady,
+	"ClientSecret": conditionTypeCentralReady,
+	"Nodes":        conditionTypeNodesReady,
+	"OVS":          conditionTypeOVSReady,
+	"Controller":   conditionTypeControllerReady,
+	"ChassisVPA":   "VPAReady",
+	"Maintenance":  conditionTypeMaintenanceReady,
 }
 ```
 
