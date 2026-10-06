@@ -55,6 +55,13 @@ are marked with the labels `c5c3.io/keystoneservice-name` and
 `c5c3.io/keystoneservice-namespace`, because an owner reference cannot cross a
 namespace.
 
+The figure shows both namespaces, and the
+[reconciler reference](../reference/c5c3/keystoneservice-reconciler.md#child-naming-and-placement)
+lists the numbered steps. `{reg}` and `{reg-ns}` are both `workflow` here,
+`{cp}` is `controlplane` and `{ns}` is `openstack`.
+
+![A KeystoneService registration from a namespace the ControlPlane does not own, in seven numbered steps. 1: the ControlPlane lists the registration namespace in spec.korc.serviceRegistrations.allowedNamespaces, and without that consent the registration reports NamespaceNotAllowed and nothing is projected. 2: the c5c3-operator writes the children into the ControlPlane namespace, beside the admin credential K-ORC reads there: a generated password Secret, the K-ORC User, Project, Role and RoleAssignment, and the catalog Service, Region and Endpoint, all marked with the labels c5c3.io/keystoneservice-name and c5c3.io/keystoneservice-namespace. 3: K-ORC creates the user in Keystone with that password. 4: the operator copies the password into a source Secret in the registration namespace. 5: a PushSecret stores it in OpenBao through the tenant secret store of that namespace. 6: an ExternalSecret reads it back into the consumer Secret {reg}-credentials. 7: the service mounts that Secret.](../diagrams/controlplane-keystoneservice-registration.svg)
+
 ## Steps
 
 ### 1. Create the service's namespace
