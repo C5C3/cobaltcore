@@ -179,10 +179,10 @@ deletions.
 **File:** `tests/e2e/cinder/basic-deployment/chainsaw-test.yaml`
 
 **Purpose:** Validates the full reconciliation cycle of a noauth Cinder on the
-2025.2 release with one NFS backend attached. All thirteen sub-conditions reach
-True, the API Deployment runs the uWSGI command the image supports, the volume
-Deployment is the single-writer shape the NFS drivers require, and the API
-answers over HTTP.
+2025.2 release with one NFS backend attached. The thirteen sub-conditions the
+suite asserts reach True (every one but `VPAReady`), the API Deployment runs
+the uWSGI command the image supports, the volume Deployment is the
+single-writer shape the NFS drivers require, and the API answers over HTTP.
 
 **Steps:**
 

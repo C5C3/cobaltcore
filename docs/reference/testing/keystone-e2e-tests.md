@@ -148,7 +148,9 @@ Deployment rollout, bootstrap Job).
 **File:** `tests/e2e/keystone/basic-deployment/chainsaw-test.yaml`
 
 **Purpose:** Validates the full happy-path reconciliation cycle in managed mode. Deploys
-a Keystone CR with `clusterRef` and verifies all 5 sub-conditions progress to True,
+a Keystone CR with `clusterRef` and verifies that the five sub-conditions it asserts
+(`SecretsReady`, `DatabaseReady`, `FernetKeysReady`, `DeploymentReady`,
+`BootstrapReady`) progress to True,
 the aggregate Ready condition reaches True with reason `AllReady`, all owned resources
 exist, a ConfigMap with the expected prefix exists, and the Keystone API at `/v3` is
 accessible.
@@ -261,7 +263,7 @@ CR, then error-asserts that all owned resources return NotFound.
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-cleanup` |
 | 2 | Wait for Ready=True | `assert` (5m) | Ready=True with reason AllReady |
 | 3 | Delete the Keystone CR | `delete` | Deletes Keystone CR `keystone-cleanup` from namespace `openstack` |
-| 4 | Assert all owned resources deleted | `error` | 12 error assertions verifying NotFound for: Deployment `keystone-cleanup-api`, Service `keystone-cleanup-api`, CronJob `keystone-cleanup-fernet-rotate`, Secret `keystone-cleanup-fernet-keys`, ServiceAccount `keystone-cleanup-fernet-rotate`, Role `keystone-cleanup-fernet-rotate`, RoleBinding `keystone-cleanup-fernet-rotate`, PushSecret `keystone-cleanup-fernet-keys-backup`, Job `keystone-cleanup-db-sync`, Database `keystone-cleanup`, User `keystone-cleanup`, Grant `keystone-cleanup` |
+| 4 | Assert all owned resources deleted | `error` | 12 error assertions verifying NotFound for: Deployment `keystone-cleanup`, Service `keystone-cleanup`, CronJob `keystone-cleanup-fernet-rotate`, Secret `keystone-cleanup-fernet-keys`, ServiceAccount `keystone-cleanup-fernet-rotate`, Role `keystone-cleanup-fernet-rotate`, RoleBinding `keystone-cleanup-fernet-rotate`, PushSecret `keystone-cleanup-fernet-keys-backup`, Job `keystone-cleanup-db-sync`, Database `keystone-cleanup`, User `keystone-cleanup`, Grant `keystone-cleanup` |
 | 5 | Assert dynamically-named ConfigMap deleted | `script` | Inverted grep verifies no ConfigMap matching `keystone-cleanup-config-*` remains after garbage collection |
 
 **Fixtures:** `00-keystone-cr.yaml`
@@ -899,7 +901,7 @@ Verifies that a resource does **not** exist. Used in `deletion-cleanup` and
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-cleanup-api
+            name: keystone-cleanup
             namespace: openstack
 ```
 
@@ -924,19 +926,17 @@ patterns (content-hash suffix), API endpoint connectivity, and rotation verifica
 The Keystone reconciler sets conditions in this order during a successful reconciliation.
 
 > **Note:** This diagram shows the _execution order_ within `Reconcile()`, which differs
-> from the `subConditionTypes` display order (`SecretsReady, DatabaseReady,
-> FernetKeysReady, DeploymentReady, BootstrapReady`). The display order determines how
-> conditions appear in `kubectl get` and status output; the execution order below shows
-> the actual reconciliation sequence.
+> from the order of `subConditionTypes`, the list of every sub-condition type that
+> decides how conditions appear in status output.
 
 ```text
 SecretsReady=True (SecretsAvailable)
     │
     ▼
-FernetKeysReady=True (FernetKeysAvailable)
+reconcileConfig (no condition — returns configMapName)
     │
     ▼
-reconcileConfig (no condition — returns configMapName)
+FernetKeysReady=True (FernetKeysAvailable)
     │
     ▼
 DatabaseReady=True (DatabaseSynced)
@@ -948,7 +948,7 @@ DeploymentReady=True (DeploymentReady)
 BootstrapReady=True (BootstrapComplete)
     │
     ▼
-Ready=True (AllReady) — aggregate of all 5 sub-conditions
+Ready=True (AllReady) — aggregate of every sub-condition; the suite asserts these five
 ```
 
 The `basic-deployment` test asserts all 6 conditions (5 sub-conditions + Ready) in a

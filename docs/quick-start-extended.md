@@ -894,7 +894,7 @@ admission time.
 
 ## Step 8 — Wait for Keystone to become Ready
 
-The operator reconciles the CR through fourteen sub-conditions before the
+The operator reconciles the CR through sixteen sub-conditions before the
 aggregate `Ready` condition is set. All are always reported; conditions tied to
 an optional spec field carry a "not required" / "disabled" reason when that
 field is unset:
@@ -910,11 +910,13 @@ field is unset:
 | `DeploymentReady` | Keystone API Deployment has available replicas |
 | `KeystoneAPIReady` | Keystone API is responding to `/v3` health probes |
 | `HPAReady` | HorizontalPodAutoscaler created (if `spec.autoscaling` is set) |
+| `VPAReady` | VerticalPodAutoscaler applied, or `VPANotRequired` when `spec.deployment.verticalAutoscaling` is unset |
 | `NetworkPolicyReady` | NetworkPolicy created (if `spec.networkPolicy` is set) |
 | `HTTPRouteReady` | Gateway API HTTPRoute reconciled, or not required when `spec.gateway` is unset |
 | `BootstrapReady` | Bootstrap Job completed (admin user, region, endpoints) |
 | `TrustFlushReady` | Trust-flush CronJob created (defaults to hourly) |
 | `PasswordRotationReady` | Scheduled admin-password rotation reconciled, or `RotationDisabled` when `spec.passwordRotation` is unset |
+| `IdentityBackendsReady` | Attached identity backends projected, or `IdentityBackendsNotRequired` when none is attached |
 
 Watch the conditions with:
 
