@@ -11,8 +11,9 @@
 # embeds it. A page embeds a figure as ![alt](<path>/diagrams/<name>.svg) on
 # one line, with the path spelled ./diagrams/ directly under docs/ and with
 # one ../ per directory level below it, without a title or angle brackets.
-# check_diagrams prints one line per drift and nothing for a consistent
-# tree. The fixture tests prove each check on a scratch tree before the last
+# Every embed of a figure carries the alt text of its first embed, in the
+# order of the sorted page paths. check_diagrams prints one line per drift
+# and nothing for a consistent tree. The fixture tests prove each check on a scratch tree before the last
 # test runs it on docs/.
 #
 # A missing file is left to `npm run docs:build`, which fails on an image
@@ -127,6 +128,8 @@ page == inv {
     sub(/.*\//, "", name)
     sub(/\.svg$/, "", name)
     if (alt ~ /^[ \t]*$/) print "empty alt text: " page ":" FNR
+    if (!(name in first_alt)) { first_alt[name] = alt; first_at[name] = page ":" FNR }
+    else if (alt != first_alt[name]) print "alt text differs: " name " -> " page ":" FNR " (first embed: " first_at[name] ")"
     if (target != canonical(page, name)) print "non-canonical path: " page ":" FNR
     embedded[name SUBSEP page] = 1
   }
@@ -372,6 +375,13 @@ test_each_drift_reports_exactly_its_line() {
   root="$(build_fixture)"
   rewrite "$root/index.md" 's#!\[Alpha alt\]#![ ]#'
   assert_eq "alt text of white space" "empty alt text: index.md:3" "$(check_diagrams "$root")"
+
+  root="$(build_fixture)"
+  rewrite "$root/$INVENTORY_PAGE" 's#(../index.md)#(../index.md), [Deep page](../reference/area/deep.md)#'
+  printf '%s\n' '' '![Alpha alt, changed](../../diagrams/alpha.svg)' >>"$root/reference/area/deep.md"
+  assert_eq "a second embed with another alt text" \
+    "alt text differs: alpha -> reference/area/deep.md:7 (first embed: index.md:3)" \
+    "$(check_diagrams "$root")"
 
   root="$(build_fixture)"
   rewrite "$root/index.md" 's#(./diagrams/alpha.svg)#(diagrams/alpha.svg)#'
