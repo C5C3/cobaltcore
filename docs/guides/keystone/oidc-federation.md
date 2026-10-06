@@ -15,8 +15,8 @@ produces — so the whole flow is reproducible on the kind devstack.
 When at least one OIDC backend attaches, the operator injects an
 Apache/`mod_auth_openidc` reverse-proxy sidecar into the Keystone pod, binds
 uWSGI to localhost behind it, and switches the Service to the proxy port.
-Detaching the last OIDC backend restores the plain uWSGI-only pod — the
-sidecar costs nothing until federation is in use.
+Detaching the last federation backend, OIDC or SAML, restores the plain
+uWSGI-only pod — the sidecar costs nothing until federation is in use.
 
 For the full field reference, see the
 [KeystoneIdentityBackend CRD API Reference](../../reference/keystone/identity-backend-crd.md).
@@ -149,7 +149,7 @@ block from the ControlPlane. Set the override via
 `spec.sizing.keystone.federationProxy` on the `ControlPlane` CR instead.
 :::
 
-The projected image is inert until an OIDC backend attaches.
+The projected image is inert until a federation backend, OIDC or SAML, attaches.
 
 ## Step 4 — Apply the backend CR
 
@@ -336,16 +336,17 @@ serves all of them from one metadata directory, and each per-IdP websso path
 pins its own issuer. Two constraints apply across the OIDC backends of one
 Keystone (webhook-enforced): `remoteIDAttribute` must be uniform, and at
 most one backend may enable `oauth2Introspection` — the module's `OIDCOAuth*`
-resource-server directives are server-scoped. With more than one backend the
-global `/v3/auth/OS-FEDERATION/websso/<protocol>` path is not pinned to any
-provider; use the per-IdP paths.
+resource-server directives are server-scoped. The global
+`/v3/auth/OS-FEDERATION/websso/<protocol>` path exists only for a protocol ID
+that one backend of this Keystone uses alone. Two backends with the same
+protocol ID get none for it; use the per-IdP paths.
 
 ## Deleting a backend
 
 `kubectl delete keystoneidentitybackend keycloak-cobaltcore` de-projects the
-configuration first (with the last OIDC backend the sidecar disappears and
-the Service returns to uWSGI), then removes the protocol, mapping, and
-identity provider — always — and finally applies
+configuration first (with the last federation backend, OIDC or SAML, the sidecar
+disappears and the Service returns to uWSGI), then removes the protocol,
+mapping, and identity provider — always — and finally applies
 `spec.domain.deletionPolicy` to the domain like the LDAP flow.
 Declarative groups live inside the domain and follow it.
 
@@ -426,7 +427,7 @@ this was already the case for public IdPs.
 | Symptom | Likely cause |
 | --- | --- |
 | `IdentityBackendsReady=False` with a `FederationProxyImageMissing` Warning | The child Keystone CR has no `spec.federation.proxyImage`. On a ControlPlane deployment the operator always projects it, so this points to a **standalone** Keystone with no proxy image — set `spec.federation.proxyImage` on it (see the [Standalone Keystone](#standalone-keystone-without-a-controlplane) section). |
-| `IdentityBackendsSkipped` Warning naming `provider metadata unavailable` (or the client `refusing to dial non-public address`) | The discovery document could not be fetched from the operator pod, or its `issuer` does not equal `spec.oidc.issuer`. The Event withholds the underlying cause on purpose (SSRF probe oracle) — read the **operator log** for the concrete failure. Check egress/DNS; spell out `spec.oidc.endpoints`; or — for a trusted in-cluster IdP — allowlist its CIDR via the operator's `federation.metadataAllowCidrs` chart value (see [Discovery against an in-cluster identity provider](#discovery-against-an-in-cluster-identity-provider)). |
+| `IdentityBackendSkipped` Warning naming `provider metadata unavailable` (or the client `refusing to dial non-public address`) | The discovery document could not be fetched from the operator pod, or its `issuer` does not equal `spec.oidc.issuer`. The Event withholds the underlying cause on purpose (SSRF probe oracle) — read the **operator log** for the concrete failure. Check egress/DNS; spell out `spec.oidc.endpoints`; or — for a trusted in-cluster IdP — allowlist its CIDR via the operator's `federation.metadataAllowCidrs` chart value (see [Discovery against an in-cluster identity provider](#discovery-against-an-in-cluster-identity-provider)). |
 | `FederationObjectsReady=False/NoMappingRules` | `spec.mappings` is empty — keystone cannot represent a rule-less mapping; add at least one rule. |
 | `MappingsReady=False/RoleOrProjectNotFound` | A role assignment references a role or project that does not exist (yet); the backend retries on a bounded poll. |
 | Federated login returns 401 with valid IdP credentials | The mapping did not match: compare the asserted claims (the sidecar logs them at debug) against your `remote[].type` matchers, and remember the issuer gate must equal the `iss` claim byte for byte. |

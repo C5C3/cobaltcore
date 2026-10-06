@@ -454,7 +454,7 @@ The Apache federation reverse-proxy sidecar for Keystone — `mod_auth_openidc`
 `apache2` + `libapache2-mod-auth-openidc` + `libapache2-mod-auth-mellon`). The
 image is release-independent — no OpenStack code — so the job pair follows
 the base-image shape rather than the release matrix: a two-platform build
-job that depends only on `lint-dockerfiles` and `prepare` (PR mode loads
+job that depends on `changes`, `lint-dockerfiles` and `prepare` (PR mode loads
 the amd64 image locally for the inline Grype scan and the
 `tests/container-images/verify_keystone_federation_proxy.sh` verify
 script), and a PR-skipped merge job assembling the multi-arch manifest with

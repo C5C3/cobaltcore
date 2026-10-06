@@ -1372,8 +1372,8 @@ RBAC is **read-only** (`get;list;watch`) in both the kubebuilder marker and the
 shared Helm rules helper: the reconciler never writes a backend.
 
 Attaching, detaching, or a backend reaching `Ready` re-projects the Horizon
-websso choices and the Keystone `trusted_dashboard` immediately, without waiting
-for a periodic resync.
+websso choices immediately, without waiting for a periodic resync. The Keystone
+`trusted_dashboard` does not depend on the backends.
 
 ### reconcileKeystone
 
