@@ -141,7 +141,7 @@ of the role that owns the object.
 | Ownership by label | Owned through labels, because no owner reference can cross the namespace or cluster | Dotted grey line, open diamond at the owner | `strokeColor=#7D8794;strokeWidth=2;endArrow=none;startArrow=diamondThin;startFill=0;startSize=14;dashed=1;dashPattern=1 3;` |
 | Optional | An optional part or a further instance of the same kind | Dashed arrow in the color of its kind | the style of its kind plus `dashed=1;dashPattern=3 2;` |
 | Step badge | Step n of a sequence. One page lists the steps under the same numbers, and the other pages that embed the figure link to that list | Dark circle with a light number at the tail of the arrow | `ellipse;aspect=fixed;fillColor=#17202B;strokeColor=none;fontColor=#FDFCF9;fontStyle=1;fontSize=20;` at 36 by 36 |
-| State | A state of a state machine | Box with slightly rounded corners, bold name | `rounded=1;absoluteArcSize=1;arcSize=12;fillColor=#FDFCF9;strokeColor=#3A4452;strokeWidth=2;` |
+| State | A state of a state machine, or a status condition in a gate graph | Box with slightly rounded corners, bold name | `rounded=1;absoluteArcSize=1;arcSize=12;fillColor=#FDFCF9;strokeColor=#3A4452;strokeWidth=2;` |
 | Stuck state | A state the machine leaves only after someone intervenes | The same box, grey | `rounded=1;absoluteArcSize=1;arcSize=12;fillColor=#E9ECEF;strokeColor=#7D8794;strokeWidth=2;` |
 | Initial marker | Where the machine starts | Small dark dot with an Order arrow into the first state | `ellipse;aspect=fixed;fillColor=#17202B;strokeColor=none;` at 20 by 20 |
 | Transition | A change of state. First label line: the trigger. Second line, font size 20 in `#55606E`: who drives it | Order arrow with a two-line label | the Order style |
