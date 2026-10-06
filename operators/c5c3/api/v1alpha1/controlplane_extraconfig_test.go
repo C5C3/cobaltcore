@@ -731,14 +731,14 @@ func TestControlPlaneExtraConfigCatalogInputsChanged_Cinder(t *testing.T) {
 }
 
 // TestValidateCreate_RejectsUnknownNovaExtraConfigOption pins the nova catalog
-// leg from both sides, and for both releases this build embeds a catalog for: a
+// leg from both sides, and for every release this build embeds a catalog for: a
 // per-service override the catalog does not accept, and the cross-service reach
 // of globalExtraConfig, which is validated against the catalog of every declared
 // service.
 func TestValidateCreate_RejectsUnknownNovaExtraConfigOption(t *testing.T) {
 	w := &ControlPlaneWebhook{}
 
-	for _, release := range []string{"2025.2", "2026.1"} {
+	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
 		t.Run("in nova extraConfig on "+release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			cp := novaControlPlane()

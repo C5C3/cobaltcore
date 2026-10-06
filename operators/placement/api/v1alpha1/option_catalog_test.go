@@ -20,9 +20,10 @@ import (
 func TestPlacementOptionCatalogs_EmbeddedReleasesParse(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	g.Expect(optionCatalogs).To(gomega.HaveLen(2))
+	g.Expect(optionCatalogs).To(gomega.HaveLen(3))
 	g.Expect(optionCatalogs).To(gomega.HaveKey("2025.2"))
 	g.Expect(optionCatalogs).To(gomega.HaveKey("2026.1"))
+	g.Expect(optionCatalogs).To(gomega.HaveKey("2026.2"))
 
 	for rel, catalog := range optionCatalogs {
 		g.Expect(catalog.Service).To(gomega.Equal("placement"), "release %s must be a placement catalog", rel)
