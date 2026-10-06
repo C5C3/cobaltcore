@@ -1095,12 +1095,15 @@ pointing at the pulled chart and `IMAGE_TAG=latest`), and runs the suite from
 End-to-end chaos tests using kind cluster, Chaos Mesh, and Chainsaw. Pulls the
 operator and service images its leg needs from GHCR via the `load-e2e-images`
 composite action, deploys them alongside Chaos Mesh infrastructure, and runs the
-chaos test suites (MariaDB pod kill, Memcached pod kill, OpenBao pod kill,
-MariaDB network partition, MariaDB network latency, the two Neutron outage
-suites, the three Cinder outage suites, OVN Southbound outage, and the three
-Nova outage suites `nova-broker-outage`, `nova-mariadb-outage` and
-`nova-placement-outage`). See
+chaos test suites of its matrix entry. See
 [Chaos E2E Test Suites](../testing/chaos-e2e-tests.md) for test suite details.
+
+The figure shows the test bed and the six steps a suite takes, and why a
+partition rule sits on the server pods.
+[Overview](../testing/chaos-e2e-tests.md#overview) describes every step under
+its number.
+
+![Two panels. The first shows the chaos test bed and the six steps of a suite. Chainsaw on the runner applies the service resources and asserts the baseline, applies the chaos resource, a PodChaos or a NetworkChaos, waits until the fault is injected, asserts the behaviour under the fault, deletes the chaos resource and asserts recovery. In the cluster, the chaos-controller-manager in the namespace chaos-mesh reconciles the chaos resource and calls the chaos-daemon on the node of a victim. The daemon kills the pod or a container, or sets rules in the network namespace of the pod. The victims are pods in the namespace openstack or in another namespace: shared-services, or the namespace of an operator. The second panel shows why a partition rule sits on the server pods. A client pod dials the ClusterIP of a Service, and kube-proxy rewrites the destination to the address of a server pod only in the root network namespace of the node. A rule in the client pods that matches the addresses of the server pods never sees one, so the partition does nothing. A rule in the server pods matches the source address of the client pod, which the packet still carries, and drops it.](../../diagrams/test-chaos-bed.svg)
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]`
 **Condition:** Runs only when `e2e-chaos == 'true'`, `build-e2e-images` succeeded, and no dependency failed or was cancelled. The resolver sets that flag from the `tests_chaos` class or the `ci:chaos` label, so the job's own condition no longer reads the label set.
