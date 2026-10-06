@@ -252,6 +252,91 @@ have not been stable on the self-hosted runners.
 
 ## Jobs
 
+### changes
+
+Classifies the paths an event changed and resolves them into the outputs the
+other jobs read: one flag per job, the change sets `build-e2e-images` builds
+from, and the matrices of the test, Tempest, publish and cleanup jobs. Every
+other job except `test-shell` lists it in `needs`.
+
+**Dependencies:** none (the job has no `needs:`)
+**Condition:** none. The job has no `if:` and runs on every event that starts
+the workflow: a push to `main`, a `v*` tag push, and a `pull_request` event of
+type `opened`, `synchronize`, `reopened` or `labeled`.
+
+The job runs on `ubuntu-latest` with `timeout-minutes: 8`.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `dorny/paths-filter@v4` | Step id `filter`. Matches the changed paths against the `filters:` block and writes one output per change class, `true` when a changed path matches |
+| 3 | `Resolve effective changes` | Step id `result`. Runs `hack/ci-resolve-changes.sh`. The step `env` passes each class as `FILTER_<class>`, the pull request's label names as the JSON array `PR_LABELS`, the event as `EVENT_NAME`, `EVENT_ACTION` and `EVENT_LABEL`, and the operator lists `ALL_OPERATORS`, `SERVICE_OPERATORS` and `CANARY_OPERATOR: keystone`. The script writes `noop`, the job flags, the change sets, `tempest-services`, `test-targets` and `e2e-operators` |
+| 4 | `Generate Tempest release matrix` | Step id `tempest-matrix`. Runs `hack/ci-generate-tempest-matrix.sh` with `TEMPEST_SERVICES` set to the `tempest-services` list of step 3, joined with spaces. The script scans `releases/*/` and writes `tempest-releases` with one entry per selected service and release. An empty selection emits every service. The script fails when the `tests/tempest/<service>-<slug>/` directory of any service is missing for any release, whatever the selection |
+| 5 | `Generate cleanup package matrix` | Step id `cleanup-matrix`. Runs `hack/ci-generate-cleanup-matrix.sh`, which derives the GHCR package names from `images/*/` and from every `operators/*/` directory that holds a `go.mod`. It writes `cleanup-packages` and `cleanup-e2e-packages`. The job exports the second |
+| 6 | `Shard the e2e-operator matrix` | Step id `e2e-operator-legs`. A `jq` filter turns `e2e-operators` into an `include` list and splits `nova` into two entries, `shard: "1"` and `shard: "2"`. It writes `legs` |
+
+Step 3 has three special cases. A `labeled` event whose label is
+neither a `ci:*` label nor `run-chaos` resolves to `noop=true`: every other flag
+is `false`, the change sets are `[]`, and `test-targets` and `e2e-operators`
+hold the placeholder `__none__`. The `ci:full` label and a `v*` tag push force
+every job flag on and select every operator. `measure-sizing` is the exception:
+only the `ci:measure-sizing` label sets it. On a push to `main` the script sets
+`build-e2e-images` to `false`, and `e2e-operators` holds every operator when the
+`go_common` or `publish_legacy` class changed, otherwise the operators whose own
+class or `image_<op>` class changed.
+[Change classes and labels](#change-classes-and-labels) describes the classes
+and the labels.
+
+The `outputs:` block of the job lists its keys in the order below. Step 3 writes
+all of them except `e2e-operator-legs`, `tempest-releases` and
+`cleanup-e2e-packages`.
+
+The flags come first. Each one is `true` or `false`:
+
+| Output | Meaning |
+| --- | --- |
+| `noop` | `true` for a `labeled` event whose label does not steer CI. `shellcheck`, `feature-ids`, `review-markers`, `verify-invalid-cr-fixtures` and `chainsaw-lint` skip on `true` |
+| `go` | Gates `lint`, `format-check`, `test`, `test-integration`, `test-race`, `govulncheck` and `verify-codegen` |
+| `docs` | Gates `docs` |
+| `helm` | Gates `helm-validate` |
+| `target-cluster-chart` | Gates `helm-push-target-cluster` |
+| `e2e-infra` | Gates `e2e-infra` |
+| `e2e-chaos` | Gates `e2e-chaos` |
+| `e2e-prometheus` | Gates `e2e-prometheus` |
+| `e2e-controlplane` | Gates `e2e-controlplane` |
+| `e2e-controlplane-sso` | Gates `e2e-controlplane-sso` |
+| `e2e-external-keystone` | Gates `e2e-external-keystone` |
+| `e2e-autoscaling` | Gates `e2e-autoscaling` |
+| `e2e-multicluster` | Gates `e2e-multicluster` |
+| `e2e-ovn-overlay` | Gates `e2e-ovn-overlay` |
+| `e2e-nova-libvirt` | Gates `e2e-nova-libvirt` |
+| `e2e-operator-upgrade` | Gates `e2e-operator-upgrade` |
+| `tempest` | Gates `tempest` |
+| `measure-sizing` | `true` under the `ci:measure-sizing` label. `e2e-controlplane`, `e2e-controlplane-sso` and `tempest` read it for `WITH_VPA` and for their three sizing steps (see [Sizing measurement](#sizing-measurement)) |
+| `actionlint` | Gates `actionlint` |
+
+The change sets and the build flags follow. `build-e2e-images` passes the first
+four to `hack/ci-resolve-e2e-images.sh`:
+
+| Output | Meaning |
+| --- | --- |
+| `changed-operators` | JSON array of the operators whose Go code is affected. A `Makefile` change adds the canary operator. Passed as `CHANGED_OPERATORS` |
+| `changed-services` | JSON array of the operators whose service image sources changed. Passed as `CHANGED_SERVICES` |
+| `changed-tempest` | `true` when the `image_tempest` or `images_base` class changed. Passed as `CHANGED_TEMPEST` |
+| `changed-proxy` | `true` when the `image_proxy` class changed. Passed as `CHANGED_PROXY` |
+| `build-e2e-images` | `true` when `has-e2e-operators`, `tempest` or an `e2e-*` flag other than `e2e-infra` is `true`. Gates `build-e2e-images` |
+| `has-e2e-operators` | `true` when `e2e-operators` holds at least one operator. Gates `e2e-operator`, `build-and-push` and `helm-push` |
+
+The matrices come last:
+
+| Output | Meaning |
+| --- | --- |
+| `e2e-operators` | `{"operator":[...]}`. The matrix of `merge-operator-images` and `helm-push` and the `operator` dimension of `build-and-push`. `github-release` loops over it to package the charts |
+| `e2e-operator-legs` | Written by step 6: the operators of `e2e-operators` as `include` entries, with `nova` split into shards `1` and `2`. The matrix of `e2e-operator` |
+| `test-targets` | `{"target":[...]}` with `common` and operator names. The matrix of `test` and `test-integration` |
+| `tempest-releases` | Written by step 4: `{"include":[...]}` with one entry per service and release. The matrix of `tempest` |
+| `cleanup-e2e-packages` | Written by step 5: JSON array of the GHCR packages that receive run-scoped tags, which leaves out `python-base` and `venv-builder`. The `package` matrix of `cleanup-e2e-tags` |
+
 ### lint
 
 Runs golangci-lint using the project's `.golangci.yml` configuration.
@@ -349,6 +434,40 @@ docs-only check.
 | 2 | `make check-feature-ids` | Greps the tracked tree for internal feature/requirement ID patterns and fails on any hit |
 
 Timeout: 8 minutes.
+
+### review-markers
+
+Verifies that no new unresolved reviewer marker enters the tracked tree. A
+reviewer marker is a review question that was committed in place of its answer,
+such as a comment that starts with `Reviewer: please …`. The job tolerates the
+markers the tree already carries through the per-file baseline in
+`scripts/review-markers-baseline.txt`, and it fails only when a file holds more
+markers than its baseline count. No path filter applies.
+
+**Dependencies:** `needs: [changes]`
+**Condition:** Runs on `pull_request` events when the `noop` output of `changes`
+is not `true`.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `make check-review-markers` | Runs `scripts/check-no-review-markers.sh`, which counts the lines that match `please[[:space:]]+verify` (case-insensitive) in each git-tracked file and compares each count with the file's baseline entry |
+
+The script takes its file list from `git ls-files`, so git-ignored build output
+is out of scope. It also skips `.planwerk/`, `.claude/`, a path named
+`architecture`, the script and the baseline file themselves, and the lockfiles
+`go.sum`, `go.work.sum`, `package-lock.json` and `Chart.lock`.
+
+A file with more matches than its baseline entry fails the job with exit code 1,
+and so does a file with matches and no entry. The script prints each match as
+`file:line:match`. A file with fewer matches than its entry only produces an
+`info:` line that asks to tighten the baseline with
+`scripts/check-no-review-markers.sh --update-baseline`. Exit code 2 means the
+script ran outside a git work tree or the baseline file is missing. The scan
+works line by line, so it misses a marker whose two words sit on different
+lines.
+
+Runs on `ubuntu-latest`. Timeout: 8 minutes.
 
 ### verify-invalid-cr-fixtures
 
@@ -1527,6 +1646,71 @@ same `e2e_controlplane` filter (`operators/c5c3/**`, `operators/keystone/**`,
 `operators/horizon/**`, `tests/e2e/c5c3/**`, `deploy/**`, `hack/**`,
 `.github/actions/**`, `.github/workflows/ci.yaml`) triggers it.
 
+### e2e-multicluster
+
+Runs the `tests/e2e-multicluster/placed-services/` Chainsaw suite across two
+kind clusters. The target cluster `cobaltcore-target` runs the infrastructure
+and no operator. The management cluster `cobaltcore-mgmt` runs the keystone,
+barbican, ovn and neutron operators and no infrastructure. The suite creates a
+`Keystone`, a `Barbican` with its `BarbicanSecretStore`, an `OVNCentral` and a
+`Neutron` on the management cluster and asserts that their children exist on
+the target. It also runs an `OVNChassis` and a `NeutronMetadataAgent` on the
+management cluster against the `OVNCentral` placed on the target. The operators
+reach the target only through a kubeconfig that carries the ServiceAccount
+token of the `target-cluster-access` chart, so a verb the chart does not grant
+shows up as a CR that never reaches `Ready`. The suite lives outside
+`tests/e2e/`: every suite there runs against one cluster, and `make e2e` sweeps
+that tree.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs on `pull_request` events when the `e2e-multicluster` output
+of `changes` is `true`, the pull request does not come from a fork
+(`github.event.pull_request.head.repo.fork != true`), `build-e2e-images` ended
+with `success`, and no job in `needs` ended with `failure` or `cancelled`.
+`always()` lets the job start when the Go jobs in `needs` were skipped.
+**Permissions:** `contents: read`, `packages: read`
+
+The job runs on `self-hosted` with `timeout-minutes: 90` and
+`continue-on-error: false`. Its `env` sets `TARGET_CLUSTER: cobaltcore-target`,
+the registration name the suite's fixtures reference, and
+`MGMT_CLUSTER: cobaltcore-mgmt`. The job leaves `BARBICAN_SECRET_STORE_GRANTS`
+unset, as `e2e-controlplane` does: the variable renders the operator's local
+TokenRequest Role, and a placed store gets its provisioner token on the target
+cluster, through the chart's grant there. `cleanup-e2e-tags` lists the job in
+its `needs`.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `Create target kind cluster` | `create-kind-cluster` composite action with `version: ${{ env.KIND_VERSION }}`, `config: hack/kind-config.yaml` and `cluster-name: ${{ env.TARGET_CLUSTER }}`. Only the target takes the kind config with its host ports |
+| 3 | `Resolve OVN version` | Writes `OVN_VERSION` to `$GITHUB_ENV` from `hack/ci-resolve-ovn-version.sh`, which reads the pin in `images/ovn/Dockerfile` |
+| 4 | `Load E2E images` | `load-e2e-images` composite action with the `image-map` output of `build-e2e-images`. Pulls eight images: `keystone-operator`, `barbican-operator`, `ovn-operator` and `neutron-operator` at `:dev`, `keystone`, `barbican` and `neutron` at `2025.2`, and `ovn:${{ env.OVN_VERSION }}` |
+| 5 | `Load service images into the target cluster` | `kind load docker-image` for `keystone:2025.2`, `barbican:2025.2`, `neutron:2025.2` and the OVN image into `cobaltcore-target`. The OVN image is a service image here: the databases and northd of the placed `OVNCentral` run on the target |
+| 6 | `Setup target-cluster infrastructure` | `setup-e2e-infra` composite action with `INFRA_ONLY: "true"`, `CLUSTER_NAME: ${{ env.TARGET_CLUSTER }}` and `WITH_OVN_KERNEL_MODULES: "true"`. With `INFRA_ONLY=true`, `hack/deploy-infra.sh` suspends every CobaltCore operator HelmRelease and scales its Deployment to zero. The chassis runs on the management cluster, but the `openvswitch` and `geneve` modules load into the host kernel that both kind clusters share |
+| 7 | `Create the management cluster` | `hack/deploy-mgmt-cluster.sh` with `CLUSTER_NAME: ${{ env.MGMT_CLUSTER }}`. The script creates a kind cluster without a config file, so the two clusters never contend for a host port. It installs flux-operator and cert-manager, applies the Flux releases whose CRDs the operators' watches need, and installs the rabbitmq-cluster-operator. It installs no CobaltCore operator and leaves the `kubectl` context on the new cluster |
+| 8 | `Load operator and datapath images into the management cluster` | `kind load docker-image` for the four operator images at `:dev`, the OVN image and `neutron:2025.2` into `cobaltcore-mgmt`. The DaemonSets of the suite's `OVNChassis` and `NeutronMetadataAgent` run on this cluster |
+| 9 | `Deploy keystone-operator` | `hack/ci-deploy-operator.sh` with `OPERATOR: keystone`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator` and `NAMESPACE: keystone-system` |
+| 10 | `Deploy barbican-operator` | The same script with `OPERATOR: barbican`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator` and `NAMESPACE: barbican-system` |
+| 11 | `Deploy ovn-operator` | The same script with `OPERATOR: ovn`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator` and `NAMESPACE: ovn-system`. No other operator in the job writes a StatefulSet or a PersistentVolumeClaim to the target, so this one exercises those two grants of the chart |
+| 12 | `Deploy neutron-operator` | The same script with `OPERATOR: neutron`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator` and `NAMESPACE: neutron-system`. It follows the ovn-operator, which installs the `OVNCentral` CRD |
+| 13 | `Install the target-cluster-access chart on the target` | `helm install` of `deploy/target-cluster/target-cluster-access` as the release `target-cluster-access` in the namespace `c5c3-access`, with `--kube-context "kind-$TARGET_CLUSTER"`, `--create-namespace`, `--set 'namespaces={openstack}'` and `--set createNamespaces=false`. The `openstack` namespace already exists from step 6 |
+| 14 | `Register the target cluster` | Reads the token from the Secret `target-cluster-access-token` in `c5c3-access`, with up to 30 tries 2 seconds apart, and fails with an `::error::` when it stays empty. Builds a kubeconfig from that token, the Secret's `ca.crt` and the server URL of `kind get kubeconfig --internal`. On the management cluster it creates the namespace `c5c3-clusters` and the Secret `cobaltcore-target` with the keys `kubeconfig` and `namespaces=openstack`, and labels the Secret `sigs.k8s.io/multicluster-runtime-kubeconfig=true` |
+| 15 | `Write the chainsaw kubeconfig for the target cluster` | Writes the admin kubeconfig of the target to `_output/cobaltcore-target.kubeconfig`. Chainsaw asserts on the target with it. The operators read the registration Secret of step 14 |
+| 16 | `Run the two-cluster E2E suite` | Creates `_output/reports`, switches the `kubectl` context to `kind-$MGMT_CLUSTER` and runs `make e2e-multicluster`. The target checks that a cluster answers, that the Secret `cobaltcore-target` exists in `c5c3-clusters` and that the chainsaw kubeconfig exists. Then it runs `chainsaw test --config tests/e2e-multicluster/chainsaw-config.yaml tests/e2e-multicluster/` |
+| 17 | `Dump diagnostic info (management cluster)` | `always()`: switches to `kind-$MGMT_CLUSTER` and runs `hack/ci-dump-diagnostics.sh` with `OPERATOR: keystone` |
+| 18 | `Dump diagnostic info (target cluster)` | `always()`: switches to `kind-$TARGET_CLUSTER` and runs the script without `OPERATOR`. The target runs the infrastructure and nothing else, so the script's infrastructure section is the whole dump |
+| 19 | `Upload JUnit report` | `always()`: `actions/upload-artifact@v7` uploads `_output/reports/` as `e2e-multicluster-junit-report` (`retention-days: 14`) |
+| 20 | `Delete kind cluster` | `always()`: runs `hack/ci-delete-kind-cluster.sh`, which covers both clusters without their names. It never fails the job |
+
+`tests/e2e-multicluster/chainsaw-config.yaml` sets `parallel: 1` and an `assert`
+timeout of `300s`, and writes the JUnit report to `_output/reports`.
+
+**Path filter:** `tests/e2e-multicluster/**` and `deploy/target-cluster/**` (the
+`tests_multicluster` class), or the `ci:multicluster` label.
+`hack/ci-resolve-changes.sh` reads no operator class and no image class for this
+flag, so a change to one of the four operators alone does not schedule the job.
+`ci:full` forces the flag on, and a labeled no-op resolves it to `false`.
+
 ### tempest
 
 Tempest API integration tests. Deploys services into a kind
@@ -1757,6 +1941,50 @@ packaged and pushed.
 
 The `make helm-package` target packages `operators/<operator>/helm/<operator>-operator/`.
 When `CHART_VERSION` is set (for tag pushes), it overrides the version in `Chart.yaml`.
+
+### helm-push-target-cluster
+
+Packages the `target-cluster-access` chart and pushes it to the GHCR OCI
+registry. Runs only on push events and is skipped on pull requests. Like
+`helm-push`, this is publish-only-on-merge. It is a job of its own because
+`helm-push` is a per-operator matrix: a step inside that matrix would package
+and push this single chart once per matrix entry, and the entries would race on
+the same registry tag.
+
+**Dependencies:** `needs: [changes]`
+**Condition:** Runs on `push` events when the `target-cluster-chart` output of
+`changes` is `true`.
+**Permissions:** `contents: read`, `packages: write`
+
+`hack/ci-resolve-changes.sh` sets `target-cluster-chart` when the
+`target_cluster_chart` class (`deploy/target-cluster/**`) changed, and forces it
+on for a `v*` tag push.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI |
+| 3 | `Login to GHCR` | Authenticates to `ghcr.io` via `helm registry login` with `github.actor` and `secrets.GITHUB_TOKEN` |
+| 4 | `Package and push Helm chart` | Removes stale `target-cluster-access-*.tgz` files, runs `make helm-package-target-cluster` and pushes the tarball to `oci://ghcr.io/c5c3/charts` |
+
+**Chart version derivation:**
+
+| Trigger | Version |
+| --- | --- |
+| Push to main | Default version from `Chart.yaml` |
+| Push v* tag | The tag name without its `v` prefix, passed as `CHART_VERSION="${GITHUB_REF_NAME#v}"` |
+
+The `make helm-package-target-cluster` target packages
+`deploy/target-cluster/target-cluster-access/`. When `CHART_VERSION` is set, the
+target passes it to `helm package` as `--version`, which overrides the version in
+`Chart.yaml`. The target runs no `helm dependency build`, because the chart has
+no subchart.
+
+No other job lists `helm-push-target-cluster` in `needs`. `github-release` waits
+for `helm-push` only, and its `files: "*-operator-*.tgz"` pattern does not match
+this chart's tarball.
+
+Runs on `ubuntu-latest`. Timeout: 15 minutes.
 
 ### github-release
 
