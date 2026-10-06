@@ -214,11 +214,46 @@ Open `https://horizon.example.com/auth/login/`. The "Authenticate using"
 dropdown now offers your identity provider. Pick it, authenticate at the
 provider, and you land back on the dashboard with a session.
 
-Under the hood the dashboard redirects the browser to
-`{keystoneURL}/auth/OS-FEDERATION/identity_providers/{idp}/protocols/{protocol}/websso`,
-passing its own origin. Keystone authenticates you through the provider and
-POSTs a token back to that origin — but only if the origin appears in its
-trusted list, which is what Step 1 configured.
+### The hops of a login {#login-hops}
+
+The figure follows one login with an OIDC backend. Its numbers are the hops
+below. An arrow with an open head is a request the browser sends, one with a
+filled head a call between servers.
+
+![A federated login through Horizon in eight numbered hops. Hop 1: the browser opens the login page of Horizon through the Gateway and picks an identity provider, and Horizon answers with a redirect. Hop 2: the browser follows it to the websso path of that provider on the public Keystone URL and passes the dashboard origin. The Service of Keystone sends every request to the federation-proxy container of the Keystone pod on port 5050, which redirects a browser without a session to the identity provider. Hop 3: the browser opens the authorization endpoint of the identity provider, and the user logs in there. Hop 4: the identity provider sends the browser back to /v3/OS-FEDERATION/redirect_uri on the public Keystone URL, with a code. Hop 5: the proxy exchanges the code at the token endpoint of the identity provider, a call that leaves the pod. Hop 6: the proxy passes the request to Keystone on 127.0.0.1:5000 with the claims as request headers, and Keystone answers with a form that carries a token, if the origin is a trusted dashboard. Hop 7: the browser posts that form to the origin, the path /auth/websso/ of Horizon. Hop 8: Horizon validates the token against the cluster-local Keystone URL and starts the session. Hops 1 to 4 and 7 are requests of the browser and use public names; hops 5 and 8 are calls between servers and use names a pod resolves. A SAML backend differs in hops 4 and 5: the browser posts the assertion to the proxy, and no call to the identity provider follows.](../diagrams/service-federated-login.svg)
+
+1. The browser opens `https://horizon.example.com/auth/login/` and submits the
+   chosen entry of "Authenticate using". Horizon answers with a redirect.
+2. The browser follows it to
+   `{keystoneURL}/auth/OS-FEDERATION/identity_providers/{idp}/protocols/{protocol}/websso`
+   and passes the dashboard origin, `https://horizon.example.com/auth/websso/`,
+   as `origin`. `{keystoneURL}` is `spec.websso.keystoneURL` of the Horizon
+   child, the public Keystone URL. The Service of Keystone sends every request
+   to the `federation-proxy` container on port 5050, which protects this path
+   and redirects a browser without a session to the identity provider.
+3. The browser opens the authorization endpoint of the issuer, and the user
+   logs in there.
+4. The identity provider sends the browser back to
+   `/v3/OS-FEDERATION/redirect_uri` on the public Keystone host, with an
+   authorization code.
+5. The proxy exchanges the code at the token endpoint of the provider. This
+   call leaves the Keystone pod, so the pod has to resolve and reach the
+   issuer.
+6. The proxy passes the request to Keystone on `127.0.0.1:5000`, with the
+   claims as `OIDC-` request headers. Keystone maps them to a user, compares
+   `origin` with its `[federation] trusted_dashboard` list, and answers with a
+   form that carries an unscoped token.
+7. The browser submits that form to the origin,
+   `https://horizon.example.com/auth/websso/`.
+8. Horizon validates the token against `OPENSTACK_KEYSTONE_URL`, the
+   cluster-local Service URL of Keystone, and starts the session.
+
+Hops 1 to 4 and 7 use names the browser resolves, which is why Step 1
+publishes both services. Hops 5 and 8 use names a pod resolves. A SAML backend
+differs in hops 4 and 5: the identity provider has the browser post the
+assertion to the proxy's endpoint
+`/v3/OS-FEDERATION/identity_providers/{idp}/protocols/{protocol}/auth/mellon/postResponse`,
+and no call from the proxy to the provider follows.
 
 ::: warning The fixture IdP is not reachable from a host browser
 On the kind devstack the fixture Keycloak issuer is a cluster-internal Service
@@ -352,7 +387,7 @@ kubectl get keystoneidentitybackend -n openstack
 
 **Keystone answers "Origin ... is not a trusted dashboard host".** The origin
 the dashboard sent does not match `trusted_dashboard` character for character.
-Compare them:
+This is hop 6 of [the login](#login-hops). Compare them:
 
 ```bash
 kubectl get keystone controlplane-keystone -n openstack \

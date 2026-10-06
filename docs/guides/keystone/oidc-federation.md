@@ -314,6 +314,11 @@ not set it by hand; see [End-to-End SSO](../end-to-end-sso.md). On a standalone
 Keystone, set `spec.federation.trustedDashboards` directly (see the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section).
 
+The figure shows this login with Horizon as the dashboard. The URL above is
+hop 2. [The hops of a login](../end-to-end-sso.md#login-hops) lists all eight.
+
+![A federated login through Horizon in eight numbered hops. Hop 1: the browser opens the login page of Horizon through the Gateway and picks an identity provider, and Horizon answers with a redirect. Hop 2: the browser follows it to the websso path of that provider on the public Keystone URL and passes the dashboard origin. The Service of Keystone sends every request to the federation-proxy container of the Keystone pod on port 5050, which redirects a browser without a session to the identity provider. Hop 3: the browser opens the authorization endpoint of the identity provider, and the user logs in there. Hop 4: the identity provider sends the browser back to /v3/OS-FEDERATION/redirect_uri on the public Keystone URL, with a code. Hop 5: the proxy exchanges the code at the token endpoint of the identity provider, a call that leaves the pod. Hop 6: the proxy passes the request to Keystone on 127.0.0.1:5000 with the claims as request headers, and Keystone answers with a form that carries a token, if the origin is a trusted dashboard. Hop 7: the browser posts that form to the origin, the path /auth/websso/ of Horizon. Hop 8: Horizon validates the token against the cluster-local Keystone URL and starts the session. Hops 1 to 4 and 7 are requests of the browser and use public names; hops 5 and 8 are calls between servers and use names a pod resolves. A SAML backend differs in hops 4 and 5: the browser posts the assertion to the proxy, and no call to the identity provider follows.](../../diagrams/service-federated-login.svg)
+
 ::: warning The fixture IdP is not reachable from a host browser
 The fixture Keycloak issuer is a cluster-internal Service name, so a browser on
 your workstation cannot complete the login form against it — the browser
