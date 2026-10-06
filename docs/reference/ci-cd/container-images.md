@@ -13,37 +13,35 @@ named build context patterns, constraint override tooling, and local build instr
 
 The OpenStack service images follow a three-layer hierarchy. Each layer builds on the
 previous one, separating concerns between runtime base, build tooling, and
-service-specific code:
+service-specific code.
 
-```text
-ubuntu:noble
-├── python-base          Runtime base: Python 3.12, system libs, openstack user
-│   ├── venv-builder     Build stage: compilers, uv, virtualenv with common packages
-│   │   ├── keystone     Stage 1 (build): install Keystone into virtualenv
-│   │   ├── horizon      Stage 1 (build): install Horizon, pre-build static assets
-│   │   ├── glance       Stage 1 (build): install Glance + glance_store[s3]
-│   │   ├── placement    Stage 1 (build): install Placement, write WSGI entry
-│   │   ├── barbican     Stage 1 (build): install Barbican into virtualenv
-│   │   ├── neutron      Stage 1 (build): install Neutron into virtualenv
-│   │   ├── cinder       Stage 1 (build): install Cinder into virtualenv
-│   │   ├── nova         Stage 0 (novnc): fetch the pinned noVNC tree
-│   │   ├── nova         Stage 1 (build): install Nova into virtualenv
-│   │   └── nova-compute Stage 1 (build): install Nova + libvirt-python (built against libvirt-dev)
-│   ├── keystone         Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── horizon          Stage 2 (runtime): copy virtualenv + static assets
-│   ├── glance           Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── placement        Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── barbican         Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── neutron          Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── cinder           Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── nova             Stage 2 (runtime): copy virtualenv and noVNC, add runtime apt packages
-│   └── nova-compute     Stage 2 (runtime): copy virtualenv, add host tools, rootwrap posture
-```
+The figure follows one service image from the files of the repository to the
+image: which file feeds which step before the build, which stage starts from
+which base image, and what the two contexts and the three build args carry. The
+table names both stages of every image.
 
-The `venv-builder` image is used only as a build stage — it never runs in production.
-Service images (e.g., `keystone`) use a multi-stage build: stage 1 extends `venv-builder`
-to install the service, then stage 2 extends `python-base` and copies only the virtualenv
-from stage 1. This ensures the final image contains no build tools.
+![The build of a service image, from the files of the repository to the image. Before the build, the job resolves the git ref of the service from releases/{release}/source-refs.yaml, checks out openstack/{service} at that ref into src/{service} and applies the patches under patches/{service}/{release}. It applies overrides/{release}/constraints.txt to releases/{release}/upper-constraints.txt, which rewrites that file in place, and it turns the block of the image in releases/{release}/extra-packages.yaml into three build args. docker build then runs images/{service}/Dockerfile in two stages. The build stage starts from the venv-builder image and installs the source tree into /var/lib/openstack, with the constraints file, the pip extras and the pip packages. The runtime stage starts from the python-base image, copies /var/lib/openstack from the build stage and installs the apt packages. venv-builder is built on python-base, and python-base on ubuntu:noble. The nova-compute image is a second build for nova: its own Dockerfile with the same two stages, on the same source tree, patches and constraints, with the block nova-compute of extra-packages.yaml.](../../diagrams/ci-service-image-build.svg)
+
+| Image | Build stage, on `venv-builder` | Runtime stage, on `python-base` |
+| --- | --- | --- |
+| `keystone` | installs Keystone into the virtualenv | copies the virtualenv, adds runtime apt packages |
+| `horizon` | installs Horizon, pre-builds the static assets | copies the virtualenv and the static assets |
+| `glance` | installs Glance, `glance_store[s3]` and `lhafile` | copies the virtualenv, adds runtime apt packages |
+| `placement` | installs Placement, writes the WSGI entry | copies the virtualenv, adds runtime apt packages |
+| `barbican` | installs Barbican into the virtualenv | copies the virtualenv, adds runtime apt packages |
+| `neutron` | installs Neutron into the virtualenv | copies the virtualenv, adds runtime apt packages |
+| `cinder` | installs Cinder into the virtualenv | copies the virtualenv, adds runtime apt packages |
+| `nova` | installs Nova into the virtualenv. A stage `novnc`, on `python-base`, fetches the pinned noVNC tree | copies the virtualenv and noVNC, adds runtime apt packages |
+| `nova-compute` | installs Nova and `libvirt-python`, built against `libvirt-dev` | copies the virtualenv, adds host tools and the rootwrap posture |
+
+The `tempest` image builds on the same pair
+([Container Image](../testing/tempest-test-infrastructure.md#container-image)).
+
+The `venv-builder` image never runs in production. It is the `FROM` target of
+the build stages and the container the service unit tests run in. Service images
+(e.g., `keystone`) use a multi-stage build: stage 1 extends `venv-builder` to
+install the service, then stage 2 extends `python-base` and copies only the
+virtualenv from stage 1. This ensures the final image contains no build tools.
 
 The release-independent images sit outside that lineage. They carry no
 OpenStack code, and all but two build straight on `ubuntu:noble`:
@@ -1832,8 +1830,12 @@ Service Dockerfiles use Docker's named build context feature (`--build-context`)
 release-specific files without embedding them in the Dockerfile or using `COPY` from the
 build directory. This keeps Dockerfiles release-independent.
 
-Each service build requires two named build contexts (shown here for Keystone; the
-Horizon build is identical with `horizon` in place of `keystone`):
+A local build passes two named build contexts (shown here for Keystone; the
+Horizon build is identical with `horizon` in place of `keystone`). CI passes two
+more, `python-base` and `venv-builder`, as `docker-image://` references to the
+digests `merge-base-images` published. The figure under
+[Dockerfile Hierarchy](#dockerfile-hierarchy) shows where each context and each
+build arg enters the build.
 
 | Context name | Contents | Mounted as |
 | --- | --- | --- |
