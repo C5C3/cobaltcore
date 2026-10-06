@@ -170,6 +170,11 @@ import can therefore draw about twice the image size from the `spec.staging`
 budget, which the devstack leaves at the operator default of `10Gi` per scratch
 volume.
 
+The figure shows the path of such an import as B. The second file of a
+conversion lands on the volume `staging`, beside the first.
+
+![Three paths of image bytes through one glance-api pod, and the three volumes on the disk of its node. Path A, a client upload with PUT /v2/images/{id}/file: the request body streams through the pod straight into the S3 store and touches no volume. Path B, a web-download import with POST /v2/images/{id}/import: the request returns at once, the pod fetches the whole image from a web server that the import filter admits onto the volume staging, an import plugin may convert it there into a second file, and after the last byte the image moves to the store. Path C, a download with GET /v2/images/{id}/file: the pod reads the image from the store, and with the image cache enabled it also writes it to the volume image-cache and serves later downloads of that image from there. The cache belongs to one replica, and a sidecar prunes it down to 80 percent of its size limit. The volumes staging, tasks-work and image-cache are emptyDirs. Each size limit is an eviction threshold: once a volume grows past it, the kubelet evicts the pod. No import writes image bytes to tasks-work.](../../diagrams/service-glance-image-paths.svg)
+
 Size that budget against what the conversion produces rather than against what
 travels over the wire. A `raw` result is the image's full virtual size, and a
 sparse `qcow2` download hides that number: a few hundred megabytes on the mirror
